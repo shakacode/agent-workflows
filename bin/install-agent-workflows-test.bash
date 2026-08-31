@@ -184,9 +184,10 @@ test_delivery_state_helper_unit_suite() {
 }
 
 test_codex_host_install_writes_helpers_and_metadata() {
-  local tmp target
+  local tmp target ruby_bin
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
+  ruby_bin="$(ruby -rrbconfig -e 'print RbConfig.ruby')"
 
   "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-agent-workflows-test.out"
 
@@ -201,10 +202,32 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/skills/pr-batch/agents/openai.yaml"
   assert_file "$target/workflows/pr-processing.md"
   assert_file "$target/docs/coordination-backend.md"
+  assert_file "$target/docs/execution-provenance-schema.md"
   assert_file "$target/docs/review-finding-schema.md"
   assert_file "$target/docs/agent-workflows-model-routing.md"
+  assert_file "$target/docs/user-facing-coordination.md"
+  assert_file "$target/docs/writing-style.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
+  assert_file "$target/bin/agent-workflow-writing-style"
+  mkdir -p "$tmp/.agents" "$tmp/docs" "$tmp/home"
+  printf 'Installed resolver smoke.\n' > "$tmp/docs/repository-style.md"
+  printf 'writing_style: docs/repository-style.md\n' > "$tmp/.agents/agent-workflow.yml"
+  writing_style_output="$(HOME="$tmp/home" "$ruby_bin" "$target/bin/agent-workflow-writing-style" --repo-root "$tmp" --format json)"
+  ruby -rjson -e 'result = JSON.parse(ARGV.fetch(0)); abort result.inspect unless result["provenance"] == "repo"' \
+    "$writing_style_output" || fail "installed writing-style resolver did not resolve the repository smoke guide"
+  rm "$tmp/.agents/agent-workflow.yml"
+  writing_style_output="$(HOME="$tmp/home" "$ruby_bin" "$target/bin/agent-workflow-writing-style" --repo-root "$tmp" --format json)"
+  ruby -rjson -e '
+    result = JSON.parse(ARGV.fetch(0))
+    expected = File.read(ARGV.fetch(1), encoding: "UTF-8").strip
+    abort result.inspect unless result["provenance"] == "portable-default" && result["guide"] == expected
+  ' "$writing_style_output" "$target/docs/writing-style.md" || \
+    fail "installed writing-style resolver did not load the packaged default document"
+  assert_file "$target/bin/validate-execution-provenance"
+  "$target/bin/validate-execution-provenance" >"$tmp/validate-execution-provenance.out"
+  grep -Fqx 'PASS execution provenance schema' "$tmp/validate-execution-provenance.out" || \
+    fail "Codex copy install could not validate its installed provenance schema guide"
   assert_file "$target/bin/agent-workflows-status"
   assert_file "$target/bin/agent-workflows-doctor"
   assert_file "$target/bin/agent_doctor/process_runner.rb"
@@ -224,7 +247,15 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/.agents/plugins/marketplace.json" ]] || fail "Codex marketplace metadata is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/plugin.json" ]] || fail "Claude native plugin manifest is source-pack metadata, not installer-managed install metadata"
   [[ ! -e "$target/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata is source-pack metadata, not installer-managed install metadata"
-  ruby -rjson -e 'metadata = JSON.parse(File.read(ARGV.fetch(0))); abort metadata.inspect unless metadata["host"] == "codex" && metadata["mode"] == "copy" && metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/)' "$target/.agent-workflows-install.json"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    provenance_fingerprint = metadata.fetch("managed_pack_doc_copy_fingerprints")["execution-provenance-schema.md"]
+    abort metadata.inspect unless metadata["host"] == "codex" &&
+                                  metadata["mode"] == "copy" &&
+                                  metadata["delivery_mode"] == "flat" &&
+                                  metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
+                                  provenance_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/)
+  ' "$target/.agent-workflows-install.json"
 }
 
 test_copy_mode_refuses_unmanaged_agent_doctor_directory_before_collision() {
@@ -317,6 +348,94 @@ test_native_plugin_plus_default_flat_install_fails_before_mutation() {
   done
 }
 
+test_existing_symlink_target_is_canonicalized_before_install() {
+  local tmp actual target output status
+  tmp="$(mktemp -d)"; actual="$tmp/actual-codex-home"; target="$tmp/codex-home"
+  mkdir -p "$actual"; ln -s "$actual" "$target"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "symlink target install exited $status: $output"
+  assert_symlink "$target"
+  assert_file "$actual/.agent-workflows-install.json"
+  assert_file "$actual/skills/pr-batch/SKILL.md"
+  [[ ! -e "$actual/.agent-workflows-install.lock" ]] || fail "symlink target install retained lock"
+}
+
+test_auto_host_classifies_configured_home_symlink_aliases() {
+  local tmp codex_home claude_home codex_alias claude_alias
+  tmp="$(mktemp -d)"; codex_home="$tmp/codex-home"; claude_home="$tmp/claude-home"
+  codex_alias="$tmp/codex-alias"; claude_alias="$tmp/claude-alias"
+  mkdir -p "$codex_home" "$claude_home"; ln -s "$codex_home" "$codex_alias"; ln -s "$claude_home" "$claude_alias"
+  CODEX_HOME="$codex_home" CLAUDE_HOME="$tmp/unused-claude" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$codex_alias" --mode copy --delivery-mode flat >/dev/null
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("host")' "$codex_home/.agent-workflows-install.json")" = codex ]] || \
+    fail "auto host misclassified configured Codex home alias"
+  CODEX_HOME="$tmp/unused-codex" CLAUDE_HOME="$claude_home" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$claude_alias" --mode copy --delivery-mode flat >/dev/null
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("host")' "$claude_home/.agent-workflows-install.json")" = claude ]] || \
+    fail "auto host misclassified configured Claude home alias"
+}
+
+test_auto_host_ignores_invalid_unrelated_configured_home() {
+  local tmp codex_home claude_home codex_alias claude_alias dangling_claude file_codex
+  tmp="$(mktemp -d)"; codex_home="$tmp/codex-home"; claude_home="$tmp/claude-home"
+  codex_alias="$tmp/codex-alias"; claude_alias="$tmp/claude-alias"
+  dangling_claude="$tmp/dangling-claude"; file_codex="$tmp/file-codex"
+  mkdir -p "$codex_home" "$claude_home"; ln -s "$codex_home" "$codex_alias"; ln -s "$claude_home" "$claude_alias"
+  ln -s "$tmp/missing-claude" "$dangling_claude"; printf 'not a home\n' > "$file_codex"
+  CODEX_HOME="$codex_home" CLAUDE_HOME="$dangling_claude" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$codex_alias" --mode copy --delivery-mode flat >/dev/null
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("host")' "$codex_home/.agent-workflows-install.json")" = codex ]] || \
+    fail "dangling unrelated Claude home blocked Codex alias classification"
+  CODEX_HOME="$file_codex" CLAUDE_HOME="$claude_home" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$claude_alias" --mode copy --delivery-mode flat >/dev/null
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("host")' "$claude_home/.agent-workflows-install.json")" = claude ]] || \
+    fail "file unrelated Codex home blocked Claude alias classification"
+}
+
+test_auto_host_skips_unresolved_configured_home_equality_marker() {
+  local tmp target injection counter output status
+  tmp="$(mktemp -d)"; target="$tmp/shared-home"; injection="$tmp/fail-second-realpath.rb"; counter="$tmp/realpath-count"
+  mkdir -p "$target"; printf '{}\n' > "$target/settings.json"
+  cat > "$injection" <<'RUBY'
+class << File
+  alias_method :qa_original_realpath, :realpath
+  def realpath(path, *args)
+    if path == ENV.fetch("QA_CONFIGURED_HOME")
+      counter = ENV.fetch("QA_REALPATH_COUNTER")
+      count = File.file?(counter) ? File.read(counter).to_i + 1 : 1
+      File.write(counter, count.to_s)
+      raise Errno::EIO if count == 2
+    end
+    qa_original_realpath(path, *args)
+  end
+end
+RUBY
+  set +e
+  output="$(CODEX_HOME="$target" CLAUDE_HOME="$tmp/unset-claude" QA_CONFIGURED_HOME="$target" \
+    QA_REALPATH_COUNTER="$counter" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host auto --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "unresolved configured-home equality marker exited $status: $output"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("host")' "$target/.agent-workflows-install.json")" = claude ]] || \
+    fail "unresolved Codex home equality marker overrode the proven Claude marker"
+}
+
+test_invalid_explicit_target_diagnostics_preserve_exact_path() {
+  local tmp dangling file output status
+  tmp="$(mktemp -d)"; dangling="$tmp/dangling-target"; file="$tmp/file-target"
+  ln -s "$tmp/missing-target" "$dangling"; printf 'not a directory\n' > "$file"
+  for target in "$dangling" "$file"; do
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+    set -e
+    [[ "$status" -ne 0 ]] || fail "invalid explicit target succeeded: $target"
+    assert_contains "$output" "Refusing target that cannot be resolved to an existing directory: $target"
+  done
+}
+
 test_plugin_companion_installs_non_skill_assets_and_records_mode() {
   local tmp target consumer host output
 
@@ -336,11 +455,13 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/LICENSE"
     assert_file "$target/workflows/pr-processing.md"
     assert_file "$target/docs/coordination-backend.md"
+    assert_file "$target/docs/writing-style.md"
     assert_file "$target/bin/agent-workflow-seam-doctor"
     assert_file "$target/bin/agent-workflows-status"
     assert_file "$target/bin/agent-workflows-doctor"
     assert_file "$target/bin/agent_doctor/process_runner.rb"
     assert_file "$target/bin/agent-workflows-delivery-state"
+    assert_file "$target/lib/agent-workflows/secure_github_actions_scanner.rb"
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
       abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
@@ -354,6 +475,166 @@ autonomous_merge:
 YAML
     output="$("$target/bin/agent-workflow-seam-doctor" --root "$consumer" 2>&1)"
     assert_contains "$output" "PASS agent workflow seam is complete"
+  done
+}
+
+test_third_party_notices_are_installed_for_every_delivery_mode() {
+  local tmp target collision_target personal_target delivery_mode mode output status
+
+  for mode in copy symlink; do
+    for delivery_mode in flat plugin-companion; do
+      tmp="$(mktemp -d)"
+      target="$tmp/$mode-$delivery_mode"
+      collision_target="$tmp/$mode-$delivery_mode-collision"
+      personal_target="$tmp/$mode-$delivery_mode-personal"
+
+      if [[ "$delivery_mode" = plugin-companion ]]; then
+        write_native_scw_state codex "$target"
+        write_native_scw_state codex "$collision_target"
+        write_native_scw_state codex "$personal_target"
+      fi
+
+      "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+        --mode "$mode" --delivery-mode "$delivery_mode" >"$tmp/install.out"
+
+      if [[ "$mode" = copy ]]; then
+        assert_file "$target/THIRD_PARTY-NOTICES.md"
+        [[ ! -L "$target/THIRD_PARTY-NOTICES.md" ]] || \
+          fail "$delivery_mode copy install linked THIRD_PARTY-NOTICES.md"
+      else
+        assert_symlink "$target/THIRD_PARTY-NOTICES.md"
+      fi
+      cmp -s "$target/THIRD_PARTY-NOTICES.md" "$ROOT/THIRD_PARTY-NOTICES.md" || \
+        fail "$mode $delivery_mode install changed THIRD_PARTY-NOTICES.md"
+
+      mkdir -p "$collision_target/THIRD_PARTY-NOTICES.md"
+      set +e
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$collision_target" \
+        --mode "$mode" --delivery-mode "$delivery_mode" 2>&1)"
+      status=$?
+      set -e
+
+      [[ "$status" -ne 0 ]] || \
+        fail "$mode $delivery_mode install replaced a THIRD_PARTY-NOTICES.md directory"
+      assert_contains "$output" "$collision_target/THIRD_PARTY-NOTICES.md"
+      [[ ! -e "$collision_target/LICENSE" && ! -e "$collision_target/workflows" ]] || \
+        fail "$mode $delivery_mode notice collision partially installed pack assets"
+      [[ ! -e "$collision_target/.agent-workflows-install.json" ]] || \
+        fail "$mode $delivery_mode notice collision committed metadata"
+
+      mkdir -p "$personal_target"
+      printf 'consumer-owned notice\n' > "$personal_target/THIRD_PARTY-NOTICES.md"
+      set +e
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$personal_target" \
+        --mode "$mode" --delivery-mode "$delivery_mode" 2>&1)"
+      status=$?
+      set -e
+
+      [[ "$status" -ne 0 ]] || \
+        fail "$mode $delivery_mode install replaced a consumer-owned THIRD_PARTY-NOTICES.md"
+      assert_contains "$output" "$personal_target/THIRD_PARTY-NOTICES.md"
+      grep -qxF 'consumer-owned notice' "$personal_target/THIRD_PARTY-NOTICES.md" || \
+        fail "$mode $delivery_mode install changed a consumer-owned THIRD_PARTY-NOTICES.md"
+      [[ ! -e "$personal_target/LICENSE" && ! -e "$personal_target/workflows" ]] || \
+        fail "$mode $delivery_mode notice ownership failure partially installed pack assets"
+      [[ ! -e "$personal_target/.agent-workflows-install.json" ]] || \
+        fail "$mode $delivery_mode notice ownership failure committed metadata"
+    done
+  done
+}
+
+test_third_party_notices_copy_upgrade_uses_fingerprint_without_git_history() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat > "$tmp/first.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_pack_root_copy_fingerprints")
+    abort metadata.inspect unless fingerprints.key?("THIRD_PARTY-NOTICES.md")
+  ' "$target/.agent-workflows-install.json"
+
+  mv "$source/.git" "$tmp/source.git"
+  printf '\nnon-git notice-v2\n' >> "$source/THIRD_PARTY-NOTICES.md"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat > "$tmp/non-git-upgrade.out"
+  grep -qxF 'non-git notice-v2' "$target/THIRD_PARTY-NOTICES.md" || \
+    fail "recorded fingerprint did not authorize an untouched non-git notice upgrade"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  printf '\npersonal notice edit\n' >> "$target/THIRD_PARTY-NOTICES.md"
+  printf '\nnon-git notice-v3\n' >> "$source/THIRD_PARTY-NOTICES.md"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "non-git upgrade replaced a modified installed notice"
+  assert_contains "$output" "Refusing to replace unowned pack root file"
+  grep -qxF 'personal notice edit' "$target/THIRD_PARTY-NOTICES.md" || \
+    fail "blocked non-git upgrade changed the modified installed notice"
+  cmp -s "$tmp/metadata.before" "$target/.agent-workflows-install.json" || \
+    fail "blocked non-git notice upgrade changed install metadata"
+}
+
+test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation() {
+  local tmp target canonical_target outside output status mode variant unsafe_ancestor expected_ancestor outside_scanner
+
+  for mode in copy symlink; do
+    for variant in lib-symlink companion-symlink lib-file companion-file; do
+      tmp="$(mktemp -d)"
+      target="$tmp/claude-home"
+      canonical_target="$(ruby -e 'print File.realpath(File.dirname(ARGV.fetch(0))) + "/" + File.basename(ARGV.fetch(0))' "$target")"
+      outside="$tmp/outside"
+      write_native_scw_state claude "$target"
+      mkdir -p "$outside"
+      case "$variant" in
+        lib-symlink)
+          unsafe_ancestor="$target/lib"
+          outside_scanner="$outside/agent-workflows/secure_github_actions_scanner.rb"
+          ln -s "$outside" "$unsafe_ancestor"
+          ;;
+        companion-symlink)
+          mkdir -p "$target/lib"
+          unsafe_ancestor="$target/lib/agent-workflows"
+          outside_scanner="$outside/secure_github_actions_scanner.rb"
+          ln -s "$outside" "$unsafe_ancestor"
+          ;;
+        lib-file)
+          unsafe_ancestor="$target/lib"
+          outside_scanner="$outside/unused"
+          printf 'owned file\n' > "$unsafe_ancestor"
+          ;;
+        companion-file)
+          mkdir -p "$target/lib"
+          unsafe_ancestor="$target/lib/agent-workflows"
+          outside_scanner="$outside/unused"
+          printf 'owned file\n' > "$unsafe_ancestor"
+          ;;
+      esac
+
+      set +e
+      output="$("$ROOT/bin/install-agent-workflows" --host claude --target "$target" --mode "$mode" \
+        --delivery-mode plugin-companion 2>&1)"
+      status=$?
+      set -e
+
+      [[ "$status" -ne 0 ]] || fail "$mode companion install accepted unsafe ancestor variant $variant"
+      expected_ancestor="${unsafe_ancestor/#$target/$canonical_target}"
+      assert_contains "$output" "Refusing unsafe scanner companion ancestor: $expected_ancestor"
+      [[ -L "$unsafe_ancestor" || -f "$unsafe_ancestor" ]] || \
+        fail "$mode companion install replaced unsafe ancestor variant $variant"
+      [[ ! -e "$outside_scanner" ]] || \
+        fail "$mode companion install wrote the scanner outside the selected agent home"
+      [[ ! -e "$target/LICENSE" ]] || fail "$mode companion path preflight ran after install mutation"
+      [[ ! -e "$target/.agent-workflows-install.json" ]] || fail "$mode companion path preflight wrote metadata"
+    done
   done
 }
 
@@ -455,6 +736,7 @@ class << File
     result
   end
 end
+
 RUBY
 
   set +e
@@ -621,8 +903,8 @@ test_recovery_normalization_failure_releases_install_lock() {
   printf '%s\n' "$staging" > "$receipt"
   cat > "$injection" <<'RUBY'
 module FailRecoveredStagingNormalization
-  def expand_path(path, *)
-    raise "injected recovered-staging normalization failure" if path == ENV["QA_RECOVERED_STAGING"] && ARGV == [path]
+  def realpath(path, *)
+    raise "injected recovered-staging normalization failure" if path == ENV["QA_RECOVERED_STAGING"]
 
     super
   end
@@ -637,7 +919,7 @@ RUBY
   set -e
 
   [[ "$status" -ne 0 ]] || fail "recovered-staging normalization failure unexpectedly succeeded"
-  assert_contains "$output" "injected recovered-staging normalization failure"
+  assert_contains "$output" "RECOVERY_FAILED: unsafe migration staging receipt"
   [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "normalization failure leaked install lock"
   assert_file "$receipt"
   [[ -d "$staging" ]] || fail "normalization failure removed staged recovery data"
@@ -669,6 +951,1167 @@ test_crash_receipt_recovers_flat_staging_before_new_install() {
   [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "recovered receipt remains"
   ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' \
     "$target/.agent-workflows-install.json"
+}
+
+test_first_install_crash_with_absent_metadata_recovers_as_flat() {
+  local tmp target staging receipt output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-first-install-crash"
+  receipt="$target/.agent-workflows-migration-staging"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '%s\n' "$staging" > "$receipt"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "absent first-install metadata recovery exited $status: $output"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ ! -e "$receipt" ]] || fail "absent first-install metadata recovery preserved completed receipt"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+  assert_file "$target/.agent-workflows-install.json"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' \
+    "$target/.agent-workflows-install.json"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "absent metadata recovery leaked install lock"
+}
+
+test_metadata_appearing_before_lock_is_not_treated_as_absent_recovery() {
+  local tmp target canonical_target staging receipt metadata fake_bin real_mkdir marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-metadata-appeared-before-lock"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_mkdir="$(command -v mkdir)"
+  marker="$tmp/metadata-appeared-before-lock"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mkdir" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 1 && "$1" = "$QA_INSTALL_LOCK" && ! -e "$QA_RACE_MARKER" ]]; then
+  printf '{"delivery_mode":"flat"}\n' > "$QA_INSTALL_METADATA"
+  printf 'appeared\n' > "$QA_RACE_MARKER"
+fi
+exec "$QA_REAL_MKDIR" "$@"
+SH
+  chmod +x "$fake_bin/mkdir"
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKDIR="$real_mkdir" \
+    QA_INSTALL_LOCK="$canonical_target/.agent-workflows-install.lock" \
+    QA_INSTALL_METADATA="$canonical_target/.agent-workflows-install.json" \
+    QA_RACE_MARKER="$marker" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 0 ]] || fail "metadata appearing before lock was not captured under lock: $status: $output"
+  [[ ! -e "$receipt" ]] || fail "fresh locked metadata capture left recovery receipt"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+  assert_file "$metadata"
+}
+
+test_metadata_disappearing_before_lock_is_not_treated_as_still_present() {
+  local tmp target canonical_target staging receipt metadata fake_bin real_mkdir marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-metadata-disappeared-before-lock"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_mkdir="$(command -v mkdir)"
+  marker="$tmp/metadata-disappeared-before-lock"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mkdir" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 1 && "$1" = "$QA_INSTALL_LOCK" && ! -e "$QA_RACE_MARKER" ]]; then
+  rm -f "$QA_INSTALL_METADATA"
+  printf 'disappeared\n' > "$QA_RACE_MARKER"
+fi
+exec "$QA_REAL_MKDIR" "$@"
+SH
+  chmod +x "$fake_bin/mkdir"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKDIR="$real_mkdir" \
+    QA_INSTALL_LOCK="$canonical_target/.agent-workflows-install.lock" \
+    QA_INSTALL_METADATA="$canonical_target/.agent-workflows-install.json" \
+    QA_RACE_MARKER="$marker" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 0 ]] || fail "fresh locked absent metadata recovery exited $status: $output"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ ! -e "$receipt" ]] || fail "fresh locked absent recovery left receipt"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+  assert_file "$metadata"
+}
+
+test_metadata_change_after_locked_preflight_fails_before_managed_file_mutation() {
+  local tmp target metadata canonical_metadata injection marker output status license_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/corrupt-metadata-after-temp-write.rb"
+  marker="$tmp/metadata-corrupted-after-temp-write"
+  "$ROOT/bin/install-agent-workflows" --host claude --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
+  license_before="$(shasum "$target/LICENSE")"
+
+  cat > "$injection" <<'RUBY'
+module CorruptMetadataAfterTempWrite
+  def open(path, *args, **kwargs, &block)
+    result = super
+    if path == "#{ENV.fetch("QA_INSTALL_METADATA")}.tmp" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      at_exit do
+        File.write(ENV.fetch("QA_INSTALL_METADATA"), "{\"delivery_mode\":")
+        File.write(ENV.fetch("QA_RACE_MARKER"), "changed\n")
+      end
+    end
+    result
+  end
+end
+File.singleton_class.prepend(CorruptMetadataAfterTempWrite)
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$canonical_metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host claude --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "post-preflight metadata change exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "post-preflight metadata change mutated a managed file"
+  [[ "$(cat "$metadata")" = '{"delivery_mode":' ]] || \
+    fail "post-preflight metadata change was overwritten"
+  [[ ! -e "$metadata.tmp" ]] || fail "post-preflight metadata change left prepared metadata"
+  assert_file "$target/.agent-workflows-install.lock/metadata-commit-old.guard"
+}
+
+test_implicit_delivery_mode_change_before_lock_fails_closed() {
+  local tmp target metadata fake_bin real_mkdir marker output status metadata_before license_before
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"; real_mkdir="$(command -v mkdir)"; marker="$tmp/mode-changed-before-lock"
+  write_native_scw_state codex "$target"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode plugin-companion >/dev/null
+  metadata_before="$(cat "$metadata")"; license_before="$(shasum "$target/LICENSE")"
+  mkdir -p "$fake_bin"
+  cat > "$fake_bin/mkdir" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+"$QA_REAL_MKDIR" "$@"
+if [[ "$*" == *"$QA_INSTALL_LOCK"* && ! -e "$QA_RACE_MARKER" ]]; then
+  ruby -rjson -e 'path = ARGV.fetch(0); data = JSON.parse(File.read(path)); data["delivery_mode"] = "flat"; File.write(path, JSON.generate(data) + "\n")' "$QA_INSTALL_METADATA"
+  : > "$QA_RACE_MARKER"
+fi
+SH
+  chmod +x "$fake_bin/mkdir"
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKDIR="$real_mkdir" QA_INSTALL_LOCK="$target/.agent-workflows-install.lock" \
+    QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "stale implicit delivery mode exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode")' "$metadata")" = "flat" ]] || \
+    fail "stale implicit delivery mode overwrote bound metadata"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || fail "stale implicit delivery mode mutated managed files"
+}
+
+test_uncertain_metadata_commit_preserves_migration_staging_and_receipt() {
+  local tmp target metadata staging receipt injection output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-committed-metadata-cleanup.rb"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+module AtomicMetadataCommitHook
+  def self.call(phase)
+    raise Errno::EIO if phase == :before_success_cleanup
+  end
+end
+RUBY
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"; status=$?
+  set -e
+  [[ "$status" -eq 68 ]] || fail "uncertain committed metadata exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_CLEANUP_FAILED"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode")' "$metadata")" = "plugin-companion" ]] || \
+    fail "uncertain commit did not retain committed metadata"
+  assert_file "$receipt"
+  IFS= read -r staging < "$receipt"
+  [[ -n "$(find "$staging" -mindepth 1 -print -quit)" ]] || fail "uncertain commit did not retain staged flat skills"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "uncertain commit restored staging into a plugin-companion layout"
+}
+
+test_present_metadata_deleted_after_binding_reports_backup_recovery_guidance() {
+  local tmp target metadata canonical_metadata injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/delete-present-metadata-after-binding.rb"
+  marker="$tmp/present-metadata-deleted"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
+
+  cat > "$injection" <<'RUBY'
+metadata = ENV.fetch("QA_INSTALL_METADATA")
+if ARGV.length == 1 && ARGV.first == metadata && File.exist?("#{metadata}.tmp") &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  at_exit do
+    File.unlink(metadata)
+    File.write(ENV.fetch("QA_RACE_MARKER"), "deleted\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$canonical_metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "present metadata deletion exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$output" "Restore a valid backup of $canonical_metadata"
+  assert_contains "$output" "preserve the target"
+  assert_not_contains "$output" "Confirm $canonical_metadata remains absent"
+  [[ ! -e "$metadata.tmp" ]] || fail "present metadata deletion left prepared metadata"
+}
+
+test_bound_metadata_change_cannot_grant_symlink_ownership() {
+  local tmp target metadata canonical_metadata outside injection marker helper initial_helper_identity output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  outside="$tmp/unmanaged-source"
+  injection="$tmp/change-metadata-after-binding-check.rb"
+  marker="$tmp/metadata-changed-after-binding-check"
+  helper="$target/bin/agent-workflows-status"
+  mkdir -p "$outside/bin"
+  printf '#!/usr/bin/env bash\necho unmanaged\n' > "$outside/bin/agent_doctor"
+  chmod +x "$outside/bin/agent_doctor"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
+  rm -f "$target/bin/agent_doctor"
+  ln -s "$outside/bin/agent_doctor" "$target/bin/agent_doctor"
+  initial_helper_identity="$(ruby -e 'stat = File.lstat(ARGV.fetch(0)); print "#{stat.dev}:#{stat.ino}"' "$helper")"
+
+  cat > "$injection" <<'RUBY'
+require "json"
+metadata = ENV.fetch("QA_INSTALL_METADATA")
+helper = ENV.fetch("QA_MANAGED_HELPER")
+initial_helper_identity = ENV.fetch("QA_INITIAL_HELPER_IDENTITY")
+if ARGV.length == 1 && ARGV.first == metadata && File.exist?("#{metadata}.tmp") &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  current_helper_identity = begin
+    stat = File.lstat(helper)
+    "#{stat.dev}:#{stat.ino}"
+  rescue Errno::ENOENT
+    "missing"
+  end
+  if current_helper_identity == initial_helper_identity
+    at_exit do
+      value = JSON.parse(File.binread(metadata))
+      value["mode"] = "symlink"
+      value["source"] = ENV.fetch("QA_UNMANAGED_SOURCE")
+      File.write(metadata, JSON.generate(value) + "\n")
+      File.write(ENV.fetch("QA_RACE_MARKER"), "changed\n")
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$canonical_metadata" QA_MANAGED_HELPER="$helper" \
+    QA_INITIAL_HELPER_IDENTITY="$initial_helper_identity" QA_UNMANAGED_SOURCE="$outside" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "bound metadata ownership race exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$(readlink "$target/bin/agent_doctor")" = "$outside/bin/agent_doctor" ]] || \
+    fail "changed live metadata granted ownership of an unmanaged doctor symlink"
+  [[ ! -e "$metadata.tmp" ]] || fail "bound metadata ownership race left prepared metadata"
+  assert_file "$target/.agent-workflows-install.lock/metadata-commit-old.guard"
+}
+
+test_bound_absent_metadata_short_circuits_snapshot_read_to_key_absent() {
+  local tmp target outside injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  outside="$tmp/unmanaged-doctor"
+  injection="$tmp/observe-absent-bound-snapshot-read.rb"
+  marker="$tmp/absent-bound-snapshot-read"
+  mkdir -p "$target/bin" "$outside"
+  ln -s "$outside" "$target/bin/agent_doctor"
+
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 2 && ARGV[0].end_with?("/.agent-workflows-install.lock/install-metadata.snapshot")
+  File.write(ENV.fetch("QA_SNAPSHOT_READ_MARKER"), "read\n")
+end
+RUBY
+
+  set +e
+  output="$(QA_SNAPSHOT_READ_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || fail "unmanaged doctor with absent metadata exited $status: $output"
+  assert_contains "$output" "Refusing unmanaged workflow doctor symlink"
+  [[ ! -e "$marker" ]] || fail "bound absent metadata attempted to read a nonexistent snapshot"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "bound absent metadata short circuit leaked install lock"
+}
+
+test_metadata_commit_rejects_destination_directory_race() {
+  local tmp target metadata canonical_metadata preserved injection marker helper initial_helper_identity output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/preserved-install-metadata.json"
+  injection="$tmp/replace-metadata-after-final-binding-check.rb"
+  marker="$tmp/metadata-replaced-after-final-binding-check"
+  helper="$target/bin/agent-workflows-status"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
+  initial_helper_identity="$(ruby -e 'stat = File.lstat(ARGV.fetch(0)); print "#{stat.dev}:#{stat.ino}"' "$helper")"
+
+  cat > "$injection" <<'RUBY'
+metadata = ENV.fetch("QA_INSTALL_METADATA")
+helper = ENV.fetch("QA_MANAGED_HELPER")
+initial_helper_identity = ENV.fetch("QA_INITIAL_HELPER_IDENTITY")
+if ARGV.length == 1 && ARGV.first == metadata && File.exist?("#{metadata}.tmp") &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  current_helper_identity = begin
+    stat = File.lstat(helper)
+    "#{stat.dev}:#{stat.ino}"
+  rescue Errno::ENOENT
+    "missing"
+  end
+  if current_helper_identity != initial_helper_identity
+    at_exit do
+      File.rename(metadata, ENV.fetch("QA_PRESERVED_METADATA"))
+      Dir.mkdir(metadata)
+      File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$canonical_metadata" QA_PRESERVED_METADATA="$preserved" \
+    QA_MANAGED_HELPER="$helper" QA_INITIAL_HELPER_IDENTITY="$initial_helper_identity" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "metadata destination directory race exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ -d "$metadata" && ! -L "$metadata" ]] || fail "metadata destination directory race replaced the competing directory"
+  assert_file "$preserved"
+  [[ ! -e "$metadata/.agent-workflows-install.json.tmp" ]] || \
+    fail "metadata commit moved prepared metadata inside the competing directory"
+  [[ ! -e "$metadata.tmp" ]] || fail "metadata destination directory race left prepared metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "metadata destination directory race leaked install lock"
+}
+
+test_metadata_commit_reverses_absent_install_after_post_rename_failure() {
+  local tmp target metadata injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-absent-post-rename-attestation.rb"
+  marker="$tmp/absent-post-rename-attestation-failed"
+
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 6 && ARGV[0] == ENV.fetch("QA_TARGET") && ARGV[2] == "absent"
+  require "digest"
+  module FailAbsentPostRenameAttestation
+    def update(*)
+      Thread.current[:qa_metadata_digest_updates] = Thread.current[:qa_metadata_digest_updates].to_i + 1
+      if Thread.current[:qa_metadata_digest_updates] == 2
+        File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+        raise "injected post-rename metadata attestation failure"
+      end
+      super
+    end
+  end
+  Digest::SHA256.prepend(FailAbsentPostRenameAttestation)
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 69 ]] || fail "absent post-rename metadata failure exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_ROLLED_BACK"
+  assert_contains "$output" "may be retried"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING"
+  assert_not_contains "$output" "preserved $metadata without overwriting it"
+  [[ ! -e "$metadata" && ! -L "$metadata" ]] || \
+    fail "absent metadata commit was not reversed after post-rename failure"
+  [[ ! -e "$metadata.tmp" ]] || fail "reversed absent metadata commit left prepared metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "reversed absent metadata commit leaked install lock"
+}
+
+test_metadata_commit_rolls_back_failed_present_compare_and_swap() {
+  local tmp target canonical_target metadata canonical_metadata preserved injection marker output status metadata_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/preserved-install-metadata.json"
+  injection="$tmp/replace-metadata-inside-present-commit.rb"
+  marker="$tmp/metadata-replaced-inside-present-commit"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_metadata="$canonical_target/.agent-workflows-install.json"
+  metadata_before="$(shasum "$metadata")"
+
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 6 && ARGV[0] == ENV.fetch("QA_TARGET") &&
+   ARGV[1] == ".agent-workflows-install.json" && ARGV[2] == "present"
+  module ReplaceMetadataInsidePresentCommit
+    def close(*args)
+      opened_stat = stat unless closed?
+      result = super
+      metadata = ENV.fetch("QA_INSTALL_METADATA")
+      unless File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        named_stat = File.lstat(metadata)
+        if opened_stat&.file? && named_stat.file? &&
+           opened_stat.dev == named_stat.dev && opened_stat.ino == named_stat.ino
+          File.rename(metadata, ENV.fetch("QA_PRESERVED_METADATA"))
+          File.write(metadata, "competing metadata\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+        end
+      end
+      result
+    end
+  end
+  IO.prepend(ReplaceMetadataInsidePresentCommit)
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$canonical_target" QA_INSTALL_METADATA="$canonical_metadata" \
+    QA_PRESERVED_METADATA="$preserved" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 67 ]] || fail "present metadata compare-and-swap race exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_ROLLBACK_FAILED"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || \
+    fail "failed metadata compare-and-swap did not restore the trusted original"
+  assert_file "$preserved"
+  [[ "$(cat "$metadata.tmp")" = "competing metadata" ]] || \
+    fail "failed metadata compare-and-swap did not preserve the competing destination"
+  assert_file "$target/.agent-workflows-install.lock/metadata-commit-old.guard"
+}
+
+test_metadata_commit_restores_from_prebound_guard_when_displaced_tmp_changes() {
+  local tmp target metadata preserved injection marker output status metadata_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/displaced-original-metadata.json"
+  injection="$tmp/replace-displaced-metadata-after-exchange.rb"
+  marker="$tmp/displaced-metadata-replaced"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  metadata_before="$(shasum "$metadata")"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module ReplaceDisplacedMetadataAfterExchange
+  def extern(signature, *arguments)
+    result = super
+    syscall_name = signature[/\b(renameat(?:2|x_np)?)\(/, 1]
+    if name == "AtomicMetadataRename" && signature.include?("openat")
+      real_openat = method(:openat)
+      define_singleton_method(:openat) do |directory_fd, entry_name, flags|
+        if Thread.current[:qa_after_metadata_exchange] && entry_name == ".agent-workflows-install.json" &&
+           !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+          Fiddle.last_error = Errno::EIO::Errno
+          -1
+        else
+          real_openat.call(directory_fd, entry_name, flags)
+        end
+      end
+    elsif name == "AtomicMetadataRename" && syscall_name
+      real_syscall = method(syscall_name)
+      define_singleton_method(syscall_name) do |*syscall_arguments|
+        result = real_syscall.call(*syscall_arguments)
+        if result == 0 && syscall_arguments.fetch(1).end_with?(".tmp") &&
+           syscall_arguments.fetch(3) == ".agent-workflows-install.json" &&
+           syscall_arguments.last == 0x2 && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          temporary = "#{ENV.fetch("QA_INSTALL_METADATA")}.tmp"
+          File.rename(temporary, ENV.fetch("QA_PRESERVED_METADATA"))
+          File.write(temporary, "raced displaced metadata\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+        end
+        result
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(ReplaceDisplacedMetadataAfterExchange)
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_PRESERVED_METADATA="$preserved" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 67 ]] || fail "changed displaced metadata rollback exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_ROLLBACK_FAILED"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || \
+    fail "prebound guard did not restore original canonical metadata"
+  assert_contains "$(cat "$metadata.tmp")" "raced displaced metadata"
+  assert_file "$preserved"
+  assert_file "$target/.agent-workflows-install.lock/metadata-commit-old.guard"
+}
+
+test_metadata_commit_preserves_both_names_when_present_rollback_fails() {
+  local tmp target metadata injection marker output status metadata_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-present-metadata-rollback.rb"
+  marker="$tmp/present-metadata-rollback-failed"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  metadata_before="$(shasum "$metadata" | awk '{print $1}')"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailPresentGuardRollback
+  def extern(signature, *arguments)
+    result = super
+    syscall_name = signature[/\b(renameat(?:2|x_np)?)\(/, 1]
+    if name == "AtomicMetadataRename" && syscall_name
+      real_syscall = method(syscall_name)
+      define_singleton_method(syscall_name) do |*syscall_arguments|
+        source_name = syscall_arguments.fetch(1)
+        destination_name = syscall_arguments.fetch(3)
+        if Thread.current[:qa_fail_metadata_rollback] && source_name == "metadata-commit-old.guard"
+          File.write(ENV.fetch("QA_RACE_MARKER"), "rollback failed\n")
+          Fiddle.last_error = Errno::EIO::Errno
+          return -1
+        end
+        result = real_syscall.call(*syscall_arguments)
+        if result == 0 && source_name.end_with?(".tmp") &&
+           destination_name == ".agent-workflows-install.json" && syscall_arguments.last == 0x2
+          temporary = "#{ENV.fetch("QA_INSTALL_METADATA")}.tmp"
+          File.rename(temporary, "#{temporary}.displaced")
+          File.write(temporary, "raced rollback metadata\n")
+          Thread.current[:qa_fail_metadata_rollback] = true
+        end
+        result
+      end
+    end
+  end
+end
+Fiddle::Importer.prepend(FailPresentGuardRollback)
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" QA_INSTALL_METADATA="$metadata" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 67 ]] || fail "failed present metadata rollback exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_ROLLBACK_FAILED"
+  assert_contains "$output" "manual recovery"
+  assert_file "$metadata"
+  assert_file "$metadata.tmp"
+  assert_file "$metadata.tmp.displaced"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.lock/metadata-commit-old.guard" | awk '{print $1}')" ]] || \
+    fail "failed present metadata rollback did not preserve the trusted guard"
+  assert_contains "$(cat "$metadata.tmp")" "raced rollback metadata"
+  [[ "$metadata_before" != "$(shasum "$metadata" | awk '{print $1}')" ]] || \
+    fail "failed present metadata rollback did not preserve the newly committed metadata name"
+}
+
+test_metadata_commit_does_not_unlink_replaced_attested_old_destination() {
+  local tmp target canonical_target metadata canonical_metadata preserved injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/preserved-attested-old-metadata.json"
+  injection="$tmp/replace-attested-old-metadata-before-unlink.rb"
+  marker="$tmp/attested-old-metadata-replaced"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_metadata="$canonical_target/.agent-workflows-install.json"
+
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 5 && ARGV[0] == ENV.fetch("QA_TARGET") && ARGV[2] == "present"
+  module ReplaceAttestedOldMetadataBeforeUnlink
+    def close(*)
+      temporary = "#{ENV.fetch("QA_INSTALL_METADATA")}.tmp"
+      unless closed? || File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        opened_stat = stat
+        named_stat = File.lstat(temporary) rescue nil
+        if named_stat && opened_stat.file? && named_stat.file? &&
+           opened_stat.dev == named_stat.dev && opened_stat.ino == named_stat.ino
+          File.rename(temporary, ENV.fetch("QA_PRESERVED_METADATA"))
+          File.write(temporary, "unverified replacement metadata\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+        end
+      end
+      super
+    end
+  end
+  IO.prepend(ReplaceAttestedOldMetadataBeforeUnlink)
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$canonical_target" QA_INSTALL_METADATA="$canonical_metadata" \
+    QA_PRESERVED_METADATA="$preserved" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "replaced attested old metadata was silently unlinked"
+  assert_contains "$output" "METADATA_COMMIT_CLEANUP_FAILED"
+  assert_contains "$output" "manual recovery"
+  assert_file "$metadata"
+  assert_file "$metadata.tmp"
+  [[ "$(cat "$metadata.tmp")" = "unverified replacement metadata" ]] || \
+    fail "metadata commit deleted or changed the unverified replacement"
+  assert_file "$preserved"
+}
+
+test_metadata_commit_rejects_replaced_prepared_file() {
+  local tmp target metadata injection marker output status preserved
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/replace-prepared-install-metadata.rb"
+  marker="$tmp/prepared-install-metadata-replaced"
+
+  cat > "$injection" <<'RUBY'
+metadata = ENV.fetch("QA_INSTALL_METADATA")
+if ARGV.first == "#{metadata}.tmp" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  at_exit do
+    File.write(
+      "#{metadata}.tmp",
+      "{\"delivery_mode\":\"plugin-companion\",\"mode\":\"symlink\",\"source\":\"/tmp/attacker\"}\n"
+    )
+    File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "replaced prepared metadata exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ ! -e "$metadata" ]] || fail "replaced prepared metadata was committed"
+  assert_file "$target/skills/pr-batch/SKILL.md"
+  grep -Rql '"source":"/tmp/attacker"' "$target" || \
+    fail "replaced prepared metadata was deleted"
+  preserved="$(find "$target" -maxdepth 1 -type f -name '.cleanup-*' -print -quit)"
+  [[ -n "$preserved" ]] || fail "replaced prepared metadata did not retain private evidence"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $preserved"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING: preserved $metadata.tmp because"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "replaced prepared metadata left an unnecessary empty install lock"
+}
+
+test_metadata_commit_capability_failure_stops_before_managed_mutation() {
+  local tmp source target canonical_target injection output status license_before metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-atomic-metadata-rename-import.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  license_before="$(shasum "$target/LICENSE")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  printf '\ncapability probe source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailAtomicMetadataRenameImport
+  def extern(signature, *arguments)
+    if signature.include?("renameat2") || signature.include?("renameatx_np")
+      raise Fiddle::DLError, "atomic rename unavailable"
+    end
+    super
+  end
+end
+Fiddle::Importer.prepend(FailAtomicMetadataRenameImport)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "missing metadata commit capability unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $canonical_target/.agent-workflows-install.lock"
+  assert_contains "$output" "move the entire preserved path aside"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "missing metadata commit capability mutated a managed file"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "missing metadata commit capability changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
+    fail "missing metadata commit capability prepared new metadata"
+  [[ -d "$target/.agent-workflows-install.lock" ]] || \
+    fail "missing metadata commit capability did not preserve the bound install lock"
+}
+
+test_metadata_actual_source_prebind_failure_stops_before_managed_mutation() {
+  local tmp source target injection output status license_before metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-actual-metadata-prebind.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  license_before="$(shasum "$target/LICENSE")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  printf '\nprebind source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailActualMetadataPrebind
+  def extern(signature, *arguments)
+    result = super
+    if name == "AtomicMetadataPrebind" && signature.include?("linkat")
+      define_singleton_method(:linkat) do |*|
+        Fiddle.last_error = Errno::EOPNOTSUPP::Errno
+        -1
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(FailActualMetadataPrebind)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "actual metadata prebind failure unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_PREBIND_UNAVAILABLE"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "actual metadata prebind failure mutated a managed file"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "actual metadata prebind failure changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
+    fail "actual metadata prebind failure prepared new metadata"
+}
+
+test_metadata_partial_prebind_failure_cleans_guard_and_allows_retry() {
+  local tmp source target injection marker output status retry_output license_before metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-prebind-guard-open.rb"
+  marker="$tmp/prebind-guard-open-failed"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  license_before="$(shasum "$target/LICENSE")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  printf '\npartial prebind source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailPrebindGuardOpen
+  def extern(signature, *arguments)
+    result = super
+    if name == "AtomicMetadataPrebind" && signature.include?("openat")
+      real_openat = method(:openat)
+      define_singleton_method(:openat) do |directory_fd, entry_name, flags|
+        if entry_name == "metadata-commit-old.guard" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+          Fiddle.last_error = Errno::EIO::Errno
+          -1
+        else
+          real_openat.call(directory_fd, entry_name, flags)
+        end
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(FailPrebindGuardOpen)
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "partial metadata prebind failure unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_PREBIND_UNAVAILABLE"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "partial metadata prebind failure mutated a managed file"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "partial metadata prebind failure changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "partial metadata prebind failure leaked install lock or guard"
+
+  retry_output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+  [[ "$license_before" != "$(shasum "$target/LICENSE")" ]] || \
+    fail "retry after partial metadata prebind failure did not install the source change"
+}
+
+test_metadata_prebind_cleanup_preserves_replacement_guard() {
+  local tmp source target injection marker output status lock foreign
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/swap-prebind-guard-during-cleanup.rb"
+  marker="$tmp/prebind-guard-cleanup-raced"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  printf '\nprebind cleanup race source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module SwapPrebindGuardDuringCleanup
+  def extern(signature, *arguments)
+    result = super
+    if name == "AtomicMetadataPrebind" && signature.include?("openat")
+      real_openat = method(:openat)
+      define_singleton_method(:openat) do |directory_fd, entry_name, flags|
+        if entry_name == "metadata-commit-old.guard" && !Thread.current[:qa_open_failed]
+          Thread.current[:qa_open_failed] = true
+          Fiddle.last_error = Errno::EIO::Errno
+          -1
+        else
+          real_openat.call(directory_fd, entry_name, flags)
+        end
+      end
+    elsif name == "AtomicMetadataPrebind" && signature.include?("unlinkat")
+      real_unlinkat = method(:unlinkat)
+      define_singleton_method(:unlinkat) do |directory_fd, entry_name, flags|
+        if entry_name == "metadata-commit-old.guard" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          guard = ENV.fetch("QA_GUARD")
+          File.rename(guard, "#{guard}.created")
+          File.write(guard, "foreign replacement guard\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+        end
+        real_unlinkat.call(directory_fd, entry_name, flags)
+      end
+    elsif name == "AtomicMetadataPrebind" &&
+          (signature.include?("renameat2") || signature.include?("renameatx_np"))
+      syscall_name = signature[/\b(renameat(?:2|x_np)?)\(/, 1]
+      real_syscall = method(syscall_name)
+      define_singleton_method(syscall_name) do |*syscall_arguments|
+        if syscall_arguments.fetch(1) == "metadata-commit-old.guard" &&
+           !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          guard = ENV.fetch("QA_GUARD")
+          File.rename(guard, "#{guard}.created")
+          File.write(guard, "foreign replacement guard\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+        end
+        real_syscall.call(*syscall_arguments)
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(SwapPrebindGuardDuringCleanup)
+RUBY
+
+  lock="$target/.agent-workflows-install.lock"
+  set +e
+  output="$(QA_GUARD="$lock/metadata-commit-old.guard" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "prebind cleanup replacement race unexpectedly succeeded"
+  assert_file "$lock/metadata-commit-old.guard.created"
+  foreign="$(find "$lock" -maxdepth 1 -type f -name 'metadata-commit-old.*' \
+    -exec grep -l 'foreign replacement guard' {} + 2>/dev/null | head -1 || true)"
+  [[ -n "$foreign" ]] || fail "prebind cleanup deleted the foreign replacement guard"
+}
+
+test_metadata_commit_link_capability_failure_stops_before_managed_mutation() {
+  local tmp source target injection output status license_before metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-atomic-metadata-probe-link.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  license_before="$(shasum "$target/LICENSE")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  printf '\nlink capability probe source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailAtomicMetadataProbeLink
+  def extern(signature, *arguments)
+    result = super
+    if name == "AtomicMetadataRenameProbe" && signature.include?("linkat")
+      define_singleton_method(:linkat) do |*|
+        Fiddle.last_error = Errno::EPERM::Errno
+        -1
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(FailAtomicMetadataProbeLink)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "missing metadata link capability unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "missing metadata link capability mutated a managed file"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "missing metadata link capability changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
+    fail "missing metadata link capability prepared new metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "missing metadata link capability leaked install lock"
+}
+
+test_transient_metadata_probe_cleanup_failure_allows_install() {
+  local tmp source target injection output status license_before metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/fail-atomic-metadata-probe-cleanup.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --mode copy \
+    --delivery-mode flat >"$tmp/initial-install.out"
+  license_before="$(shasum "$target/LICENSE")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  printf '\ncapability cleanup source change\n' >> "$source/LICENSE"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailAtomicMetadataProbeCleanup
+  def extern(signature, *arguments)
+    result = super
+    if name == "AtomicMetadataRenameProbe" && signature.include?("unlinkat")
+      real_unlinkat = method(:unlinkat)
+      failed_once = false
+      define_singleton_method(:unlinkat) do |directory_fd, entry_name, flags|
+        if (ENV["QA_PERSISTENT_PROBE_UNLINK"] || !failed_once) && entry_name.start_with?("metadata-rename-probe-")
+          failed_once = true
+          Fiddle.last_error = 1
+          -1
+        else
+          real_unlinkat.call(directory_fd, entry_name, flags)
+        end
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(FailAtomicMetadataProbeCleanup)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "transient metadata probe cleanup failure exited $status: $output"
+  assert_not_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$(shasum "$source/LICENSE" | awk '{print $1}')" = "$(shasum "$target/LICENSE" | awk '{print $1}')" ]] || \
+    fail "transient metadata probe cleanup failure did not install managed update"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || \
+    fail "failed metadata probe cleanup prepared new metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "failed metadata probe cleanup leaked install lock"
+
+  license_before="$(shasum "$target/LICENSE")"
+  printf '\npersistent probe cleanup source change\n' >> "$source/LICENSE"
+  set +e
+  output="$(QA_PERSISTENT_PROBE_UNLINK=1 RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "persistent metadata probe cleanup failure unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || \
+    fail "persistent metadata probe cleanup failure mutated managed files"
+}
+
+test_metadata_probe_creation_does_not_follow_replaced_lock_ancestor() {
+  local tmp target lock moved_lock outside injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; lock="$target/.agent-workflows-install.lock"
+  moved_lock="$target/.agent-workflows-install.lock-moved"; outside="$tmp/outside"
+  injection="$tmp/swap-probe-lock.rb"; marker="$tmp/probe-lock-swapped"
+  mkdir -p "$target" "$outside"; chmod 0777 "$target" "$outside"
+  cat > "$injection" <<'RUBY'
+module MetadataRenameProbeHook
+  def self.call(phase)
+    return unless phase == :after_directory_attestation
+    File.rename(ENV.fetch("QA_INSTALL_LOCK"), ENV.fetch("QA_MOVED_LOCK"))
+    File.symlink(ENV.fetch("QA_OUTSIDE"), ENV.fetch("QA_INSTALL_LOCK"))
+    File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_INSTALL_LOCK="$lock" QA_MOVED_LOCK="$moved_lock" QA_OUTSIDE="$outside" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "replaced probe lock ancestor unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING"
+  [[ -z "$(find "$outside" -mindepth 1 -print -quit)" ]] || fail "probe creation wrote through replaced lock ancestor"
+  [[ -z "$(find "$moved_lock" -mindepth 1 -print -quit)" ]] || fail "probe lock race retained probe entries"
+  [[ ! -e "$target/LICENSE" ]] || fail "probe lock race mutated managed files"
+  rm "$lock"; rmdir "$moved_lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_atomic_rename_capability_failure_stops_before_recovery_mutation() {
+  local tmp target staging receipt metadata injection output status metadata_before receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-capability"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-recovery-atomic-rename-import.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  metadata_before="$(shasum "$metadata")"
+  receipt_before="$(shasum "$receipt")"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module FailRecoveryAtomicRenameImport
+  def extern(signature, *arguments)
+    if signature.include?("renameat2") || signature.include?("renameatx_np")
+      raise Fiddle::DLError, "atomic rename unavailable"
+    end
+    super
+  end
+end
+Fiddle::Importer.prepend(FailRecoveryAtomicRenameImport)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "missing recovery atomic rename capability unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || \
+    fail "missing recovery atomic rename capability changed install metadata"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || \
+    fail "missing recovery atomic rename capability changed the recovery receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || \
+    fail "missing recovery atomic rename capability mutated the recovery target"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "missing recovery atomic rename capability created recovery quarantine"
+  [[ -d "$target/.agent-workflows-install.lock" ]] || \
+    fail "missing recovery atomic rename capability did not preserve the bound install lock"
 }
 
 test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat() {
@@ -794,6 +2237,2041 @@ test_install_lock_blocks_concurrent_migration_before_mutation() {
     "$target/.agent-workflows-install.json"
 }
 
+test_recovery_restore_holds_install_lock_against_retry() {
+  local tmp target staging receipt metadata injection marker gate primary_pid
+  local retry_output retry_status primary_status attempt
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-missing-for-lock-test"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/pause-metadata-restore.rb"
+  marker="$tmp/restore-started"
+  gate="$tmp/allow-restore"
+  mkdir -p "$staging/user-owned-skill" "$target/skills/user-owned-skill"
+  printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf 'collision\n' > "$target/skills/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    if phase == :before_rename
+      File.write(ENV.fetch("QA_RESTORE_MARKER"), "started\n")
+      1_000.times do
+        break if File.exist?(ENV.fetch("QA_RESTORE_GATE"))
+        sleep 0.01
+      end
+      exit 99 unless File.exist?(ENV.fetch("QA_RESTORE_GATE"))
+    end
+  end
+end
+RUBY
+
+  QA_INSTALL_METADATA="$metadata" RUBYOPT="-r$injection" \
+    QA_RESTORE_MARKER="$marker" QA_RESTORE_GATE="$gate" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/primary.out" 2>&1 &
+  primary_pid=$!
+  for ((attempt = 0; attempt < 500; attempt++)); do
+    [[ -e "$marker" ]] && break
+    kill -0 "$primary_pid" 2>/dev/null || break
+    sleep 0.01
+  done
+  if [[ ! -e "$marker" ]]; then
+    : > "$gate"
+    wait "$primary_pid" || true
+    fail "primary recovery did not reach metadata restoration: $(cat "$tmp/primary.out")"
+  fi
+
+  set +e
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  retry_status=$?
+  set -e
+  : > "$gate"
+  set +e
+  wait "$primary_pid"
+  primary_status=$?
+  set -e
+
+  [[ "$retry_status" -ne 0 ]] || fail "retry acquired the install lock during recovery restoration"
+  assert_contains "$retry_output" "another agent-workflows install or migration holds"
+  [[ "$primary_status" -ne 0 ]] || fail "rollback-collision recovery unexpectedly succeeded"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "recovery restoration leaked install lock"
+  assert_file "$metadata"
+  assert_file "$receipt"
+}
+
+test_recovery_metadata_change_during_rollback_preserves_staging_and_tree() {
+  local tmp target canonical_target staging canonical_staging receipt metadata fake_bin real_mv injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-binding-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_mv="$(command -v mv)"
+  injection="$tmp/change-metadata-before-bound-staged-move.rb"
+  marker="$tmp/metadata-changed-before-staged-move"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$1" = "$QA_STAGED_SKILL" && "$2" = "$QA_SKILLS_ROOT/" ]]; then
+  printf '[]\n' > "$QA_INSTALL_METADATA"
+  : > "$QA_RACE_MARKER"
+fi
+exec "$QA_REAL_MV" "$@"
+SH
+  chmod +x "$fake_bin/mv"
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 4 && ARGV.fetch(0) == ENV.fetch("QA_STAGED_SKILL") &&
+   ARGV.fetch(1) == File.join(ENV.fetch("QA_SKILLS_ROOT"), "user-owned-skill")
+  File.write(ENV.fetch("QA_INSTALL_METADATA"), "[]\n")
+  File.write(ENV.fetch("QA_RACE_MARKER"), "changed\n")
+end
+RUBY
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" \
+    QA_STAGED_SKILL="$canonical_staging/user-owned-skill" QA_SKILLS_ROOT="$canonical_target/skills" \
+    QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "metadata change during rollback exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$(grep -c 'CORRUPT_INSTALL_METADATA' <<< "$output")" -eq 1 ]] || \
+    fail "corrupt metadata was reported more than once: $output"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "corrupt recovery left a staged skill in the target tree"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "corrupt recovery leaked install lock"
+}
+
+test_recovery_metadata_change_during_companion_cleanup_preserves_staging() {
+  local tmp target canonical_target staging canonical_staging receipt metadata fake_bin real_mv injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-binding-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_mv="$(command -v mv)"
+  injection="$tmp/change-metadata-before-bound-staging-cleanup.rb"
+  marker="$tmp/metadata-changed-before-staging-cleanup"
+  mkdir -p "$staging/old-flat-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  printf 'old flat skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$1" = "$QA_STAGING" &&
+      "$2" = "$QA_TARGET"/.agent-workflows-recovery-cleanup-*/staging ]]; then
+  printf '[]\n' > "$QA_INSTALL_METADATA"
+  : > "$QA_RACE_MARKER"
+fi
+exec "$QA_REAL_MV" "$@"
+SH
+  chmod +x "$fake_bin/mv"
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 4 && ARGV.fetch(0) == ENV.fetch("QA_STAGING") &&
+   ARGV.fetch(1).match?(%r{/\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+/staging\z})
+  File.write(ENV.fetch("QA_INSTALL_METADATA"), "[]\n")
+  File.write(ENV.fetch("QA_RACE_MARKER"), "changed\n")
+end
+RUBY
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_STAGING="$canonical_staging" \
+    QA_TARGET="$canonical_target" QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "metadata change during companion cleanup exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  [[ ! -e "$target/skills/old-flat-skill" ]] || fail "corrupt companion cleanup changed the target tree"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "corrupt companion cleanup leaked install lock"
+}
+
+test_recovery_staging_replacement_during_rollback_preserves_artifacts() {
+  local tmp target canonical_target staging canonical_staging preserved receipt outside fake_bin real_mv injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-staging-replacement"
+  preserved="$target/.agent-workflows-flat-migration-staging-preserved"
+  receipt="$target/.agent-workflows-migration-staging"
+  outside="$tmp/outside-staging"
+  fake_bin="$tmp/fake-bin"
+  real_mv="$(command -v mv)"
+  injection="$tmp/replace-staging-before-bound-rollback-move.rb"
+  marker="$tmp/staging-replaced"
+  mkdir -p "$staging/user-owned-skill" "$outside/user-owned-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  printf 'original staged skill\n' > "$staging/user-owned-skill/SKILL.md"
+  printf 'outside skill\n' > "$outside/user-owned-skill/SKILL.md"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$1" = "$QA_STAGING/user-owned-skill" && "$2" = "$QA_TARGET/skills/" &&
+      ! -e "$QA_RACE_MARKER" ]]; then
+  "$QA_REAL_MV" "$QA_STAGING" "$QA_PRESERVED_STAGING"
+  ln -s "$QA_OUTSIDE_STAGING" "$QA_STAGING"
+  : > "$QA_RACE_MARKER"
+fi
+exec "$QA_REAL_MV" "$@"
+SH
+  chmod +x "$fake_bin/mv"
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 4 && ARGV.fetch(0) == File.join(ENV.fetch("QA_STAGING"), "user-owned-skill") &&
+   ARGV.fetch(2) == ENV.fetch("QA_STAGING") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  File.rename(ENV.fetch("QA_STAGING"), ENV.fetch("QA_PRESERVED_STAGING"))
+  File.symlink(ENV.fetch("QA_OUTSIDE_STAGING"), ENV.fetch("QA_STAGING"))
+  File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+end
+RUBY
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_TARGET="$canonical_target" \
+    QA_STAGING="$canonical_staging" QA_PRESERVED_STAGING="$preserved" QA_OUTSIDE_STAGING="$outside" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "rollback staging replacement exited $status: $output"
+  assert_contains "$output" "RECOVERY_STAGING_BINDING_CHANGED"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$preserved/user-owned-skill/SKILL.md"
+  assert_file "$outside/user-owned-skill/SKILL.md"
+  assert_file "$outside/SENTINEL"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "rollback staging replacement changed target skills"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "rollback staging replacement leaked install lock"
+}
+
+test_recovery_staging_replacement_during_companion_cleanup_preserves_artifacts() {
+  local tmp target canonical_target staging canonical_staging preserved receipt outside fake_bin real_mv injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-replacement"
+  preserved="$target/.agent-workflows-flat-migration-cleanup-preserved"
+  receipt="$target/.agent-workflows-migration-staging"
+  outside="$tmp/outside-staging"
+  fake_bin="$tmp/fake-bin"
+  real_mv="$(command -v mv)"
+  injection="$tmp/replace-staging-before-bound-cleanup-move.rb"
+  marker="$tmp/staging-replaced"
+  mkdir -p "$staging/old-flat-skill" "$outside" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  write_native_scw_state codex "$target"
+  printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$1" = "$QA_STAGING" &&
+      "$2" = "$QA_TARGET"/.agent-workflows-recovery-cleanup-*/staging &&
+      ! -e "$QA_RACE_MARKER" ]]; then
+  "$QA_REAL_MV" "$QA_STAGING" "$QA_PRESERVED_STAGING"
+  ln -s "$QA_OUTSIDE_STAGING" "$QA_STAGING"
+  : > "$QA_RACE_MARKER"
+fi
+exec "$QA_REAL_MV" "$@"
+SH
+  chmod +x "$fake_bin/mv"
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 4 && ARGV.fetch(0) == ENV.fetch("QA_STAGING") &&
+   ARGV.fetch(1).match?(%r{/\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+/staging\z}) &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  File.rename(ENV.fetch("QA_STAGING"), ENV.fetch("QA_PRESERVED_STAGING"))
+  File.symlink(ENV.fetch("QA_OUTSIDE_STAGING"), ENV.fetch("QA_STAGING"))
+  File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+end
+RUBY
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_TARGET="$canonical_target" \
+    QA_STAGING="$canonical_staging" QA_PRESERVED_STAGING="$preserved" QA_OUTSIDE_STAGING="$outside" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "companion cleanup staging replacement exited $status: $output"
+  assert_contains "$output" "RECOVERY_STAGING_BINDING_CHANGED"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$preserved/old-flat-skill/SKILL.md"
+  assert_file "$outside/SENTINEL"
+  [[ ! -e "$target/skills/old-flat-skill" ]] || fail "cleanup staging replacement changed target skills"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "cleanup staging replacement leaked install lock"
+}
+
+test_recovery_staging_disappearing_after_identity_capture_fails_closed() {
+  local tmp target staging canonical_staging preserved receipt injection marker counter output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-identity-disappears"
+  preserved="$target/.agent-workflows-flat-migration-identity-preserved"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/remove-staging-after-identity.rb"
+  marker="$tmp/staging-replaced"
+  counter="$tmp/staging-lstat-count"
+  mkdir -p "$staging/user-owned-skill"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  printf 'original staged skill\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+class << File
+  alias qa_original_lstat lstat
+  def lstat(path)
+    result = qa_original_lstat(path)
+    if path == ENV.fetch("QA_STAGING")
+      counter = ENV.fetch("QA_LSTAT_COUNTER")
+      count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+      File.write(counter, count)
+      if count == 2 && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        at_exit do
+          File.rename(ENV.fetch("QA_STAGING"), ENV.fetch("QA_PRESERVED_STAGING"))
+          File.write(ENV.fetch("QA_STAGING"), "replacement\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+        end
+      end
+    end
+    result
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_STAGING="$canonical_staging" QA_PRESERVED_STAGING="$preserved" QA_RACE_MARKER="$marker" \
+    QA_LSTAT_COUNTER="$counter" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "missing bound staging exited $status: $output"
+  assert_contains "$output" "RECOVERY_STAGING_BINDING_CHANGED"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$preserved/user-owned-skill/SKILL.md"
+  [[ ! -d "$staging" ]] || fail "missing bound staging was silently recreated"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "missing bound staging leaked install lock"
+}
+
+test_recovery_skills_root_replacement_during_reversal_preserves_outside_data() {
+  local tmp target canonical_target staging canonical_staging receipt outside canonical_outside preserved_skills injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-skills-reversal"
+  receipt="$target/.agent-workflows-migration-staging"
+  outside="$tmp/outside-skills"
+  preserved_skills="$tmp/preserved-target-skills"
+  injection="$tmp/replace-skills-root-after-first-move.rb"
+  marker="$tmp/skills-root-replaced"
+  mkdir -p "$staging/a-first-skill" "$staging/b-second-skill" "$outside/a-first-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  canonical_outside="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$outside")"
+  printf 'original first skill\n' > "$staging/a-first-skill/SKILL.md"
+  printf 'original second skill\n' > "$staging/b-second-skill/SKILL.md"
+  printf 'outside private data\n' > "$outside/a-first-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 4 && ARGV.fetch(0) == File.join(ENV.fetch("QA_STAGING"), "a-first-skill") &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  at_exit do
+    File.rename(ENV.fetch("QA_SKILLS_ROOT"), ENV.fetch("QA_PRESERVED_SKILLS"))
+    File.symlink(ENV.fetch("QA_OUTSIDE_SKILLS"), ENV.fetch("QA_SKILLS_ROOT"))
+    File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_STAGING="$canonical_staging" QA_SKILLS_ROOT="$canonical_target/skills" \
+    QA_PRESERVED_SKILLS="$preserved_skills" QA_OUTSIDE_SKILLS="$canonical_outside" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "skills root replacement during reversal exited $status: $output"
+  assert_contains "$output" "RECOVERY_SKILLS_BINDING_CHANGED"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$outside/a-first-skill/SKILL.md"
+  assert_contains "$(cat "$outside/a-first-skill/SKILL.md")" "outside private data"
+  assert_file "$preserved_skills/a-first-skill/SKILL.md"
+  assert_file "$staging/b-second-skill/SKILL.md"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "skills root replacement leaked install lock"
+}
+
+test_recovery_destination_appearing_at_move_is_not_replaced() {
+  local tmp target staging receipt injection marker output status destination
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-destination-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/create-destination-before-rename.rb"
+  marker="$tmp/destination-created"
+  destination="$target/skills/user-owned-skill"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'staged skill\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryMoveHook
+  def self.call(phase, _source_parent, source_name, destination_parent, destination_name)
+    return unless phase == :before_rename && source_name == "user-owned-skill"
+    marker = ENV.fetch("QA_RACE_MARKER")
+    return if File.exist?(marker)
+    destination = File.join(destination_parent, destination_name)
+    Dir.mkdir(destination)
+    File.write(File.join(destination, "SENTINEL"), "appeared destination\n")
+    File.write(marker, "created\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "destination appearing at recovery move exited $status: $output"
+  assert_contains "$output" "RECOVERY_PATH_BINDING_CHANGED"
+  assert_file "$destination/SENTINEL"
+  assert_contains "$(cat "$destination/SENTINEL")" "appeared destination"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  assert_file "$receipt"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "destination race leaked install lock"
+}
+
+test_flat_crash_recovery_restores_staged_symlink_skill() {
+  local tmp target staging receipt source_skill output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-symlink-skill"
+  receipt="$target/.agent-workflows-migration-staging"
+  source_skill="$tmp/source-skill"
+  mkdir -p "$staging" "$source_skill"
+  printf 'source skill\n' > "$source_skill/SKILL.md"
+  ln -s "$source_skill" "$staging/symlink-skill"
+  printf '{"delivery_mode":"flat","mode":"symlink","source":"%s"}\n' "$ROOT" \
+    > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  mkdir "$target/.agent-workflows-install.json.tmp"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "metadata preflight unexpectedly succeeded after symlink recovery"
+  assert_symlink "$target/skills/symlink-skill"
+  [[ "$(readlink "$target/skills/symlink-skill")" = "$source_skill" ]] || \
+    fail "recovery changed the staged symlink target"
+  [[ ! -e "$receipt" ]] || fail "successful symlink recovery preserved receipt"
+  [[ ! -e "$staging" ]] || fail "successful symlink recovery preserved staging"
+}
+
+test_pending_recovery_accepts_prior_target_symlink_staging_receipt() {
+  local tmp actual target staging receipt output status
+  tmp="$(mktemp -d)"; actual="$tmp/actual-codex-home"; target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-prior-target-alias"
+  receipt="$actual/.agent-workflows-migration-staging"
+  mkdir -p "$actual/.agent-workflows-flat-migration-prior-target-alias/user-owned-skill"
+  ln -s "$actual" "$target"
+  printf 'user-owned\n' > "$actual/.agent-workflows-flat-migration-prior-target-alias/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$actual/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"; status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "prior target symlink receipt recovery exited $status: $output"
+  assert_file "$actual/skills/user-owned-skill/SKILL.md"
+  [[ ! -e "$receipt" ]] || fail "prior target symlink receipt was not removed"
+  [[ ! -e "$actual/.agent-workflows-flat-migration-prior-target-alias" ]] || \
+    fail "prior target symlink staging was not removed"
+  assert_symlink "$target"
+}
+
+test_recovery_source_replacement_after_inventory_is_not_moved() {
+  local tmp target staging receipt injection marker preserved output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-source-entry-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/replace-source-before-open.rb"
+  marker="$tmp/source-replaced"
+  preserved="$tmp/preserved-original"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'original staged skill\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryMoveHook
+  def self.call(phase, source_parent, source_name, _destination_parent, _destination_name)
+    return unless phase == :before_source_open && source_name == "user-owned-skill"
+    marker = ENV.fetch("QA_RACE_MARKER")
+    return if File.exist?(marker)
+    source = File.join(source_parent, source_name)
+    File.rename(source, ENV.fetch("QA_PRESERVED_SOURCE"))
+    Dir.mkdir(source)
+    File.write(File.join(source, "SKILL.md"), "replacement skill\n")
+    File.write(marker, "replaced\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" QA_PRESERVED_SOURCE="$preserved" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "source replacement after inventory exited $status: $output"
+  assert_contains "$output" "RECOVERY_PATH_BINDING_CHANGED"
+  assert_file "$marker"
+  assert_file "$preserved/SKILL.md"
+  assert_contains "$(cat "$preserved/SKILL.md")" "original staged skill"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  assert_contains "$(cat "$staging/user-owned-skill/SKILL.md")" "replacement skill"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "replacement source was moved"
+  assert_file "$receipt"
+}
+
+test_recovery_identity_failure_reverses_earlier_moves() {
+  local tmp target staging receipt injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-identity-failure"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/remove-second-before-identity.rb"
+  marker="$tmp/second-entry-removed"
+  mkdir -p "$staging/a-first-skill" "$staging/b-second-skill"
+  printf 'first staged skill\n' > "$staging/a-first-skill/SKILL.md"
+  printf 'second staged skill\n' > "$staging/b-second-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RemoveSecondRecoveryEntry
+  def lstat(path)
+    if ARGV == [path] && path.end_with?("/b-second-skill") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.rename(path, ENV.fetch("QA_PRESERVED_SOURCE"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "removed\n")
+    end
+    super
+  end
+end
+File.singleton_class.prepend(RemoveSecondRecoveryEntry)
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" QA_PRESERVED_SOURCE="$tmp/preserved-second" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "identity failure after earlier move exited $status: $output"
+  assert_file "$marker"
+  assert_file "$staging/a-first-skill/SKILL.md"
+  [[ ! -e "$target/skills/a-first-skill" ]] || fail "identity failure did not reverse earlier move"
+  assert_file "$tmp/preserved-second/SKILL.md"
+  assert_file "$receipt"
+}
+
+test_recovery_post_move_verification_failure_reverses_committed_move() {
+  local tmp target staging receipt injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-post-move-verify"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/fail-after-recovery-move.rb"
+  marker="$tmp/post-move-hook-ran"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'staged skill\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryMoveHook
+  def self.call(phase, _source_parent, source_name, _destination_parent, _destination_name)
+    return unless phase == :after_rename_before_verify && source_name == "user-owned-skill"
+    marker = ENV.fetch("QA_RACE_MARKER")
+    return if File.exist?(marker)
+    File.write(marker, "reached\n")
+    raise "injected post-move verification failure"
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "post-move verification failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_PATH_BINDING_CHANGED"
+  assert_file "$marker"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  assert_contains "$(cat "$staging/user-owned-skill/SKILL.md")" "staged skill"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "committed recovery move was not reversed"
+  assert_file "$receipt"
+}
+
+test_recovery_post_move_open_failure_reverses_committed_move() {
+  local tmp target staging receipt injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-post-move-open"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/fail-post-move-open.rb"
+  marker="$tmp/post-move-open-failed"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'staged skill\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+require "fiddle"
+Fiddle::Function.prepend(Module.new do
+  def call(*args)
+    if Thread.current[:qa_fail_next_recovery_open]
+      Thread.current[:qa_fail_next_recovery_open] = false
+      Fiddle.last_error = Errno::EIO::Errno
+      return -1
+    end
+    super
+  end
+end)
+module RecoveryMoveHook
+  def self.call(phase, _source_parent, source_name, _destination_parent, _destination_name)
+    return unless phase == :after_rename_before_verify && source_name == "user-owned-skill"
+    return if File.exist?(ENV.fetch("QA_RACE_MARKER"))
+    File.write(ENV.fetch("QA_RACE_MARKER"), "reached\n")
+    Thread.current[:qa_fail_next_recovery_open] = true
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "post-move open failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_PATH_BINDING_CHANGED"
+  assert_file "$marker"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  assert_contains "$(cat "$staging/user-owned-skill/SKILL.md")" "staged skill"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "committed recovery move was not reversed"
+  assert_file "$receipt"
+}
+
+test_companion_cleanup_post_move_replacement_has_named_retry_failure() {
+  local tmp target staging canonical_staging preserved receipt injection marker output retry_output status retry_status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-post-move"
+  preserved="$target/.agent-workflows-flat-migration-cleanup-post-move-preserved"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/replace-cleanup-staging-after-move.rb"
+  marker="$tmp/cleanup-staging-replaced"
+  mkdir -p "$staging/old-flat-skill"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  write_native_scw_state codex "$target"
+  printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 4 && ARGV.fetch(0) == ENV.fetch("QA_STAGING") &&
+   ARGV.fetch(1).match?(%r{/\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+/staging\z})
+  at_exit do
+    File.rename(ARGV.fetch(1), ENV.fetch("QA_PRESERVED_STAGING"))
+    Dir.mkdir(ARGV.fetch(1))
+    File.write(File.join(ARGV.fetch(1), "DECOY"), "replacement\n")
+    File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_STAGING="$canonical_staging" QA_PRESERVED_STAGING="$preserved" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "cleanup post-move replacement exited $status: $output"
+  assert_contains "$output" "RECOVERY_STAGING_BINDING_CHANGED"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$preserved/old-flat-skill/SKILL.md"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "cleanup post-move replacement leaked install lock"
+
+  set +e
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  retry_status=$?
+  set -e
+  [[ "$retry_status" -eq 1 ]] || fail "cleanup post-move retry exited $retry_status: $retry_output"
+  assert_contains "$retry_output" "RECOVERY_FAILED: unsafe migration staging receipt"
+  assert_not_contains "$retry_output" "Errno::ENOENT"
+  assert_file "$receipt"
+}
+
+test_companion_cleanup_post_move_exception_restores_receipted_staging() {
+  local tmp target canonical_target staging receipt injection marker output status cleanup_root
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-post-move-exception"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/fail-cleanup-post-move-verify.rb"
+  marker="$tmp/cleanup-post-move-exception"
+  mkdir -p "$staging/old-flat-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  write_native_scw_state codex "$target"
+  printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryMoveHook
+  def self.call(phase, source_parent, _source_name, destination_parent, _destination_name)
+    return unless phase == :after_rename_before_verify
+    return unless source_parent == ENV.fetch("QA_TARGET")
+    return unless File.basename(destination_parent).start_with?(".agent-workflows-recovery-cleanup-")
+    marker = ENV.fetch("QA_RACE_MARKER")
+    return if File.exist?(marker)
+    File.write(marker, "reached\n")
+    raise "injected cleanup post-move verification failure"
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$canonical_target" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "cleanup post-move exception exited $status: $output"
+  assert_contains "$output" "RECOVERY_CLEANUP_COMMITTED_UNVERIFIED"
+  assert_contains "$output" "$staging"
+  assert_contains "$output" "RECOVERY_FAILED: recovery paths changed during the operation"
+  assert_file "$marker"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  assert_contains "$(cat "$staging/old-flat-skill/SKILL.md")" "original staged skill"
+  assert_file "$receipt"
+  [[ "$(cat "$receipt")" = "$staging" ]] || fail "cleanup post-move exception left a stale receipt: $(cat "$receipt")"
+  cleanup_root="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-recovery-cleanup-*' -print -quit)"
+  [[ -z "$cleanup_root" ]] || fail "cleanup post-move exception hid preserved staging under $cleanup_root"
+}
+
+test_companion_cleanup_root_replacement_cannot_move_staging_outside_target() {
+  local tmp target staging canonical_staging receipt outside canonical_outside preserved_root injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-root-replacement"
+  receipt="$target/.agent-workflows-migration-staging"
+  outside="$tmp/outside-cleanup"
+  preserved_root="$tmp/preserved-cleanup-root"
+  injection="$tmp/replace-cleanup-root-before-move.rb"
+  marker="$tmp/cleanup-root-replaced"
+  mkdir -p "$staging/old-flat-skill" "$outside"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  canonical_outside="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$outside")"
+  write_native_scw_state codex "$target"
+  printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 4 && ARGV.fetch(0) == ENV.fetch("QA_STAGING") &&
+   ARGV.fetch(1).match?(%r{/\.agent-workflows-recovery-cleanup-[A-Za-z0-9]+/staging\z}) &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  cleanup_root = File.dirname(ARGV.fetch(1))
+  File.rename(cleanup_root, ENV.fetch("QA_PRESERVED_CLEANUP_ROOT"))
+  File.symlink(ENV.fetch("QA_OUTSIDE_CLEANUP"), cleanup_root)
+  File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+elsif ARGV.length >= 4 && ARGV.fetch(0) == File.join(ENV.fetch("QA_OUTSIDE_CLEANUP"), "staging") &&
+      ARGV.fetch(1) == ENV.fetch("QA_STAGING")
+  File.write(ENV.fetch("QA_STAGING"), "block unsafe reversal\n") unless File.exist?(ENV.fetch("QA_STAGING"))
+end
+RUBY
+
+  set +e
+  output="$(QA_STAGING="$canonical_staging" QA_OUTSIDE_CLEANUP="$canonical_outside" \
+    QA_PRESERVED_CLEANUP_ROOT="$preserved_root" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "cleanup root replacement exited $status: $output"
+  assert_contains "$output" "RECOVERY_CLEANUP_BINDING_CHANGED"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  assert_file "$outside/SENTINEL"
+  [[ ! -e "$outside/staging" ]] || fail "cleanup root replacement moved staging outside target"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "cleanup root replacement leaked install lock"
+}
+
+test_companion_cleanup_rejects_unsafe_root_replacement_before_staging_move() {
+  local tmp target staging canonical_staging receipt preserved_root injection marker output status cleanup_root
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-unsafe-cleanup-root"
+  receipt="$target/.agent-workflows-migration-staging"
+  preserved_root="$tmp/preserved-cleanup-root"
+  injection="$tmp/replace-cleanup-root-before-binding.rb"
+  marker="$tmp/cleanup-root-replaced"
+  mkdir -p "$staging/old-flat-skill"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  write_native_scw_state codex "$target"
+  printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 1 &&
+   File.basename(ARGV.fetch(0)).start_with?(".agent-workflows-recovery-cleanup-") &&
+   !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  cleanup_root = ARGV.fetch(0)
+  File.rename(cleanup_root, ENV.fetch("QA_PRESERVED_CLEANUP_ROOT"))
+  Dir.mkdir(cleanup_root)
+  File.chmod(0o777, cleanup_root)
+  File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+end
+RUBY
+
+  set +e
+  output="$(QA_PRESERVED_CLEANUP_ROOT="$preserved_root" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "companion cleanup accepted an unsafe cleanup-root replacement"
+  assert_contains "$output" "RECOVERY_CLEANUP_ROOT_REJECTED"
+  assert_contains "$output" "CLEANUP_PENDING"
+  assert_file "$marker"
+  assert_file "$receipt"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  assert_contains "$(cat "$staging/old-flat-skill/SKILL.md")" "original staged skill"
+  cleanup_root="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-recovery-cleanup-*' -print -quit)"
+  [[ -n "$cleanup_root" ]] || fail "unsafe replacement cleanup root was not preserved"
+  [[ "$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0777' "$cleanup_root")" = "777" ]] || \
+    fail "unsafe replacement cleanup root mode changed"
+  [[ ! -e "$cleanup_root/staging" ]] || fail "receipted staging moved into unsafe cleanup root"
+  [[ -d "$preserved_root" ]] || fail "original cleanup root was not preserved"
+  [[ -z "$(find "$preserved_root" -mindepth 1 -print -quit)" ]] || fail "staging moved into the original cleanup root"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "unsafe cleanup-root rejection leaked install lock"
+
+  rmdir "$cleanup_root" "$preserved_root"
+  output="$(RUBYOPT= "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)" || \
+    fail "retry after removing unsafe cleanup roots failed: $output"
+  [[ ! -e "$receipt" ]] || fail "retry retained completed recovery receipt"
+  [[ ! -e "$canonical_staging" ]] || fail "retry retained completed recovery staging"
+}
+
+test_companion_cleanup_root_swap_during_deletion_preserves_all_entries() {
+  local tmp target staging receipt preserved_root injection marker output status replacement
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-delete-swap"
+  receipt="$target/.agent-workflows-migration-staging"
+  preserved_root="$tmp/preserved-cleanup-root"
+  injection="$tmp/swap-cleanup-root-during-removal.rb"
+  marker="$tmp/cleanup-root-swapped"
+  mkdir -p "$staging/old-flat-skill"
+  write_native_scw_state codex "$target"
+  chmod 0777 "$target"
+  printf 'original staged skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+require "fileutils"
+
+swap_cleanup_root = lambda do |cleanup_root|
+  next if File.exist?(ENV.fetch("QA_RACE_MARKER"))
+
+  File.rename(cleanup_root, ENV.fetch("QA_PRESERVED_CLEANUP_ROOT"))
+  Dir.mkdir(cleanup_root)
+  File.write(File.join(cleanup_root, "UNRELATED"), "unrelated replacement\n")
+  File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+end
+
+module FileUtils
+  class << self
+    alias qa_original_remove_entry remove_entry
+
+    define_method(:remove_entry) do |path, force = false|
+      if File.dirname(File.expand_path(path)) == ENV.fetch("QA_TARGET") &&
+         File.basename(path).match?(/\A\.agent-workflows-recovery-cleanup-/)
+        Object.const_get(:QA_SWAP_CLEANUP_ROOT).call(File.expand_path(path))
+      end
+      qa_original_remove_entry(path, force)
+    end
+  end
+end
+
+QA_SWAP_CLEANUP_ROOT = swap_cleanup_root
+
+class << File
+  alias qa_original_cleanup_rename rename
+
+  def rename(source, destination)
+    if File.basename(source).match?(/\A\.agent-workflows-recovery-cleanup-/) &&
+       File.basename(destination).match?(/\A\.agent-workflows-recovery-delete-/)
+      QA_SWAP_CLEANUP_ROOT.call(File.expand_path(source))
+    end
+    qa_original_cleanup_rename(source, destination)
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" QA_PRESERVED_CLEANUP_ROOT="$preserved_root" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "cleanup deletion path swap exited $status: $output"
+  assert_contains "$output" "RECOVERY_CLEANUP_BINDING_CHANGED"
+  assert_file "$receipt"
+  assert_file "$preserved_root/staging/old-flat-skill/SKILL.md"
+  replacement="$(find "$tmp" -name UNRELATED -print -quit)"
+  [[ -n "$replacement" ]] || fail "cleanup deletion path swap deleted the unrelated replacement"
+  assert_contains "$(cat "$replacement")" "unrelated replacement"
+  assert_contains "$output" "$(dirname "$replacement")"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "cleanup deletion path swap leaked install lock"
+}
+
+test_missing_metadata_backup_reports_restore_failure_without_corrupt_guidance() {
+  local tmp target staging receipt metadata injection counter output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-backup-disappears"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/remove-backup-before-restore.rb"
+  counter="$tmp/backup-attestation-count"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 1 && File.basename(ARGV.fetch(0)) == "original-backup"
+  counter = ENV.fetch("QA_BACKUP_COUNTER")
+  count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count)
+  File.unlink(ARGV.fetch(0)) if count == 4 && File.file?(ARGV.fetch(0))
+end
+RUBY
+
+  set +e
+  output="$(QA_BACKUP_COUNTER="$counter" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "missing metadata backup exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_RESTORE_FAILED"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$(grep -c 'RECOVERY_METADATA_RESTORE_FAILED' <<< "$output")" -eq 1 ]] || \
+    fail "metadata restore failure was reported more than once: $output"
+  ruby -rjson -e 'JSON.parse(File.read(ARGV.fetch(0)))' "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "missing metadata backup restored a staged skill"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "missing backup did not preserve recovery quarantine"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "missing backup leaked install lock"
+}
+
+test_transient_metadata_restore_failure_preserves_receipt_after_reversal() {
+  local tmp target staging receipt metadata injection counter marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-transient-restore"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-one-backup-attestation.rb"
+  counter="$tmp/backup-attestation-count"
+  marker="$tmp/transient-restore-failure"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+class << File
+  alias qa_transient_original_lstat lstat
+  def lstat(path)
+    if File.basename(path) == "original-backup"
+      counter = ENV.fetch("QA_BACKUP_COUNTER")
+      count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+      File.write(counter, count)
+      if count == 7
+        File.write(ENV.fetch("QA_TRANSIENT_MARKER"), "failed once\n")
+        raise Errno::EIO, path
+      end
+    end
+    qa_transient_original_lstat(path)
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_BACKUP_COUNTER="$counter" QA_TRANSIENT_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "transient metadata restore failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_FAILED: recovery paths changed during the operation"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "transient restore failure left staged skill in target"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "transient restore failure leaked install lock"
+}
+
+test_mid_rollback_backup_change_does_not_blame_intact_metadata() {
+  local tmp target canonical_target staging canonical_staging receipt metadata injection marker output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-backup-change"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/change-backup-after-first-move.rb"
+  marker="$tmp/backup-changed"
+  mkdir -p "$staging/user-owned-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 4 && ARGV.fetch(0) == ENV.fetch("QA_STAGED_SKILL")
+  quarantine = Dir.glob(File.join(ENV.fetch("QA_TARGET"), ".agent-workflows-install.json.recovery-*"), File::FNM_DOTMATCH).fetch(0)
+  File.write(File.join(quarantine, "original-backup"), "changed backup\n")
+  File.write(ENV.fetch("QA_RACE_MARKER"), "changed\n")
+end
+RUBY
+
+  set +e
+  output="$(QA_STAGED_SKILL="$canonical_staging/user-owned-skill" QA_TARGET="$canonical_target" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "mid-rollback backup change exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_RESTORE_FAILED"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  ruby -rjson -e 'JSON.parse(File.read(ARGV.fetch(0)))' "$metadata"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "mid-rollback backup change did not preserve quarantine"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "mid-rollback backup change leaked install lock"
+}
+
+test_companion_cleanup_rejects_mktemp_path_outside_target() {
+  local tmp target staging receipt outside fake_bin real_mktemp output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-wrong-root"
+  receipt="$target/.agent-workflows-migration-staging"
+  outside="$tmp/outside-cleanup-root"
+  fake_bin="$tmp/fake-bin"
+  real_mktemp="$(command -v mktemp)"
+  mkdir -p "$staging/old-flat-skill" "$outside" "$fake_bin"
+  printf 'old flat skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mktemp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" = *".agent-workflows-recovery-cleanup-XXXXXX"* ]]; then
+  printf '%s\n' "$QA_OUTSIDE_CLEANUP_ROOT"
+  exit 0
+fi
+exec "$QA_REAL_MKTEMP" "$@"
+SH
+  chmod +x "$fake_bin/mktemp"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKTEMP="$real_mktemp" \
+    QA_OUTSIDE_CLEANUP_ROOT="$outside" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "companion cleanup accepted an out-of-target cleanup root"
+  assert_file "$outside/SENTINEL"
+  assert_file "$receipt"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  [[ ! -e "$target/skills/old-flat-skill" ]] || fail "unsafe cleanup root changed target tree"
+  assert_contains "$output" "CLEANUP_PENDING"
+}
+
+test_companion_cleanup_rejects_symlinked_cleanup_root() {
+  local tmp target staging receipt outside fake_bin real_mktemp output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-symlink-root"
+  receipt="$target/.agent-workflows-migration-staging"
+  outside="$tmp/outside-cleanup-root"
+  fake_bin="$tmp/fake-bin"
+  real_mktemp="$(command -v mktemp)"
+  mkdir -p "$staging/old-flat-skill" "$outside/staging" "$fake_bin"
+  printf 'old flat skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  printf 'foreign staging\n' > "$outside/staging/FOREIGN.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mktemp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" = *".agent-workflows-recovery-cleanup-XXXXXX"* ]]; then
+  cleanup_root="$QA_TARGET/.agent-workflows-recovery-cleanup-Symlink1"
+  ln -s "$QA_OUTSIDE_CLEANUP_ROOT" "$cleanup_root"
+  printf '%s\n' "$cleanup_root"
+  exit 0
+fi
+exec "$QA_REAL_MKTEMP" "$@"
+SH
+  chmod +x "$fake_bin/mktemp"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKTEMP="$real_mktemp" QA_TARGET="$target" \
+    QA_OUTSIDE_CLEANUP_ROOT="$outside" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "companion cleanup accepted a symlinked cleanup root"
+  assert_file "$outside/SENTINEL"
+  assert_file "$outside/staging/FOREIGN.md"
+  assert_symlink "$target/.agent-workflows-recovery-cleanup-Symlink1"
+  [[ ! -e "$outside/staging/.agent-workflows-flat-migration-cleanup-symlink-root" ]] || \
+    fail "companion cleanup moved staging through a symlinked cleanup root"
+  assert_file "$receipt"
+  assert_file "$staging/old-flat-skill/SKILL.md"
+  [[ ! -e "$target/skills/old-flat-skill" ]] || fail "symlinked cleanup root changed target tree"
+  assert_contains "$output" "CLEANUP_PENDING"
+  assert_contains "$output" "RECOVERY_CLEANUP_ROOT_REJECTED"
+}
+
+test_companion_cleanup_supports_world_writable_target() {
+  local tmp target staging receipt output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-world-writable"
+  receipt="$target/.agent-workflows-migration-staging"
+  mkdir -p "$staging/old-flat-skill"
+  write_native_scw_state codex "$target"
+  chmod 0777 "$target"
+  printf 'old flat skill\n' > "$staging/old-flat-skill/SKILL.md"
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "world-writable target cleanup exited $status: $output"
+  assert_not_contains "$output" "CLEANUP_PENDING"
+  [[ ! -e "$receipt" ]] || fail "world-writable target left recovery receipt"
+  [[ ! -e "$staging" ]] || fail "world-writable target left recovery staging"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-recovery-cleanup-*' -print -quit)" ]] || \
+    fail "world-writable target left recovery cleanup root"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-recovery-delete-*' -print -quit)" ]] || \
+    fail "world-writable target left captured recovery cleanup root"
+}
+
+test_recovery_hardlink_unavailable_is_named_without_blaming_metadata() {
+  local tmp target staging receipt metadata injection output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-no-hardlinks"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-recovery-hardlink.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    raise Errno::EOPNOTSUPP if phase == :before_link
+  end
+end
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 && "$status" -ne 65 ]] || fail "hardlink-unavailable recovery exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "hardlink-unavailable recovery changed target tree"
+}
+
+test_recovery_capture_supports_system_ruby_2_6() {
+  local tmp target staging receipt fake_bin marker output status original_path default_ruby system_ruby_version
+  original_path="$PATH"
+  default_ruby="$(ruby -rrbconfig -e 'print RbConfig.ruby')"
+  if [[ ! -x /usr/bin/ruby ]]; then
+    return 0
+  fi
+  system_ruby_version="$(/usr/bin/ruby -e 'print RUBY_VERSION' 2>/dev/null || true)"
+  case "$system_ruby_version" in
+    2.6.*) ;;
+    *) return 0 ;;
+  esac
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-system-ruby"
+  receipt="$target/.agent-workflows-migration-staging"
+  fake_bin="$tmp/system-ruby-bin"
+  local PATH="$fake_bin:$original_path"
+  marker="$tmp/system-ruby-invocations"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+cat > "$fake_bin/ruby" <<'SH'
+#!/bin/sh
+case "$*" in
+  *RecoverySyscalls*|*RecoveryReceiptSyscalls*|*RecoveryRestoreSyscalls*|*RecoveryCleanupSyscalls*|*renameatx_np*)
+  /usr/bin/ruby -e 'abort RUBY_VERSION unless RUBY_VERSION.start_with?("2.6.")'
+  printf 'system-ruby-2.6\n' >> "$QA_SYSTEM_RUBY_MARKER"
+  exec /usr/bin/ruby "$@"
+  ;;
+esac
+exec "$QA_DEFAULT_RUBY" "$@"
+SH
+  chmod +x "$fake_bin/ruby"
+  export PATH
+  hash -r
+
+  set +e
+  output="$(BASH_ENV=/dev/null QA_SYSTEM_RUBY_MARKER="$marker" QA_DEFAULT_RUBY="$default_ruby" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "system Ruby recovery exited $status: $output"
+  assert_file "$marker"
+  assert_contains "$(cat "$marker")" "system-ruby-2.6"
+  assert_not_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  [[ ! -e "$receipt" ]] || fail "system Ruby recovery left receipt"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "system Ruby recovery left metadata quarantine"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+}
+
+test_capture_runtime_load_failure_removes_empty_quarantine() {
+  local tmp target staging receipt metadata injection output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-capture-load-failure"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-capture-load.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+raise LoadError, "capture helper unavailable" if ARGV.length == 5 &&
+                                                 ARGV.fetch(1) == ".agent-workflows-install.json"
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 && "$status" -ne 65 ]] || fail "capture load failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "capture load failure leaked an empty recovery quarantine"
+  assert_file "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_capture_failure_reports_private_quarantine_after_cleanup_detach() {
+  local tmp target staging receipt metadata injection output status quarantine marker
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-private-quarantine"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-capture-and-detached-cleanup.rb"
+  marker="$tmp/quarantine-cleanup-failed-once"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module BoundDirCleanupPostDetachHook
+  def self.call(path)
+    marker = ENV.fetch("QA_DIR_FAILURE_MARKER")
+    return if File.exist?(marker)
+    File.write(marker, "failed\n")
+    raise Errno::EIO if path.include?(".cleanup-dir-")
+  end
+end
+raise LoadError, "capture helper unavailable" if ARGV.length == 5 &&
+                                                 ARGV.fetch(1) == ".agent-workflows-install.json"
+RUBY
+  set +e
+  output="$(QA_DIR_FAILURE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 && "$status" -ne 65 ]] || fail "combined capture cleanup failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  [[ -z "$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "combined capture cleanup failure left canonical quarantine"
+  quarantine="$(printf '%s\n' "$output" | sed -n 's/^Preserved recovery metadata quarantine \(.*\) blocks automatic recovery\.$/\1/p' | head -1)"
+  [[ -n "$quarantine" ]] || fail "combined capture cleanup failure lost private quarantine"
+  [[ -d "$quarantine" ]] || fail "reported private quarantine does not exist: $quarantine"
+  [[ "$(printf '%s\n' "$output" | grep -Fxc "Preserved recovery metadata quarantine $quarantine blocks automatic recovery.")" -eq 1 ]] || \
+    fail "combined capture cleanup diagnostic was duplicated: $output"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine blocks automatic recovery."
+  assert_file "$metadata"
+  assert_file "$receipt"
+}
+
+test_capture_binding_change_reports_private_quarantine_after_cleanup_detach() {
+  local tmp target staging receipt metadata injection output status quarantine marker
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-binding-private-quarantine"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-binding-and-detached-cleanup.rb"; marker="$tmp/quarantine-cleanup-failed-once"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+require "fiddle"
+trace = TracePoint.new(:end) do |event|
+  next unless event.self.respond_to?(:name) && event.self.name == "RecoverySyscalls"
+  event.self.define_singleton_method(:openat) do |*|
+    Fiddle.last_error = Errno::ELOOP::Errno
+    -1
+  end
+  trace.disable
+end
+trace.enable
+module BoundDirCleanupPostDetachHook
+  def self.call(path)
+    marker = ENV.fetch("QA_DIR_FAILURE_MARKER")
+    return if File.exist?(marker)
+    File.write(marker, "failed\n")
+    raise Errno::EIO if path.include?(".cleanup-dir-")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_DIR_FAILURE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 65 ]] || fail "binding-change private quarantine exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ -z "$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "binding-change cleanup left canonical quarantine"
+  quarantine="$(printf '%s\n' "$output" | sed -n 's/^Preserved recovery metadata quarantine \(.*\) blocks automatic recovery\.$/\1/p' | head -1)"
+  [[ -n "$quarantine" && -d "$quarantine" ]] || fail "binding-change output lost private quarantine: $output"
+  [[ "$(printf '%s\n' "$output" | grep -Fxc "Preserved recovery metadata quarantine $quarantine blocks automatic recovery.")" -eq 1 ]] || \
+    fail "binding-change quarantine diagnostic was duplicated: $output"
+  assert_file "$metadata"
+  assert_file "$receipt"
+}
+
+test_capture_failure_after_sentinel_install_restores_original_metadata() {
+  local tmp target staging receipt metadata injection output status before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-capture-undo"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-after-sentinel-install.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    raise Errno::EIO if phase == :after_rename
+  end
+end
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "post-sentinel capture failure unexpectedly succeeded"
+  assert_file "$metadata"
+  [[ "$before" = "$(shasum "$metadata")" ]] || fail "capture undo did not restore original metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_capture_undo_uses_original_guard_when_displaced_sentinel_changes() {
+  local tmp target staging receipt metadata injection output status before quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-capture-guard"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/replace-displaced-sentinel-after-exchange.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    quarantine = Dir.glob("#{ENV.fetch("QA_INSTALL_METADATA")}.recovery-*").fetch(0)
+    File.rename(File.join(quarantine, "sentinel"), File.join(quarantine, "sentinel-displaced"))
+    File.write(File.join(quarantine, "sentinel"), "raced displaced sentinel\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || fail "changed displaced capture sentinel exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$before" = "$(shasum "$metadata")" ]] || \
+    fail "capture undo did not restore canonical metadata from original guard"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "capture guard failure did not preserve quarantine"
+  assert_file "$quarantine/sentinel"
+  assert_file "$quarantine/sentinel-displaced"
+  assert_file "$quarantine/metadata"
+  assert_file "$receipt"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "capture guard failure mutated recovery target"
+}
+
+test_recovery_capture_exchange_restores_competing_destination() {
+  local tmp target staging receipt metadata preserved injection marker output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-capture-exchange"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/preserved-original-metadata.json"
+  injection="$tmp/replace-recovery-destination-before-swap.rb"
+  marker="$tmp/recovery-destination-replaced"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module ReplaceRecoveryDestinationBeforeSwap
+  def extern(signature, *arguments)
+    result = super
+    syscall_name = signature[/\b(renameat(?:2|x_np)?)\(/, 1]
+    if name == "RecoverySyscalls" && syscall_name
+      real_syscall = method(syscall_name)
+      define_singleton_method(syscall_name) do |*syscall_arguments|
+        source_name = syscall_arguments.fetch(1)
+        destination_name = syscall_arguments.fetch(3)
+        if source_name == "sentinel" && destination_name == ".agent-workflows-install.json" &&
+           !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          File.rename(ENV.fetch("QA_INSTALL_METADATA"), ENV.fetch("QA_PRESERVED_METADATA"))
+          File.write(ENV.fetch("QA_INSTALL_METADATA"), "competing metadata\n")
+          File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+        end
+        real_syscall.call(*syscall_arguments)
+      end
+    end
+    result
+  end
+end
+Fiddle::Importer.prepend(ReplaceRecoveryDestinationBeforeSwap)
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_PRESERVED_METADATA="$preserved" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 1 ]] || fail "recovery capture destination race exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$(cat "$metadata")" '"delivery_mode":"flat"'
+  assert_file "$preserved"
+  assert_contains "$(cat "$preserved")" '"delivery_mode":"flat"'
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "recovery capture destination race did not preserve quarantine"
+  [[ "$(cat "$quarantine/sentinel")" = "competing metadata" ]] || \
+    fail "recovery capture did not preserve the competing destination"
+  assert_file "$quarantine/metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || \
+    fail "recovery capture destination race mutated the recovery target"
+}
+
+test_recovery_partial_backup_copy_failure_preserves_quarantine() {
+  local tmp target staging receipt metadata injection output status quarantine retry_output retry_status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-partial-copy"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-recovery-backup-copy.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    raise Errno::EIO if phase == :after_backup_copy
+  end
+end
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 && "$status" -ne 65 ]] || fail "partial backup copy exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "partial backup copy did not preserve recovery quarantine"
+  assert_file "$quarantine/original-backup"
+  assert_file "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  assert_contains "$output" "$quarantine"
+  set +e
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  retry_status=$?
+  set -e
+  [[ "$retry_status" -eq 65 ]] || fail "partial backup retry exited $retry_status: $retry_output"
+  assert_contains "$retry_output" "$quarantine"
+  assert_contains "$retry_output" "move the entire quarantine aside"
+}
+
+test_recovery_capture_cleanup_preserves_replaced_created_artifact() {
+  local tmp target staging receipt metadata injection marker output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/swap-created-recovery-artifact.rb"
+  marker="$tmp/recovery-created-artifact-swapped"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :after_backup_copy
+    quarantine = Dir.glob("#{ENV.fetch("QA_INSTALL_METADATA")}.recovery-*").fetch(0)
+    backup = File.join(quarantine, "original-backup")
+    File.rename(backup, File.join(quarantine, "original-backup.created"))
+    File.write(backup, "foreign replacement backup\n")
+    File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "recovery capture cleanup race unexpectedly succeeded"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "recovery capture cleanup race removed quarantine evidence"
+  assert_file "$quarantine/original-backup.created"
+  assert_file "$quarantine/original-backup"
+  assert_contains "$(cat "$quarantine/original-backup")" "foreign replacement backup"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_recovery_capture_post_attestation_cleanup_preserves_replacement() {
+  local tmp target staging receipt metadata injection output status quarantine
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-sentinel-cleanup-race"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/swap-sentinel-at-cleanup.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureCleanupHook
+  def self.call(name)
+    return unless name == "sentinel"
+    quarantine = Dir.glob("#{ENV.fetch("QA_METADATA")}.recovery-*").fetch(0)
+    path = File.join(quarantine, name)
+    File.rename(path, "#{path}.attested")
+    File.write(path, "foreign sentinel replacement\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_METADATA="$metadata" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "capture cleanup replacement unexpectedly succeeded"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  grep -Rql "foreign sentinel replacement" "$quarantine" || \
+    fail "capture cleanup deleted foreign sentinel replacement"
+  assert_file "$quarantine/sentinel.attested"
+}
+
+test_commit_post_attestation_cleanup_preserves_tmp_replacement() {
+  local tmp target metadata injection output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/swap-tmp-at-cleanup.rb"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  cat > "$injection" <<'RUBY'
+module AtomicMetadataCommitCleanupHook
+  def self.call(name)
+    return unless name.end_with?(".tmp")
+    path = "#{ENV.fetch("QA_METADATA")}.tmp"
+    File.rename(path, "#{path}.attested")
+    File.write(path, "foreign tmp replacement\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_METADATA="$metadata" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "commit cleanup replacement unexpectedly succeeded"
+  grep -Rql "foreign tmp replacement" "$target" || fail "commit cleanup deleted foreign tmp replacement"
+  assert_file "$metadata.tmp.attested"
+}
+
+test_normal_guard_cleanup_preserves_post_attestation_replacement() {
+  local tmp target lock guard metadata canonical_metadata canonical_lock canonical_guard injection output status preserved
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; lock="$target/.agent-workflows-install.lock"
+  guard="$lock/metadata-commit-old.guard"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/swap-normal-guard-cleanup.rb"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
+  canonical_lock="$(dirname "$canonical_metadata")/.agent-workflows-install.lock"
+  canonical_guard="$canonical_lock/metadata-commit-old.guard"
+  cat > "$injection" <<'RUBY'
+module AtomicMetadataGuardCleanupHook
+  def self.call
+    path = ENV.fetch("QA_GUARD")
+    File.rename(path, "#{path}.attested")
+    File.write(path, "foreign normal guard replacement\n")
+  end
+end
+module ChangeMetadataAfterPreparation
+  def open(path, *args, **kwargs, &block)
+    result = super
+    if path == "#{ENV.fetch("QA_METADATA")}.tmp" && !Thread.current[:qa_changed_metadata]
+      Thread.current[:qa_changed_metadata] = true
+      at_exit { File.unlink(path) if File.exist?(path) }
+    end
+    result
+  end
+end
+File.singleton_class.prepend(ChangeMetadataAfterPreparation)
+RUBY
+  set +e
+  output="$(QA_GUARD="$canonical_guard" QA_METADATA="$canonical_metadata" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "normal guard cleanup replacement unexpectedly succeeded"
+  grep -Rql "foreign normal guard replacement" "$lock" || \
+    fail "normal guard cleanup deleted foreign replacement"
+  assert_file "$guard.attested"
+  preserved="$(find "$canonical_lock" -maxdepth 1 -type f -name 'metadata-commit-old.cleanup-*' -print -quit)"
+  [[ -n "$preserved" ]] || fail "normal guard cleanup did not retain private evidence"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $preserved"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING: preserved $canonical_guard because"
+}
+
+test_successful_install_reports_retained_lock_cleanup_pending() {
+  local tmp target lock injection output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; lock="$target/.agent-workflows-install.lock"
+  injection="$tmp/fail-lock-detach.rb"
+  cat > "$injection" <<'RUBY'
+module BoundDirCleanupHook
+  def self.call(path)
+    raise Errno::EIO if path.end_with?(".agent-workflows-install.lock")
+  end
+end
+RUBY
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "lock cleanup failure reported successful install"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $lock"
+  assert_contains "$output" "move the entire preserved path aside"
+  assert_file "$target/.agent-workflows-install.json"
+  [[ -d "$lock" ]] || fail "lock cleanup failure did not preserve lock"
+}
+
+test_successful_install_reports_private_lock_after_post_detach_failure() {
+  local tmp target clean_target lock injection output status preserved clean_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; clean_target="$tmp/clean-home"
+  lock="$target/.agent-workflows-install.lock"; injection="$tmp/fail-lock-after-detach.rb"
+  clean_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$clean_target" --mode copy --delivery-mode flat 2>&1)"
+  assert_not_contains "$clean_output" "METADATA_CLEANUP_PENDING"
+  cat > "$injection" <<'RUBY'
+module BoundDirCleanupPostDetachHook
+  def self.call(path)
+    raise Errno::EIO if path.include?(".cleanup-dir-")
+  end
+end
+RUBY
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "post-detach lock cleanup failure reported success"
+  [[ ! -e "$lock" ]] || fail "post-detach lock cleanup left the canonical lock name"
+  preserved="$(find "$target" -maxdepth 1 -type d -name '.cleanup-dir-*' -print -quit)"
+  [[ -n "$preserved" ]] || fail "post-detach lock cleanup did not retain private evidence"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING: preserved $preserved"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING: preserved $lock because"
+  assert_file "$target/.agent-workflows-install.json"
+}
+
+test_restore_post_attestation_cleanup_preserves_source_replacement() {
+  local tmp target staging receipt metadata injection output status quarantine
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-restore-cleanup-race"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/swap-restore-source-at-cleanup.rb"
+  mkdir -p "$staging/user-owned-skill"; printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreCleanupHook
+  def self.call(name)
+    return unless name == "metadata"
+    quarantine = Dir.glob("#{ENV.fetch("QA_METADATA")}.recovery-*").fetch(0)
+    path = File.join(quarantine, name)
+    File.rename(path, "#{path}.attested")
+    File.write(path, "foreign restore replacement\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_METADATA="$metadata" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "restore cleanup replacement unexpectedly succeeded"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  grep -Rql "foreign restore replacement" "$quarantine" || \
+    fail "restore cleanup deleted foreign source replacement"
+  assert_file "$quarantine/metadata.attested"
+}
+
+test_restore_cleanup_failure_does_not_reexchange_verified_content() {
+  local tmp target staging receipt metadata injection marker output status restored_inode current_inode retry_output retry_status quarantine
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-late-cleanup"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-after-verified-restore.rb"; marker="$tmp/restored-inode"
+  mkdir -p "$staging/user-owned-skill"; printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    metadata = ENV.fetch("QA_INSTALL_METADATA")
+    File.write(ENV.fetch("QA_RACE_MARKER"), File.stat(metadata).ino.to_s)
+  end
+end
+module RecoveryRestoreCleanupHook
+  def self.call(name)
+    raise Errno::EIO if name == "metadata"
+  end
+end
+RUBY
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "late restore cleanup failure unexpectedly succeeded"
+  restored_inode="$(cat "$marker")"; current_inode="$(ruby -e 'print File.stat(ARGV.fetch(0)).ino' "$metadata")"
+  [[ "$current_inode" = "$restored_inode" ]] || fail "late cleanup failure re-exchanged verified restored metadata"
+  assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "late restore cleanup failure lost recovery evidence"
+  set +e
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; retry_status=$?
+  set -e
+  [[ "$retry_status" -ne 0 ]] || fail "late restore cleanup retry ignored preserved recovery evidence"
+  assert_contains "$retry_output" "$quarantine"
+}
+
+test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance() {
+  local tmp target staging receipt metadata injection output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-late-capture"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/corrupt-snapshot-after-capture.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    snapshot = Dir.glob(File.join(ENV.fetch("QA_TARGET"), ".agent-workflows-install.json.recovery-*", "metadata")).fetch(0)
+    File.write(snapshot, "changed after capture\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "late capture corruption exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "late capture corruption did not preserve quarantine"
+  quarantine="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$quarantine")"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine; do not delete it while recovering the target."
+  assert_contains "$output" "blocks automatic recovery"
+  assert_file "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_late_capture_restore_failure_does_not_blame_intact_metadata() {
+  local tmp target staging receipt metadata injection output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-late-restore-failure"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/corrupt-recovery-copies-after-capture.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    quarantine = Dir.glob(File.join(ENV.fetch("QA_TARGET"), ".agent-workflows-install.json.recovery-*")).fetch(0)
+    File.write(File.join(quarantine, "metadata"), "snapshot changed\n")
+    File.write(File.join(quarantine, "original-backup"), "backup changed\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "late capture restore failure exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "late capture restore failure did not preserve quarantine"
+  quarantine="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$quarantine")"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine; do not delete it while recovering the target."
+  assert_contains "$output" "blocks automatic recovery"
+  assert_contains "$output" "Preserved pending recovery receipt $(ruby -e 'print File.realpath(ARGV.fetch(0))' "$receipt") for staging directory"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "late capture restore failure leaked install lock"
+}
+
+test_snapshot_only_corruption_restores_before_reporting() {
+  local tmp target canonical_target staging canonical_staging receipt metadata fake_bin real_mv injection output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-snapshot-corrupt"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"
+  real_mv="$(command -v mv)"
+  injection="$tmp/corrupt-snapshot-before-bound-staged-move.rb"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_staging="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$staging")"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$fake_bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$#" -eq 2 && "$1" = "$QA_STAGED_SKILL" && "$2" = "$QA_SKILLS_ROOT/" ]]; then
+  snapshot="$(find "$QA_TARGET" -maxdepth 2 -path '*/.agent-workflows-install.json.recovery-*/metadata' -print -quit)"
+  printf 'snapshot changed\n' > "$snapshot"
+fi
+exec "$QA_REAL_MV" "$@"
+SH
+  chmod +x "$fake_bin/mv"
+  cat > "$injection" <<'RUBY'
+if ARGV.length >= 4 && ARGV.fetch(0) == ENV.fetch("QA_STAGED_SKILL") &&
+   ARGV.fetch(1) == File.join(ENV.fetch("QA_SKILLS_ROOT"), "user-owned-skill")
+  snapshot = Dir.glob(File.join(ENV.fetch("QA_TARGET"), ".agent-workflows-install.json.recovery-*", "metadata")).first
+  File.write(snapshot, "snapshot changed\n")
+end
+RUBY
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MV="$real_mv" QA_TARGET="$canonical_target" \
+    QA_STAGED_SKILL="$canonical_staging/user-owned-skill" QA_SKILLS_ROOT="$canonical_target/skills" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "snapshot-only corruption exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved recovery metadata quarantine"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "restorable snapshot-only corruption leaked quarantine"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "snapshot-only corruption changed target tree"
+}
+
+test_nul_in_recorded_source_is_corrupt_before_symlink_adoption() {
+  local tmp target recorded_source link_source metadata output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  recorded_source="$tmp/recorded-source"
+  link_source="$tmp/recordedsource"
+  metadata="$target/.agent-workflows-install.json"
+  mkdir -p "$target/bin" "$link_source/bin/agent_doctor"
+  printf 'unmanaged\n' > "$link_source/bin/agent_doctor/sentinel"
+  ln -s "$link_source/bin/agent_doctor" "$target/bin/agent_doctor"
+  ruby -rjson -e '
+    FileUtils.mkdir_p(File.dirname(ARGV.fetch(0)))
+    source = ARGV.fetch(1).sub("recorded-source", "recorded\0source")
+    File.write(ARGV.fetch(0), JSON.generate({"mode" => "symlink", "source" => source}) + "\n")
+  ' -rfileutils "$metadata" "$recorded_source"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "NUL-coerced recorded source exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Refusing unmanaged workflow doctor symlink"
+  assert_symlink "$target/bin/agent_doctor"
+  assert_file "$link_source/bin/agent_doctor/sentinel"
+}
+
+test_preexisting_metadata_tmp_is_preserved_with_actionable_failure() {
+  local tmp target metadata_tmp output status before paths_before
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata_tmp="$target/.agent-workflows-install.json.tmp"
+  mkdir -p "$target"; printf 'untrusted orphan\n' > "$metadata_tmp"
+  before="$(shasum "$metadata_tmp")"; paths_before="$(find "$target" -print | LC_ALL=C sort)"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  [[ "$status" -eq 68 ]] || fail "pre-existing metadata tmp exited $status: $output"
+  assert_contains "$output" "METADATA_PREPARE_BLOCKED"
+  assert_contains "$output" "$metadata_tmp"
+  assert_contains "$output" "preserve"
+  assert_not_contains "$output" "Errno::EEXIST"
+  assert_not_contains "$output" "from "
+  [[ "$before" = "$(shasum "$metadata_tmp")" ]] || fail "pre-existing metadata tmp was changed"
+  [[ "$paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || fail "pre-existing metadata tmp failure mutated target"
+}
+
 test_repeat_install_replays_recorded_companion_delivery_mode() {
   local tmp target
   tmp="$(mktemp -d)"
@@ -812,6 +4290,630 @@ test_repeat_install_replays_recorded_companion_delivery_mode() {
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
     abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
   ' "$target/.agent-workflows-install.json"
+}
+
+test_repeat_flat_install_accepts_installer_created_uncommitted_skill() {
+  local tmp source target mode marker
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/uncommitted-local"
+  printf '%s\n' '---' 'name: uncommitted-local' \
+    'description: Exercise repeat installs from a dirty development checkout.' \
+    '---' '' '# Uncommitted Local' > "$source/skills/uncommitted-local/SKILL.md"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-home-$mode"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" --delivery-mode flat >"$tmp/first-$mode.out"
+    marker="source-edit-after-$mode-install"
+    printf '\n%s\n' "$marker" >> "$source/skills/uncommitted-local/SKILL.md"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" --delivery-mode flat >"$tmp/repeat-$mode.out"
+
+    if [[ "$mode" = copy ]]; then
+      cmp -s "$source/skills/uncommitted-local/SKILL.md" \
+        "$target/skills/uncommitted-local/SKILL.md" || \
+        fail "repeat copy install did not update the installer-created uncommitted skill"
+    else
+      [[ "$(readlink "$target/skills/uncommitted-local")" = \
+         "$source/skills/uncommitted-local" ]] || \
+        fail "repeat symlink install changed the installer-created uncommitted skill link"
+    fi
+    grep -qxF "$marker" "$target/skills/uncommitted-local/SKILL.md" || \
+      fail "repeat $mode install lost the uncommitted source edit"
+  done
+}
+
+test_repeat_flat_copy_install_blocks_modified_installer_created_uncommitted_skill() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/uncommitted-local"
+  printf '%s\n' '---' 'name: uncommitted-local' \
+    'description: Exercise target-modification fencing.' \
+    '---' '' '# Uncommitted Local' > "$source/skills/uncommitted-local/SKILL.md"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+  printf '\npersonal installed-copy edit\n' >> \
+    "$target/skills/uncommitted-local/SKILL.md"
+  printf '\nnew source edit\n' >> "$source/skills/uncommitted-local/SKILL.md"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified uncommitted skill target"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal installed-copy edit' \
+    "$target/skills/uncommitted-local/SKILL.md" || \
+    fail "repeat copy install changed the modified uncommitted skill target"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "blocked uncommitted skill replay changed install metadata"
+}
+
+test_repeat_flat_copy_install_blocks_modified_recorded_targets() {
+  local tmp source skill_target empty_target symlink_target doc_target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  skill_target="$tmp/skill-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$skill_target" \
+    --mode copy --delivery-mode flat >"$tmp/skill-first.out"
+  cp "$skill_target/.agent-workflows-install.json" "$tmp/skill-metadata.before"
+  metadata_before="$tmp/skill-metadata.before"
+  printf '\npersonal recorded-skill edit\n' >> "$skill_target/skills/pr-batch/SKILL.md"
+  printf 'nested personal file\n' > "$skill_target/skills/pr-batch/personal-notes.txt"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$skill_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified recorded skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal recorded-skill edit' "$skill_target/skills/pr-batch/SKILL.md" || \
+    fail "blocked repeat install changed the modified recorded skill"
+  grep -qxF 'nested personal file' "$skill_target/skills/pr-batch/personal-notes.txt" || \
+    fail "blocked repeat install removed a nested personal skill file"
+  cmp -s "$metadata_before" "$skill_target/.agent-workflows-install.json" || \
+    fail "blocked recorded-skill replay changed install metadata"
+
+  empty_target="$tmp/empty-directory-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$empty_target" \
+    --mode copy --delivery-mode flat >"$tmp/empty-first.out"
+  cp "$empty_target/.agent-workflows-install.json" "$tmp/empty-metadata.before"
+  mkdir -p "$empty_target/skills/pr-batch/personal-empty/nested-empty"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$empty_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install removed a personal empty skill directory"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  [[ -d "$empty_target/skills/pr-batch/personal-empty/nested-empty" ]] || \
+    fail "blocked repeat install removed the personal empty skill directory"
+  cmp -s "$tmp/empty-metadata.before" "$empty_target/.agent-workflows-install.json" || \
+    fail "blocked empty-directory replay changed install metadata"
+
+  symlink_target="$tmp/symlink-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$symlink_target" \
+    --mode copy --delivery-mode flat >"$tmp/symlink-first.out"
+  mkdir -p "$tmp/personal-pr-batch"
+  printf 'personal symlink target\n' > "$tmp/personal-pr-batch/SKILL.md"
+  mv "$symlink_target/skills/pr-batch" "$tmp/installed-pr-batch.before-symlink"
+  ln -s "$tmp/personal-pr-batch" "$symlink_target/skills/pr-batch"
+  cp "$symlink_target/.agent-workflows-install.json" "$tmp/symlink-metadata.before"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$symlink_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced an arbitrary recorded-skill symlink"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  [[ -L "$symlink_target/skills/pr-batch" && \
+     "$(readlink "$symlink_target/skills/pr-batch")" = "$tmp/personal-pr-batch" ]] || \
+    fail "blocked repeat install changed the recorded-skill symlink"
+  cmp -s "$tmp/symlink-metadata.before" "$symlink_target/.agent-workflows-install.json" || \
+    fail "blocked recorded-skill symlink replay changed install metadata"
+
+  doc_target="$tmp/doc-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$doc_target" \
+    --mode copy --delivery-mode flat >"$tmp/doc-first.out"
+  cp "$doc_target/.agent-workflows-install.json" "$tmp/doc-metadata.before"
+  printf 'personal recorded-doc edit\n' > "$doc_target/docs/coordination-backend.md"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$doc_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified recorded pack document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  grep -qxF 'personal recorded-doc edit' "$doc_target/docs/coordination-backend.md" || \
+    fail "blocked repeat install changed the modified recorded pack document"
+  cmp -s "$tmp/doc-metadata.before" "$doc_target/.agent-workflows-install.json" || \
+    fail "blocked recorded-document replay changed install metadata"
+}
+
+test_repeat_flat_copy_install_uses_fingerprints_without_git_history() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  mv "$source/.git" "$tmp/source.git"
+  printf '\nnon-git managed-v2\n' >> "$source/skills/pr-batch/SKILL.md"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/non-git-upgrade.out"
+  grep -qxF 'non-git managed-v2' "$target/skills/pr-batch/SKILL.md" || \
+    fail "recorded fingerprint did not authorize an untouched non-git copy upgrade"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  printf '\npersonal non-git target edit\n' >> "$target/skills/pr-batch/SKILL.md"
+  printf '\nnon-git managed-v3\n' >> "$source/skills/pr-batch/SKILL.md"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "non-git copy upgrade replaced a modified installed skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal non-git target edit' "$target/skills/pr-batch/SKILL.md" || \
+    fail "blocked non-git upgrade changed the modified installed skill"
+  cmp -s "$tmp/metadata.before" "$target/.agent-workflows-install.json" || \
+    fail "blocked non-git upgrade changed install metadata"
+}
+
+test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history() {
+  local tmp source target modified_target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mv "$source/.git" "$tmp/source.git"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/flat.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints")
+    abort metadata.inspect unless metadata["source_revision"] == "unknown" && !fingerprints.empty?
+  ' "$target/.agent-workflows-install.json"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion >"$tmp/companion.out"
+
+  [[ ! -e "$target/skills/pr-batch" ]] || \
+    fail "fingerprint-authorized companion migration retained a managed flat skill"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+  ' "$target/.agent-workflows-install.json"
+
+  modified_target="$tmp/modified-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$modified_target" \
+    --mode copy --delivery-mode flat >"$tmp/modified-flat.out"
+  printf '\npersonal non-git migration edit\n' >> "$modified_target/skills/pr-batch/SKILL.md"
+  write_native_scw_state codex "$modified_target"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$modified_target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "fingerprints authorized migration of a modified flat skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal non-git migration edit' "$modified_target/skills/pr-batch/SKILL.md" || \
+    fail "blocked fingerprint migration changed the modified flat skill"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$modified_target/.agent-workflows-install.json"
+}
+
+test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
+  local tmp source target recorded_fingerprint verified_fingerprint
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  mkdir -p "$source/skills/fingerprint-fixture/bin"
+  mkdir -p "$source/skills/fingerprint-fixture/empty/nested"
+  printf '%s\n' '---' 'name: fingerprint-fixture' 'description: Fingerprint fixture.' '---' > \
+    "$source/skills/fingerprint-fixture/SKILL.md"
+  printf '#!/bin/sh\nexit 0\n' > "$source/skills/fingerprint-fixture/bin/run"
+  chmod +x "$source/skills/fingerprint-fixture/bin/run"
+  ln -s SKILL.md "$source/skills/fingerprint-fixture/skill-link"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+
+  recorded_fingerprint="$(jq -r '.managed_skill_copy_fingerprints["fingerprint-fixture"]' \
+    "$target/.agent-workflows-install.json")"
+  verified_fingerprint="$(ruby -e \
+    'load ARGV.shift; puts AgentWorkflowsDeliveryState.directory_fingerprint(ARGV.fetch(0))' \
+    "$source/bin/agent-workflows-delivery-state" "$target/skills/fingerprint-fixture")"
+
+  [[ "$recorded_fingerprint" != "null" && -n "$recorded_fingerprint" ]] || \
+    fail "installer metadata omitted the fixture skill fingerprint"
+  [[ "$recorded_fingerprint" = "$verified_fingerprint" ]] || \
+    fail "installer and delivery-state directory fingerprints drifted"
+}
+
+test_installation_docs_describe_managed_coordination_doc_fingerprints() {
+  local docs changelog
+  docs="$(cat "$ROOT/docs/installation-and-upgrades.md")"
+  changelog="$(cat "$ROOT/CHANGELOG.md")"
+
+  assert_contains "$docs" '<target>/docs/user-facing-coordination.md'
+  assert_contains "$docs" '<target>/docs/writing-style.md'
+  assert_contains "$docs" '<target>/docs/execution-provenance-schema.md'
+  assert_contains "$docs" '<target>/bin/validate-execution-provenance'
+  assert_contains "$docs" 'managed_skill_copy_fingerprints'
+  assert_contains "$docs" 'managed_pack_doc_copy_fingerprints'
+  assert_contains "$docs" 'including every installed'
+  assert_contains "$docs" '<target>/docs/solutions/*'
+  assert_contains "$docs" 'installer refuses to'
+  assert_contains "$docs" 'replace a modified'
+  assert_contains "$changelog" 'Copy-install fingerprints'
+}
+
+test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc() {
+  local tmp source target personal_target output status metadata_before doc_name
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  personal_target="$tmp/personal-codex-home"
+  doc_name="uncommitted-pack-doc.md"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.read(path)
+    insertion = "  writing-style.md\n  uncommitted-pack-doc.md\n)"
+    abort "missing pack_docs insertion point" unless text.sub!("  writing-style.md\n)", insertion)
+    File.write(path, text)
+  ' "$source/bin/install-agent-workflows"
+  printf 'managed-v1\n' > "$source/docs/$doc_name"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  printf 'managed-v2\n' > "$source/docs/$doc_name"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/repeat.out"
+  grep -qxF 'managed-v2' "$target/docs/$doc_name" || \
+    fail "repeat copy install did not update the installer-created uncommitted pack document"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+  printf 'personal installed-doc edit\n' > "$target/docs/$doc_name"
+  printf 'managed-v3\n' > "$source/docs/$doc_name"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified uncommitted pack document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  grep -qxF 'personal installed-doc edit' "$target/docs/$doc_name" || \
+    fail "repeat copy install changed the modified uncommitted pack document"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "blocked uncommitted document replay changed install metadata"
+
+  mkdir -p "$personal_target/docs"
+  printf 'personal-predating-first-install\n' > "$personal_target/docs/$doc_name"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$personal_target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "first copy install replaced a personal uncommitted pack document collision"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  grep -qxF 'personal-predating-first-install' "$personal_target/docs/$doc_name" || \
+    fail "first copy install changed the personal uncommitted pack document"
+  [[ ! -e "$personal_target/.agent-workflows-install.json" ]] || \
+    fail "blocked first install committed metadata"
+}
+
+test_repeat_copy_install_blocks_modified_solution_document() {
+  local tmp source target output status metadata_before solution_name
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  solution_name="coordination-unknown-state.md"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_pack_doc_copy_fingerprints")
+    abort fingerprints.inspect unless fingerprints.key?(ARGV.fetch(1))
+  ' "$target/.agent-workflows-install.json" "solutions/$solution_name"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+  printf 'personal installed-solution edit\n' > "$target/docs/solutions/$solution_name"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "repeat copy install replaced a modified solution document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  assert_contains "$output" "$target/docs/solutions/$solution_name"
+  grep -qxF 'personal installed-solution edit' "$target/docs/solutions/$solution_name" || \
+    fail "repeat copy install changed the modified solution document"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "blocked solution document replay changed install metadata"
+}
+
+test_flat_upgrade_refuses_newly_packaged_skill_collision() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  git -C "$source" rm -r --quiet skills/close-session
+  git -C "$source" commit --quiet -m "simulate source before close-session"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/legacy-install.out"
+
+  mkdir -p "$target/skills/close-session"
+  printf 'personal close-session sentinel\n' > "$target/skills/close-session/SKILL.md"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  rsync -a "$ROOT/skills/close-session" "$source/skills/"
+  git -C "$source" add skills/close-session
+  git -C "$source" commit --quiet -m "add packaged close-session"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat upgrade replaced a newly colliding personal skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "$target/skills/close-session"
+  grep -qxF 'personal close-session sentinel' "$target/skills/close-session/SKILL.md" || \
+    fail "flat upgrade changed the personal close-session skill"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "flat collision changed install metadata"
+}
+
+test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  git -C "$source" rm -r --quiet skills/close-session
+  git -C "$source" commit --quiet -m "simulate source before close-session"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/legacy-install.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  rsync -a "$ROOT/skills/close-session" "$source/skills/"
+  git -C "$source" add skills/close-session
+  git -C "$source" commit --quiet -m "add packaged close-session"
+  mv "$target/bin/agent-workflows-status" "$tmp/agent-workflows-status"
+  mkdir "$target/bin/agent-workflows-status"
+  printf 'personal helper collision\n' > "$target/bin/agent-workflows-status/sentinel"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat upgrade accepted a late helper collision"
+  assert_contains "$output" "Refusing to replace non-file path"
+  [[ ! -e "$target/skills/close-session" ]] || \
+    fail "failed flat upgrade stranded a newly packaged skill"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "failed flat upgrade changed install metadata"
+
+  mv "$target/bin/agent-workflows-status" "$tmp/personal-helper-collision"
+  mv "$tmp/agent-workflows-status" "$target/bin/agent-workflows-status"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/retry.out"
+  assert_file "$target/skills/close-session/SKILL.md"
+}
+
+test_flat_copy_upgrade_refuses_newly_packaged_doc_collision() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  git -C "$source" rm --quiet docs/user-facing-coordination.md
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.read(path)
+    abort "missing pack doc entry" unless text.sub!("  user-facing-coordination.md\n", "")
+    File.write(path, text)
+  ' "$source/bin/install-agent-workflows"
+  git -C "$source" add bin/install-agent-workflows
+  git -C "$source" commit --quiet -m "simulate source before coordination doc"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/legacy-install.out"
+
+  printf 'personal coordination sentinel\n' > "$target/docs/user-facing-coordination.md"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  install -m 0644 "$ROOT/docs/user-facing-coordination.md" "$source/docs/user-facing-coordination.md"
+  install -m 0755 "$ROOT/bin/install-agent-workflows" "$source/bin/install-agent-workflows"
+  printf '\nupgrade-managed-doc-marker\n' >> "$source/docs/coordination-backend.md"
+  git -C "$source" add docs/user-facing-coordination.md docs/coordination-backend.md bin/install-agent-workflows
+  git -C "$source" commit --quiet -m "add coordination doc"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat copy upgrade replaced a newly colliding personal document"
+  assert_contains "$output" "Refusing to replace unowned pack document"
+  assert_contains "$output" "$target/docs/user-facing-coordination.md"
+  grep -qxF 'personal coordination sentinel' "$target/docs/user-facing-coordination.md" || \
+    fail "flat copy upgrade changed the personal coordination document"
+  assert_not_contains "$(cat "$target/docs/coordination-backend.md")" "upgrade-managed-doc-marker"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "flat document collision changed install metadata"
+
+  mv "$target/docs/user-facing-coordination.md" "$tmp/personal-coordination.md"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/successful-upgrade.out"
+  cmp -s "$target/docs/user-facing-coordination.md" "$source/docs/user-facing-coordination.md" || \
+    fail "flat copy upgrade did not install an absent coordination document"
+  cmp -s "$target/docs/coordination-backend.md" "$source/docs/coordination-backend.md" || \
+    fail "flat copy upgrade did not update a previously managed document"
+}
+
+test_flat_copy_upgrade_refuses_pack_doc_directory_before_mutation() {
+  local tmp source target output status metadata_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/initial-install.out"
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  metadata_before="$tmp/metadata.before"
+
+  mv "$target/docs/coordination-backend.md" "$tmp/coordination-backend.md"
+  mkdir "$target/docs/coordination-backend.md"
+  printf 'personal directory sentinel\n' > "$target/docs/coordination-backend.md/sentinel"
+  printf '\nlate-preflight-workflow-marker\n' >> "$source/workflows/pr-processing.md"
+  git -C "$source" add workflows/pr-processing.md
+  git -C "$source" commit --quiet -m "update managed workflow"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "flat upgrade replaced a pack document directory"
+  assert_contains "$output" "Refusing to replace non-file path"
+  assert_contains "$output" "$target/docs/coordination-backend.md"
+  assert_not_contains "$(cat "$target/workflows/pr-processing.md")" "late-preflight-workflow-marker"
+  assert_file "$target/docs/coordination-backend.md/sentinel"
+  cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+    fail "pack document directory collision changed install metadata"
+
+  mv "$target/docs/coordination-backend.md" "$tmp/personal-coordination-directory"
+  mv "$tmp/coordination-backend.md" "$target/docs/coordination-backend.md"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat \
+    >"$tmp/retry.out"
+  assert_contains "$(cat "$target/workflows/pr-processing.md")" "late-preflight-workflow-marker"
+}
+
+test_symlink_upgrade_refuses_newly_packaged_doc_collisions_before_mutation() {
+  local tmp source legacy_source target destination output status metadata_before
+  local workflow_before license_before skill_before coordination_before variant
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  legacy_source="$tmp/legacy-source"
+  mkdir -p "$source" "$legacy_source"
+  new_source_repo "$source"
+  new_source_repo "$legacy_source"
+
+  git -C "$legacy_source" rm --quiet docs/user-facing-coordination.md
+  ruby -e '
+    path = ARGV.fetch(0)
+    text = File.read(path)
+    abort "missing pack doc entry" unless text.sub!("  user-facing-coordination.md\n", "")
+    File.write(path, text)
+  ' "$legacy_source/bin/install-agent-workflows"
+  git -C "$legacy_source" add bin/install-agent-workflows
+  git -C "$legacy_source" commit --quiet -m "simulate source before coordination doc"
+
+  for variant in symlink file; do
+    target="$tmp/codex-home-$variant"
+    "$legacy_source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode symlink --delivery-mode flat >"$tmp/legacy-$variant.out"
+    destination="$target/docs/user-facing-coordination.md"
+    if [[ "$variant" = symlink ]]; then
+      printf 'personal coordination sentinel\n' > "$tmp/personal-coordination.md"
+      ln -s "$tmp/personal-coordination.md" "$destination"
+    else
+      printf 'personal coordination sentinel\n' > "$destination"
+    fi
+
+    workflow_before="$(readlink "$target/workflows")"
+    license_before="$(readlink "$target/LICENSE")"
+    skill_before="$(readlink "$target/skills/pr-batch")"
+    coordination_before="$(readlink "$target/docs/coordination-backend.md")"
+    metadata_before="$tmp/metadata-$variant.before"
+    cp "$target/.agent-workflows-install.json" "$metadata_before"
+
+    set +e
+    output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode symlink --delivery-mode flat 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -ne 0 ]] || fail "symlink upgrade replaced a newly colliding personal $variant"
+    assert_contains "$output" "Refusing to replace unowned pack document"
+    assert_contains "$output" "$destination"
+    if [[ "$variant" = symlink ]]; then
+      [[ "$(readlink "$destination")" = "$tmp/personal-coordination.md" ]] || \
+        fail "symlink upgrade changed the personal coordination symlink"
+    else
+      grep -qxF 'personal coordination sentinel' "$destination" || \
+        fail "symlink upgrade changed the personal coordination file"
+    fi
+    [[ "$(readlink "$target/workflows")" = "$workflow_before" ]] || \
+      fail "symlink document collision partially changed workflows"
+    [[ "$(readlink "$target/LICENSE")" = "$license_before" ]] || \
+      fail "symlink document collision partially changed LICENSE"
+    [[ "$(readlink "$target/skills/pr-batch")" = "$skill_before" ]] || \
+      fail "symlink document collision partially changed skills"
+    [[ "$(readlink "$target/docs/coordination-backend.md")" = "$coordination_before" ]] || \
+      fail "symlink document collision partially changed an earlier pack document"
+    cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
+      fail "symlink document collision changed install metadata"
+  done
 }
 
 test_repeat_companion_install_blocks_new_current_native_skill_collision() {
@@ -851,7 +4953,7 @@ test_repeat_companion_install_blocks_new_current_native_skill_collision() {
 }
 
 test_repeat_companion_install_blocks_native_skill_removed_from_current_source() {
-  local tmp source target plugin_root metadata_before output status
+  local tmp source target plugin_root metadata_before skill_to_remove output status
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
@@ -867,7 +4969,10 @@ test_repeat_companion_install_blocks_native_skill_removed_from_current_source() 
 
   mkdir -p "$plugin_root/skills/address-review" "$target/skills/address-review"
   cp "$source/skills/address-review/SKILL.md" "$plugin_root/skills/address-review/SKILL.md"
-  rm -rf "$source/skills/address-review"
+  skill_to_remove="$source/skills/address-review"
+  [[ "$skill_to_remove" = "$tmp/source/skills/address-review" && -d "$skill_to_remove" && ! -L "$skill_to_remove" ]] || \
+    fail "refusing to remove unexpected test skill path: $skill_to_remove"
+  rm -r -- "$skill_to_remove"
   git -C "$source" add -u skills/address-review
   git -C "$source" commit --quiet -m "remove address-review skill"
   printf 'flat duplicate\n' > "$target/skills/address-review/SKILL.md"
@@ -946,7 +5051,7 @@ test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots() 
 }
 
 test_invalid_recorded_delivery_mode_fails_before_mutation() {
-  local tmp target output status metadata_before sentinel_before target_paths_before
+  local tmp target output status metadata_before sentinel_before target_paths_before variant
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   mkdir -p "$target"
@@ -966,24 +5071,1701 @@ test_invalid_recorded_delivery_mode_fails_before_mutation() {
   sentinel_before="$(shasum "$target/sentinel.txt")"
   target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
 
+  for variant in omitted explicit; do
+    set +e
+    if [[ "$variant" = omitted ]]; then
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+    else
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+    fi
+    status=$?
+    set -e
+
+    [[ "$status" -eq 64 ]] || fail "invalid recorded delivery mode exited $status on $variant path: $output"
+    assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion."
+    assert_contains "$output" "Restore a valid backup"
+    assert_not_contains "$output" "JSON::ParserError"
+    assert_not_contains "$output" "common.rb"
+    [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+      fail "invalid recorded delivery mode mutated metadata on $variant path"
+    [[ "$sentinel_before" = "$(shasum "$target/sentinel.txt")" ]] || \
+      fail "invalid recorded delivery mode mutated sentinel on $variant path"
+    [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+      fail "invalid recorded delivery mode changed the target tree on $variant path"
+    [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "invalid recorded delivery mode created install lock"
+    [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "invalid recorded delivery mode created staging receipt"
+    [[ ! -e "$target/skills" ]] || fail "invalid recorded delivery mode created a flat skill layout"
+  done
+}
+
+test_schema_invalid_mode_fails_before_managed_mutation() {
+  local tmp target metadata output status metadata_before license_before target_paths_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    value = JSON.parse(File.read(path))
+    value["mode"] = nil
+    File.write(path, JSON.pretty_generate(value) + "\n")
+  ' "$metadata"
+  metadata_before="$(shasum "$metadata")"
+  license_before="$(shasum "$target/LICENSE")"
+  target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "schema-invalid mode exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "schema-invalid mode rewrote install metadata"
+  [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || fail "schema-invalid mode mutated a managed file"
+  [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+    fail "schema-invalid mode changed the target tree"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "schema-invalid mode created install lock"
+}
+
+test_legacy_metadata_with_corrupt_newer_schema_field_fails_before_mutation() {
+  local tmp target metadata output status before paths_before
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  mkdir -p "$target"
+  printf '{"host":"codex","mode":"copy","source":"%s","source_revision":"legacy","managed_skill_copy_fingerprints":"corrupt"}\n' \
+    "$ROOT" > "$metadata"
+  before="$(shasum "$metadata")"; paths_before="$(find "$target" -print | LC_ALL=C sort)"
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  [[ "$status" -eq 65 ]] || fail "corrupt sibling in legacy metadata exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$before" = "$(shasum "$metadata")" ]] || fail "corrupt legacy sibling metadata was rewritten"
+  [[ "$paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || fail "corrupt legacy sibling mutated target"
+}
+
+test_invalid_fingerprint_entry_fails_before_managed_mutation() {
+  local tmp target metadata pristine variant output status metadata_before license_before target_paths_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  pristine="$tmp/pristine-metadata.json"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  cp "$metadata" "$pristine"
+  license_before="$(shasum "$target/LICENSE")"
+
+  for variant in null_digest short_digest nonhex_digest empty_name nested_skill_name traversal_name absolute_doc_name; do
+    cp "$pristine" "$metadata"
+    ruby -rjson -e '
+      path, variant = ARGV
+      value = JSON.parse(File.read(path))
+      skill_fingerprints = value.fetch("managed_skill_copy_fingerprints")
+      doc_fingerprints = value.fetch("managed_pack_doc_copy_fingerprints")
+      key = skill_fingerprints.keys.fetch(0)
+      case variant
+      when "null_digest" then skill_fingerprints[key] = nil
+      when "short_digest" then skill_fingerprints[key] = "abc123"
+      when "nonhex_digest" then skill_fingerprints[key] = "g" * 64
+      when "empty_name" then skill_fingerprints[""] = "a" * 64
+      when "nested_skill_name" then skill_fingerprints["nested/name"] = "a" * 64
+      when "traversal_name" then skill_fingerprints["../outside"] = "a" * 64
+      when "absolute_doc_name" then doc_fingerprints["/outside"] = "a" * 64
+      else abort variant
+      end
+      File.write(path, JSON.pretty_generate(value) + "\n")
+    ' "$metadata" "$variant"
+    metadata_before="$(shasum "$metadata")"
+    target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -eq 65 ]] || fail "invalid fingerprint entry $variant exited $status: $output"
+    assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+    [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "invalid fingerprint entry $variant rewrote install metadata"
+    [[ "$license_before" = "$(shasum "$target/LICENSE")" ]] || fail "invalid fingerprint entry $variant mutated a managed file"
+    [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+      fail "invalid fingerprint entry $variant changed the target tree"
+    [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "invalid fingerprint entry $variant created install lock"
+  done
+}
+
+test_recovery_capture_persistent_descriptor_close_failure_is_not_success() {
+  local tmp target staging receipt metadata injection marker output status quarantine preserved retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-capture-close"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-capture-close.rb"; marker="$tmp/capture-completed"; preserved="$tmp/preserved-quarantine"
+  mkdir -p "$staging/user-owned-skill"; printf 'user\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    File.write(ENV.fetch("QA_RACE_MARKER"), "completed\n") if phase == :after_rename
+  end
+end
+module PersistentCaptureCloseFailure
+  def close(*args)
+    if ARGV.length == 5 && File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(PersistentCaptureCloseFailure)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "capture close uncertainty reported success"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"; assert_file "$metadata"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "capture close uncertainty lost quarantine"
+  assert_contains "$output" "$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$quarantine")"
+  mv "$quarantine" "$preserved"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)" || fail "capture close retry wedged: $retry_output"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_absent_metadata_appearance_during_flat_recovery_preserves_staging() {
+  local tmp target canonical_target staging receipt metadata fake_bin real_mkdir marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-absent-race"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  fake_bin="$tmp/fake-bin"; real_mkdir="$(command -v mkdir)"; marker="$tmp/metadata-appeared"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"; printf 'user\n' > "$staging/user-owned-skill/SKILL.md"; printf '%s\n' "$staging" > "$receipt"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  cat > "$fake_bin/mkdir" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *"$QA_SKILLS_ROOT"* && ! -e "$QA_RACE_MARKER" ]]; then
+  printf '{"delivery_mode":"plugin-companion"}\n' > "$QA_INSTALL_METADATA"
+  : > "$QA_RACE_MARKER"
+fi
+exec "$QA_REAL_MKDIR" "$@"
+SH
+  chmod +x "$fake_bin/mkdir"
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKDIR="$real_mkdir" QA_SKILLS_ROOT="$canonical_target/skills" \
+    QA_INSTALL_METADATA="$canonical_target/.agent-workflows-install.json" QA_RACE_MARKER="$marker" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "appeared metadata allowed absent-state recovery"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "appeared metadata left restored flat skill live"
+  assert_contains "$output" "RECOVERY"
+}
+
+test_cross_directory_probe_open_failure_removes_created_directory() {
+  local tmp target injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-cross-directory-open.rb"; marker="$tmp/open-failed"
+  cat > "$injection" <<'RUBY'
+module MetadataRenameProbeHook
+  def self.call(phase)
+    return unless phase == :after_directory_attestation
+    AtomicMetadataRenameProbe.singleton_class.class_eval do
+      alias_method :qa_original_openat, :openat
+      define_method(:openat) do |fd, name, flags, mode|
+        if name == "metadata-rename-probe-directory" && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+          File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+          Fiddle.last_error = Errno::EMFILE::Errno
+          next -1
+        end
+        qa_original_openat(fd, name, flags, mode)
+      end
+    end
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "cross-directory open failure unexpectedly succeeded"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "cross-directory open failure retained install lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)" || fail "cross-directory open retry wedged: $retry_output"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_newline_recorded_delivery_modes_fail_before_mutation() {
+  local value variant tmp target output status metadata_before target_paths_before
+  for value in '"\n"' '"flat\n"'; do
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    mkdir -p "$target"
+    printf '{"delivery_mode":%s}\n' "$value" > "$target/.agent-workflows-install.json"
+    metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+    target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+
+    for variant in omitted explicit; do
+      set +e
+      if [[ "$variant" = omitted ]]; then
+        output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+      else
+        output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+      fi
+      status=$?
+      set -e
+
+      [[ "$status" -eq 64 ]] || fail "newline recorded delivery mode exited $status on $variant path: $output"
+      assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion"
+      assert_contains "$output" "Restore a valid backup"
+      assert_not_contains "$output" "JSON::ParserError"
+      [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+        fail "newline recorded mode changed metadata on $variant path"
+      [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+        fail "newline recorded mode changed target tree on $variant path"
+      [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "newline recorded mode created install lock"
+      [[ ! -e "$target/skills" ]] || fail "newline recorded mode created flat skills"
+    done
+  done
+}
+
+test_corrupt_install_metadata_fails_closed_with_recovery_guidance() {
+  local tmp target output status metadata_before target_paths_before variant
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target"
+  printf '{"delivery_mode":' > "$target/.agent-workflows-install.json"
+  printf 'preserve me\n' > "$target/sentinel.txt"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+
+  for variant in omitted explicit; do
+    set +e
+    if [[ "$variant" = omitted ]]; then
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+    else
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --delivery-mode flat 2>&1)"
+    fi
+    status=$?
+    set -e
+
+    [[ "$status" -eq 65 ]] || fail "corrupt install metadata exited $status on the $variant delivery-mode path: $output"
+    assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+    assert_contains "$output" "$target/.agent-workflows-install.json"
+    assert_contains "$output" "Restore a valid backup"
+    assert_contains "$output" "new empty target"
+    assert_contains "$output" "--delivery-mode flat|plugin-companion"
+    assert_not_contains "$output" "or remove"
+    [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+      fail "corrupt metadata failure changed install metadata"
+    [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+      fail "corrupt metadata failure changed the target tree"
+    [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "corrupt metadata failure created install lock"
+    [[ ! -e "$target/skills" ]] || fail "corrupt metadata failure created a flat skill layout"
+  done
+}
+
+test_non_object_install_metadata_is_corrupt() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target"
+  printf '[]\n' > "$target/.agent-workflows-install.json"
+
   set +e
   output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
   status=$?
   set -e
 
-  [[ "$status" -eq 64 ]] || fail "invalid recorded delivery mode exited $status: $output"
-  assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion, got: hybrid"
-  assert_not_contains "$output" "JSON::ParserError"
-  assert_not_contains "$output" "common.rb"
-  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
-    fail "invalid recorded delivery mode mutated metadata"
-  [[ "$sentinel_before" = "$(shasum "$target/sentinel.txt")" ]] || \
-    fail "invalid recorded delivery mode mutated sentinel"
+  [[ "$status" -eq 65 ]] || fail "non-object install metadata exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "non-object metadata created install lock"
+  [[ ! -e "$target/skills" ]] || fail "non-object metadata created flat skills"
+}
+
+test_schema_invalid_delivery_mode_fails_before_pending_recovery_mutation() {
+  local variant value tmp target staging receipt output status metadata_before receipt_before target_paths_before
+  for variant in array null empty; do
+    case "$variant" in
+      array) value='["flat"]' ;;
+      null) value=null ;;
+      empty) value='""' ;;
+    esac
+    tmp="$(mktemp -d)"
+    target="$tmp/codex-home"
+    staging="$target/.agent-workflows-flat-migration-repro"
+    receipt="$target/.agent-workflows-migration-staging"
+    mkdir -p "$staging/$variant-owned-skill"
+    printf '%s-owned\n' "$variant" > "$staging/$variant-owned-skill/SKILL.md"
+    printf '{"delivery_mode":%s}\n' "$value" > "$target/.agent-workflows-install.json"
+    printf '%s\n' "$staging" > "$receipt"
+    metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+    receipt_before="$(shasum "$receipt")"
+    target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -eq 65 ]] || fail "schema-invalid $variant delivery mode exited $status: $output"
+    assert_file "$receipt"
+    [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "schema-invalid $variant metadata changed pending receipt"
+    assert_file "$staging/$variant-owned-skill/SKILL.md"
+    [[ ! -e "$target/skills/$variant-owned-skill" ]] || fail "schema-invalid $variant metadata restored staged skill"
+    [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+      fail "schema-invalid $variant metadata changed install metadata"
+    [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+      fail "schema-invalid $variant metadata changed the target tree"
+    [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "schema-invalid $variant metadata created install lock"
+    assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  done
+}
+
+test_recovery_metadata_race_fails_before_pending_recovery_mutation() {
+  local tmp target staging receipt injection counter output status receipt_before target_paths_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/corrupt-after-first-metadata-read.rb"
+  counter="$tmp/metadata-read"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+  cat > "$injection" <<'RUBY'
+require "json"
+module CorruptAfterFirstMetadataRead
+  def parse(source, *args)
+    value = super
+    counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+    unless File.exist?(counter)
+      File.write(counter, "read\n")
+      File.write(ENV.fetch("QA_INSTALL_METADATA"), "{\"delivery_mode\":[\"flat\"]}\n")
+    end
+    value
+  end
+end
+JSON.singleton_class.prepend(CorruptAfterFirstMetadataRead)
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "recovery-time corruption changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "recovery-time corruption restored staged skill"
   [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
-    fail "invalid recorded delivery mode changed the target tree"
-  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "invalid recorded delivery mode created install lock"
-  [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "invalid recorded delivery mode created staging receipt"
-  [[ ! -e "$target/skills" ]] || fail "invalid recorded delivery mode created a flat skill layout"
+    fail "recovery-time corruption changed the target tree"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "recovery-time corruption leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "recovery-time corrupt metadata exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_recovery_metadata_path_race_fails_before_pending_recovery_mutation() {
+  local tmp target staging receipt outside injection counter output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-path-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  outside="$tmp/outside-metadata.json"
+  injection="$tmp/replace-metadata-with-symlink.rb"
+  counter="$tmp/metadata-read"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '{"delivery_mode":"flat"}\n' > "$outside"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  cat > "$injection" <<'RUBY'
+require "json"
+module ReplaceMetadataWithSymlinkAfterFirstRead
+  def parse(source, *args)
+    value = super
+    counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+    unless File.exist?(counter)
+      File.write(counter, "read\n")
+      metadata = ENV.fetch("QA_INSTALL_METADATA")
+      File.unlink(metadata)
+      File.symlink(ENV.fetch("QA_OUTSIDE_METADATA"), metadata)
+    end
+    value
+  end
+end
+JSON.singleton_class.prepend(ReplaceMetadataWithSymlinkAfterFirstRead)
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
+    QA_OUTSIDE_METADATA="$outside" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "path-race corruption changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "path-race corruption restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "path-race corruption leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "recovery-time metadata path race exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_metadata_parser_runtime_failure_is_corrupt() {
+  local tmp target staging receipt injection output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-parser-failure"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/parser-runtime-failure.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  cat > "$injection" <<'RUBY'
+require "json"
+module FailMetadataParser
+  def parse(*)
+    raise "injected metadata parser failure"
+  end
+end
+JSON.singleton_class.prepend(FailMetadataParser)
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "parser failure changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "parser failure restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "parser failure leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "metadata parser runtime failure exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+}
+
+test_metadata_decode_runtime_failure_does_not_bypass_symlink_refusal() {
+  local tmp target injection marker output status metadata_before target_paths_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  injection="$tmp/decode-runtime-failure.rb"
+  marker="$tmp/decode-branch-reached"
+  mkdir -p "$target/bin" "$tmp/unmanaged-doctor"
+  ln -s "$tmp/unmanaged-doctor" "$target/bin/agent_doctor"
+  printf '{"delivery_mode":"flat","mode":"symlink","source":"%s"}\n' "$ROOT" > "$target/.agent-workflows-install.json"
+  printf 'preserve me\n' > "$target/sentinel.txt"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+  target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+  cat > "$injection" <<'RUBY'
+module FailMetadataDecoder
+  def unpack1(format, *)
+    if format == "m0"
+      File.write(ENV.fetch("QA_DECODE_MARKER"), "reached\n")
+      raise "injected metadata decode failure"
+    end
+
+    super
+  end
+end
+String.prepend(FailMetadataDecoder)
+RUBY
+
+  set +e
+  output="$(QA_DECODE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" \
+    --host codex --target "$target" --mode symlink 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || fail "metadata decode runtime failure exited $status: $output"
+  assert_contains "$output" "Refusing unmanaged workflow doctor symlink"
+  assert_not_contains "$output" "injected metadata decode failure"
+  assert_file "$marker"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "decode runtime failure changed install metadata"
+  [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+    fail "decode runtime failure changed the target tree"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "decode runtime failure leaked install lock"
+}
+
+test_metadata_attestation_hashes_opened_inode_without_reopening_path() {
+  local tmp target staging receipt metadata canonical_metadata replacement injection marker fake_bin real_mktemp
+  local quarantine_attempt output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-attestation-path-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  replacement="$tmp/replacement.json"
+  injection="$tmp/replace-path-after-lstat.rb"
+  marker="$tmp/path-replaced-after-lstat"
+  fake_bin="$tmp/fake-bin"
+  real_mktemp="$(command -v mktemp)"
+  quarantine_attempt="$tmp/quarantine-attempted"
+  mkdir -p "$staging/user-owned-skill" "$fake_bin"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
+  printf '[]\n' > "$replacement"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+require "digest"
+class << File
+  alias_method :qa_original_lstat, :lstat
+  def lstat(path)
+    stat = qa_original_lstat(path)
+    if path == ENV.fetch("QA_METADATA_PATH") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+      File.rename(ENV.fetch("QA_REPLACEMENT_PATH"), path)
+    end
+    stat
+  end
+end
+RUBY
+  cat > "$fake_bin/mktemp" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" == *".agent-workflows-install.json.recovery-"* ]]; then
+  : > "$QA_QUARANTINE_ATTEMPT"
+fi
+exec "$QA_REAL_MKTEMP" "$@"
+SH
+  chmod +x "$fake_bin/mktemp"
+
+  set +e
+  output="$(PATH="$fake_bin:$PATH" QA_REAL_MKTEMP="$real_mktemp" QA_QUARANTINE_ATTEMPT="$quarantine_attempt" \
+    QA_METADATA_PATH="$canonical_metadata" QA_REPLACEMENT_PATH="$replacement" QA_RACE_MARKER="$marker" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "metadata pathname replacement exited $status: $output"
+  assert_file "$marker"
+  [[ ! -e "$quarantine_attempt" ]] || fail "mixed-inode attestation advanced to recovery quarantine creation"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "mixed-inode attestation mutated recovery staging"
+}
+
+test_quarantine_replacement_before_backup_copy_does_not_write_outside_target() {
+  local tmp target staging receipt metadata outside injection marker output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-quarantine-symlink-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  outside="$tmp/outside"
+  injection="$tmp/replace-quarantine-before-copy.rb"
+  marker="$tmp/quarantine-replaced"
+  mkdir -p "$staging/user-owned-skill" "$outside"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :after_backup_copy
+    return if File.exist?(ENV.fetch("QA_RACE_MARKER"))
+    quarantine = Dir.glob(File.join(ENV.fetch("QA_TARGET"), ".agent-workflows-install.json.recovery-*")).fetch(0)
+    File.rename(quarantine, quarantine + ".preserved")
+    File.symlink(ENV.fetch("QA_OUTSIDE"), quarantine)
+    File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" QA_OUTSIDE="$outside" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "quarantine replacement exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_file "$outside/SENTINEL"
+  [[ -z "$(find "$outside" -mindepth 1 ! -name SENTINEL -print -quit)" ]] || \
+    fail "quarantine capture wrote outside target"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ -n "$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*.preserved' -print -quit)" ]] || \
+    fail "quarantine replacement lost captured recovery directory"
+}
+
+test_recovery_invalid_string_race_fails_before_pending_recovery_mutation() {
+  local tmp target staging receipt injection counter output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-invalid-string-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/write-invalid-string-after-first-read.rb"
+  counter="$tmp/metadata-read"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  cat > "$injection" <<'RUBY'
+require "json"
+module WriteInvalidStringAfterFirstMetadataRead
+  def parse(source, *args)
+    value = super
+    counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+    unless File.exist?(counter)
+      File.write(counter, "read\n")
+      File.write(ENV.fetch("QA_INSTALL_METADATA"), "{\"delivery_mode\":\"\\n\"}\n")
+    end
+    value
+  end
+end
+JSON.singleton_class.prepend(WriteInvalidStringAfterFirstMetadataRead)
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "invalid-string race changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "invalid-string race restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "invalid-string race leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "recovery-time invalid string race exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_recovery_metadata_delete_race_is_corrupt() {
+  local tmp target staging receipt injection counter output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-delete-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/delete-metadata-after-first-read.rb"
+  counter="$tmp/metadata-read"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  cat > "$injection" <<'RUBY'
+require "json"
+module DeleteMetadataAfterFirstRead
+  def parse(source, *args)
+    value = super
+    counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+    unless File.exist?(counter)
+      File.write(counter, "read\n")
+      File.unlink(ENV.fetch("QA_INSTALL_METADATA"))
+    end
+    value
+  end
+end
+JSON.singleton_class.prepend(DeleteMetadataAfterFirstRead)
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "metadata delete race changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "metadata delete race restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "metadata delete race leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "recovery-time metadata delete race exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_recovery_second_read_overwrite_is_corrupt_before_mutation() {
+  local tmp target staging receipt injection counter output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-second-read-overwrite"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/overwrite-metadata-after-second-read.rb"
+  counter="$tmp/metadata-read-count"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  cat > "$injection" <<'RUBY'
+require "json"
+module OverwriteMetadataAfterSecondRead
+  def parse(source, *args)
+    value = super
+    counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+    count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+    File.write(counter, count)
+    if count == 2
+      File.write(ENV.fetch("QA_INSTALL_METADATA"), "{\"delivery_mode\":[\"flat\"]}\n")
+    end
+    value
+  end
+end
+JSON.singleton_class.prepend(OverwriteMetadataAfterSecondRead)
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "second-read overwrite changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "second-read overwrite restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "second-read overwrite leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "second-read overwrite exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_recovery_second_read_delete_is_corrupt_before_mutation() {
+  local tmp target staging receipt injection counter output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-second-read-delete"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/delete-metadata-after-second-read.rb"
+  counter="$tmp/metadata-read-count"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  cat > "$injection" <<'RUBY'
+require "json"
+module DeleteMetadataAfterSecondRead
+  def parse(source, *args)
+    value = super
+    counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+    count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+    File.write(counter, count)
+    File.unlink(ENV.fetch("QA_INSTALL_METADATA")) if count == 2
+    value
+  end
+end
+JSON.singleton_class.prepend(DeleteMetadataAfterSecondRead)
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$target/.agent-workflows-install.json" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "second-read delete changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "second-read delete restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "second-read delete leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "second-read delete exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_recovery_post_reader_exit_overwrite_is_corrupt_before_mutation() {
+  local tmp target canonical_target staging receipt metadata injection counter decoy output status receipt_before metadata_before quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-post-reader-overwrite"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/overwrite-metadata-after-second-reader-exits.rb"
+  counter="$tmp/metadata-reader-count"
+  decoy="$tmp/replacement-metadata.json"
+  mkdir -p "$staging/user-owned-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '{"delivery_mode":["flat"]}\n' > "$decoy"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  metadata_before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 2 && ARGV.fetch(1) == "delivery_mode"
+  counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+  count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count)
+  if count == 2
+    snapshot = ARGV.fetch(0)
+    at_exit do
+      File.rename(ENV.fetch("QA_REPLACEMENT_METADATA"), snapshot)
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_REPLACEMENT_METADATA="$decoy" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "post-reader overwrite changed pending receipt"
+  assert_file "$metadata"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "post-reader overwrite changed install metadata"
+  [[ ! -e "$decoy" ]] || fail "post-reader overwrite did not execute snapshot replacement"
+  quarantine="$(find "$canonical_target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "post-reader overwrite did not preserve metadata quarantine"
+  assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING: preserved recovery state at $quarantine"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "post-reader overwrite restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "post-reader overwrite leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "post-reader overwrite exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_recovery_post_reader_exit_delete_is_corrupt_before_mutation() {
+  local tmp target staging receipt metadata injection counter output status receipt_before metadata_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-post-reader-delete"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/delete-metadata-after-second-reader-exits.rb"
+  counter="$tmp/metadata-reader-count"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  metadata_before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 2 && ARGV.fetch(1) == "delivery_mode"
+  counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+  count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count)
+  if count == 2
+    snapshot = ARGV.fetch(0)
+    at_exit { File.unlink(snapshot) }
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "post-reader delete changed pending receipt"
+  assert_file "$metadata"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "post-reader delete changed install metadata"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "post-reader delete leaked metadata quarantine"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "post-reader delete restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "post-reader delete leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "post-reader delete exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_cleanup_receipt_replacement_is_preserved_and_named() {
+  local tmp target staging receipt metadata injection replacement output status quarantine cleanup_receipt
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-receipt-binding"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/replace-cleanup-receipt.rb"
+  replacement="$tmp/replacement-receipt"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  printf 'replacement receipt\n' > "$replacement"
+  cat > "$injection" <<'RUBY'
+module RecoveryCleanupHook
+  def self.call(phase, receipt_name)
+    return unless phase == :before_receipt_move
+    receipt = File.join(ENV.fetch("QA_TARGET"), receipt_name)
+    File.rename(receipt, receipt + ".original")
+    File.rename(ENV.fetch("QA_REPLACEMENT_RECEIPT"), receipt)
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET="$target" QA_REPLACEMENT_RECEIPT="$replacement" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "cleanup receipt replacement exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING: preserved recovery state at"
+  assert_file "$target/.agent-workflows-install.json.cleanup-complete-"*.original
+  [[ ! -e "$receipt" ]] || fail "completed recovery left migration receipt"
+  cleanup_receipt="$(find "$target" -maxdepth 2 -type f -name 'cleanup-receipt' -print -quit)"
+  [[ -n "$cleanup_receipt" ]] || fail "cleanup receipt replacement did not preserve replacement"
+  assert_contains "$(cat "$cleanup_receipt")" "replacement receipt"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "cleanup receipt replacement did not preserve holder"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+}
+
+test_recovery_placeholder_replacement_names_preserved_quarantine() {
+  local tmp target canonical_target staging receipt metadata injection counter output status receipt_before metadata_digest quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-placeholder-replacement"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/replace-metadata-placeholder-after-reader-exits.rb"
+  counter="$tmp/metadata-reader-count"
+  mkdir -p "$staging/user-owned-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  metadata_digest="$(shasum "$metadata" | awk '{print $1}')"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 2 && ARGV.fetch(1) == "delivery_mode"
+  counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+  count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count)
+  if count == 2
+    at_exit do
+      original = ENV.fetch("QA_INSTALL_METADATA")
+      File.unlink(original)
+      File.write(original, "attacker replacement\n")
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$metadata" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  quarantine="$(find "$canonical_target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "placeholder replacement did not preserve metadata quarantine: $output"
+  assert_file "$quarantine/metadata"
+  assert_file "$quarantine/original-backup"
+  [[ "$metadata_digest" = "$(shasum "$quarantine/metadata" | awk '{print $1}')" ]] || fail "quarantined metadata changed"
+  [[ "$metadata_digest" = "$(shasum "$quarantine/original-backup" | awk '{print $1}')" ]] || fail "backup metadata changed"
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "placeholder replacement changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "placeholder replacement restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "placeholder replacement leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "placeholder replacement exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$output" "Preserved recovery metadata quarantine $quarantine"
+  assert_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_crashed_recovery_quarantine_is_named_on_next_run() {
+  local tmp target canonical_target staging receipt metadata quarantine canonical_quarantine output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-crash-residue"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  quarantine="$metadata.recovery-A1b2C3"
+  mkdir -p "$staging/user-owned-skill" "$quarantine"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_quarantine="$canonical_target/.agent-workflows-install.json.recovery-A1b2C3"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '{"delivery_mode":"flat"}\n' > "$quarantine/metadata"
+  printf '{"delivery_mode":"flat"}\n' > "$quarantine/original-backup"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "crashed recovery residue exited $status: $output"
+  assert_not_contains "$output" "cannot read valid install metadata"
+  assert_contains "$output" "Preserved recovery metadata quarantine $canonical_quarantine"
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "crash residue changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "crash residue restored staged skill"
+  assert_file "$quarantine/metadata"
+  assert_file "$quarantine/original-backup"
+}
+
+test_unexpected_recovery_residue_is_named_without_blaming_metadata() {
+  local tmp target canonical_target staging receipt metadata residue canonical_residue output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-unexpected-residue"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  residue="$metadata.recovery-unexpected"
+  mkdir -p "$staging/user-owned-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_residue="$canonical_target/.agent-workflows-install.json.recovery-unexpected"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf 'unknown residue\n' > "$residue"
+  printf '%s\n' "$staging" > "$receipt"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "unexpected recovery residue exited $status: $output"
+  assert_contains "$output" "Unexpected recovery residue $canonical_residue blocks recovery"
+  assert_not_contains "$output" "cannot read valid install metadata"
+  assert_file "$metadata"
+  assert_file "$residue"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_corrupt_metadata_with_residue_reports_both_problems() {
+  local tmp target canonical_target metadata residue canonical_residue output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  residue="$metadata.recovery-archived"
+  mkdir -p "$target"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_residue="$canonical_target/.agent-workflows-install.json.recovery-archived"
+  printf 'not json\n' > "$metadata"
+  printf 'archived residue\n' > "$residue"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "corrupt metadata with residue exited $status: $output"
+  assert_contains "$output" "Unexpected recovery residue $canonical_residue blocks recovery"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_contains "$output" "Restore a valid backup"
+  assert_file "$metadata"
+  assert_file "$residue"
+}
+
+test_recovery_cleanup_residue_does_not_wedge_completed_recovery() {
+  local tmp target canonical_target staging later_staging receipt metadata injection counter output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-residue"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/add-quarantine-residue-after-reader-exits.rb"
+  counter="$tmp/metadata-reader-count"
+  mkdir -p "$staging/user-owned-skill"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 2 && ARGV.fetch(1) == "delivery_mode"
+  counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+  count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count)
+  File.write(File.join(File.dirname(ARGV.fetch(0)), "cleanup-residue"), "preserve me\n") if count == 2
+end
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "cleanup-only residue exited $status: $output"
+  [[ ! -e "$receipt" ]] || fail "cleanup-only residue preserved a completed recovery receipt"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+  assert_file "$metadata"
+  quarantine="$(find "$canonical_target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "cleanup-only residue was not preserved"
+  assert_file "$quarantine/cleanup-residue"
+  assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING: preserved $quarantine"
+
+  later_staging="$target/.agent-workflows-flat-migration-after-cleanup-residue"
+  mkdir -p "$later_staging/later-owned-skill"
+  printf 'later user-owned\n' > "$later_staging/later-owned-skill/SKILL.md"
+  printf '%s\n' "$later_staging" > "$receipt"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "cleanup-only residue blocked later recovery with status $status: $output"
+  [[ ! -e "$receipt" ]] || fail "later recovery left its completed receipt"
+  [[ ! -e "$later_staging" ]] || fail "later recovery left its staging directory"
+  assert_file "$target/skills/later-owned-skill/SKILL.md"
+  assert_file "$quarantine/cleanup-residue"
+}
+
+test_recovery_restore_atomically_replaces_placeholder() {
+  local tmp target staging receipt metadata injection observer output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-atomic-restore"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/observe-metadata-rename.rb"
+  observer="$tmp/restore-observer.log"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    if phase == :before_rename
+      File.write(ENV.fetch("QA_OBSERVER_LOG"), "restore-intercepted\n")
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_OBSERVER_LOG="$observer" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "atomic metadata restore exited $status: $output"
+  assert_contains "$(cat "$observer")" "restore-intercepted"
+  [[ ! -e "$receipt" ]] || fail "atomic metadata restore preserved completed receipt"
+  assert_file "$metadata"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+}
+
+test_completed_recovery_restore_ignores_persistent_descriptor_close_failure() {
+  local tmp target staging receipt metadata injection marker output status retry_output
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-completed-close"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-completed-restore-close.rb"
+  marker="$tmp/completed-restore-close-failed"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    $qa_completed_restore_cleanup = true if phase == :before_success_cleanup
+  end
+end
+
+module FailCompletedRecoveryRestoreClose
+  def close(*)
+    if ARGV.length == 7 && $qa_completed_restore_cleanup
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n") unless File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailCompletedRecoveryRestoreClose)
+RUBY
+
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 0 ]] || fail "completed recovery restore close failure exited $status: $output"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  [[ ! -e "$receipt" ]] || fail "completed recovery restore close failure retained receipt"
+  [[ ! -e "$staging" ]] || fail "completed recovery restore close failure retained staging"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "completed recovery restore close failure retained recovery quarantine"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_recovery_restore_directory_race_preserves_backup() {
+  local tmp target staging receipt metadata injection observer output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-restore-directory-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/replace-metadata-with-directory.rb"
+  observer="$tmp/restore-directory-race.log"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    if phase == :before_rename
+      destination = ENV.fetch("QA_INSTALL_METADATA")
+      File.unlink(destination)
+      Dir.mkdir(destination)
+      File.write(File.join(destination, "metadata"), "replacement directory\n")
+      File.write(ENV.fetch("QA_OBSERVER_LOG"), "restore-directory-race\n")
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_OBSERVER_LOG="$observer" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 69 ]] || fail "restore directory race exited $status: $output"
+  assert_contains "$(cat "$observer")" "restore-directory-race"
+  assert_contains "$output" "RECOVERY_FAILED"
+  assert_contains "$output" "RECOVERY_METADATA_RESTORE_FAILED: verified install metadata remains in place"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "restore directory race did not preserve quarantine: $output"
+  assert_file "$quarantine/original-backup/metadata"
+  assert_file "$metadata"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  assert_file "$quarantine/metadata/metadata"
+  [[ ! -e "$quarantine/restore-guard" ]] || fail "verified directory-race rollback retained restore guard"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_recovery_restore_exchange_restores_competing_destination() {
+  local tmp target staging receipt metadata preserved injection marker output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-restore-exchange"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/preserved-recovery-sentinel.json"
+  injection="$tmp/replace-recovery-restore-destination.rb"
+  marker="$tmp/recovery-restore-destination-replaced"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    return unless phase == :before_rename
+    destination = ENV.fetch("QA_INSTALL_METADATA")
+    File.rename(destination, ENV.fetch("QA_PRESERVED_METADATA"))
+    File.write(destination, "competing restore metadata\n")
+    File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_PRESERVED_METADATA="$preserved" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$marker"
+  [[ "$status" -eq 65 ]] || fail "recovery restore destination race exited $status: $output"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  assert_file "$preserved"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "recovery restore destination race did not preserve quarantine"
+  assert_file "$quarantine/original-backup"
+  [[ "$(cat "$quarantine/metadata")" = "competing restore metadata" ]] || \
+    fail "recovery restore did not preserve the competing destination"
+  assert_file "$quarantine/restore-guard"
+}
+
+test_restore_undo_uses_guard_when_displaced_source_changes() {
+  local tmp target staging receipt metadata injection output status quarantine before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-restore-guard-source-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/replace-displaced-restore-source-after-exchange.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    quarantine = Dir.glob("#{ENV.fetch("QA_INSTALL_METADATA")}.recovery-*").fetch(0)
+    source = File.join(quarantine, "metadata")
+    File.rename(source, File.join(quarantine, "metadata-displaced"))
+    File.write(source, "raced displaced restore source\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 69 ]] || fail "changed displaced restore source exited $status: $output"
+  [[ "$before" = "$(shasum "$metadata")" ]] || \
+    fail "restore undo did not restore canonical metadata from restore guard"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "restore source race did not preserve quarantine"
+  [[ ! -e "$quarantine/restore-guard" ]] || fail "verified restore rollback retained restore guard"
+  assert_file "$quarantine/metadata"
+  assert_file "$quarantine/metadata-displaced"
+  assert_file "$receipt"
+}
+
+test_partial_restore_undo_restores_guard_to_target() {
+  local tmp target staging receipt metadata injection output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-partial-restore-undo"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-restore-guard-undo.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    File.write(ENV.fetch("QA_INSTALL_METADATA"), "changed after restore\n")
+    RecoveryRestoreSyscalls.singleton_class.prepend(Module.new do
+      def renameat(*args)
+        @qa_rename_count = (@qa_rename_count || 0) + 1
+        return -1 if @qa_rename_count == 2
+        super
+      end
+    end)
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 65 ]] || fail "partial restore undo exited $status: $output"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "partial restore undo did not preserve quarantine"
+  assert_file "$metadata"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  assert_file "$quarantine/restore-guard"
+  assert_file "$receipt"
+}
+
+test_cleanup_receipt_write_failure_is_pending_without_corrupt_guidance() {
+  local tmp target staging receipt metadata injection output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-receipt-write-failure"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-cleanup-receipt-write.rb"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+cleanup_receipt = ARGV.find do |argument|
+  File.basename(argument).start_with?(".agent-workflows-install.json.cleanup-complete-")
+end
+raise Errno::EIO, cleanup_receipt if cleanup_receipt
+RUBY
+
+  set +e
+  output="$(RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "cleanup receipt write failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "RECOVERY_FAILED"
+  assert_file "$metadata"
+  ruby -rjson -e 'abort unless %w[flat plugin-companion].include?(JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode"))' "$metadata"
+  [[ ! -e "$receipt" ]] || fail "cleanup receipt write failure left migration receipt"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "cleanup receipt write failure did not preserve recovery evidence"
+  assert_file "$quarantine/original-backup"
+}
+
+test_cleanup_receipt_ancestor_rebind_does_not_write_outside_target() {
+  local tmp parent preserved_parent outside_parent target preserved_target outside_target staging receipt metadata
+  local injection marker output status quarantine outside_receipt
+  tmp="$(mktemp -d)"
+  parent="$tmp/home-parent"
+  preserved_parent="$tmp/home-parent-preserved"
+  outside_parent="$tmp/outside-parent"
+  target="$parent/codex-home"
+  preserved_target="$preserved_parent/codex-home"
+  outside_target="$outside_parent/codex-home"
+  staging="$target/.agent-workflows-flat-migration-cleanup-receipt-ancestor-rebind"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/rebind-target-ancestor-before-cleanup-receipt.rb"
+  marker="$tmp/cleanup-receipt-ancestor-rebound"
+  mkdir -p "$staging/user-owned-skill" "$outside_target"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+receipt_argument = ARGV.find do |argument|
+  File.basename(argument).start_with?(".agent-workflows-install.json.cleanup-complete-")
+end
+if receipt_argument && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+  File.rename(ENV.fetch("QA_TARGET_PARENT"), ENV.fetch("QA_PRESERVED_PARENT"))
+  File.symlink(ENV.fetch("QA_OUTSIDE_PARENT"), ENV.fetch("QA_TARGET_PARENT"))
+  File.write(ENV.fetch("QA_RACE_MARKER"), "rebound\n")
+end
+RUBY
+
+  set +e
+  output="$(QA_TARGET_PARENT="$parent" QA_PRESERVED_PARENT="$preserved_parent" \
+    QA_OUTSIDE_PARENT="$outside_parent" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 1 ]] || fail "cleanup receipt ancestor rebind exited $status: $output"
+  assert_file "$marker"
+  assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  outside_receipt="$(find "$outside_target" -maxdepth 1 -type f -name '.agent-workflows-install.json.cleanup-complete-*' -print -quit)"
+  [[ -z "$outside_receipt" ]] || fail "cleanup receipt ancestor rebind wrote outside target: $outside_receipt"
+  quarantine="$(find "$preserved_target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "cleanup receipt ancestor rebind did not preserve recovery evidence: $output"
+  assert_file "$quarantine/original-backup"
+  assert_file "$preserved_target/.agent-workflows-install.json"
+}
+
+test_recovery_restore_destination_symlink_does_not_write_outside_target() {
+  local tmp target staging receipt metadata outside injection observer output status quarantine
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-restore-symlink-race"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  outside="$tmp/outside"
+  injection="$tmp/replace-metadata-before-rename.rb"
+  observer="$tmp/restore-symlink-race.log"
+  mkdir -p "$staging/user-owned-skill" "$outside"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  printf 'outside sentinel\n' > "$outside/SENTINEL"
+  cat > "$injection" <<'RUBY'
+module RecoveryRestoreHook
+  def self.call(phase)
+    if phase == :before_rename && !File.exist?(ENV.fetch("QA_OBSERVER_LOG"))
+      destination = ENV.fetch("QA_INSTALL_METADATA")
+      File.unlink(destination)
+      File.symlink(ENV.fetch("QA_OUTSIDE"), destination)
+      File.write(ENV.fetch("QA_OBSERVER_LOG"), "restore-symlink-race\n")
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_OUTSIDE="$outside" QA_OBSERVER_LOG="$observer" \
+    RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_contains "$(cat "$observer")" "restore-symlink-race"
+  [[ "$status" -eq 1 ]] || fail "bound metadata restore exited $status: $output"
+  assert_contains "$output" "RECOVERY_FAILED: preserved"
+  assert_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING: preserved recovery state at"
+  assert_file "$outside/SENTINEL"
+  [[ -z "$(find "$outside" -mindepth 1 ! -name SENTINEL -print -quit)" ]] || \
+    fail "metadata restoration wrote outside target"
+  assert_file "$metadata"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "flat"' "$metadata"
+  quarantine="$(find "$target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  [[ -n "$quarantine" ]] || fail "bound metadata restore did not preserve quarantine"
+  assert_symlink "$quarantine/payload/metadata"
+  [[ "$(readlink "$quarantine/payload/metadata")" = "$outside" ]] || \
+    fail "bound metadata restore did not preserve replacement symlink"
+  [[ ! -e "$quarantine/restore-guard" ]] || fail "bound metadata restore retained stale restore guard"
+  assert_file "$receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "bound metadata restore mutated recovery target"
+}
+
+test_recovery_keeps_parseable_metadata_visible_during_capture() {
+  local tmp target staging receipt metadata injection observer output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-visible-capture"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/observe-captured-metadata.rb"
+  observer="$tmp/observer.log"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+require "json"
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    JSON.parse(File.read(ENV.fetch("QA_INSTALL_METADATA")))
+    File.write(ENV.fetch("QA_OBSERVER_LOG"), "capture-visible\n")
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" RUBYOPT="-r$injection" \
+    QA_OBSERVER_LOG="$observer" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "visible capture exited $status: $output"
+  assert_file "$observer"
+  assert_contains "$(cat "$observer")" "capture-visible"
+  assert_file "$metadata"
+  [[ ! -e "$receipt" ]] || fail "visible capture preserved completed receipt"
+  assert_file "$target/skills/user-owned-skill/SKILL.md"
+}
+
+test_recovery_unsupported_string_between_reads_preserves_receipt() {
+  local tmp target staging receipt metadata canonical_metadata injection counter output status receipt_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-invalid-between-reads"
+  receipt="$target/.agent-workflows-migration-staging"
+  metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/write-invalid-metadata-after-first-reader-exits.rb"
+  counter="$tmp/metadata-reader-count"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  canonical_metadata="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$metadata")"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  cat > "$injection" <<'RUBY'
+require "json"
+if ARGV.length == 2 && ARGV.fetch(0) == ENV["QA_INSTALL_METADATA"] && ARGV.fetch(1) == "delivery_mode"
+  counter = ENV.fetch("QA_METADATA_READ_COUNTER")
+  count = File.exist?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count)
+  if count == 1
+    at_exit do
+      File.write(ENV.fetch("QA_INSTALL_METADATA"), "{\"delivery_mode\":\"hybrid\"}\n")
+    end
+  end
+end
+RUBY
+
+  set +e
+  output="$(QA_METADATA_READ_COUNTER="$counter" QA_INSTALL_METADATA="$canonical_metadata" \
+    RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "unsupported recovery mode changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "unsupported recovery mode restored staged skill"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "unsupported recovery mode leaked install lock"
+  [[ "$status" -eq 64 ]] || fail "unsupported recovery mode exited $status: $output"
+  assert_contains "$output" "Installed metadata delivery_mode must be flat or plugin-companion."
+  assert_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_nul_recorded_delivery_mode_fails_before_pending_recovery_mutation() {
+  local tmp target staging receipt output status receipt_before metadata_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  staging="$target/.agent-workflows-flat-migration-nul-mode"
+  receipt="$target/.agent-workflows-migration-staging"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '%s\n' '{"delivery_mode":"flat\u0000"}' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  receipt_before="$(shasum "$receipt")"
+  metadata_before="$(shasum "$target/.agent-workflows-install.json")"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  assert_file "$receipt"
+  [[ "$receipt_before" = "$(shasum "$receipt")" ]] || fail "NUL delivery mode changed pending receipt"
+  assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "NUL delivery mode restored staged skill"
+  [[ "$metadata_before" = "$(shasum "$target/.agent-workflows-install.json")" ]] || \
+    fail "NUL delivery mode changed install metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "NUL delivery mode leaked install lock"
+  [[ "$status" -eq 65 ]] || fail "NUL delivery mode exited $status: $output"
+  assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+  assert_not_contains "$output" "Preserved pending recovery receipt"
+}
+
+test_legacy_install_metadata_without_delivery_mode_remains_flat() {
+  local tmp target
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target"
+  ruby -rjson -e '
+    path, source = ARGV
+    File.write(path, JSON.pretty_generate({
+      "host" => "codex",
+      "mode" => "copy",
+      "source" => source,
+      "source_revision" => "0000000000000000000000000000000000000000"
+    }) + "\n")
+  ' "$target/.agent-workflows-install.json" "$ROOT"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+
+  assert_file "$target/skills/pr-batch/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$target/.agent-workflows-install.json"
 }
 
 test_companion_to_flat_refuses_unowned_same_named_skill() {
@@ -1294,11 +7076,15 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/workflows"
   assert_file "$target/docs/personal.md"
   assert_symlink "$target/docs/coordination-backend.md"
+  assert_symlink "$target/docs/execution-provenance-schema.md"
   assert_symlink "$target/docs/review-finding-schema.md"
   assert_symlink "$target/docs/agent-workflows-model-routing.md"
+  assert_symlink "$target/docs/user-facing-coordination.md"
+  assert_symlink "$target/docs/writing-style.md"
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
+  assert_symlink "$target/bin/validate-execution-provenance"
   assert_symlink "$target/bin/agent_doctor"
   assert_symlink "$target/bin/agent-workflows-trust-audit"
   [[ ! -e "$target/bin/agent-stack" ]] || fail "generic workflow install should not symlink stack-specific helper"
@@ -1322,6 +7108,64 @@ test_symlink_mode_replaces_docs_directory_symlink() {
   [[ ! -e "$external_docs/coordination-backend.md" ]] || fail "should not write through pre-existing docs symlink"
   [[ ! -e "$external_docs/review-finding-schema.md" ]] || fail "should not write through pre-existing docs symlink"
   [[ ! -e "$external_docs/agent-workflows-model-routing.md" ]] || fail "should not write through pre-existing docs symlink"
+}
+
+test_install_replaces_docs_directory_symlink_without_following_pack_named_children() {
+  local tmp target external_docs mode
+  tmp="$(mktemp -d)"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-home-$mode"
+    external_docs="$tmp/external-docs-$mode"
+    mkdir -p "$target" "$external_docs"
+    printf 'personal external coordination sentinel\n' > \
+      "$external_docs/user-facing-coordination.md"
+    ln -s "$external_docs" "$target/docs"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" >"$tmp/install-$mode.out"
+
+    [[ -d "$target/docs" && ! -L "$target/docs" ]] || \
+      fail "$mode install did not replace the docs parent symlink"
+    grep -qxF 'personal external coordination sentinel' \
+      "$external_docs/user-facing-coordination.md" || \
+      fail "$mode install changed the external pack-named document"
+    if [[ "$mode" = copy ]]; then
+      [[ -f "$target/docs/user-facing-coordination.md" && \
+         ! -L "$target/docs/user-facing-coordination.md" ]] || \
+        fail "copy install did not create a real coordination document"
+    else
+      assert_symlink "$target/docs/user-facing-coordination.md"
+    fi
+  done
+}
+
+test_install_replaces_solutions_directory_symlink_without_following_pack_named_children() {
+  local tmp target external_solutions solution_name mode
+  tmp="$(mktemp -d)"
+  solution_name="coordination-unknown-state.md"
+
+  for mode in copy symlink; do
+    target="$tmp/codex-home-$mode"
+    external_solutions="$tmp/external-solutions-$mode"
+    mkdir -p "$target/docs" "$external_solutions"
+    printf 'personal external solution sentinel\n' > "$external_solutions/$solution_name"
+    ln -s "$external_solutions" "$target/docs/solutions"
+
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+      --mode "$mode" >"$tmp/install-$mode.out"
+
+    [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || \
+      fail "$mode install did not replace the solutions directory symlink"
+    grep -qxF 'personal external solution sentinel' "$external_solutions/$solution_name" || \
+      fail "$mode install changed the external solution document"
+    if [[ "$mode" = copy ]]; then
+      cmp -s "$target/docs/solutions/$solution_name" "$ROOT/docs/solutions/$solution_name" || \
+        fail "copy install did not install the managed solution document"
+    else
+      assert_symlink "$target/docs/solutions/$solution_name"
+    fi
+  done
 }
 
 test_copy_mode_after_symlink_mode_does_not_delete_source_docs() {
@@ -1748,15 +7592,857 @@ test_upgrade_validates_consumer_root_after_install() {
   assert_contains "$output" "UPGRADE_COMPLETE"
 }
 
+test_metadata_commit_close_failure_after_exchange_preserves_committed_layout() {
+  local tmp target metadata staging receipt injection marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  receipt="$target/.agent-workflows-migration-staging"
+  injection="$tmp/fail-metadata-temp-close.rb"; marker="$tmp/metadata-temp-close-failed"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+module FailMetadataTemporaryClose
+  def close(*)
+    Thread.current[:qa_commit_close_count] = Thread.current.fetch(:qa_commit_close_count, 0) + 1
+    if ARGV.length == 6 && ARGV.fetch(1) == ".agent-workflows-install.json" &&
+       Thread.current[:qa_commit_close_count] == 2 && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailMetadataTemporaryClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode plugin-companion 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 68 ]] || fail "metadata close failure exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_CLEANUP_FAILED"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$(ruby -rjson -e 'puts JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode")' "$metadata")" = "plugin-companion" ]] || \
+    fail "metadata close failure did not retain committed plugin-companion metadata"
+  assert_file "$receipt"
+  IFS= read -r staging < "$receipt"
+  [[ -n "$(find "$staging" -mindepth 1 -print -quit)" ]] || fail "metadata close failure lost staged flat skills"
+  [[ ! -e "$target/skills/pr-batch" ]] || fail "metadata close failure restored flat skills beside plugin metadata"
+}
+
+test_verified_capture_rollback_is_not_reported_as_corrupt() {
+  local tmp target staging receipt metadata injection marker output status metadata_before
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-capture-rollback"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-after-capture-exchange.rb"; marker="$tmp/capture-failed"
+  mkdir -p "$staging/user-owned-skill"
+  printf 'user-owned\n' > "$staging/user-owned-skill/SKILL.md"; printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  printf '%s\n' "$staging" > "$receipt"; metadata_before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :after_rename
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "capture rollback failure unexpectedly succeeded"
+  assert_contains "$output" "RECOVERY_METADATA_CAPTURE_UNAVAILABLE"; assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "verified capture rollback changed metadata"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"
+}
+
+test_verified_metadata_commit_rollback_cleans_artifacts() {
+  local tmp target canonical_target metadata canonical_metadata injection marker ensure_marker tail_marker output status metadata_before retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-post-exchange-metadata-open.rb"; marker="$tmp/post-exchange-open-failed"
+  ensure_marker="$tmp/rollback-ensure-close-failed"; tail_marker="$tmp/rollback-tail-close-failed"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  canonical_metadata="$canonical_target/.agent-workflows-install.json"; metadata_before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 6 && ARGV.fetch(2) == "present"
+  module AtomicMetadataCommitHook
+    def self.call(phase)
+      return unless phase == :after_exchange
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+  end
+  module FailRollbackDescriptorCloses
+    def close(*)
+      opened_stat = stat unless closed?
+      result = super
+      metadata = ENV.fetch("QA_INSTALL_METADATA")
+      named_stat = File.lstat(metadata) rescue nil
+      if File.exist?(ENV.fetch("QA_RACE_MARKER")) && opened_stat&.file? && named_stat&.file? &&
+         opened_stat.dev == named_stat.dev && opened_stat.ino == named_stat.ino &&
+         !File.exist?(ENV.fetch("QA_ENSURE_CLOSE_MARKER"))
+        File.write(ENV.fetch("QA_ENSURE_CLOSE_MARKER"), "failed\n")
+        raise Errno::EIO
+      end
+      if respond_to?(:path) && path == ENV.fetch("QA_TARGET") && File.exist?(ENV.fetch("QA_RACE_MARKER")) &&
+         !File.exist?(ENV.fetch("QA_TAIL_CLOSE_MARKER"))
+        File.write(ENV.fetch("QA_TAIL_CLOSE_MARKER"), "failed\n")
+        raise Errno::EIO
+      end
+      result
+    end
+  end
+  IO.prepend(FailRollbackDescriptorCloses)
+end
+RUBY
+  set +e
+  output="$(QA_TARGET="$canonical_target" QA_INSTALL_METADATA="$canonical_metadata" QA_RACE_MARKER="$marker" \
+    QA_ENSURE_CLOSE_MARKER="$ensure_marker" QA_TAIL_CLOSE_MARKER="$tail_marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; assert_file "$ensure_marker"; assert_file "$tail_marker"
+  [[ "$status" -eq 69 ]] || fail "verified metadata rollback exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_ROLLED_BACK"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING"
+  assert_not_contains "$output" "CORRUPT_INSTALL_METADATA"
+  [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "verified metadata rollback did not restore original"
+  [[ ! -e "$metadata.tmp" ]] || fail "verified metadata rollback left prepared metadata"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "verified metadata rollback left install lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_completed_metadata_commit_tail_close_is_classified_uncertain() {
+  local tmp target canonical_target metadata injection marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-completed-commit-tail-close.rb"; marker="$tmp/completed-tail-close-failed"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  cat > "$injection" <<'RUBY'
+if ARGV.length == 6 && ARGV.fetch(2) == "present"
+  module FailCompletedCommitTailClose
+    def close(*)
+      result = super
+      if respond_to?(:path) && path == ENV.fetch("QA_TARGET") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+        raise Errno::EIO
+      end
+      result
+    end
+  end
+  IO.prepend(FailCompletedCommitTailClose)
+end
+RUBY
+  set +e
+  output="$(QA_TARGET="$canonical_target" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 68 ]] || fail "completed metadata tail close exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_CLEANUP_FAILED"
+  assert_file "$metadata"
+}
+
+test_recovery_move_close_failure_reverses_committed_move() {
+  local tmp target staging receipt injection marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-close-failure"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-moved-source-close.rb"; marker="$tmp/move-close-failed"
+  mkdir -p "$staging/user-owned-skill"; printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailMovedSourceClose
+  def close(*)
+    if ARGV.length == 7 && ARGV.fetch(0).end_with?("/user-owned-skill") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailMovedSourceClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 65 ]] || fail "recovery move close failure exited $status: $output"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "committed move was not reversed after close failure"
+}
+
+test_recovery_cleanup_close_failure_finalizes_deleted_staging() {
+  local tmp target canonical_target staging receipt injection marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-cleanup-close"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-cleanup-target-close.rb"; marker="$tmp/cleanup-close-failed"
+  mkdir -p "$staging/user-owned-skill"; canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"; printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  write_native_scw_state codex "$target"
+  cat > "$injection" <<'RUBY'
+module FailCleanupTargetClose
+  def close(*)
+    if ARGV.length == 2 && ARGV.fetch(0) == ENV.fetch("QA_TARGET") &&
+       ARGV.fetch(1).include?("/.agent-workflows-recovery-cleanup-") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailCleanupTargetClose)
+RUBY
+  set +e
+  output="$(QA_TARGET="$canonical_target" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 0 ]] || fail "committed cleanup close failure exited $status: $output"
+  [[ ! -e "$receipt" ]] || fail "committed cleanup close failure retained receipt"
+  [[ ! -e "$staging" ]] || fail "committed cleanup close failure retained deleted staging"
+}
+
+test_prebind_guard_close_failure_does_not_leak_lock() {
+  local tmp target injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-prebind-guard-close.rb"; marker="$tmp/prebind-close-failed"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  cat > "$injection" <<'RUBY'
+module FailPrebindGuardClose
+  def close(*)
+    if ARGV.length == 4 && ARGV.fetch(1) == ".agent-workflows-install.json" &&
+       ARGV.fetch(2).end_with?("/.agent-workflows-install.lock") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailPrebindGuardClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 0 ]] || fail "prebind guard close failure exited $status: $output"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "prebind guard close failure leaked install lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_metadata_probe_close_failure_cleans_lock_and_allows_retry() {
+  local tmp target injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-probe-close.rb"; marker="$tmp/probe-close-failed"
+  cat > "$injection" <<'RUBY'
+module FailProbeDescriptorClose
+  def close(*)
+    Thread.current[:qa_probe_close_count] = Thread.current.fetch(:qa_probe_close_count, 0) + 1
+    if ARGV.length == 1 && ARGV.fetch(0).end_with?("/.agent-workflows-install.lock") &&
+       Thread.current[:qa_probe_close_count] == 3 && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+IO.prepend(FailProbeDescriptorClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 1 ]] || fail "metadata probe close failure exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "metadata probe close failure leaked install lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_snapshot_creation_does_not_follow_replaced_lock_ancestor() {
+  local tmp target metadata lock moved_lock outside injection marker before output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  lock="$target/.agent-workflows-install.lock"; moved_lock="$target/.agent-workflows-install.lock-moved"
+  outside="$tmp/outside"; injection="$tmp/swap-snapshot-lock.rb"; marker="$tmp/lock-swapped"
+  mkdir -p "$target" "$outside"; chmod 0777 "$target" "$outside"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module MetadataSnapshotHook
+  def self.call(phase)
+    return unless phase == :before_snapshot_create
+    File.rename(ENV.fetch("QA_INSTALL_LOCK"), ENV.fetch("QA_MOVED_LOCK"))
+    File.symlink(ENV.fetch("QA_OUTSIDE"), ENV.fetch("QA_INSTALL_LOCK"))
+    File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_INSTALL_LOCK="$lock" QA_MOVED_LOCK="$moved_lock" QA_OUTSIDE="$outside" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -ne 0 ]] || fail "replaced snapshot lock ancestor unexpectedly succeeded"
+  assert_contains "$output" "METADATA_CLEANUP_PENDING"
+  [[ ! -e "$outside/install-metadata.snapshot" ]] || fail "snapshot creation wrote through replaced lock ancestor"
+  assert_file "$moved_lock/install-metadata.snapshot"
+  [[ "$before" = "$(shasum "$metadata")" ]] || fail "snapshot lock race changed metadata"
+  [[ ! -e "$target/LICENSE" ]] || fail "snapshot lock race mutated managed files"
+  rm "$lock"
+  rm "$moved_lock/install-metadata.snapshot"
+  rmdir "$moved_lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_persistent_completed_snapshot_close_failure_cleans_lock_and_allows_retry() {
+  local tmp target metadata injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-snapshot-close.rb"; marker="$tmp/snapshot-close-failed"
+  mkdir -p "$target"; printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  cat > "$injection" <<'RUBY'
+module MetadataSnapshotHook
+  def self.call(phase)
+    $qa_snapshot_fsynced = true if phase == :after_snapshot_fsync
+  end
+end
+module FailCompletedSnapshotClose
+  class << self; attr_accessor :snapshot_id; end
+  def close(*)
+    if ARGV.length == 4 && $qa_snapshot_fsynced && !closed? && stat.file?
+      FailCompletedSnapshotClose.snapshot_id ||= object_id
+      if object_id == FailCompletedSnapshotClose.snapshot_id
+        File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n") unless File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        raise Errno::EIO
+      end
+    end
+    super
+  end
+end
+IO.prepend(FailCompletedSnapshotClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 0 ]] || fail "completed snapshot close failure exited $status: $output"
+  assert_not_contains "$output" "METADATA_CLEANUP_PENDING"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "completed snapshot close failure retained install lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_persistent_recovery_holder_close_failure_removes_committed_empty_holder() {
+  local tmp target staging receipt injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-holder-close"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-recovery-holder-close.rb"; marker="$tmp/holder-close-failed"
+  mkdir -p "$staging/user-owned-skill"; printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailRecoveryHolderClose
+  class << self
+    attr_accessor :holder_id
+  end
+
+  def close(*)
+    if ARGV.length == 6 && ARGV.fetch(1).start_with?(".agent-workflows-install.json.recovery-") &&
+       !closed? && stat.directory?
+      FailRecoveryHolderClose.holder_id ||= object_id
+      if object_id == FailRecoveryHolderClose.holder_id
+        File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n") unless File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        raise Errno::EIO
+      end
+    end
+    super
+  end
+end
+IO.prepend(FailRecoveryHolderClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 0 ]] || fail "recovery holder close failure exited $status: $output"
+  assert_not_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  [[ ! -e "$receipt" ]] || fail "recovery holder close failure retained migration receipt"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "recovery holder close failure retained holder"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.cleanup-complete-*' -print -quit)" ]] || \
+    fail "recovery holder close failure retained completion receipt"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_persistent_recovery_payload_close_failure_preserves_committed_cleanup() {
+  local tmp target staging receipt injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-payload-close"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-recovery-payload-close.rb"; marker="$tmp/payload-close-failed"
+  mkdir -p "$staging/user-owned-skill"; printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailRecoveryPayloadClose
+  class << self
+    attr_accessor :payload_id
+  end
+
+  def close(*)
+    if ARGV.length == 6 && ARGV.fetch(1).start_with?(".agent-workflows-install.json.recovery-") &&
+       !closed? && stat.file?
+      FailRecoveryPayloadClose.payload_id ||= object_id
+      if object_id == FailRecoveryPayloadClose.payload_id
+        File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n") unless File.exist?(ENV.fetch("QA_RACE_MARKER"))
+        raise Errno::EIO
+      end
+    end
+    super
+  end
+end
+IO.prepend(FailRecoveryPayloadClose)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"
+  [[ "$status" -eq 0 ]] || fail "recovery payload close failure exited $status: $output"
+  assert_not_contains "$output" "RECOVERY_METADATA_CLEANUP_PENDING"
+  [[ ! -e "$receipt" ]] || fail "recovery payload close failure retained migration receipt"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "recovery payload close failure retained holder"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.cleanup-complete-*' -print -quit)" ]] || \
+    fail "recovery payload close failure retained completion receipt"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_recovery_capture_temporary_creation_stays_in_held_quarantine() {
+  local tmp target staging receipt metadata outside moved injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-temp-parent"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  outside="$tmp/outside"; moved="$target/.agent-workflows-install.json.recovery-moved"
+  injection="$tmp/swap-quarantine-before-temp.rb"; marker="$tmp/quarantine-swapped"
+  mkdir -p "$staging/user-owned-skill" "$outside"; printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCaptureHook
+  def self.call(phase)
+    return unless phase == :before_temporary_create
+    quarantine = Dir.glob("#{ENV.fetch("QA_INSTALL_METADATA")}.recovery-*").fetch(0)
+    File.rename(quarantine, ENV.fetch("QA_MOVED_QUARANTINE"))
+    File.symlink(ENV.fetch("QA_OUTSIDE"), quarantine)
+    File.write(ENV.fetch("QA_RACE_MARKER"), "swapped\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_INSTALL_METADATA="$metadata" QA_MOVED_QUARANTINE="$moved" QA_OUTSIDE="$outside" \
+    QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "replaced quarantine path unexpectedly succeeded"
+  [[ -z "$(find "$outside" -mindepth 1 -print -quit)" ]] || fail "recovery temp creation wrote through replaced quarantine ancestor"
+  [[ -n "$(find "$moved" -type f -name 'agent-workflows-metadata-*.tmp' -print -quit)" ]] || fail "held quarantine did not preserve temporary evidence"
+  assert_file "$receipt"; assert_file "$metadata"
+  rm "$(find "$target" -maxdepth 1 -type l -name '.agent-workflows-install.json.recovery-*' -print -quit)"
+  find "$moved" -mindepth 1 -maxdepth 1 -type f -delete
+  rmdir "$moved"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_committed_recovery_cleanup_mode_restore_failure_does_not_wedge_receipt() {
+  local tmp target canonical_target staging receipt injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-mode-close"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-target-mode-restore.rb"; marker="$tmp/mode-restore-failed"
+  mkdir -p "$staging/old-flat-skill"; write_native_scw_state codex "$target"; chmod 0777 "$target"
+  canonical_target="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'old\n' > "$staging/old-flat-skill/SKILL.md"; printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailCommittedCleanupModeRestore
+  def chmod(mode)
+    if ARGV.length == 2 && stat.directory? && (mode & 0o022) != 0
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+File.prepend(FailCommittedCleanupModeRestore)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "cleanup mode restore failure unexpectedly succeeded"
+  assert_contains "$output" "RECOVERY_CLEANUP_REMOVAL_INCOMPLETE: restored receipted recovery staging at $canonical_target/${staging##*/}"
+  assert_file "$receipt"; assert_file "$staging/old-flat-skill/SKILL.md"
+  [[ "$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0o7777' "$target")" = "755" ]] || \
+    fail "cleanup mode restore failure left unexpected target mode"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+  [[ ! -e "$receipt" && ! -e "$staging" ]] || fail "cleanup mode restore retry retained recovery state"
+}
+
+test_post_deletion_target_mode_restore_failure_finalizes_recovery_receipt() {
+  local tmp target staging receipt injection marker output status retry_output mode
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-post-delete-mode"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-exact-mode-after-delete.rb"; marker="$tmp/exact-mode-failed"
+  mkdir -p "$staging/old-flat-skill"; write_native_scw_state codex "$target"; chmod 0777 "$target"
+  printf 'old\n' > "$staging/old-flat-skill/SKILL.md"; printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module FailExactModeAfterDeletion
+  def chmod(mode)
+    if ARGV.length == 2 && stat.directory? && mode == 0o777
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    super
+  end
+end
+File.prepend(FailExactModeAfterDeletion)
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 70 ]] || fail "post-deletion mode restore failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_TARGET_MODE_RESTORE_PENDING"
+  assert_contains "$output" "$target"
+  assert_contains "$output" "chmod 0777"
+  assert_not_contains "$output" "preserved $receipt"
+  [[ ! -e "$receipt" && ! -e "$staging" ]] || fail "post-deletion mode restore failure retained nonexistent recovery state"
+  mode="$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0o7777' "$target")"
+  [[ "$mode" = "1777" ]] || fail "post-deletion mode restore failure left unexpected target mode $mode"
+  chmod 0777 "$target"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_default_staging_rollback_reverses_partial_moves() {
+  local tmp target injection marker counter output status receipt staging first_moved competing
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/block-second-default-rollback.rb"; marker="$tmp/rollback-blocked"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  write_native_scw_state codex "$target"; counter="$tmp/check-count"
+  cat > "$injection" <<'RUBY'
+require "fileutils"
+require "json"
+if ARGV.first == "check" && ENV["QA_CHECK_COUNTER"]
+  counter = ENV.fetch("QA_CHECK_COUNTER")
+  count = File.file?(counter) ? File.read(counter).to_i + 1 : 1
+  File.write(counter, count.to_s)
+  if count == 3
+    target = ARGV[ARGV.index("--target") + 1]
+    raced = File.join(target, "skills/final-raced-child")
+    FileUtils.mkdir_p(raced)
+    File.write(File.join(raced, "SKILL.md"), "raced\n")
+  end
+end
+module RecoveryMoveHook
+  def self.call(phase, source_parent, source_name, destination_parent, _destination_name)
+    return unless phase == :after_rename_before_verify
+    return unless File.basename(source_parent).start_with?(".agent-workflows-flat-migration-")
+    return unless File.basename(destination_parent) == "skills"
+    return if File.exist?(ENV.fetch("QA_RACE_MARKER"))
+    next_name = Dir.children(source_parent).sort.fetch(0)
+    competing = File.join(destination_parent, next_name)
+    Dir.mkdir(competing)
+    File.write(File.join(competing, "FOREIGN.md"), "foreign\n")
+    File.write(ENV.fetch("QA_RACE_MARKER"), "#{source_name}|#{next_name}\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" QA_CHECK_COUNTER="$counter" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "partial default staging rollback unexpectedly succeeded"
+  IFS='|' read -r first_moved competing < "$marker"
+  receipt="$target/.agent-workflows-migration-staging"; assert_file "$receipt"; IFS= read -r staging < "$receipt"
+  assert_file "$staging/$first_moved/SKILL.md"
+  assert_file "$target/skills/$competing/FOREIGN.md"
+  [[ ! -e "$target/skills/$first_moved" ]] || fail "default rollback left its first moved entry live"
+  assert_contains "$output" "ROLLBACK_FAILED"
+}
+
+test_cleanup_receipt_rechecks_replaced_residue_before_acceptance() {
+  local tmp target canonical_target staging migration_receipt residue preserved receipt injection marker output status identity
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; residue="$target/.agent-workflows-install.json.recovery-ReceiptRace1"
+  staging="$target/.agent-workflows-flat-migration-receipt-race"; migration_receipt="$target/.agent-workflows-migration-staging"
+  preserved="$target/.agent-workflows-install.json.recovery-preserved"; receipt="$target/.agent-workflows-install.json.cleanup-complete-ReceiptRace1"
+  injection="$tmp/replace-recovery-residue-final-window.rb"; marker="$tmp/residue-replaced"
+  mkdir -p "$residue" "$staging/user-owned-skill"
+  canonical_target="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$target")"
+  printf 'user\n' > "$staging/user-owned-skill/SKILL.md"; printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$migration_receipt"
+  identity="$(ruby -e 's=File.stat(ARGV.fetch(0)); print "#{s.dev}:#{s.ino}"' "$residue")"; printf '%s' "$identity" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCleanupReceiptHook
+  def self.call(phase, residue)
+    return unless phase == :before_final_residue_check
+    File.rename(residue, ENV.fetch("QA_PRESERVED_RESIDUE"))
+    Dir.mkdir(residue)
+    File.write(File.join(residue, "metadata"), "replacement\n")
+    File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+  end
+end
+RUBY
+  set +e
+  output="$(QA_PRESERVED_RESIDUE="$preserved" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "replaced cleanup residue was accepted"
+  assert_contains "$output" "Preserved recovery metadata quarantine $canonical_target/${residue##*/} blocks automatic recovery."
+  assert_file "$residue/metadata"; [[ -d "$preserved" ]] || fail "original cleanup residue was not preserved"
+}
+
+test_recovery_capture_target_fifo_race_fails_without_hanging() {
+  local tmp target canonical_target staging receipt metadata preserved injection marker output_file output status pid completed
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-target-fifo"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  preserved="$tmp/codex-home-preserved"; injection="$tmp/replace-target-with-fifo.rb"; marker="$tmp/target-replaced"
+  output_file="$tmp/installer-output"
+  mkdir -p "$staging/user-owned-skill"; printf 'staged\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"
+  canonical_target="$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$target")"
+  cat > "$injection" <<'RUBY'
+require "fiddle/import"
+module RecoveryTargetFifo
+  extend Fiddle::Importer
+  dlload Fiddle.dlopen(nil)
+  extern "int mkfifo(const char *, unsigned int)"
+end
+class << File
+  alias_method :qa_original_open, :open
+  def open(path, *args, **kwargs, &block)
+    if ARGV.length == 5 && path == ENV.fetch("QA_TARGET") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.rename(path, ENV.fetch("QA_PRESERVED_TARGET"))
+      raise SystemCallError.new("mkfifo", Fiddle.last_error) if RecoveryTargetFifo.mkfifo(path, 0o600) == -1
+      File.write(ENV.fetch("QA_RACE_MARKER"), "replaced\n")
+    end
+    qa_original_open(path, *args, **kwargs, &block)
+  end
+end
+RUBY
+
+  set +e
+  QA_TARGET="$canonical_target" QA_PRESERVED_TARGET="$preserved" QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" \
+    "$ROOT/bin/install-agent-workflows" --host codex --target "$target" > "$output_file" 2>&1 &
+  pid=$!
+  completed=false
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$pid" 2>/dev/null; then completed=true; break; fi
+    sleep 0.1
+  done
+  if [[ "$completed" != true ]]; then
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    set -e
+    fail "recovery capture blocked while opening a raced target FIFO"
+  fi
+  wait "$pid"; status=$?
+  set -e
+  output="$(cat "$output_file")"
+
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "recovery target FIFO race unexpectedly succeeded"
+  [[ -p "$canonical_target" ]] || fail "recovery target FIFO race did not retain the raced target pathname"
+  assert_file "$preserved/.agent-workflows-install.json"
+  assert_file "$preserved/.agent-workflows-migration-staging"
+  rm "$canonical_target"; mv "$preserved" "$canonical_target"
+  find "$canonical_target" -maxdepth 1 -type d -name '.agent-workflows-install.json.recovery-*' -empty -exec rmdir {} \;
+  [[ -d "$canonical_target/.agent-workflows-install.lock" ]] || fail "recovery target FIFO race lost retained install lock"
+  [[ -z "$(find "$canonical_target/.agent-workflows-install.lock" -mindepth 1 -print -quit)" ]] || \
+    fail "recovery target FIFO race retained a nonempty install lock"
+  rmdir "$canonical_target/.agent-workflows-install.lock"
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$output" "Installed ShakaCode agent workflows"
+}
+
+test_post_deletion_verification_failure_finalizes_recovery_receipt() {
+  local tmp target staging receipt injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-post-delete-verify"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-post-delete-verification.rb"; marker="$tmp/verify-failed"
+  mkdir -p "$staging/old-flat-skill"; write_native_scw_state codex "$target"; chmod 0777 "$target"
+  printf 'old\n' > "$staging/old-flat-skill/SKILL.md"; printf '{"delivery_mode":"plugin-companion"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCleanupRootHook
+  def self.call(phase)
+    return unless phase == :after_deletion_mode_restore
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 70 ]] || fail "post-deletion verification failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_TARGET_MODE_RESTORE_PENDING"
+  assert_contains "$output" "$target"
+  [[ ! -e "$receipt" && ! -e "$staging" ]] || fail "post-deletion verification failure retained committed recovery state"
+  [[ "$(ruby -e 'printf "%o", File.stat(ARGV.fetch(0)).mode & 0o7777' "$target")" = "777" ]] || \
+    fail "post-deletion verification failure did not restore target mode"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_completed_recovery_metadata_cleanup_mode_failure_has_no_stale_pending_path() {
+  local tmp target staging receipt injection marker output status
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-metadata-mode"
+  receipt="$target/.agent-workflows-migration-staging"; injection="$tmp/fail-metadata-cleanup-mode.rb"; marker="$tmp/mode-failed"
+  mkdir -p "$staging/user-owned-skill"; chmod 0777 "$target"
+  printf 'user\n' > "$staging/user-owned-skill/SKILL.md"; printf '{"delivery_mode":"flat"}\n' > "$target/.agent-workflows-install.json"
+  printf '%s\n' "$staging" > "$receipt"
+  cat > "$injection" <<'RUBY'
+module RecoveryCleanupHook
+  def self.call(phase, _name)
+    return unless phase == :before_target_mode_restore
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  assert_file "$marker"; [[ "$status" -eq 0 ]] || fail "committed metadata cleanup mode failure exited $status: $output"
+  assert_contains "$output" "RECOVERY_TARGET_MODE_RESTORE_PENDING"
+  assert_not_contains "$output" "preserved recovery state at"
+  [[ -z "$(find "$target" -maxdepth 1 -name '.agent-workflows-install.json.recovery-*' -print -quit)" ]] || \
+    fail "committed metadata cleanup mode failure retained quarantine"
+}
+
+test_cross_directory_exchange_capability_failure_stops_before_recovery_mutation() {
+  local tmp target staging receipt metadata injection marker output status before
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; staging="$target/.agent-workflows-flat-migration-cross-probe"
+  receipt="$target/.agent-workflows-migration-staging"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-cross-directory-probe.rb"; marker="$tmp/cross-probe-failed"
+  mkdir -p "$staging/user-owned-skill"; printf 'user\n' > "$staging/user-owned-skill/SKILL.md"
+  printf '{"delivery_mode":"flat"}\n' > "$metadata"; printf '%s\n' "$staging" > "$receipt"; before="$(shasum "$metadata")"
+  cat > "$injection" <<'RUBY'
+module MetadataRenameProbeHook
+  def self.call(phase)
+    return unless phase == :before_cross_directory_exchange
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::ENOTSUP
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -eq 1 ]] || fail "cross-directory capability failure exited $status: $output"
+  assert_contains "$output" "METADATA_COMMIT_UNAVAILABLE"
+  [[ "$before" = "$(shasum "$metadata")" ]] || fail "cross-directory capability failure changed metadata"
+  assert_file "$receipt"; assert_file "$staging/user-owned-skill/SKILL.md"
+  [[ ! -e "$target/skills/user-owned-skill" ]] || fail "cross-directory capability failure mutated recovery state"
+}
+
+test_partial_snapshot_write_failure_cleans_lock_and_allows_retry() {
+  local tmp target metadata injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; metadata="$target/.agent-workflows-install.json"
+  injection="$tmp/fail-snapshot-write.rb"; marker="$tmp/snapshot-write-failed"
+  mkdir -p "$target"; printf '{"delivery_mode":"flat"}\n' > "$metadata"
+  cat > "$injection" <<'RUBY'
+module MetadataSnapshotHook
+  def self.call(phase)
+    return unless phase == :after_snapshot_create && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "partial snapshot failure unexpectedly succeeded"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || \
+    fail "partial snapshot failure retained install lock: $(find "$target/.agent-workflows-install.lock" -maxdepth 1 -print)"
+  retry_output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_partial_prepared_metadata_write_failure_cleans_tmp_and_allows_retry() {
+  local tmp target injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-prepared-write.rb"; marker="$tmp/prepared-write-failed"
+  cat > "$injection" <<'RUBY'
+module PreparedMetadataHook
+  def self.call(phase)
+    return unless phase == :after_create && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+    File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+    raise Errno::EIO
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "partial prepared metadata failure unexpectedly succeeded"
+  [[ ! -e "$target/.agent-workflows-install.json.tmp" ]] || fail "partial prepared metadata failure retained tmp"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "partial prepared metadata failure retained install lock"
+  retry_output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
+test_install_lock_identity_failure_removes_empty_lock_and_allows_retry() {
+  local tmp target injection marker output status retry_output
+  tmp="$(mktemp -d)"; target="$tmp/codex-home"; injection="$tmp/fail-lock-identity-once.rb"; marker="$tmp/identity-failed"
+  cat > "$injection" <<'RUBY'
+class << File
+  alias_method :qa_original_lstat, :lstat
+  def lstat(path)
+    if ARGV.length == 1 && path.end_with?("/.agent-workflows-install.lock") && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+      File.write(ENV.fetch("QA_RACE_MARKER"), "failed\n")
+      raise Errno::EIO
+    end
+    qa_original_lstat(path)
+  end
+end
+RUBY
+  set +e
+  output="$(QA_RACE_MARKER="$marker" RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"; status=$?
+  set -e
+  assert_file "$marker"; [[ "$status" -ne 0 ]] || fail "lock identity failure unexpectedly succeeded"
+  assert_contains "$output" "INSTALL_LOCK_IDENTITY_FAILED"
+  [[ ! -e "$target/.agent-workflows-install.lock" ]] || fail "lock identity failure retained empty lock"
+  retry_output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  assert_contains "$retry_output" "Installed ShakaCode agent workflows"
+}
+
 main() {
   TEST_SOURCE_ROOT="$(mktemp -d)"
   new_source_repo "$TEST_SOURCE_ROOT"
   ROOT="$TEST_SOURCE_ROOT"
 
   local tests=(
+    test_metadata_commit_close_failure_after_exchange_preserves_committed_layout
+    test_verified_capture_rollback_is_not_reported_as_corrupt
+    test_verified_metadata_commit_rollback_cleans_artifacts
+    test_completed_metadata_commit_tail_close_is_classified_uncertain
+    test_recovery_move_close_failure_reverses_committed_move
+    test_recovery_cleanup_close_failure_finalizes_deleted_staging
+    test_prebind_guard_close_failure_does_not_leak_lock
+    test_metadata_probe_close_failure_cleans_lock_and_allows_retry
+    test_snapshot_creation_does_not_follow_replaced_lock_ancestor
+    test_persistent_completed_snapshot_close_failure_cleans_lock_and_allows_retry
+    test_persistent_recovery_holder_close_failure_removes_committed_empty_holder
+    test_persistent_recovery_payload_close_failure_preserves_committed_cleanup
+    test_recovery_capture_temporary_creation_stays_in_held_quarantine
+    test_committed_recovery_cleanup_mode_restore_failure_does_not_wedge_receipt
+    test_post_deletion_target_mode_restore_failure_finalizes_recovery_receipt
+    test_default_staging_rollback_reverses_partial_moves
+    test_cleanup_receipt_rechecks_replaced_residue_before_acceptance
+    test_recovery_capture_target_fifo_race_fails_without_hanging
+    test_post_deletion_verification_failure_finalizes_recovery_receipt
+    test_completed_recovery_metadata_cleanup_mode_failure_has_no_stale_pending_path
+    test_cross_directory_exchange_capability_failure_stops_before_recovery_mutation
+    test_partial_snapshot_write_failure_cleans_lock_and_allows_retry
+    test_partial_prepared_metadata_write_failure_cleans_tmp_and_allows_retry
+    test_install_lock_identity_failure_removes_empty_lock_and_allows_retry
     test_delivery_state_helper_unit_suite
     test_native_plugin_plus_default_flat_install_fails_before_mutation
+    test_existing_symlink_target_is_canonicalized_before_install
+    test_auto_host_classifies_configured_home_symlink_aliases
+    test_auto_host_ignores_invalid_unrelated_configured_home
+    test_auto_host_skips_unresolved_configured_home_equality_marker
+    test_invalid_explicit_target_diagnostics_preserve_exact_path
     test_plugin_companion_installs_non_skill_assets_and_records_mode
+    test_third_party_notices_are_installed_for_every_delivery_mode
+    test_third_party_notices_copy_upgrade_uses_fingerprint_without_git_history
+    test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass
     test_metadata_temp_failure_preserves_flat_tree_and_prior_mode
@@ -1766,16 +8452,142 @@ main() {
     test_failed_partial_rollback_preserves_receipt_for_retry
     test_recovery_normalization_failure_releases_install_lock
     test_crash_receipt_recovers_flat_staging_before_new_install
+    test_first_install_crash_with_absent_metadata_recovers_as_flat
+    test_metadata_appearing_before_lock_is_not_treated_as_absent_recovery
+    test_metadata_disappearing_before_lock_is_not_treated_as_still_present
+    test_metadata_change_after_locked_preflight_fails_before_managed_file_mutation
+    test_implicit_delivery_mode_change_before_lock_fails_closed
+    test_uncertain_metadata_commit_preserves_migration_staging_and_receipt
+    test_present_metadata_deleted_after_binding_reports_backup_recovery_guidance
+    test_bound_metadata_change_cannot_grant_symlink_ownership
+    test_bound_absent_metadata_short_circuits_snapshot_read_to_key_absent
+    test_metadata_commit_rejects_destination_directory_race
+    test_metadata_commit_reverses_absent_install_after_post_rename_failure
+    test_metadata_commit_rolls_back_failed_present_compare_and_swap
+    test_metadata_commit_restores_from_prebound_guard_when_displaced_tmp_changes
+    test_metadata_commit_preserves_both_names_when_present_rollback_fails
+    test_metadata_commit_does_not_unlink_replaced_attested_old_destination
+    test_metadata_commit_rejects_replaced_prepared_file
+    test_metadata_commit_capability_failure_stops_before_managed_mutation
+    test_metadata_actual_source_prebind_failure_stops_before_managed_mutation
+    test_metadata_partial_prebind_failure_cleans_guard_and_allows_retry
+    test_metadata_prebind_cleanup_preserves_replacement_guard
+    test_normal_guard_cleanup_preserves_post_attestation_replacement
+    test_successful_install_reports_retained_lock_cleanup_pending
+    test_successful_install_reports_private_lock_after_post_detach_failure
+    test_metadata_commit_link_capability_failure_stops_before_managed_mutation
+    test_transient_metadata_probe_cleanup_failure_allows_install
+    test_metadata_probe_creation_does_not_follow_replaced_lock_ancestor
+    test_atomic_rename_capability_failure_stops_before_recovery_mutation
     test_crash_receipt_cleans_committed_companion_quarantine_without_restoring_flat
     test_flat_crash_recovery_rejects_symlink_staging_without_touching_outside_data
     test_flat_crash_recovery_rejects_symlink_skills_root_before_move
     test_companion_crash_cleanup_rejects_symlink_staging_without_touching_outside_data
     test_install_lock_blocks_concurrent_migration_before_mutation
+    test_recovery_restore_holds_install_lock_against_retry
+    test_recovery_metadata_change_during_rollback_preserves_staging_and_tree
+    test_recovery_metadata_change_during_companion_cleanup_preserves_staging
+    test_recovery_staging_replacement_during_rollback_preserves_artifacts
+    test_recovery_staging_replacement_during_companion_cleanup_preserves_artifacts
+    test_recovery_staging_disappearing_after_identity_capture_fails_closed
+    test_recovery_skills_root_replacement_during_reversal_preserves_outside_data
+    test_recovery_destination_appearing_at_move_is_not_replaced
+    test_flat_crash_recovery_restores_staged_symlink_skill
+    test_pending_recovery_accepts_prior_target_symlink_staging_receipt
+    test_recovery_source_replacement_after_inventory_is_not_moved
+    test_recovery_identity_failure_reverses_earlier_moves
+    test_recovery_post_move_verification_failure_reverses_committed_move
+    test_recovery_post_move_open_failure_reverses_committed_move
+    test_companion_cleanup_post_move_replacement_has_named_retry_failure
+    test_companion_cleanup_post_move_exception_restores_receipted_staging
+    test_companion_cleanup_root_replacement_cannot_move_staging_outside_target
+    test_companion_cleanup_rejects_unsafe_root_replacement_before_staging_move
+    test_companion_cleanup_root_swap_during_deletion_preserves_all_entries
+    test_missing_metadata_backup_reports_restore_failure_without_corrupt_guidance
+    test_transient_metadata_restore_failure_preserves_receipt_after_reversal
+    test_mid_rollback_backup_change_does_not_blame_intact_metadata
+    test_companion_cleanup_rejects_mktemp_path_outside_target
+    test_companion_cleanup_rejects_symlinked_cleanup_root
+    test_companion_cleanup_supports_world_writable_target
+    test_recovery_hardlink_unavailable_is_named_without_blaming_metadata
+    test_recovery_capture_supports_system_ruby_2_6
+    test_capture_runtime_load_failure_removes_empty_quarantine
+    test_capture_failure_reports_private_quarantine_after_cleanup_detach
+    test_capture_binding_change_reports_private_quarantine_after_cleanup_detach
+    test_capture_failure_after_sentinel_install_restores_original_metadata
+    test_capture_undo_uses_original_guard_when_displaced_sentinel_changes
+    test_recovery_capture_exchange_restores_competing_destination
+    test_recovery_partial_backup_copy_failure_preserves_quarantine
+    test_recovery_capture_cleanup_preserves_replaced_created_artifact
+    test_recovery_capture_post_attestation_cleanup_preserves_replacement
+    test_commit_post_attestation_cleanup_preserves_tmp_replacement
+    test_restore_post_attestation_cleanup_preserves_source_replacement
+    test_restore_cleanup_failure_does_not_reexchange_verified_content
+    test_late_capture_failure_reports_corrupt_without_stale_quarantine_guidance
+    test_late_capture_restore_failure_does_not_blame_intact_metadata
+    test_snapshot_only_corruption_restores_before_reporting
+    test_nul_in_recorded_source_is_corrupt_before_symlink_adoption
+    test_preexisting_metadata_tmp_is_preserved_with_actionable_failure
     test_repeat_install_replays_recorded_companion_delivery_mode
+    test_repeat_flat_install_accepts_installer_created_uncommitted_skill
+    test_repeat_flat_copy_install_blocks_modified_installer_created_uncommitted_skill
+    test_repeat_flat_copy_install_blocks_modified_recorded_targets
+    test_repeat_flat_copy_install_uses_fingerprints_without_git_history
+    test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history
+    test_copy_metadata_fingerprint_matches_delivery_state_verifier
+    test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
+    test_repeat_copy_install_blocks_modified_solution_document
+    test_installation_docs_describe_managed_coordination_doc_fingerprints
+    test_flat_upgrade_refuses_newly_packaged_skill_collision
+    test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill
+    test_flat_copy_upgrade_refuses_newly_packaged_doc_collision
+    test_flat_copy_upgrade_refuses_pack_doc_directory_before_mutation
+    test_symlink_upgrade_refuses_newly_packaged_doc_collisions_before_mutation
     test_repeat_companion_install_blocks_new_current_native_skill_collision
     test_repeat_companion_install_blocks_native_skill_removed_from_current_source
     test_companion_install_rejects_mixed_valid_and_invalid_candidate_native_roots
     test_invalid_recorded_delivery_mode_fails_before_mutation
+    test_schema_invalid_mode_fails_before_managed_mutation
+    test_legacy_metadata_with_corrupt_newer_schema_field_fails_before_mutation
+    test_invalid_fingerprint_entry_fails_before_managed_mutation
+    test_recovery_capture_persistent_descriptor_close_failure_is_not_success
+    test_absent_metadata_appearance_during_flat_recovery_preserves_staging
+    test_cross_directory_probe_open_failure_removes_created_directory
+    test_newline_recorded_delivery_modes_fail_before_mutation
+    test_corrupt_install_metadata_fails_closed_with_recovery_guidance
+    test_non_object_install_metadata_is_corrupt
+    test_schema_invalid_delivery_mode_fails_before_pending_recovery_mutation
+    test_recovery_metadata_race_fails_before_pending_recovery_mutation
+    test_recovery_metadata_path_race_fails_before_pending_recovery_mutation
+    test_metadata_parser_runtime_failure_is_corrupt
+    test_metadata_decode_runtime_failure_does_not_bypass_symlink_refusal
+    test_metadata_attestation_hashes_opened_inode_without_reopening_path
+    test_quarantine_replacement_before_backup_copy_does_not_write_outside_target
+    test_recovery_invalid_string_race_fails_before_pending_recovery_mutation
+    test_recovery_metadata_delete_race_is_corrupt
+    test_recovery_second_read_overwrite_is_corrupt_before_mutation
+    test_recovery_second_read_delete_is_corrupt_before_mutation
+    test_recovery_post_reader_exit_overwrite_is_corrupt_before_mutation
+    test_recovery_post_reader_exit_delete_is_corrupt_before_mutation
+    test_cleanup_receipt_replacement_is_preserved_and_named
+    test_recovery_placeholder_replacement_names_preserved_quarantine
+    test_crashed_recovery_quarantine_is_named_on_next_run
+    test_unexpected_recovery_residue_is_named_without_blaming_metadata
+    test_corrupt_metadata_with_residue_reports_both_problems
+    test_recovery_cleanup_residue_does_not_wedge_completed_recovery
+    test_recovery_restore_atomically_replaces_placeholder
+    test_completed_recovery_restore_ignores_persistent_descriptor_close_failure
+    test_recovery_restore_directory_race_preserves_backup
+    test_recovery_restore_exchange_restores_competing_destination
+    test_restore_undo_uses_guard_when_displaced_source_changes
+    test_partial_restore_undo_restores_guard_to_target
+    test_cleanup_receipt_write_failure_is_pending_without_corrupt_guidance
+    test_cleanup_receipt_ancestor_rebind_does_not_write_outside_target
+    test_recovery_restore_destination_symlink_does_not_write_outside_target
+    test_recovery_keeps_parseable_metadata_visible_during_capture
+    test_recovery_unsupported_string_between_reads_preserves_receipt
+    test_nul_recorded_delivery_mode_fails_before_pending_recovery_mutation
+    test_legacy_install_metadata_without_delivery_mode_remains_flat
     test_companion_to_flat_refuses_unowned_same_named_skill
     test_auto_host_with_explicit_target_resolves_the_detected_host
     test_codex_host_install_writes_helpers_and_metadata
@@ -1794,6 +8606,8 @@ main() {
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers
     test_symlink_mode_replaces_docs_directory_symlink
+    test_install_replaces_docs_directory_symlink_without_following_pack_named_children
+    test_install_replaces_solutions_directory_symlink_without_following_pack_named_children
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
     test_symlink_mode_refuses_unmanaged_live_and_dangling_doctor_links_before_mutation
     test_symlink_mode_replaces_recorded_prior_source_doctor_link

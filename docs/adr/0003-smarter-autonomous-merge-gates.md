@@ -292,6 +292,48 @@ repository-declared sensitive documents.
 Safe lanes make a positive autonomous classification easier; they do not
 override another gate.
 
+Portable `safe_path_groups` defaults ship for `documentation` and `tests`.
+Consumer `include` and `exclude` patterns are added to the portable sets; a
+consumer can never remove a portable exclude. A repository that configures no
+`safe_path_groups` therefore still reaches a positive documentation or test
+classification for an ordinary documentation-only or test-only change, instead
+of being unable to classify anything as safe until it hand-writes globs.
+
+The portable defaults are:
+
+```yaml
+safe_path_groups:
+  documentation:
+    include: ["**/*.md", "**/*.mdx", "docs/**", "**/*.txt"]
+    exclude: ["AGENTS.md", "**/AGENTS.md", "CLAUDE.md", "**/CLAUDE.md",
+              "**/SKILL.md", "**/autonomous_merge_*.rb",
+              "**/autonomous-merge-*", "**/check_goal_prompt_size.rb",
+              "**/*contract-test.rb", "workflows/**", ".agents/**",
+              "docs/adr/**", "**/CHANGELOG.md", "SECURITY.md",
+              "**/SECURITY.md", "**/README.md"]
+  tests:
+    include: ["test/**", "spec/**", "**/*_test.rb", "**/*_spec.rb",
+              "**/*.test.ts", "**/*.test.js", "**/__tests__/**"]
+    exclude: ["AGENTS.md", "**/AGENTS.md", "CLAUDE.md", "**/CLAUDE.md",
+              "**/SKILL.md", "**/autonomous_merge_*.rb",
+              "**/autonomous-merge-*", "**/check_goal_prompt_size.rb",
+              "**/*contract-test.rb", "workflows/**", ".agents/**",
+              "docs/adr/**", "**/fixtures/**", "**/*fixture*",
+              "spec/dummy/**", "test/dummy/**", "**/*.snap"]
+```
+
+Every portable group shares the same leading exclude block. That shared block
+covers every built-in policy path in both the source and installed `.agents/`
+layouts, which is what keeps the documentation-only rule above mechanically
+true: a documentation or test classification can never be asserted for an ADR,
+the canonical workflow, a skill source, the seam, an agent instruction file, or
+an autonomous-merge helper, in any consumer configuration. Because the portable
+excludes cannot be removed, a consumer `include` that reaches a policy path is
+still excluded rather than becoming safe. Agent instruction documents,
+changelogs, security policy, READMEs, test fixtures, and dummy applications are
+excluded for the same reason: they are policy, release, or runtime surfaces
+rather than ordinary prose or tests.
+
 ## Repository Seam
 
 Consumer repositories may add an optional structured
@@ -315,6 +357,7 @@ autonomous_merge:
   policy_paths:
     - "<repo-owned autonomous-merge-policy glob>"
 
+  # Added to the portable defaults above; never replacing them.
   safe_path_groups:
     documentation:
       include:
@@ -374,7 +417,12 @@ The mapping is a closed, versioned schema:
   be omitted otherwise;
 - `policy_paths` and `generated_paths` are lists of nonempty glob strings; and
 - each safe path group accepts only `include` and `exclude`, both lists of
-  nonempty glob strings, and must define at least one include pattern.
+  nonempty glob strings; a declared group is merged additively onto the portable
+  group of the same name, and an undeclared group keeps the portable defaults
+  unchanged. The at-least-one-include requirement is on the group's *effective*
+  include list, which the portable defaults always satisfy, so a consumer may
+  declare a group with only `exclude` to tighten the portable set without
+  widening it. Declared include patterns must still be valid globs.
 
 Globs are repository-root-relative and match normalized `/`-separated paths.
 The portable grammar supports literals, `*` and `?` within a path component,
@@ -407,6 +455,9 @@ source.
 - `human_review_paths` only add gates.
 - Built-in policy sources and `policy_paths` always require human review.
 - Safe path groups cannot override common hard categories or numeric gates.
+- Safe path groups are additive: a configured `include` or `exclude` is added to
+  the portable set for that group, and no configuration removes a portable
+  exclude. A group declaring only `exclude` is valid and tightens that group.
 - `generated_paths` affect reporting only.
 - The current PR is evaluated using trusted-base policy. A PR cannot weaken its
   own gate by modifying the seam, workflow files, agent instructions, or
@@ -609,6 +660,32 @@ rollback status, and the exact decision needed.
 `autonomous-merge-evidence-unknown` carries the current head SHA, evidence
 failure, policy provenance, and repair action. Neither state may collapse into
 `ready-gates-clean` or a generic `blocked-user-input`.
+
+### Human-first closeout rendering
+
+The evaluator remains the machine source of truth. The portable
+`skills/pr-batch/bin/autonomous-merge-closeout` helper reads that JSON without
+changing it and deterministically renders the two blocking outcomes. Its
+plain-English summary precedes the closeout state, verdict, and gate IDs. Each
+human-approval gate is explained from its canonical meaning plus available
+path evidence; the action identifies the qualifying human actor, the complete
+`autonomous-merge-risk-decision:v1` PR comment as the durable location, and the
+exact head to approve. It also defines durable and current-head and says that a
+new head invalidates the decision.
+
+For `UNKNOWN`, the renderer says that the result is an evidence/authority
+failure rather than an approvable policy-risk verdict, lists the exact evidence
+failures, and directs the coordinator or evaluator operator to repair trusted
+evidence, rerun eligibility, and replace the coordinator-owned result artifact
+used by merge assurance. A new or unknown head requires fresh binding. Both
+forms distinguish the gate from a code defect, failed CI, or review finding;
+ordinary-readiness claims remain separate and require their own evidence.
+
+Malformed renderer input fails closed. Optional `--format json` emits the
+versioned `autonomous-merge-closeout` v1 presentation contract while repeating
+the evaluator's exact verdict, head, sorted gates, rollback, policy provenance,
+and evidence failures. The original evaluator artifact, not this presentation
+contract, remains the input to merge assurance and existing automation.
 
 ## Consequences
 

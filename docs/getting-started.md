@@ -474,10 +474,12 @@ skill or document that implements it.
   verifies exact targets and shapes the lanes, and `pr-batch` runs them —
   the skill-roles table in
   [PR batch skills usage](pr-batch-skills.md) shows each hand-off.
-- **Map file collisions before running anything in parallel.**
-  `plan-pr-batch` builds a file-touch map so items that touch the same
-  paths never share a parallel wave — collisions get sequenced or deferred
-  — and it keeps each wave within small host-aware caps
+- **Express real dependencies instead of serializing on filenames alone.**
+  `plan-pr-batch` uses issue-authored semantic dependencies and active
+  reservations as ordering constraints. Verified file overlap is an
+  integration advisory, so low-risk overlap such as documentation or the
+  changelog does not block otherwise independent lanes. Waves still stay
+  within the capacity observed on each host
   ([plan-pr-batch skill](../skills/plan-pr-batch/SKILL.md)).
 - **Keep maker and checker separate.** Each lane gets one worker, and an
   independent checker — distinct from every maker in the batch — evaluates

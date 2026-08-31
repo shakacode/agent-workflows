@@ -1,0 +1,26 @@
+{
+  "schema": "execution-provenance-v0",
+  "execution_provenance": {
+    "batch": "batch-001",
+    "lane": "lane-inherited",
+    "target": "OWNER/REPO#103",
+    "scenario_class": "qa",
+    "role": "QA",
+    "route_policy": "exact-route",
+    "requested": { "model": "gpt-5.6-terra", "effort": "high" },
+    "observed": { "model": "gpt-5.6-sol", "effort": "high" },
+    "coordinator": { "model": "gpt-5.6-sol", "effort": "high" },
+    "dispatcher": "codex",
+    "binding_source": "host-session-metadata",
+    "host": { "executable": "codex", "version": "1.2.3" },
+    "session_id": "session-inherited",
+    "thread_id": "thread-inherited",
+    "started_at": "2026-08-11T12:00:00Z",
+    "ended_at": "2026-08-11T12:20:00Z",
+    "influenced_commits": ["2222222222222222222222222222222222222222"],
+    "attribution_confidence": "mixed",
+    "mismatch_reason": "The worker inherited the coordinator route instead of its requested tuple.",
+    "recorded_authority": "UNKNOWN",
+    "disposition": "coordinator-pair-inheritance"
+  }
+}

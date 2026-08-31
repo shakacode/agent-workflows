@@ -10,6 +10,10 @@ from file-order diffs. Inspect the entire exact-diff change first, then present
 coherent changes interactively. This is an explanation workflow, not a code
 review, approval, or grant of merge authority.
 
+The current task remains the sole user-facing coordinator. The walkthrough is
+an internal explanatory phase, not another task or owner. It does not transfer
+responsibility to a worker, external task, or automation.
+
 ## Establish The Exact Change
 
 1. Resolve the exact repository and PR from the supplied URL or number. When
@@ -136,11 +140,21 @@ After the final step:
    does not mean every line was reviewed, the PR was approved, or merge was
    authorized.
 
-When invoked by an `ask` merge-authority workflow, return control to that
-workflow after the exact-diff walkthrough. The authority workflow must refresh
-the diff identity and readiness and ask its one final merge decision separately.
+When invoked by an `ask` merge-authority workflow, return control to the current
+task after the exact-diff walkthrough. The current task must refresh the diff
+identity and readiness and ask its one final merge decision separately.
 Walkthrough participation is not merge approval. A walkthrough response, `next`,
 or positive reaction is never merge approval.
+
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction and a separate `Action needed:` line. For a clean standalone
+walkthrough with no remaining question or decision, use `Action needed: none.`
+and `Next: Archive this task.` When invoked by an `ask` merge-authority workflow,
+use `Action needed: none.` and `Next: Return control to the current coordinator
+task for its refreshed merge decision.` If the walkthrough ends on a blocking
+question or stale/`UNKNOWN` evidence, name the exact required answer or repair
+and say whether to reply here or start a new task. The walkthrough summary and
+coverage ledger are evidence, not a next step.
 
 ## Boundaries
 

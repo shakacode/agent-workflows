@@ -1,0 +1,120 @@
+name: Audit downstream seam drift
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/downstream-seam-audit.yml
+      - bin/push-downstream
+      - bin/push-downstream-test.rb
+      - bin/agent-workflow-seam-doctor
+      - bin/agent-workflow-writing-style
+      - bin/agent-workflow-seam-doctor-test.rb
+      - bin/agent_doctor/**
+      - skills/secure-github-actions/lib/**
+      - downstream.yml
+      - seam-presets.yml
+  schedule:
+    - cron: "17 15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Read-only fleet audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+
+      - name: Run read-only downstream seam audit
+        id: audit
+        env:
+          AUDIT_REPORT: ${{ runner.temp }}/downstream-seam-audit.json
+        run: |
+          set -o pipefail
+          set +e
+          ruby bin/push-downstream --audit | tee "$AUDIT_REPORT"
+          audit_exit=${PIPESTATUS[0]}
+          set -e
+          AUDIT_EXIT="$audit_exit" ruby <<'RUBY'
+          require "cgi"
+          require "json"
+
+          report_json = File.binread(ENV.fetch("AUDIT_REPORT"))
+          report = JSON.parse(report_json)
+          abort "unexpected audit schema" unless report["schema"] == "agent-workflows/downstream-seam-audit/v1"
+
+          source = report.fetch("source")
+          abort "audit source SHA is not exact" unless source.fetch("sha") == ENV.fetch("GITHUB_SHA")
+          abort "audit source worktree was not clean" unless source.fetch("worktree_clean") == true
+
+          consumers = report.fetch("consumers")
+          abort "audit consumers are not an array" unless consumers.is_a?(Array)
+          abort "audit consumers are empty" if consumers.empty?
+          statuses = %w[clean drifted blocked]
+          fields = %w[seam_doctor_issues changed_managed_paths follow_ups]
+          consumers.each do |consumer|
+            abort "audit consumer is not an object" unless consumer.is_a?(Hash)
+            status = consumer.fetch("status")
+            abort "audit contains an unknown status" unless statuses.include?(status)
+
+            fields.each do |field|
+              value = consumer.fetch(field)
+              if consumer.fetch("status") == "blocked"
+                abort "blocked audit field did not preserve UNKNOWN" unless value == "UNKNOWN"
+              else
+                abort "known audit field is not an array" unless value.is_a?(Array)
+              end
+            end
+          end
+
+          counts = statuses.to_h do |status|
+            [status, consumers.count { |consumer| consumer.fetch("status") == status }]
+          end
+          expected_summary = { "total" => consumers.length }.merge(counts)
+          abort "audit summary does not match consumers" unless report.fetch("summary") == expected_summary
+
+          expected_exit = counts.fetch("clean") == consumers.length ? 0 : 1
+          abort "audit exit does not match report state" unless
+            expected_exit == Integer(ENV.fetch("AUDIT_EXIT"), 10)
+
+          File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|
+            output.puts "exit_code=#{expected_exit}"
+          end
+          File.open(ENV.fetch("GITHUB_STEP_SUMMARY"), "a") do |summary|
+            summary.puts "## Downstream seam audit report"
+            summary.puts
+            summary.puts "<details>"
+            summary.puts "<summary>Machine-readable JSON</summary>"
+            summary.puts
+            summary.puts "<pre>#{CGI.escapeHTML(report_json)}</pre>"
+            summary.puts "</details>"
+          end
+          RUBY
+          exit 0
+
+      - name: Preserve audit exit status
+        if: always()
+        env:
+          AUDIT_EXIT_CODE: ${{ steps.audit.outputs.exit_code }}
+        run: |
+          case "$AUDIT_EXIT_CODE" in
+            ""|*[!0-9]*)
+              echo "::error::Audit command did not report an exit status."
+              exit 1
+              ;;
+            *)
+              exit "$AUDIT_EXIT_CODE"
+              ;;
+          esac

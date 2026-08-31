@@ -40,6 +40,8 @@ module ValidateReviewFindings
     continuous-evaluation-loop
     post-merge-audit
     address-review
+    structural-review
+    fix-flaky-tests
   ].freeze
   PROVENANCE_USAGE_FIELDS = %w[input_tokens output_tokens cache_read_tokens total_tokens].freeze
   STRING_ARRAY_FIELDS = %w[evidence links related_ids].freeze
@@ -426,7 +428,10 @@ module ValidateReviewFindings
   end
 
   def unknown_sentinel_variant?(value)
-    value.is_a?(String) && value.strip.casecmp?("UNKNOWN") && value != "UNKNOWN"
+    return false unless value.is_a?(String) && value != "UNKNOWN"
+
+    normalized = value.unicode_normalize(:nfkc)
+    normalized.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "").casecmp?("UNKNOWN")
   end
 
   def full_git_object_id?(value)

@@ -37,6 +37,52 @@ validating the plan is the difficult part.
 Model choice never replaces tests, types, linting, review, functional or visual
 verification, migration safeguards, least privilege, or human approval.
 
+## Planning-Pass Route Assessment
+
+Assess the current `$plan-pr-batch` planning pass separately from the future
+batch coordinator, worker, and checker routes. Named routes are advisory; use
+the provider-neutral route when the active host or roster is not verified.
+
+| Classification | Provider-neutral | Codex GPT-5.6 | Claude profile |
+| --- | --- | --- | --- |
+| `affirmatively-simple` | `balanced/medium` | `Terra/medium` | `Sonnet 5/medium` |
+| `routine-multi-lane` | `balanced/high` | `Terra/high` | `Sonnet 5/high` |
+| `default-or-uncertain-single-target` | `strongest/high` | `Sol/high` | `Opus 5/high` |
+| `pinned-high-risk-or-escalation` | `strongest/xhigh` | `Sol/xhigh` | `Opus 5/xhigh` |
+
+Use `affirmatively-simple` only after verified scope establishes explicit
+acceptance criteria, a known bounded file surface, no unresolved design or
+dependency question, no security, authorization, concurrency, persistence,
+lifecycle, routing, release, public-contract, or other high-consequence
+boundary, easy failure detection and rollback, and a strong deterministic
+verification oracle. Any missing or disputed simplicity criterion keeps a
+single target in `default-or-uncertain-single-target`; a present or disputed
+pinned high-risk trigger uses `pinned-high-risk-or-escalation`. Multiple
+verified routine targets use `routine-multi-lane` unless a high-risk trigger
+applies. This classification describes only the current planning pass and does
+not select the future batch coordinator.
+
+| Observed comparison | Disposition | Maximum routed reviews | Compare routes? | Restart advice? |
+| --- | --- | --- | --- | --- |
+| `stronger-current` | `future-cost-advisory` | `0` | `yes` | `no` |
+| `weaker-current-host-supported` | `bounded-independent-review` | `1` | `yes` | `no` |
+| `any-observed-field-UNKNOWN` | `non-blocking-advisory` | `0` | `no` | `no` |
+
+When the fully observed current route is stronger than recommended, report the
+cheaper recommendation for a future planning run only. Do not spawn another
+planner merely to save cost after a stronger route is already active.
+When it is materially weaker, the host may run at most one bounded independent
+plan review at the recommended route, but only when explicit route-specific
+execution is supported and the review can finish without user interaction.
+Keep the reviewer distinct from the plan maker and disclose the review route.
+Unavailable, inherited, substituted, or unverifiable route-specific execution
+gets a non-blocking advisory instead; never require a restart.
+Record observed host, model, and effort field by field only from host-exposed
+runtime evidence. If any field needed for comparison is `UNKNOWN`, make no
+stronger/weaker comparison, launch no route-correct review, and give no restart
+advice. Requested preferences, prompt text, and model self-report are not
+observations.
+
 ## Conservative GPT-5.6 Profile
 
 Use this recommended advisory profile for Codex GPT-5.6 batches. It is an
@@ -45,6 +91,8 @@ expose these models. `Sol` means GPT-5.6 Sol, `Terra` means GPT-5.6 Terra, and
 `xhigh` is the extra-high reasoning-effort tier above `high`; verify that exact
 effort token on the selected runtime before launch:
 
+- Default single-target future coordinator: Sol/high
+- Affirmatively simple single-target future coordinator: Terra/high
 - Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
@@ -52,15 +100,28 @@ effort token on the selected runtime before launch:
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
+For the future coordinator, one issue or PR remains single-target even when it
+delegates bounded implementation, review, or QA lanes. Default to Sol/high
+because one issue may still require difficult diagnosis, design, or verification.
+Check the high-risk exception first: a present or disputed pinned high-risk
+boundary uses Sol/xhigh. Otherwise use Terra/high only after positively
+establishing explicit acceptance criteria, a known bounded file surface, no
+unresolved design or dependency question, no security/release/high-consequence
+boundary, easy failure detection and rollback, and a strong deterministic
+verification oracle. Delegating subagents does not change a single target into
+a multi-target plan.
+
 Sol/xhigh is reserved for the listed exceptions; it is not the routine
 multi-lane coordinator default. Task-specific routing still follows ambiguity,
 consequence, and verification strength.
 
-Routine bounded planning, dispatch bookkeeping, status reconciliation, evidence
-collation, and routine coordination use the `balanced`/high class. Name the
-exact `Terra/high` pair only when the active host has verified that pair;
-otherwise preserve the requested preference and record host-observed values as
-`UNKNOWN` when unavailable.
+For multiple targets, routine bounded planning and coordination use
+the `balanced`/high class. Mechanical dispatch bookkeeping, status
+reconciliation, and evidence collation may also use that worker class, but do
+not change a single-target coordinator's Sol/high default. Name the exact
+`Terra/high` pair only when the active host has verified that pair; otherwise
+preserve the requested preference and record host-observed values as `UNKNOWN`
+when unavailable.
 
 Reserve Sol/xhigh for a pinned high-risk trigger, a bounded plan challenge,
 repeated credible failures, or an evidence-backed `MODEL_ESCALATION_REQUEST`.
@@ -73,7 +134,7 @@ GPT-5.5 is recommended for an explicitly requested independent comparison or
 family-specific fallback. Selecting it elsewhere remains permitted but falls
 outside this profile's evidence-backed recommendation.
 
-Prefer Sol at the stated effort for the initiating parent. If the host exposes
+Prefer the classified Sol or Terra route above for the initiating parent. If the host exposes
 the running model or effort, record it as observed metadata; otherwise keep the
 field `UNKNOWN` and continue with the same safeguards.
 
@@ -95,8 +156,11 @@ the selected model. A pinned high-risk boundary uses Sol/xhigh; other unknown or
 uncertainty uses Sol/high. If unavailable, use the closest available route or
 runtime default and record it honestly. Every
 worker stops without editing further and returns to the coordinator when evidence
-contradicts the diagnosis, scope or blast radius grows, a high-risk boundary
-appears, verification weakens, or consequential judgment is required. Sol/xhigh
+contradicts the diagnosis, material semantic scope growth or material blast-radius
+growth appears, a high-risk boundary appears, verification weakens, or
+consequential judgment is required. Evidence-backed discovery of a necessary
+in-repository path alone is not such growth; follow the [path-expansion
+contract](pr-batch-skills.md#implementation-batch-planning-flow). Sol/xhigh
 is the recommendation for high-risk or qualified escalated work, not a
 prerequisite.
 
@@ -105,43 +169,46 @@ Luna is outside this conservative profile.
 ## Conservative Claude Profile (provisional)
 
 Use this recommended advisory profile for Claude batches. Version marker:
-`claude-profile v0`, provisional pending observed route metadata and
+`claude-profile v1`, provisional pending observed route metadata and
 comparative evidence tracked in shakacode/agent-workflows#151 (adopted via
 shakacode/agent-workflows#171). It is a planning preference, not a
 portable default for runtimes that do not expose these models. The roster is
-Opus 4.8 (`claude-opus-4-8`), Sonnet 5 (`claude-sonnet-5`), and Fable 5
+Opus 5 (`claude-opus-5`), Sonnet 5 (`claude-sonnet-5`), and Fable 5
 (`claude-fable-5`), and `xhigh` is the extra-high reasoning-effort tier above
-`high`; exact effort-token support on Claude runtimes is unverified, so record
-the host-observed effort when exposed and otherwise use `UNKNOWN` without
-blocking launch:
+`high`. Anthropic documents the full `low` through `max` effort ladder for
+[Opus 5](https://platform.claude.com/docs/en/about-claude/models/whats-new-opus-5),
+but that does not prove availability on the active host; record host-observed
+effort when exposed and otherwise use `UNKNOWN` without blocking launch:
 
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Default single-target future coordinator: Opus 5/high
+- Affirmatively simple single-target future coordinator: Sonnet 5/high
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
 
-The Opus 4.8/xhigh choices are deliberate conservative baselines for
-multi-lane coordination, uncertain work, and independent adversarial QA, where
-shaping or challenging the plan is the high-leverage work. Task-specific
-routing still follows ambiguity, consequence, and verification strength. A
-single-lane, clearly scoped coordinator may use Opus 4.8/high.
+Opus 5/high is the default future single-target coordinator route when the
+target is not affirmatively simple. Reserve Opus 5/xhigh for a present or
+disputed pinned high-risk boundary, bounded plan challenge, repeated credible
+failures, or an evidence-backed escalation. Routine multi-lane coordination
+uses the balanced class at high effort; topology alone does not justify xhigh.
 
 Fable 5 is the leading candidate for long-horizon or highest-value
 coordination, but it stays experimental until the
 shakacode/agent-workflows#151 evidence supports promotion. Never make Fable 5
 or `max` effort a default route.
 
-Prefer Opus 4.8 at the recommended effort for the initiating parent. Record
+Prefer the classified Opus 5 or Sonnet 5 route above for the initiating parent. Record
 host-observed parent metadata only from runtime state the host exposes; mutable
 defaults, prompt text, model self-report, and an installed model list are not
 observations. A different or `UNKNOWN` parent route does not alone block target
 interpretation, planning, dispatch, review, or audit.
 
-The preferred independent adversarial checker route is a fresh Opus 4.8/xhigh
+The preferred independent adversarial checker route is a fresh Opus 5/xhigh
 instance, distinct from every maker. The preferred routine deterministic QA
-route is Opus 4.8/high. Sonnet may gather mechanical evidence or serve as the
+route is Opus 5/high. Sonnet may gather mechanical evidence or serve as the
 independent checker; either route's verdict qualifies only when the checker
 role, independence, scope, current-head evidence, and evidence quality qualify.
 
@@ -153,13 +220,16 @@ public-contract change, and easy failure detection and rollback. When lane risk
 or bounded delegation requires an execution envelope, the coordinator role
 supplies the exact goal and non-goals, owned paths, supported diagnosis,
 invariants, acceptance criteria, required verification, and stop conditions
-regardless of the selected model. Opus 4.8/xhigh is the recommended route for a
-present or disputed high-risk boundary or another missing or disputed simplicity
-criterion; if unavailable, use the closest available route or runtime default
+regardless of the selected model. A present or disputed pinned high-risk
+boundary uses Opus 5/xhigh; other missing or disputed simplicity criteria use
+Opus 5/high. If unavailable, use the closest available route or runtime default
 and record it honestly. Every worker stops without editing further and returns
-to the coordinator when evidence contradicts the diagnosis, scope or blast
-radius grows, a high-risk boundary appears, verification weakens, or
-consequential judgment is required.
+to the coordinator when evidence contradicts the diagnosis, material semantic
+scope growth or material blast-radius growth appears, a high-risk boundary
+appears, verification weakens, or consequential judgment is required.
+Evidence-backed discovery of a necessary in-repository path alone is not such
+growth; follow the [path-expansion
+contract](pr-batch-skills.md#implementation-batch-planning-flow).
 
 Haiku 4.5 is outside this provisional profile.
 
@@ -337,6 +407,11 @@ reconciled replacement. If none is authorized, it returns `blocked-user-input`
 with one stable `dispatch-decision-request v1`, including canonical viable
 fallback choices; replay does not create blocker churn. A selected result permits
 Goal-mode automatic resume only after the required persistence record is durable.
+Complete terminal lane facts block every dispatch before selection or replacement
+proof consumption with `blocked-replacement-terminal-state`; reconcile or replan
+instead of relaunching that lane. In replacement contexts, missing or `UNKNOWN`
+terminal facts return the same status and require callers to refresh targeted lane state
+before retrying. Legacy missing or partial lane state remains valid for an initial launch.
 
 ## Requested Versus Observed Route Provenance
 
@@ -345,6 +420,10 @@ AW D recorded requested routes in handoffs and PR prose while the observed
 session metadata for one lane showed a different tuple, so that batch produced
 no usable evidence for or against the routes it was meant to test. The rules
 below are what make route evidence trustworthy enough to evaluate.
+
+Record those facts with the versioned
+[execution-provenance receipt schema](execution-provenance-schema.md); its
+validator keeps receipt dispositions aligned with the table below.
 
 A requested route is an instruction; an observed route is host-reported
 evidence of what actually executed. The two are separate fields and never
@@ -356,47 +435,51 @@ binds. Git author identity, branch name, commit trailer, prompt text, an
 installed model roster, and a model's own self-report are not proof of the
 route that executed.
 
-When operator policy names an exact route, an unbound, unavailable,
-substituted, or `UNKNOWN` observed tuple stops the lane with
-`MODEL_ROUTE_MISMATCH` before any edit begins.
+A route mismatch, unavailability, inherited route, or `UNKNOWN` observed tuple
+must be recorded honestly and must exclude that execution from route-measurement
+evidence; it never alone stops otherwise valid work.
 
-A worker never inherits the coordinator's model/effort pair, and an inherited
-pair is a route mismatch even when the inherited route is stronger than the
-requested one. Collaboration, review-fix, and helper subagents spawned inside a
-lane are workers for this rule; inheritance through a nested spawn is the exact
-mechanism that silently defeated an exact requested implementation route in
-batch AW D.
+A worker records its own observed model/effort separately from the coordinator;
+an inherited pair is a route mismatch even when the inherited route is stronger
+than the requested one. Collaboration, review-fix, and helper subagents spawned
+inside a lane are workers for this rule; inheritance through a nested spawn is
+the exact mechanism that silently defeated an exact requested implementation
+route in batch AW D.
 
 ### Disposition Table
 
-Every lane launch resolves to exactly one case. Only `proceed` and
-`proceed-as-fallback` may be reported as a satisfied route, and both require
-observed host evidence:
+Every lane launch resolves to exactly one case. `proceed` is eligible for
+route-measurement evidence because the requested and observed tuples match.
+`proceed-unmeasured` and `proceed-as-fallback` continue the otherwise valid
+lane, but cannot be counted as evidence for the original requested route:
 
 | Case | Requested | Observed | Disposition |
 | --- | --- | --- | --- |
 | `bound-exact-match` | exact tuple | same exact tuple from host evidence | `proceed` |
-| `unbound-exact-route` | exact tuple | `UNKNOWN` | `MODEL_ROUTE_MISMATCH` |
-| `silent-substitution` | exact tuple | different tuple | `MODEL_ROUTE_MISMATCH` |
-| `coordinator-pair-inheritance` | exact worker tuple | coordinator tuple, inherited | `MODEL_ROUTE_MISMATCH` |
+| `unbound-exact-route` | exact tuple | `UNKNOWN` | `proceed-unmeasured` |
+| `silent-substitution` | exact tuple | different tuple | `proceed-unmeasured` |
+| `coordinator-pair-inheritance` | exact worker tuple | coordinator tuple, inherited | `proceed-unmeasured` |
 | `authorized-fallback` | exact tuple | authorized fallback tuple with recorded authority | `proceed-as-fallback` |
 
 An authorized fallback is explicit, recorded before launch, and names the
 authority that approved it. An unrecorded fallback is a silent substitution and
-takes that row's disposition.
+takes that row's disposition. An explicitly user-selected override remains a
+user override rather than an implicit fallback, and its requested and observed
+tuples are recorded separately.
 
 These dispositions are a normative contract for coordinators, handoffs, and
-execution receipts. They are not statuses any helper returns today:
-`dispatcher-capability-preflight` emits `selected`, `launch-pending`,
+execution receipts, and the execution-provenance validator checks their
+receipt classifications. They are not statuses returned by
+`dispatcher-capability-preflight`, which emits `selected`, `launch-pending`,
 `replay-already-active`, `blocked-user-input`, `blocked-replacement-fencing`,
-and `invalid-input`, and nothing yet observes an actual route at dispatch time. Do
-not read `MODEL_ROUTE_MISMATCH` as a value a script produces until the
-execution-provenance receipts land.
+`blocked-replacement-terminal-state`, and `invalid-input`; that helper still does not observe the actual route at
+dispatch time. A route mismatch remains a disposition-table outcome, not a
+helper return value.
 
-A lane that resolves to `MODEL_ROUTE_MISMATCH` stops for relaunch or an
-explicitly authorized fallback. It must not be reported as having run the
-requested route, and its results must not be compared against results from a
-lane whose route was observed.
+A lane that resolves to `proceed-unmeasured` or `proceed-as-fallback` continues
+unless an independent risk, scope, evidence, or authority gate blocks it. It
+must not be reported as having run the original requested route, and its results
+must not be used as route-measurement evidence for that route.
 
 ### Evidence Status
 
@@ -407,10 +490,11 @@ until observed receipts exist for it; do not cite a profile route as measured
 evidence, and do not compare a requested route that lacks an observed receipt
 against one that has one.
 
-No ten-batch measured promotion decision may be made before #398
-execution-provenance receipts exist. A promotion experiment must use matched
-task classes and context topology, record requested-versus-observed execution
-evidence, and publish its comparison results; this evidence is not complete.
+No ten-batch measured promotion decision may be made before #398 usage/cost
+receipts, #333 execution-provenance receipts, and #335 evaluation runner exist.
+A promotion experiment must use matched task classes and context topology,
+record requested-versus-observed execution evidence, and publish its comparison
+results; this evidence is not complete.
 
 | Scenario class | Risk | Recommended route | Samples | Evidence strength |
 | --- | --- | --- | --- | --- |
