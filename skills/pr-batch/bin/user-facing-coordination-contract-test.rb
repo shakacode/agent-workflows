@@ -156,9 +156,20 @@ class UserFacingCoordinationContractTest < Minitest::Test
   end
 
   def test_coordination_changes_preserve_exact_gmcc_v4_merge_authority_clauses
-    [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
+    workflow = File.read(File.join(ROOT, WORKFLOW), encoding: "UTF-8")
+    assert_includes workflow, GMCC_V4, WORKFLOW
+
+    pr_batch = File.read(File.join(ROOT, PR_BATCH), encoding: "UTF-8")
+    assert_includes pr_batch, GMCC_V4, PR_BATCH
+    assert_includes pr_batch, "ready-human-review-required", PR_BATCH
+    assert_includes pr_batch, "autonomous-merge-evidence-unknown", PR_BATCH
+    refute_includes pr_batch, "GMCC-v3:", PR_BATCH
+
+    [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
-      assert_includes text, GMCC_V4, path
+      refute_includes text, "GMCC-v4:", path
+      assert_includes text, "ready-human-review-required", path
+      assert_includes text, "autonomous-merge-evidence-unknown", path
       refute_includes text, "GMCC-v3:", path
     end
   end
@@ -270,9 +281,11 @@ class UserFacingCoordinationContractTest < Minitest::Test
 
     [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = normalized(path)
-      assert_includes text, "Action needed: Start a new task with the fenced goal prompt.", path
       assert_includes text,
-                      "Next: Paste the prompt into that task, then archive this planning task.",
+                      "Action needed: Start a new task with the fenced goal prompt and its Batch Plan or exact durable plan-state reference.",
+                      path
+      assert_includes text,
+                      "Next: Paste both into that task, then archive this planning task.",
                       path
     end
 
