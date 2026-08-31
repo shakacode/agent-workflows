@@ -597,7 +597,6 @@ evidence. Valid QA lane final states in worked-issue/QA-lane coverage tables are
 column records the QA coverage result such as `satisfied`, `waived`, `blocked`,
 or `unknown`.
 
-
 ## PR Description And Readiness Handoff
 
 ### Human-First PR Description Contract
@@ -849,7 +848,6 @@ Pressure checks:
 - A blocker that publishes an exact future reset time gets one same-thread heartbeat scheduled for that time, because neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that exact published time; use it as the single scheduled mechanism for that blocker and gate; do not start or retain either watcher mode for the same gate, and create or update its durable record before stopping or replacing any existing watcher so no wake is lost. Replay updates that one heartbeat instead of duplicating it, and a terminal state pauses or deletes it. An `UNKNOWN` retry time, a `blocked-user-input` blocker, or an unavailable scheduling capability creates no automation and keeps the exact manual resume instructions.
 - `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
-
 
 ## Integration, Review, And Merge Readiness
 
@@ -2055,7 +2053,6 @@ Continue bounded live checks until the PR is actually merged or a queue failure
 becomes a real blocker, then verify the landed commit and expected base branch.
 Do not bypass the queue with administrator privileges merely to preserve a
 direct-merge command shape.
-
 
 ## Landing And Completed-Batch Audit
 

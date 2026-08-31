@@ -151,7 +151,6 @@ class IntegrationCloseoutContractTest < Minitest::Test
       refute_includes route, "bin/merge-assurance", heading
     end
 
-
     assert_includes @workflow,
                     "[Completed-Batch Audit Receipt And Archive Replay](pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay)"
   end
