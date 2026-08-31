@@ -76,6 +76,14 @@ def normalize_prose(text)
   text.gsub(/\s+/, " ")
 end
 
+def with_default_external_encoding(encoding)
+  original = Encoding.default_external
+  Encoding.default_external = encoding
+  yield
+ensure
+  Encoding.default_external = original
+end
+
 # Anchored to a whole heading line so a heading quoted in prose or a sync comment
 # cannot capture the section.
 def extract_anchored_section(text, heading, end_heading:)
@@ -563,37 +571,46 @@ class CoordinationDeclarationContractTest < Minitest::Test
   end
 
   def test_unrecognized_declaration_form_fails
-    blockers = coordination_declaration_blockers("coordination: fine\n")
+    with_default_external_encoding(Encoding::US_ASCII) do
+      declaration = "fíne"
+      blockers = coordination_declaration_blockers("coordination: #{declaration}\n")
 
-    refute_empty blockers
-    assert_includes blockers.first, "unrecognized"
+      refute_empty blockers
+      assert_includes blockers.first, "unrecognized"
+      assert_includes blockers.first, declaration
+    end
   end
 
   def test_near_miss_declarations_are_rejected_with_an_exact_correction
-    [
-      "`coordination: registered aw-1`",
-      "**coordination:** registered aw-1",
-      "Coordination: registered aw-1",
-      "coordination - registered aw-1",
-      "coordination – registered aw-1"
-    ].each do |near_miss|
-      blockers = coordination_declaration_blockers("#{near_miss}\n")
+    with_default_external_encoding(Encoding::US_ASCII) do
+      [
+        "`coordination: registered aw-1`",
+        "**coordination:** registered aw-1",
+        "Coordination: registered aw-1",
+        "coordination - registered aw-1",
+        "coordination – registered aw-1"
+      ].each do |near_miss|
+        blockers = coordination_declaration_blockers("#{near_miss}\n")
 
-      refute_empty blockers, "#{near_miss.inspect} must remain rejected"
-      assert_includes blockers.first, "near-miss"
-      assert_includes blockers.first, near_miss
-      assert_includes blockers.first, "coordination: registered <batch-id>"
-      assert_includes blockers.first, "coordination: unavailable #{EM_DASH} <reason>"
+        refute_empty blockers, "#{near_miss.inspect} must remain rejected"
+        assert_includes blockers.first, "near-miss"
+        assert_includes blockers.first, near_miss
+        assert_includes blockers.first, "coordination: registered <batch-id>"
+        assert_includes blockers.first, "coordination: unavailable #{EM_DASH} <reason>"
+      end
     end
   end
 
   def test_both_forms_on_one_line_fail
-    handoff = "coordination: registered aw-1 unavailable #{EM_DASH} backend flaky\n"
-    blockers = coordination_declaration_blockers(handoff)
+    with_default_external_encoding(Encoding::US_ASCII) do
+      batch_id = "aw-1 unavailable #{EM_DASH} backend flaky"
+      blockers = coordination_declaration_blockers("coordination: registered #{batch_id}\n")
 
-    refute_empty blockers, "one line carrying both forms must not pass as a clean declaration"
-    assert_includes blockers.first, "single token"
-    assert_includes blockers.first, "never both on one line"
+      refute_empty blockers, "one line carrying both forms must not pass as a clean declaration"
+      assert_includes blockers.first, "single token"
+      assert_includes blockers.first, batch_id
+      assert_includes blockers.first, "never both on one line"
+    end
   end
 
   def test_registered_batch_id_rejects_trailing_prose

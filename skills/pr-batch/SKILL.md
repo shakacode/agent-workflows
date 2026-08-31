@@ -214,14 +214,24 @@ When invoking this skill's helper scripts, resolve `PR_BATCH_SKILL_DIR` in this
 order: explicit environment variable; the loaded skill's base directory when the
 host exposes it; repo-local `.agents/skills/pr-batch`; then stop with a precise
 blocker if the helper is still missing.
-For release-mode coordination, auto-merge confidence, and shared release tracker
-updates, follow `AGENTS.md` and the release-mode sections of the resolved
-`pr-processing.md`; do not invent new labels or overwrite tracker issue bodies
-from stale reads. Select the merge gate by the target branch's release phase:
-follow the **Release Phase Gate** in the resolved `pr-processing.md` and the
-repo's `AGENTS.md` release policy. If any target's value, priority, or proposed
-fix scope is unclear, use the installed or repo-local `evaluate-issue` skill
-before assigning implementation workers.
+For release-mode coordination, auto-merge confidence, shared release trackers,
+production deployment or promotion, publishing, release rollback, or other
+explicit release work, load the resolved
+`pr-production-release.md`: prefer the repo-local
+`.agents/workflows/pr-production-release.md` when present; otherwise use the
+installed workflow from the same Agent Workflows pack as the loaded `pr-batch`
+skill, not relative to a potentially repo-pinned processing override. Follow the
+consumer repo's `AGENTS.md` release policy. Do
+not restate the component's tracker, phase, promotion, or release rules here.
+Ordinary base-branch feature work does not load that downstream component unless
+repository policy or the live release tracker selects release handling for that
+PR. Before skipping it, perform a bounded tracker-discovery check using only the
+consumer repo's `AGENTS.md` tracker labels, title prefix, or other search policy.
+Load the component when an existing applicable tracker unambiguously selects the
+PR; if the repo defines no tracker discovery policy, do not invent one. If any
+target's value, priority, or proposed fix scope is unclear, use the
+installed or repo-local `evaluate-issue` skill before assigning implementation
+workers.
 Skip issues labeled `needs-customer-feedback` unless the user explicitly provides customer evidence or maintainer approval for that issue; report each skipped target with `needs-customer-feedback` as the reason.
 
 ## Non-Negotiable Safety Rules
@@ -886,89 +896,26 @@ or a parallel collection system.
 
 ## Worker Rules
 
-Follow the canonical
-[Worker Rules](../../workflows/pr-processing.md#worker-rules) and keep one target
-or one semantic lane per worker. Ordinary file overlap does not require
-file-disjoint workers or launch serialization; record it for integration. Every
-file-editing worker runs in its own
-worktree so two workers never share one working directory — Codex or
-multi-machine workers use `git worktree add`; in-process Claude Code
-`Agent`/`Workflow` subagents pass `isolation: 'worktree'`. The main agent owns
-final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
-Workers emit the canonical Lane Card after a successful claim, on
-blocked/cancelled state, and as the final handoff header. The actor that opens
-or updates the PR emits the PR-open Lane Card when the PR is opened. The card
-shows claim holder and `dashboard_url` from backend metadata or `UNKNOWN`;
-`pr_url` comes from backend metadata, verified GitHub PR state, or `UNKNOWN`.
-It also records preferred model/effort, optional observed host/model/effort, and
-whether a coordinator-role-approved execution envelope was received, the
-unchanged repository-qualified canonical launch identity, and `Ad-hoc
-override: none` or every accepted durable override field when lane
-risk or bounded delegation required one. Unavailable route
-observations remain field-granular `UNKNOWN`.
-Follow the canonical [Dependency And Conflict Throughput Policy](../../workflows/pr-processing.md#dependency-and-conflict-throughput-policy): issue-authored semantic dependencies are the only ordering edges; file overlap is an integration advisory. Record any operational non-safety coordination override in the Batch Plan and affected Lane Cards; it may set aside only its specifically evidenced stale/broken bookkeeping or coordination stop and cannot alter protected gates.
-For host-aware sizing, Codex-targeted waves may use up to 10 independent
-lanes, or 8 when shared/risky conditions apply.
-Claude and generic waves use up to 5 lanes, or up to 3 under those same
-conditions. Keep `UNKNOWN` path lanes serial until discovery resolves their real
-paths. File overlap is an integration advisory; issue-authored semantic dependencies remain the only ordering edges. Queue spillover as later waves rather than overfilling the active worker
-set. Preserve the coordinator model/effort preference and each lane's staged
-worker model/effort preference at dispatch. Keep worker requested preferences
-distinct from the coordinator preference; if the dispatcher or runtime inherits
-or defaults to that route, record it honestly and continue. Model collation does not combine lane ownership, and an
-unavailable preference remains `UNKNOWN` without blocking. Workers remain on the initial route for
-a focused correction after a small first failure and emit
-`MODEL_ESCALATION_REQUEST` only at the canonical evidence threshold.
-Alongside that packet, a private-backend worker emits
-`escalation_requested` with `from_route`, `to_route`, and `evidence`.
-Before editing, workers in lanes whose risk or bounded delegation requires an
-execution envelope restate the coordinator-role-approved envelope regardless of
-route. Necessary in-repository path expansion defaults to allowed when
-repository evidence shows an added path is reasonably necessary to complete the
-already-authorized goal or its required validation. Treat owned paths and the
-execution envelope as coordination and collision controls, not as a
-user-permission boundary. Before editing, record each added path and reason in
-the lane envelope when one is present; otherwise use a durable coordinator-owned
-lane record or Lane Card that the coordinator can read. Every added path not yet
-reflected in its verified file-touch map must have an active typed
-`expansion-path-reservation` before edit. When a lane is the sole active editor,
-the coordinator durably records the reservation, refreshes authoritative
-file-touch maps, lane lifecycle state, and active-lane claim and collision checks,
-and reruns `batch-plan-preflight`; the worker continues without user approval or
-a blocked lifecycle only after the preflight accepts. Before a worker in a multi-editor wave
-changes an added path, it persists a typed expansion request, marks its durable
-lane lifecycle blocked, refreshes its heartbeat, emits a Lane Card with the path,
-reason, and request evidence reference, and pauses at a safe checkpoint. The
-coordinator processes expansion requests serially, records an active
-`expansion_path_reservations` entry, refreshes authoritative file-touch maps and
-lane lifecycle state, and reruns `batch-plan-preflight`. For every multi-editor
-request, acceptance alone does not authorize resume: the requester must durably
-transition out of `blocked`, a fresh preflight must accept, and the requester
-must be absent from `launch.held_lane_ids`; when launch or relaunch is needed, it
-must also be present in `launch.eligible_lane_ids`. Under
-maximum-concurrency-one serialization, the current holder must also release the
-slot before resume. The reservation persists until the verified PR file-touch map
-contains the path or the request is cancelled, and it is removed once reflected
-or cancelled. A collision or `UNKNOWN` collision state remains stopped until
-then. A missing path alone is not material scope growth and must not produce
-`blocked-user-input`.
-Directory renames use a distinct `expansion-rename-reservation` v1 record with
-canonical, distinct `old` and `new` endpoints; only this typed rename form adds
-ancestor/descendant collision checks, while scalar path reservations remain
-exact-path collision controls.
-Necessary additions can include contract or type files, tests or fixtures,
-offline demo stubs, and build or generated integration surfaces when repository
-evidence makes them necessary.
-Contradictory evidence remains an immediate stop. Stop and return control when
-any of the following applies: the approved goal, accepted behavior, or acceptance
-criteria changes; the work adds unrelated work; it crosses a repository or trust
-boundary; it requires a destructive or difficult-to-reverse action; it introduces
-secrets, permissions, deployments, billing, or other external effects; it
-requires consequential architecture, performance, compatibility, or product
-judgment; it materially changes security, privacy, compliance, or release policy;
-it collides with another active lane and cannot be safely coordinated; it exposes
-consequential ambiguity; or it weakens verification. An omitted path alone is not
-such a condition.
+Codex-targeted waves may use up to 10 independent lanes, or 8 when shared/risky
+conditions apply. Claude and generic waves use up to 5 lanes, or up to 3 under
+those conditions. Keep requested and observed routes distinct;
+if the dispatcher or runtime inherits or defaults to another route, record it
+honestly. File overlap is an integration advisory.
+
+Use the canonical
+[Dependency And Conflict Throughput Policy](../../workflows/pr-processing.md#dependency-and-conflict-throughput-policy).
+Put `Non-safety coordination override:` in the Batch Plan and affected Lane
+Cards; it never alters protected gates.
+
+After prompt intake, plan/dependency preflight, and dispatcher selection, load
+[PR-Batch Worker Execution](../../workflows/pr-batch-worker-execution.md). It owns
+isolated setup, the bounded implementation loop, focused validation, meaningful
+stop packets, the worker attention queue, Lane Cards, and the
+implementation-head handoff.
+
+Keep planning, coordination, security, and PR closeout here; do not mirror the
+execution contract. The integration owner consumes the head/evidence and owns publication,
+current-head review/CI, readiness, and merge sequencing.
 
 ## Pausing Or Stopping A Batch
 
@@ -1058,9 +1005,7 @@ Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#pla
 For the complete numbered sequence, follow the canonical closeout lane in
 `.agents/workflows/pr-processing.md` instead of stopping at PR creation. The
 coordinator owns the live re-fetch, current-head checks and review-thread triage,
-per-PR merge-ledger run, stale release-mode classification updates and the finalized PR-body
-`Agent Merge Confidence` block refresh required for accelerated-RC readiness (kept
-distinct), hosted-CI request and waitback when uncertainty remains, and any
+per-PR merge-ledger run, hosted-CI request and waitback when uncertainty remains, and any
 authorized ready/merge action, required QA Evidence verification, and the late
 post-merge bot-finding sweep before final batch handoff. Once every batch target
 has a final state, run a read-only check after terminal releases only when the
@@ -1076,7 +1021,7 @@ deadline; the helper must preserve the exact child executable and separate
 argument vector, launch it in its own process group, and terminate the whole
 process group when the deadline expires. A timeout or forced termination is a
 command failure: record best-effort `UNKNOWN` telemetry-audit evidence and
-continue closeout through steps 13-14 with that blocker; the audit subprocess
+continue closeout through steps 12-13 with that blocker; the audit subprocess
 must never wedge merge closeout. When that compatible capability is advertised, incomplete
 coverage, command failure, or `UNKNOWN` readback blocks telemetry closeout. If
 the active backend does not advertise

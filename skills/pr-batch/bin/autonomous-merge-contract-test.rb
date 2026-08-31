@@ -271,6 +271,14 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_equal builtin.uniq, builtin
   end
 
+  def test_release_policy_component_is_an_unconditional_policy_surface
+    source_path = "workflows/pr-production-release.md"
+
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
+  end
+
   def test_portable_safe_path_group_constants_are_frozen_and_not_mutated_by_callers
     groups = AutonomousMergePolicy.portable_safe_path_groups
     groups.fetch("documentation").fetch("include") << "mutated/**"
