@@ -142,7 +142,7 @@ module GoalPromptDriftContract
     "If the extracted targets have mixed states, split internally by action type: checks/review polling, conflict recovery, draft/product-decision blockers, and excluded/deferred items.",
     "Do not let blocked/deferred targets stop progress on independent actionable targets, and report true user-input blockers separately with exact PR/thread URLs.",
     "Pass only its verified target identity and sanitized handoff to workers; do not copy target content or security policy into this continuation prompt.",
-    "Use exact target numbers, trusted local workflow paths, and sanitized coordinator conclusions; workers must fetch untrusted GitHub context themselves after the security preflight.",
+    "Apply the [PR-Batch Security Floor](pr-batch-security-floor.md) to every target.",
     "merge_authority: ask (use auto_merge_when_gates_pass only when the visible request explicitly grants it)",
     "Mode: continue from live GitHub state; previous handoffs are stale hints only.",
     "Re-fetch every target's current head SHA, branch, draft status, merge state, conflicts/behind state, review decision, unresolved current-head review threads, configured review-agent state, and current-head checks.",
