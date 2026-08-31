@@ -20,6 +20,7 @@ load receipt_parser_path
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 PROMPT_INTAKE_PATH = File.join(ROOT, "workflows/pr-batch-intake.md")
+WORKER_EXECUTION_PATH = File.join(ROOT, "workflows/pr-batch-worker-execution.md")
 SPEC_SKILL_PATH = File.join(ROOT, "skills/spec/SKILL.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
@@ -546,6 +547,7 @@ class GoalCompletionContractTest < Minitest::Test
   def setup
     @workflow = read_repo_file(WORKFLOW_PATH)
     @prompt_intake = read_repo_file(PROMPT_INTAKE_PATH)
+    @worker_execution = read_repo_file(WORKER_EXECUTION_PATH)
     @spec_skill = read_repo_file(SPEC_SKILL_PATH)
     @pr_batch_skill = read_repo_file(PR_BATCH_SKILL_PATH)
     @plan_pr_batch_skill = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
@@ -1069,19 +1071,33 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_lane_card_contract_is_documented
-    workflow_worker_rules = extract_markdown_section(@workflow, "### Worker Rules")
-    assert_text_includes workflow_worker_rules, "Lane Card", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "after a successful claim", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "when the PR is opened", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "`claim:`", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "holder|UNKNOWN", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "generation|UNKNOWN", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "instance|UNKNOWN", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "dashboard_url", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "pr_url", "workflows/pr-processing.md Worker Rules"
+    canonical_handoff = extract_markdown_section(
+      @worker_execution,
+      "## Worker-To-Coordinator Handoff",
+      end_heading: /^##\s+/
+    )
+    assert_text_includes canonical_handoff, "Lane Card", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "accepted ownership", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "later opens or updates the PR", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "`claim:`", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "holder|UNKNOWN", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "generation|UNKNOWN", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "instance|UNKNOWN", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "dashboard_url", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "pr_url", "worker-execution handoff"
 
     {
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "workflows/pr-processing.md Worker Rules" =>
+        extract_markdown_section(@workflow, "### Worker Rules"),
+      "skills/pr-batch/SKILL.md Worker Rules" =>
+        extract_markdown_section(@pr_batch_skill, "## Worker Rules", end_heading: /^##\s+/)
+    }.each do |label, route|
+      assert_text_includes route, "pr-batch-worker-execution.md", label
+      assert_text_includes route, "implementation-head handoff", label
+      refute_includes route, "`claim:`", "#{label} must route instead of mirroring the Lane Card"
+    end
+
+    {
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
