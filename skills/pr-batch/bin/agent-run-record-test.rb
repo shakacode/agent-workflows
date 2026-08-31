@@ -1248,6 +1248,19 @@ class AgentRunRecordTest < Minitest::Test
     assert_includes stdout, "\\[click\\]\\(https&#58;//example.invalid\\)"
   end
 
+  def test_render_neutralizes_gfm_extended_autolinks_from_untrusted_visible_fields
+    record = valid_record
+    record.fetch("work_item")["title"] = "www.phish.example user@evil.example"
+
+    stdout, stderr, status = run_helper("render", stdin_data: JSON.generate(record))
+
+    assert status.success?, stderr
+    refute_includes stdout, "www.phish.example"
+    refute_includes stdout, "user@evil.example"
+    assert_includes stdout, "www&#46;phish.example"
+    assert_includes stdout, "user&#8203;@evil.example"
+  end
+
   def test_contract_requires_outer_dynamic_values_to_use_the_hostile_value_rendering_contract
     document = File.read(CONTRACT_DOC, encoding: "UTF-8")
     assert_match(

@@ -1109,7 +1109,9 @@ module AgentRunRecord
 
   def plain(value)
     escaped = html_escape(value).gsub(/([\\`*_\[\]()!~])/, '\\\\\1')
-    escaped.gsub(/\b(https?):/i, '\1&#58;')
+    escaped = escaped.gsub(/\b(https?):/i, '\1&#58;')
+    escaped = escaped.gsub(/\bwww\./i) { |prefix| "#{prefix[0, 3]}&#46;" }
+    escaped.gsub("@", "&#8203;@")
   end
 
   def code(value)
