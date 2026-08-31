@@ -478,6 +478,111 @@ YAML
   done
 }
 
+test_third_party_notices_are_installed_for_every_delivery_mode() {
+  local tmp target collision_target personal_target delivery_mode mode output status
+
+  for mode in copy symlink; do
+    for delivery_mode in flat plugin-companion; do
+      tmp="$(mktemp -d)"
+      target="$tmp/$mode-$delivery_mode"
+      collision_target="$tmp/$mode-$delivery_mode-collision"
+      personal_target="$tmp/$mode-$delivery_mode-personal"
+
+      if [[ "$delivery_mode" = plugin-companion ]]; then
+        write_native_scw_state codex "$target"
+        write_native_scw_state codex "$collision_target"
+        write_native_scw_state codex "$personal_target"
+      fi
+
+      "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+        --mode "$mode" --delivery-mode "$delivery_mode" >"$tmp/install.out"
+
+      if [[ "$mode" = copy ]]; then
+        assert_file "$target/THIRD_PARTY-NOTICES.md"
+        [[ ! -L "$target/THIRD_PARTY-NOTICES.md" ]] || \
+          fail "$delivery_mode copy install linked THIRD_PARTY-NOTICES.md"
+      else
+        assert_symlink "$target/THIRD_PARTY-NOTICES.md"
+      fi
+      cmp -s "$target/THIRD_PARTY-NOTICES.md" "$ROOT/THIRD_PARTY-NOTICES.md" || \
+        fail "$mode $delivery_mode install changed THIRD_PARTY-NOTICES.md"
+
+      mkdir -p "$collision_target/THIRD_PARTY-NOTICES.md"
+      set +e
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$collision_target" \
+        --mode "$mode" --delivery-mode "$delivery_mode" 2>&1)"
+      status=$?
+      set -e
+
+      [[ "$status" -ne 0 ]] || \
+        fail "$mode $delivery_mode install replaced a THIRD_PARTY-NOTICES.md directory"
+      assert_contains "$output" "$collision_target/THIRD_PARTY-NOTICES.md"
+      [[ ! -e "$collision_target/LICENSE" && ! -e "$collision_target/workflows" ]] || \
+        fail "$mode $delivery_mode notice collision partially installed pack assets"
+      [[ ! -e "$collision_target/.agent-workflows-install.json" ]] || \
+        fail "$mode $delivery_mode notice collision committed metadata"
+
+      mkdir -p "$personal_target"
+      printf 'consumer-owned notice\n' > "$personal_target/THIRD_PARTY-NOTICES.md"
+      set +e
+      output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$personal_target" \
+        --mode "$mode" --delivery-mode "$delivery_mode" 2>&1)"
+      status=$?
+      set -e
+
+      [[ "$status" -ne 0 ]] || \
+        fail "$mode $delivery_mode install replaced a consumer-owned THIRD_PARTY-NOTICES.md"
+      assert_contains "$output" "$personal_target/THIRD_PARTY-NOTICES.md"
+      grep -qxF 'consumer-owned notice' "$personal_target/THIRD_PARTY-NOTICES.md" || \
+        fail "$mode $delivery_mode install changed a consumer-owned THIRD_PARTY-NOTICES.md"
+      [[ ! -e "$personal_target/LICENSE" && ! -e "$personal_target/workflows" ]] || \
+        fail "$mode $delivery_mode notice ownership failure partially installed pack assets"
+      [[ ! -e "$personal_target/.agent-workflows-install.json" ]] || \
+        fail "$mode $delivery_mode notice ownership failure committed metadata"
+    done
+  done
+}
+
+test_third_party_notices_copy_upgrade_uses_fingerprint_without_git_history() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat > "$tmp/first.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_pack_root_copy_fingerprints")
+    abort metadata.inspect unless fingerprints.key?("THIRD_PARTY-NOTICES.md")
+  ' "$target/.agent-workflows-install.json"
+
+  mv "$source/.git" "$tmp/source.git"
+  printf '\nnon-git notice-v2\n' >> "$source/THIRD_PARTY-NOTICES.md"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat > "$tmp/non-git-upgrade.out"
+  grep -qxF 'non-git notice-v2' "$target/THIRD_PARTY-NOTICES.md" || \
+    fail "recorded fingerprint did not authorize an untouched non-git notice upgrade"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  printf '\npersonal notice edit\n' >> "$target/THIRD_PARTY-NOTICES.md"
+  printf '\nnon-git notice-v3\n' >> "$source/THIRD_PARTY-NOTICES.md"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "non-git upgrade replaced a modified installed notice"
+  assert_contains "$output" "Refusing to replace unowned pack root file"
+  grep -qxF 'personal notice edit' "$target/THIRD_PARTY-NOTICES.md" || \
+    fail "blocked non-git upgrade changed the modified installed notice"
+  cmp -s "$tmp/metadata.before" "$target/.agent-workflows-install.json" || \
+    fail "blocked non-git notice upgrade changed install metadata"
+}
+
 test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation() {
   local tmp target canonical_target outside output status mode variant unsafe_ancestor expected_ancestor outside_scanner
 
@@ -8335,6 +8440,8 @@ main() {
     test_auto_host_skips_unresolved_configured_home_equality_marker
     test_invalid_explicit_target_diagnostics_preserve_exact_path
     test_plugin_companion_installs_non_skill_assets_and_records_mode
+    test_third_party_notices_are_installed_for_every_delivery_mode
+    test_third_party_notices_copy_upgrade_uses_fingerprint_without_git_history
     test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass

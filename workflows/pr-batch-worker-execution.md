@@ -1,6 +1,6 @@
 # PR-Batch Worker Execution
 
-This component owns bounded implementation for an accepted PR-batch lane.
+This component owns bounded implementation for an accepted lane.
 Load after prompt intake, planning, dependency preflight, and dispatch, before
 creating the lane worktree or editing files.
 
@@ -51,8 +51,11 @@ does not redefine scope or substitute a new diagnosis.
   multi-machine workers use `git worktree add`; in-process Claude Code
   `Agent`/`Workflow` workers use `isolation: 'worktree'`. Never let concurrent
   file-editing workers share a working directory, index, or branch.
-- Verify repository root, exact base, branch, worktree cleanliness, and live
-  GitHub target before editing. Never revert another worker's changes.
+- Verify repository root, exact base, branch, and worktree cleanliness before
+  editing. For a GitHub issue/PR, re-fetch the live target. For a
+  `trusted-ad-hoc-override` lane, instead re-verify its complete accepted
+  durable override provenance is exact and non-`UNKNOWN`. Never revert another
+  worker's changes.
 - When optional coordination is active, refresh its heartbeat at phase changes.
   Before rebase or push, recheck bounded status and the known
   holder/generation/instance; a mismatch stops without mutation. A dependent
@@ -131,9 +134,10 @@ owner runs the clean committed full validation and all current-head gates.
 
 Use reversible best judgment for naming, ordinary conflicts, test selection,
 changelog deferral, documentation placement, and other non-consequential
-choices allowed by repository policy. Record the decision for integration.
+choices allowed by repository policy. Record it for integration.
 
-Stop at a safe checkpoint when contradictory evidence appears; goal/behavior changes; unrelated work;
+Stop at a safe checkpoint when contradictory evidence appears; the approved
+goal, accepted behavior, or acceptance criteria changes; unrelated work;
 repository/trust-boundary crossings; destructive or hard-to-reverse actions;
 new secrets, permissions, deployments, billing, or external effects;
 consequential architecture, performance, compatibility, or product decisions;

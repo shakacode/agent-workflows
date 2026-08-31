@@ -55,7 +55,7 @@ AUDIT_BOUNDED_EXECUTION_REQUIRED_CONCEPTS = {
     "vector, launch it in its own process group, and terminate the whole process group when the deadline expires.",
   "timeout failure evidence and closeout continuation" =>
     "A timeout or forced termination is a command failure: record best-effort `UNKNOWN` telemetry-audit evidence " \
-    "and continue closeout through steps 13-14 with that blocker; the audit subprocess must never wedge merge " \
+    "and continue closeout through steps 12-13 with that blocker; the audit subprocess must never wedge merge " \
     "closeout."
 }.freeze
 REMEDIATION_AUTHORITY_REQUIRED_CONCEPTS = {

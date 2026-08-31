@@ -7,6 +7,10 @@ ROOT = File.expand_path("../../..", __dir__)
 COMPONENT_PATH = File.join(ROOT, "workflows/pr-batch-worker-execution.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
+DEPENDENCY_POLICY_LINK =
+  "[Dependency And Conflict Throughput Policy]" \
+  "(../../workflows/pr-processing.md#dependency-and-conflict-throughput-policy)"
+ACCEPTANCE_CRITERIA_STOP = "the approved goal, accepted behavior, or acceptance criteria changes"
 
 def section(text, heading, next_heading)
   match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
@@ -41,7 +45,7 @@ class WorkerExecutionContractTest < Minitest::Test
       assert_match(/^## #{Regexp.escape(heading)}$/, @component, heading)
     end
 
-    assert_operator @component.bytesize, :<=, 11_000,
+    assert_operator @component.bytesize, :<=, 12_000,
                     "worker execution must stay smaller than the duplicated source blocks it replaces"
     assert_includes @component, "It emits a committed implementation head and replayable evidence."
     assert_includes @component, "worker-execution-handoff v1"
@@ -52,15 +56,29 @@ class WorkerExecutionContractTest < Minitest::Test
       "workflow" => squish(section(@workflow, "### Worker Rules", /^###\s+/)),
       "pr-batch skill" => squish(section(@skill, "## Worker Rules", /^##\s+/))
     }
+    route_links = {
+      "workflow" => "[PR-Batch Worker Execution](pr-batch-worker-execution.md)",
+      "pr-batch skill" => "[PR-Batch Worker Execution](../../workflows/pr-batch-worker-execution.md)"
+    }
 
     routes.each do |label, route|
-      assert_equal 1, route.scan("pr-batch-worker-execution.md").length, label
+      assert_equal 1, route.scan(route_links.fetch(label)).length, label
       assert_includes route, "focused validation", label
       assert_includes route, "implementation-head handoff", label
       refute_includes route, "git worktree add", "#{label} mirrors isolated setup"
       refute_includes route, "worker-execution-handoff v1", "#{label} mirrors the output schema"
       assert_operator route.bytesize, :<, 1_200, "#{label} is no longer a thin route"
     end
+  end
+
+  def test_skill_preserves_the_dependency_policy_route
+    route = squish(section(@skill, "## Worker Rules", /^##\s+/))
+
+    assert_equal 1, route.scan(DEPENDENCY_POLICY_LINK).length
+    assert_includes route, "Non-safety coordination override:"
+    assert_includes route, "Batch Plan"
+    assert_includes route, "Lane Cards"
+    assert_includes route, "protected gates"
   end
 
   def test_isolation_and_dependency_permissions_fail_closed
@@ -75,6 +93,10 @@ class WorkerExecutionContractTest < Minitest::Test
     assert_includes setup, "missing or `UNKNOWN` stops the lane"
     assert_includes setup, "holder/generation/instance"
     assert_includes setup, "claim-only execution"
+    assert_includes setup, "For a GitHub issue/PR, re-fetch the live target"
+    assert_includes setup,
+                    "For a `trusted-ad-hoc-override` lane, instead re-verify its complete accepted durable override provenance"
+    refute_includes setup, "worktree cleanliness, and live GitHub target before editing"
   end
 
   def test_expansion_preserves_reservation_and_resume_gates
@@ -114,6 +136,7 @@ class WorkerExecutionContractTest < Minitest::Test
     assert_includes attention, "`permission`, otherwise `question`, otherwise"
     assert_includes attention, "one exact decision or action required"
     assert_includes attention, "Do not ask merely"
+    assert_includes attention, ACCEPTANCE_CRITERIA_STOP
     assert_includes attention, "verification would be weakened"
   end
 

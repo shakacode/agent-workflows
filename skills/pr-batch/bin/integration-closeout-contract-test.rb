@@ -5,6 +5,7 @@ require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
 COMPONENT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
+PRODUCTION_RELEASE_PATH = File.join(ROOT, "workflows/pr-production-release.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 VALIDATE_WORKFLOW_PATH = File.join(ROOT, ".github/workflows/validate.yml")
@@ -48,6 +49,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
 
   def setup
     @component = File.read(COMPONENT_PATH, encoding: "UTF-8")
+    @production_release = File.read(PRODUCTION_RELEASE_PATH, encoding: "UTF-8")
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
     @skill = File.read(SKILL_PATH, encoding: "UTF-8")
     @validate_workflow = File.read(VALIDATE_WORKFLOW_PATH, encoding: "UTF-8")
@@ -222,6 +224,11 @@ class IntegrationCloseoutContractTest < Minitest::Test
     refute_includes @component, "Refresh stale release-mode classification"
     refute_includes @component, "During accelerated-RC auto-merge"
     refute_includes @component, "append the audit report to the release-gate audit ledger"
-    assert_match(/^#### Release Audit Ledger Handoff$/, @workflow)
+    assert_match(/^## Release Audit Ledger Handoff$/, @production_release)
+    release_audit_route = route_after(@workflow, "Release Audit Ledger Handoff")
+    assert_includes release_audit_route.gsub(/\s+/, " "),
+                    "resolved PR Production And Release component"
+    assert_includes release_audit_route, "compatibility route"
+    assert_operator release_audit_route.bytesize, :<, 450
   end
 end

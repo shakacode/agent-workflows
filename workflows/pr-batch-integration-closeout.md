@@ -995,9 +995,17 @@ The closeout lane is:
    hosted-CI waitback: autonomous nit outcomes, human decision-point count, current
    confidence or readiness note, and any remaining `UNKNOWN` facts.
 10. Mark ready or merge PRs only under the resolved per-PR merge authority after
-    ordinary qualification and the merge-endgame debounce. A downstream
-    production/release result may add a blocker, but this component performs no
-    release, promotion, tracker, or deployment action.
+    ordinary qualification and the merge-endgame debounce. Immediately before
+    that action, repeat the bounded tracker-discovery check when the consumer
+    repo defines tracker-discovery policy. If the refreshed tracker selects
+    release handling, load the resolved production/release component; if the
+    defined discovery cannot complete or is ambiguous, record `UNKNOWN` and
+    block the action. When that component is loaded, also apply its **Release
+    Closeout Extension** section from the resolved component: apply the
+    extension's pre-action rules before the ready or merge action and its
+    post-merge rule before ordinary closeout step 11. A downstream
+    production/release result may add a blocker, but this
+    component performs no release, promotion, tracker, or deployment action.
 11. After any closeout-lane merge action, run a lightweight sweep for late
     post-merge bot findings before the final batch handoff: confirm the PR landed,
     resolve target and base branch names from PR metadata and `.agents/agent-workflow.yml`, check

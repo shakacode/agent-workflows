@@ -217,14 +217,24 @@ When invoking this skill's helper scripts, resolve `PR_BATCH_SKILL_DIR` in this
 order: explicit environment variable; the loaded skill's base directory when the
 host exposes it; repo-local `.agents/skills/pr-batch`; then stop with a precise
 blocker if the helper is still missing.
-For release-mode coordination, auto-merge confidence, and shared release tracker
-updates, follow `AGENTS.md` and the release-mode sections of the resolved
-`pr-processing.md`; do not invent new labels or overwrite tracker issue bodies
-from stale reads. Select the merge gate by the target branch's release phase:
-follow the **Release Phase Gate** in the resolved `pr-processing.md` and the
-repo's `AGENTS.md` release policy. If any target's value, priority, or proposed
-fix scope is unclear, use the installed or repo-local `evaluate-issue` skill
-before assigning implementation workers.
+For release-mode coordination, auto-merge confidence, shared release trackers,
+production deployment or promotion, publishing, release rollback, or other
+explicit release work, load the resolved
+`pr-production-release.md`: prefer the repo-local
+`.agents/workflows/pr-production-release.md` when present; otherwise use the
+installed workflow from the same Agent Workflows pack as the loaded `pr-batch`
+skill, not relative to a potentially repo-pinned processing override. Follow the
+consumer repo's `AGENTS.md` release policy. Do
+not restate the component's tracker, phase, promotion, or release rules here.
+Ordinary base-branch feature work does not load that downstream component unless
+repository policy or the live release tracker selects release handling for that
+PR. Before skipping it, perform a bounded tracker-discovery check using only the
+consumer repo's `AGENTS.md` tracker labels, title prefix, or other search policy.
+Load the component when an existing applicable tracker unambiguously selects the
+PR; if the repo defines no tracker discovery policy, do not invent one. If any
+target's value, priority, or proposed fix scope is unclear, use the
+installed or repo-local `evaluate-issue` skill before assigning implementation
+workers.
 Skip issues labeled `needs-customer-feedback` unless the user explicitly provides customer evidence or maintainer approval for that issue; report each skipped target with `needs-customer-feedback` as the reason.
 
 ## Non-Negotiable Safety Rules
@@ -652,25 +662,38 @@ registration carries `pack_sha`, `coordinator_preference`, and per-lane
 checkpoints without replacing prose packets. Do not duplicate auto lifecycle
 events `claim.acquired`, `claim.released`, or `phase.changed`.
 
+For a compact directional throughput view, normalize only allowlisted durable
+coordination and field-selected GitHub-shaped metadata into
+`workflow-telemetry-input` v1, then run the sibling
+`bin/workflow-telemetry-report`. Use its replay fixture and contract documented
+in `docs/coordination-backend.md`; preserve literal `UNKNOWN` for unavailable
+measures. Its phase, human-question queue, and slot totals are cumulative across
+lanes rather than elapsed critical-path time; its separate batch-level
+`integration_seconds` window is not `phase_seconds.integration`. Never add raw prompts, responses, transcripts, tool results, secrets,
+environment/auth content, exact accounting, adaptive scheduling, experiments,
+or a parallel collection system.
+
 ## Worker Rules
 
 Codex-targeted waves may use up to 10 independent lanes, or 8 when shared/risky
-conditions apply. Claude and generic waves use up to 5 lanes, or up to 3 under those same
-conditions. Keep requested and observed routes distinct; if the dispatcher or runtime inherits
-or defaults to another route, record it honestly and continue. File overlap is an integration advisory;
-issue-authored semantic dependencies remain the only ordering edges.
+conditions apply. Claude and generic waves use up to 5 lanes, or up to 3 under
+those conditions. Keep requested and observed routes distinct;
+if the dispatcher or runtime inherits or defaults to another route, record it
+honestly. File overlap is an integration advisory.
 
-Load the canonical
-[PR-Batch Worker Execution](../../workflows/pr-batch-worker-execution.md)
-component after prompt intake, plan/dependency preflight, and dispatcher
-selection. It owns isolated setup, the bounded implementation loop, focused
-validation, meaningful stop packets, the worker attention queue, Lane Cards,
-and the implementation-head handoff.
+Use the canonical
+[Dependency And Conflict Throughput Policy](../../workflows/pr-processing.md#dependency-and-conflict-throughput-policy).
+Put `Non-safety coordination override:` in the Batch Plan and affected Lane
+Cards; it never alters protected gates.
 
-This skill routes the accepted lane and surrounding planning, optional
-coordination, security, and closeout decisions into that component. Do not
-mirror or reinterpret its execution contract here. The integration/PR-closeout
-owner consumes the returned head and evidence and remains responsible for PR
+After prompt intake, plan/dependency preflight, and dispatcher selection, load
+[PR-Batch Worker Execution](../../workflows/pr-batch-worker-execution.md). It owns
+isolated setup, the bounded implementation loop, focused validation, meaningful
+stop packets, the worker attention queue, Lane Cards, and the
+implementation-head handoff.
+
+Keep planning, coordination, security, and PR closeout here; do not mirror the
+execution contract. The integration owner consumes the head/evidence and owns
 publication, current-head review/CI, readiness, and merge sequencing.
 
 ## Integration And PR Publication

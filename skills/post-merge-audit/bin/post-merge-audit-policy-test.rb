@@ -156,7 +156,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   def test_release_gate_ledger_append_is_not_blocked_by_comment_ban
     [
       "skills/post-merge-audit/SKILL.md",
-      "workflows/pr-processing.md"
+      "workflows/pr-production-release.md"
     ].each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
