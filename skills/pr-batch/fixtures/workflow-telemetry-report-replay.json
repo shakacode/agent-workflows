@@ -1,0 +1,76 @@
+{
+  "contract": "workflow-telemetry-input",
+  "version": 1,
+  "batch_id": "aw-replay-562",
+  "source_ref": "coordination://aw-replay-562",
+  "prompt_creation": {
+    "at": "2026-08-29T20:00:00Z",
+    "model": "UNKNOWN",
+    "workflow_version": "pack-prompt-v1"
+  },
+  "worker_start": {
+    "at": "2026-08-29T20:00:45Z",
+    "model": "gpt-5.6-sol",
+    "workflow_version": "pack-worker-v2"
+  },
+  "phase_intervals": [
+    {
+      "lane_id": "issue-562-telemetry",
+      "phase": "discovery",
+      "started_at": "2026-08-29T20:00:45Z",
+      "ended_at": "2026-08-29T20:02:45Z"
+    },
+    {
+      "lane_id": "issue-562-telemetry",
+      "phase": "implementation",
+      "started_at": "2026-08-29T20:02:45Z",
+      "ended_at": "2026-08-29T20:07:45Z"
+    },
+    {
+      "lane_id": "issue-562-telemetry",
+      "phase": "review",
+      "started_at": "2026-08-29T20:07:45Z",
+      "ended_at": "UNKNOWN"
+    }
+  ],
+  "human_questions": [
+    {
+      "lane_id": "issue-562-telemetry",
+      "asked_at": "2026-08-29T20:03:00Z",
+      "answered_at": "2026-08-29T20:05:00Z"
+    },
+    {
+      "lane_id": "issue-562-telemetry",
+      "asked_at": "2026-08-29T20:08:00Z",
+      "answered_at": "UNKNOWN"
+    }
+  ],
+  "slot_intervals": [
+    {
+      "lane_id": "issue-562-telemetry",
+      "status": "occupied",
+      "started_at": "2026-08-29T20:00:45Z",
+      "ended_at": "2026-08-29T20:10:45Z"
+    },
+    {
+      "lane_id": "issue-562-telemetry",
+      "status": "stopped",
+      "started_at": "2026-08-29T20:10:45Z",
+      "ended_at": "2026-08-29T20:11:45Z"
+    }
+  ],
+  "amplification": {
+    "review_attempts": 2,
+    "ci_attempts": 3,
+    "retry_attempts": 1
+  },
+  "integration": {
+    "started_at": "2026-08-29T20:12:00Z",
+    "ended_at": "2026-08-29T20:17:00Z"
+  },
+  "outcomes": {
+    "consequential_defects": 1,
+    "reverts": 0,
+    "rollbacks": "UNKNOWN"
+  }
+}
