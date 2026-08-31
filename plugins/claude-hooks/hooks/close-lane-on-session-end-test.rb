@@ -310,6 +310,11 @@ class CloseLaneOnSessionEndTest < Minitest::Test
     end
   end
 
+  def test_production_emission_deadline_defaults_to_one_second
+    assert_equal 1.0, CloseLaneOnSessionEnd::DEFAULT_TIMEOUT_SECONDS
+    assert_equal CloseLaneOnSessionEnd::DEFAULT_TIMEOUT_SECONDS, CloseLaneOnSessionEnd.timeout_seconds({})
+  end
+
   def test_successful_leader_times_out_when_a_descendant_outlives_the_deadline
     Dir.mktmpdir("session-end-successful-leader-test") do |directory|
       ready_reader, ready_writer = IO.pipe
