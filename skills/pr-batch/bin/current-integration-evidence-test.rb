@@ -41,6 +41,15 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
     end
   end
 
+  def test_disjoint_safe_deltas_report_sorted_reuse_reasons
+    with_repository(base_delta_path: "docs/guide.md", head_path: "docs/feature.md") do |fixture|
+      result = collect(fixture)
+
+      assert_equal "reuse-exact-head", result.dig("reuse", "decision")
+      assert_equal %w[base-delta-reuse-safe pr-delta-reuse-safe], result.dig("reuse", "reasons")
+    end
+  end
+
   def test_disjoint_code_on_both_sides_requires_fresh_integration
     with_repository(base_delta_path: "lib/other.rb") do |fixture|
       result = collect(fixture)
@@ -177,6 +186,23 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
     end
   end
 
+  def test_collect_ignores_provider_candidate_oid_churn
+    with_repository(base_delta_path: "docs/guide.md") do |fixture|
+      reads = 0
+      reader = lambda do |**|
+        reads += 1
+        value = snapshot(fixture)
+        value.fetch("candidate")["oid"] = (reads == 1 ? "d" : "e") * 40
+        value
+      end
+
+      result = collect(fixture, snapshot_reader: reader)
+
+      assert_equal "reuse-exact-head", result.dig("reuse", "decision")
+      assert_equal "d" * 40, result.dig("candidate", "oid")
+    end
+  end
+
   def test_local_git_fallback_ignores_ambient_git_overrides_and_repository_state
     with_repository(base_delta_path: "docs/guide.md") do |fixture|
       value = snapshot(fixture)
@@ -271,13 +297,13 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
     end
   end
 
-  def test_snapshot_movement_fails_closed
+  def test_snapshot_semantic_movement_fails_closed
     with_repository(base_delta_path: "docs/guide.md") do |fixture|
       reads = 0
       reader = lambda do |**|
         reads += 1
         value = snapshot(fixture)
-        value["candidate"]["oid"] = "f" * 40 if reads == 2
+        value["candidate"]["tree_oid"] = "f" * 40 if reads == 2
         value
       end
 

@@ -110,7 +110,11 @@ module CurrentIntegrationEvidence
                 local_candidate(repo_root, trusted_base_sha, head_sha)
 
     final = snapshot_reader.call(repo:, pr_number:, base_ref:)
-    raise Error, "current integration changed during evidence collection" unless final == initial
+    validate_snapshot!(final, base_ref:, head_sha:, trusted_base_sha:)
+    candidate_from_snapshot(final, trusted_base_sha:, head_sha:)
+    unless snapshot_semantic_identity(final) == snapshot_semantic_identity(initial)
+      raise Error, "current integration changed during evidence collection"
+    end
 
     decision, reasons = reuse_decision(
       recorded_base_sha:, trusted_base_sha:, pr_paths: git_pr_paths,
@@ -288,6 +292,8 @@ module CurrentIntegrationEvidence
     safe_reasons = []
     safe_reasons << "base-delta-reuse-safe" if base_safe
     safe_reasons << "pr-delta-reuse-safe" if pr_safe
+    safe_reasons.uniq!
+    safe_reasons.sort!
     return ["reuse-exact-head", safe_reasons] if pr_safe || base_safe
 
     ["fresh-integration-required", ["neither-delta-reuse-safe"]]
@@ -324,6 +330,16 @@ module CurrentIntegrationEvidence
     raise Error, "#{label} list contains duplicates" unless normalized.uniq.length == normalized.length
 
     normalized.sort
+  end
+
+  def snapshot_semantic_identity(snapshot)
+    candidate = snapshot["candidate"]
+    semantic_candidate = if candidate.is_a?(Hash)
+                           candidate.reject { |key, _value| key == "oid" }
+                         else
+                           candidate
+                         end
+    snapshot.merge("candidate" => semantic_candidate)
   end
 
   def changed_paths(repo_root, older, newer)
