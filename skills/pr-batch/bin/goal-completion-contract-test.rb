@@ -199,9 +199,6 @@ PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " 
                       "(`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, " \
                       "`go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid " \
                       "configured `repo_prefix` is a blocker; do not silently fall back."
-PROJECT_PREFIX_DOCS_RULE = "using the optional validated `repo_prefix` from " \
-                           "`.agents/agent-workflow.yml` when present. Otherwise use the deterministic " \
-                           "repository-name abbreviation (`agent-workflows` -> `AW`)"
 LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "`<PROJECT>` is a short abbreviation derived from the current repository name",
   "Derive `<PROJECT>` from the current repository name",
@@ -1273,11 +1270,53 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch/SKILL.md" => [@pr_batch_skill, PROJECT_PREFIX_RULE],
       "skills/plan-pr-batch/SKILL.md" => [@plan_pr_batch_skill, PROJECT_PREFIX_RULE],
       "skills/triage/SKILL.md" => [@triage_skill, PROJECT_PREFIX_RULE],
-      "docs/pr-batch-skills.md" => [@pr_batch_docs, PROJECT_PREFIX_DOCS_RULE]
+      "docs/pr-batch-skills.md" => [@pr_batch_docs, PROJECT_PREFIX_RULE]
     }.each do |label, (text, pinned_rule)|
       assert_empty permissive_project_name_sentences(text, pinned_rule),
                    "#{label} ties `<PROJECT>` to the repository name outside the pinned rule"
     end
+  end
+
+  def test_continuation_prompt_owns_its_project_prefix_rule
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+
+    assert_squished_includes continuation, PROJECT_PREFIX_RULE, "continuation prompt"
+    refute_includes @workflow_goal_prompt, "<PROJECT>",
+                    "the six-field human prompt must not regain continuation title metadata"
+  end
+
+  def test_recovery_routes_and_merge_authority_do_not_reference_removed_prompt_fields_or_defaults
+    recovery = extract_markdown_section(
+      @workflow,
+      "### Model-Routing Recovery Prompt",
+      end_heading: /^###\s+/
+    )
+
+    assert_squished_includes recovery, "values from the existing durable Batch Plan", "recovery prompt"
+    refute_includes recovery, "fields from the Plan To Goal template"
+
+    {
+      "workflow" => @workflow,
+      "pr-batch skill" => @pr_batch_skill,
+      "plan-pr-batch skill" => @plan_pr_batch_skill
+    }.each do |label, text|
+      refute_includes text, "unresolved authority defaults to", label
+      refute_includes text, "default the normal human prompt to `ask`", label
+    end
+
+    assert_squished_includes @workflow,
+                             "ask the user before launch when authority is unresolved",
+                             "workflow"
+    assert_squished_includes @pr_batch_skill,
+                             "before worker launch from visible authority or ask the user",
+                             "pr-batch skill"
+    assert_squished_includes @plan_pr_batch_skill,
+                             "ask whether the normal human prompt should use `ask` or `auto`",
+                             "plan-pr-batch skill"
   end
 
   def test_permissive_project_guidance_is_caught_even_when_reworded

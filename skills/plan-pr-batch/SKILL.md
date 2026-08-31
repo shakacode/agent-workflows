@@ -192,8 +192,8 @@ the whole launch before dispatch.
      Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
    - If the user wants a ready `$pr-batch` goal and has not specified merge
-     authority, default the normal human prompt to `ask`; accept explicit
-     `auto`. Map those values to machine `ask` and
+     authority, ask whether the normal human prompt should use `ask` or `auto`.
+     Map those values to machine `ask` and
      `auto_merge_when_gates_pass`. Preserve an explicitly selected machine-only
      `merge_authority: none` in durable state outside the normal human prompt.
      Do not leave the human field unresolved. Explain that `ask` automatically

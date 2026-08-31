@@ -289,8 +289,8 @@ Ask only for missing data. If the user already supplied an exact value, use it.
 5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
 <!-- host-branch: codex-only end -->
 6. **Merge authority**: the normal human prompt uses `ask` or `auto`. Resolve it
-   before worker launch from visible authority; unresolved authority defaults to
-   `ask`. Human `auto` maps to machine `auto_merge_when_gates_pass`. Preserve
+   before worker launch from visible authority or ask the user. Human `auto`
+   maps to machine `auto_merge_when_gates_pass`. Preserve
    machine-only `merge_authority: none` outside the human prompt when repository
    policy or an explicit no-merge workflow selects it. Explain that
    `ask` automatically walks through the exact-diff PR one conceptual change at

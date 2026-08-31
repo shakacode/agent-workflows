@@ -688,8 +688,8 @@ For broader or ambiguous requests, resolve these inputs:
   authorization reference instead of inventing another source record.
 - Task name: a deterministic title naming repository, work item, and purpose.
 - Mode: plan-only, create a Codex goal prompt, or launch workers now.
-- Merge authority: human `ask` or `auto`; unresolved authority defaults to
-  `ask`. Map `auto` to machine `auto_merge_when_gates_pass`. Preserve an
+- Merge authority: human `ask` or `auto`; ask the user before launch when
+  authority is unresolved. Map `auto` to machine `auto_merge_when_gates_pass`. Preserve an
   explicitly selected machine-only `merge_authority: none` outside the normal
   human prompt. `ask` automatically walks through the exact-diff PR one
   conceptual change at a time before its one final merge decision.
@@ -2995,9 +2995,10 @@ continuation prompt below.
 
 Before resuming, keep the current goal. Near its top, replace any conflicting
 static model-group line with the compact `Coordinator model/effort preference:`
-and `Worker model/effort preferences:` fields from the Plan To Goal template. Do not clear the
-goal; its objective, targets, `merge_authority`, QA decision, and completion
-contract remain authoritative.
+and `Worker model/effort preferences:` values from the existing durable Batch
+Plan. These recovery values are not additions to the six-field human prompt. Do
+not clear the goal; its objective, targets, `merge_authority`, QA decision, and
+completion contract remain authoritative.
 
 For a conservative GPT-5.6 recovery explicitly requested by an operator, use
 the recommended profile: routine multi-lane coordination on balanced/high;
@@ -3115,9 +3116,19 @@ target list for each batch:
 
 <!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
 
-Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule from
-[Plan To Goal Handoff](#plan-to-goal-handoff), and run
-`date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
+Before filling this continuation-only `Batch title:` line, run
+`date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`. Resolve `<PROJECT>`
+from the optional `repo_prefix` in `.agents/agent-workflow.yml` when present;
+its value must be 1-6 uppercase ASCII letters or digits. If `repo_prefix` is
+absent, derive `<PROJECT>` deterministically from the repository name: use the
+basename of the `origin` remote after stripping `.git`, or the repository root
+basename when `origin` is unavailable; for a multi-segment name take the first
+character of each of the first six `-`, `_`, or space-separated segments, and
+for a single-segment name take its first 4 characters or the whole name when
+shorter, then uppercase the result (`agent-workflows` -> `AW`,
+`react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` ->
+`WEB3`, `3d-tiles` -> `3T`). An invalid configured `repo_prefix` is a blocker;
+do not silently fall back.
 
 ```text
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>.
