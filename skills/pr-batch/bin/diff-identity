@@ -1,0 +1,141 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "json"
+require "optparse"
+
+# Canonical exact-diff identity shared by walkthrough and merge assurance.
+module DiffIdentity
+  class Error < StandardError; end
+
+  CONTRACT = "diff-identity"
+  VERSION = 1
+  SERIALIZATION_TAG = "#{CONTRACT}-v#{VERSION}".freeze
+  SHA_PATTERN = /\A[0-9a-f]{40}\z/
+  REF_FORBIDDEN_CHARACTERS = ["~", "^", ":", "?", "*", "[", "\\"].freeze
+
+  module_function
+
+  def derive(base_ref:, base_sha:, head_sha:)
+    Digest::SHA256.hexdigest(serialization(base_ref:, base_sha:, head_sha:))
+  end
+
+  def serialization(base_ref:, base_sha:, head_sha:)
+    validate!(base_ref:, base_sha:, head_sha:)
+    fields = [
+      SERIALIZATION_TAG,
+      "base_ref", base_ref.bytesize.to_s, base_ref,
+      "base_sha", base_sha.bytesize.to_s, base_sha,
+      "head_sha", head_sha.bytesize.to_s, head_sha,
+      ""
+    ]
+    fields.join("\0").b
+  end
+
+  def canonical_ref?(value)
+    return false unless value.is_a?(String)
+    return false unless value.encoding == Encoding::UTF_8 && value.valid_encoding?
+    return false if value.empty?
+    return false if value.bytes.any? { |byte| byte <= 0x20 || byte == 0x7f }
+    return false if value.start_with?("-", "/") || value.end_with?("/", ".")
+    return false if value.include?("..") || value.include?("@{") || value.include?("//")
+    return false if value.each_char.any? { |character| REF_FORBIDDEN_CHARACTERS.include?(character) }
+
+    value.split("/", -1).all? do |component|
+      !component.empty? && !component.start_with?(".") && !component.end_with?(".lock")
+    end
+  end
+
+  def validate!(base_ref:, base_sha:, head_sha:)
+    unless canonical_ref?(base_ref)
+      raise Error, "base ref must be a canonical nonempty Git ref name"
+    end
+    raise Error, "base SHA must be exactly 40 lowercase hexadecimal characters" unless
+      base_sha.is_a?(String) && base_sha.match?(SHA_PATTERN)
+    raise Error, "head SHA must be exactly 40 lowercase hexadecimal characters" unless
+      head_sha.is_a?(String) && head_sha.match?(SHA_PATTERN)
+  end
+
+  class Runner
+    def run(argv)
+      options = parse_options(argv)
+      return help if options[:help]
+
+      identity = DiffIdentity.derive(
+        base_ref: options.fetch(:base_ref),
+        base_sha: options.fetch(:base_sha),
+        head_sha: options.fetch(:head_sha)
+      )
+      if options[:json]
+        puts JSON.pretty_generate(
+          "contract" => CONTRACT,
+          "version" => VERSION,
+          "base_ref" => options.fetch(:base_ref),
+          "base_sha" => options.fetch(:base_sha),
+          "head_sha" => options.fetch(:head_sha),
+          "diff_identity" => identity
+        )
+      else
+        puts identity
+      end
+      0
+    rescue Error => e
+      warn "Error: #{e.message}"
+      1
+    end
+
+    private
+
+    def parse_options(argv)
+      options = { json: false }
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: diff-identity --base-ref REF --base-sha SHA --head-sha SHA [--json]"
+        opts.on("--base-ref REF") do |value|
+          options[:base_ref] = utf8_cli_argument!(value, "--base-ref")
+        end
+        opts.on("--base-sha SHA") do |value|
+          options[:base_sha] = utf8_cli_argument!(value, "--base-sha")
+        end
+        opts.on("--head-sha SHA") do |value|
+          options[:head_sha] = utf8_cli_argument!(value, "--head-sha")
+        end
+        opts.on("--json") { options[:json] = true }
+        opts.on("-h", "--help") { options[:help] = true }
+      end
+      # OptionParser applies inferred regular expressions before callbacks.
+      # Parse binary duplicates so malformed locale-tagged argv reaches our
+      # controlled UTF-8 validation instead of raising from Regexp#match.
+      remaining = parser.parse(argv.map(&:b))
+      raise Error, "unexpected arguments: #{remaining.join(' ')}" unless remaining.empty?
+
+      unless options[:help]
+        %i[base_ref base_sha head_sha].each do |key|
+          raise Error, "--#{key.to_s.tr('_', '-')} is required" if options[key].nil?
+        end
+      end
+      options
+    rescue OptionParser::ParseError => e
+      raise Error, e.message
+    end
+
+    def utf8_cli_argument!(value, option)
+      utf8 = value.dup.force_encoding(Encoding::UTF_8)
+      raise Error, "#{option} must contain valid UTF-8 bytes" unless utf8.valid_encoding?
+
+      utf8
+    end
+
+    def help
+      puts <<~HELP
+        Usage: diff-identity --base-ref REF --base-sha SHA --head-sha SHA [--json]
+
+        Emit the canonical lowercase SHA-256 identity for a reviewed diff.
+        --base-sha is the resolved base commit or effective merge-base commit.
+      HELP
+      0
+    end
+  end
+end
+
+exit DiffIdentity::Runner.new.run(ARGV) if $PROGRAM_NAME == __FILE__

@@ -21,6 +21,34 @@ module AutonomousMergeRuntimeTrust
         .agents/skills/pr-batch/bin/autonomous-merge-closeout
       ]
     },
+    "diff-identity-helper" => {
+      path: File.expand_path("../bin/diff-identity", __dir__),
+      tree_paths: %w[
+        skills/pr-batch/bin/diff-identity
+        .agents/skills/pr-batch/bin/diff-identity
+      ]
+    },
+    "ci-readiness-helper" => {
+      path: File.expand_path("../bin/pr-ci-readiness", __dir__),
+      tree_paths: %w[
+        skills/pr-batch/bin/pr-ci-readiness
+        .agents/skills/pr-batch/bin/pr-ci-readiness
+      ]
+    },
+    "merge-assurance-helper" => {
+      path: File.expand_path("../bin/merge-assurance", __dir__),
+      tree_paths: %w[
+        skills/pr-batch/bin/merge-assurance
+        .agents/skills/pr-batch/bin/merge-assurance
+      ]
+    },
+    "merge-submit-helper" => {
+      path: File.expand_path("../bin/pr-merge-submit", __dir__),
+      tree_paths: %w[
+        skills/pr-batch/bin/pr-merge-submit
+        .agents/skills/pr-batch/bin/pr-merge-submit
+      ]
+    },
     "decision-library" => {
       path: File.expand_path("autonomous_merge_decision.rb", __dir__),
       tree_paths: %w[

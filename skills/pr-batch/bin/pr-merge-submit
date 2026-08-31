@@ -7,6 +7,7 @@
 
 require "json"
 require "digest"
+require "English"
 require "etc"
 require "fileutils"
 require "open3"
@@ -158,6 +159,7 @@ module PrMergeSubmit
     end
 
     def run(argv)
+      @repo_root = nil
       @pending_signal = nil
       @cancellation_signal = nil
       @mutation_attempted = false
@@ -185,7 +187,7 @@ module PrMergeSubmit
     rescue UnknownOutcome => e
       warn "UNKNOWN: #{e.message}"
       2
-    rescue Error => e
+    rescue Error, MergeAssurance::Error => e
       warn "Error: #{e.message}"
       1
     ensure
@@ -198,7 +200,7 @@ module PrMergeSubmit
       options = {
         method: nil, subject: nil, body: nil, repo: nil, host: nil,
         expected_head: nil, expected_base: nil, merge_assurance_receipt: nil,
-        help: false, pr: nil
+        requested_hosted_runs: [], help: false, pr: nil
       }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
@@ -214,6 +216,9 @@ module PrMergeSubmit
         end
         opts.on("--merge-assurance-receipt FILE", "Fresh eligible merge-assurance receipt") do |value|
           options[:merge_assurance_receipt] = value
+        end
+        opts.on("--requested-hosted-run RUN_ID", "Trusted requested Actions run ID; repeatable") do |value|
+          options[:requested_hosted_runs] << value
         end
         opts.on("--method METHOD", METHODS, "Direct method; merge queue configuration controls queued merges") do |value|
           options[:method] = value
@@ -256,6 +261,7 @@ module PrMergeSubmit
         opts.separator "        --subject SUBJECT  Direct merge commit subject"
         opts.separator "        --body BODY        Direct merge commit body"
         opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v1 receipt"
+        opts.separator "        --requested-hosted-run RUN_ID  Trusted requested run ID; repeatable"
       end
     end
 
@@ -274,6 +280,10 @@ module PrMergeSubmit
       raise Error, "--method is required" unless METHODS.include?(options[:method])
       raise Error, "--merge-assurance-receipt is required" if options[:merge_assurance_receipt].to_s.empty?
 
+      options[:requested_hosted_runs] = MergeAssurance.canonical_requested_hosted_run_ids(
+        options[:requested_hosted_runs]
+      )
+
       reject_leading_at!(options, :subject)
       reject_leading_at!(options, :body)
     end
@@ -283,7 +293,7 @@ module PrMergeSubmit
       freshness issued_at verdict version
     ].freeze
     RECEIPT_BINDING_KEYS = %w[
-      authority base diff_identity head_sha host pr repo
+      authority base diff_base_sha diff_identity head_sha host pr repo requested_hosted_run_ids
     ].freeze
     RECEIPT_EVIDENCE_KEYS = %w[
       authenticated_tracker_reads autonomous_result ci_result context
@@ -319,10 +329,13 @@ module PrMergeSubmit
       now = Time.now.utc
       validate_receipt_evidence!(receipt, evidence)
       validate_receipt_freshness!(receipt, now)
+      trusted_ci_policy = trusted_ci_policy_for_receipt!(evidence)
       reassessed = MergeAssurance.assess(
         ci_result: evidence["ci_result"],
         autonomous_result: evidence["autonomous_result"],
         context: evidence["context"],
+        trusted_ci_policy:,
+        requested_hosted_runs: options[:requested_hosted_runs],
         selected_hosted_ci_receipts: evidence["selected_hosted_ci_receipts"],
         now:
       )
@@ -347,6 +360,222 @@ module PrMergeSubmit
       receipt
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "merge-assurance receipt is unavailable: #{e.message}"
+    end
+
+    def trusted_ci_policy_for_receipt!(evidence)
+      context = evidence["context"]
+      base = context["base"] if context.is_a?(Hash)
+      return nil unless base.is_a?(Hash)
+
+      @repo_root ||= trusted_repo_root!
+      PrCiReadiness.trusted_ci_policy_at(
+        repo_root: @repo_root,
+        base_ref: base["ref"],
+        base_sha: base["sha"]
+      )
+    rescue PrCiReadiness::Error => e
+      raise Error, "trusted-base ci_readiness policy could not be authenticated: #{e.message}"
+    end
+
+    def validate_current_ci_for_submission!(options)
+      evidence = @merge_assurance_receipt.fetch("evidence")
+      trusted_ci_policy = trusted_ci_policy_for_receipt!(evidence)
+      refreshed_ci_result = refresh_complete_ci_result!(
+        evidence.fetch("ci_result"), options, trusted_ci_policy:
+      )
+      reassessed = MergeAssurance.assess(
+        ci_result: refreshed_ci_result,
+        autonomous_result: evidence["autonomous_result"],
+        context: evidence["context"],
+        trusted_ci_policy:,
+        requested_hosted_runs: options[:requested_hosted_runs],
+        selected_hosted_ci_receipts: evidence["selected_hosted_ci_receipts"]
+      )
+      unless reassessed["eligible"] == true
+        raise Error, "current CI evidence does not currently qualify: " \
+                     "#{Array(reassessed['failures']).join('; ')}"
+      end
+      return if @merge_assurance_receipt["bindings"] == reassessed["bindings"] &&
+                @merge_assurance_receipt["follow_up_accounting"] == reassessed["follow_up_accounting"]
+
+      raise Error, "current CI reassessment changed merge-assurance bindings or accounting"
+    end
+
+    def refresh_complete_ci_result!(ci_result, options, trusted_ci_policy: nil)
+      requested_hosted = ci_result["requested_hosted"] if ci_result.is_a?(Hash)
+      requested_run_ids = options[:requested_hosted_runs]
+      unless requested_hosted.is_a?(Hash) && requested_run_ids.is_a?(Array) &&
+             requested_hosted["run_ids"] == requested_run_ids
+        raise Error, "current CI requested hosted-run bindings are malformed"
+      end
+
+      readiness = PrCiReadiness::Runner.new(
+        command_runner: lambda do |command, *arguments|
+          raise PrCiReadiness::Error, "readiness attempted an unsupported command" unless command == "gh"
+
+          run_gh(*arguments, host: options[:host])
+        end
+      )
+      refreshed = readiness.assess_authenticated(
+        repo: options[:repo], pr_number: options[:pr], host: options[:host],
+        requested_hosted_runs: requested_run_ids, trusted_repo_root: @repo_root,
+        diff_base_sha: ci_result["diff_base_sha"]
+      )
+      gated_scopes = %w[required_status_check_rollup github_actions dependabot other]
+      if gated_scopes.all? { |scope| refreshed.dig("scopes", scope, "complete") == true }
+        ci_snapshot = readiness.authenticated_ci_snapshot(
+          repo: options[:repo], pr_number: options[:pr], host: options[:host],
+          requested_hosted_runs: requested_run_ids
+        )
+        validate_ci_snapshot_continuity!(refreshed, ci_snapshot, options)
+      end
+      unless refreshed.dig("requested_hosted", "run_ids") == requested_run_ids
+        raise Error, "current CI requested hosted-run bindings changed during reassessment"
+      end
+
+      validate_policy_disposition_continuity!(ci_result, refreshed, trusted_ci_policy:)
+      expected = {
+        "context" => { "host" => options[:host] },
+        "repo" => options[:repo],
+        "pr" => options[:pr].to_i,
+        "base" => ci_result["base"],
+        "diff_base_sha" => ci_result["diff_base_sha"],
+        "diff_identity" => ci_result["diff_identity"],
+        "head_sha" => options[:expected_head],
+        "ci_policy" => trusted_ci_policy
+      }
+      changed_bindings = expected.keys.reject do |key|
+        if key == "head_sha"
+          refreshed[key].is_a?(String) && refreshed[key].casecmp?(expected[key])
+        else
+          refreshed[key] == expected[key]
+        end
+      end
+      unless changed_bindings.empty?
+        raise Error, "current CI reassessment changed bound fields: #{changed_bindings.join(', ')}"
+      end
+
+      refreshed
+    rescue PrCiReadiness::Error => e
+      raise Error, "current CI evidence could not be refreshed completely: #{e.message}"
+    end
+
+    def validate_ci_snapshot_continuity!(refreshed, snapshot, options)
+      unless snapshot["head_sha"].to_s.casecmp?(options[:expected_head])
+        raise Error, "current CI inventory moved to another head"
+      end
+
+      initial_rows = %w[github_actions dependabot].flat_map do |scope|
+        Array(refreshed.dig("scopes", scope, "rows"))
+      end
+      initial_rows.select! { |row| row.is_a?(Hash) && %w[run job].include?(row["kind"]) }
+      canonical = lambda do |rows|
+        rows.map { |row| MergeAssurance.canonical_json(row) }.sort
+      end
+      unless canonical.call(initial_rows) == canonical.call(Array(snapshot["actions_rows"]))
+        raise Error, "current CI Actions runs or jobs changed during final reassessment"
+      end
+      unless refreshed["authenticated_required_check_inventory"] == snapshot["required_check_inventory"]
+        raise Error, "current CI required checks changed during final reassessment"
+      end
+      unless refreshed["authenticated_status_inventory"] == snapshot["status_inventory"]
+        raise Error, "current CI commit statuses changed during final reassessment"
+      end
+      unless refreshed["requested_hosted"] == snapshot["requested_hosted"] &&
+             refreshed["authenticated_requested_hosted_inventory"] == snapshot["requested_hosted_inventory"]
+        raise Error, "current CI requested hosted runs changed during final reassessment"
+      end
+
+      refreshed_viewer_review_inventory = refreshed.fetch("viewer_review_inventory")
+      snapshot_viewer_review_inventory = snapshot.fetch("viewer_review_inventory")
+      unless refreshed_viewer_review_inventory.fetch("complete") == true &&
+             snapshot_viewer_review_inventory.fetch("complete") == true
+        raise Error, "current CI viewer review draft inventory was incomplete during final reassessment"
+      end
+
+      canonical_viewer_drafts = lambda do |drafts|
+        Array(drafts).map do |draft|
+          [draft.fetch("id"), draft.fetch("commit_oid")]
+        end.sort
+      end
+      unless canonical_viewer_drafts.call(refreshed.fetch("viewer_pending_review_drafts")) ==
+             canonical_viewer_drafts.call(snapshot_viewer_review_inventory.fetch("viewer_pending_review_drafts"))
+        raise Error, "current CI viewer review drafts changed during final reassessment"
+      end
+      return if refreshed["authenticated_check_inventory"] == snapshot["check_inventory"]
+
+      raise Error, "current CI check suites or runs changed during final reassessment"
+    end
+
+    def validate_policy_disposition_continuity!(receipt_ci, refreshed_ci, trusted_ci_policy:)
+      receipt_dispositions = receipt_ci.dig("scopes", "other", "policy_dispositions") if receipt_ci.is_a?(Hash)
+      if trusted_ci_policy.nil?
+        raise Error, "receipt CI policy dispositions are not authenticated" unless receipt_dispositions.nil?
+
+        return
+      end
+      unless receipt_dispositions.is_a?(Array)
+        raise Error, "receipt CI policy dispositions are malformed"
+      end
+
+      scopes = refreshed_ci["scopes"]
+      raise Error, "current CI scopes are malformed" unless scopes.is_a?(Hash)
+
+      current_rows = scopes.flat_map do |scope_name, scope|
+        next [] unless scope.is_a?(Hash) && scope["rows"].is_a?(Array)
+
+        scope["rows"].filter_map do |row|
+          [scope_name, row] if row.is_a?(Hash) && row["kind"] == "check_run"
+        end
+      end
+      required_rows = scopes.dig("required_status_check_rollup", "rows")
+      current_dispositions = scopes.dig("other", "policy_dispositions")
+      receipt_dispositions.each do |disposition|
+        rule = trusted_ci_policy.fetch("optional_approval_held_checks").find do |candidate|
+          candidate["id"] == disposition["rule_id"] &&
+            candidate["app_slug"] == disposition["app_slug"] && candidate["name"] == disposition["name"]
+        end
+        raise Error, "receipt CI disposition no longer matches an authenticated rule" unless rule
+
+        matches = current_rows.select do |_scope_name, row|
+          row["app_slug"] == rule["app_slug"] && row["name"] == rule["name"]
+        end
+        unless matches.length == 1 && matches.first.first == "other"
+          inventory_errors = scopes.values.filter_map do |scope|
+            scope["error"] if scope.is_a?(Hash) && !scope["error"].to_s.empty?
+          end
+          observed = current_rows.map do |scope_name, row|
+            "#{scope_name}:#{row['app_slug']}/#{row['name']}##{row['id']}"
+          end
+          diagnostics = inventory_errors + ["observed #{observed.empty? ? '(none)' : observed.join(', ')}"]
+          detail = ": #{diagnostics.join('; ')}"
+          raise Error, "current CI inventory does not contain exactly one disposed check in the other scope#{detail}"
+        end
+
+        current = matches.first.last
+        if Array(required_rows).any? { |required| PrCiReadiness.required_matches_optional_row?(required, current) }
+          raise Error, "current CI disposed check was reclassified as required"
+        end
+
+        current_state = PrCiReadiness.evidence_row_state(current)
+        if current["id"] != disposition["id"] && current_state != "READY"
+          raise Error, "current CI replacement for a disposed check is not independently ready"
+        end
+        unless current_state == "READY" || PrCiReadiness.optional_approval_held_row?(current)
+          raise Error, "current CI disposed check is neither held nor independently ready"
+        end
+
+        next if current_state == "READY"
+
+        has_exact_disposition = current_dispositions.is_a?(Array) &&
+                                current_dispositions.one? do |candidate|
+                                  PrCiReadiness.disposition_matches_row?(candidate, current) &&
+                                    candidate["rule_id"] == rule["id"]
+                                end
+        next if has_exact_disposition
+
+        raise Error, "current held check lacks one exact authenticated policy disposition"
+      end
     end
 
     def validate_receipt_evidence!(receipt, evidence)
@@ -451,11 +680,13 @@ module PrMergeSubmit
         bindings["head_sha"].to_s.casecmp?(options[:expected_head])
       raise Error, "merge-assurance receipt base ref mismatch" unless
         bindings.dig("base", "ref") == options[:expected_base]
+      raise Error, "merge-assurance receipt requested hosted-run authorization mismatch" unless
+        bindings["requested_hosted_run_ids"] == options[:requested_hosted_runs]
     end
 
     def load_merge_submission_policy!
       base_sha = @merge_assurance_receipt.dig("bindings", "base", "sha").to_s
-      @repo_root = trusted_repo_root!
+      @repo_root ||= trusted_repo_root!
       raw = trusted_blob!(
         base_sha, POLICY_CONFIG, "trusted-base merge-submission policy", allow_missing: true
       )
@@ -807,9 +1038,9 @@ module PrMergeSubmit
     end
 
     def direct_merge_result(options)
-      # Re-read immediately before mutation so the receipt-bound base and exact
-      # head are checked at the narrowest practical point. GitHub's direct merge
-      # mutation binds the expected head OID but has no expected-base OID field.
+      validate_current_ci_for_submission!(options)
+      # Re-read after the potentially slow CI inventory and immediately before
+      # mutation. GitHub binds the expected head OID but has no expected-base OID.
       refreshed = fetch_pr(options)
       validate_receipt_live_bindings!(refreshed, options)
       validate_pr!(refreshed, options)
@@ -912,8 +1143,10 @@ module PrMergeSubmit
         raise Error, "--method #{options[:method]} does not match trusted-base guarded-direct method #{policy['method']}"
       end
 
-      # Narrow the acknowledged non-atomic-base window immediately before the
-      # repository guard. A queue enabled in the meantime remains canonical.
+      validate_current_ci_for_submission!(options)
+      validate_live_guard!(policy.fetch("executable"), policy.fetch("trusted_bytes"))
+      # Narrow the acknowledged non-atomic-base window after the potentially
+      # slow CI inventory. A queue enabled in the meantime remains canonical.
       refreshed = fetch_pr(options)
       validate_receipt_live_bindings!(refreshed, options)
       validate_pr!(refreshed, options)
@@ -925,12 +1158,13 @@ module PrMergeSubmit
       unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil?
         raise UnknownOutcome, "PR merge-queue membership became inconsistent or UNKNOWN before guarded-direct submission"
       end
-      return enqueue_result(refreshed, options) if refreshed["isMergeQueueEnabled"] == true
+      if refreshed["isMergeQueueEnabled"] == true
+        return enqueue_result(refreshed, options, ci_validated: true, pr_validated: true)
+      end
       unless refreshed["isMergeQueueEnabled"] == false
         raise UnknownOutcome, "PR merge-queue state became missing or UNKNOWN before guarded-direct submission"
       end
 
-      validate_live_guard!(policy.fetch("executable"), policy.fetch("trusted_bytes"))
       guard_stdout, guard_stderr, guard_status = run_guard(policy, options)
       diagnostics = failure_output(guard_stdout, guard_stderr)
       reconciled = fetch_pr_for_reconciliation!(options, "guarded-direct submission outcome")
@@ -982,6 +1216,9 @@ module PrMergeSubmit
         "--method", policy.fetch("method"),
         "--merge-assurance-receipt", File.expand_path(options[:merge_assurance_receipt])
       ]
+      Array(options[:requested_hosted_runs]).each do |run_id|
+        args.concat(["--requested-hosted-run", run_id])
+      end
       args.concat(["--subject", options[:subject]]) if options[:subject]
       args.concat(["--body", options[:body]]) if options[:body]
       directory = Dir.mktmpdir("pr-merge-submit-guard")
@@ -1000,6 +1237,7 @@ module PrMergeSubmit
           policy.fetch("trusted_bytes"), executable
         )
         policy.fetch("identity")["interpreter"] = interpreter_identity if interpreter_identity
+        validate_guard_launch_boundary!(options)
         begin
           guard_result = run_process(
             guarded_direct_environment(options),
@@ -1021,6 +1259,19 @@ module PrMergeSubmit
         guard_result = cleanup_private_guard_directory!(directory, guard_result)
       end
       guard_result
+    end
+
+    def validate_guard_launch_boundary!(options)
+      validate_current_ci_for_submission!(options)
+      refreshed = fetch_pr(options)
+      validate_receipt_live_bindings!(refreshed, options)
+      validate_pr!(refreshed, options)
+      return if refreshed["isInMergeQueue"] == false &&
+                refreshed["mergeQueueEntry"].nil? &&
+                refreshed["isMergeQueueEnabled"] == false
+
+      raise UnknownOutcome,
+            "PR merge-queue state changed or became UNKNOWN during guarded-direct materialization"
     end
 
     def guarded_direct_environment(options)
@@ -1108,10 +1359,14 @@ module PrMergeSubmit
     end
 
     def cleanup_private_guard_directory!(directory, guard_result)
+      in_flight = $ERROR_INFO
       remove_private_guard_directory!(directory)
       guard_result
     rescue StandardError => e
       message = "private guarded-direct repository cleanup failed: #{e.message}"
+      if guard_result.nil? && in_flight.is_a?(Error)
+        raise in_flight.class, "#{in_flight.message}; additionally, #{message}"
+      end
       raise Error, message if guard_result.nil?
 
       stdout, stderr, = guard_result
@@ -1235,7 +1490,24 @@ module PrMergeSubmit
       queue_result(pull_request, entry, options, reconciled:)
     end
 
-    def enqueue_result(pull_request, options)
+    def enqueue_result(pull_request, options, ci_validated: false, pr_validated: false)
+      validate_current_ci_for_submission!(options) unless ci_validated
+      unless pr_validated
+        pull_request = fetch_pr(options)
+        validate_receipt_live_bindings!(pull_request, options)
+        validate_pr!(pull_request, options)
+      end
+      if pull_request["isInMergeQueue"] == true
+        return existing_queue_result(pull_request, options) if exact_queue?(pull_request, options)
+
+        raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof before enqueue"
+      end
+
+      unless pull_request["isInMergeQueue"] == false && pull_request["mergeQueueEntry"].nil? &&
+             pull_request["isMergeQueueEnabled"] == true
+        raise Error, "PR merge-queue state changed or became UNKNOWN before enqueue"
+      end
+
       stdout, stderr, status = run_gh(
         "api", "graphql",
         "-H", GRAPHQL_FEATURE_HEADER,

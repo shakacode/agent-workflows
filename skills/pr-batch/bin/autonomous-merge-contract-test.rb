@@ -2,6 +2,10 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "fileutils"
+require "open3"
+require "rbconfig"
+require "tmpdir"
 require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
 require_relative "../lib/autonomous_merge_runtime_trust"
 
@@ -32,6 +36,24 @@ SAFE_PATH_GROUP_DOCUMENTATION_PARITY = "Portable safe_path_groups defaults ship 
                                        "a consumer can never remove a portable exclude."
 
 class AutonomousMergeContractTest < Minitest::Test
+  def paragraphs_with(path, fragment)
+    File.read(File.join(ROOT, path), encoding: "UTF-8")
+        .split(/\n{2,}/)
+        .select { |paragraph| paragraph.include?(fragment) }
+  end
+
+  def bash_blocks_with(path, fragment)
+    File.read(File.join(ROOT, path), encoding: "UTF-8")
+        .scan(/```bash\n(.*?)```/m)
+        .flatten
+        .select { |block| block.include?(fragment) }
+  end
+
+  def shipped_markdown_paths
+    Dir.glob(File.join(ROOT, "{skills,workflows}", "**", "*.md"))
+       .map { |path| path.delete_prefix("#{ROOT}/") }
+  end
+
   def test_runtime_records_are_keyword_structs_compatible_with_ruby_three_one
     records = [
       AutonomousMergePolicy::Result,
@@ -80,6 +102,128 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes workflow, "mechanically recomputes a length-framed manifest"
     assert_includes workflow, "remain coordinator procedures"
     assert_match(/`merge_authority`\s+remains separate from\s+eligibility/, workflow)
+  end
+
+  def test_ask_merge_authority_gate_rejects_a_raw_candidate_skill_directory
+    script = bash_blocks_with("workflows/pr-processing.md", "DIFF_IDENTITY=").fetch(0)
+
+    _stdout, stderr, status = Open3.capture3(
+      {
+        "PR_BATCH_SKILL_DIR" => File.join(ROOT, "skills/pr-batch"),
+        "BASE_REF" => "main",
+        "DIFF_BASE_SHA" => "1" * 40,
+        "HEAD_SHA" => "2" * 40,
+        "PATH" => [File.dirname(RbConfig.ruby), "/usr/bin", "/bin"].join(":")
+      },
+      "/bin/bash", "--noprofile", "--norc", "-c", script,
+      unsetenv_others: true
+    )
+
+    refute status.success?
+    assert_includes stderr, "UNKNOWN: trusted diff-identity helper is unavailable"
+  end
+
+  def test_ask_merge_authority_gate_uses_an_authenticated_outside_repository_helper
+    script = bash_blocks_with("workflows/pr-processing.md", "DIFF_IDENTITY=").fetch(0)
+
+    Dir.mktmpdir("trusted-pr-batch-skill") do |root|
+      skill_dir = File.join(root, "pr-batch")
+      FileUtils.mkdir_p(File.join(skill_dir, "bin"))
+      FileUtils.cp(File.join(ROOT, "skills/pr-batch/bin/diff-identity"), File.join(skill_dir, "bin"))
+
+      stdout, stderr, status = Open3.capture3(
+        {
+          "TRUSTED_PR_BATCH_SKILL_DIR" => skill_dir,
+          "BASE_REF" => "main",
+          "DIFF_BASE_SHA" => "1" * 40,
+          "HEAD_SHA" => "2" * 40,
+          "PATH" => [File.dirname(RbConfig.ruby), "/usr/bin", "/bin"].join(":")
+        },
+        "/bin/bash", "--noprofile", "--norc", "-c", "#{script}\nprintf '%s\\n' \"${DIFF_IDENTITY}\"",
+        unsetenv_others: true
+      )
+
+      assert status.success?, stderr
+      assert_match(/\A[0-9a-f]{64}\n\z/, stdout)
+      assert_empty stderr
+    end
+  end
+
+  def test_ask_merge_authority_gate_fails_closed_without_an_authenticated_skill
+    script = bash_blocks_with("workflows/pr-processing.md", "DIFF_IDENTITY=").fetch(0)
+
+    _stdout, stderr, status = Open3.capture3(
+      {
+        "BASE_REF" => "main",
+        "DIFF_BASE_SHA" => "1" * 40,
+        "HEAD_SHA" => "2" * 40
+      },
+      "/bin/bash", "--noprofile", "--norc", "-c", script,
+      unsetenv_others: true
+    )
+
+    refute status.success?
+    assert_includes stderr, "UNKNOWN: trusted diff-identity helper is unavailable"
+  end
+
+  def test_every_shipped_readiness_caller_authenticates_the_trusted_repository_root
+    callers = shipped_markdown_paths.flat_map do |path|
+      paragraphs_with(path, "/bin/pr-ci-readiness").map { |paragraph| [path, paragraph] }
+    end
+
+    assert_equal 4, callers.length
+    callers.each do |path, paragraph|
+      assert_includes paragraph, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness"', path
+      assert_includes paragraph, '--trusted-repo-root "$(git rev-parse --show-toplevel)"', path
+      assert_includes paragraph, "--diff-base-sha", path
+    end
+  end
+
+  def test_independent_review_prompt_requires_an_authenticated_readiness_helper
+    workflow = File.read(File.join(ROOT, "workflows/adversarial-pr-review.md"), encoding: "UTF-8")
+    prompt = workflow.split("## Independent Review Prompt", 2).fetch(1).gsub(/\s+/, " ")
+
+    assert_includes prompt, "`TRUSTED_PR_BATCH_SKILL_DIR`"
+    assert_includes prompt, "authenticated exact trusted-base materialization"
+    assert_includes prompt, "independently digest-verified installed pack"
+    refute_includes prompt, "`PR_BATCH_SKILL_DIR`"
+    assert_includes prompt, "no repo-local candidate fallback"
+  end
+
+  def test_canonical_merge_commands_forward_ordered_requested_hosted_runs
+    merge_callers = shipped_markdown_paths.flat_map do |path|
+      bash_blocks_with(path, "/bin/merge-assurance").map { |block| [path, block] }
+    end
+    submit_callers = shipped_markdown_paths.flat_map do |path|
+      bash_blocks_with(path, "/bin/pr-merge-submit").map { |block| [path, block] }
+    end
+
+    assert_equal 2, merge_callers.length
+    assert_equal 1, submit_callers.length
+    (merge_callers + submit_callers).each do |path, block|
+      helper = block.include?("/bin/merge-assurance") ? "merge-assurance" : "pr-merge-submit"
+      assert_includes block, "\"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/#{helper}\"", path
+      assert_includes block, 'REQUESTED_HOSTED_RUN_ARGS+=(--requested-hosted-run "${run_id}")', path
+      assert_includes block, '"${REQUESTED_HOSTED_RUN_ARGS[@]}"', path
+    end
+  end
+
+  def test_trusted_runtime_manifest_binds_every_merge_boundary_helper
+    expected = {
+      "diff-identity-helper" => "diff-identity",
+      "ci-readiness-helper" => "pr-ci-readiness",
+      "merge-assurance-helper" => "merge-assurance",
+      "merge-submit-helper" => "pr-merge-submit"
+    }
+
+    expected.each do |role, helper|
+      source = AutonomousMergeRuntimeTrust::RUNTIME_SOURCES.fetch(role)
+      assert_equal File.join(ROOT, "skills/pr-batch/bin", helper), source.fetch(:path)
+      assert_equal [
+        "skills/pr-batch/bin/#{helper}",
+        ".agents/skills/pr-batch/bin/#{helper}"
+      ], source.fetch(:tree_paths)
+    end
   end
 
   def test_goal_generation_surfaces_carry_both_autonomous_stop_states

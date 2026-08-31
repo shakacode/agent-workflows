@@ -421,6 +421,8 @@ remove the marker deliberately before taking direct ownership.
   resolved values
 - an optional `autonomous_merge` mapping conforms to the shared closed schema;
   malformed policy is reported instead of silently falling back
+- an optional `ci_readiness` mapping conforms to the closed version 1 schema;
+  rules require unique IDs and unique exact `app_slug`/`name` identities
 - an optional `merge_submission` mapping uses the closed direct, queue-only, or
   guarded-direct schema, and any configured guard is a present executable
   regular file under `.agents/bin`

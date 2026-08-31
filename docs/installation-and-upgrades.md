@@ -600,6 +600,67 @@ dataset covers submitted-review history, the distribution and sampled near
 misses have been reviewed, and a threshold decision is recorded. The
 calibration helper emits no merge decisions.
 
+Every consumer upgrading to this pack must populate `context.diff_base_sha` and
+derive `diff_identity` with the trusted `diff-identity` helper as described
+below. That migration is required whether or not the repository configures
+optional approval-held CI.
+
+Separately, consumers that intentionally leave non-required, approval-gated
+third-party checks held may opt in to the exact trusted-base policy seam:
+
+```yaml
+ci_readiness:
+  version: 1
+  optional_approval_held_checks:
+    - id: <POLICY_RULE_ID>
+      app_slug: <APP_SLUG>
+      name: <CHECK_NAME>
+```
+
+Populate these placeholders from the consumer's own
+`.agents/agent-workflow.yml` policy seam; shared workflow documentation does
+not define consumer check identities.
+
+Land and review that policy change separately before relying on it. The merge
+path reads `.agents/agent-workflow.yml` from the live base commit's Git object,
+not candidate worktree bytes, and callers pass the consumer root through
+`--trusted-repo-root` to both `pr-ci-readiness` and `merge-assurance`, plus the
+reviewed base/effective-merge-base SHA through the `pr-ci-readiness` command's
+`--diff-base-sha` option. The v2 result binds that canonical diff identity and the live
+base ref/SHA, so base movement invalidates prior CI evidence even when the head
+is unchanged. Existing
+repositories that omit `ci_readiness` or set it to exact `n/a` retain the prior
+fail-closed behavior; no pending row becomes optional. After adoption, raw rows
+remain in the v2 result, while only exact configured check-run identities that
+are still approval-held and not required receive authenticated dispositions.
+The currently supported held-phase evidence is CircleCI-specific: the exact
+`circleci-checks` row must be `in_progress`, its output title and workflow link
+must bind the configured check name and one CircleCI workflow, completion and
+actions must be explicitly null, and `started_at` must be null or a valid
+timestamp. The summary must contain at least one downstream `Blocked` phase; it
+may also contain `Success` prerequisites. A same-workflow link authenticates
+origin but not completion, and the current collector has no separate terminal
+history evidence, so every `Running` phase remains blocking. Failed or unknown
+states, missing or malformed provider evidence, another app, or another
+pending/queued state also remain blocking.
+
+`--trusted-repo-root` requires the exact live base commit object locally even
+when `ci_readiness` is omitted or `n/a`. A shallow or PR-branch-only checkout
+must fetch that exact base commit (or unshallow the repository) first; an
+unavailable base object fails closed.
+
+The upgraded pack supplies `skills/pr-batch/bin/diff-identity`. As part of the
+required upgrade migration, replace opaque or locally invented digests with
+this helper before creating new walkthrough, approval, or merge-context
+evidence. Existing evidence made for an arbitrary digest is not migrated:
+recompute the identity from the exact base ref, resolved base/effective
+merge-base full lowercase SHA, and full lowercase head SHA, then repeat any
+evidence gate bound to the old identity.
+Store that reviewed base/effective-merge-base SHA as `context.diff_base_sha`
+and bind the same value in walkthrough and human-decision evidence. Continue to
+store the live GitHub `baseRefOid` in `context.base.sha`; installed merge
+submission uses that distinct live binding to reject base movement.
+
 Then dry-run one installed workflow, such as `$plan-pr-batch` or
 `$address-review`, until it resolves base branch, validation, hosted CI,
 review-gate, changelog, and follow-up values from the repo seam without making

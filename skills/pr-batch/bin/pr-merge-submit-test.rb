@@ -41,6 +41,7 @@ class PrMergeSubmitTest < Minitest::Test
     enqueue_timeout_unknown enqueue_timeout_merged
   ].freeze
   MUTATION_TIMEOUT_GH_SECONDS = "2"
+  INTERRUPT_START_DEADLINE_SECONDS = 10
   GUARD_TIMEOUT_GH_SECONDS = "2"
   # The remaining timeout modes hang their only gh call, so a startup-induced
   # timeout is the same observable event as the hang under test. They keep the
@@ -77,7 +78,7 @@ class PrMergeSubmitTest < Minitest::Test
       trusted_policy_observer: ->(policy) { trusted_policy = policy }
     )
 
-    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert result.fetch(:status).success?, "#{result.fetch(:stderr)}\n#{log}"
     payload = JSON.parse(result.fetch(:stdout))
     assert_equal "direct", payload.fetch("submission")
     assert_equal "squash", payload.fetch("method")
@@ -161,7 +162,7 @@ class PrMergeSubmitTest < Minitest::Test
     )
     assert_equal 1, malformed_result.fetch(:status).exitstatus
     assert_includes malformed_result.fetch(:stderr),
-                    "Error: trusted-base merge-submission policy is invalid YAML:"
+                    "Error: trusted-base ci_readiness policy could not be authenticated:"
     assert_empty malformed_log
 
     invalid_base_result, invalid_base_log, = run_cli(
@@ -169,7 +170,7 @@ class PrMergeSubmitTest < Minitest::Test
     )
     assert_equal 1, invalid_base_result.fetch(:status).exitstatus
     assert_includes invalid_base_result.fetch(:stderr),
-                    "Error: trusted-base merge-submission policy is unavailable:"
+                    "Error: trusted-base ci_readiness policy could not be authenticated:"
     assert_empty invalid_base_log
   end
 
@@ -214,7 +215,7 @@ class PrMergeSubmitTest < Minitest::Test
   def test_direct_graphql_errors_reconcile_an_exact_merge
     result, log, = run_cli(mode: "direct_graphql_error_merged")
 
-    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert result.fetch(:status).success?, "#{result.fetch(:stderr)}\n#{log}"
     assert_unknown_reconciled_merge(
       JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
     )
@@ -321,7 +322,7 @@ class PrMergeSubmitTest < Minitest::Test
       timeout_result.fetch(:stderr)
     )
     assert_includes timeout_result.fetch(:stderr), "do not retry blindly"
-    assert_equal(3, timeout_log.lines.count { |line| line.include?("number=42") })
+    assert_equal(4, timeout_log.lines.count { |line| line.include?("number=42") })
 
     interrupt_result, interrupt_log, interrupt_guard_log = run_cli(
       mode: "guard_interrupt",
@@ -335,7 +336,7 @@ class PrMergeSubmitTest < Minitest::Test
       interrupt_result.fetch(:stderr)
     )
     assert_includes interrupt_result.fetch(:stderr), "do not retry blindly"
-    assert_equal(3, interrupt_log.lines.count { |line| line.include?("number=42") })
+    assert_equal(4, interrupt_log.lines.count { |line| line.include?("number=42") })
     refute_empty interrupt_guard_log
   end
 
@@ -475,7 +476,7 @@ class PrMergeSubmitTest < Minitest::Test
 
     assert_equal 1, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "guarded-direct executable does not match the trusted-base blob"
-    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    assert_equal(1, log.lines.count { |line| line.include?("number=42") })
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
     assert_empty guard_log
@@ -531,6 +532,38 @@ class PrMergeSubmitTest < Minitest::Test
     refute status.success?
   end
 
+  def test_cleanup_failure_preserves_an_in_flight_unknown_outcome
+    runner = PrMergeSubmit::Runner.allocate
+    runner.define_singleton_method(:remove_private_guard_directory!) do |_directory|
+      raise Errno::EACCES, "cleanup denied"
+    end
+
+    error = assert_raises(PrMergeSubmit::UnknownOutcome) do
+      raise PrMergeSubmit::UnknownOutcome, "queue state changed during materialization"
+    ensure
+      runner.send(:cleanup_private_guard_directory!, "/private/guard", nil)
+    end
+
+    assert_includes error.message, "queue state changed during materialization"
+    assert_includes error.message, "cleanup failed"
+  end
+
+  def test_cleanup_failure_preserves_an_in_flight_error
+    runner = PrMergeSubmit::Runner.allocate
+    runner.define_singleton_method(:remove_private_guard_directory!) do |_directory|
+      raise Errno::EACCES, "cleanup denied"
+    end
+
+    error = assert_raises(PrMergeSubmit::Error) do
+      raise PrMergeSubmit::Error, "current CI evidence no longer qualifies"
+    ensure
+      runner.send(:cleanup_private_guard_directory!, "/private/guard", nil)
+    end
+
+    assert_includes error.message, "current CI evidence no longer qualifies"
+    assert_includes error.message, "cleanup failed"
+  end
+
   def test_forced_termination_unknown_is_returned_for_exact_reconciliation
     runner = PrMergeSubmit::Runner.allocate
     runner.instance_variable_set(
@@ -542,6 +575,7 @@ class PrMergeSubmitTest < Minitest::Test
       [[executable], nil]
     end
     runner.define_singleton_method(:guard_timeout_seconds) { 0.1 }
+    runner.define_singleton_method(:validate_guard_launch_boundary!) { |_options| }
     runner.define_singleton_method(:run_process) do |*_args, **_kwargs|
       raise PrMergeSubmit::UnknownOutcome,
             "guarded-direct executable process group did not exit after forced termination; " \
@@ -869,7 +903,7 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "enqueuePullRequest"
     assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
     assert_includes log, "GH_HOST=#{HOST} api graphql"
-    assert_equal 3, log.scan("GraphQL-Features: merge_queue").length
+    assert_equal 4, log.scan("GraphQL-Features: merge_queue").length
     refute_includes log, "--auto"
   end
 
@@ -1259,28 +1293,29 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal true, payload.fetch("reconciled_after_failure")
   end
 
-  def test_enqueue_transport_failure_does_not_dequeue_a_retargeted_entry
+  def test_final_revalidation_blocks_retargeted_entry_before_enqueue_transport
     assert_retargeted_queue_entry_is_not_dequeued("enqueue_transport_base_race")
   end
 
-  def test_enqueue_graphql_errors_do_not_dequeue_a_retargeted_entry
+  def test_final_revalidation_blocks_retargeted_entry_before_enqueue_graphql
     assert_retargeted_queue_entry_is_not_dequeued("enqueue_graphql_error_base_race")
   end
 
-  def test_post_enqueue_base_mismatch_reports_unknown_without_dequeue
+  def test_final_revalidation_blocks_a_queue_base_mismatch_before_enqueue
     result, log = run_cli(mode: "queue_base_race", merge_submission: merge_queue_policy)
 
-    assert_equal 2, result.fetch(:status).exitstatus
+    assert_equal 1, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "PR base moved"
-    assert_includes result.fetch(:stderr), "automatic queue cleanup is unsafe"
+    refute_includes log, "enqueuePullRequest"
     refute_includes log, "dequeuePullRequest"
   end
 
-  def test_post_enqueue_replacement_entry_is_not_dequeued
+  def test_final_revalidation_blocks_a_retargeted_queue_entry_before_enqueue
     result, log = run_cli(mode: "queue_entry_replaced", merge_submission: merge_queue_policy)
 
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "automatic queue cleanup is unsafe"
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "PR base moved"
+    refute_includes log, "enqueuePullRequest"
     refute_includes log, "dequeuePullRequest"
   end
 
@@ -1324,6 +1359,814 @@ class PrMergeSubmitTest < Minitest::Test
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_includes log, "repos/owner/repo/issues/1"
     assert_includes log, "enqueuePullRequest"
+  end
+
+  def test_authenticated_optional_approval_held_receipt_reaches_the_merge_mutation
+    result, log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" }
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "check-runs"
+    assert_includes log, "mergePullRequest"
+    assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
+  end
+
+  def test_trusted_base_ci_policy_cannot_be_bypassed_by_omitting_receipt_policy_evidence
+    observed_policy = nil
+    result, log = run_cli(
+      mode: "direct",
+      receipt_mode: :ci_policy_omitted,
+      merge_submission: { "mode" => "direct" },
+      ci_transition: :failed,
+      trusted_policy_observer: ->(policy) { observed_policy = policy }
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal 1, observed_policy.dig("ci_readiness", "version")
+    assert_includes result.fetch(:stderr),
+                    "ci policy evidence does not match authenticated trusted-base policy"
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_no_policy_repository_still_refreshes_complete_ci_before_every_mutation_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :valid, merge_submission:,
+        ci_transition: :unrelated_failure
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), "current CI", mode
+      refute_includes log, mutation, mode
+      assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
+    end
+  end
+
+  def test_pr_base_is_revalidated_after_final_ci_refresh_on_every_mutation_route
+    routes = {
+      direct_ci_base_race: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue_ci_base_race: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_ci_base_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_ci_base_race: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), "PR base moved", mode
+      refute_includes log, mutation, mode
+      assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
+    end
+  end
+
+  def test_guarded_direct_blocks_base_and_queue_changes_after_materialization
+    {
+      guard_post_materialization_base_race: "PR base moved",
+      guard_post_materialization_queue_race: "merge-queue state changed"
+    }.each do |mode, expected_error|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held,
+        merge_submission: guarded_direct_policy
+      )
+
+      refute result.fetch(:status).success?, mode
+      assert_includes result.fetch(:stderr), expected_error, mode
+      assert_operator log.scan("/check-suites?").length, :>=, 6, mode
+      refute_includes log, "GUARD_EXECUTION", mode
+      assert_empty guard_log, mode
+    end
+  end
+
+  def test_uppercase_expected_head_remains_bound_through_final_ci_refresh_on_every_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        uppercase_expected_head: true
+      )
+
+      assert result.fetch(:status).success?, "#{mode}: #{result.fetch(:stderr)}"
+      if mutation == "GUARD_EXECUTION"
+        assert_match(/--expected-head\n[0-9A-F]{40}\n/, guard_log, mode)
+      else
+        assert_includes log, mutation, mode
+        assert_ci_refresh_immediately_precedes_mutation(log, mutation)
+      end
+    end
+  end
+
+  def test_authenticated_requested_run_bindings_are_preserved_through_final_refresh
+    result, log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held_requested,
+      merge_submission: { "mode" => "direct" },
+      requested_hosted_runs: %w[42 43]
+    )
+
+    assert result.fetch(:status).success?, "#{result.fetch(:stderr)}\n#{log}"
+    first_run = log.index("actions/runs/42")
+    second_run = log.index("actions/runs/43")
+    assert first_run
+    assert second_run
+    assert_operator first_run, :<, second_run
+    assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
+  end
+
+  def test_requested_hosted_run_change_after_assessment_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[requested_run_race_pending requested_run_race_rerun requested_job_race_pending].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held_requested,
+          merge_submission:, requested_hosted_runs: %w[42 43], ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "requested hosted runs changed", "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_viewer_draft_opened_after_assessment_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held,
+        merge_submission:, ci_transition: :viewer_draft_race
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), "viewer review drafts changed", mode
+      refute_includes log, mutation, mode
+      assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
+    end
+  end
+
+  def test_submitted_review_pagination_change_does_not_block_submission
+    result, log = run_cli(
+      mode: "direct", receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" },
+      ci_transition: :viewer_submitted_review_pagination_race
+    )
+
+    assert_equal 0, result.fetch(:status).exitstatus, "#{result.fetch(:stderr)}\n#{log}"
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_receipt_cannot_delete_authenticated_requested_run_bindings
+    result, log = run_cli(mode: "direct", receipt_mode: :requested_hosted_missing)
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "requested hosted-run bindings are invalid"
+    assert_empty log
+  end
+
+  def test_caller_cannot_clear_reorder_or_subset_requested_run_authorization_on_any_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    tampered_receipts = %i[
+      optional_held_requested_cleared
+      optional_held_requested_reversed
+      optional_held_requested_subset
+    ]
+    routes.each do |mode, (merge_submission, mutation)|
+      tampered_receipts.each do |receipt_mode|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode:, merge_submission:,
+          requested_hosted_runs: %w[42 43]
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{receipt_mode}"
+        assert_includes result.fetch(:stderr), "trusted invocation authorization", "#{mode}/#{receipt_mode}"
+        refute_includes log, mutation, "#{mode}/#{receipt_mode}"
+        assert_empty guard_log, "#{mode}/#{receipt_mode}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_exact_requested_run_authorization_continues_on_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held_requested,
+        merge_submission:, requested_hosted_runs: %w[42 43]
+      )
+
+      assert result.fetch(:status).success?, "#{mode}: #{result.fetch(:stderr)}"
+      assert_operator log.index("actions/runs/42"), :<, log.index("actions/runs/43"), mode
+      if mutation == "GUARD_EXECUTION"
+        assert_includes guard_log, "--requested-hosted-run\n42\n--requested-hosted-run\n43", mode
+      else
+        assert_includes log, mutation, mode
+        assert_ci_refresh_immediately_precedes_mutation(log, mutation)
+      end
+    end
+  end
+
+  def test_guarded_queue_refreshes_optional_held_ci_after_its_final_pr_read
+    result, log = run_cli(
+      mode: "guard_queue_race",
+      receipt_mode: :optional_held,
+      merge_submission: guarded_direct_policy
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "enqueuePullRequest"
+    assert_ci_refresh_immediately_precedes_mutation(log, "enqueuePullRequest")
+  end
+
+  def test_optional_approval_held_receipt_blocks_when_the_check_changes_or_mismatches
+    {
+      running: "current CI",
+      failed: "current CI",
+      moved: "current CI"
+    }.each do |transition, expected_error|
+      result, log = run_cli(
+        mode: "direct",
+        receipt_mode: :optional_held,
+        merge_submission: { "mode" => "direct" },
+        ci_transition: transition
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, transition
+      assert_includes result.fetch(:stderr), expected_error, transition
+      inventory_endpoint = transition == :moved ? "check-suites" : "check-runs"
+      assert_includes log, inventory_endpoint, transition
+      refute_includes log, "mergePullRequest", transition
+      refute_includes log, "enqueuePullRequest", transition
+    end
+  end
+
+  def test_guarded_queue_blocks_when_the_optional_held_check_starts_or_fails
+    %i[running failed].each do |transition|
+      result, log = run_cli(
+        mode: "guard_queue_race",
+        receipt_mode: :optional_held,
+        merge_submission: guarded_direct_policy,
+        ci_transition: transition
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, transition
+      assert_includes result.fetch(:stderr), "current CI", transition
+      assert_includes log, "check-runs", transition
+      refute_includes log, "mergePullRequest", transition
+      refute_includes log, "enqueuePullRequest", transition
+    end
+  end
+
+  def test_completed_success_removes_the_stale_disposition_on_direct_and_guarded_queue_routes
+    {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"]
+    }.each do |mode, (merge_submission, mutation)|
+      result, log = run_cli(
+        mode: mode.to_s,
+        receipt_mode: :optional_held,
+        merge_submission:,
+        ci_transition: :success
+      )
+
+      assert result.fetch(:status).success?, "#{mode}: #{result.fetch(:stderr)}"
+      assert_includes log, mutation, mode
+      assert_ci_refresh_immediately_precedes_mutation(log, mutation)
+    end
+  end
+
+  def test_replacement_check_run_blocks_running_or_failed_on_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[replacement_running replacement_failed].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s,
+          receipt_mode: :optional_held,
+          merge_submission:,
+          ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_new_unrelated_blocking_check_run_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[unrelated_failure unrelated_pending unrelated_held].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s,
+          receipt_mode: :optional_held,
+          merge_submission:,
+          ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_missing_policy_disposed_check_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        ci_transition: :missing_disposed
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), "current CI", mode
+      refute_includes log, mutation, mode
+      assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
+    end
+  end
+
+  def test_new_unrelated_success_remains_compatible_with_direct_submission
+    result, log = run_cli(
+      mode: "direct", receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" }, ci_transition: :unrelated_success
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
+  end
+
+  def test_actions_or_commit_status_transition_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[
+        required_failure required_pending actions_failure actions_pending status_failure status_pending
+      ].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s,
+          receipt_mode: :optional_held,
+          merge_submission:,
+          ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        expected_scope = if transition.to_s.start_with?("required")
+                           "required_status_check_rollup"
+                         elsif transition.to_s.start_with?("actions")
+                           "github_actions"
+                         else
+                           "other"
+                         end
+        assert_includes result.fetch(:stderr), expected_scope, "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_actions_appearing_after_authenticated_assessment_stop_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[actions_race_failure actions_race_pending].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held,
+          merge_submission:, ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        assert_operator log.scan("actions/runs?head_sha=").length, :>=, 2, "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_placeholder_appearance_or_materialization_after_assessment_stops_before_mutation
+    %i[late_queued_placeholder placeholder_gains_run].each do |transition|
+      result, log = run_cli(
+        mode: "direct", receipt_mode: :optional_held,
+        merge_submission: { "mode" => "direct" }, ci_transition: transition
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, transition
+      assert_includes result.fetch(:stderr), "check suites or runs changed", transition
+      refute_includes log, "mergePullRequest", transition
+    end
+  end
+
+  def test_commit_status_change_during_assessment_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[status_race_failure status_race_pending].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held,
+          merge_submission:, ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "other", "#{mode}/#{transition}"
+        expected_status_reads = mode == :guard_success ? 5 : 2
+        assert_equal expected_status_reads, log.scan("/status?per_page=").length,
+                     "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_commit_status_change_during_final_snapshot_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[status_snapshot_failure status_snapshot_pending].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held,
+          merge_submission:, ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr),
+                        "commit statuses changed during final reassessment",
+                        "#{mode}/#{transition}"
+        assert_equal 3, log.scan("/status?per_page=").length, "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_required_check_change_after_authenticated_assessment_stops_before_mutation
+    result, log = run_cli(
+      mode: "direct", receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" }, ci_transition: :required_race_pending
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "required checks changed"
+    assert_equal 3, log.scan("pr checks 42").length
+    refute_includes log, "mergePullRequest"
+  end
+
+  def test_complete_ci_surface_inventory_errors_stop_before_direct_mutation
+    %i[actions_inventory_missing status_inventory_missing].each do |transition|
+      result, log = run_cli(
+        mode: "direct", receipt_mode: :optional_held,
+        merge_submission: { "mode" => "direct" }, ci_transition: transition
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, transition
+      assert_includes result.fetch(:stderr), "current CI", transition
+      assert_includes result.fetch(:stderr), "not complete", transition
+      refute_includes log, "mergePullRequest", transition
+    end
+  end
+
+  def test_historical_check_attempt_uses_latest_result_on_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      success, success_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        ci_transition: :historical_then_latest_success
+      )
+      assert success.fetch(:status).success?, "#{mode}: #{success.fetch(:stderr)}"
+      assert_includes success_log, "filter=latest", mode
+      assert_ci_refresh_immediately_precedes_mutation(success_log, mutation)
+
+      failure, failure_log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        ci_transition: :historical_then_latest_failure
+      )
+      assert_equal 1, failure.fetch(:status).exitstatus, mode
+      assert_includes failure.fetch(:stderr), "current CI", mode
+      assert_includes failure_log, "filter=latest", mode
+      refute_includes failure_log, mutation, mode
+      assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
+    end
+  end
+
+  def test_cross_suite_same_name_rows_block_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[
+        later_lower_id_success later_lower_id_failure
+        missing_suite_chronology tied_suite_chronology
+      ].each do |transition|
+        failure, failure_log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+          ci_transition: transition
+        )
+        assert_equal 1, failure.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes failure.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        refute_includes failure_log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_stable_queued_placeholder_is_ignored_but_other_unmaterialized_suites_block_every_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    transitions = %i[
+      empty_suite_requested empty_suite_in_progress
+      empty_suite_waiting empty_suite_pending empty_suite_unknown
+      empty_suite_malformed_conclusion empty_suite_malformed_count
+      empty_suite_count_mismatch empty_suite_completed
+    ]
+    routes.each do |mode, (merge_submission, mutation)|
+      ready, ready_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+        ci_transition: :empty_suite_queued
+      )
+      assert ready.fetch(:status).success?, "#{mode}/queued-placeholder: #{ready.fetch(:stderr)}"
+      assert_ci_refresh_immediately_precedes_mutation(ready_log, mutation)
+
+      transitions.each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held, merge_submission:,
+          ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
+  def test_queued_placeholder_does_not_override_required_or_requested_pending_evidence
+    required, required_log = run_cli(
+      mode: "direct", receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" },
+      ci_transition: :empty_suite_queued_required_pending
+    )
+    assert_equal 1, required.fetch(:status).exitstatus
+    assert_includes required.fetch(:stderr), "required_status_check_rollup"
+    refute_includes required_log, "mergePullRequest"
+
+    requested, requested_log = run_cli(
+      mode: "direct", receipt_mode: :optional_held_requested,
+      merge_submission: { "mode" => "direct" }, requested_hosted_runs: %w[42 43],
+      ci_transition: :empty_suite_queued_requested_pending
+    )
+    assert_equal 1, requested.fetch(:status).exitstatus
+    assert_includes requested.fetch(:stderr), "current CI evidence does not currently qualify"
+    refute_includes requested_log, "mergePullRequest"
+  end
+
+  def test_sole_successful_replacement_is_accepted_with_final_ordering_on_every_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log = run_cli(
+        mode: mode.to_s,
+        receipt_mode: :optional_held,
+        merge_submission:,
+        ci_transition: :replacement_success
+      )
+
+      assert result.fetch(:status).success?, "#{mode}: #{result.fetch(:stderr)}"
+      assert_ci_refresh_immediately_precedes_mutation(log, mutation)
+    end
+  end
+
+  def test_exact_head_check_run_inventory_is_paginated_complete_and_unambiguous
+    success, success_log = run_cli(
+      mode: "direct", receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" }, ci_transition: :pagination_success
+    )
+    assert success.fetch(:status).success?, success.fetch(:stderr)
+    assert_includes success_log, "page=1"
+    assert_includes success_log, "page=2"
+    assert_ci_refresh_immediately_precedes_mutation(success_log, "mergePullRequest")
+
+    %i[
+      additional_running incomplete_inventory malformed_inventory missing_inventory unknown_inventory
+    ].each do |transition|
+      result, log = run_cli(
+        mode: "direct", receipt_mode: :optional_held,
+        merge_submission: { "mode" => "direct" }, ci_transition: transition
+      )
+      assert_equal 1, result.fetch(:status).exitstatus, transition
+      assert_includes result.fetch(:stderr), "current CI", transition
+      refute_includes log, "mergePullRequest", transition
+    end
+  end
+
+  def test_optional_approval_held_receipt_cannot_supply_missing_malformed_or_tampered_policy
+    missing_result, missing_log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held_policy_missing,
+      merge_submission: { "mode" => "direct" },
+      policy_fixture: :missing
+    )
+    assert_equal 1, missing_result.fetch(:status).exitstatus
+    assert_includes missing_result.fetch(:stderr),
+                    "ci policy disposition is not authenticated from trusted base"
+    assert_empty missing_log
+
+    malformed_result, malformed_log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held_policy_malformed,
+      merge_submission: { "mode" => "direct" },
+      policy_fixture: :malformed
+    )
+    assert_equal 1, malformed_result.fetch(:status).exitstatus
+    assert_includes malformed_result.fetch(:stderr),
+                    "trusted-base ci_readiness policy could not be authenticated"
+    assert_empty malformed_log
+
+    duplicate_result, duplicate_log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held_policy_duplicate,
+      merge_submission: { "mode" => "direct" },
+      policy_fixture: :duplicate_ci_readiness
+    )
+    assert_equal 1, duplicate_result.fetch(:status).exitstatus
+    assert_includes duplicate_result.fetch(:stderr),
+                    "trusted-base ci_readiness policy could not be authenticated"
+    assert_empty duplicate_log
+
+    tampered_result, tampered_log = run_cli(
+      mode: "direct",
+      receipt_mode: :optional_held_policy_tampered,
+      merge_submission: { "mode" => "direct" }
+    )
+    assert_equal 1, tampered_result.fetch(:status).exitstatus
+    assert_includes tampered_result.fetch(:stderr),
+                    "ci policy evidence does not match authenticated trusted-base policy"
+    assert_empty tampered_log
+  end
+
+  def test_reused_runner_resolves_the_trusted_repository_root_for_each_run
+    Dir.mktmpdir("pr-merge-submit-runner-lifecycle") do |dir|
+      first_root, first_base_sha, = prepare_consumer_repo(
+        dir,
+        merge_submission: { "mode" => "direct" },
+        policy_fixture: :present,
+        guard_fixture: :executable,
+        ci_readiness: true
+      )
+      second_root = File.join(dir, "consumer-two")
+      run_git!(dir, "clone", "-q", first_root, second_root)
+      File.write(File.join(second_root, "README.md"), "second consumer fixture\n")
+      run_git!(second_root, "add", "README.md")
+      run_git!(
+        second_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-qm", "second trusted base"
+      )
+      second_base_sha = run_git!(second_root, "rev-parse", "HEAD").strip
+
+      gh_path = File.join(dir, "gh")
+      gh_log = File.join(dir, "gh.log")
+      guard_marker = File.join(dir, "guard-called")
+      runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => gh_path })
+      runner.define_singleton_method(:system_tool_test_environment) do
+        { "GH_LOG" => gh_log, "PR_TEST_GUARD_MARKER" => guard_marker }
+      end
+
+      repositories = [first_root, second_root].zip([first_base_sha, second_base_sha])
+      statuses = repositories.map.with_index do |(repo_root, base_sha), index|
+        receipt_path = File.join(dir, "merge-assurance-receipt-#{index}.json")
+        write_merge_assurance_receipt(
+          receipt_path, mode: :optional_held, repo: "owner/repo", head: HEAD_SHA,
+                        base_ref: "main", base_sha:, host: HOST, pr_number: 42,
+                        gh_dir: dir, repo_root:
+        )
+        File.write(
+          gh_path,
+          fake_gh(
+            mode: "direct", head: HEAD_SHA, base: "main", base_sha:,
+            url_host: HOST, repo: "owner/repo"
+          )
+        )
+        FileUtils.chmod(0o755, gh_path)
+        arguments = cli_arguments(
+          "owner/repo", HEAD_SHA, true, true,
+          include_merge_assurance_receipt: true, receipt_path:, gh_path:
+        ).drop(3)
+        status = nil
+        capture_io { status = Dir.chdir(repo_root) { runner.run(arguments) } }
+        status
+      end
+
+      assert_equal [0, 0], statuses
+      assert_equal File.realpath(second_root), runner.instance_variable_get(:@repo_root)
+    end
+  end
+
+  def test_reviewed_diff_base_may_differ_from_the_live_base_binding
+    result, log = run_cli(mode: "direct", receipt_diff_base_sha: "c" * 40)
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_guarded_direct_revalidates_ci_after_guard_materialization
+    result, log, guard_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      receipt_mode: :optional_held,
+      ci_transition: :held_then_failed_after_first_inventory
+    )
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "current CI disposed check is neither held nor independently ready"
+    assert_operator log.scan("/check-suites?").length, :>=, 4
+    refute_includes log, "GUARD_EXECUTION"
+    assert_empty guard_log
   end
 
   def test_authenticated_tracker_receipt_evidence_is_exact_and_current
@@ -1443,6 +2286,25 @@ class PrMergeSubmitTest < Minitest::Test
 
   private
 
+  def assert_ci_refresh_immediately_precedes_mutation(log, mutation)
+    commands = log.split(/(?=^GH_HOST=)/).reject(&:empty?)
+    mutation_index = commands.index { |command| command.include?(mutation) }
+    refute_nil mutation_index, mutation
+    refresh_index = commands.each_index.select do |index|
+      index < mutation_index && commands[index].include?("api repos/owner/repo/pulls/42")
+    end.last
+    refute_nil refresh_index
+    metadata_indexes = commands.each_index.select do |index|
+      index < mutation_index && commands[index].include?("number=42")
+    end
+    refute_empty metadata_indexes
+    assert_operator refresh_index, :<, metadata_indexes.last
+    assert_equal mutation_index - 1, metadata_indexes.last
+    %w[actions/runs check-runs /status].each do |inventory|
+      assert commands[0...refresh_index].any? { |command| command.include?(inventory) }, inventory
+    end
+  end
+
   def guarded_direct_policy(
     executable: ".agents/bin/merge-pr-after-checks",
     method: "squash",
@@ -1488,9 +2350,9 @@ class PrMergeSubmitTest < Minitest::Test
   def assert_retargeted_queue_entry_is_not_dequeued(mode)
     result, log = run_cli(mode:, merge_submission: merge_queue_policy)
 
-    assert_equal 2, result.fetch(:status).exitstatus
+    assert_equal 1, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "PR base moved"
-    assert_includes result.fetch(:stderr), "cannot be safely dequeued"
+    refute_includes log, "enqueuePullRequest"
     refute_includes log, "dequeuePullRequest"
   end
 
@@ -1549,12 +2411,16 @@ class PrMergeSubmitTest < Minitest::Test
     merge_submission: SOURCE_REPO_POLICY,
     policy_fixture: :present,
     receipt_base_sha: nil,
+    receipt_diff_base_sha: nil,
     guard_fixture: :executable,
     head_ref_name: "feature/test",
     interpreter_attack: false,
     bash_env_attack: false,
     guard_timeout_seconds: nil,
-    interrupt_guard: false
+    interrupt_guard: false,
+    ci_transition: :held,
+    requested_hosted_runs: [],
+    uppercase_expected_head: false
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
@@ -1567,7 +2433,10 @@ class PrMergeSubmitTest < Minitest::Test
                                             [File.expand_path("../../..", __dir__), BASE_SHA, HEAD_SHA]
                                           else
                                             prepare_consumer_repo(
-                                              dir, merge_submission:, policy_fixture:, guard_fixture:
+                                              dir,
+                                              merge_submission:, policy_fixture:, guard_fixture:,
+                                              ci_readiness: receipt_mode.to_s.start_with?("optional_held") ||
+                                                receipt_mode == :ci_policy_omitted
                                             )
                                           end
       if !source_repo_policy &&
@@ -1575,6 +2444,7 @@ class PrMergeSubmitTest < Minitest::Test
         head = fixture_head
         expected_head = fixture_head
       end
+      expected_head = expected_head.upcase if uppercase_expected_head
       trusted_policy_observer&.call(
         YAML.safe_load(
           run_git!(repo_root, "show", "#{base_sha}:.agents/agent-workflow.yml"),
@@ -1595,11 +2465,18 @@ class PrMergeSubmitTest < Minitest::Test
         interpreter_attack
       bash_env_attack_path = prepare_bash_env_attack(dir, attacker_log_path) if bash_env_attack
       gh_path = File.join(dir, "gh")
+      effective_ci_transition = if ci_transition == :held &&
+                                   !receipt_mode.to_s.start_with?("optional_held")
+                                  :success
+                                else
+                                  ci_transition
+                                end
       File.write(
         gh_path,
         fake_gh(
           mode:, head:, base:, base_sha: receipt_base_sha || base_sha,
-          url_host:, repo:, merge_commit_oid:, head_ref_name:
+          url_host:, repo:, merge_commit_oid:, head_ref_name:,
+          ci_transition: effective_ci_transition
         )
       )
       FileUtils.chmod(0o755, gh_path)
@@ -1607,10 +2484,13 @@ class PrMergeSubmitTest < Minitest::Test
       after_stub_warmup&.call
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       unless receipt_mode == :missing
+        receipt_head = uppercase_expected_head ? expected_head.downcase : expected_head
         write_merge_assurance_receipt(
-          receipt_path, mode: receipt_mode, repo:, head: expected_head,
+          receipt_path, mode: receipt_mode, repo:, head: receipt_head,
                         base_ref: expected_base, base_sha: receipt_base_sha || base_sha,
-                        host: HOST, pr_number: 42, gh_dir: dir
+                        diff_base_sha: receipt_diff_base_sha,
+                        host: HOST, pr_number: 42, gh_dir: dir, repo_root:,
+                        requested_hosted_runs:
         )
       end
       environment = cli_environment(
@@ -1622,7 +2502,8 @@ class PrMergeSubmitTest < Minitest::Test
       )
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
-        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:
+        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:,
+        requested_hosted_runs:
       )
       result = if interrupt_guard
                  capture_with_interrupt(
@@ -1651,7 +2532,7 @@ class PrMergeSubmitTest < Minitest::Test
       stdin.close
       stdout_reader = Thread.new { stdout.read }
       stderr_reader = Thread.new { stderr.read }
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + INTERRUPT_START_DEADLINE_SECONDS
       until File.exist?(wait_path)
         raise "guard did not start before interrupt deadline" if
           Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
@@ -1681,7 +2562,7 @@ class PrMergeSubmitTest < Minitest::Test
         gh_path,
         fake_gh(
           mode:, head: HEAD_SHA, base: "main", base_sha:,
-          url_host: HOST, repo: "owner/repo"
+          url_host: HOST, repo: "owner/repo", ci_transition: :success
         )
       )
       FileUtils.chmod(0o755, gh_path)
@@ -1690,7 +2571,8 @@ class PrMergeSubmitTest < Minitest::Test
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       write_merge_assurance_receipt(
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
-                      base_ref: "main", base_sha:, host: HOST, pr_number: 42, gh_dir: dir
+                      base_ref: "main", base_sha:, host: HOST, pr_number: 42, gh_dir: dir,
+                      repo_root:
       )
       result = Open3.popen3(
         cli_environment(
@@ -1707,7 +2589,7 @@ class PrMergeSubmitTest < Minitest::Test
         stdin.close
         stdout_reader = Thread.new { stdout.read }
         stderr_reader = Thread.new { stderr.read }
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + INTERRUPT_START_DEADLINE_SECONDS
         until File.exist?(log_path) && File.read(log_path).include?(wait_for)
           raise "gh request did not start before interrupt deadline" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
@@ -1837,7 +2719,7 @@ class PrMergeSubmitTest < Minitest::Test
     gh_path:,
     expected_base: "main",
     subject: "Fix the thing (#42)", body: nil,
-    include_merge_assurance_receipt: true, receipt_path: nil
+    include_merge_assurance_receipt: true, receipt_path: nil, requested_hosted_runs: []
   )
     runner = <<~RUBY
       load #{SCRIPT.inspect}
@@ -1854,12 +2736,15 @@ class PrMergeSubmitTest < Minitest::Test
     args.concat(["--expected-head", expected_head]) if include_expected_head
     args.concat(["--expected-base", expected_base]) if include_expected_base
     args.concat(["--merge-assurance-receipt", receipt_path]) if include_merge_assurance_receipt
+    requested_hosted_runs.each { |run_id| args.concat(["--requested-hosted-run", run_id]) }
     args
   end
 
   def write_merge_assurance_receipt(
-    path, mode:, repo:, head:, base_ref:, base_sha:, host:, pr_number:, gh_dir:
+    path, mode:, repo:, head:, base_ref:, base_sha:, host:, pr_number:, gh_dir:,
+    repo_root:, diff_base_sha: nil, requested_hosted_runs: []
   )
+    diff_base_sha ||= base_sha
     now = Time.now.utc
     checked_at = (now - 1).iso8601
     scope = lambda do |name, rows|
@@ -1878,10 +2763,20 @@ class PrMergeSubmitTest < Minitest::Test
       "context" => { "host" => host },
       "repo" => repo,
       "pr" => pr_number,
+      "base" => { "ref" => base_ref, "sha" => base_sha },
+      "diff_base_sha" => diff_base_sha,
+      "diff_identity" => DiffIdentity.derive(base_ref:, base_sha: diff_base_sha, head_sha: head),
       "head_sha" => head,
       "checked_at" => checked_at,
       "verdict" => "READY",
       "ordinary_verdict" => "READY",
+      "requested_hosted" => {
+        "run_ids" => [],
+        "pending" => [],
+        "failing" => [],
+        "stale" => [],
+        "unknown" => []
+      },
       "scopes" => {
         "required_status_check_rollup" => scope.call(
           "required", [{ "name" => "required", "bucket" => "pass" }]
@@ -1893,6 +2788,56 @@ class PrMergeSubmitTest < Minitest::Test
         "other" => scope.call("other", [])
       }
     }
+    if mode.to_s.start_with?("optional_held_requested")
+      ci_result.fetch("requested_hosted")["run_ids"] = %w[42 43]
+    end
+    trusted_ci_policy = nil
+    if mode.to_s.start_with?("optional_held")
+      begin
+        trusted_ci_policy = PrCiReadiness.trusted_ci_policy_at(
+          repo_root:, base_ref:, base_sha:
+        )
+      rescue PrCiReadiness::Error
+        raise unless %i[
+          optional_held_policy_malformed optional_held_policy_duplicate
+        ].include?(mode)
+      end
+      if trusted_ci_policy.nil? && %i[
+        optional_held_policy_missing optional_held_policy_malformed optional_held_policy_duplicate
+      ].include?(mode)
+        trusted_ci_policy = claimed_optional_held_policy(base_ref:, base_sha:)
+      end
+      raise "optional-held receipt fixture needs a policy" unless trusted_ci_policy
+
+      workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
+      held = {
+        "kind" => "check_run", "id" => 31, "suite_id" => 801, "name" => "storybook-review-app",
+        "head_sha" => head,
+        "status" => "in_progress", "conclusion" => nil,
+        "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
+        "app_slug" => "circleci-checks", "dependabot" => false, "actions" => nil,
+        "details_url" => workflow_url,
+        "output" => {
+          "title" => "Workflow: storybook-review-app",
+          "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - Blocked\n"
+        }
+      }
+      ci_result.fetch("scopes").fetch("other").merge!(
+        "state" => "READY",
+        "rows" => [held],
+        "policy_dispositions" => [
+          {
+            "disposition" => "optional_approval_held",
+            "rule_id" => "circleci-storybook",
+            "kind" => "check_run",
+            "id" => 31,
+            "app_slug" => "circleci-checks",
+            "name" => "storybook-review-app"
+          }
+        ]
+      )
+      ci_result["ci_policy"] = trusted_ci_policy
+    end
     autonomous_result = {
       "verdict" => "autonomous-merge-eligible",
       "head_sha" => head,
@@ -1903,6 +2848,10 @@ class PrMergeSubmitTest < Minitest::Test
         "manifest" => {
           "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
           "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
+          "diff-identity-helper" => "skills/pr-batch/bin/diff-identity",
+          "ci-readiness-helper" => "skills/pr-batch/bin/pr-ci-readiness",
+          "merge-assurance-helper" => "skills/pr-batch/bin/merge-assurance",
+          "merge-submit-helper" => "skills/pr-batch/bin/pr-merge-submit",
           "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
           "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
           "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
@@ -1942,9 +2891,10 @@ class PrMergeSubmitTest < Minitest::Test
       "repo" => repo,
       "pr" => pr_number,
       "base" => { "ref" => base_ref, "sha" => base_sha },
+      "diff_base_sha" => diff_base_sha,
       "head_sha" => head,
       "authority" => "auto_merge_when_gates_pass",
-      "diff_identity" => "e" * 64,
+      "diff_identity" => DiffIdentity.derive(base_ref:, base_sha: diff_base_sha, head_sha: head),
       "human_merge_decision" => nil,
       "walkthrough" => nil,
       "semantic_github_actions_change" => semantic,
@@ -1964,14 +2914,26 @@ class PrMergeSubmitTest < Minitest::Test
     end
     receipt = with_fake_gh(gh_dir) do
       MergeAssurance.assess(
-        ci_result:, autonomous_result:, context:,
-        selected_hosted_ci_receipts: selected_hosted_receipts,
+        ci_result:, autonomous_result:, context:, trusted_ci_policy:,
+        requested_hosted_runs:, selected_hosted_ci_receipts: selected_hosted_receipts,
         now:
       )
     end
     raise "test receipt did not qualify: #{receipt.inspect}" unless receipt["eligible"]
 
     case mode
+    when :optional_held_requested_cleared
+      receipt.dig("evidence", "ci_result", "requested_hosted")["run_ids"] = []
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :optional_held_requested_reversed
+      receipt.dig("evidence", "ci_result", "requested_hosted")["run_ids"] = %w[43 42]
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :optional_held_requested_subset
+      receipt.dig("evidence", "ci_result", "requested_hosted")["run_ids"] = ["43"]
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :requested_hosted_missing
+      receipt.dig("evidence", "ci_result").delete("requested_hosted")
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :nested_unknown
       receipt.dig("evidence", "autonomous_result", "helper_trust", "manifest")["note"] = "UNKNOWN"
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
@@ -2002,6 +2964,11 @@ class PrMergeSubmitTest < Minitest::Test
         "evidence", "authenticated_tracker_reads", 0, "issue_metadata"
       )["title"] = "UNKNOWN"
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :optional_held_policy_tampered
+      receipt.dig(
+        "evidence", "ci_result", "ci_policy", "optional_approval_held_checks", 0
+      )["name"] = "attacker-check"
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :selected_hosted_missing
       receipt.dig("evidence", "selected_hosted_ci_receipts")["records"] = []
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
@@ -2012,6 +2979,21 @@ class PrMergeSubmitTest < Minitest::Test
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     end
     File.write(path, JSON.generate(receipt))
+  end
+
+  def claimed_optional_held_policy(base_ref:, base_sha:)
+    {
+      "version" => 1,
+      "provenance" => "git:#{base_sha}:.agents/agent-workflow.yml@#{'e' * 40}",
+      "base" => { "ref" => base_ref, "sha" => base_sha },
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
   end
 
   def with_fake_gh(dir)
@@ -2038,8 +3020,9 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def semantic_issue_payload(host:, repo:, pr_number:, head:)
+  def semantic_issue_payload(host:, repo:, pr_number:, base_ref:, base_sha:, head:)
     tracker = semantic_tracker(host:, repo:, pr_number:)
+    diff_identity = DiffIdentity.derive(base_ref:, base_sha:, head_sha: head)
     {
       "id" => 101,
       "node_id" => "I_kwDOExample",
@@ -2052,7 +3035,7 @@ class PrMergeSubmitTest < Minitest::Test
         "Verify the semantic workflow behavior after merge.",
         "semantic-tracker-source-pr: #{tracker['source_pr']}",
         "semantic-tracker-head-sha: #{head}",
-        "semantic-tracker-diff-identity: #{'e' * 64}",
+        "semantic-tracker-diff-identity: #{diff_identity}",
         "semantic-tracker-operation-digest: " \
           "#{MergeAssurance.semantic_tracker_operation_digest(tracker)}"
       ].join("\n"),
@@ -2060,17 +3043,47 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def prepare_consumer_repo(dir, merge_submission:, policy_fixture:, guard_fixture:)
+  def prepare_consumer_repo(
+    dir, merge_submission:, policy_fixture:, guard_fixture:, ci_readiness: false
+  )
     root = File.join(dir, "consumer")
     FileUtils.mkdir_p(File.join(root, ".agents/bin"))
     policy = { "base_branch" => "main" }
     policy["merge_submission"] = merge_submission unless merge_submission.nil?
+    if ci_readiness
+      policy["ci_readiness"] = {
+        "version" => 1,
+        "optional_approval_held_checks" => [
+          {
+            "id" => "circleci-storybook",
+            "app_slug" => "circleci-checks",
+            "name" => "storybook-review-app"
+          }
+        ]
+      }
+    end
     policy_path = File.join(root, ".agents/agent-workflow.yml")
     case policy_fixture
     when :present
       File.write(policy_path, policy.to_yaml)
     when :malformed
       File.write(policy_path, "merge_submission: [\n")
+    when :duplicate_ci_readiness
+      File.write(
+        policy_path,
+        <<~YAML
+          base_branch: main
+          merge_submission:
+            mode: direct
+          ci_readiness:
+            version: 1
+            version: 1
+            optional_approval_held_checks:
+              - id: circleci-storybook
+                app_slug: circleci-checks
+                name: storybook-review-app
+        YAML
+      )
     when :missing
       nil
     else
@@ -2172,6 +3185,7 @@ class PrMergeSubmitTest < Minitest::Test
         File.write(live_path, #{attacker_guard.inspect})
         File.chmod(0o755, live_path)
       end
+      File.open(File.join(test_root, "gh.log"), "a") { |file| file.puts("GH_HOST= GUARD_EXECUTION") }
       File.open(File.join(test_root, "guard.log"), "a") { |file| file.puts(ARGV.join("\n")) }
       File.write(File.join(test_root, "guard-called"), "called\n")
       sleep 5 if %w[guard_timeout guard_interrupt].include?(mode)
@@ -2242,15 +3256,17 @@ class PrMergeSubmitTest < Minitest::Test
 
   def fake_gh(
     mode:, head:, base:, base_sha:, url_host:, repo:, head_ref_name: "feature/test",
-    merge_commit_oid: MERGE_COMMIT_SHA
+    merge_commit_oid: MERGE_COMMIT_SHA, ci_transition: :held
   )
+    current_check_head = ci_transition == :moved ? MOVED_SHA : head
     head_ref_entry = if head_ref_name == :missing
                        ""
                      else
                        %("headRefName" => #{head_ref_name.inspect},)
                      end
     semantic_issue = semantic_issue_payload(
-      host: HOST, repo: "owner/repo", pr_number: 42, head:
+      host: HOST, repo: "owner/repo", pr_number: 42,
+      base_ref: base, base_sha:, head:
     )
     queue_payload = if mode == "queue_missing_entry"
                       { "data" => { "enqueuePullRequest" => { "mergeQueueEntry" => nil } } }
@@ -2272,7 +3288,513 @@ class PrMergeSubmitTest < Minitest::Test
       File.open(ENV.fetch("GH_LOG"), "a") do |file|
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
       end
-      if ARGV.include?("repos/owner/repo/issues/1")
+      transition = #{ci_transition.inspect}
+      if ARGV[0, 3] == ["api", "repos/#{repo}/pulls/42"]
+        puts JSON.generate(
+          "id" => 420, "number" => 42,
+          "head" => {
+            "sha" => #{head.inspect}, "ref" => #{head_ref_name.inspect},
+            "repo" => { "id" => 10, "full_name" => #{repo.inspect} }
+          },
+          "base" => {
+            "sha" => #{base_sha.inspect}, "ref" => #{base.inspect},
+            "repo" => { "id" => 10, "full_name" => #{repo.inspect} }
+          }
+        )
+        exit 0
+      end
+      if ARGV[0, 3] == ["pr", "checks", "42"]
+        state, bucket = case transition
+                        when :required_failure then ["FAILURE", "fail"]
+                        when :required_pending, :empty_suite_queued_required_pending
+                          ["PENDING", "pending"]
+                        when :required_race_pending
+                          required_reads = File.read(ENV.fetch("GH_LOG")).scan("pr checks 42").length
+                          required_reads >= 3 ? ["PENDING", "pending"] : ["SUCCESS", "pass"]
+                        else ["SUCCESS", "pass"]
+                        end
+        puts JSON.generate([
+          { "name" => "required", "state" => state, "bucket" => bucket,
+            "link" => "", "workflow" => "required-app" }
+        ])
+        exit 0
+      end
+      if ARGV[0, 3] == ["pr", "view", "42"]
+        puts JSON.generate("headRefOid" => #{head.inspect})
+        exit 0
+      end
+      if ARGV.any? { |arg| arg.include?("reviews(first:100") }
+        review_reads = File.read(ENV.fetch("GH_LOG")).scan("reviews(first:100").length
+        review_race_threshold = #{mode.inspect} == "guard_success" ? 6 : 3
+        review_nodes = if transition == :viewer_draft_race && review_reads >= review_race_threshold
+                         [{ "id" => "PRR_draft", "state" => "PENDING", "submittedAt" => nil,
+                            "commit" => { "oid" => #{head.inspect} } }]
+                       else
+                         []
+                       end
+        pagination_race = transition == :viewer_submitted_review_pagination_race && review_reads >= 3
+        pagination_cursor = ARGV.include?("endCursor=viewer-page-2")
+        if pagination_race
+          review_nodes = if pagination_cursor
+                           []
+                         else
+                           [{ "id" => "PRR_submitted", "state" => "COMMENTED",
+                              "submittedAt" => "2026-07-20T14:00:00Z",
+                              "commit" => { "oid" => #{head.inspect} } }]
+                         end
+        end
+        puts JSON.generate(
+          "data" => { "repository" => { "pullRequest" => {
+            "reviews" => { "nodes" => review_nodes,
+                           "pageInfo" => {
+                             "hasNextPage" => pagination_race && !pagination_cursor,
+                             "endCursor" => pagination_race && !pagination_cursor ? "viewer-page-2" : nil
+                           } }
+          } } }
+        )
+        exit 0
+      end
+      requested_run_endpoint = ARGV.find do |arg|
+        ["repos/#{repo}/actions/runs/42", "repos/#{repo}/actions/runs/43"].include?(arg)
+      end
+      if requested_run_endpoint
+        run_id = requested_run_endpoint[%r{/runs/(\\d+)\\z}, 1].to_i
+        requested_reads = File.readlines(ENV.fetch("GH_LOG")).count do |line|
+          line.strip.end_with?("actions/runs/\#{run_id}")
+        end
+        requested_race_threshold = #{mode.inspect} == "guard_success" ? 4 : 2
+        requested_pending = run_id == 42 &&
+                            (transition == :empty_suite_queued_requested_pending ||
+                             transition == :requested_run_race_pending &&
+                               requested_reads >= requested_race_threshold)
+        requested_attempt = if transition == :requested_run_race_rerun && run_id == 42 &&
+                               requested_reads >= requested_race_threshold
+                              2
+                            else
+                              1
+                            end
+        puts JSON.generate(
+          "id" => run_id, "name" => "requested-\#{run_id}", "head_sha" => #{head.inspect},
+          "run_attempt" => requested_attempt,
+          "status" => requested_pending ? "in_progress" : "completed",
+          "conclusion" => requested_pending ? nil : "success",
+          "html_url" => "https://#{HOST}/#{repo}/actions/runs/\#{run_id}"
+        )
+        exit 0
+      end
+      requested_jobs_endpoint = ARGV.find do |arg|
+        arg.match?(%r{repos/#{repo}/actions/runs/(42|43)/jobs\\?})
+      end
+      if requested_jobs_endpoint
+        run_id = requested_jobs_endpoint[%r{/runs/(\\d+)/jobs}, 1].to_i
+        requested_job_reads = File.readlines(ENV.fetch("GH_LOG")).count do |line|
+          line.include?("actions/runs/\#{run_id}/jobs?")
+        end
+        requested_job_race_threshold = #{mode.inspect} == "guard_success" ? 4 : 2
+        requested_job_pending = transition == :requested_job_race_pending && run_id == 42 &&
+                                requested_job_reads >= requested_job_race_threshold
+        job = {
+          "id" => run_id * 100, "name" => "requested-\#{run_id} / job",
+          "status" => requested_job_pending ? "in_progress" : "completed",
+          "conclusion" => requested_job_pending ? nil : "success",
+          "html_url" => "https://#{HOST}/#{repo}/actions/runs/\#{run_id}/job"
+        }
+        puts JSON.generate("total_count" => 1, "jobs" => [job])
+        exit 0
+      end
+      actions_endpoint = ARGV.find { |arg| arg.include?("repos/#{repo}/actions/runs?head_sha=") }
+      if actions_endpoint
+        exit 1 if transition == :actions_inventory_missing
+
+        actions_reads = File.read(ENV.fetch("GH_LOG")).scan("actions/runs?head_sha=").length
+        action_rows = if %i[actions_failure actions_pending].include?(transition) ||
+                         (%i[actions_race_failure actions_race_pending].include?(transition) &&
+                          actions_reads >= 2)
+                        failure = %i[actions_failure actions_race_failure].include?(transition)
+                        status = failure ? "completed" : "in_progress"
+                        conclusion = failure ? "failure" : nil
+                        [{
+                          "id" => 501, "workflow_id" => 601, "run_number" => 1, "run_attempt" => 1,
+                          "event" => "pull_request", "head_branch" => #{head_ref_name.inspect},
+                          "head_repository" => { "id" => 10 }, "pull_requests" => [],
+                          "head_sha" => #{head.inspect}, "name" => "current-actions",
+                          "status" => status, "conclusion" => conclusion,
+                          "html_url" => "https://#{HOST}/#{repo}/actions/runs/501",
+                          "actor" => { "login" => "octocat" },
+                          "triggering_actor" => { "login" => "octocat" }
+                        }]
+                      else
+                        []
+                      end
+        puts JSON.generate("total_count" => action_rows.length, "workflow_runs" => action_rows)
+        exit 0
+      end
+      if ARGV.any? { |arg| arg.include?("repos/#{repo}/actions/runs/501/jobs?") }
+        puts JSON.generate("total_count" => 0, "jobs" => [])
+        exit 0
+      end
+      status_endpoint = ARGV.find { |arg| arg.include?("/commits/#{head}/status?") }
+      if status_endpoint
+        exit 1 if transition == :status_inventory_missing
+
+        status_reads = File.read(ENV.fetch("GH_LOG")).scan("/status?per_page=").length
+        race_threshold = #{mode.inspect} == "guard_success" ? 5 : 2
+        status_rows = case transition
+                      when :status_failure
+                        [{ "id" => 701, "context" => "current-status", "state" => "failure",
+                           "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                      when :status_pending
+                        [{ "id" => 701, "context" => "current-status", "state" => "pending",
+                           "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                      when :status_race_failure
+                        if status_reads >= race_threshold
+                          [{ "id" => 701, "context" => "current-status", "state" => "failure",
+                             "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                        else
+                          []
+                        end
+                      when :status_race_pending
+                        if status_reads >= race_threshold
+                          [{ "id" => 701, "context" => "current-status", "state" => "pending",
+                             "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                        else
+                          []
+                        end
+                      when :status_snapshot_failure
+                        if status_reads >= 3
+                          [{ "id" => 701, "context" => "current-status", "state" => "failure",
+                             "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                        else
+                          []
+                        end
+                      when :status_snapshot_pending
+                        if status_reads >= 3
+                          [{ "id" => 701, "context" => "current-status", "state" => "pending",
+                             "target_url" => "https://#{HOST}/#{repo}/status/701" }]
+                        else
+                          []
+                        end
+                      else
+                        []
+                      end
+        combined_state = if status_rows.any? { |row| %w[error failure].include?(row["state"]) }
+                           "failure"
+                         elsif status_rows.empty? || status_rows.any? { |row| row["state"] == "pending" }
+                           "pending"
+                         else
+                           "success"
+                         end
+        puts JSON.generate(
+          "sha" => #{head.inspect}, "state" => combined_state,
+          "total_count" => status_rows.length, "statuses" => status_rows
+        )
+        exit 0
+      end
+      inventory_endpoint = ARGV.find { |arg| arg.include?("/commits/#{head}/check-runs?") }
+      suite_inventory_endpoint = ARGV.find { |arg| arg.include?("/commits/#{head}/check-suites?") }
+      suite_runs_endpoint = ARGV.find { |arg| arg.include?("/check-suites/") && arg.include?("/check-runs?") }
+      check_inventory_endpoint = inventory_endpoint || suite_inventory_endpoint || suite_runs_endpoint
+      if check_inventory_endpoint
+        page = check_inventory_endpoint[/[?&]page=(\\d+)/, 1].to_i
+        build_check_run = lambda do |id:, status:, conclusion:, started_at:, name: "storybook-review-app",
+                                    app_slug: "circleci-checks", head_sha: #{current_check_head.inspect},
+                                    provider_status: nil|
+          row = {
+            "id" => id, "name" => name, "head_sha" => head_sha,
+            "status" => status, "conclusion" => conclusion, "started_at" => started_at,
+            "html_url" => "https://#{HOST}/#{repo}/checks/\#{id}",
+            "app" => { "slug" => app_slug }
+          }
+          if app_slug == "circleci-checks"
+            workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
+            row.merge!(
+              "completed_at" => status == "completed" ? "2026-08-25T12:01:00Z" : nil,
+              "details_url" => workflow_url,
+              "actions" => nil,
+              "output" => {
+                "title" => "Workflow: \#{name}",
+                "summary" => "[View CircleCI Workflow](\#{workflow_url})\\n\\n" \
+                             "* start - \#{provider_status || 'Running'}\\n"
+              }
+            )
+          end
+          row
+        end
+        held = build_check_run.call(
+          id: 31, status: "in_progress", conclusion: nil,
+          started_at: "2026-08-24T08:07:48Z", provider_status: "Blocked"
+        )
+        running_replacement = build_check_run.call(
+          id: 32, status: "in_progress", conclusion: nil,
+          started_at: "2026-08-25T12:00:00Z", provider_status: "Running"
+        )
+        failed_replacement = build_check_run.call(
+          id: 32, status: "completed", conclusion: "failure",
+          started_at: "2026-08-25T12:00:00Z"
+        )
+        successful_replacement = build_check_run.call(
+          id: 32, status: "completed", conclusion: "success",
+          started_at: "2026-08-25T12:00:00Z"
+        )
+        unrelated_failure = build_check_run.call(
+          id: 99, status: "completed", conclusion: "failure",
+          started_at: "2026-08-25T12:00:00Z", name: "unrelated-check",
+          app_slug: "unrelated-app"
+        )
+        unrelated_pending = build_check_run.call(
+          id: 99, status: "in_progress", conclusion: nil,
+          started_at: "2026-08-25T12:00:00Z", name: "unrelated-check",
+          app_slug: "unrelated-app"
+        )
+        unrelated_held = build_check_run.call(
+          id: 99, status: "in_progress", conclusion: nil, started_at: nil,
+          name: "unrelated-check", app_slug: "unrelated-app"
+        )
+        unrelated_success = build_check_run.call(
+          id: 99, status: "completed", conclusion: "success",
+          started_at: "2026-08-25T12:00:00Z", name: "unrelated-check",
+          app_slug: "unrelated-app"
+        )
+        earlier_higher_id_success = build_check_run.call(
+          id: 200, status: "completed", conclusion: "success",
+          started_at: "2026-08-25T10:00:00Z"
+        ).merge("fixture_suite_id" => 803, "fixture_suite_created_at" => "2026-08-25T10:00:00Z")
+        earlier_higher_id_failure = earlier_higher_id_success.merge("conclusion" => "failure")
+        later_lower_id_success = build_check_run.call(
+          id: 100, status: "completed", conclusion: "success",
+          started_at: "2026-08-25T12:00:00Z"
+        ).merge("fixture_suite_id" => 804, "fixture_suite_created_at" => "2026-08-25T12:00:00Z")
+        later_lower_id_failure = later_lower_id_success.merge("conclusion" => "failure")
+        if transition == :missing_inventory
+          warn "inventory unavailable"
+          exit 1
+        end
+        if transition == :malformed_inventory
+          puts JSON.generate("total_count" => 1, "check_runs" => "malformed")
+          exit 0
+        end
+        check_runs, total_count = case transition
+                                  when :replacement_running
+                                    [[running_replacement], 1]
+                                  when :replacement_failed
+                                    [[failed_replacement], 1]
+                                  when :replacement_success
+                                    [[successful_replacement], 1]
+                                  when :additional_running
+                                    [[held, running_replacement], 2]
+                                  when :unrelated_failure
+                                    [[held, unrelated_failure], 2]
+                                  when :unrelated_pending
+                                    [[held, unrelated_pending], 2]
+                                  when :unrelated_held
+                                    [[held, unrelated_held], 2]
+                                  when :unrelated_success
+                                    [[held, unrelated_success], 2]
+                                  when :historical_then_latest_success
+                                    [[successful_replacement], 1]
+                                  when :historical_then_latest_failure
+                                    [[failed_replacement], 1]
+                                  when :later_lower_id_success
+                                    [[earlier_higher_id_failure, later_lower_id_success], 2]
+                                  when :later_lower_id_failure
+                                    [[earlier_higher_id_success, later_lower_id_failure], 2]
+                                  when :missing_suite_chronology
+                                    [[held.merge("fixture_suite_created_at" => nil)], 1]
+                                  when :tied_suite_chronology
+                                    [[
+                                      held.merge(
+                                        "fixture_suite_id" => 803,
+                                        "fixture_suite_created_at" => "2026-08-25T10:00:00Z"
+                                      ),
+                                      successful_replacement.merge(
+                                        "fixture_suite_id" => 804,
+                                        "fixture_suite_created_at" => "2026-08-25T10:00:00Z"
+                                      )
+                                    ], 2]
+                                  when :missing_disposed
+                                    [[], 0]
+                                  when :pagination_success
+                                    if page == 1
+                                      unrelated = Array.new(100) do |index|
+                                        build_check_run.call(
+                                          id: 1000 + index, status: "completed", conclusion: "success",
+                                          started_at: "2026-08-25T12:00:00Z", name: "unrelated-\#{index}",
+                                          app_slug: "circleci-checks"
+                                        )
+                                      end
+                                      [unrelated, 101]
+                                    else
+                                      [[successful_replacement], 101]
+                                    end
+                                  when :incomplete_inventory
+                                    [page == 1 ? [held] : [], 2]
+                                  when :unknown_inventory
+                                    [[held.merge("status" => "UNKNOWN")], 1]
+                                  when :running
+                                    [[held.merge(
+                                      "started_at" => "2026-08-25T12:00:00Z",
+                                      "output" => held.fetch("output").merge(
+                                        "summary" => "[View CircleCI Workflow](\#{held.fetch('details_url')})" \
+                                                     "\\n\\n* start - Running\\n"
+                                      )
+                                    )], 1]
+                                  when :failed
+                                    [[held.merge(
+                                      "status" => "completed", "conclusion" => "failure",
+                                      "started_at" => "2026-08-25T12:00:00Z"
+                                    )], 1]
+                                  when :success
+                                    [[held.merge(
+                                      "status" => "completed", "conclusion" => "success",
+                                      "started_at" => "2026-08-25T12:00:00Z"
+                                    )], 1]
+                                  when :held_then_failed_after_first_inventory
+                                    pr_metadata_reads = File.read(ENV.fetch("GH_LOG") + ".queries").to_i
+                                    if pr_metadata_reads >= 2
+                                      [[held.merge(
+                                        "status" => "completed", "conclusion" => "failure",
+                                        "started_at" => "2026-08-25T12:00:00Z"
+                                      )], 1]
+                                    else
+                                      [[held], 1]
+                                    end
+                                  else
+                                    [[held], 1]
+                                  end
+        suite_for_row = lambda do |row|
+          slug = row.dig("app", "slug")
+          default_id = slug == "circleci-checks" ? 801 : 802
+          created_at = if row.key?("fixture_suite_created_at")
+                         row["fixture_suite_created_at"]
+                       else
+                         "2026-08-25T10:00:00Z"
+                       end
+          { "id" => row.fetch("fixture_suite_id", default_id),
+            "created_at" => created_at,
+            "updated_at" => created_at,
+            "head_sha" => #{current_check_head.inspect},
+            "app" => { "id" => slug == "circleci-checks" ? 901 : 902, "slug" => slug } }
+        end
+        suites = check_runs.group_by { |row| suite_for_row.call(row) }.map do |suite, suite_rows|
+          suite_status = suite_rows.any? { |row| row["status"] != "completed" } ? "in_progress" : "completed"
+          suite_conclusion = if suite_status == "completed"
+                               suite_rows.filter_map { |row| row["conclusion"] }
+                                         .find { |value| !%w[neutral skipped success].include?(value) } || "success"
+                             end
+          suite.merge(
+            "status" => suite_status,
+            "conclusion" => suite_conclusion,
+            "latest_check_runs_count" => if %i[pagination_success incomplete_inventory].include?(transition)
+                                           total_count
+                                         else
+                                           suite_rows.length
+                                         end
+          )
+        end
+        suite_inventory_reads = File.read(ENV.fetch("GH_LOG")).scan("/check-suites?").length
+        late_placeholder = suite_inventory_reads > 3
+        empty_suite_status = {
+          empty_suite_queued: "queued",
+          empty_suite_queued_required_pending: "queued",
+          empty_suite_queued_requested_pending: "queued",
+          late_queued_placeholder: late_placeholder ? "queued" : nil,
+          placeholder_gains_run: late_placeholder ? "in_progress" : "queued",
+          empty_suite_requested: "requested",
+          empty_suite_in_progress: "in_progress",
+          empty_suite_waiting: "waiting",
+          empty_suite_pending: "pending",
+          empty_suite_unknown: "UNKNOWN",
+          empty_suite_malformed_conclusion: "queued",
+          empty_suite_malformed_count: "completed",
+          empty_suite_count_mismatch: "completed",
+          empty_suite_completed: "completed"
+        }[transition]
+        if empty_suite_status
+          suites << {
+            "id" => 899, "created_at" => "2026-08-25T12:30:00Z",
+            "updated_at" => "2026-08-25T12:30:00Z",
+            "head_sha" => #{current_check_head.inspect},
+            "app" => { "id" => 999, "slug" => "empty-suite-app" },
+            "status" => empty_suite_status,
+            "conclusion" => if transition == :empty_suite_malformed_conclusion
+                              "success"
+                            elsif empty_suite_status == "completed"
+                              "success"
+                            end,
+            "latest_check_runs_count" => if transition == :empty_suite_malformed_count
+                                            "1"
+                                          elsif transition == :empty_suite_count_mismatch
+                                            1
+                                          elsif transition == :placeholder_gains_run && late_placeholder
+                                            1
+                                          else
+                                            0
+                                          end
+          }
+        end
+        if suite_inventory_endpoint
+          puts JSON.generate("total_count" => suites.length, "check_suites" => suites)
+          exit 0
+        end
+        if suite_runs_endpoint
+          suite_id = suite_runs_endpoint[%r{/check-suites/(\\d+)/}, 1].to_i
+          suite_runs = check_runs.filter_map do |row|
+            suite = suite_for_row.call(row)
+            next unless suite.fetch("id") == suite_id
+
+            row.merge("check_suite" => { "id" => suite_id }, "app" => suite.fetch("app"))
+          end
+          if transition == :placeholder_gains_run && late_placeholder && suite_id == 899
+            suite_runs = [{
+              "id" => 990, "name" => "dormant-build", "head_sha" => #{current_check_head.inspect},
+              "status" => "in_progress", "conclusion" => nil,
+              "started_at" => "2026-08-25T12:31:00Z", "html_url" => "",
+              "check_suite" => { "id" => 899 },
+              "app" => { "id" => 999, "slug" => "empty-suite-app" }
+            }]
+          end
+          suite_total = if %i[pagination_success incomplete_inventory].include?(transition)
+                          total_count
+                        else
+                          suite_runs.length
+                        end
+          puts JSON.generate("total_count" => suite_total, "check_runs" => suite_runs)
+          exit 0
+        end
+        puts JSON.generate("total_count" => total_count, "check_runs" => check_runs)
+        exit 0
+      end
+      if ARGV.include?("repos/#{repo}/check-runs/31")
+        phase = case #{ci_transition.inspect}
+                when :running
+                  { "status" => "in_progress", "conclusion" => nil,
+                    "started_at" => "2026-08-25T12:00:00Z", "provider_status" => "Running" }
+                when :failed
+                  { "status" => "completed", "conclusion" => "failure",
+                    "started_at" => "2026-08-25T12:00:00Z", "provider_status" => "Failed" }
+                when :success
+                  { "status" => "completed", "conclusion" => "success",
+                    "started_at" => "2026-08-25T12:00:00Z", "provider_status" => "Success" }
+                else
+                  { "status" => "in_progress", "conclusion" => nil,
+                    "started_at" => "2026-08-24T08:07:48Z", "provider_status" => "Blocked" }
+                end
+        provider_status = phase.delete("provider_status")
+        workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
+        puts JSON.generate(
+          { "id" => 31, "name" => "storybook-review-app", "head_sha" => #{current_check_head.inspect},
+            "app" => { "slug" => "circleci-checks" },
+            "completed_at" => phase["status"] == "completed" ? "2026-08-25T12:01:00Z" : nil,
+            "details_url" => workflow_url, "actions" => nil,
+            "output" => {
+              "title" => "Workflow: storybook-review-app",
+              "summary" => "[View CircleCI Workflow](\#{workflow_url})\\n\\n" \
+                           "* start - \#{provider_status}\\n"
+            } }.merge(phase)
+        )
+        exit 0
+      end
+      if ARGV.include?("repos/#{repo}/issues/1")
         puts #{JSON.generate(semantic_issue).inspect}
         exit 0
       end
@@ -2297,6 +3819,8 @@ class PrMergeSubmitTest < Minitest::Test
         File.write(query_count_path, (query_count + 1).to_s)
         current_mode = #{mode.inspect}
         guard_called = File.exist?(ENV.fetch("PR_TEST_GUARD_MARKER"))
+        gh_log = File.read(ENV.fetch("GH_LOG"))
+        enqueue_attempted = gh_log.include?("enqueuePullRequest")
         queue_enabled = case current_mode
                         when "queue", "queue_fast_merged", "queue_fast_merged_base_advanced",
                              "queue_missing_entry", "already_queued", "already_queued_base_advanced",
@@ -2312,9 +3836,13 @@ class PrMergeSubmitTest < Minitest::Test
                              "enqueue_transport_queued_base_advanced", "queue_post_queued_base_advanced",
                              "queue_post_queued_with_commit",
                              "enqueue_non_object_response_queued", "queue_base_race",
-                             "queue_entry_replaced", "queue_entry_replaced_same_target" then true
-                        when "direct_queue_race" then query_count.positive?
+                             "queue_entry_replaced", "queue_entry_replaced_same_target",
+                             "queue_ci_base_race" then true
+                        when "direct_queue_race", "guard_queue_race", "guard_queue_ci_base_race"
+                          query_count.positive?
                         when "direct_graphql_error_queue_enabled" then query_count >= 2
+                        when "guard_post_materialization_queue_race"
+                          query_count >= 2
                         else false
                         end
         queued = case current_mode
@@ -2327,10 +3855,11 @@ class PrMergeSubmitTest < Minitest::Test
                       "enqueue_graphql_error_merged_queued",
                       "queue_entry_replaced_same_target",
                       "queue_post_queued_base_advanced",
-                      "queue_post_queued_with_commit" then query_count.positive?
+                      "queue_post_queued_with_commit" then enqueue_attempted
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
                  when "direct_graphql_error_in_queue" then query_count >= 2
+                 when "guard_queue_race" then query_count >= 2
                  else false
                  end
         merged_after_mutation = [
@@ -2347,12 +3876,19 @@ class PrMergeSubmitTest < Minitest::Test
           direct_transport_merged direct_graphql_error_merged direct_response_invalid_merged
         ].include?(current_mode) && direct_attempted
         merged = ["already_merged", "already_merged_base_advanced"].include?(current_mode) ||
-                 (merged_after_mutation && query_count.positive?) || guarded_direct_merged || directly_merged
+                 (merged_after_mutation && enqueue_attempted) || guarded_direct_merged || directly_merged
         base_race_modes = [
           "queue_base_race", "queue_entry_replaced", "enqueue_transport_base_race",
           "enqueue_graphql_error_base_race"
         ]
-        live_base = if base_race_modes.include?(current_mode) && query_count.positive?
+        ci_base_race_modes = %w[
+          direct_ci_base_race queue_ci_base_race guard_queue_ci_base_race guard_ci_base_race
+        ]
+        ci_inventory_complete = gh_log.include?("/commits/")
+        live_base = if (base_race_modes.include?(current_mode) && query_count.positive?) ||
+                       (ci_base_race_modes.include?(current_mode) && ci_inventory_complete) ||
+                       (current_mode == "guard_post_materialization_base_race" &&
+                        query_count >= 2)
                       "release"
                     else
                       #{base.inspect}
@@ -2367,7 +3903,7 @@ class PrMergeSubmitTest < Minitest::Test
           already_merged_base_advanced initial_open_base_advanced already_queued_base_advanced
         ]
         live_base_oid = if base_advanced_modes.include?(current_mode) &&
-                           (initially_advanced_modes.include?(current_mode) || query_count.positive?)
+                           (initially_advanced_modes.include?(current_mode) || enqueue_attempted)
                           #{ADVANCED_BASE_SHA.inspect}
                         else
                           #{base_sha.inspect}

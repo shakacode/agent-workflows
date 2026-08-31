@@ -589,8 +589,69 @@ direct evidence repair and reevaluation and must never be worded as approvable.
 After ordinary readiness and any required walkthrough or human decision, capture
 the resolved `pr-ci-readiness` v2 result, the autonomous eligibility result, and
 a trusted coordinator-owned merge context. `pr-ci-readiness` v2 owns the scoped,
-exact-head required-status, GitHub Actions, Dependabot, and other CI evidence;
-legacy v1 CI output is not sufficient.
+exact-head required-status, GitHub Actions, Dependabot, and other CI evidence,
+including authenticated live GitHub suite/run refresh and complete
+materialization. Pass the reviewed `context.diff_base_sha` as
+`--diff-base-sha`; the result binds the live base ref/SHA and canonical
+`diff_identity`, so retargeting, live-base movement, or a different reviewed
+base/effective merge base invalidates CI even when the head is unchanged.
+`merge-assurance` structurally revalidates that `ci_result`; it does not
+independently query GitHub. Legacy v1 CI output is not sufficient.
+
+Derive `diff_identity` with the trusted pack's `bin/diff-identity`, passing the
+exact base ref, the resolved full lowercase base/effective-merge-base SHA used
+for the reviewed diff, and the full lowercase head SHA. The helper's v1
+length-delimited NUL-separated serialization is canonical; never substitute an
+opaque 64-hex value or caller-authored serialization. Any member change
+invalidates walkthrough, human-decision, CI, and receipt evidence.
+The valid single-component Git branch name `@` is accepted; reflog syntax
+containing `@{` remains noncanonical and is rejected.
+The trusted coordinator must resolve that reviewed SHA from the trusted
+repository. `merge-assurance` authenticates and canonically binds the supplied
+value but intentionally does not query Git or prove ancestry itself.
+Record that reviewed SHA separately as `context.diff_base_sha`, and bind the
+same field in walkthrough and human-decision evidence. Keep `context.base.sha`
+as the live base commit (`baseRefOid`) used by trusted-base policy loading and
+final merge submission; do not substitute an effective merge base there.
+
+When the trusted-base `.agents/agent-workflow.yml` configures the closed
+`ci_readiness` v1 `optional_approval_held_checks` seam, pass the consumer Git
+root to both helpers. `pr-ci-readiness` keeps raw rows and records exact policy
+dispositions; `merge-assurance` reloads that policy from the receipt-bound base
+Git object before applying them. Missing, malformed, `UNKNOWN`, tampered, stale,
+required, requested, failed, or unmatched evidence remains blocking.
+A name match to any required evidence blocks optional disposition;
+workflow/producer metadata is not authenticated identity and cannot narrow that
+match.
+When readiness used requested hosted runs, repeat each canonical positive run ID
+as `--requested-hosted-run` to both `merge-assurance` and `pr-merge-submit`,
+preserving order. Those trusted invocation arguments are the authorization
+boundary; caller-editable CI JSON and its integrity digest cannot create,
+delete, reorder, or narrow the authorized run set.
+For a third-party check run, the currently supported provider-phase evidence is
+an `in_progress` `circleci-checks` row whose output title and workflow link bind
+the configured check name and one CircleCI workflow, whose completion and
+actions are explicitly null, and whose `started_at` is null or a valid
+timestamp. Its summary must contain at least one downstream `Blocked` phase;
+`Success` prerequisites are also allowed. A same-workflow link authenticates
+origin but not completion, and the current collector has no separate terminal
+history evidence, so every `Running` phase remains blocking. Failed or unknown
+states, missing or malformed provider evidence, another app, queued rows, and
+otherwise ambiguous phase evidence also remain blocking.
+The final check-run inventory paginates exact-head check suites and each suite's
+latest runs. Competing attempts with the same `(app_slug, name)` may use
+strictly validated run `started_at` chronology only within one authenticated
+suite. Preserve the same app/name from distinct authenticated suites as
+distinct general readiness evidence; because optional-policy rules identify
+only app/name, that multiplicity cannot receive an optional disposition.
+A missing or null retry timestamp, malformed timestamp, or tie is `UNKNOWN`.
+Every suite also requires a recognized status/conclusion pair and an exact
+`latest_check_runs_count` materialized by the paginated latest-run response.
+A stable queued zero-run suite is retained in the authenticated first/final
+suite snapshots as a dormant-app placeholder and emits no check row. A new or
+changed placeholder, any other zero-run suite, a count mismatch, or a
+phase-contradictory suite is `UNKNOWN`; required and explicitly requested
+pending evidence still blocks through its authoritative scope.
 
 When a hosted workflow outside the ordinary GitHub check scopes is explicitly
 selected, add its exact `{provider, run_id}` to merge-context
@@ -622,10 +683,18 @@ selection invokes no seam and gates no incidental hosted run.
 Run:
 
 ```bash
-"${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
+# REQUESTED_HOSTED_RUN_IDS is the ordered coordinator input; set it to () when no runs were requested.
+REQUESTED_HOSTED_RUN_ARGS=()
+for run_id in "${REQUESTED_HOSTED_RUN_IDS[@]}"; do
+  REQUESTED_HOSTED_RUN_ARGS+=(--requested-hosted-run "${run_id}")
+done
+"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --trusted-repo-root "$(git rev-parse --show-toplevel)" \
+  "${REQUESTED_HOSTED_RUN_ARGS[@]}" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 `merge-assurance` alone owns merge-authority, follow-up accounting, and

@@ -28,6 +28,9 @@
 require "json"
 require "open3"
 require "time"
+require "yaml"
+require_relative "../../../bin/agent_doctor/autonomous_merge_policy_yaml"
+load File.expand_path("diff-identity", __dir__) unless defined?(DiffIdentity)
 
 # Pure verdict logic (no I/O) plus the gh-backed runner. The pure methods take
 # the raw `gh pr checks --json` output string (or parsed rows) so they can be
@@ -94,6 +97,35 @@ module PrCiReadiness
     end
   end
 
+  # The GraphQL fallback may be newer than the exact-head REST inventory. Only
+  # let an authenticated disposition explain that mismatch when every blocking
+  # fallback row is the same pending CircleCI workflow observed by REST.
+  def policy_dispositions_own_fallback_rows?(rows, required_cancellations:, other_scope:)
+    dispositions = other_scope["policy_dispositions"]
+    exact_rows = other_scope["rows"]
+    return false unless dispositions.is_a?(Array) && dispositions.any? && exact_rows.is_a?(Array)
+
+    disposition_rows = dispositions.filter_map do |disposition|
+      matches = exact_rows.select { |row| disposition_matches_row?(disposition, row) }
+      matches.first if matches.one?
+    end
+    return false unless disposition_rows.length == dispositions.length
+
+    blocking_rows = readiness_rows(
+      rows, required_used: false, required_cancellations:
+    ).select { |row| %w[cancel fail pending].include?(row["bucket"].to_s) }
+    return false if blocking_rows.empty?
+
+    blocking_rows.all? do |row|
+      link = row["link"]
+      row["bucket"] == "pending" && link.is_a?(String) && !link.empty? &&
+        disposition_rows.one? do |exact_row|
+          row["name"] == exact_row["name"] && link == exact_row["details_url"] &&
+            (row["workflow"].to_s.empty? || row["workflow"] == exact_row["app_slug"])
+        end
+    end
+  end
+
   def failing_names(rows)
     rows.select { |row| row["bucket"].to_s == "fail" }.map { |row| row["name"].to_s }
   end
@@ -144,6 +176,24 @@ module PrCiReadiness
 
   EVIDENCE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
   SUCCESSFUL_CONCLUSIONS = %w[success neutral skipped].freeze
+  POLICY_PATH = ".agents/agent-workflow.yml"
+  POLICY_KEYS = %w[optional_approval_held_checks version].freeze
+  OPTIONAL_CHECK_KEYS = %w[app_slug id name].freeze
+  POLICY_RULE_ID = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
+  APPROVAL_HELD_STATUSES = %w[in_progress].freeze
+  CIRCLECI_APP_SLUG = "circleci-checks"
+  CIRCLECI_WORKFLOW_URL = %r{\Ahttps://app\.circleci\.com/workflow/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?[^#\s]*)?\z}
+  SYSTEM_GIT = %w[/opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git /bin/git].find do |path|
+    File.file?(path) && File.executable?(path)
+  end
+  TRUSTED_GIT_ENV = {
+    "GIT_CONFIG_NOSYSTEM" => "1",
+    "GIT_CONFIG_SYSTEM" => File::NULL,
+    "GIT_CONFIG_GLOBAL" => File::NULL,
+    "GIT_NO_REPLACE_OBJECTS" => "1",
+    "GIT_TERMINAL_PROMPT" => "0",
+    "LC_ALL" => "C"
+  }.freeze
 
   def evidence_row_state(row)
     return "UNKNOWN" unless row.is_a?(Hash)
@@ -167,9 +217,19 @@ module PrCiReadiness
     "UNKNOWN"
   end
 
-  def evidence_scope(source:, head_sha:, complete:, rows:, checked_at:, error: nil)
+  def evidence_scope(
+    source:, head_sha:, complete:, rows:, checked_at:, error: nil,
+    policy_dispositions: nil
+  )
     normalized_rows = rows.is_a?(Array) ? rows : []
-    row_states = normalized_rows.map { |row| evidence_row_state(row) }
+    blocking_rows = if policy_dispositions.nil?
+                      normalized_rows
+                    else
+                      normalized_rows.reject do |row|
+                        policy_dispositions.any? { |disposition| disposition_matches_row?(disposition, row) }
+                      end
+                    end
+    row_states = blocking_rows.map { |row| evidence_row_state(row) }
     state =
       if complete != true
         "UNKNOWN"
@@ -190,12 +250,13 @@ module PrCiReadiness
       "rows" => normalized_rows,
       "checked_at" => checked_at
     }
+    result["policy_dispositions"] = policy_dispositions unless policy_dispositions.nil?
     result["error"] = error.to_s unless error.to_s.empty?
     result["error"] ||= "one or more rows had an unknown state" if state == "UNKNOWN" && complete == true
     result
   end
 
-  def evidence_contract(repo:, pr_number:, head_sha:, checked_at:, scopes:)
+  def evidence_contract(repo:, pr_number:, base:, diff_base_sha:, head_sha:, checked_at:, scopes:)
     states = scopes.values.map { |scope| scope["state"] }
     verdict =
       if states.any? { |state| !EVIDENCE_STATES.include?(state) } || states.include?("UNKNOWN")
@@ -210,6 +271,11 @@ module PrCiReadiness
       "version" => 2,
       "repo" => repo,
       "pr" => pr_number.to_i,
+      "base" => base,
+      "diff_base_sha" => diff_base_sha,
+      "diff_identity" => DiffIdentity.derive(
+        base_ref: base.fetch("ref"), base_sha: diff_base_sha, head_sha:
+      ),
       "head_sha" => head_sha,
       "checked_at" => checked_at,
       "verdict" => verdict,
@@ -220,7 +286,7 @@ module PrCiReadiness
   def inventory_scopes(
     head_sha:, checked_at:, required_rows:, required_complete:, actions_rows:,
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
-    statuses_complete:, errors: {}
+    statuses_complete:, errors: {}, optional_approval_held_policy: nil
   )
     # required_rows may still contain a non-Hash entry that survived
     # readiness classification upstream (kept, not dropped, so it remains
@@ -248,6 +314,15 @@ module PrCiReadiness
         row["app_slug"].to_s == "github-actions" ||
         row["dependabot"] == true
     end
+    policy_dispositions = if optional_approval_held_policy.nil?
+                            nil
+                          else
+                            optional_approval_held_dispositions(
+                              other_rows,
+                              required_rows:,
+                              policy: optional_approval_held_policy
+                            )
+                          end
 
     {
       "required_status_check_rollup" => evidence_scope(
@@ -268,9 +343,220 @@ module PrCiReadiness
       "other" => evidence_scope(
         source: "github.checks_and_statuses.exact_head.non_required",
         head_sha:, complete: check_runs_complete && statuses_complete,
-        rows: other_rows, checked_at:, error: errors["other"]
+        rows: other_rows, checked_at:, error: errors["other"],
+        policy_dispositions:
       )
     }
+  end
+
+  def validate_optional_approval_held_policy!(policy)
+    unless closed_string_key_schema?(policy, POLICY_KEYS) && policy["version"] == 1
+      raise Error, "ci_readiness must be a closed version 1 mapping"
+    end
+
+    rules = policy["optional_approval_held_checks"]
+    unless rules.is_a?(Array) && !rules.empty?
+      raise Error, "ci_readiness.optional_approval_held_checks must be a nonempty list"
+    end
+
+    seen_ids = {}
+    seen_identities = {}
+    rules.each do |rule|
+      unless closed_string_key_schema?(rule, OPTIONAL_CHECK_KEYS)
+        raise Error, "each optional approval-held check must contain exactly app_slug, id, and name"
+      end
+
+      rule_id = rule["id"]
+      app_slug = rule["app_slug"]
+      name = rule["name"]
+      raise Error, "optional approval-held check id is invalid" unless rule_id.is_a?(String) && rule_id.match?(POLICY_RULE_ID)
+      raise Error, "optional approval-held check app_slug is invalid" unless
+        app_slug.is_a?(String) && app_slug.match?(POLICY_RULE_ID)
+      raise Error, "optional approval-held check name must be resolved single-line text" unless
+        name.is_a?(String) && !name.empty? && !name.match?(/[[:cntrl:]]/) && name != "UNKNOWN"
+      raise Error, "duplicate optional approval-held check id #{rule_id}" if seen_ids[rule_id]
+
+      identity = [app_slug, name]
+      raise Error, "duplicate optional approval-held check identity #{app_slug}/#{name}" if seen_identities[identity]
+
+      seen_ids[rule_id] = true
+      seen_identities[identity] = true
+    end
+    policy
+  end
+
+  def closed_string_key_schema?(value, expected_keys)
+    value.is_a?(Hash) &&
+      value.keys.all?(String) &&
+      value.keys.length == expected_keys.length &&
+      (value.keys - expected_keys).empty?
+  end
+
+  def optional_approval_held_dispositions(rows, required_rows:, policy:)
+    validate_optional_approval_held_policy!(policy)
+    identity_counts = Array(rows).filter_map { |row| check_run_identity(row) }.tally
+    rules_by_identity = policy.fetch("optional_approval_held_checks").to_h do |rule|
+      [[rule.fetch("app_slug"), rule.fetch("name")], rule]
+    end
+    # GitHub currently omits producer identity from third-party required rows.
+    # Match names conservatively so required evidence can never become optional.
+    required_names = Array(required_rows).filter_map do |required|
+      required["name"].to_s.downcase if required.is_a?(Hash)
+    end
+    required_names = required_names.to_h { |name| [name, true] }
+
+    rows.filter_map do |row|
+      next unless optional_approval_held_row?(row)
+      next unless identity_counts[check_run_identity(row)] == 1
+
+      rule = rules_by_identity[[row["app_slug"], row["name"]]]
+      next unless rule
+      next if required_names[row["name"].downcase]
+
+      {
+        "disposition" => "optional_approval_held",
+        "rule_id" => rule.fetch("id"),
+        "kind" => "check_run",
+        "id" => row["id"],
+        "app_slug" => row["app_slug"],
+        "name" => row["name"]
+      }
+    end
+  end
+
+  def check_run_identity(row)
+    return nil unless row.is_a?(Hash) && row["kind"] == "check_run"
+
+    row.values_at("kind", "app_slug", "name")
+  end
+
+  def optional_approval_held_row?(row)
+    row.is_a?(Hash) && row["kind"] == "check_run" &&
+      row["id"].is_a?(Integer) && row["id"].positive? &&
+      row["app_slug"].is_a?(String) && !row["app_slug"].empty? &&
+      row["name"].is_a?(String) && !row["name"].empty? &&
+      APPROVAL_HELD_STATUSES.include?(row["status"].to_s.downcase) &&
+      row["conclusion"].nil? && circleci_approval_held_evidence?(row)
+  end
+
+  def circleci_approval_held_evidence?(row)
+    return false unless row["app_slug"] == CIRCLECI_APP_SLUG
+    return false unless optional_phase_timestamp?(row, "started_at")
+    return false unless row.key?("completed_at") && row["completed_at"].nil?
+    return false unless row.key?("actions") && row["actions"].nil?
+
+    details_match = row["details_url"].to_s.match(CIRCLECI_WORKFLOW_URL)
+    output = row["output"]
+    return false unless details_match && output.is_a?(Hash) && output.keys.sort == %w[summary title]
+    return false unless output["title"] == "Workflow: #{row['name']}"
+
+    summary_lines = output["summary"].to_s.lines.map(&:strip).reject(&:empty?)
+    summary_link = summary_lines.shift.to_s.match(%r{\A\[View CircleCI Workflow\]\((https://[^)]+)\)\z})
+    summary_url_match = summary_link && summary_link[1].match(CIRCLECI_WORKFLOW_URL)
+    return false unless summary_url_match && summary_url_match[1] == details_match[1]
+
+    phases = summary_lines.map { |line| line.match(/\A\* (?<job>\S.*) - (?<status>\S+)\z/) }
+    return false if phases.empty? || phases.any?(&:nil?)
+    return false unless phases.any? { |phase| phase[:status] == "Blocked" }
+
+    phases.all? { |phase| %w[Success Blocked].include?(phase[:status]) }
+  end
+
+  def optional_phase_timestamp?(row, key)
+    return false unless row.key?(key)
+    return true if row[key].nil?
+    return false unless row[key].is_a?(String)
+
+    Time.iso8601(row[key])
+    true
+  rescue ArgumentError
+    false
+  end
+
+  def required_matches_optional_row?(required, row)
+    return false unless required.is_a?(Hash)
+    return false unless required["name"].to_s.casecmp?(row["name"].to_s)
+
+    # `gh pr checks --required` currently leaves workflow empty for third-party
+    # checks. Workflow is not authenticated producer identity, so even a future
+    # nonempty shape cannot prove that a same-name required row is unrelated.
+    # Match by name conservatively: required evidence must never become optional.
+    true
+  end
+
+  def disposition_matches_row?(disposition, row)
+    disposition.is_a?(Hash) && row.is_a?(Hash) &&
+      disposition["kind"] == row["kind"] && disposition["id"] == row["id"] &&
+      disposition["app_slug"] == row["app_slug"] && disposition["name"] == row["name"]
+  end
+
+  def trusted_ci_policy_at(repo_root:, base_ref:, base_sha:)
+    validate_trusted_policy_binding!(base_ref:, base_sha:)
+    root = File.realpath(repo_root)
+    raise Error, "trusted repository root is not a directory" unless File.directory?(root)
+
+    resolved = resolve_exact_commit!(root, base_sha)
+    raise Error, "trusted repository does not resolve the exact base SHA" unless resolved == base_sha
+
+    tree_entry = git_capture!(root, "ls-tree", base_sha, "--", POLICY_PATH)
+    return nil if tree_entry.empty?
+
+    raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{POLICY_PATH}")
+    duplicate_errors = AutonomousMergePolicy.duplicate_key_errors(raw).select do |error|
+      error == '$ contains duplicate key "ci_readiness"' ||
+        error.start_with?("$.ci_readiness contains duplicate key") ||
+        error.start_with?("$.ci_readiness.optional_approval_held_checks contains duplicate key")
+    end
+    unless duplicate_errors.empty?
+      raise Error, "trusted-base ci_readiness policy contains duplicate keys: #{duplicate_errors.join('; ')}"
+    end
+
+    config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false) || {}
+    raise Error, "trusted-base policy is not a mapping" unless config.is_a?(Hash)
+
+    policy = config["ci_readiness"]
+    return nil if policy.nil? || policy == "n/a"
+
+    validate_optional_approval_held_policy!(policy)
+    blob_sha = git_capture!(root, "rev-parse", "#{base_sha}:#{POLICY_PATH}").strip.downcase
+    raise Error, "trusted-base policy blob SHA is invalid" unless blob_sha.match?(/\A[0-9a-f]{40}\z/)
+
+    {
+      "version" => 1,
+      "provenance" => "git:#{base_sha}:#{POLICY_PATH}@#{blob_sha}",
+      "base" => { "ref" => base_ref, "sha" => base_sha },
+      "optional_approval_held_checks" => policy.fetch("optional_approval_held_checks")
+    }
+  rescue Errno::ENOENT, Errno::EACCES, Psych::Exception => e
+    raise Error, "trusted-base ci_readiness policy is unavailable or malformed: #{e.message.lines.first.to_s.strip}"
+  end
+
+  def validate_trusted_policy_binding!(base_ref:, base_sha:)
+    unless DiffIdentity.canonical_ref?(base_ref)
+      raise Error, "trusted-base policy base ref is invalid"
+    end
+    raise Error, "trusted-base policy base SHA must be lowercase full hexadecimal" unless
+      base_sha.is_a?(String) && base_sha.match?(/\A[0-9a-f]{40}\z/)
+  end
+
+  def git_capture!(root, *arguments)
+    raise Error, "trusted system Git executable is unavailable" unless SYSTEM_GIT
+
+    stdout, stderr, status = Open3.capture3(
+      TRUSTED_GIT_ENV,
+      SYSTEM_GIT, "--no-replace-objects", "--literal-pathspecs", "-C", root, *arguments,
+      unsetenv_others: true
+    )
+    return stdout if status.success?
+
+    detail = [stderr, stdout].map(&:strip).reject(&:empty?).join("; ")
+    raise Error, "trusted Git read failed: #{detail.empty? ? 'no diagnostic' : detail}"
+  end
+
+  def resolve_exact_commit!(root, base_sha)
+    git_capture!(root, "rev-parse", "#{base_sha}^{commit}").strip.downcase
+  rescue Error
+    raise Error, "trusted repository does not resolve the exact base SHA"
   end
 
   # Build the normalized result hash from the captured check rows. Invalid
@@ -370,6 +656,10 @@ module PrCiReadiness
                                               Repeat for multiple maintainer-requested runs.
                                               With no usable required checks, requested runs replace
                                               the full advisory-list fallback gate.
+          --trusted-repo-root DIR             Load ci_readiness policy from the live base SHA's
+                                              .agents/agent-workflow.yml Git blob in this repository.
+          --diff-base-sha SHA                 Bind evidence to the reviewed effective merge base.
+                                              Defaults to the PR's current base SHA.
           --json                              Print JSON (default).
           --text                              Print a human-readable verdict instead of JSON.
           --self-check                        Run parser checks plus a read-only gh smoke check.
@@ -379,6 +669,10 @@ module PrCiReadiness
       {
         "pr": 1234,
         "context": { "host": "github.com" },
+        "base": { "ref": "main", "sha": "<LIVE_BASE_SHA>" },
+        "diff_base_sha": "<REVIEWED_DIFF_BASE_SHA>",
+        "diff_identity": "<CANONICAL_DIFF_IDENTITY>",
+        "head_sha": "<EXACT_HEAD_SHA>",
         "verdict": "READY" | "NOT_READY" | "UNKNOWN",
         "required_used": true | false,
         "failing": [ "check name", ... ],
@@ -412,6 +706,16 @@ module PrCiReadiness
   # gh-backed CLI: parses args, fetches the check rows, and prints the verdict.
   # All subprocess calls use array args (no shell).
   class Runner
+    CHECK_RUN_STATUSES = %w[queued in_progress completed waiting requested pending].freeze
+    CHECK_RUN_CONCLUSIONS = %w[
+      action_required cancelled failure neutral success skipped stale startup_failure timed_out
+    ].freeze
+    CHECK_SUITE_READY_CONCLUSIONS = %w[neutral skipped success].freeze
+
+    def initialize(command_runner: nil)
+      @command_runner = command_runner
+    end
+
     def run(argv)
       opts = parse_args(argv)
       if opts[:help]
@@ -424,13 +728,79 @@ module PrCiReadiness
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      result = assess(repo, pr_number, requested_hosted_runs: opts[:requested_hosted_runs])
+      result = assess(
+        repo,
+        pr_number,
+        requested_hosted_runs: opts[:requested_hosted_runs],
+        trusted_repo_root: opts[:trusted_repo_root],
+        diff_base_sha: opts[:diff_base_sha]
+      )
       result["context"] = { "host" => host }
       print_result(result, opts[:format])
       0
     rescue Error => e
       warn "Error: #{e.message}"
       1
+    end
+
+    def assess_authenticated(
+      repo:, pr_number:, host:, requested_hosted_runs:, trusted_repo_root: nil, diff_base_sha: nil
+    )
+      resolved_host = resolve_host!(host)
+      @gh_env = { "GH_HOST" => resolved_host }
+      result = assess(
+        resolve_repo!(repo), validate_pr!(pr_number),
+        requested_hosted_runs:, trusted_repo_root:, diff_base_sha:
+      )
+      result["context"] = { "host" => resolved_host }
+      result
+    end
+
+    def authenticated_ci_snapshot(repo:, pr_number:, host:, requested_hosted_runs: [])
+      resolved_host = resolve_host!(host)
+      @gh_env = { "GH_HOST" => resolved_host }
+      resolved_repo = resolve_repo!(repo)
+      validated_pr = validate_pr!(pr_number)
+      target_pr = fetch_target_pr_identity(resolved_repo, validated_pr, require_base: true)
+      rows, complete, error, = fetch_exact_head_actions(resolved_repo, target_pr)
+      raise Error, error unless complete
+
+      _check_runs, checks_complete, checks_error, check_inventory =
+        fetch_exact_head_check_runs(resolved_repo, target_pr.fetch(:head_sha))
+      raise Error, checks_error unless checks_complete
+
+      required_fetch = fetch_checks(resolved_repo, validated_pr, required: true)
+      raise Error, "required-check inventory was unavailable during final CI inventory" unless
+        required_fetch.fetch(:known_good)
+
+      required_inventory = canonical_check_snapshot(PrCiReadiness.parse_rows(required_fetch.fetch(:raw)))
+      statuses, statuses_complete, statuses_error =
+        fetch_exact_head_statuses(resolved_repo, target_pr.fetch(:head_sha))
+      raise Error, statuses_error unless statuses_complete
+
+      requested_hosted, requested_hosted_inventory = requested_hosted_summary(
+        resolved_repo, validated_pr, requested_hosted_runs, target_pr.fetch(:head_sha)
+      )
+      viewer_review = viewer_pending_review_draft_inventory(
+        resolved_repo, validated_pr, target_pr.fetch(:head_sha)
+      )
+      raise Error, viewer_review.fetch("error", "viewer review inventory was incomplete") unless
+        viewer_review.fetch("complete")
+
+      final_target_pr = fetch_target_pr_identity(resolved_repo, validated_pr, require_base: true)
+      unless same_target_pr_identity?(target_pr, final_target_pr)
+        raise Error, "target PR identity moved during final CI inventory"
+      end
+
+      {
+        "head_sha" => target_pr.fetch(:head_sha), "actions_rows" => rows,
+        "check_inventory" => check_inventory,
+        "required_check_inventory" => required_inventory,
+        "status_inventory" => canonical_status_snapshot(statuses),
+        "requested_hosted" => requested_hosted,
+        "requested_hosted_inventory" => requested_hosted_inventory,
+        "viewer_review_inventory" => viewer_review
+      }
     end
 
     private
@@ -452,6 +822,8 @@ module PrCiReadiness
         when "--host" then opts[:host] = take_value!(args, "--host")
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
         when "--requested-hosted-run" then opts[:requested_hosted_runs] << take_value!(args, "--requested-hosted-run")
+        when "--trusted-repo-root" then opts[:trusted_repo_root] = take_value!(args, "--trusted-repo-root")
+        when "--diff-base-sha" then opts[:diff_base_sha] = take_value!(args, "--diff-base-sha")
         when "--json" then opts[:format] = "json"
         when "--text" then opts[:format] = "text"
         when "--self-check" then opts[:self_check] = true
@@ -534,15 +906,27 @@ module PrCiReadiness
 
     # Fetch the required-check list first; fall back to the full list when the
     # required form yields no current rows. required_used flips false on fallback.
-    def assess(repo, pr_number, requested_hosted_runs:)
+    def assess(repo, pr_number, requested_hosted_runs:, trusted_repo_root: nil, diff_base_sha: nil)
       checked_at = Time.now.utc.iso8601
       target_pr =
         begin
-          fetch_target_pr_identity(repo, pr_number)
+          fetch_target_pr_identity(repo, pr_number, require_base: true)
         rescue StandardError => e
           return unavailable_target_pr_result(repo, pr_number, checked_at, e)
         end
       exact_head_sha = target_pr.fetch(:head_sha)
+      reviewed_diff_base_sha = diff_base_sha || target_pr.fetch(:base_sha)
+      unless reviewed_diff_base_sha.is_a?(String) && reviewed_diff_base_sha.match?(/\A[0-9a-f]{40}\z/)
+        raise Error, "--diff-base-sha must be a lowercase full hexadecimal commit SHA"
+      end
+
+      trusted_ci_policy = if trusted_repo_root
+                            PrCiReadiness.trusted_ci_policy_at(
+                              repo_root: trusted_repo_root,
+                              base_ref: target_pr.fetch(:base_ref),
+                              base_sha: target_pr.fetch(:base_sha)
+                            )
+                          end
       required_fetch = fetch_checks(repo, pr_number, required: true)
       required_raw = required_fetch.fetch(:raw)
       required_query_known = required_fetch.fetch(:known_good)
@@ -588,8 +972,11 @@ module PrCiReadiness
         end
       query_evidence_known = required_query_known && full_query_known != false
       result["verdict"] = "UNKNOWN" if !query_evidence_known && result["verdict"] == "READY"
-      result = apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
-      result = apply_viewer_review_inventory(result, repo, pr_number)
+      ordinary_checks_verdict = result.fetch("verdict")
+      result = apply_requested_hosted_runs(
+        result, repo, pr_number, requested_hosted_runs, exact_head_sha
+      )
+      result = apply_viewer_review_inventory(result, repo, pr_number, exact_head_sha)
       required_evidence_rows =
         if required_used
           PrCiReadiness.readiness_rows(required_rows, required_used: true)
@@ -605,9 +992,24 @@ module PrCiReadiness
           )
         end
       inventory = exact_head_inventory(repo, target_pr)
+      final_required_fetch = fetch_checks(repo, pr_number, required: true)
+      final_required_rows = PrCiReadiness.parse_rows(final_required_fetch.fetch(:raw))
+      required_snapshot_unchanged =
+        canonical_check_snapshot(required_rows) == canonical_check_snapshot(final_required_rows)
+      required_inventory_stable = required_query_known && final_required_fetch.fetch(:known_good) &&
+                                  required_snapshot_unchanged
+      unless required_inventory_stable
+        inventory[:required_complete] = false
+        inventory[:errors]["required_status_check_rollup"] = [
+          inventory[:errors]["required_status_check_rollup"],
+          "required-check inventory changed during exact-head assessment"
+        ].compact.join("; ")
+      end
+      result = revalidate_viewer_review_inventory(result, repo, pr_number, exact_head_sha)
+      revalidate_status_inventory!(inventory, repo, exact_head_sha)
       target_identity_error =
         begin
-          final_target_pr = fetch_target_pr_identity(repo, pr_number)
+          final_target_pr = fetch_target_pr_identity(repo, pr_number, require_base: true)
           unless same_target_pr_identity?(target_pr, final_target_pr)
             "target PR identity moved during exact-head inventory: " \
               "#{target_pr_identity_description(target_pr)} -> " \
@@ -636,25 +1038,121 @@ module PrCiReadiness
         check_runs_complete: inventory.fetch(:check_runs_complete),
         statuses: inventory.fetch(:statuses),
         statuses_complete: inventory.fetch(:statuses_complete),
-        errors: inventory.fetch(:errors)
+        errors: inventory.fetch(:errors),
+        optional_approval_held_policy: trusted_ci_policy && {
+          "version" => trusted_ci_policy.fetch("version"),
+          "optional_approval_held_checks" => trusted_ci_policy.fetch("optional_approval_held_checks")
+        }
       )
       contract = PrCiReadiness.evidence_contract(
-        repo:, pr_number:, head_sha: exact_head_sha, checked_at:, scopes:
+        repo:, pr_number:,
+        base: { "ref" => target_pr.fetch(:base_ref), "sha" => target_pr.fetch(:base_sha) },
+        diff_base_sha: reviewed_diff_base_sha, head_sha: exact_head_sha, checked_at:, scopes:
       )
-      ordinary_verdict = result.fetch("verdict")
+      # The fallback verdict is disposition-blind; override it only when an exact-head disposition made the contract READY.
+      disposition_owns_fallback = !required_used && ordinary_checks_verdict == "NOT_READY" &&
+                                  result.fetch("invalid").empty? &&
+                                  contract.fetch("verdict") == "READY" &&
+                                  PrCiReadiness.policy_dispositions_own_fallback_rows?(
+                                    rows,
+                                    required_cancellations:,
+                                    other_scope: scopes.fetch("other")
+                                  )
+      ordinary_verdict = disposition_owns_fallback ? contract.fetch("verdict") : ordinary_checks_verdict
+      supplemental_verdict = supplemental_readiness_verdict(result)
       overall_verdict =
-        if ordinary_verdict == "NOT_READY" || contract.fetch("verdict") == "NOT_READY"
+        if ordinary_verdict == "NOT_READY" || contract.fetch("verdict") == "NOT_READY" ||
+           supplemental_verdict == "NOT_READY"
           "NOT_READY"
-        elsif ordinary_verdict == "UNKNOWN" || contract.fetch("verdict") == "UNKNOWN"
+        elsif ordinary_verdict == "UNKNOWN" || contract.fetch("verdict") == "UNKNOWN" ||
+              supplemental_verdict == "UNKNOWN"
           "UNKNOWN"
         else
           "READY"
         end
-      contract.merge(result).merge(
+      merged = contract.merge(result).merge(
         "verdict" => overall_verdict,
         "ordinary_verdict" => ordinary_verdict,
         "scopes" => scopes
       )
+      merged["authenticated_check_inventory"] = inventory.fetch(:check_inventory_snapshot) if
+        inventory.fetch(:check_inventory_snapshot).is_a?(Hash)
+      merged["authenticated_required_check_inventory"] = canonical_check_snapshot(final_required_rows)
+      merged["authenticated_status_inventory"] = canonical_status_snapshot(inventory.fetch(:statuses))
+      merged["ci_policy"] = trusted_ci_policy if trusted_ci_policy
+      merged
+    end
+
+    def canonical_check_snapshot(rows)
+      rows.map do |row|
+        row.is_a?(Hash) ? JSON.generate(row.keys.sort.to_h { |key| [key, row[key]] }) : JSON.generate(row)
+      end.sort
+    end
+
+    def revalidate_viewer_review_inventory(result, repo, pr_number, expected_head_sha)
+      initial_inventory = result.fetch("viewer_review_inventory")
+      initial_drafts = result.fetch("viewer_pending_review_drafts")
+      final_inventory = viewer_pending_review_draft_inventory(repo, pr_number, expected_head_sha)
+      final_drafts = final_inventory.fetch("viewer_pending_review_drafts")
+      snapshots_match = canonical_viewer_draft_snapshot(initial_drafts) ==
+                        canonical_viewer_draft_snapshot(final_drafts)
+      stable = initial_inventory.fetch("complete") == true &&
+               final_inventory.fetch("complete") == true && snapshots_match
+      combined_drafts = (initial_drafts + final_drafts).uniq do |draft|
+        [draft["id"], draft["commit_oid"]]
+      end
+      result["viewer_pending_review_drafts"] = combined_drafts
+      result["viewer_review_inventory"] = final_inventory.reject do |key, _value|
+        key == "viewer_pending_review_drafts"
+      end
+      return result if stable
+
+      errors = [initial_inventory["error"], final_inventory["error"]].compact
+      errors << "pending review draft inventory changed during assessment" unless snapshots_match
+      errors << "pending review draft inventory was incomplete during assessment" if errors.empty?
+      result.fetch("viewer_review_inventory")["complete"] = false
+      result.fetch("viewer_review_inventory")["error"] = errors.join("; ")
+      result
+    end
+
+    def canonical_viewer_draft_snapshot(drafts)
+      drafts.map { |draft| JSON.generate(draft.values_at("id", "commit_oid")) }.sort
+    end
+
+    def revalidate_status_inventory!(inventory, repo, head_sha)
+      initial_statuses = inventory.fetch(:statuses)
+      initial_complete = inventory.fetch(:statuses_complete)
+      final_statuses, final_complete, final_error = fetch_exact_head_statuses(repo, head_sha)
+      snapshots_match = canonical_status_snapshot(initial_statuses) == canonical_status_snapshot(final_statuses)
+
+      inventory[:statuses] = final_statuses
+      return if initial_complete && final_complete && snapshots_match
+
+      inventory[:statuses_complete] = false
+      diagnostics = [inventory[:errors]["other"], final_error]
+      diagnostics << "commit-status inventory changed during exact-head assessment" unless snapshots_match
+      unless initial_complete && final_complete
+        diagnostics << "commit-status inventory was incomplete during exact-head assessment"
+      end
+      inventory[:errors]["other"] = diagnostics.compact.reject(&:empty?).uniq.join("; ")
+    end
+
+    def canonical_status_snapshot(rows)
+      rows.map do |row|
+        JSON.generate(row.keys.sort.map { |key| [key, row[key]] })
+      end.sort
+    end
+
+    def supplemental_readiness_verdict(result)
+      requested = result.fetch("requested_hosted", {})
+      viewer_drafts = result.fetch("viewer_pending_review_drafts", [])
+      viewer_inventory = result.fetch("viewer_review_inventory", {})
+      return "NOT_READY" if Array(requested["pending"]).any? || Array(requested["failing"]).any? ||
+                            Array(viewer_drafts).any?
+      return "UNKNOWN" if Array(requested["stale"]).any? || Array(requested["unknown"]).any? ||
+                          viewer_inventory["complete"] != true
+
+      "READY"
     end
 
     def unavailable_target_pr_result(repo, pr_number, checked_at, error)
@@ -674,9 +1172,12 @@ module PrCiReadiness
       ordinary = PrCiReadiness.assess(
         pr_number:, required_used: false, rows: [], required_cancellations: []
       )
-      contract = PrCiReadiness.evidence_contract(
-        repo:, pr_number:, head_sha:, checked_at:, scopes:
-      )
+      contract = {
+        "contract" => "pr-ci-readiness", "version" => 2, "repo" => repo,
+        "pr" => pr_number.to_i, "base" => { "ref" => "UNKNOWN", "sha" => "UNKNOWN" },
+        "diff_base_sha" => "UNKNOWN", "diff_identity" => "UNKNOWN", "head_sha" => head_sha,
+        "checked_at" => checked_at, "verdict" => "UNKNOWN", "scopes" => scopes
+      }
       contract.merge(ordinary).merge(
         "verdict" => "UNKNOWN",
         "ordinary_verdict" => "UNKNOWN",
@@ -692,7 +1193,8 @@ module PrCiReadiness
       errors["github_actions"] = actions_error if actions_error
       errors["dependabot"] = actions_error if actions_error
 
-      check_runs, check_runs_complete, check_runs_error = fetch_exact_head_check_runs(repo, head_sha)
+      check_runs, check_runs_complete, check_runs_error, check_inventory_snapshot =
+        fetch_exact_head_check_runs(repo, head_sha)
       if check_runs_error
         errors["github_actions"] = [errors["github_actions"], check_runs_error].compact.join("; ")
         errors["dependabot"] = [errors["dependabot"], check_runs_error].compact.join("; ")
@@ -710,6 +1212,7 @@ module PrCiReadiness
 
       {
         actions_rows:, actions_complete:, check_runs:, check_runs_complete:,
+        check_inventory_snapshot:,
         statuses:, statuses_complete:, errors:,
         required_complete: true
       }
@@ -719,8 +1222,11 @@ module PrCiReadiness
       return check_runs unless actions_complete
 
       selected_run_ids = actions_rows.filter_map { |row| row["id"] if row["kind"] == "run" }
-      selected_job_identities = actions_rows.filter_map do |row|
-        actions_job_identity(row["url"]) if row["kind"] == "job"
+      selected_jobs_by_identity = actions_rows.each_with_object({}) do |row, jobs|
+        next unless row["kind"] == "job"
+
+        identity = actions_job_identity(row["url"])
+        jobs[identity] = row if identity
       end
       check_runs.select do |row|
         next true unless row["app_slug"] == "github-actions"
@@ -730,7 +1236,11 @@ module PrCiReadiness
         next true unless observed_actions_run_ids.include?(identity.first)
         next false unless selected_run_ids.include?(identity.first)
 
-        !selected_job_identities.include?(identity)
+        selected_job = selected_jobs_by_identity[identity]
+        next true unless selected_job
+
+        selected_job.values_at("name", "status", "conclusion") !=
+          row.values_at("name", "status", "conclusion")
       end
     end
 
@@ -770,26 +1280,250 @@ module PrCiReadiness
     end
 
     def fetch_exact_head_check_runs(repo, head_sha)
-      rows = fetch_paginated_collection(
-        "repos/#{repo}/commits/#{head_sha}/check-runs?per_page=100&page=%<page>s",
-        "check_runs"
-      ).map do |row|
-        ensure_exact_head!(row, head_sha, "check run")
-        {
-          "kind" => "check_run",
-          "id" => row["id"],
-          "name" => row["name"].to_s,
-          "status" => row["status"].to_s,
-          "conclusion" => row["conclusion"],
-          "url" => row["html_url"].to_s,
-          "head_sha" => head_sha,
-          "app_slug" => row.dig("app", "slug").to_s,
-          "dependabot" => dependabot_attributed?(row)
-        }
+      suites = fetch_paginated_collection(
+        "repos/#{repo}/commits/#{head_sha}/check-suites?per_page=100&page=%<page>s",
+        "check_suites"
+      )
+      validated_suites = validate_check_suites(suites, head_sha)
+      initial_suite_snapshot = canonical_check_suite_snapshot(validated_suites)
+      rows = materialize_check_suite_runs(repo, head_sha, validated_suites)
+      final_suites = fetch_paginated_collection(
+        "repos/#{repo}/commits/#{head_sha}/check-suites?per_page=100&page=%<page>s",
+        "check_suites"
+      )
+      final_validated_suites = validate_check_suites(final_suites, head_sha)
+      final_suite_snapshot = canonical_check_suite_snapshot(final_validated_suites)
+      unless final_suite_snapshot == initial_suite_snapshot
+        raise Error, "check suite inventory changed during run materialization"
       end
-      [rows, true, nil]
+
+      final_rows = materialize_check_suite_runs(repo, head_sha, final_validated_suites)
+      verified_suites = fetch_paginated_collection(
+        "repos/#{repo}/commits/#{head_sha}/check-suites?per_page=100&page=%<page>s",
+        "check_suites"
+      )
+      verified_suite_snapshot = canonical_check_suite_snapshot(validate_check_suites(verified_suites, head_sha))
+      unless verified_suite_snapshot == initial_suite_snapshot
+        raise Error, "check suite inventory changed during final verification"
+      end
+
+      unless canonical_materialized_check_run_snapshot(final_rows) ==
+             canonical_materialized_check_run_snapshot(rows)
+        raise Error, "check-run inventory changed during final verification"
+      end
+
+      check_inventory_snapshot = {
+        "check_suites" => initial_suite_snapshot,
+        "check_runs" => canonical_materialized_check_run_snapshot(rows)
+      }
+
+      duplicate_ids = rows.group_by { |row, _created_at| row["id"] }
+                          .any? { |_id, matches| matches.length > 1 }
+      raise Error, "latest check-run inventory repeated an id" if duplicate_ids
+
+      rows_by_suite_and_name = rows.group_by do |row, _created_at, suite_id|
+        [suite_id, *row.values_at("app_slug", "name")]
+      end
+      selected_rows = rows_by_suite_and_name.map do |identity, attempts|
+        next attempts.first if attempts.length == 1
+
+        attempts_with_times = attempts.map do |attempt|
+          row, = attempt
+          started_at = row["started_at"]
+          if started_at.nil?
+            raise Error, "latest check-run inventory lacked run attempt chronology for #{identity.join('/')}"
+          end
+
+          [attempt, strict_rfc3339_time!(started_at, "check run started_at")]
+        end
+        latest_time = attempts_with_times.map(&:last).max
+        latest_attempts = attempts_with_times.select { |_attempt, started_at| started_at == latest_time }
+        if latest_attempts.length != 1
+          raise Error, "latest check-run inventory had tied run attempt chronology for #{identity.join('/')}"
+        end
+
+        latest_attempts.first.first
+      end
+
+      selected_rows_by_suite = selected_rows.group_by { |_row, _created_at, suite_id| suite_id }
+      validated_suites.each do |_suite, suite_id, _app, _created_at, _updated_at, status, conclusion, _latest_count|
+        suite_rows = selected_rows_by_suite.fetch(suite_id, []).map(&:first)
+        validate_check_suite_phase!(suite_rows, status:, conclusion:)
+      end
+      rows = selected_rows.map(&:first)
+
+      [rows, true, nil, check_inventory_snapshot]
     rescue StandardError => e
-      [[], false, "exact-head check-run inventory failed: #{e.message}"]
+      [[], false, "exact-head check-run inventory failed: #{e.message}", nil]
+    end
+
+    def validate_check_suites(suites, head_sha)
+      suites.map { |suite| [suite, *validate_check_suite_identity!(suite, head_sha)] }
+    end
+
+    def materialize_check_suite_runs(repo, head_sha, validated_suites)
+      suite_ids = {}
+      validated_suites.flat_map do |validated_suite|
+        _suite, suite_id, suite_app, suite_created_at, _suite_updated_at, suite_status,
+          _suite_conclusion, latest_count =
+          validated_suite
+        raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
+
+        suite_ids[suite_id] = true
+        suite_rows = fetch_paginated_collection(
+          "repos/#{repo}/check-suites/#{suite_id}/check-runs?filter=latest&per_page=100&page=%<page>s",
+          "check_runs"
+        ).map do |row|
+          normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
+        end
+        validate_check_suite_materialization!(suite_rows, status: suite_status, latest_count:)
+        suite_rows.map { |row| [row, suite_created_at, suite_id] }
+      end
+    end
+
+    def canonical_check_suite_snapshot(validated_suites)
+      validated_suites.map do |_suite, suite_id, app, created_at, updated_at, status, conclusion, latest_count|
+        JSON.generate([
+                        suite_id, app.fetch("id"), app.fetch("slug"), created_at.utc.iso8601(9),
+                        updated_at.utc.iso8601(9), status, conclusion, latest_count
+                      ])
+      end.sort
+    end
+
+    def canonical_materialized_check_run_snapshot(rows)
+      rows.map do |row, suite_created_at, suite_id|
+        canonical_row = row.keys.sort.map { |key| [key, row[key]] }
+        JSON.generate([suite_id, suite_created_at.utc.iso8601(9), canonical_row])
+      end.sort
+    end
+
+    def validate_check_suite_identity!(suite, head_sha)
+      raise Error, "check suite was not an object" unless suite.is_a?(Hash)
+
+      suite_id = suite["id"]
+      raise Error, "check suite id was not a positive integer" unless suite_id.is_a?(Integer) && suite_id.positive?
+
+      ensure_exact_head!(suite, head_sha, "check suite")
+      app = suite["app"]
+      unless valid_check_app?(app)
+        raise Error, "check suite app identity was malformed or unknown"
+      end
+
+      created_at = strict_rfc3339_time!(suite["created_at"], "check suite created_at")
+      updated_at = strict_rfc3339_time!(suite["updated_at"], "check suite updated_at")
+      status = suite["status"]
+      conclusion = suite["conclusion"]
+      latest_count = suite["latest_check_runs_count"]
+      valid_phase = CHECK_RUN_STATUSES.include?(status) && suite.key?("conclusion") &&
+                    if status == "completed"
+                      CHECK_RUN_CONCLUSIONS.include?(conclusion)
+                    else
+                      conclusion.nil?
+                    end
+      unless valid_phase && latest_count.is_a?(Integer) && latest_count >= 0
+        raise Error, "check suite phase or latest-run count was malformed or unknown"
+      end
+
+      [suite_id, app, created_at, updated_at, status, conclusion, latest_count]
+    end
+
+    def validate_check_suite_materialization!(rows, status:, latest_count:)
+      if latest_count.zero?
+        return if rows.empty? && status == "queued"
+
+        raise Error, "check suite latest-run inventory was empty and cannot prove readiness"
+      end
+      return if rows.length == latest_count
+
+      raise Error, "check suite latest-run count did not match materialized rows"
+    end
+
+    def validate_check_suite_phase!(rows, status:, conclusion:)
+      return if rows.empty? && status == "queued"
+
+      if status == "completed"
+        raise Error, "completed check suite contained a nonterminal latest run" unless
+          rows.all? { |row| row["status"] == "completed" }
+
+        row_states = rows.map { |row| PrCiReadiness.evidence_row_state(row) }
+        conclusion_ready = CHECK_SUITE_READY_CONCLUSIONS.include?(conclusion)
+        rows_ready = row_states.all? { |state| state == "READY" }
+        unless conclusion_ready == rows_ready
+          raise Error, "completed check suite conclusion contradicted its latest runs"
+        end
+      elsif rows.all? { |row| row["status"] == "completed" }
+        raise Error, "nonterminal check suite contained only completed latest runs"
+      end
+    end
+
+    def strict_rfc3339_time!(value, context)
+      canonical = value.is_a?(String) && value.match?(
+        /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/
+      )
+      raise Error, "#{context} was missing or malformed" unless canonical
+
+      Time.iso8601(value)
+    rescue ArgumentError
+      raise Error, "#{context} was missing or malformed"
+    end
+
+    def normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
+      raise Error, "check run was not an object" unless row.is_a?(Hash)
+
+      run_id = row["id"]
+      name = row["name"]
+      status = row["status"]
+      conclusion = row["conclusion"]
+      started_at = row["started_at"]
+      app = row["app"]
+      valid_identity = run_id.is_a?(Integer) && run_id.positive? &&
+                       name.is_a?(String) && !name.empty? && name != "UNKNOWN" &&
+                       !name.match?(/[[:cntrl:]]/) && valid_check_app?(app)
+      valid_phase = CHECK_RUN_STATUSES.include?(status) && row.key?("conclusion") &&
+                    if status == "completed"
+                      CHECK_RUN_CONCLUSIONS.include?(conclusion)
+                    else
+                      conclusion.nil?
+                    end
+      valid_started_at = row.key?("started_at") &&
+                         (started_at.nil? || started_at.is_a?(String) && valid_iso8601_time?(started_at))
+      unless valid_identity && valid_phase && valid_started_at
+        raise Error, "check run identity or phase evidence was malformed or unknown"
+      end
+
+      ensure_exact_head!(row, head_sha, "check run")
+      unless row.dig("check_suite", "id") == suite_id &&
+             app.values_at("id", "slug") == suite_app.values_at("id", "slug")
+        raise Error, "check run contradicted its enumerated suite or app identity"
+      end
+
+      normalized = {
+        "kind" => "check_run", "id" => run_id, "name" => name,
+        "status" => status, "conclusion" => conclusion,
+        "url" => row["html_url"].to_s, "head_sha" => head_sha,
+        "app_slug" => app["slug"], "suite_id" => suite_id,
+        "dependabot" => dependabot_attributed?(row),
+        "started_at" => started_at
+      }
+      if app["slug"] == CIRCLECI_APP_SLUG
+        output = row["output"]
+        normalized.merge!(
+          "completed_at" => row.fetch("completed_at", "UNKNOWN"),
+          "details_url" => row.fetch("details_url", "UNKNOWN"),
+          "actions" => row.fetch("actions", "UNKNOWN"),
+          "output" => if output.is_a?(Hash) && output.key?("title") && output.key?("summary")
+                        { "title" => output["title"], "summary" => output["summary"] }
+                      else
+                        "UNKNOWN"
+                      end
+        )
+      end
+      normalized
+    end
+
+    def valid_check_app?(app)
+      app.is_a?(Hash) && app["id"].is_a?(Integer) && app["id"].positive? &&
+        app["slug"].is_a?(String) && !app["slug"].empty? && app["slug"] != "UNKNOWN"
     end
 
     # Commit statuses are read from the combined status endpoint
@@ -1011,7 +1745,7 @@ module PrCiReadiness
         next unless id_matches
 
         head_matches =
-          association.dig("head", "sha") == target_pr.fetch(:head_sha) &&
+          association.dig("head", "sha").to_s.casecmp?(target_pr.fetch(:head_sha)) &&
           association.dig("head", "ref") == target_pr.fetch(:head_ref) &&
           association.dig("head", "repo", "id") == target_pr.fetch(:head_repo_id)
         unless head_matches
@@ -1029,7 +1763,7 @@ module PrCiReadiness
 
     def ensure_exact_head!(row, head_sha, context, sha_key: "head_sha")
       actual = row[sha_key].to_s
-      return if actual == head_sha
+      return if actual.casecmp?(head_sha)
 
       raise Error, "#{context} was not bound to exact head #{head_sha} (found #{actual.empty? ? 'missing' : actual})"
     end
@@ -1080,7 +1814,7 @@ module PrCiReadiness
       cmd = ["gh", "pr", "checks", pr_number.to_s, "--repo", repo]
       cmd << "--required" if required
       cmd += ["--json", "name,state,bucket,link,workflow"]
-      out, err, status = Open3.capture3(@gh_env, *cmd)
+      out, err, status = capture_command(*cmd)
       raw = out.to_s.force_encoding("UTF-8")
       known_good = PrCiReadiness.json_array_payload?(raw) ||
                    status.success? && raw.strip.empty? || no_checks_diagnostic?(err)
@@ -1098,12 +1832,14 @@ module PrCiReadiness
       normalized.match?(/\Ano (?:required )?checks reported on the '[^\r\n]+' branch(?:\r?\n)?\z/)
     end
 
-    def apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
+    def apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs, expected_head_sha)
       result["requested_hosted"] = empty_requested_hosted
+      result["authenticated_requested_hosted_inventory"] = []
       return result if requested_hosted_runs.empty?
 
-      requested = requested_hosted_summary(repo, pr_number, requested_hosted_runs)
+      requested, inventory = requested_hosted_summary(repo, pr_number, requested_hosted_runs, expected_head_sha)
       result["requested_hosted"] = requested
+      result["authenticated_requested_hosted_inventory"] = inventory
       if requested["pending"].any? || requested["failing"].any?
         result["verdict"] = "NOT_READY"
       elsif result["verdict"] == "READY" && (requested["stale"].any? || requested["unknown"].any?)
@@ -1132,8 +1868,8 @@ module PrCiReadiness
       }
     end
 
-    def apply_viewer_review_inventory(result, repo, pr_number)
-      inventory = viewer_pending_review_draft_inventory(repo, pr_number)
+    def apply_viewer_review_inventory(result, repo, pr_number, expected_head_sha)
+      inventory = viewer_pending_review_draft_inventory(repo, pr_number, expected_head_sha)
       result["viewer_pending_review_drafts"] = inventory.fetch("viewer_pending_review_drafts")
       result["viewer_review_inventory"] = inventory.reject { |key, _value| key == "viewer_pending_review_drafts" }
       if inventory.fetch("viewer_pending_review_drafts").any?
@@ -1156,11 +1892,12 @@ module PrCiReadiness
         }
       }
     GRAPHQL
+    REVIEW_STATES = %w[APPROVED CHANGES_REQUESTED COMMENTED DISMISSED PENDING].freeze
 
-    def viewer_pending_review_draft_inventory(repo, pr_number)
+    def viewer_pending_review_draft_inventory(repo, pr_number, expected_head_sha)
       owner, name = repo.split("/", 2)
-      expected_head_sha = fetch_pr_head_oid(repo, pr_number)
       viewer_pending_review_drafts = []
+      seen_review_ids = {}
       cursor = nil
       pages = 0
 
@@ -1171,9 +1908,17 @@ module PrCiReadiness
         raise Error, "review inventory returned non-array nodes" unless nodes.is_a?(Array)
         raise Error, "review inventory returned incomplete page info" unless page_info.is_a?(Hash)
 
+        nodes.each do |review|
+          validate_review_inventory_row!(review)
+          review_id = review.fetch("id")
+          raise Error, "review inventory repeated review id #{review_id}" if seen_review_ids[review_id]
+
+          seen_review_ids[review_id] = true
+        end
+
         pending_reviews = nodes.select do |review|
           review["state"] == "PENDING" && review["submittedAt"].nil? &&
-            review.dig("commit", "oid") == expected_head_sha
+            review.dig("commit", "oid").to_s.casecmp?(expected_head_sha)
         end
         viewer_pending_review_drafts.concat(pending_reviews.map do |review|
           { "id" => review.fetch("id"), "commit_oid" => expected_head_sha }
@@ -1192,6 +1937,33 @@ module PrCiReadiness
         "viewer_pending_review_drafts" => viewer_pending_review_drafts || [], "error" => e.message }
     end
 
+    def validate_review_inventory_row!(review)
+      expected_keys = %w[commit id state submittedAt]
+      unless review.is_a?(Hash) && review.keys.sort == expected_keys &&
+             review["id"].is_a?(String) && !review["id"].empty? &&
+             REVIEW_STATES.include?(review["state"])
+        raise Error, "review inventory returned a malformed or unknown review row"
+      end
+
+      commit = review["commit"]
+      unless commit.is_a?(Hash) && commit.keys.sort == ["oid"] && full_sha?(commit["oid"])
+        raise Error, "review inventory returned a review without an exact commit binding"
+      end
+
+      submitted_at = review["submittedAt"]
+      valid_submission = submitted_at.nil? ||
+                         submitted_at.is_a?(String) && valid_iso8601_time?(submitted_at)
+      valid_submission &&= submitted_at.nil? if review["state"] == "PENDING"
+      raise Error, "review inventory returned contradictory submission evidence" unless valid_submission
+    end
+
+    def valid_iso8601_time?(value)
+      Time.iso8601(value)
+      true
+    rescue ArgumentError
+      false
+    end
+
     def fetch_reviews_page(owner, name, pr_number, cursor)
       cmd = ["gh", "api", "graphql", "-f", "owner=#{owner}", "-f", "name=#{name}", "-F", "pr=#{pr_number}"]
       cmd += ["-f", "endCursor=#{cursor}"] unless cursor.nil?
@@ -1201,16 +1973,25 @@ module PrCiReadiness
         raise(Error, "review inventory response was incomplete")
     end
 
-    def requested_hosted_summary(repo, pr_number, requested_hosted_runs)
-      expected_head_sha = fetch_pr_head_oid(repo, pr_number)
-      requested_hosted_runs.each_with_object(empty_requested_hosted) do |input, summary|
+    def requested_hosted_summary(repo, _pr_number, requested_hosted_runs, expected_head_sha)
+      summary = empty_requested_hosted
+      inventory = []
+      requested_hosted_runs.each do |input|
         run_id = requested_hosted_run_id(input)
         summary["run_ids"] << run_id
         run = fetch_actions_run(repo, run_id)
-        classify_requested_run(summary, repo, run_id, run, expected_head_sha)
+        unless run["id"].is_a?(Integer) && run["id"].positive? && run["id"].to_s == run_id
+          raise Error, "requested hosted run payload id did not match requested id #{run_id}"
+        end
+
+        inventory << requested_hosted_inventory_row("run", run_id, run)
+        jobs = fetch_actions_jobs(repo, run_id)
+        inventory.concat(jobs.map { |job| requested_hosted_inventory_row("job", run_id, job) })
+        classify_requested_run(summary, run_id, run, jobs, expected_head_sha)
       rescue Error => e
         summary["unknown"] << { "run_id" => run_id || input.to_s, "reason" => e.message }
       end
+      [summary, inventory]
     end
 
     def requested_hosted_run_id(input)
@@ -1221,9 +2002,9 @@ module PrCiReadiness
       run_id
     end
 
-    def classify_requested_run(summary, repo, run_id, run, expected_head_sha)
+    def classify_requested_run(summary, run_id, run, jobs, expected_head_sha)
       actual_head_sha = run.fetch("head_sha", "").to_s
-      if actual_head_sha.empty? || actual_head_sha != expected_head_sha
+      if actual_head_sha.empty? || !actual_head_sha.casecmp?(expected_head_sha)
         summary["stale"] << run_record(run_id, run).merge(
           "head_sha" => actual_head_sha,
           "expected_head_sha" => expected_head_sha
@@ -1232,11 +2013,26 @@ module PrCiReadiness
       end
 
       classify_status_row(summary, "run", run_id, run_record(run_id, run))
-      return if run.fetch("status", "").to_s == "completed" && successful_conclusion?(run.fetch("conclusion", "").to_s)
-
-      fetch_actions_jobs(repo, run_id).each do |job|
+      jobs.each do |job|
         classify_status_row(summary, "job", run_id, run_record(run_id, job))
       end
+    end
+
+    def requested_hosted_inventory_row(kind, run_id, payload)
+      id = payload["id"]
+      unless id.is_a?(Integer) && id.positive?
+        raise Error, "requested hosted #{kind} id was not a positive integer"
+      end
+
+      record = run_record(run_id, payload).merge("kind" => kind, "id" => id)
+      return record unless kind == "run"
+
+      run_attempt = payload["run_attempt"]
+      unless run_attempt.is_a?(Integer) && run_attempt.positive?
+        raise Error, "requested hosted run attempt was not a positive integer"
+      end
+
+      record.merge("run_attempt" => run_attempt)
     end
 
     def classify_status_row(summary, kind, run_id, row)
@@ -1266,15 +2062,7 @@ module PrCiReadiness
       }
     end
 
-    def fetch_pr_head_oid(repo, pr_number)
-      data = capture_json!("gh", "pr", "view", pr_number.to_s, "--repo", repo, "--json", "headRefOid")
-      head = data.fetch("headRefOid", "").to_s
-      raise Error, "could not resolve PR headRefOid for ##{pr_number}" if head.empty?
-
-      head
-    end
-
-    def fetch_target_pr_identity(repo, pr_number)
+    def fetch_target_pr_identity(repo, pr_number, require_base: false)
       data = capture_json!("gh", "api", "repos/#{repo}/pulls/#{pr_number}")
       raise Error, "target PR response was not an object" unless data.is_a?(Hash)
 
@@ -1294,6 +2082,8 @@ module PrCiReadiness
         raise Error, "target PR head SHA was not a full hexadecimal commit SHA"
       end
 
+      head_sha = head_sha.downcase
+
       head_ref = head["ref"]
       unless head_ref.is_a?(String) && !head_ref.strip.empty?
         raise Error, "target PR head ref was not a nonblank string"
@@ -1307,14 +2097,35 @@ module PrCiReadiness
         raise Error, "target PR head repo id was not a positive integer"
       end
 
+      base = data["base"]
+      if require_base || !base.nil?
+        raise Error, "target PR base was not an object" unless base.is_a?(Hash)
+
+        base_sha = base["sha"]
+        unless base_sha.is_a?(String) && base_sha.match?(/\A[0-9a-f]{40}\z/)
+          raise Error, "target PR base SHA was not a lowercase full hexadecimal commit SHA"
+        end
+
+        base_ref = base["ref"]
+        PrCiReadiness.validate_trusted_policy_binding!(base_ref:, base_sha:)
+        base_repo = base["repo"]
+        raise Error, "target PR base repo was not an object" unless base_repo.is_a?(Hash)
+
+        base_repo_name = base_repo["full_name"].to_s
+        unless base_repo_name.casecmp?(repo)
+          raise Error, "target PR base repo did not exactly match #{repo}"
+        end
+      end
+
       {
         id:, number:, head_sha:, head_ref:, head_repo_id:,
-        head_repo_full_name: head_repo["full_name"].to_s
+        head_repo_full_name: head_repo["full_name"].to_s,
+        base_sha:, base_ref:, base_repo_full_name: base_repo_name
       }
     end
 
     def same_target_pr_identity?(left, right)
-      keys = %i[id number head_sha head_ref head_repo_id]
+      keys = %i[id number head_sha head_ref head_repo_id base_sha base_ref base_repo_full_name]
       left.values_at(*keys) == right.values_at(*keys)
     end
 
@@ -1323,7 +2134,8 @@ module PrCiReadiness
       repo_name = "unknown" if repo_name.empty?
       "id=#{identity.fetch(:id)} number=##{identity.fetch(:number)} " \
         "head=#{identity.fetch(:head_sha)} ref=#{identity.fetch(:head_ref)} " \
-        "head_repo_id=#{identity.fetch(:head_repo_id)} head_repo=#{repo_name}"
+        "head_repo_id=#{identity.fetch(:head_repo_id)} head_repo=#{repo_name} " \
+        "base=#{identity.fetch(:base_ref)}@#{identity.fetch(:base_sha)}"
     end
 
     def fetch_actions_run(repo, run_id)
@@ -1368,10 +2180,16 @@ module PrCiReadiness
     # Run a command with no shell (array args) and return UTF-8 stdout, raising
     # when the command fails. Used only for commands whose exit status matters.
     def capture_required!(*cmd)
-      out, status = Open3.capture2(@gh_env, *cmd)
+      out, _err, status = capture_command(*cmd)
       raise Error, "command failed: #{cmd.first(3).join(' ')}" unless status.success?
 
       out.force_encoding("UTF-8")
+    end
+
+    def capture_command(*cmd)
+      return @command_runner.call(*cmd) if @command_runner
+
+      Open3.capture3(@gh_env, *cmd)
     end
 
     def print_result(result, format)

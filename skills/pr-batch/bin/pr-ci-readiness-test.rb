@@ -16,6 +16,22 @@ load SCRIPT
 class PrCiReadinessTest < Minitest::Test
   # --- Pure verdict logic (module_function), tested directly ---------------
 
+  def circleci_approval_held_row(id: 31, name: "storybook-review-app", summary_status: "Blocked")
+    workflow_id = format("00000000-0000-4000-8000-%012d", id)
+    workflow_url = "https://app.circleci.com/workflow/#{workflow_id}"
+    {
+      "kind" => "check_run", "id" => id, "name" => name,
+      "status" => "in_progress", "conclusion" => nil,
+      "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false, "actions" => nil,
+      "details_url" => workflow_url,
+      "output" => {
+        "title" => "Workflow: #{name}",
+        "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - #{summary_status}\n"
+      }
+    }
+  end
+
   def test_all_passing_is_ready
     out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
                                  { "name" => "rspec", "bucket" => "pass" },
@@ -267,12 +283,17 @@ class PrCiReadinessTest < Minitest::Test
     }
 
     contract = PrCiReadiness.evidence_contract(
-      repo: "owner/repo", pr_number: 7, head_sha: head,
+      repo: "owner/repo", pr_number: 7,
+      base: { "ref" => "main", "sha" => "b" * 40 }, diff_base_sha: "c" * 40, head_sha: head,
       checked_at: "2026-07-30T12:00:00Z", scopes:
     )
 
     assert_equal "pr-ci-readiness", contract.fetch("contract")
     assert_equal 2, contract.fetch("version")
+    assert_equal({ "ref" => "main", "sha" => "b" * 40 }, contract.fetch("base"))
+    assert_equal "c" * 40, contract.fetch("diff_base_sha")
+    assert_equal DiffIdentity.derive(base_ref: "main", base_sha: "c" * 40, head_sha: head),
+                 contract.fetch("diff_identity")
     assert_equal head, contract.fetch("head_sha")
     assert_equal "UNKNOWN", contract.fetch("verdict")
     assert_equal scopes, contract.fetch("scopes")
@@ -419,6 +440,714 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal [22], other_ids
   end
 
+  def test_trusted_policy_keeps_optional_approval_held_rows_but_removes_them_from_blocking_state
+    head = "a" * 40
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+    held = circleci_approval_held_row
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal [held], scopes.dig("other", "rows")
+    assert_equal "READY", scopes.dig("other", "state")
+    assert_equal(
+      [
+        {
+          "disposition" => "optional_approval_held",
+          "rule_id" => "circleci-storybook",
+          "kind" => "check_run",
+          "id" => 31,
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ],
+      scopes.dig("other", "policy_dispositions")
+    )
+  end
+
+  def test_optional_policy_rejects_historical_shaped_running_links_without_terminal_evidence
+    head = "a" * 40
+    held = circleci_approval_held_row
+    workflow_url = held.fetch("details_url")
+    held = held.merge(
+      "output" => held.fetch("output").merge(
+        "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n" \
+                     "* setup - Success\n" \
+                     "* [start-cypress](#{workflow_url}) - Running\n" \
+                     "* [start-plugin](#{workflow_url}) - Running\n" \
+                     "* [start-mobile](#{workflow_url}) - Running\n" \
+                     "* [start-playwright](#{workflow_url}) - Running\n" \
+                     "* build-storybook-review-app - Blocked\n" \
+                     "* deploy-storybook-review-app - Blocked\n"
+      )
+    )
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+  end
+
+  def test_optional_policy_accepts_successful_prerequisites_and_downstream_blocked_phases
+    head = "a" * 40
+    held = circleci_approval_held_row
+    workflow_url = held.fetch("details_url")
+    held = held.merge(
+      "output" => held.fetch("output").merge(
+        "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n" \
+                     "* setup - Success\n" \
+                     "* build-storybook-review-app - Blocked\n"
+      )
+    )
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "READY", scopes.dig("other", "state")
+    refute_empty scopes.dig("other", "policy_dispositions")
+  end
+
+  def test_optional_policy_keeps_an_actively_running_check_blocking
+    head = "a" * 40
+    running = circleci_approval_held_row(summary_status: "Running")
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [running], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+  end
+
+  def test_optional_policy_requires_complete_noncontradictory_circleci_phase_evidence
+    head = "a" * 40
+    base_row = circleci_approval_held_row
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    ambiguous_rows = {
+      "missing started_at" => base_row.reject { |key| key == "started_at" },
+      "malformed started_at" => base_row.merge("started_at" => "not-a-timestamp"),
+      "non-string started_at" => base_row.merge("started_at" => 123),
+      "completed timestamp" => base_row.merge("completed_at" => "2026-08-24T08:08:48Z"),
+      "check actions" => base_row.merge("actions" => []),
+      "missing output" => base_row.reject { |key| key == "output" },
+      "mismatched title" => base_row.merge("output" => base_row.fetch("output").merge("title" => "Other")),
+      "mixed running summary" => circleci_approval_held_row.merge(
+        "output" => circleci_approval_held_row.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
+                       "* start - Blocked\n* build-hold-artifacts - Running\n"
+        )
+      ),
+      "plain approval-like running job" => circleci_approval_held_row.merge(
+        "output" => circleci_approval_held_row.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
+                       "* approval-tests - Running\n* build - Blocked\n"
+        )
+      ),
+      "job URL with approval-like label" => circleci_approval_held_row.merge(
+        "output" => circleci_approval_held_row.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
+                       "* [approval-tests](https://app.circleci.com/job/123) - Running\n" \
+                       "* build - Blocked\n"
+        )
+      ),
+      "different workflow UUID with approval-like label" => circleci_approval_held_row.merge(
+        "output" => circleci_approval_held_row.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
+                       "* [approval-tests](https://app.circleci.com/workflow/" \
+                       "00000000-0000-4000-8000-000000000099) - Running\n" \
+                       "* build - Blocked\n"
+        )
+      ),
+      "failed prerequisite with approval hold" => circleci_approval_held_row.merge(
+        "output" => circleci_approval_held_row.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{base_row.fetch('details_url')})\n\n" \
+                       "* setup - Failed\n* hold - Running\n* build - Blocked\n"
+        )
+      ),
+      "non-CircleCI details URL" => base_row.merge("details_url" => "https://example.test/workflow/31"),
+      "ordinary queued phase" => base_row.merge("status" => "queued", "started_at" => nil)
+    }
+
+    ambiguous_rows.each do |label, row|
+      scopes = PrCiReadiness.inventory_scopes(
+        head_sha: head,
+        checked_at: "2026-07-30T12:00:00Z",
+        required_rows: [], required_complete: true,
+        actions_rows: [], actions_complete: true,
+        check_runs: [row], check_runs_complete: true,
+        statuses: [], statuses_complete: true,
+        optional_approval_held_policy: policy
+      )
+
+      assert_equal "NOT_READY", scopes.dig("other", "state"), label
+      assert_empty scopes.dig("other", "policy_dispositions"), label
+    end
+  end
+
+  def test_optional_policy_does_not_apply_circleci_phase_evidence_to_another_provider
+    row = circleci_approval_held_row.merge("app_slug" => "other-ci")
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        { "id" => "other-storybook", "app_slug" => "other-ci", "name" => "storybook-review-app" }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: "a" * 40, checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [row], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+  end
+
+  def test_optional_policy_does_not_disposition_duplicate_conflicting_check_run_identity
+    head = "a" * 40
+    held = {
+      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    failed = held.merge("status" => "completed", "conclusion" => "failure")
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held, failed], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+    assert_equal [held, failed], scopes.dig("other", "rows")
+  end
+
+  def test_optional_policy_does_not_disposition_duplicate_provider_identity_with_distinct_ids
+    head = "a" * 40
+    held = {
+      "kind" => "check_run", "id" => 31, "suite_id" => 10, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    replacement = held.merge("id" => 32, "suite_id" => 20)
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [], required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held, replacement], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+    assert_equal [held, replacement], scopes.dig("other", "rows")
+  end
+
+  def test_optional_policy_indexes_check_run_identity_once_per_row
+    rows = Array.new(100) do |index|
+      circleci_approval_held_row(id: index + 1, name: "check-#{index}")
+    end
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => rows.map do |row|
+        {
+          "id" => "rule-#{row.fetch('id')}",
+          "app_slug" => row.fetch("app_slug"),
+          "name" => row.fetch("name")
+        }
+      end
+    }
+    original = PrCiReadiness.method(:check_run_identity)
+    identity_calls = 0
+    PrCiReadiness.define_singleton_method(:check_run_identity) do |row|
+      identity_calls += 1
+      original.call(row)
+    end
+
+    dispositions = PrCiReadiness.optional_approval_held_dispositions(
+      rows, required_rows: [], policy:
+    )
+
+    assert_equal rows.length, dispositions.length
+    assert_operator identity_calls, :<=, rows.length * 2
+  ensure
+    PrCiReadiness.define_singleton_method(:check_run_identity, original) if original
+  end
+
+  def test_required_reclassification_prevents_optional_approval_held_disposition
+    head = "a" * 40
+    held = {
+      "kind" => "check_run", "id" => 32, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        {
+          "id" => "circleci-storybook",
+          "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at: "2026-07-30T12:00:00Z",
+      required_rows: [
+        { "workflow" => "circleci-checks", "name" => "storybook-review-app", "bucket" => "pending" }
+      ],
+      required_complete: true,
+      actions_rows: [], actions_complete: true,
+      check_runs: [held], check_runs_complete: true,
+      statuses: [], statuses_complete: true,
+      optional_approval_held_policy: policy
+    )
+
+    assert_equal "NOT_READY", scopes.dig("required_status_check_rollup", "state")
+    assert_equal "NOT_APPLICABLE", scopes.dig("other", "state")
+    assert_empty scopes.dig("other", "policy_dispositions")
+  end
+
+  def test_required_third_party_row_remains_required_across_workflow_shapes
+    head = "a" * 40
+    held = {
+      "kind" => "check_run", "id" => 32, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil, "started_at" => nil,
+      "app_slug" => "circleci-checks", "dependabot" => false
+    }
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [
+        { "id" => "circleci-storybook", "app_slug" => "circleci-checks", "name" => "storybook-review-app" }
+      ]
+    }
+
+    ["", "future-third-party-workflow-shape"].each do |workflow|
+      scopes = PrCiReadiness.inventory_scopes(
+        head_sha: head, checked_at: "2026-07-30T12:00:00Z",
+        required_rows: [{ "workflow" => workflow, "name" => "storybook-review-app", "bucket" => "pending" }],
+        required_complete: true, actions_rows: [], actions_complete: true,
+        check_runs: [held], check_runs_complete: true,
+        statuses: [], statuses_complete: true,
+        optional_approval_held_policy: policy
+      )
+
+      assert_equal "NOT_READY", scopes.dig("required_status_check_rollup", "state"), workflow
+      assert_equal "NOT_READY", scopes.dig("other", "state"), workflow
+      assert_empty scopes.dig("other", "policy_dispositions"), workflow
+    end
+  end
+
+  def test_trusted_ci_policy_is_loaded_from_the_exact_base_commit_not_worktree_bytes
+    Dir.mktmpdir("pr-ci-policy") do |root|
+      run_fixture_git(root, "init", "-q")
+      run_fixture_git(root, "config", "user.name", "Test User")
+      run_fixture_git(root, "config", "user.email", "test@example.test")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        {
+          "ci_readiness" => {
+            "version" => 1,
+            "optional_approval_held_checks" => [
+              {
+                "id" => "circleci-storybook",
+                "app_slug" => "circleci-checks",
+                "name" => "storybook-review-app"
+              }
+            ]
+          }
+        }.to_yaml
+      )
+      run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+      run_fixture_git(root, "commit", "-q", "-m", "policy")
+      base_sha = run_fixture_git(root, "rev-parse", "HEAD").strip
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), "ci_readiness: UNKNOWN\n")
+
+      policy = PrCiReadiness.trusted_ci_policy_at(
+        repo_root: root, base_ref: "main", base_sha:
+      )
+
+      assert_equal base_sha, policy.dig("base", "sha")
+      assert_equal "storybook-review-app", policy.dig("optional_approval_held_checks", 0, "name")
+      assert_match(
+        %r{\Agit:#{base_sha}:\.agents/agent-workflow\.yml@[0-9a-f]{40}\z},
+        policy.fetch("provenance")
+      )
+    end
+  end
+
+  def test_trusted_ci_policy_rejects_duplicate_ci_readiness_keys
+    fixtures = {
+      root: <<~YAML,
+        ci_readiness:
+          version: 1
+          optional_approval_held_checks: []
+        ci_readiness:
+          version: 1
+          optional_approval_held_checks: []
+      YAML
+      version: <<~YAML,
+        ci_readiness:
+          version: 1
+          version: 1
+          optional_approval_held_checks: []
+      YAML
+      rule: <<~YAML
+        ci_readiness:
+          version: 1
+          optional_approval_held_checks:
+            - id: circleci-storybook
+              app_slug: circleci-checks
+              app_slug: circleci-checks
+              name: storybook-review-app
+      YAML
+    }
+
+    fixtures.each do |label, yaml|
+      Dir.mktmpdir("pr-ci-policy-duplicate") do |root|
+        run_fixture_git(root, "init", "-q")
+        run_fixture_git(root, "config", "user.name", "Test User")
+        run_fixture_git(root, "config", "user.email", "test@example.test")
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), yaml)
+        run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+        run_fixture_git(root, "commit", "-q", "-m", "duplicate policy")
+        base_sha = run_fixture_git(root, "rev-parse", "HEAD").strip
+
+        error = assert_raises(PrCiReadiness::Error) do
+          PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
+        end
+
+        assert_includes error.message, "duplicate key", label
+      end
+    end
+  end
+
+  def test_trusted_ci_policy_ignores_repository_replacement_refs
+    Dir.mktmpdir("pr-ci-policy-replace") do |root|
+      run_fixture_git(root, "init", "-q")
+      run_fixture_git(root, "config", "user.name", "Test User")
+      run_fixture_git(root, "config", "user.email", "test@example.test")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        optional_policy_yaml("trusted-check")
+      )
+      run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+      run_fixture_git(root, "commit", "-q", "-m", "trusted policy")
+      base_sha = run_fixture_git(root, "rev-parse", "HEAD").strip
+      trusted_blob_sha = run_fixture_git(
+        root, "rev-parse", "#{base_sha}:.agents/agent-workflow.yml"
+      ).strip
+
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        optional_policy_yaml("forged-check")
+      )
+      run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+      run_fixture_git(root, "commit", "-q", "-m", "forged policy")
+      forged_sha = run_fixture_git(root, "rev-parse", "HEAD").strip
+      forged_blob_sha = run_fixture_git(
+        root, "rev-parse", "#{forged_sha}:.agents/agent-workflow.yml"
+      ).strip
+      run_fixture_git(root, "replace", base_sha, forged_sha)
+
+      policy = PrCiReadiness.trusted_ci_policy_at(
+        repo_root: root, base_ref: "main", base_sha:
+      )
+
+      assert_equal "trusted-check", policy.dig("optional_approval_held_checks", 0, "name")
+      assert_equal(
+        "git:#{base_sha}:.agents/agent-workflow.yml@#{trusted_blob_sha}",
+        policy.fetch("provenance")
+      )
+      refute_includes policy.fetch("provenance"), forged_blob_sha
+    end
+  end
+
+  def test_trusted_ci_policy_does_not_inherit_git_dir
+    Dir.mktmpdir("pr-ci-policy-root") do |root|
+      Dir.mktmpdir("pr-ci-policy-attacker") do |attacker|
+        [root, attacker].each do |repo|
+          run_fixture_git(repo, "init", "-q")
+          run_fixture_git(repo, "config", "user.name", "Test User")
+          run_fixture_git(repo, "config", "user.email", "test@example.test")
+          FileUtils.mkdir_p(File.join(repo, ".agents"))
+        end
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), optional_policy_yaml("trusted-check"))
+        run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+        run_fixture_git(root, "commit", "-q", "-m", "trusted policy")
+        File.write(File.join(attacker, ".agents", "agent-workflow.yml"), optional_policy_yaml("forged-check"))
+        run_fixture_git(attacker, "add", ".agents/agent-workflow.yml")
+        run_fixture_git(attacker, "commit", "-q", "-m", "forged policy")
+        attacker_sha = run_fixture_git(attacker, "rev-parse", "HEAD").strip
+
+        original_git_dir = ENV["GIT_DIR"]
+        ENV["GIT_DIR"] = File.join(attacker, ".git")
+        error = assert_raises(PrCiReadiness::Error) do
+          PrCiReadiness.trusted_ci_policy_at(
+            repo_root: root, base_ref: "main", base_sha: attacker_sha
+          )
+        end
+        assert_match(/does not resolve the exact base SHA/, error.message)
+      ensure
+        original_git_dir.nil? ? ENV.delete("GIT_DIR") : ENV["GIT_DIR"] = original_git_dir
+      end
+    end
+  end
+
+  def test_unknown_trusted_base_ci_policy_fails_closed
+    Dir.mktmpdir("pr-ci-policy-unknown") do |root|
+      run_fixture_git(root, "init", "-q")
+      run_fixture_git(root, "config", "user.name", "Test User")
+      run_fixture_git(root, "config", "user.email", "test@example.test")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), "ci_readiness: UNKNOWN\n")
+      run_fixture_git(root, "add", ".agents/agent-workflow.yml")
+      run_fixture_git(root, "commit", "-q", "-m", "unknown policy")
+      base_sha = run_fixture_git(root, "rev-parse", "HEAD").strip
+
+      error = assert_raises(PrCiReadiness::Error) do
+        PrCiReadiness.trusted_ci_policy_at(repo_root: root, base_ref: "main", base_sha:)
+      end
+
+      assert_match(/closed version 1 mapping/, error.message)
+    end
+  end
+
+  def test_heterogeneous_policy_and_rule_keys_fail_with_controlled_errors
+    valid_rule = {
+      "id" => "circleci-storybook",
+      "app_slug" => "circleci-checks",
+      "name" => "storybook-review-app"
+    }
+    policies = [
+      {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule],
+        1 => "unexpected"
+      },
+      {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge(1 => "unexpected")]
+      }
+    ]
+
+    policies.each do |policy|
+      error = assert_raises(PrCiReadiness::Error) do
+        PrCiReadiness.validate_optional_approval_held_policy!(policy)
+      end
+      assert_match(/closed version 1 mapping|contain exactly app_slug, id, and name/, error.message)
+    end
+  end
+
+  def test_optional_approval_held_policy_rejects_every_invalid_security_boundary_shape
+    valid_rule = {
+      "id" => "circleci-storybook",
+      "app_slug" => "circleci-checks",
+      "name" => "storybook-review-app"
+    }
+    cases = {
+      "unsupported version" => {
+        "version" => 2, "optional_approval_held_checks" => [valid_rule]
+      },
+      "missing version" => {
+        "optional_approval_held_checks" => [valid_rule]
+      },
+      "empty rules" => {
+        "version" => 1, "optional_approval_held_checks" => []
+      },
+      "non-list rules" => {
+        "version" => 1, "optional_approval_held_checks" => valid_rule
+      },
+      "uppercase rule id" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("id" => "CircleCI-Storybook")]
+      },
+      "underscored app slug" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("app_slug" => "circleci_checks")]
+      },
+      "unknown name" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("name" => "UNKNOWN")]
+      },
+      "multiline name" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("name" => "storybook\nreview")]
+      },
+      "duplicate rule id" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [
+          valid_rule,
+          valid_rule.merge("app_slug" => "other-app", "name" => "other-check")
+        ]
+      },
+      "duplicate check identity" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule, valid_rule.merge("id" => "other-rule")]
+      }
+    }
+
+    cases.each do |label, policy|
+      assert_raises(PrCiReadiness::Error, label) do
+        PrCiReadiness.validate_optional_approval_held_policy!(policy)
+      end
+    end
+  end
+
+  def test_optional_policy_accepts_resolved_names_containing_unknown
+    valid_rule = {
+      "id" => "circleci-storybook",
+      "app_slug" => "circleci-checks",
+      "name" => "storybook-review-app"
+    }
+    ["Approval UNKNOWN state", "NOT-UNKNOWN"].each do |name|
+      policy = {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("name" => name)]
+      }
+
+      assert_equal policy, PrCiReadiness.validate_optional_approval_held_policy!(policy), name
+    end
+  end
+
+  def run_fixture_git(root, *arguments)
+    output, status = Open3.capture2e(
+      { "GIT_CONFIG_NOSYSTEM" => "1", "GIT_CONFIG_GLOBAL" => File::NULL },
+      "git", *arguments, chdir: root
+    )
+    raise "fixture git failed: #{output}" unless status.success?
+
+    output
+  end
+
+  def optional_policy_yaml(name)
+    {
+      "ci_readiness" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [
+          {
+            "id" => "circleci-storybook",
+            "app_slug" => "circleci-checks",
+            "name" => name
+          }
+        ]
+      }
+    }.to_yaml
+  end
+
   def test_required_rows_without_positive_producer_do_not_hide_failing_same_name_evidence
     head = "a" * 40
     checked_at = "2026-07-30T12:00:00Z"
@@ -463,7 +1192,9 @@ class PrCiReadinessTest < Minitest::Test
         statuses_complete: true
       )
       contract = PrCiReadiness.evidence_contract(
-        repo: "owner/repo", pr_number: 7, head_sha: head, checked_at:, scopes:
+        repo: "owner/repo", pr_number: 7,
+        base: { "ref" => "main", "sha" => "b" * 40 }, diff_base_sha: "b" * 40,
+        head_sha: head, checked_at:, scopes:
       )
       other_ids = (item.fetch(:check_runs) + item.fetch(:statuses)).map { |row| row.fetch("id") }
 
@@ -476,6 +1207,46 @@ end
 
 # CLI / Runner integration via a fake gh on PATH.
 class PrCiReadinessCliTest < Minitest::Test
+  def test_cli_heterogeneous_trusted_policy_keys_fail_without_a_traceback
+    Dir.mktmpdir("pr-ci-policy-heterogeneous") do |root|
+      run_policy_git(root, "init", "-q")
+      run_policy_git(root, "config", "user.name", "Test User")
+      run_policy_git(root, "config", "user.email", "test@example.test")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        <<~YAML
+          ci_readiness:
+            version: 1
+            optional_approval_held_checks:
+              - id: circleci-storybook
+                app_slug: circleci-checks
+                name: storybook-review-app
+                1: unexpected
+        YAML
+      )
+      run_policy_git(root, "add", ".agents/agent-workflow.yml")
+      run_policy_git(root, "commit", "-q", "-m", "malformed policy")
+      base_sha = run_policy_git(root, "rev-parse", "HEAD").strip
+      head = "a" * 40
+      identity = {
+        "id" => 9_001, "number" => 123,
+        "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002, "full_name" => "owner/repo" } },
+        "base" => { "sha" => base_sha, "ref" => "main", "repo" => { "id" => 9_003, "full_name" => "owner/repo" } }
+      }
+      with_fake_gh(required_json: "[]", full_json: "[]", pr_head: head, pr_identity: identity) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+
+        refute status.success?
+        assert_includes out, "each optional approval-held check must contain exactly"
+        refute_includes out, "ArgumentError"
+        refute_includes out, "from "
+      end
+    end
+  end
+
   HICHEE_DATA_431_HEAD = "6c7f86b92e2eac2fc73ce29c74ab5cce9ea9b2c1"
 
   def hichee_data_431_identity
@@ -497,7 +1268,16 @@ class PrCiReadinessCliTest < Minitest::Test
                    exact_check_runs: [], exact_statuses: [], exact_inventory_error: nil,
                    exact_actions_total_count: nil, expected_host: nil,
                    exact_status_sha: :echo, exact_status_total_count: nil,
-                   exact_status_pages: nil)
+                   exact_status_pages: nil, exact_status_snapshots: nil)
+    pr_identity = add_default_base_identity(pr_identity)
+    if pr_identity.nil? && (!pr_head.is_a?(String) || !pr_head.match?(/\A[0-9a-f]{40}\z/i))
+      fixture_head = "a" * 40
+      runs = replace_fixture_value(runs, pr_head, fixture_head)
+      review_pages = replace_fixture_value(review_pages, pr_head, fixture_head)
+      exact_actions = replace_fixture_value(exact_actions, pr_head, fixture_head)
+      exact_check_runs = replace_fixture_value(exact_check_runs, pr_head, fixture_head)
+      pr_head = fixture_head
+    end
     Dir.mktmpdir("pr-ci-readiness-test") do |dir|
       gh = File.join(dir, "gh")
       File.write(
@@ -508,12 +1288,38 @@ class PrCiReadinessCliTest < Minitest::Test
           required_check_error, full_check_error, exact_actions, exact_check_runs,
           exact_statuses, exact_inventory_error, exact_actions_total_count,
           File.join(dir, "pr-head-state"), File.join(dir, "pr-identity-state"), expected_host,
-          exact_status_sha, exact_status_total_count, exact_status_pages
+          exact_status_sha, exact_status_total_count, exact_status_pages, exact_status_snapshots
         )
       )
       FileUtils.chmod(0o755, gh)
       env = { "PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}" }
       yield env
+    end
+  end
+
+  def add_default_base_identity(identity)
+    return identity.map { |item| add_default_base_identity(item) } if identity.is_a?(Array)
+    return identity unless identity.is_a?(Hash) && !identity.key?("base")
+
+    repo = identity.dig("head", "repo", "full_name") || "owner/repo"
+    identity.merge(
+      "base" => {
+        "sha" => "b" * 40,
+        "ref" => "main",
+        "repo" => { "id" => 9_003, "full_name" => repo }
+      }
+    )
+  end
+
+  def replace_fixture_value(value, old_value, new_value)
+    case value
+    when Array then value.map { |item| replace_fixture_value(item, old_value, new_value) }
+    when Hash
+      value.to_h do |key, item|
+        [key, replace_fixture_value(item, old_value, new_value)]
+      end
+    else
+      value == old_value ? new_value : value
     end
   end
 
@@ -541,7 +1347,26 @@ class PrCiReadinessCliTest < Minitest::Test
   # `exact_status_sha` with a literal SHA (mismatch) or nil (missing) to prove
   # the assertion still fails closed.
   def combined_status_branch(exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count,
-                             exact_status_pages)
+                             exact_status_pages, exact_status_snapshots, status_state_path)
+    if exact_status_snapshots
+      snapshot_cases = exact_status_snapshots.each_with_index.map do |payload, index|
+        "  #{index}) #{shell_json_printf(payload)} ;;"
+      end.join("\n")
+      return <<~BASH
+        if [[ "$*" = *"/status?per_page="* ]]; then
+          #{exact_inventory_error == 'statuses' ? 'exit 1' : ''}
+          count=0
+          if [ -f #{status_state_path.inspect} ]; then count=$(cat #{status_state_path.inspect}); fi
+          case "$count" in
+          #{snapshot_cases}
+            *) #{shell_json_printf(exact_status_snapshots.last)} ;;
+          esac
+          printf '%s' "$((count + 1))" > #{status_state_path.inspect}
+          exit 0
+        fi
+      BASH
+    end
+
     if exact_status_pages
       page_cases = exact_status_pages.each_with_index.map do |payload, index|
         "  #{index + 1}) #{shell_json_printf(payload)} ;;"
@@ -592,7 +1417,25 @@ class PrCiReadinessCliTest < Minitest::Test
                      required_check_error, full_check_error, exact_actions, exact_check_runs,
                      exact_statuses, exact_inventory_error, exact_actions_total_count,
                      pr_head_state_path, pr_identity_state_path, expected_host,
-                     exact_status_sha, exact_status_total_count, exact_status_pages)
+                     exact_status_sha, exact_status_total_count, exact_status_pages,
+                     exact_status_snapshots)
+    required_check_command = if required_json.is_a?(Array)
+                               state_path = "#{pr_head_state_path}.required-checks"
+                               cases = required_json.each_with_index.map do |payload, index|
+                                 "#{index}) printf '%s' #{payload.inspect} ;;"
+                               end.join("\n")
+                               <<~BASH
+                                 count=0
+                                 if [ -f #{state_path.inspect} ]; then count=$(cat #{state_path.inspect}); fi
+                                 case "$count" in
+                                 #{cases}
+                                   *) printf '%s' #{required_json.last.inspect} ;;
+                                 esac
+                                 printf '%s' "$((count + 1))" > #{state_path.inspect}
+                               BASH
+                             else
+                               "printf '%s' #{required_json.inspect}"
+                             end
     host_guard =
       if expected_host
         <<~BASH
@@ -666,13 +1509,20 @@ class PrCiReadinessCliTest < Minitest::Test
             "sha" => identity_head,
             "ref" => "feature",
             "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+          },
+          "base" => {
+            "sha" => "b" * 40,
+            "ref" => "main",
+            "repo" => { "id" => 9_003, "full_name" => "owner/repo" }
           }
         }
         template = JSON.generate(default_identity).sub('"number":0', '"number":%s')
         "printf #{template.inspect} \"$FAKE_PR_NUMBER\""
       end
     run_cases = runs.map do |run_id, payload|
-      run_json = JSON.generate(payload.fetch(:run))
+      run = payload.fetch(:run)
+      run = run.merge("run_attempt" => 1) unless run.key?("run_attempt")
+      run_json = JSON.generate(run)
       jobs_json = JSON.generate(
         "total_count" => payload.fetch(:jobs_total_count, payload.fetch(:jobs).length),
         "jobs" => payload.fetch(:jobs)
@@ -730,6 +1580,25 @@ class PrCiReadinessCliTest < Minitest::Test
                                         }
                                       }
                                     })
+    first_page_command =
+      if first_page.is_a?(Array)
+        state_path = "#{pr_head_state_path}.review-inventory"
+        cases = first_page.each_with_index.map do |payload, index|
+          "#{index}) payload=#{JSON.generate(payload).inspect} ;;"
+        end.join("\n")
+        <<~BASH
+          count=0
+          if [ -f #{state_path.inspect} ]; then count=$(cat #{state_path.inspect}); fi
+          case "$count" in
+          #{cases}
+            *) payload=#{JSON.generate(first_page.last).inspect} ;;
+          esac
+          printf '%s' "$payload"
+          printf '%s' "$((count + 1))" > #{state_path.inspect}
+        BASH
+      else
+        shell_json_printf(first_page)
+      end
     check_fields_guard = if required_check_fields
                            <<~BASH
                              if [[ " $* " != *" --json #{required_check_fields} "* ]]; then
@@ -765,6 +1634,52 @@ class PrCiReadinessCliTest < Minitest::Test
                                else
                                  ""
                                end
+    identity_payload = pr_identity.is_a?(Array) ? pr_identity.compact.first : pr_identity
+    suite_head = identity_payload&.dig("head", "sha") || pr_head
+    check_runs_by_slug = exact_check_runs.each_with_index.group_by do |(row, index)|
+      row.dig("app", "slug") || "malformed-#{index}"
+    end
+    prepared_suite_runs = check_runs_by_slug.map.with_index do |(slug, indexed_rows), index|
+      suite_id = 800 + index
+      app = { "id" => 900 + index, "slug" => slug }
+      runs_for_suite = indexed_rows.map do |row, _row_index|
+        prepared = JSON.parse(JSON.generate(row))
+        if prepared["app"].is_a?(Hash)
+          prepared["app"] = app.merge(prepared["app"])
+        end
+        prepared["check_suite"] ||= { "id" => suite_id }
+        unless prepared.key?("started_at")
+          prepared["started_at"] = prepared["status"] == "completed" ? "2026-08-25T12:00:00Z" : nil
+        end
+        prepared
+      end
+      suite_status = runs_for_suite.any? { |row| row["status"] != "completed" } ? "in_progress" : "completed"
+      suite_conclusion = if suite_status == "completed"
+                           runs_for_suite.filter_map { |row| row["conclusion"] }
+                                         .find { |value| !%w[neutral skipped success].include?(value) } || "success"
+                         end
+      suite = {
+        "id" => suite_id,
+        "created_at" => "2026-08-25T#{format('%02d', 10 + index)}:00:00Z",
+        "updated_at" => "2026-08-25T#{format('%02d', 10 + index)}:00:00Z",
+        "head_sha" => suite_head,
+        "app" => app,
+        "status" => suite_status,
+        "conclusion" => suite_conclusion,
+        "latest_check_runs_count" => runs_for_suite.length
+      }
+      [suite, runs_for_suite]
+    end
+    suite_rows = prepared_suite_runs.map(&:first)
+    suite_run_cases = prepared_suite_runs.map do |suite, suite_runs|
+      <<~BASH
+        if [[ "$*" = *"/check-suites/#{suite.fetch('id')}/check-runs?filter=latest&per_page="* ]]; then
+          #{exact_inventory_error == 'check_runs' ? 'exit 1' : ''}
+          #{shell_json_printf('total_count' => suite_runs.length, 'check_runs' => suite_runs)}
+          exit 0
+        fi
+      BASH
+    end.join("\n")
 
     <<~SH
       #!/usr/bin/env bash
@@ -784,7 +1699,7 @@ class PrCiReadinessCliTest < Minitest::Test
         for arg in "$@"; do
           if [ "$arg" = "--required" ]; then
           #{required_check_error_command}
-            printf '%s' #{required_json.inspect}
+          #{required_check_command}
             exit #{check_status}
           fi
         done
@@ -802,9 +1717,7 @@ class PrCiReadinessCliTest < Minitest::Test
             exit 1
           fi
       #{review_cases}
-          cat <<'JSON'
-      #{JSON.generate(first_page)}
-      JSON
+      #{first_page_command}
           exit 0
         fi
         if [[ "$*" = *"actions/runs?head_sha="* ]]; then
@@ -815,13 +1728,15 @@ class PrCiReadinessCliTest < Minitest::Test
           )}
           exit 0
         fi
-        if [[ "$*" = *"/check-runs?per_page="* ]]; then
+        if [[ "$*" = *"/check-suites?per_page="* ]]; then
           #{exact_inventory_error == 'check_runs' ? 'exit 1' : ''}
-          #{shell_json_printf('total_count' => exact_check_runs.length, 'check_runs' => exact_check_runs)}
+          #{shell_json_printf('total_count' => suite_rows.length, 'check_suites' => suite_rows)}
           exit 0
         fi
+      #{suite_run_cases}
       #{combined_status_branch(
-        exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count, exact_status_pages
+        exact_statuses, exact_inventory_error, exact_status_sha, exact_status_total_count, exact_status_pages,
+        exact_status_snapshots, "#{pr_head_state_path}.statuses"
       )}
         # The status-history list endpoint is served with its real shape: its
         # rows carry no commit SHA. Nothing should request it -- it is kept so
@@ -840,6 +1755,43 @@ class PrCiReadinessCliTest < Minitest::Test
   def run_script(env, *args)
     fake_env = env.merge("FAKE_PR_NUMBER" => args.first.to_s)
     Open3.capture2e(fake_env, "ruby", SCRIPT, *args)
+  end
+
+  def with_optional_policy_repo
+    Dir.mktmpdir("pr-ci-readiness-policy") do |root|
+      run_policy_git(root, "init", "-q")
+      run_policy_git(root, "config", "user.name", "Test User")
+      run_policy_git(root, "config", "user.email", "test@example.test")
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        {
+          "ci_readiness" => {
+            "version" => 1,
+            "optional_approval_held_checks" => [
+              {
+                "id" => "circleci-storybook",
+                "app_slug" => "circleci-checks",
+                "name" => "storybook-review-app"
+              }
+            ]
+          }
+        }.to_yaml
+      )
+      run_policy_git(root, "add", ".agents/agent-workflow.yml")
+      run_policy_git(root, "commit", "-q", "-m", "policy")
+      yield root, run_policy_git(root, "rev-parse", "HEAD").strip
+    end
+  end
+
+  def run_policy_git(root, *arguments)
+    output, status = Open3.capture2e(
+      { "GIT_CONFIG_NOSYSTEM" => "1", "GIT_CONFIG_GLOBAL" => File::NULL },
+      PrCiReadiness::SYSTEM_GIT, *arguments, chdir: root
+    )
+    raise "fixture git failed: #{output}" unless status.success?
+
+    output
   end
 
   def test_check_fetch_requests_workflow_identity
@@ -1346,11 +2298,6 @@ class PrCiReadinessCliTest < Minitest::Test
       exact_actions: [old_run, current_run],
       exact_check_runs: [
         {
-          "id" => 2000, "name" => "unit", "status" => "completed", "conclusion" => "failure",
-          "head_sha" => head, "app" => { "slug" => "github-actions" },
-          "html_url" => "https://github.com/owner/repo/actions/runs/100/job/1000"
-        },
-        {
           "id" => 2001, "name" => "unit", "status" => "completed", "conclusion" => "success",
           "head_sha" => head, "app" => { "slug" => "github-actions" },
           "html_url" => current_job.fetch("html_url")
@@ -1368,6 +2315,47 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "READY", data.fetch("verdict")
       assert_equal "READY", data.dig("scopes", "github_actions", "state")
       assert_equal([101, 1010], data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") })
+    end
+  end
+
+  def test_exact_head_actions_do_not_hide_a_same_job_rerun_that_became_in_progress
+    head = "a" * 40
+    current_run = {
+      "id" => 101, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101"
+    }
+    completed_job = {
+      "id" => 1010, "name" => "unit", "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010"
+    }
+    rerunning_check = {
+      "id" => 2001, "name" => "unit", "status" => "in_progress", "conclusion" => nil,
+      "head_sha" => head, "app" => { "slug" => "github-actions" },
+      "started_at" => "2026-08-25T12:01:00Z", "html_url" => completed_job.fetch("html_url")
+    }
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [current_run],
+      exact_check_runs: [rerunning_check],
+      runs: { "101" => { run: current_run, jobs: [completed_job] } }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal "NOT_READY", data.dig("scopes", "github_actions", "state")
+      assert_equal(
+        [101, 1010, 2001],
+        data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      )
     end
   end
 
@@ -2087,6 +3075,200 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_optional_disposition_owns_fallback_verdict_when_required_inventory_is_empty
+    head = "a" * 40
+    with_optional_policy_repo do |root, base_sha|
+      pr_identity = {
+        "id" => 9_001, "number" => 123,
+        "head" => {
+          "sha" => head, "ref" => "feature",
+          "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+        },
+        "base" => {
+          "sha" => base_sha, "ref" => "main",
+          "repo" => { "id" => 9_003, "full_name" => "owner/repo" }
+        }
+      }
+      workflow_id = "ac163d39-bfa6-4c1d-9daa-5dff74e2200a"
+      details_url = "https://app.circleci.com/workflow/#{workflow_id}?utm_campaign=vcs-integration-link&" \
+                    "utm_medium=referral&utm_content=bottom&utm_source=github-checks-link"
+      summary_url = "https://app.circleci.com/workflow/#{workflow_id}?utm_campaign=vcs-integration-link&" \
+                    "utm_medium=referral&utm_content=summary&utm_source=github-checks-link"
+      job_url = "https://app.circleci.com/workflow/#{workflow_id}?utm_campaign=vcs-integration-link&" \
+                "utm_medium=referral&utm_source=github-checks-link"
+      held = {
+        "id" => 31, "name" => "storybook-review-app", "status" => "in_progress",
+        "conclusion" => nil, "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
+        "head_sha" => head, "app" => { "slug" => "circleci-checks" }, "actions" => nil,
+        "details_url" => details_url,
+        "output" => {
+          "title" => "Workflow: storybook-review-app",
+          "summary" => "[View CircleCI Workflow](#{summary_url})\n\n" \
+                       "* [start](#{job_url}) - Blocked\n" \
+                       "* build-storybook-review-app - Blocked\n"
+        },
+        "html_url" => "https://example/check/31"
+      }
+      held_rollup = {
+        "workflow" => "", "name" => "storybook-review-app", "bucket" => "pending",
+        "state" => "IN_PROGRESS", "link" => details_url
+      }
+      with_fake_gh(
+        required_json: "",
+        full_json: JSON.generate([held_rollup]),
+        pr_head: head,
+        pr_identity:,
+        exact_check_runs: [held]
+      ) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+        assert status.success?, out
+        data = JSON.parse(out)
+
+        assert_equal "READY", data.fetch("verdict"), data.inspect
+        assert_equal "READY", data.fetch("ordinary_verdict")
+        assert_equal "READY", data.dig("scopes", "other", "state")
+        refute_empty data.dig("scopes", "other", "policy_dispositions")
+      end
+
+      graphql_only_pending = {
+        "workflow" => "external-ci", "name" => "security", "bucket" => "pending",
+        "state" => "IN_PROGRESS", "link" => "https://example/check/32"
+      }
+      with_fake_gh(
+        required_json: "",
+        full_json: JSON.generate([held_rollup, graphql_only_pending]),
+        pr_head: head,
+        pr_identity:,
+        exact_check_runs: [held]
+      ) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+        assert status.success?, out
+        data = JSON.parse(out)
+
+        assert_equal "NOT_READY", data.fetch("verdict")
+        assert_equal "NOT_READY", data.fetch("ordinary_verdict")
+        assert_equal "READY", data.dig("scopes", "other", "state")
+        refute_empty data.dig("scopes", "other", "policy_dispositions")
+      end
+
+      running = {
+        "id" => 32, "name" => "security", "status" => "in_progress",
+        "conclusion" => nil, "started_at" => "2026-07-30T11:58:00Z", "head_sha" => head,
+        "app" => { "slug" => "external-ci" }, "html_url" => "https://example/check/32"
+      }
+      with_fake_gh(
+        required_json: "",
+        full_json: JSON.generate([held_rollup, graphql_only_pending]),
+        pr_head: head,
+        pr_identity:,
+        exact_check_runs: [held, running]
+      ) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+        assert status.success?, out
+        data = JSON.parse(out)
+
+        assert_equal "NOT_READY", data.fetch("verdict")
+        assert_equal "NOT_READY", data.dig("scopes", "other", "state")
+        assert_equal 1, data.dig("scopes", "other", "policy_dispositions").length
+      end
+    end
+  end
+
+  def test_optional_disposition_cannot_override_an_unrelated_invalid_check_bucket
+    head = "a" * 40
+    with_optional_policy_repo do |root, base_sha|
+      pr_identity = {
+        "id" => 9_001, "number" => 123,
+        "head" => {
+          "sha" => head, "ref" => "feature",
+          "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+        },
+        "base" => {
+          "sha" => base_sha, "ref" => "main",
+          "repo" => { "id" => 9_003, "full_name" => "owner/repo" }
+        }
+      }
+      workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
+      exact_held = {
+        "id" => 31, "name" => "storybook-review-app", "status" => "in_progress",
+        "conclusion" => nil, "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
+        "head_sha" => head, "app" => { "slug" => "circleci-checks" }, "actions" => nil,
+        "details_url" => workflow_url,
+        "output" => {
+          "title" => "Workflow: storybook-review-app",
+          "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - Blocked\n"
+        },
+        "html_url" => "https://example/check/31"
+      }
+      with_fake_gh(
+        required_json: "",
+        full_json: '[{"workflow":"circleci-checks","name":"storybook-review-app","bucket":"pending"},' \
+                   '{"workflow":"external-ci","name":"mystery","bucket":"future-state"}]',
+        pr_head: head,
+        pr_identity:,
+        exact_check_runs: [exact_held]
+      ) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+        assert status.success?, out
+        data = JSON.parse(out)
+
+        assert_equal "NOT_READY", data.fetch("verdict"), data.inspect
+        assert_equal "NOT_READY", data.fetch("ordinary_verdict")
+        assert_equal ['mystery (bucket: "future-state")'], data.fetch("invalid")
+        refute_empty data.dig("scopes", "other", "policy_dispositions")
+      end
+    end
+  end
+
+  def test_optional_disposition_fails_closed_when_required_inventory_changes_during_assessment
+    head = "a" * 40
+    with_optional_policy_repo do |root, base_sha|
+      identity = {
+        "id" => 9_001, "number" => 123,
+        "head" => {
+          "sha" => head, "ref" => "feature",
+          "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+        },
+        "base" => {
+          "sha" => base_sha, "ref" => "main",
+          "repo" => { "id" => 9_003, "full_name" => "owner/repo" }
+        }
+      }
+      held = {
+        "id" => 31, "name" => "storybook-review-app", "status" => "in_progress",
+        "conclusion" => nil, "started_at" => nil, "head_sha" => head,
+        "app" => { "slug" => "circleci-checks" }, "html_url" => "https://example/check/31"
+      }
+      required = {
+        "workflow" => "circleci-checks", "name" => "storybook-review-app", "bucket" => "pending"
+      }
+      with_fake_gh(
+        required_json: ["[]", JSON.generate([required])],
+        full_json: JSON.generate([required]),
+        pr_head: head, pr_identity: identity, exact_check_runs: [held]
+      ) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+        assert status.success?, out
+        data = JSON.parse(out)
+
+        assert_equal "NOT_READY", data.fetch("verdict")
+        assert_equal false, data.dig("scopes", "required_status_check_rollup", "complete")
+        assert_includes data.dig("scopes", "required_status_check_rollup", "error"),
+                        "required-check inventory changed during exact-head assessment"
+      end
+    end
+  end
+
   def test_duplicate_combined_status_contexts_fail_closed_case_insensitively
     head = "a" * 40
     with_fake_gh(
@@ -2113,6 +3295,35 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "UNKNOWN", data.dig("scopes", "other", "state")
       assert_empty data.dig("scopes", "other", "rows")
       assert_includes data.dig("scopes", "other", "error"), "repeated case-insensitive context"
+    end
+  end
+
+  def test_commit_status_inventory_change_during_assessment_fails_closed
+    head = "a" * 40
+    success = {
+      "id" => 400, "context" => "legacy", "state" => "success",
+      "target_url" => "https://example/status/400"
+    }
+    failure = success.merge("id" => 401, "state" => "failure")
+    snapshots = [success, failure].map do |row|
+      {
+        "sha" => head, "state" => row.fetch("state"),
+        "total_count" => 1, "statuses" => [row]
+      }
+    end
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]", pr_head: head, exact_status_snapshots: snapshots
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_includes data.dig("scopes", "other", "error"),
+                      "commit-status inventory changed during exact-head assessment"
     end
   end
 
@@ -2677,6 +3888,720 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_pending_review_draft_inventory_fails_closed_when_snapshot_changes_during_assessment
+    head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    review_payload = lambda do |nodes|
+      {
+        "data" => {
+          "repository" => {
+            "pullRequest" => {
+              "reviews" => {
+                "nodes" => nodes,
+                "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+              }
+            }
+          }
+        }
+      }
+    end
+    late_draft = {
+      "id" => "PRR_late", "state" => "PENDING", "submittedAt" => nil,
+      "commit" => { "oid" => head }
+    }
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]', full_json: "[]", pr_head: head,
+      review_pages: { nil => [review_payload.call([]), review_payload.call([late_draft])] }
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      draft_ids = data.fetch("viewer_pending_review_drafts").map { |row| row.fetch("id") }
+      assert_equal ["PRR_late"], draft_ids
+      assert_equal false, data.dig("viewer_review_inventory", "complete")
+      assert_includes data.dig("viewer_review_inventory", "error"), "changed during assessment"
+    end
+  end
+
+  def test_review_draft_inventory_uses_outer_authenticated_head_during_transient_head_change
+    outer_head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    transient_head = "4f67da47c44b7f403c72be2ed8f5bf4505666975"
+    identity = hichee_data_431_identity.merge(
+      "head" => hichee_data_431_identity.fetch("head").merge("sha" => outer_head)
+    )
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: transient_head,
+      pr_identity: [identity, identity],
+      review_pages: {
+        nil => {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "reviews" => {
+                  "nodes" => [
+                    { "id" => "PRR_outer", "state" => "PENDING", "submittedAt" => nil,
+                      "commit" => { "oid" => outer_head } }
+                  ],
+                  "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                }
+              }
+            }
+          }
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal(
+        ["PRR_outer"], data.fetch("viewer_pending_review_drafts").map { |row| row.fetch("id") }
+      )
+    end
+  end
+
+  def test_requested_run_uses_outer_authenticated_head_during_transient_head_change
+    outer_head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    transient_head = "4f67da47c44b7f403c72be2ed8f5bf4505666975"
+    identity = hichee_data_431_identity.merge(
+      "head" => hichee_data_431_identity.fetch("head").merge("sha" => outer_head)
+    )
+    with_fake_gh(
+      required_json: "",
+      full_json: "[]",
+      pr_head: transient_head,
+      pr_identity: [identity, identity],
+      runs: {
+        "100" => {
+          run: {
+            "id" => 100, "name" => "requested", "head_sha" => transient_head,
+            "status" => "completed", "conclusion" => "success",
+            "html_url" => "https://github.com/shakacode/hichee-data/actions/runs/100"
+          },
+          jobs: []
+        }
+      }
+    ) do |env|
+      out, status = run_script(
+        env, "431", "--repo", "shakacode/hichee-data", "--requested-hosted-run", "100"
+      )
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal(
+        ["100"], data.dig("requested_hosted", "stale").map { |row| row.fetch("run_id") }
+      )
+    end
+  end
+
+  def test_requested_run_payload_id_must_match_requested_id
+    head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    identity = hichee_data_431_identity.merge(
+      "head" => hichee_data_431_identity.fetch("head").merge("sha" => head)
+    )
+    with_fake_gh(
+      required_json: "", full_json: "[]", pr_head: head,
+      pr_identity: [identity, identity],
+      runs: {
+        "100" => {
+          run: {
+            "id" => 999, "name" => "wrong-run", "head_sha" => head,
+            "status" => "completed", "conclusion" => "success",
+            "html_url" => "https://github.com/shakacode/hichee-data/actions/runs/999"
+          },
+          jobs: []
+        }
+      }
+    ) do |env|
+      out, status = run_script(
+        env, "431", "--repo", "shakacode/hichee-data", "--requested-hosted-run", "100"
+      )
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_includes data.dig("requested_hosted", "unknown", 0, "reason"), "id"
+    end
+  end
+
+  def test_malformed_successful_check_run_makes_exact_inventory_unknown
+    head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]', full_json: "[]", pr_head: head,
+      exact_check_runs: [
+        { "id" => nil, "name" => nil, "head_sha" => head, "app" => nil,
+          "status" => "completed", "conclusion" => "success" }
+      ]
+    ) do |env|
+      out, status = run_script(env, "31", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+    end
+  end
+
+  def test_exact_check_inventory_does_not_use_capped_git_ref_runs_endpoint
+    runner = PrCiReadiness::Runner.new
+    endpoints = []
+    runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, _key, validate_page: nil|
+      endpoints << endpoint
+      _validate_page = validate_page
+      []
+    end
+
+    runner.send(:fetch_exact_head_check_runs, "owner/repo", "a" * 40)
+
+    refute(endpoints.any? do |endpoint|
+      endpoint.include?("/commits/") && endpoint.include?("/check-runs")
+    end)
+  end
+
+  def test_check_suite_inventory_fails_closed_when_queued_placeholder_appears_during_materialization
+    head = "a" * 40
+    initial_suite = {
+      "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "updated_at" => "2026-08-25T10:00:00Z",
+      "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+      "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
+    }
+    late_suite = initial_suite.merge(
+      "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+      "updated_at" => "2026-08-25T12:00:00Z",
+      "app" => { "id" => 19, "slug" => "dormant-app" },
+      "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
+    )
+    suite_fetches = 0
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        suite_fetches += 1
+        suite_fetches == 1 ? [initial_suite] : [initial_suite, late_suite]
+      else
+        [{
+          "id" => 100, "name" => "build", "head_sha" => head,
+          "status" => "completed", "conclusion" => "success",
+          "started_at" => "2026-08-25T10:00:00Z", "html_url" => "",
+          "app" => initial_suite.fetch("app"), "check_suite" => { "id" => 10 }
+        }]
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    refute complete
+    assert_empty rows
+    assert_includes error, "changed during run materialization"
+    assert_equal 2, suite_fetches
+  end
+
+  def test_check_suite_snapshot_is_order_independent_and_multiplicity_preserving
+    head = "a" * 40
+    suites = [10, 20].map do |suite_id|
+      {
+        "id" => suite_id, "created_at" => "2026-08-25T#{suite_id}:00:00Z",
+        "updated_at" => "2026-08-25T#{suite_id}:00:00Z",
+        "head_sha" => head, "app" => { "id" => suite_id, "slug" => "ci-#{suite_id}" },
+        "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
+      }
+    end
+    { reordered: suites.reverse, duplicated: [suites.first, suites.last, suites.last] }.each do |label, final|
+      suite_fetches = 0
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          suite_fetches += 1
+          suite_fetches == 1 ? suites : final
+        else
+          suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
+          suite = suites.find { |row| row.fetch("id") == suite_id }
+          [{
+            "id" => suite_id * 10, "name" => "build", "head_sha" => head,
+            "status" => "completed", "conclusion" => "success",
+            "started_at" => "2026-08-25T10:00:00Z", "html_url" => "",
+            "app" => suite.fetch("app"), "check_suite" => { "id" => suite_id }
+          }]
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      if label == :reordered
+        assert complete, error
+        assert_equal [100, 200], rows.map { |row| row.fetch("id") }.sort
+      else
+        refute complete
+        assert_empty rows
+        assert_includes error, "changed during run materialization"
+      end
+    end
+  end
+
+  def test_check_run_snapshot_fails_closed_when_phase_changes_after_suite_materialization
+    head = "a" * 40
+    suite = {
+      "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "updated_at" => "2026-08-25T10:00:00Z",
+      "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+      "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
+    }
+    successful_run = {
+      "id" => 100, "name" => "build", "head_sha" => head,
+      "status" => "completed", "conclusion" => "success",
+      "started_at" => "2026-08-25T10:00:00Z", "html_url" => "",
+      "app" => suite.fetch("app"), "check_suite" => { "id" => 10 }
+    }
+    changed_run = successful_run.merge("conclusion" => "neutral")
+    suite_fetches = 0
+    run_fetches = 0
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        suite_fetches += 1
+        [suite]
+      else
+        run_fetches += 1
+        [run_fetches == 1 ? successful_run : changed_run]
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    refute complete
+    assert_empty rows
+    assert_includes error, "check-run inventory changed during final verification"
+    assert_equal 3, suite_fetches
+    assert_equal 2, run_fetches
+  end
+
+  def test_check_suite_snapshot_fails_closed_when_suite_appears_during_final_run_materialization
+    head = "a" * 40
+    initial_suite = {
+      "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "updated_at" => "2026-08-25T10:00:00Z",
+      "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+      "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
+    }
+    late_suite = initial_suite.merge(
+      "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+      "updated_at" => "2026-08-25T12:00:00Z",
+      "status" => "in_progress", "conclusion" => nil, "latest_check_runs_count" => 0
+    )
+    suite_fetches = 0
+    run_fetches = 0
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        suite_fetches += 1
+        suite_fetches < 3 ? [initial_suite] : [initial_suite, late_suite]
+      else
+        run_fetches += 1
+        [{
+          "id" => 100, "name" => "build", "head_sha" => head,
+          "status" => "completed", "conclusion" => "success",
+          "started_at" => "2026-08-25T10:00:00Z", "html_url" => "",
+          "app" => initial_suite.fetch("app"), "check_suite" => { "id" => 10 }
+        }]
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    refute complete
+    assert_empty rows
+    assert_includes error, "changed during final verification"
+    assert_equal 3, suite_fetches
+    assert_equal 2, run_fetches
+  end
+
+  def test_check_suite_inventory_preserves_same_name_rows_from_distinct_suites
+    head = "a" * 40
+    %w[success failure].each do |latest_conclusion|
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          [
+            { "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+              "updated_at" => "2026-08-25T10:00:00Z" },
+            { "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+              "updated_at" => "2026-08-25T12:00:00Z" }
+          ].map do |suite|
+            latest_conclusion_for_suite = if suite.fetch("id") == 10
+                                            latest_conclusion == "success" ? "failure" : "success"
+                                          else
+                                            latest_conclusion
+                                          end
+            suite.merge(
+              "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+              "status" => "completed", "conclusion" => latest_conclusion_for_suite,
+              "latest_check_runs_count" => 1
+            )
+          end
+        else
+          suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
+          run_id = suite_id == 10 ? 200 : 100
+          conclusion = if suite_id == 10
+                         latest_conclusion == "success" ? "failure" : "success"
+                       else
+                         latest_conclusion
+                       end
+          [{
+            "id" => run_id, "name" => "build", "head_sha" => head,
+            "status" => "completed", "conclusion" => conclusion,
+            "started_at" => suite_id == 10 ? "2026-08-25T11:00:00Z" : "2026-08-25T12:00:00Z",
+            "html_url" => "",
+            "app" => { "id" => 9, "slug" => "ci-app" },
+            "check_suite" => { "id" => suite_id }
+          }]
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      assert complete, "#{latest_conclusion}: #{error}"
+      assert_nil error, latest_conclusion
+      assert_equal [100, 200], rows.map { |row| row.fetch("id") }.sort, latest_conclusion
+      assert_equal [10, 20], rows.map { |row| row.fetch("suite_id") }.sort, latest_conclusion
+    end
+  end
+
+  def test_same_suite_chronology_revalidates_selected_phase_matrix
+    head = "a" * 40
+    cases = {
+      later_success: ["completed", "success", "completed", "failure", "completed", "success", true],
+      later_failure: ["completed", "failure", "completed", "success", "completed", "failure", true],
+      later_pending: ["in_progress", nil, "completed", "failure", "in_progress", nil, true],
+      failure_suite_later_success: ["completed", "failure", "completed", "failure", "completed", "success", false],
+      success_suite_later_failure: ["completed", "success", "completed", "success", "completed", "failure", false],
+      completed_suite_later_pending: ["completed", "failure", "completed", "failure", "in_progress", nil, false],
+      running_suite_later_success: ["in_progress", nil, "completed", "failure", "completed", "success", false]
+    }
+
+    cases.each do |label, values|
+      suite_status, suite_conclusion, old_status, old_conclusion,
+        latest_status, latest_conclusion, expected_complete = values
+      suite = {
+        "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+        "updated_at" => "2026-08-25T10:00:00Z",
+        "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+        "status" => suite_status, "conclusion" => suite_conclusion, "latest_check_runs_count" => 2
+      }
+      runs = [
+        {
+          "id" => 100, "name" => "build", "head_sha" => head,
+          "status" => old_status, "conclusion" => old_conclusion,
+          "started_at" => "2026-08-25T10:00:00Z", "html_url" => "",
+          "app" => suite.fetch("app"), "check_suite" => { "id" => 10 }
+        },
+        {
+          "id" => 101, "name" => "build", "head_sha" => head,
+          "status" => latest_status, "conclusion" => latest_conclusion,
+          "started_at" => "2026-08-25T12:00:00Z", "html_url" => "",
+          "app" => suite.fetch("app"), "check_suite" => { "id" => 10 }
+        }
+      ]
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        key == "check_suites" ? [suite] : runs
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      if expected_complete
+        assert complete, "#{label}: #{error}"
+        assert_nil error, label
+        assert_equal [101], rows.map { |row| row.fetch("id") }, label
+      else
+        refute complete, label
+        assert_empty rows, label
+        assert_match(/contradicted|nonterminal/, error, label)
+      end
+    end
+  end
+
+  def test_check_suite_inventory_preserves_cross_suite_rerequest_as_distinct_evidence
+    head = "a" * 40
+    {
+      running: ["in_progress", nil],
+      failed: %w[completed failure]
+    }.each do |label, (latest_status, latest_conclusion)|
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          [
+            {
+              "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+              "updated_at" => "2026-08-25T10:00:00Z",
+              "status" => latest_status, "conclusion" => latest_conclusion
+            },
+            {
+              "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+              "updated_at" => "2026-08-25T12:00:00Z",
+              "status" => "completed", "conclusion" => "success"
+            }
+          ].map do |suite|
+            suite.merge(
+              "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+              "latest_check_runs_count" => 1
+            )
+          end
+        else
+          suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
+          rerequested = suite_id == 10
+          [{
+            "id" => rerequested ? 200 : 100, "name" => "build", "head_sha" => head,
+            "status" => rerequested ? latest_status : "completed",
+            "conclusion" => rerequested ? latest_conclusion : "success",
+            "started_at" => rerequested ? "2026-08-25T14:00:00Z" : "2026-08-25T13:00:00Z",
+            "html_url" => "", "app" => { "id" => 9, "slug" => "ci-app" },
+            "check_suite" => { "id" => suite_id }
+          }]
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      assert complete, "#{label}: #{error}"
+      assert_nil error, label
+      assert_equal [100, 200], rows.map { |row| row.fetch("id") }.sort, label
+      assert_equal [10, 20], rows.map { |row| row.fetch("suite_id") }.sort, label
+    end
+  end
+
+  def test_check_suite_inventory_validates_suite_chronology_without_cross_suite_retry_inference
+    head = "a" * 40
+    {
+      missing_suite_created_at: [nil, "2026-08-25T12:00:00Z", false],
+      missing_run_started_at: ["2026-08-25T12:00:00Z", nil, true],
+      tied_run_started_at: ["2026-08-25T12:00:00Z", "2026-08-25T11:00:00Z", true]
+    }.each do |label, (second_created_at, second_started_at, expected_complete)|
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          [
+            { "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+              "updated_at" => "2026-08-25T10:00:00Z" },
+            { "id" => 20, "created_at" => second_created_at, "updated_at" => second_created_at }
+          ].map do |suite|
+            suite.merge(
+              "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+              "status" => "completed", "conclusion" => "success",
+              "latest_check_runs_count" => 1
+            )
+          end
+        else
+          suite_id = endpoint[%r{/check-suites/(\d+)/}, 1].to_i
+          [{
+            "id" => suite_id * 10, "name" => "build", "head_sha" => head,
+            "status" => "completed", "conclusion" => "success",
+            "started_at" => suite_id == 10 ? "2026-08-25T11:00:00Z" : second_started_at,
+            "html_url" => "",
+            "app" => { "id" => 9, "slug" => "ci-app" },
+            "check_suite" => { "id" => suite_id }
+          }]
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      if expected_complete
+        assert complete, "#{label}: #{error}"
+        assert_nil error, label
+        assert_equal [100, 200], rows.map { |row| row.fetch("id") }.sort, label
+        assert_equal [10, 20], rows.map { |row| row.fetch("suite_id") }.sort, label
+      else
+        refute complete, label
+        assert_empty rows, label
+        assert_match(/created_at/, error, label)
+      end
+    end
+  end
+
+  def test_stable_queued_check_suite_without_published_checks_is_an_authenticated_placeholder
+    head = "a" * 40
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        [{
+          "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+          "updated_at" => "2026-08-25T10:00:00Z",
+          "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
+          "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
+        }]
+      else
+        []
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    assert complete, error
+    assert_empty rows
+    assert_nil error
+  end
+
+  def test_queued_placeholder_materializing_a_run_fails_suite_snapshot_continuity
+    head = "a" * 40
+    placeholder = {
+      "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "updated_at" => "2026-08-25T10:00:00Z",
+      "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
+      "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
+    }
+    materialized = placeholder.merge("status" => "in_progress", "latest_check_runs_count" => 1)
+    suite_fetches = 0
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        suite_fetches += 1
+        [suite_fetches == 1 ? placeholder : materialized]
+      else
+        []
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    refute complete
+    assert_empty rows
+    assert_includes error, "changed during run materialization"
+    assert_equal 2, suite_fetches
+  end
+
+  def test_queued_placeholder_updated_at_change_fails_suite_snapshot_continuity
+    head = "a" * 40
+    placeholder = {
+      "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "updated_at" => "2026-08-25T10:00:00Z",
+      "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
+      "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
+    }
+    updated = placeholder.merge("updated_at" => "2026-08-25T10:01:00Z")
+    suite_fetches = 0
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        suite_fetches += 1
+        [suite_fetches == 1 ? placeholder : updated]
+      else
+        []
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    refute complete
+    assert_empty rows
+    assert_includes error, "changed during run materialization"
+    assert_equal 2, suite_fetches
+  end
+
+  def test_check_suite_updated_at_must_be_present_and_rfc3339
+    head = "a" * 40
+    [nil, "not-a-timestamp"].each do |updated_at|
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          [{
+            "id" => 10, "created_at" => "2026-08-25T10:00:00Z", "updated_at" => updated_at,
+            "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
+            "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
+          }]
+        else
+          []
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      refute complete, updated_at.inspect
+      assert_empty rows, updated_at.inspect
+      assert_includes error, "updated_at", updated_at.inspect
+    end
+  end
+
+  def test_empty_nonqueued_or_malformed_check_suite_is_not_complete
+    head = "a" * 40
+    %w[requested in_progress waiting pending UNKNOWN].each do |suite_status|
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          [{
+            "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+            "updated_at" => "2026-08-25T10:00:00Z",
+            "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
+            "status" => suite_status, "conclusion" => nil, "latest_check_runs_count" => 0
+          }]
+        else
+          []
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      refute complete, suite_status
+      assert_empty rows, suite_status
+      assert_match(/check suite/, error, suite_status)
+    end
+  end
+
+  def test_malformed_or_unknown_review_rows_make_inventory_incomplete
+    head = "3f67da47c44b7f403c72be2ed8f5bf4505666974"
+    identity = hichee_data_431_identity.merge(
+      "head" => hichee_data_431_identity.fetch("head").merge("sha" => head)
+    )
+    invalid_rows = {
+      missing_commit: {
+        "id" => "PRR_missing_commit", "state" => "PENDING", "submittedAt" => nil, "commit" => nil
+      },
+      unknown_state: {
+        "id" => "PRR_unknown", "state" => "UNKNOWN", "submittedAt" => nil,
+        "commit" => { "oid" => head }
+      }
+    }
+    invalid_rows.each do |label, row|
+      with_fake_gh(
+        required_json: '[{"name":"unit","bucket":"pass"}]',
+        full_json: "[]", pr_head: head, pr_identity: [identity, identity],
+        review_pages: {
+          nil => {
+            "data" => {
+              "repository" => {
+                "pullRequest" => {
+                  "reviews" => {
+                    "nodes" => [row],
+                    "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ) do |env|
+        out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
+        assert status.success?, "#{label}: #{out}"
+        data = JSON.parse(out)
+        assert_equal "UNKNOWN", data.fetch("verdict"), label
+        assert_equal false, data.dig("viewer_review_inventory", "complete"), label
+      end
+    end
+  end
+
   def test_pending_current_head_review_drafts_block_unknown_checks
     with_fake_gh(
       required_json: "",
@@ -2725,7 +4650,7 @@ class PrCiReadinessCliTest < Minitest::Test
                     { "id" => "PRR_dismissed", "state" => "DISMISSED", "submittedAt" => nil,
                       "commit" => { "oid" => "current-head" } },
                     { "id" => "PRR_old", "state" => "PENDING", "submittedAt" => nil,
-                      "commit" => { "oid" => "old-head" } }
+                      "commit" => { "oid" => "b" * 40 } }
                   ],
                   "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
                 }
@@ -3199,6 +5124,31 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_requested_hosted_pending_job_blocks_even_when_run_reports_success
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+                 "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "in_progress", "conclusion" => nil,
+              "html_url" => "https://example.test/jobs/7" }
+          ]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      pending = data.fetch("requested_hosted").fetch("pending").map { |row| row["name"] }
+      assert_equal ["hosted / linux"], pending
+    end
+  end
+
   def test_requested_hosted_failure_blocks_ready_required_gate
     with_fake_gh(
       required_json: '[{"name":"unit","bucket":"pass"}]',
@@ -3250,7 +5200,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_requested_hosted_success_does_not_fetch_jobs
+  def test_requested_hosted_success_preserves_complete_job_inventory
     with_fake_gh(
       required_json: '[{"name":"unit","bucket":"pass"}]',
       full_json: '[{"name":"unit","bucket":"pass"}]',
@@ -3259,8 +5209,10 @@ class PrCiReadinessCliTest < Minitest::Test
         "42" => {
           run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
                  "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
-          jobs: [],
-          jobs_error: true
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "completed", "conclusion" => "success",
+              "html_url" => "https://example.test/jobs/7" }
+          ]
         }
       }
     ) do |env|
@@ -3269,6 +5221,8 @@ class PrCiReadinessCliTest < Minitest::Test
       data = JSON.parse(out)
       assert_equal "READY", data["verdict"]
       assert_empty data.fetch("requested_hosted").fetch("unknown")
+      kinds = data.fetch("authenticated_requested_hosted_inventory").map { |row| row["kind"] }
+      assert_equal %w[run job], kinds
     end
   end
 
