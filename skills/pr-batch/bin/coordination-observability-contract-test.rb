@@ -129,6 +129,17 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes status, "Optional telemetry"
   end
 
+  def test_public_fallback_preserves_bounded_identity_and_expiry
+    fallback = squish(section(@backend_doc, "## Public Claim Comment Fallback", /^##\s+/))
+
+    assert_includes fallback, "stable session, thread, or machine identifier"
+    assert_includes fallback, "`thread: unavailable`"
+    assert_includes fallback, "machine, branch, and batch fields"
+    assert_includes fallback, "2-4 hours"
+    assert_includes fallback, "no later than the known batch window"
+    refute_includes fallback, "repository-configured fallback cap"
+  end
+
   def test_restart_replacement_and_cancellation_are_replayable
     recovery = squish(section(@component, "## Restart, Replacement, And Cancellation", /^##\s+/))
 

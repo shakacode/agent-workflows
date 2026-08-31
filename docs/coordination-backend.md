@@ -81,9 +81,12 @@ expires_at: <ISO8601_UTC>
 -->
 ```
 
-Use a bounded advisory expiry, normally the active batch window and no more
-than the repository-configured fallback cap. Refresh the same comment when the
-lane continues beyond that window. This comment is a human-visible hint only:
+Use any stable session, thread, or machine identifier that lets a restarted
+coordinator recognize its own work; if none exists, use `thread: unavailable`
+and rely on the machine, branch, and batch fields. Use a bounded advisory
+expiry, usually 2-4 hours for an active batch and no later than the known batch
+window. Refresh the same comment when the lane continues beyond that window.
+This comment is a human-visible hint only:
 it cannot override a private refusal, express cancellation, prove terminal
 state, or grant scope or authority. Ad-hoc targets have no issue or PR comment
 surface and therefore cannot use this fallback.
