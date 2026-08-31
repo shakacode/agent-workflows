@@ -82,6 +82,9 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes squish(@workflow), "Do not bypass the queue with administrator privileges"
     assert_includes normalized, "## Release Closeout Extension"
     assert_includes normalized, "accelerated-RC waiver-soak"
+    assert_includes normalized, "current-head formal GitHub review record"
+    assert_includes normalized, "reviewer or finalizer with `write`, `maintain`, or `admin` permission"
+    assert_includes normalized, "does not waive the fallback trigger, final re-poll, current-head"
 
     closeout = @workflow.split("The closeout lane is:", 2).last
                         .split("## Self-Review Gate", 2).first

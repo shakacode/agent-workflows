@@ -151,6 +151,14 @@ Auto-merge requires all of the following:
   trusted evidence records the stale run's head SHA and URL. This release-only
   extension still requires the ordinary final Checks API re-poll and every
   distinct-attester restriction.
+- **Repo-configured fallback identity.** A repo-configured fallback review may
+  establish its qualifying identity through a named current-head GitHub
+  check/app, a current-head formal GitHub review record, or durable attestation
+  by a reviewer or finalizer with `write`, `maintain`, or `admin` permission.
+  The reviewer or attester must satisfy the same no-authorship, no-merge-actor,
+  and different-account restrictions as the ordinary fallback. This identity
+  route does not waive the fallback trigger, final re-poll, current-head,
+  blocker-triage, or evidence requirements.
 - Claude failures not caused by capacity limits are understood before merge.
 - CodeRabbit approval is not required, but concrete CodeRabbit findings still need normal blocker triage.
 - Reviewer verdicts in the confidence block are classified as current-head or stale/advisory with the head SHA each verdict covers. Stale approvals, positive comments, and summaries cannot be cited as merge gates.
