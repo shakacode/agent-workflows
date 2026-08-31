@@ -159,7 +159,13 @@ class UserFacingCoordinationContractTest < Minitest::Test
     workflow = File.read(File.join(ROOT, WORKFLOW), encoding: "UTF-8")
     assert_includes workflow, GMCC_V4, WORKFLOW
 
-    [PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
+    pr_batch = File.read(File.join(ROOT, PR_BATCH), encoding: "UTF-8")
+    assert_includes pr_batch, GMCC_V4, PR_BATCH
+    assert_includes pr_batch, "ready-human-review-required", PR_BATCH
+    assert_includes pr_batch, "autonomous-merge-evidence-unknown", PR_BATCH
+    refute_includes pr_batch, "GMCC-v3:", PR_BATCH
+
+    [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
       refute_includes text, "GMCC-v4:", path
       assert_includes text, "ready-human-review-required", path

@@ -1156,17 +1156,21 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal %w[ready Unknown], invalid_values
   end
 
-  def test_skill_prose_points_to_canonical_contract_instead_of_pasting_it
+  def test_skill_prose_carries_only_the_compact_portable_fallback
     assert_text_includes @pr_batch_skill, CANONICAL_CONTRACT_LINK, "skills/pr-batch/SKILL.md"
     assert_equal 0, @pr_batch_skill.scan(PENDING_CHECKS_PRESSURE).length,
                  "skills/pr-batch/SKILL.md should leave the verbose pressure example in the canonical workflow"
-    assert_equal 0, @pr_batch_skill.scan(COMPACT_CONTRACT_LINE).length,
-                 "skills/pr-batch/SKILL.md should resolve the canonical contract instead of restating it"
+    assert_equal 1, @pr_batch_skill.scan(COMPACT_CONTRACT_LINE).length,
+                 "skills/pr-batch/SKILL.md must retain one self-contained portable GMCC fallback"
+    assert_squished_includes @pr_batch_skill,
+                             "put this exact self-contained completion fallback in the accompanying Batch Plan or delivered launch state, never in the human-authored prompt",
+                             "skills/pr-batch/SKILL.md"
   end
 
   def test_compact_prompt_contracts_stay_byte_for_byte_aligned
     contracts = {
-      "workflows/pr-processing.md canonical compact contract" => compact_contract_line(@workflow_contract_section)
+      "workflows/pr-processing.md canonical compact contract" => compact_contract_line(@workflow_contract_section),
+      "skills/pr-batch/SKILL.md portable compact fallback" => compact_contract_line(@pr_batch_skill)
     }
 
     contracts.each do |label, line|

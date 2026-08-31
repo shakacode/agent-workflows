@@ -703,7 +703,14 @@ target, lane, dependency, and ownership assignment without expanding the
 human-readable prompt.
 The resolved canonical workflow owns launcher provenance, telemetry, recurring
 wake translation, manifest grammar, and merge-planning policy. Keep those
-machine contracts out of the generated prompt and do not restate them here.
+machine contracts out of the generated prompt. When the canonical workflow is
+missing or cannot autoload in a portable skill installation, put this exact
+self-contained completion fallback in the accompanying Batch Plan or delivered
+launch state, never in the human-authored prompt; its inline semantics remain
+normative:
+
+GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
 Use this template when creating goal text:
