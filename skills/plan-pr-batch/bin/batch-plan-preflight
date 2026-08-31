@@ -175,6 +175,9 @@ module BatchPlanPreflight
     contents = file.read(TRUSTED_PLAN_MAX_BYTES + 1)
     return [nil, :oversized] if contents.bytesize > TRUSTED_PLAN_MAX_BYTES
 
+    contents.force_encoding(Encoding::UTF_8)
+    return [nil, :invalid_encoding] unless contents.valid_encoding?
+
     [contents, nil]
   rescue ArgumentError, IOError, SystemCallError
     [nil, :unreadable]
@@ -636,6 +639,12 @@ module BatchPlanPreflight
           "token-budget-trusted-plan-nonregular",
           "$.plan.token_budget_anchor.trusted_plan_path",
           "Trusted token-budget plan must resolve to a regular file opened without blocking."
+        )
+      when :invalid_encoding
+        violations << violation(
+          "token-budget-trusted-plan-invalid-encoding",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must contain valid UTF-8 before JSON validation."
         )
       when :unreadable
         violations << violation(

@@ -6183,6 +6183,111 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_expired_override_approval_stop_precedes_active_scope_coalescing_and_requires_coverage
+    with_state do |state_path|
+      initialize_budget(state_path)
+      lane_override = budget_override(
+        state_path,
+        id: "active-scope-approval-expiry",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 800,
+        expires_at: "2026-08-12T12:05:00Z"
+      )
+      run_helper(state_path, command("override", "override" => lane_override))
+      admitted, admitted_stderr, admitted_status = reserve(
+        state_path,
+        id: "active-before-approval-expiry",
+        tokens: 500
+      )
+      assert admitted_status.success?, admitted_stderr
+      assert_equal "admitted-with-warning", admitted.fetch("status")
+
+      after_expiry = command(
+        "reserve",
+        "evaluated_at" => "2026-08-12T13:00:00Z",
+        "reservation" => reservation(
+          id: "active-after-approval-expiry",
+          tokens: 1,
+          overrides: {
+            "telemetry" => reservation(id: "ignored", tokens: 1).fetch("telemetry").merge(
+              "observed_at" => "2026-08-12T12:59:00Z"
+            )
+          }
+        )
+      )
+      stopped, stderr, status = run_helper(state_path, after_expiry)
+
+      assert status.success?, stderr
+      assert_equal "approval-required", stopped.fetch("status")
+      assert_equal "actual-approval-threshold", stopped.fetch("reason")
+      assert_equal %w[read-only-discovery checkpoint approve], stopped.fetch("allowed_actions")
+      assert_equal 600, stopped.dig("totals", "lanes", "lane-a", "limit_tokens")
+      stopped_state = File.binread(state_path)
+      saved = JSON.parse(stopped_state)
+      persisted_decision = saved.fetch("admission_decisions").values.find do |decision|
+        decision["reservation_id"] == "active-after-approval-expiry"
+      end
+      assert_equal ["lane-a"], persisted_decision.fetch("blocking_scope_ids")
+      assert_equal "approval-required", persisted_decision.fetch("status")
+      assert_equal 1, saved.dig("reservation_decisions", "active-after-approval-expiry", "outcomes").length
+
+      replayed, replay_stderr, replay_status = run_helper(state_path, after_expiry)
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal "approval-required", replayed.fetch("decision_status")
+      assert_equal "actual-approval-threshold", replayed.fetch("reason")
+      assert_equal stopped_state, File.binread(state_path)
+
+      lane_approval = approval(
+        state_path,
+        id: "active-after-expiry-approval",
+        issued_at: "2026-08-12T12:59:00Z",
+        expires_at: "2026-08-12T14:00:00Z"
+      )
+      approved, approval_stderr, approval_status = run_helper(
+        state_path,
+        command(
+          "approve",
+          "evaluated_at" => "2026-08-12T13:01:00Z",
+          "approval" => lane_approval
+        )
+      )
+      assert approval_status.success?, approval_stderr
+      assert_equal "approved", approved.fetch("status")
+
+      covered_request = reservation(
+        id: "active-after-approval-expiry-covered",
+        tokens: 1,
+        overrides: {
+          "approval_id" => "active-after-expiry-approval",
+          "telemetry" => reservation(id: "ignored-covered", tokens: 1).fetch("telemetry").merge(
+            "observed_at" => "2026-08-12T13:01:00Z"
+          )
+        }
+      )
+      covered, covered_stderr, covered_status = run_helper(
+        state_path,
+        command(
+          "reserve",
+          "evaluated_at" => "2026-08-12T13:02:00Z",
+          "reservation" => covered_request
+        )
+      )
+
+      assert covered_status.success?, covered_stderr
+      assert_equal "coalesced", covered.fetch("status")
+      assert_equal "active-after-expiry-approval", covered.fetch("approval_id")
+      covered_state = JSON.parse(File.binread(state_path))
+      assert_equal "active-after-approval-expiry-covered",
+                   covered_state.dig("approvals", "active-after-expiry-approval", "consumed_by")
+      resolved_decision = covered_state.fetch("admission_decisions").values.find do |decision|
+        decision["reservation_id"] == "active-after-approval-expiry"
+      end
+      assert_equal "active-after-approval-expiry-covered", resolved_decision.fetch("resolved_by_reservation_id")
+    end
+  end
+
   def test_scoped_override_headroom_ignores_superseded_aggregate_history
     with_state do |state_path|
       initialize_budget(state_path)
@@ -6863,6 +6968,89 @@ class BatchTokenBudgetTest < Minitest::Test
         Process.kill("KILL", writer_pid)
         Process.wait(writer_pid)
       end
+    end
+  end
+
+  def test_batch_usage_receipt_rejects_invalid_utf8_artifacts_and_accepts_valid_boundary_bytes
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
+      artifact_path = receipt_ref.delete_prefix("file://")
+      invalid_json = File.binread(artifact_path).sub(
+        "metadata_only".b,
+        "\xFFetadata_only".b
+      )
+      refute invalid_json.dup.force_encoding(Encoding::UTF_8).valid_encoding?
+      File.binwrite(artifact_path, invalid_json)
+      state_before = File.binread(state_path)
+      lock_path = "#{state_path}.lock"
+      lock_before = File.binread(lock_path)
+
+      blocked, stderr, status = run_helper(
+        state_path,
+        command(
+          "reconcile",
+          "usage_receipt" => receipt,
+          "usage_receipt_ref" => receipt_ref,
+          "usage_receipt_digest" => receipt_digest,
+          "completed_reservation_ids" => []
+        )
+      )
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-receipt-artifact-mismatch", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      assert_equal lock_before, File.binread(lock_path)
+      assert_empty Dir.glob(File.join(File.dirname(state_path), ".#{File.basename(state_path)}.tmp-*"))
+      state = JSON.parse(state_before)
+      assert_empty state.fetch("usage_receipts")
+      assert_nil state["usage_cursor"]
+    end
+
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, = real_descendants_usage_receipt(state_path)
+      receipt.fetch("privacy").fetch("excluded") << "valid-multibyte-résumé"
+      receipt, receipt_ref, receipt_digest = receipt_artifact(state_path, receipt, "utf8-boundary")
+      artifact_path = receipt_ref.delete_prefix("file://")
+      assert File.binread(artifact_path).dup.force_encoding(Encoding::UTF_8).valid_encoding?
+      boundary_hook = File.join(File.dirname(state_path), "usage-receipt-boundary-hook.rb")
+      File.write(boundary_hook, <<~'RUBY')
+        module UsageReceiptExactBoundaryStat
+          def stat
+            result = super
+            if path == ENV["BATCH_TOKEN_BUDGET_BOUNDARY_ARTIFACT"]
+              result.define_singleton_method(:size) { 1_048_576 }
+            end
+            result
+          end
+        end
+
+        File.prepend(UsageReceiptExactBoundaryStat)
+      RUBY
+      clock_options = trusted_clock_options_for_time(Time.iso8601("2026-08-12T12:00:00Z"))
+      reconcile_command = command(
+        "reconcile",
+        "usage_receipt" => receipt,
+        "usage_receipt_ref" => receipt_ref,
+        "usage_receipt_digest" => receipt_digest,
+        "completed_reservation_ids" => []
+      )
+
+      run_options = {
+        env: clock_options.fetch(:env).merge("BATCH_TOKEN_BUDGET_BOUNDARY_ARTIFACT" => artifact_path),
+        ruby_arguments: clock_options.fetch(:ruby_arguments) + ["-r", boundary_hook]
+      }
+      reconciled, stderr, status = run_helper(state_path, reconcile_command, **run_options)
+      assert status.success?, stderr
+      assert_equal "reconciled", reconciled.fetch("status")
+      reconciled_state = File.binread(state_path)
+
+      replayed, replay_stderr, replay_status = run_helper(state_path, reconcile_command, **run_options)
+      assert replay_status.success?, replay_stderr
+      assert_equal "replayed", replayed.fetch("status")
+      assert_equal reconciled_state, File.binread(state_path)
     end
   end
 

@@ -20,6 +20,7 @@ module BatchTokenBudget
   ].freeze
   CONTROL_ACTIONS = %w[initialize reserve approve override reconcile release checkpoint closeout].freeze
   NON_DURABLE_RESERVATION_REASONS = %w[invalid-reservation telemetry-stale telemetry-unknown].freeze
+  NON_DURABLE_RECONCILIATION_REASONS = %w[usage-receipt-artifact-mismatch].freeze
   RECEIPT_TYPES = %w[
     batch-token-budget-initialization-receipt batch-token-budget-threshold-receipt
     batch-token-budget-reservation-decision-receipt batch-token-budget-reservation-receipt
@@ -206,6 +207,9 @@ module BatchTokenBudget
 
       bounded_json = file.read(USAGE_RECEIPT_MAX_BYTES + 1) || ""
       return false if bounded_json.bytesize > USAGE_RECEIPT_MAX_BYTES
+
+      bounded_json.force_encoding(Encoding::UTF_8)
+      return false unless bounded_json.valid_encoding?
 
       bounded_json
     end
@@ -1711,11 +1715,12 @@ module BatchTokenBudget
       scope_totals(original_state, reservation.fetch("scope_id")), 0, thresholds
     )
     current_aggregate_state = threshold_state(original_state.dig("scopes", "aggregate"), 0, thresholds)
-    if strongest_threshold(current_scope_state, current_aggregate_state) == "hard"
-      blocking_scope_ids = [
-        (reservation.fetch("scope_id") if current_scope_state == "hard"),
-        ("aggregate" if current_aggregate_state == "hard")
-      ].compact
+    current_threshold_state = strongest_threshold(current_scope_state, current_aggregate_state)
+    current_blocking_scope_ids = [
+      (reservation.fetch("scope_id") if %w[approval hard].include?(current_scope_state)),
+      ("aggregate" if %w[approval hard].include?(current_aggregate_state))
+    ].compact
+    if current_threshold_state == "hard"
       return persist_admission_decision(
         original_state,
         reservation,
@@ -1723,7 +1728,20 @@ module BatchTokenBudget
         "budget-exhausted",
         "actual-hard-threshold",
         %w[read-only-discovery checkpoint override closeout],
-        blocking_scope_ids
+        current_blocking_scope_ids
+      )
+    end
+    current_approval_covered = current_threshold_state == "approval" && valid_approval &&
+                               approval_covers_scope_ids?(approval, current_blocking_scope_ids)
+    if current_threshold_state == "approval" && !current_approval_covered
+      return persist_admission_decision(
+        original_state,
+        reservation,
+        command,
+        "approval-required",
+        "actual-approval-threshold",
+        %w[read-only-discovery checkpoint approve],
+        current_blocking_scope_ids
       )
     end
 
@@ -1735,9 +1753,10 @@ module BatchTokenBudget
         reservation,
         command.fetch("evaluated_at")
       )
-      approval_consumed = valid_approval && resolvable_prior_decisions.any? do |decision|
-        decision["status"] == "approval-required"
-      end
+      approval_consumed = current_approval_covered ||
+                          (valid_approval && resolvable_prior_decisions.any? do |decision|
+                            decision["status"] == "approval-required"
+                          end)
       if approval_consumed
         resolved_state["approvals"][approval_id]["consumed_by"] = reservation_id
       end
@@ -3132,6 +3151,10 @@ module BatchTokenBudget
       end
     if command["action"] == "reserve" && command_result["status"] == "blocked" &&
        NON_DURABLE_RESERVATION_REASONS.include?(command_result["reason"])
+      return [pre_command_state, command_result]
+    end
+    if command["action"] == "reconcile" && command_result["status"] == "blocked" &&
+       NON_DURABLE_RECONCILIATION_REASONS.include?(command_result["reason"])
       return [pre_command_state, command_result]
     end
 

@@ -1167,6 +1167,40 @@ class BatchPlanPreflightTest < Minitest::Test
                     "token-budget-trusted-plan-oversized"
   end
 
+  def test_token_budget_rejects_invalid_utf8_trusted_plan_before_canonicalization
+    input = input_for
+    candidate = token_budget
+    enable_token_budget(input, candidate)
+    artifact_path = input.dig("plan", "token_budget_anchor", "trusted_plan_path")
+    artifact_json = JSON.generate(canonicalize(candidate)).b
+    File.binwrite(artifact_path, artifact_json.sub("coordinator-399", "coordinator-\xFF".b))
+
+    result, stderr, status = evaluate(input)
+
+    refute status.success?, stderr
+    assert_empty stderr
+    assert_equal(
+      [{
+        "code" => "token-budget-trusted-plan-invalid-encoding",
+        "path" => "$.plan.token_budget_anchor.trusted_plan_path",
+        "message" => "Trusted token-budget plan must contain valid UTF-8 before JSON validation."
+      }],
+      result.fetch("violations")
+    )
+  end
+
+  def test_token_budget_accepts_valid_multibyte_trusted_plan_content
+    input = input_for
+    candidate = token_budget
+    candidate.fetch("trusted_verifiers").first["id"] = "coordinator-résumé"
+    enable_token_budget(input, candidate)
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+  end
+
   def test_token_budget_rejects_malformed_or_duplicate_key_trusted_plan_artifacts
     candidate = token_budget
     duplicate_key_json = JSON.generate(candidate).sub(
@@ -1980,7 +2014,7 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
-  def test_directory_rename_endpoints_collide_with_ancestor_touches
+  def test_directory_rename_endpoints_report_ancestor_touches_as_integration_advisories
     %w[old new].each do |endpoint|
       lanes = [lane("lane-a"), lane("lane-b")]
       ancestor = "lib/#{endpoint}"
@@ -1993,10 +2027,11 @@ class BatchPlanPreflightTest < Minitest::Test
 
       result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps))
 
-      refute status.success?, endpoint
-      collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
-      assert_equal %w[lane-a lane-b], collision.fetch("lane_ids"), endpoint
-      assert_includes collision.fetch("message"), ancestor, endpoint
+      assert status.success?, endpoint
+      assert_empty result.fetch("violations"), endpoint
+      advisory = result.fetch("advisories").find { |item| item.fetch("code") == "file-overlap-advisory" }
+      assert_equal %w[lane-a lane-b], advisory.fetch("lane_ids"), endpoint
+      assert_includes advisory.fetch("message"), ancestor, endpoint
     end
   end
 
