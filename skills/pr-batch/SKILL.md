@@ -219,8 +219,9 @@ production deployment or promotion, publishing, release rollback, or other
 explicit release work, load the resolved
 `pr-production-release.md`: prefer the repo-local
 `.agents/workflows/pr-production-release.md` when present; otherwise use the
-installed workflow adjacent to the resolved `pr-processing.md` in the same
-Agent Workflows pack. Follow the consumer repo's `AGENTS.md` release policy. Do
+installed workflow from the same Agent Workflows pack as the loaded `pr-batch`
+skill, not relative to a potentially repo-pinned processing override. Follow the
+consumer repo's `AGENTS.md` release policy. Do
 not restate the component's tracker, phase, promotion, or release rules here.
 Ordinary base-branch feature work does not load that downstream component unless
 repository policy or the live release tracker selects release handling for that

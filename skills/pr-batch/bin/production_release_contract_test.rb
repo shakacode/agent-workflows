@@ -59,7 +59,7 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes skill, "if the repo defines no tracker discovery policy, do not invent one"
     assert_includes workflow, "production deployment"
     assert_includes workflow, "### Ordinary Review Fallback"
-    assert_includes workflow, "does not load the production/release component"
+    assert_includes workflow, "does not by itself authorize auto-merge or load the production/release component"
     review_gate = @workflow.split("## Review Completion Gate", 2).last
                            .split("### Adversarial Review Gate", 2).first
     refute_includes review_gate, "pr-production-release.md"
@@ -67,7 +67,8 @@ class ProductionReleaseContractTest < Minitest::Test
 
     assert_includes skill, "load the resolved `pr-production-release.md`"
     assert_includes skill, "prefer the repo-local `.agents/workflows/pr-production-release.md` when present"
-    assert_includes skill, "installed workflow adjacent to the resolved `pr-processing.md`"
+    assert_includes skill, "installed workflow from the same Agent Workflows pack as the loaded `pr-batch` skill"
+    assert_includes skill, "not relative to a potentially repo-pinned processing override"
     assert_includes skill, "Do not restate the component's tracker, phase, promotion, or release rules here."
     assert_includes skill, "production deployment or promotion"
     assert_includes skill, "publishing, release rollback, or other explicit release work"
@@ -123,6 +124,9 @@ class ProductionReleaseContractTest < Minitest::Test
 
     fallback = squish(@workflow.split("### Ordinary Review Fallback", 2).last
                                 .split("### Adversarial Review Gate", 2).first)
+    assert_includes fallback, "does not by itself authorize auto-merge"
+    assert_includes fallback, "may explicitly reuse and extend these safety and attestation mechanics"
+    assert_includes fallback, "that downstream component supplies the additional authority"
     assert_includes fallback, "current-head formal GitHub review record"
     assert_includes fallback, "reviewer or finalizer with `write`, `maintain`, or `admin` permission"
     assert_includes fallback, "does not waive the fallback trigger, final re-poll, current-head"

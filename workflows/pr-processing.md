@@ -3667,9 +3667,12 @@ Use `address-review` for actionable GitHub review comments instead of skimming t
 
 ### Ordinary Review Fallback
 
-This fallback applies only to a human merge when the configured current-head
-reviewer cannot produce a usable result. It does not authorize auto-merge and
-does not load the production/release component.
+This is the ordinary human-merge fallback when the configured current-head
+reviewer cannot produce a usable result. It does not by itself authorize
+auto-merge or load the production/release component. A resolved release
+component may explicitly reuse and extend these safety and attestation mechanics
+for accelerated-RC auto-merge; that downstream component supplies the additional
+authority and release-specific gates.
 
 - Record a timestamped trigger in trusted PR, review, workflow, or check-run
   evidence created by the merge actor, maintainer, or trusted automation. The PR
