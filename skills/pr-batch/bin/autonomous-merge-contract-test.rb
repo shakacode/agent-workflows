@@ -255,6 +255,8 @@ class AutonomousMergeContractTest < Minitest::Test
     builtin = AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS
 
     refute_empty AutonomousMergePolicy::SOURCE_POLICY_PATTERNS
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, "workflows/pr-batch-security-floor.md"
+    assert_includes builtin, ".agents/workflows/pr-batch-security-floor.md"
     AutonomousMergePolicy::SOURCE_POLICY_PATTERNS.each do |pattern|
       assert_includes builtin, pattern
       assert_includes builtin, ".agents/#{pattern}"
