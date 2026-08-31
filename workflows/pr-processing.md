@@ -3838,6 +3838,30 @@ timeline evidence fails closed as `UNKNOWN`. Choosing the trusted base or
 installed-pack digest, inspecting the diff, producing the semantic assessment,
 and proving a human decision plus merge authority remain coordinator procedures
 backed by durable evidence.
+
+An older recorded PR base is not automatically unsafe. When the PR head has
+not moved, the evaluator builds `current-integration-evidence` that binds the
+recorded base, immutable head, independently read current base, canonical patch
+identity, and a clean current integration candidate. GitHub's
+`potentialMergeCommit` is preferred; if it is missing or still bound to an
+older base after branch movement, the trusted runtime uses an isolated
+`git merge-tree` calculation without modifying the branch. Malformed provider
+identity still fails closed.
+Exact-head CI and review may be reused only when the PR paths and current-base
+delta are disjoint, neither side touches a built-in or consumer-configured
+high-risk path, and at least one whole side consists only of trusted-safe
+documentation, the configured changelog, or configured generated paths.
+Disjoint code-to-code changes, path overlap, conflicts, incomplete path
+evidence, or any policy/workflow/security/release/high-risk path fail closed and
+use the normal branch-update plus fresh-evidence path. This fast path never
+waives failing or pending checks, unresolved review, security, authority, or
+other ordinary gates.
+
+The result reports `base-unchanged`, `reuse-exact-head`, or a fail-closed reason,
+plus counts for validator and review replays avoided. It reports elapsed time
+saved only from durable measured evidence; otherwise the value is `null`, not
+an estimate.
+
 The semantic assessment must be an external coordinator-owned file derived
 from the trusted task and inspected diff; a path lexically or physically
 inside the evaluated repository is rejected. Do not read it from stdin, the PR
@@ -3862,7 +3886,8 @@ The output contract reports `verdict`, `head_sha`, trusted-base
 reason-tagged `path_matches`,
 `safe_class`, lexicographically sorted duplicate-free `triggered_gates`,
 `shadow_triggered_gates`, `shadow_evidence_unknown`, `rollback_assessment`,
-`human_decision_evidence`, and exact `evidence_failures`. Canonical v1 gate IDs
+`human_decision_evidence`, `current_integration`, and exact
+`evidence_failures`. Canonical v1 gate IDs
 are closed:
 
 - `architectural-product-judgment`
@@ -4107,6 +4132,20 @@ bindings, freshness, and selected hosted-CI records before any queue or
 guarded-direct mutation. A missing, cancelled, failed, nonterminal, stale-head,
 or mismatched-PR selected record blocks before the first GitHub call or
 repository guard.
+
+The v2 assurance receipt also embeds the exact `current-integration-evidence`
+used by autonomous eligibility. Before mutation, `pr-merge-submit` re-reads the
+live head and base and replays the same GitHub integration candidate, or
+recomputes the same trusted local merge tree. Replay identity is the integration
+tree plus its ordered current-base/head parents; a GitHub synthetic candidate
+OID is recorded as provenance but may change when GitHub regenerates the same
+candidate. A missing or semantically changed candidate, base movement, head
+movement, or receipt mismatch blocks submission. This is a current-base proof
+for an immutable head, not permission to merge a stale or unknown tree.
+
+The submit replay binds the PR's `baseRefOid` to the recorded base and an
+independent live `refs/heads/<base>` lookup to the receipt's current base. Never
+substitute the recorded PR base for the live target-branch ref.
 
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
 always preserves read-only, idempotent observation when the exact reviewed PR

@@ -777,7 +777,7 @@ class AutonomousMergeCloseoutTest < Minitest::Test
                  when "repos/owner/repo/pulls/42"
                    {
                      "head" => { "sha" => objective.fetch("head_sha") },
-                     "base" => { "sha" => objective.fetch("base_sha") },
+                     "base" => { "sha" => objective.fetch("base_sha"), "ref" => "main" },
                      "updated_at" => "2026-08-22T12:00:00Z",
                      "changed_files" => objective.fetch("files").length,
                      "commits" => objective.fetch("commits").length
@@ -834,6 +834,9 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     evidence_failures: [],
     policy_provenance: "git:#{BASE_SHA}:#{POLICY_PATH}@#{POLICY_BLOB_SHA}"
   )
+    current_integration = if verdict == "human-approval-required"
+                            base_unchanged_integration(head_sha:)
+                          end
     {
       "verdict" => verdict,
       "head_sha" => head_sha,
@@ -856,6 +859,7 @@ class AutonomousMergeCloseoutTest < Minitest::Test
       "shadow_evidence_unknown" => [],
       "rollback_assessment" => rollback_assessment,
       "human_decision_evidence" => { "status" => "none" },
+      "current_integration" => current_integration,
       "evidence_failures" => evidence_failures
     }
   end
@@ -866,12 +870,34 @@ class AutonomousMergeCloseoutTest < Minitest::Test
       "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
       "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
       "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+      "integration-evidence-library" => "skills/pr-batch/lib/current_integration_evidence.rb",
       "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
       "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
       "policy-yaml-library" => "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
       "runtime-trust-library" => "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb",
       "calibration-decision" =>
         "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
+    }
+  end
+
+  def base_unchanged_integration(head_sha: HEAD_SHA)
+    {
+      "contract" => "current-integration-evidence",
+      "version" => 1,
+      "repository" => "owner/repo",
+      "pr" => 42,
+      "recorded_base_sha" => BASE_SHA,
+      "head_sha" => head_sha,
+      "current_base" => { "ref" => "main", "sha" => BASE_SHA },
+      "patch_identity" => nil,
+      "candidate" => nil,
+      "base_delta" => { "paths" => [] },
+      "reuse" => { "decision" => "base-unchanged", "reasons" => ["base-unchanged"] },
+      "telemetry" => {
+        "validator_replays_avoided" => 0,
+        "review_replays_avoided" => 0,
+        "elapsed_seconds_saved" => nil
+      }
     }
   end
 end

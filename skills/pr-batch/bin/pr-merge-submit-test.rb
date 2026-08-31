@@ -90,6 +90,104 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty guard_log
   end
 
+  def test_replays_the_receipt_bound_current_integration_candidate_before_submission
+    accepted, accepted_log, = run_cli(
+      mode: "current_integration_match",
+      receipt_mode: :reused_integration
+    )
+    rejected, rejected_log, = run_cli(
+      mode: "current_integration_mismatch",
+      receipt_mode: :reused_integration
+    )
+
+    assert accepted.fetch(:status).success?, accepted.fetch(:stderr)
+    assert_includes accepted_log, "mergePullRequest"
+    assert_equal 1, rejected.fetch(:status).exitstatus
+    assert_includes rejected.fetch(:stderr), "live current integration candidate no longer matches"
+    refute_includes rejected_log, "mergePullRequest"
+  end
+
+  def test_provider_candidate_oid_is_informational_when_tree_and_parents_match
+    result, log, = run_cli(
+      mode: "current_integration_regenerated_oid",
+      receipt_mode: :reused_integration
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_reused_integration_binds_recorded_pr_base_separately_from_live_current_base
+    accepted, accepted_log, = run_cli(
+      mode: "current_integration_match",
+      receipt_mode: :reused_integration
+    )
+    wrong_recorded_base, wrong_recorded_log, = run_cli(
+      mode: "current_integration_recorded_base_mismatch",
+      receipt_mode: :reused_integration
+    )
+    moved_live_base, moved_live_log, = run_cli(
+      mode: "current_integration_live_base_mismatch",
+      receipt_mode: :reused_integration
+    )
+
+    assert accepted.fetch(:status).success?, accepted.fetch(:stderr)
+    assert_includes accepted_log, "mergePullRequest"
+    assert_includes wrong_recorded_base.fetch(:stderr), "recorded base SHA mismatch"
+    refute_includes wrong_recorded_log, "mergePullRequest"
+    assert_includes moved_live_base.fetch(:stderr), "receipt base SHA mismatch"
+    refute_includes moved_live_log, "mergePullRequest"
+  end
+
+  def test_replays_a_trusted_local_merge_tree_candidate
+    Dir.mktmpdir("pr-merge-submit-local-integration") do |root|
+      run_git!(root, "init", "-q", "-b", "main")
+      File.write(File.join(root, "README.md"), "base\n")
+      run_git!(root, "add", ".")
+      run_git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base")
+      recorded_base = run_git!(root, "rev-parse", "HEAD").strip
+      run_git!(root, "switch", "-qc", "feature")
+      File.write(File.join(root, "feature.rb"), "feature\n")
+      run_git!(root, "add", ".")
+      run_git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "feature")
+      head = run_git!(root, "rev-parse", "HEAD").strip
+      run_git!(root, "switch", "-q", "main")
+      FileUtils.mkdir_p(File.join(root, "docs"))
+      File.write(File.join(root, "docs/guide.md"), "docs\n")
+      run_git!(root, "add", ".")
+      run_git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "docs")
+      current_base = run_git!(root, "rev-parse", "HEAD").strip
+      candidate = CurrentIntegrationEvidence.local_candidate(root, current_base, head)
+      integration = {
+        "contract" => "current-integration-evidence",
+        "version" => 1,
+        "repository" => "owner/repo",
+        "pr" => 42,
+        "recorded_base_sha" => recorded_base,
+        "head_sha" => head,
+        "current_base" => { "ref" => "main", "sha" => current_base },
+        "patch_identity" => "8" * 64,
+        "candidate" => candidate,
+        "base_delta" => { "paths" => ["docs/guide.md"] },
+        "reuse" => { "decision" => "reuse-exact-head", "reasons" => ["base-delta-reuse-safe"] },
+        "telemetry" => {
+          "validator_replays_avoided" => 1,
+          "review_replays_avoided" => 1,
+          "elapsed_seconds_saved" => nil
+        }
+      }
+      runner = PrMergeSubmit::Runner.new
+      runner.instance_variable_set(:@repo_root, root)
+
+      runner.send(:validate_current_integration_live!, {}, integration)
+      integration.fetch("candidate")["tree_oid"] = "f" * 40
+      error = assert_raises(PrMergeSubmit::Error) do
+        runner.send(:validate_current_integration_live!, {}, integration)
+      end
+      assert_includes error.message, "no longer matches"
+    end
+  end
+
   def test_selected_hosted_ci_non_success_receipts_block_queue_and_guarded_direct
     cases = %i[
       selected_hosted_missing
@@ -1905,6 +2003,7 @@ class PrMergeSubmitTest < Minitest::Test
           "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
           "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
           "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+          "integration-evidence-library" => "skills/pr-batch/lib/current_integration_evidence.rb",
           "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
           "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
           "policy-yaml-library" => "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
@@ -1926,8 +2025,51 @@ class PrMergeSubmitTest < Minitest::Test
       "shadow_evidence_unknown" => [],
       "rollback_assessment" => "code-only-rollback-established",
       "human_decision_evidence" => { "status" => "none" },
+      "current_integration" => {
+        "contract" => "current-integration-evidence",
+        "version" => 1,
+        "repository" => repo,
+        "pr" => pr_number,
+        "recorded_base_sha" => base_sha,
+        "head_sha" => head,
+        "current_base" => { "ref" => base_ref, "sha" => base_sha },
+        "patch_identity" => nil,
+        "candidate" => nil,
+        "base_delta" => { "paths" => [] },
+        "reuse" => { "decision" => "base-unchanged", "reasons" => ["base-unchanged"] },
+        "telemetry" => {
+          "validator_replays_avoided" => 0,
+          "review_replays_avoided" => 0,
+          "elapsed_seconds_saved" => nil
+        }
+      },
       "evidence_failures" => []
     }
+    if mode == :reused_integration
+      autonomous_result["current_integration"] = {
+        "contract" => "current-integration-evidence",
+        "version" => 1,
+        "repository" => repo,
+        "pr" => pr_number,
+        "recorded_base_sha" => "9" * 40,
+        "head_sha" => head,
+        "current_base" => { "ref" => base_ref, "sha" => base_sha },
+        "patch_identity" => "8" * 64,
+        "candidate" => {
+          "source" => "github-potential-merge-commit",
+          "oid" => "3" * 40,
+          "tree_oid" => "4" * 40,
+          "parents" => [base_sha, head]
+        },
+        "base_delta" => { "paths" => ["docs/guide.md"] },
+        "reuse" => { "decision" => "reuse-exact-head", "reasons" => ["base-delta-reuse-safe"] },
+        "telemetry" => {
+          "validator_replays_avoided" => 1,
+          "review_replays_avoided" => 1,
+          "elapsed_seconds_saved" => nil
+        }
+      }
+    end
     tracker = semantic_tracker(host:, repo:, pr_number:)
     semantic = mode.to_s.start_with?("semantic")
     selected_hosted = mode.to_s.start_with?("selected_hosted")
@@ -2366,12 +2508,21 @@ class PrMergeSubmitTest < Minitest::Test
         initially_advanced_modes = %w[
           already_merged_base_advanced initial_open_base_advanced already_queued_base_advanced
         ]
-        live_base_oid = if base_advanced_modes.include?(current_mode) &&
+        live_base_oid = if current_mode == "current_integration_live_base_mismatch"
+                          #{ADVANCED_BASE_SHA.inspect}
+                        elsif base_advanced_modes.include?(current_mode) &&
                            (initially_advanced_modes.include?(current_mode) || query_count.positive?)
                           #{ADVANCED_BASE_SHA.inspect}
                         else
                           #{base_sha.inspect}
                         end
+        recorded_base_oid = if current_mode == "current_integration_recorded_base_mismatch"
+                              #{('7' * 40).inspect}
+                            elsif current_mode.start_with?("current_integration_")
+                              #{('9' * 40).inspect}
+                            else
+                              #{base_sha.inspect}
+                            end
         queue_entry = if queued
                         {
                           "id" => current_mode.start_with?("queue_entry_replaced") ? "MQE_2" : "MQE_1",
@@ -2383,6 +2534,7 @@ class PrMergeSubmitTest < Minitest::Test
         puts JSON.generate(
           "data" => {
             "repository" => {
+              "currentBaseRef" => { "target" => { "oid" => live_base_oid } },
               "pullRequest" => {
                 "id" => "PR_42",
                 #{head_ref_entry}
@@ -2392,7 +2544,7 @@ class PrMergeSubmitTest < Minitest::Test
                                   #{head.inspect}
                                 end,
                 "baseRefName" => live_base,
-                "baseRefOid" => live_base_oid,
+                "baseRefOid" => recorded_base_oid,
                 "state" => merged ? "MERGED" : "OPEN",
                 "isDraft" => false,
                 "url" => "https://#{url_host}/#{repo}/pull/42",
@@ -2404,6 +2556,20 @@ class PrMergeSubmitTest < Minitest::Test
                 ].include?(current_mode)
                                    { "oid" => #{merge_commit_oid.inspect} }
                                  end,
+                "potentialMergeCommit" => if current_mode.start_with?("current_integration_")
+                  {
+                    "oid" => current_mode == "current_integration_regenerated_oid" ?
+                      #{('6' * 40).inspect} : #{('3' * 40).inspect},
+                    "tree" => {
+                      "oid" => current_mode == "current_integration_mismatch" ?
+                        #{('5' * 40).inspect} : #{('4' * 40).inspect}
+                    },
+                    "parents" => {
+                      "totalCount" => 2,
+                      "nodes" => [{ "oid" => live_base_oid }, { "oid" => #{head.inspect} }]
+                    }
+                  }
+                end,
                 "isInMergeQueue" => queued,
                 "mergeQueueEntry" => queue_entry,
                 "isMergeQueueEnabled" => queue_enabled

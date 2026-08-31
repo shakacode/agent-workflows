@@ -569,6 +569,21 @@ The coordinator still procedurally owns the trusted base/digest, external
 semantic assessment, and durable proof of human identity plus merge authority.
 A provenance flag states the expected identity and does not create trust.
 
+An unchanged head may retain its exact-head CI and review evidence after a
+disjoint base advance only through the canonical current-integration fast path.
+That receipt binds the recorded base, current trusted base, patch identity, and
+provider or trusted-local integration candidate. Both sides must avoid
+high-risk paths, and at least one entire side must be trusted-safe docs,
+changelog, or configured generated output; disjoint code-to-code changes still
+take the normal refresh path. The v2 merge-assurance receipt binds this evidence
+and `pr-merge-submit` replays the same candidate tree and ordered parents
+immediately before mutation. A provider candidate commit OID is retained as
+provenance but is not semantic identity because GitHub may regenerate that
+synthetic commit object without changing its tree or parents.
+Submission rechecks the PR's recorded base and independently reads the live
+target-branch ref; it never treats the stale PR `baseRefOid` as the live base.
+No readiness, review, security, or authority gate is weakened.
+
 `ready-human-review-required` carries the exact current head SHA, every
 triggered gate, rollback status, and the exact durable human decision needed.
 `autonomous-merge-evidence-unknown` carries the exact current head SHA,
@@ -643,7 +658,8 @@ Run:
 `merge-assurance` alone owns merge-authority, follow-up accounting, and
 `UNKNOWN` policy at this final boundary. Every merge caller must generate a
 fresh eligible receipt and pass it to `pr-merge-submit`; the submit helper
-requires it unconditionally and replays the selected-run records before either
+requires it unconditionally and replays the selected-run records plus the
+receipt-bound current-integration candidate before either
 queue or guarded-direct submission. `merge_authority: none` remains a no-merge
 state and can never produce an eligible receipt. Keep this gate conceptually
 separate from batch-plan preflight.

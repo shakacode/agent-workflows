@@ -54,8 +54,11 @@ module AutonomousMergeEvidence
 
     initial_head = initial.dig("head", "sha")
     initial_base = initial.dig("base", "sha")
+    initial_base_ref = initial.dig("base", "ref")
     unless full_sha?(initial_head) && full_sha?(initial_base) &&
-           final.dig("head", "sha") == initial_head && final.dig("base", "sha") == initial_base
+           initial_base_ref.is_a?(String) && !initial_base_ref.strip.empty? &&
+           final.dig("head", "sha") == initial_head && final.dig("base", "sha") == initial_base &&
+           final.dig("base", "ref") == initial_base_ref
       raise CollectionError, "head or base moved during evidence collection"
     end
 
@@ -85,6 +88,7 @@ module AutonomousMergeEvidence
     {
       "head_sha" => initial_head,
       "base_sha" => initial_base,
+      "base_ref" => initial_base_ref,
       "files_complete" => true,
       "files" => files.map { |file| normalize_file(file) },
       "commits_complete" => true,
