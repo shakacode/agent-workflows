@@ -571,8 +571,10 @@ before mutating GitHub or the branch.
   seam that opts out of coordination.
 - Before posting a fallback claim, inspect recent PR comments for an unexpired
   `codex-claim` block on the same PR. Only a marker backed by authenticated and
-  authorized ownership evidence is conflicting; any other marker remains
-  advisory and cannot block mutations. For a verified conflict, stop
+  authorized ownership evidence is conflicting. A marker proven malformed or
+  unauthorized remains advisory; an unavailable or incomplete verification
+  remains `UNKNOWN` and blocks the affected action. For a verified conflict,
+  stop
   GitHub-mutating actions and report the comment URL; local-only action `a` may
   still proceed, but it must report that publishing/reply actions remain blocked
   by the verified active claim. Apply the concrete author-and-marker verification
@@ -594,10 +596,10 @@ before mutating GitHub or the branch.
   expires_at: <ISO8601_UTC>
   -->
   ```
-  Use any stable session, thread, or machine identifier available; if none is
-  available, use `thread: unavailable`. Set a short bounded advisory lease,
-  usually 2-4 hours for an active review run, and refresh the same comment if
-  continuing beyond that window.
+  Use a stable session or thread identity; if none is available, use
+  `thread: unavailable`, which cannot self-renew. Refresh only a comment with
+  the matching stable identity; restart with an unavailable identity requires
+  explicit reassignment. Set a short bounded advisory lease, usually 2-4 hours.
 - At a stable stop, update every acquired private heartbeat or advisory claim
   state before reporting. For private coordination, send terminal heartbeats and
   release the claims on normal completion; preserve them for blocked or handoff

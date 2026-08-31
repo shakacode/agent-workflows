@@ -111,7 +111,8 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes ownership, "private_state: claim-only"
     assert_includes ownership, "In `mode: private`, run bounded target status before claim"
     assert_includes ownership, "Degraded status with declared `depends_on` refs is a hard stop"
-    assert_includes ownership, "For `public-fallback`, use only the verified public marker flow"
+    assert_includes ownership, "For `public-fallback`, after required cross-mode reconciliation"
+    assert_includes ownership, "use only the verified public marker flow"
     assert_includes ownership, "For `none`, skip every claim operation"
     assert_includes ownership, "Before dispatching dependency-sensitive lanes"
     assert_includes ownership, "For `mode: private`, create or update private batch and lane state"
@@ -177,8 +178,20 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes fallback, "A comment body alone never qualifies"
     [fallback, @component, @workflow, @address_review_skill, @address_review_workflow].each do |consumer|
       assert_includes squish(consumer), "authenticated and authorized ownership evidence"
-      assert_includes squish(consumer), "remains advisory and cannot block mutations"
+      assert_includes squish(consumer), "proven malformed or unauthorized remains advisory"
+      assert_includes squish(consumer), "unavailable or incomplete verification remains `UNKNOWN`"
+      assert_includes squish(consumer), "blocks the affected action"
       assert_includes squish(consumer), "concrete author-and-marker verification"
+    end
+  end
+
+  def test_private_to_public_fallback_reconciles_cross_mode_ownership
+    fallback = squish(section(@backend_doc, "## Public Claim Comment Fallback", /^##\s+/))
+    result = squish(section(@component, "## Adapter Result", /^##\s+/))
+
+    [fallback, result].each do |consumer|
+      assert_includes consumer, "reconcile private ownership or use a trusted cross-mode mirror"
+      assert_includes consumer, "If reconciliation is unavailable, stop the affected lane"
     end
   end
 
@@ -204,6 +217,9 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes recovery, "human_intervention"
     assert_includes recovery, "kind: drain"
     assert_includes recovery, "release"
+    workflow_recovery = squish(@workflow)
+    assert_includes workflow_recovery, "matching stable, non-`unavailable` thread"
+    assert_includes workflow_recovery, "explicit reassignment"
   end
 
   def test_private_registration_preserves_operational_recovery_context

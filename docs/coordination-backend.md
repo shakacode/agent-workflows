@@ -68,10 +68,13 @@ Use one advisory public claim when trusted configuration selects this fallback,
 or after the private claim cannot start or definitively fails with a non-timeout
 setup or authentication error and repository policy permits fallback. A timeout
 or private claim refusal never permits fallback. Before posting, inspect recent
-comments for an unexpired marker on the same target. Only a marker backed by
-authenticated and authorized ownership evidence is conflicting; any other
-marker remains advisory and cannot block mutations. Report either marker's
-comment URL as handoff evidence.
+comments for an unexpired marker on the same target. Before switching from
+private mode, reconcile private ownership or use a trusted cross-mode mirror.
+If reconciliation is unavailable, stop the affected lane. Only a marker backed
+by authenticated and authorized ownership evidence is conflicting. A marker
+proven malformed or unauthorized remains advisory; an unavailable or
+incomplete verification remains `UNKNOWN` and blocks the affected action. Report either
+marker's comment URL as handoff evidence.
 
 Among verified markers, only one owned by a different lane or instance is
 conflicting. A marker whose batch, machine, stable, non-`unavailable` thread,

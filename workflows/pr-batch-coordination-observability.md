@@ -72,20 +72,20 @@ evidence:
   heartbeat and preserve each unsupported value or literal `UNKNOWN` in durable
   lane evidence. Never infer support from another backend implementation.
 - `public-fallback`: trusted configuration directly selects
-  `public claim-comment fallback`, or an issue or PR lane cannot start the
-  configured private claim because of a definitive non-timeout setup or
-  authentication failure and repository policy permits that advisory fallback.
+  `public claim-comment fallback`, or a private claim cannot start after a
+  definitive non-timeout setup/authentication failure and policy permits fallback.
+  Before switching from private mode, reconcile private ownership or use a
+  trusted cross-mode mirror. If reconciliation is unavailable, stop the affected lane.
   The comment never overrides a private refusal and is not machine-readable
   cancellation, terminal, or authority evidence. Only a marker backed by
-  authenticated and authorized ownership evidence is conflicting; any other
-  marker remains advisory and cannot block mutations. Among verified markers,
-  only one owned by a different lane or instance conflicts. A marker is the
-  lane's renewable marker only when batch, machine, a stable,
+  authenticated and authorized ownership evidence is conflicting. A marker
+  proven malformed or unauthorized remains advisory; an unavailable or
+  incomplete verification remains `UNKNOWN` and blocks the affected action.
+  Among verified markers, only one owned by a different lane or instance
+  conflicts. A marker is renewable only when batch, machine, a stable,
   non-`unavailable` thread, and branch all match; refresh the same comment.
-  A marker with `thread: unavailable` cannot be self-renewed because its worker
-  instance is ambiguous. For an
-  ad-hoc lane, public claim fallback is unavailable because there is no issue
-  or PR comment surface. Stop before branch or worktree creation and require a
+  A marker with `thread: unavailable` cannot be self-renewed. An ad-hoc lane
+  cannot use fallback because it has no issue or PR comment surface; require a
   coordination target or explicit no-backend single-operator approval. Apply
   the concrete author-and-marker verification from the public
   [backend guide](../docs/coordination-backend.md#public-claim-comment-fallback);
@@ -133,8 +133,9 @@ missing or `UNKNOWN` trusted local plan or live replay.
    declared `depends_on` refs is a hard stop. A successful compare-and-swap
    proceeds as `private_state: claim-only`; a refusal stops, while a claim timeout
    is `UNKNOWN (claim outcome)` and stops until reconciled.
-   For `public-fallback`, use only the verified public marker flow. For `none`,
-   skip every claim operation and preserve the single-operator assumption.
+   For `public-fallback`, after required cross-mode reconciliation, use only the
+   verified public marker flow. For `none`, skip every claim operation and
+   preserve the single-operator assumption.
 2. After claim, mirror the repository's `agent_claimed_label` (default
    `agent-claimed`) only for an issue or PR and only when expiry reconciliation
    is available. The label is a visible hint, not the lock. Remove it on release

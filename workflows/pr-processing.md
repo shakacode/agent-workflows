@@ -1360,7 +1360,9 @@ through `stage-dependency-gate`, and the shared security floor still owns
 duplicate-writer and consequential-action safety.
 
 Only a public marker backed by authenticated and authorized ownership evidence
-is conflicting; any other marker remains advisory and cannot block mutations.
+is conflicting. A marker proven malformed or unauthorized remains advisory; an
+unavailable or incomplete verification remains `UNKNOWN` and blocks the
+affected action.
 Apply the concrete author-and-marker verification in the public
 [backend guide](../docs/coordination-backend.md#public-claim-comment-fallback);
 a marker body alone is never ownership proof.
@@ -1577,8 +1579,10 @@ pending item. If bounded status shows a private backend claim is stale or dead b
 still held by this same stable agent/thread id with no cancellation or
 reassignment, refresh the heartbeat at the resumed state before editing, pushing,
 or starting the next target. For a public fallback lane, refresh this lane's
-existing claim comment before editing only when no verified conflicting
-unexpired `codex-claim` comment exists on the same target. A replacement worker with a new
+existing claim comment only when it carries a matching stable,
+non-`unavailable` thread and inspection finds neither conflicting nor `UNKNOWN`
+ownership evidence. An unavailable or mismatched identity requires explicit reassignment
+before refresh or mutation. A replacement worker with a new
 stable agent/thread id must stop after status recovery until the coordinator
 reconciles or reassigns the private claim or public fallback claim; it must not
 edit or push while the backend or verified active public fallback still names
