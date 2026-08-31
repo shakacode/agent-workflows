@@ -40,6 +40,7 @@ module HostTaskLaunch
     operation = input.fetch("operation")
     lane = mutable_operation?(operation) || input.key?("dependency_state") ? lane_for!(record, input.fetch("lane_id")) : nil
     update_task_identity!(lane, input.fetch("task_identity")) if %w[bind-provisional bind-task].include?(operation)
+    refresh_helper_evidence!(lane, input.fetch("helper_evidence")) if operation == "refresh-helper-evidence"
     update_lane!(lane, input.fetch("update")) if operation == "update"
     publication = publication_gate(input, record)
     return invalid_input if publication == :invalid
@@ -71,8 +72,9 @@ module HostTaskLaunch
 
   def validate_input!(input)
     raise ContractError unless input.is_a?(Hash) && input["type"] == TYPE && input["version"] == VERSION
-    raise ContractError unless %w[prepare publish begin-create retry bind-provisional bind-task update].include?(input["operation"])
+    raise ContractError unless %w[prepare publish begin-create retry bind-provisional bind-task update refresh-helper-evidence].include?(input["operation"])
     raise ContractError if mutable_operation?(input["operation"]) && !scalar_value?(input["lane_id"])
+    raise ContractError if input["operation"] == "refresh-helper-evidence" && !scalar_value?(input["lane_id"])
     raise ContractError if input.key?("dependency_state") && !%w[ready waiting].include?(input["dependency_state"])
     raise ContractError unless input["task_creation_authorization"].is_a?(String)
     raise ContractError unless input["local_fence_path"].is_a?(String) && !input["local_fence_path"].strip.empty?
@@ -291,6 +293,8 @@ module HostTaskLaunch
     raise ContractError if update.key?("human_input_needed") && !%w[yes no].include?(update.fetch("human_input_needed"))
     raise ContractError if update.key?("blocker") && !update.fetch("blocker").nil? && !scalar_value?(update.fetch("blocker"))
 
+    raise ContractError unless (update.keys - %w[state outcome branch pr latest blocker human_input_needed]).empty?
+
     %w[state outcome branch pr latest blocker human_input_needed].each do |key|
       next unless update.key?(key)
 
@@ -307,7 +311,30 @@ module HostTaskLaunch
   end
 
   def mutable_operation?(operation)
-    %w[begin-create retry bind-provisional bind-task update].include?(operation)
+    %w[begin-create retry bind-provisional bind-task update refresh-helper-evidence].include?(operation)
+  end
+
+  def refresh_helper_evidence!(lane, evidence)
+    AgentRunRecord.validate!(evidence)
+    existing = lane.fetch("helper_evidence")
+    immutable_paths = [
+      %w[contract], %w[version], %w[run_id], %w[launch_idempotency_key], %w[repository],
+      %w[work_item], %w[prompt_source kind], %w[prompt_source url], %w[prompt_source digest_at_selection],
+      %w[prompt_source digest_at_launch], %w[current_main], %w[runner name], %w[runner machine],
+      %w[runner model_at_prompt_creation], %w[workflow_versions prompt_creation],
+      %w[workflow_versions worker_start], %w[timestamps selected_at], %w[timestamps prompt_created_at],
+      %w[timestamps worker_started_at], %w[prompt_transport]
+    ]
+    immutable_paths.each { |path| raise ContractError unless dig_path(existing, path) == dig_path(evidence, path) }
+    old_later = existing.dig("workflow_versions", "later_observations")
+    new_later = evidence.dig("workflow_versions", "later_observations")
+    raise ContractError unless new_later.first(old_later.length) == old_later
+
+    lane["helper_evidence"] = evidence
+  end
+
+  def dig_path(value, path)
+    path.reduce(value) { |memo, key| memo.fetch(key) }
   end
 
   def lane_for!(record, lane_id)
