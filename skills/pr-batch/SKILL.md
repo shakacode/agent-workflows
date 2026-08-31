@@ -219,9 +219,10 @@ production deployment or promotion, or publishing, load
 [PR Production And Release](../../workflows/pr-production-release.md) and follow
 the consumer repo's `AGENTS.md` release policy. Do not restate its tracker,
 phase, promotion, or release rules here. Ordinary base-branch feature work does
-not load that downstream component. If any target's value, priority, or proposed
-fix scope is unclear, use the installed or repo-local `evaluate-issue` skill
-before assigning implementation workers.
+not load that downstream component unless repository policy or the live release
+tracker selects release handling for that PR. If any target's value, priority,
+or proposed fix scope is unclear, use the installed or repo-local
+`evaluate-issue` skill before assigning implementation workers.
 Skip issues labeled `needs-customer-feedback` unless the user explicitly provides customer evidence or maintainer approval for that issue; report each skipped target with `needs-customer-feedback` as the reason.
 
 ## Non-Negotiable Safety Rules

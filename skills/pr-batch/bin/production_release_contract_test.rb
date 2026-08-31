@@ -57,10 +57,13 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes skill, "[PR Production And Release](../../workflows/pr-production-release.md)"
     assert_includes skill, "Do not restate its tracker, phase, promotion, or release rules here."
     assert_includes skill, "production deployment or promotion"
+    assert_includes skill, "unless repository policy or the live release tracker selects release handling for that PR"
 
     assert_includes @handbook, "../workflows/pr-production-release.md#release-mode-preflight"
     assert_includes @handbook, "../workflows/pr-production-release.md#release-phase-gate"
     assert_includes @handbook, "../workflows/pr-production-release.md#accelerated-rc-auto-merge"
+    assert_includes @handbook, "../workflows/pr-production-release.md#promotion-publishing-and-rollback-authority"
+    assert_includes @handbook, "Merge authority does not grant it."
   end
 
   def test_safety_and_authority_invariants_survive_extraction
