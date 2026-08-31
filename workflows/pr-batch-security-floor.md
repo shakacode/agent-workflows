@@ -41,7 +41,7 @@ not globally stop unrelated work.
 3. Apply least privilege and the Rule of Two from
    [`docs/security-posture.md`](../docs/security-posture.md). An autonomous
    session must not combine untrusted input, secret or sensitive access, and
-   state-change or exfiltration capability. A trusted maintainer may lift only
+   state-change or external-disclosure capability. A trusted maintainer may lift only
    one named boundary for one named target.
 4. Consequential actions require explicit authority from trusted context.
    Merge, deployment, release, destructive action, secret access, permission
