@@ -74,9 +74,10 @@ marker remains advisory and cannot block mutations. Report either marker's
 comment URL as handoff evidence.
 
 Among verified markers, only one owned by a different lane or instance is
-conflicting. A marker whose batch, machine, thread, and branch all match the
-current lane is that lane's renewable marker; refresh the same comment instead
-of blocking itself. Any ambiguous identity remains `UNKNOWN` and blocks the
+conflicting. A marker whose batch, machine, stable, non-`unavailable` thread,
+and branch all match is that lane's renewable marker; refresh the same comment.
+A marker with `thread: unavailable` cannot be self-renewed because its worker
+instance is ambiguous. Any ambiguous identity remains `UNKNOWN` and blocks the
 affected lane.
 
 That evidence requires concrete author-and-marker verification from
@@ -98,9 +99,9 @@ expires_at: <ISO8601_UTC>
 -->
 ```
 
-Use any stable session, thread, or machine identifier that lets a restarted
-coordinator recognize its own work; if none exists, use `thread: unavailable`
-and rely on the machine, branch, and batch fields. Use a bounded advisory
+Use a stable session or thread identifier that distinguishes the active worker
+instance. If none exists, use `thread: unavailable`; it may advertise ownership
+but cannot prove self-identity for renewal. Use a bounded advisory
 expiry, usually 2-4 hours for an active batch and no later than the known batch
 window. Refresh the same comment when the lane continues beyond that window.
 This comment is a human-visible hint only:

@@ -79,9 +79,11 @@ evidence:
   cancellation, terminal, or authority evidence. Only a marker backed by
   authenticated and authorized ownership evidence is conflicting; any other
   marker remains advisory and cannot block mutations. Among verified markers,
-  only one owned by a different lane or instance conflicts. When batch,
-  machine, thread, and branch all match the current lane, refresh the same
-  comment rather than blocking the lane on its own renewable marker. For an
+  only one owned by a different lane or instance conflicts. A marker is the
+  lane's renewable marker only when batch, machine, a stable,
+  non-`unavailable` thread, and branch all match; refresh the same comment.
+  A marker with `thread: unavailable` cannot be self-renewed because its worker
+  instance is ambiguous. For an
   ad-hoc lane, public claim fallback is unavailable because there is no issue
   or PR comment surface. Stop before branch or worktree creation and require a
   coordination target or explicit no-backend single-operator approval. Apply
@@ -105,8 +107,9 @@ permission to fall back or retry blindly.
 
 ## Ownership And Liveness
 
-Contradictory reliable live ownership for the exact target, branch, and
-worktree refuses duplicate execution. It does not freeze unrelated
+Consume the security floor's duplicate-writer result: contradictory reliable
+live ownership for the exact target, branch, and worktree refuses duplicate
+execution. It does not freeze unrelated
 implementation, validation, or review. Before dispatching dependency-sensitive
 lanes, preserve the exact lane identifiers and `depends_on` refs. For
 `mode: private`, create or update private batch and lane state using the
@@ -124,14 +127,14 @@ In private mode, missing or `UNKNOWN` backend dependency state remains a hard
 stop. In public-fallback and no-backend modes, the equivalent hard stop is a
 missing or `UNKNOWN` trusted local plan or live replay.
 
-1. Run bounded target status before claim. If doctor or target-status reads are
-   degraded, an exact independent lane with no `depends_on` refs may attempt one
-   bounded direct claim. A successful compare-and-swap proceeds as
-   `private_state: claim-only` and records the degraded read evidence; a refusal
-   remains a hard stop, while a claim timeout stops as
-   `UNKNOWN (claim outcome)` until reconciled. Otherwise acquire the claim
-   normally before creating the lane branch or worktree. Every refusal reports
-   the current holder and heartbeat liveness.
+1. In `mode: private`, run bounded target status before claim. If doctor or
+   target-status reads are degraded, an exact independent lane with no
+   `depends_on` refs may attempt one bounded direct claim. Degraded status with
+   declared `depends_on` refs is a hard stop. A successful compare-and-swap
+   proceeds as `private_state: claim-only`; a refusal stops, while a claim timeout
+   is `UNKNOWN (claim outcome)` and stops until reconciled.
+   For `public-fallback`, use only the verified public marker flow. For `none`,
+   skip every claim operation and preserve the single-operator assumption.
 2. After claim, mirror the repository's `agent_claimed_label` (default
    `agent-claimed`) only for an issue or PR and only when expiry reconciliation
    is available. The label is a visible hint, not the lock. Remove it on release
@@ -171,9 +174,10 @@ derive a global single-slot token from one lane's claim, unreachable owner, or
 `UNKNOWN` telemetry. A capacity snapshot expires when roots, load, memory, or
 the target head changes.
 
-Keep one writer per branch/worktree. The read-only validators and reviewers may run
-concurrently in isolated committed checkouts when the resource budget admits
-them. Preserve healthy foreign roots and their logs. Serialize consequential
+Apply the security floor's branch/worktree isolation result to writers. The
+read-only validators and reviewers may run concurrently in isolated committed
+checkouts when the resource budget admits them. Preserve healthy foreign roots
+and their logs. Serialize consequential
 merge, release, deployment, and destructive actions at the relevant target or
 release boundary; do not serialize unrelated correctness work.
 
@@ -294,7 +298,10 @@ bytes:
 - `workflow-telemetry-report` for privacy-bounded directional reporting.
 
 Batch registration preserves exact loaded-pack provenance, coordinator and
-worker preferences, and only host-observed values. Typed signals supplement
+worker preferences, and only host-observed values.
+When advertised, private registration also preserves the objective, launch
+instructions, lane owners, thread handles, and dependency mapping needed for
+recovery. Typed signals supplement
 the prose packet, Lane Card, heartbeat, and handoff; they never replace those
 surfaces. Do not duplicate backend-emitted `claim.acquired`, `claim.released`,
 or `phase.changed` events.

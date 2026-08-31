@@ -101,13 +101,18 @@ class CoordinationObservabilityContractTest < Minitest::Test
   def test_reliable_conflict_stops_only_duplicate_execution
     ownership = squish(section(@component, "## Ownership And Liveness", /^##\s+/))
 
-    assert_includes ownership, "Contradictory reliable live ownership"
+    assert_includes ownership, "Consume the security floor's duplicate-writer result"
+    assert_includes ownership, "contradictory reliable live ownership"
     assert_includes ownership, "exact target, branch, and worktree"
     assert_includes ownership, "refuses duplicate execution"
     assert_includes ownership, "does not freeze unrelated"
     assert_includes ownership, "claim timeout"
     assert_includes ownership, "UNKNOWN (claim outcome)"
     assert_includes ownership, "private_state: claim-only"
+    assert_includes ownership, "In `mode: private`, run bounded target status before claim"
+    assert_includes ownership, "Degraded status with declared `depends_on` refs is a hard stop"
+    assert_includes ownership, "For `public-fallback`, use only the verified public marker flow"
+    assert_includes ownership, "For `none`, skip every claim operation"
     assert_includes ownership, "Before dispatching dependency-sensitive lanes"
     assert_includes ownership, "For `mode: private`, create or update private batch and lane state"
     assert_includes ownership, "For `public-fallback` or `none`"
@@ -126,7 +131,8 @@ class CoordinationObservabilityContractTest < Minitest::Test
 
     assert_includes capacity, "configurable per-host resource budget"
     assert_includes capacity, "fresh normalized-load and healthy-memory evidence"
-    assert_includes capacity, "one writer per branch/worktree"
+    assert_includes capacity, "Apply the security floor's branch/worktree isolation result"
+    refute_includes capacity, "Keep one writer per branch/worktree"
     assert_includes capacity, "read-only validators and reviewers"
     assert_includes capacity, "isolated committed checkouts"
     assert_includes capacity, "merge, release, deployment, and destructive actions"
@@ -154,9 +160,10 @@ class CoordinationObservabilityContractTest < Minitest::Test
     fallback = squish(section(@backend_doc, "## Public Claim Comment Fallback", /^##\s+/))
 
     assert_match(/^## Batch Coordination Declaration$/, @backend_doc)
-    assert_includes fallback, "stable session, thread, or machine identifier"
+    assert_includes fallback, "stable session or thread identifier"
+    assert_includes fallback, "distinguishes the active worker instance"
     assert_includes fallback, "`thread: unavailable`"
-    assert_includes fallback, "machine, branch, and batch fields"
+    assert_includes fallback, "cannot prove self-identity for renewal"
     assert_includes fallback, "2-4 hours"
     assert_includes fallback, "no later than the known batch window"
     refute_includes fallback, "repository-configured fallback cap"
@@ -179,9 +186,10 @@ class CoordinationObservabilityContractTest < Minitest::Test
     fallback = squish(section(@backend_doc, "## Public Claim Comment Fallback", /^##\s+/))
 
     [fallback, squish(@component)].each do |consumer|
-      assert_includes consumer, "batch, machine, thread, and branch"
+      assert_includes consumer, "stable, non-`unavailable` thread"
       assert_includes consumer, "different lane or instance"
       assert_includes consumer, "same comment"
+      assert_includes consumer, "cannot be self-renewed"
     end
   end
 
@@ -196,6 +204,16 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes recovery, "human_intervention"
     assert_includes recovery, "kind: drain"
     assert_includes recovery, "release"
+  end
+
+  def test_private_registration_preserves_operational_recovery_context
+    evidence = squish(section(@component, "## Compatibility And Evidence", /\z/))
+
+    assert_includes evidence, "When advertised, private registration also preserves"
+    %w[objective instructions owners handles].each do |field|
+      assert_includes evidence, field
+    end
+    assert_includes evidence, "dependency mapping"
   end
 
   def test_workflow_skill_and_public_backend_doc_route_without_mirroring
