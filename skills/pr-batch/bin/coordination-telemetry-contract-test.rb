@@ -619,7 +619,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_match(/\A[0-9a-f]{40}\z|\AUNKNOWN\z/, manifest.fetch("pack_sha"))
     assert_manifest_route_provenance(manifest)
 
-    [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
+    [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), TRIAGE_SKILL_PATH].each do |path|
       assert_manifest_prompt_contract(read_repo_file(path), path)
     end
   end
@@ -715,7 +715,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "whole-entry UNKNOWN" => MANIFEST_WHOLE_LANE_ENTRY_UNKNOWN_LINE,
       "whole coordinator-preference UNKNOWN" => MANIFEST_WHOLE_COORDINATOR_PREFERENCE_UNKNOWN_LINE
     }.each do |mutation, invalid_line|
-      [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
+      [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), TRIAGE_SKILL_PATH].each do |path|
         text = read_repo_file(path)
         mutated_text = text.sub(MANIFEST_PROMPT_LINE, invalid_line)
         refute_equal text, mutated_text, "#{path} must expose the manifest grammar to mutation"

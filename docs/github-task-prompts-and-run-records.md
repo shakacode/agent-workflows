@@ -11,9 +11,10 @@ identity, digest, lifecycle, or history rules below.
 
 ## One-line launch
 
-The operator may say `Use PR-batch to complete this work item`. For an issue
-target, the exact one-line shortcut `Use PR-batch to fix this issue` remains a
-supported equivalent. The launcher then:
+The canonical shortcut is `Fix issue #123 using $pr-batch with merge authority ask.`
+when the active repository makes the issue identity unambiguous. The issue-scoped
+phrase `Use PR-batch to fix this issue` remains a compatibility alias, not a
+second canonical prompt. The launcher then:
 
 1. applies the existing target and security preflights;
 2. derives the repository and exact issue or pull request from the active GitHub target;
@@ -38,9 +39,26 @@ restatements, generated identifiers, digests, or timestamps. Missing observed
 metadata stays field-granular `UNKNOWN`; it does not stall ordinary work unless
 another workflow gate independently requires that fact.
 
+## Canonical human prompt
+
+The launcher derives this prompt from the selected work item. `Human available
+after` is optional and is omitted when the maintainer did not supply a time.
+Generated launcher metadata, lifecycle state, coordination, manifests, and
+merge-policy bookkeeping stay outside these human-authored fields.
+
+```text
+Repository: OWNER/REPO
+Work item: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
+Task name: <repository, work item, and purpose>
+Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
+Merge authority: <auto|ask>
+Human available after: <optional time; omit this line when not supplied>
+```
+
 ## Prompt sources and trust
 
-A run has exactly one prompt source:
+Each GitHub-backed lane handled by `agent-run-record` v1 has exactly one prompt
+source:
 
 - `issue-body`: the canonical body bytes returned for the selected issue;
 - `pull-request-body`: the canonical body bytes returned for the selected pull
@@ -70,6 +88,53 @@ match the launch digest before any source interpretation. The record never
 stores or repeats the prompt source content. Digests are integrity bindings,
 not proof that the content is trusted.
 
+## Launcher composition boundary
+
+Before prompt creation, the trusted launcher generates and persists one
+globally unique per-execution `run_id`, one `launch_idempotency_key` reused by
+retries of that launch, and one exact canonical `record_destination` in the
+durable Batch Plan. A GitHub-backed or mixed run chooses one exact selected
+issue or pull-request work-item URL; a maintainer-comment source anchors to its
+parent work item. A wholly non-GitHub trusted-ad-hoc run reuses its existing
+durable plan/backend destination. The launcher delivers the destination and run
+ID to every worker with that lane's launch digest and existing replay tuple:
+`lane_id`, dispatcher, `instance_id`, and launch token. A deterministic launch
+token is not unique across reruns and never substitutes for `run_id`.
+
+Each execution publishes exactly one `agent-launcher-run-record:v1` comment or
+durable record at that destination. It has one compact visible state, one
+collapsed details block, and one unique entry per planned lane. Selection
+evidence is written first, launch evidence is appended at dispatch, and worker
+evidence is appended only after the worker opens the destination, resolves the
+exact outer `run_id` and replay tuple, and verifies its observed digest.
+Missing, extra, duplicated, hybrid, or ambiguous lane routing fails closed.
+Reruns append a new outer record instead of replacing history.
+
+The v1 helper remains a closed GitHub boundary for issue bodies, pull-request
+bodies, and trusted maintainer comments. Its `agent-run-record:v1` result
+supplies nested GitHub lane evidence only and is never independently published.
+The helper-generated `run_id` and retry key remain identifiers for that lane
+evidence. The launcher embeds the evidence under the outer execution `run_id`;
+it does not inject outer identity, destination, or replay values into the helper
+or substitute the helper ID for the outer ID.
+
+The outer renderer applies the helper renderer's HTML escaping, Markdown
+neutralization, URI-scheme neutralization, and inert-code treatment to every
+dynamic value. This includes target titles, lane IDs, every replay-tuple value,
+record destinations, durable references, task/branch/PR values, updates, and
+blockers. No outer dynamic value may create a Markdown link, HTML element, or
+active URI.
+
+A preflight-accepted `trusted-ad-hoc-override` bypasses the helper. Preserve its
+exact existing `plan-state://` or `batch://` durable reference as the prompt
+source and persist the record at its existing durable plan/backend destination.
+Require the reference to resolve to the same immutable accepted
+provenance/authority record revision, or equivalent existing content binding,
+at selection, launch, and worker start. Record all three source-digest fields as
+exact `not applicable — trusted-ad-hoc-override`. A missing, mutable, changed,
+or `UNKNOWN` binding stops at that boundary. Do not invent source bytes, a
+snapshot, another storage location, or another helper schema.
+
 ## Compact record
 
 The visible portion contains the runner, machine, state/outcome, task, branch,
@@ -77,7 +142,7 @@ PR, latest material update, and no more than one meaningful blocker. Generated
 metadata and detailed provenance live in one disclosure:
 
 ```markdown
-<!-- agent-run-record:v1 -->
+<!-- agent-launcher-run-record:v1 -->
 Agent run: Codex on M5 — active / pending
 
 Task: `AW #560 — GitHub prompts and run records` · Branch: `jg-codex/issue-560-run-records` · PR: `UNKNOWN`
@@ -89,27 +154,36 @@ Blocker: none
 
 - Run ID: `123e4567-e89b-42d3-a456-426614174000`
 - Launch retry key: `65d9f4e3-b51d-4a09-ae97-bd8704aa9aac`
+- Record destination: `https://github.com/shakacode/agent-workflows/issues/560`
 - Repository: `shakacode/agent-workflows`
-- Work item: issue #560 — Use GitHub task prompts and compact append-only run records
-- Prompt source: issue-body — https://github.com/shakacode/agent-workflows/issues/560
-- Prompt digest at selection: `<64 lowercase hexadecimal characters>`
-- Prompt digest at launch: `<64 lowercase hexadecimal characters>`
-- Prompt digest observed by worker: `<64 lowercase hexadecimal characters>`
-- Prompt transport: complete-batch-plan — `inline`
-- Selected at: 2026-08-30T02:00:55.829Z
 - Prompt created at: 2026-08-30T02:00:56.829Z
-- Worker prompt digest observed at: 2026-08-30T02:00:57.829Z
-- Worker started at: 2026-08-30T02:00:57.829Z
-- Configured base at launch: `main`@`<full commit SHA>`
 - Runner: Codex
 - Model at prompt creation: `gpt-5.6-sol`
-- Model observed by worker: `UNKNOWN`
-- Task ID/link: `<task ID>` / `UNKNOWN`
-- Branch/PR: `jg-codex/issue-560-run-records` / `UNKNOWN`
-- State/outcome: `active` / `pending`
 - Workflow at prompt creation (2026-08-30T02:00:56.829Z): pack `<full commit SHA>`; pr-batch `sha256:<digest>`; pr-processing `sha256:<digest>`
-- Workflow observed at worker start (2026-08-30T02:00:57.829Z): pack `<full commit SHA>`; pr-batch `sha256:<digest>`; pr-processing `sha256:<digest>`
 - Later workflow observations: none
+- Target lanes:
+  - Lane: `issue-560`
+    - Target: issue #560 — Use GitHub task prompts and compact append-only run records
+    - Replay identity: `lane_id=issue-560; dispatcher=codex; instance_id=<instance>; launch_token=<token>`
+    - Helper evidence run ID: `<helper-generated UUID v4>`
+    - Helper evidence retry key: `<helper-generated UUID v4 reused by helper launch retries>`
+    - Prompt source: issue-body — `https://github.com/shakacode/agent-workflows/issues/560`
+    - Prompt digest at selection: `<64 lowercase hexadecimal characters>`
+    - Prompt digest at launch: `<64 lowercase hexadecimal characters>`
+    - Prompt digest observed by worker: `<64 lowercase hexadecimal characters>`
+    - Prompt transport: complete-batch-plan — `inline`
+    - Selected at: 2026-08-30T02:00:55.829Z
+    - Launched at: 2026-08-30T02:00:57.000Z
+    - Worker prompt digest observed at: 2026-08-30T02:00:57.829Z
+    - Worker started at: 2026-08-30T02:00:57.829Z
+    - Configured base at launch: `main`@`<full commit SHA>`
+    - Model observed by worker: `UNKNOWN`
+    - Task ID/link: `<task ID>` / `UNKNOWN`
+    - Branch/PR: `jg-codex/issue-560-run-records` / `UNKNOWN`
+    - State/outcome: `active` / `pending`
+    - Latest: 2026-08-30T02:00:57.829Z — worker started
+    - Blocker: none
+    - Workflow observed at worker start (2026-08-30T02:00:57.829Z): pack `<full commit SHA>`; pr-batch `sha256:<digest>`; pr-processing `sha256:<digest>`
 - Coordination: not recorded (optional)
 - Record observed at: 2026-08-30T02:00:59.000Z
 
@@ -123,11 +197,16 @@ cannot become links or executable Markdown.
 
 ## V1 field contract
 
+This table defines the unchanged GitHub lane evidence accepted and emitted by
+the v1 helper. The trusted launcher composes that evidence with the outer
+`record_destination`, replay tuple, and cheap `Launched at` observation defined
+above; those outer fields do not expand the helper schema.
+
 | Field | Contract |
 | --- | --- |
 | `contract`, `version` | Exactly `agent-run-record`, version `1`. |
-| `run_id` | One generated UUID v4 for the logical run; immutable and globally unique. |
-| `launch_idempotency_key` | One generated UUID v4 reused for retries of that same launch. |
+| `run_id` | One helper-generated UUID v4 for the GitHub lane evidence; immutable and globally unique. The launcher embeds this evidence under its separately generated outer execution `run_id` without injecting that ID into the helper. |
+| `launch_idempotency_key` | One helper-generated UUID v4 reused for retries of that same helper launch; reruns receive a new key. The outer launch retry key remains launcher-owned. |
 | `repository`, `work_item` | Repository-qualified issue or pull-request kind, identity, title, and exact URL fetched from GitHub. |
 | `prompt_source` | One exact `issue-body`, `pull-request-body`, or trusted `maintainer-comment` source URL plus distinct selection, launch, and worker-observed digests; comment sources also record author and association. |
 | `prompt_transport` | `null` before launch verification, then the launch digest bound to the complete Batch Plan or an exact durable `plan-state://<id>/<path>` reference. |
@@ -168,6 +247,11 @@ through `mark-worker-started`; before that event the record uses `Worker started
 at: pending`. This cheap timestamp collection has no dependency on telemetry or
 accounting work.
 
+The outer launcher also captures `Launched at` directly when dispatch begins
+and persists it with that lane's `verify-launch` result and replay handoff. The
+helper supplies the verified launch digest; neither layer waits for telemetry
+or infers the timestamp later.
+
 ## Workflow version history
 
 `workflow_versions.prompt_creation` records the prompt-creation observation.
@@ -193,27 +277,33 @@ The helper's `observe-workflows` command performs this comparison and append.
 
 ## Retry and rerun history
 
-The launcher writes an `agent-run-launch-identity` v1 file with mode `0600`
-before worker launch. The file binds the run ID and
-`launch_idempotency_key` to repository, work item, prompt source and selection digest,
-runner, machine, prompt-creation model, configured base, prompt-creation workflow,
-and the direct selection and prompt-creation timestamps.
+The outer launcher persists its execution `run_id`, launch retry key, and
+`record_destination` before prompt creation. A retry of that launch reuses all
+three values and updates the same `agent-launcher-run-record:v1` record. A
+deliberate rerun generates a new outer run ID and retry key and appends one new
+outer record at the persisted destination. It never replaces or folds the
+earlier record.
 
-- A launch retry uses the same identity file. It reuses the run ID,
-  `launch_idempotency_key`, original selection/prompt-creation times, and original configured-base
-  binding even if `main` moved while the launch channel retried.
-- Same-launch retries preserve the original source and selection digest. If the
-  canonical source bytes differ at launch verification, the helper refuses
-  dispatch and requires a deliberate new run, source reselection, and rerun of
-  the security preflight.
-- A rerun uses a new identity file, receives a new run ID and idempotency key,
-  and appends a new v1 GitHub comment. It never replaces the earlier run.
+Separately, each GitHub lane helper writes an `agent-run-launch-identity` v1
+file with mode `0600`. The file binds its helper evidence run ID and
+`launch_idempotency_key` to repository, work item, prompt source and selection
+digest, runner, machine, prompt-creation model, configured base,
+prompt-creation workflow, and direct selection/prompt-creation timestamps.
 
-The GitHub history is append-only at the run boundary. A live run may refresh
-its own comment's mutable state, task, branch, PR, latest update, and blocker,
-but its run ID, launch retry key, prompt source/selection digest, selection and
-prompt-creation times, launch base, and recorded worker-start observation remain
-immutable. Every rerun is a new comment.
+- A retry of that helper launch reuses the same identity file and its helper
+  evidence IDs, timestamps, configured-base binding, source, and selection
+  digest even if `main` moved.
+- If canonical source bytes differ at launch verification, the helper refuses
+  dispatch and requires source reselection, security preflight, and a new outer
+  run rather than mutating either identity.
+- A helper rerun uses a new identity file and evidence IDs, but its payload is
+  embedded in the new outer record. No `agent-run-record:v1` helper marker or
+  helper-only comment is independently published.
+
+Within one live outer record, only mutable state, task, branch, PR, latest
+update, blocker, and later observations may refresh. The outer run ID, retry
+key, destination, lane identities, source/selection evidence, prompt-creation
+time, launch base, and recorded worker-start observations remain immutable.
 
 ## Optional coordination
 
@@ -225,6 +315,11 @@ This does not weaken any separate coordination requirement selected by the
 repository or active PR-batch plan.
 
 ## Helper
+
+Invoke the helper only for a GitHub-backed lane. A trusted-ad-hoc lane bypasses
+the CLI and follows the durable-reference route above; passing
+`trusted-ad-hoc-override` to `--prompt-source` is invalid and stops before a
+GitHub read or identity write.
 
 Prepare an issue-body run after the normal PR-batch preflight and base fetch:
 
@@ -320,12 +415,14 @@ The helper uses field-selected GitHub reads: repository `nameWithOwner`; issue
 or pull request `number,title,body,url` for a direct body source; or work item
 `number,title,url` plus the selected comment fields for a maintainer-comment
 source. It emits Markdown or JSON only; posting or updating the GitHub comment remains the trusted
-launcher/coordinator's responsibility.
+launcher/coordinator's responsibility. The launcher embeds the helper payload
+as lane evidence and publishes only the outer marker.
 
 ## Historical v0 record
 
 Existing `<!-- agent-run-record:v0 -->` comments are historical evidence. Do
-not edit, reinterpret, or migrate them in place. New runs emit v1. A v0 comment
-does not supply a v1 run ID, idempotency key, three-boundary digest chain, or
-split state/outcome, so
-it cannot be used as a launch-retry identity file.
+not edit, reinterpret, or migrate them in place. New execution records publish
+`<!-- agent-launcher-run-record:v1 -->`; helper payloads use
+`agent-run-record:v1` only as nested evidence. A v0 comment does not supply an
+outer run ID, idempotency key, record destination, three-boundary digest chain,
+or split state/outcome, so it cannot be used as launch-retry identity.

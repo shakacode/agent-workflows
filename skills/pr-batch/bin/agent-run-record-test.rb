@@ -531,10 +531,35 @@ class AgentRunRecordTest < Minitest::Test
 
   def test_document_is_the_versioned_v1_contract_owner
     document = File.read(CONTRACT_DOC, encoding: "UTF-8")
+    prompt_section = document[/^## Canonical human prompt\n.*?(?=^## )/m]
+    compact_section = document[/^## Compact record\n.*?(?=^## )/m]
+    expected_prompt = <<~PROMPT
+      Repository: OWNER/REPO
+      Work item: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
+      Task name: <repository, work item, and purpose>
+      Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
+      Merge authority: <auto|ask>
+      Human available after: <optional time; omit this line when not supplied>
+    PROMPT
 
     assert_match(/\A# GitHub Task Prompts And Run Records\n/, document)
     assert_match(/The `agent-run-record` v1\s+contract/, document)
     assert_equal 1, document.scan(/^## V1 field contract$/).length
+    refute_nil prompt_section
+    refute_nil compact_section
+    assert_equal [expected_prompt], prompt_section.scan(/```text\n(.*?)```\n/m).flatten
+    assert_equal 1, document.scan("`Fix issue #123 using $pr-batch with merge authority ask.`").length
+    assert_includes document, "Each GitHub-backed lane handled by `agent-run-record` v1"
+    assert_equal 1, compact_section.scan("<!-- agent-launcher-run-record:v1 -->").length
+    assert_equal 0, compact_section.scan("<!-- agent-run-record:v1 -->").length
+    assert_equal 1, compact_section.scan("<summary>Run details</summary>").length
+    assert_equal 1, compact_section.scan("- Target lanes:").length
+    assert_includes document, "`record_destination`"
+    assert_includes document, "`lane_id`, dispatcher, `instance_id`, and launch token"
+    assert_includes document, "Each execution publishes exactly one `agent-launcher-run-record:v1`"
+    assert_includes document, "does not inject outer identity, destination, or replay values into the helper"
+    assert_includes document, "never independently published"
+    assert_includes document, "not applicable — trusted-ad-hoc-override"
   end
 
   def test_prepare_requires_exactly_one_issue_or_pull_request_target
@@ -581,7 +606,9 @@ class AgentRunRecordTest < Minitest::Test
         ["missing selection digest", ["--selected-at", SELECTED_AT, "--prompt-created-at", PROMPT_CREATED_AT],
          "--prompt-digest-at-selection is required"],
         ["malformed selection digest", [*launch_timestamp_arguments, "--prompt-digest-at-selection", "bad"],
-         "--prompt-digest-at-selection has invalid format"]
+         "--prompt-digest-at-selection has invalid format"],
+        ["trusted ad-hoc helper bypass", [*launch_timestamp_arguments, "--prompt-source", "trusted-ad-hoc-override"],
+         "prompt source must be issue-body or maintainer-comment"]
       ]
 
       cases.each_with_index do |(label, extra_arguments, expected_error), index|
@@ -640,9 +667,12 @@ class AgentRunRecordTest < Minitest::Test
 
       refute_nil section, path
       assert_includes section, "agent-run-record v1 contract", path
-      assert_match(%r{\]\([^)]*docs/github-task-prompts-and-run-records\.md\)}, section, path)
+      assert_match(%r{\]\([^)]*docs/github-task-prompts-and-run-records\.md(?:#[^)]*)?\)}, section, path)
       assert_match(/\[`agent-run-record` CLI\]\([^)]*agent-run-record\)/, section, path)
-      assert_operator section.lines.length, :<=, 9, path
+      assert_match(/GitHub(?: source|\s+source)? and\s+digest evidence/m, section, path)
+      assert_match(/never inject.*through the helper/m, section, path)
+      assert_match(/trusted-ad-hoc-override.*bypass|bypass.*trusted-ad-hoc-override/m, section, path)
+      assert_operator section.lines.length, :<=, 12, path
       sections << section
     end
 
@@ -1216,6 +1246,32 @@ class AgentRunRecordTest < Minitest::Test
     assert status.success?, stderr
     refute_includes stdout, "[click](https://example.invalid)"
     assert_includes stdout, "\\[click\\]\\(https&#58;//example.invalid\\)"
+  end
+
+  def test_outer_dynamic_values_use_the_hostile_value_rendering_contract
+    document = File.read(CONTRACT_DOC, encoding: "UTF-8")
+    hostile_values = {
+      "target title" => "[click](javascript:alert(1))",
+      "lane ID" => "lane-1<img src=x onerror=alert(1)>",
+      "replay tuple" => "`tuple`](data:text/html,pwn)",
+      "record destination" => "https://example.invalid)[open](javascript:alert(1))",
+      "durable reference" => "plan-state://run/path<img src=x onerror=alert(1)>"
+    }
+
+    ["target titles", "lane IDs", "every replay-tuple value", "record destinations", "durable references"].each do |field|
+      assert_includes document, field
+    end
+
+    hostile_values.each do |label, hostile_value|
+      record = valid_record
+      record.fetch("work_item")["title"] = hostile_value
+      stdout, stderr, status = run_helper("render", stdin_data: JSON.generate(record))
+
+      assert status.success?, "#{label}: #{stderr}"
+      refute_includes stdout, hostile_value, label
+      refute_match(/\]\((?:javascript|data):/i, stdout, label)
+      refute_includes stdout, "<img", label
+    end
   end
 
   def test_explicit_installed_pack_root_is_observed_separately_from_consumer_repo

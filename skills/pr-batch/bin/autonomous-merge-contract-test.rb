@@ -82,19 +82,24 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_match(/`merge_authority`\s+remains separate from\s+eligibility/, workflow)
   end
 
-  def test_goal_generation_surfaces_carry_both_autonomous_stop_states
+  def test_goal_generation_surfaces_resolve_autonomous_stop_states_without_restatement
+    workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    assert_includes workflow, "GMCC-v4:"
+    assert_includes workflow, "ready-human-review-required"
+    assert_includes workflow, "autonomous-merge-evidence-unknown"
+    assert_includes workflow, GMCC_HUMAN_DECISION_BINDING
+
     %w[
-      workflows/pr-processing.md
       skills/pr-batch/SKILL.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
 
-      assert_includes text, "GMCC-v4:"
+      refute_includes text, "GMCC-v4:"
+      assert_includes text, "$pr-batch"
       assert_includes text, "ready-human-review-required"
       assert_includes text, "autonomous-merge-evidence-unknown"
-      assert_includes text, GMCC_HUMAN_DECISION_BINDING
     end
   end
 
