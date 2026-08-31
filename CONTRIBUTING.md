@@ -7,12 +7,38 @@ focused, and easy for consumer repos to adopt.
 
 - Start from the current `main` branch and keep each PR focused on one workflow,
   helper, or documentation concern.
-- Run `.agents/bin/lint` and `bin/validate` before opening or updating a PR.
+- Run `bin/lint` and `bin/validate` before opening or updating a PR.
   The lint command checks the tracked Ruby, shell, Markdown, YAML, and GitHub
   Actions surfaces with pinned tools. Do not autocorrect the tree unless the PR
   is explicitly a formatting cleanup.
+- Contributor docs use the short `bin/*` form; the `.agents/bin/*` seam
+  (`.agents/bin/lint`, `.agents/bin/validate`) is the portable entry point
+  consumer repos resolve, and both run the same commands here.
 - Review changed Markdown manually for stale paths, broken links, and accidental
   consumer-repo assumptions.
+
+## Lint Toolchain Setup
+
+`bin/lint` checks tool versions but does not install software. Install each
+tool at the version reported by the command:
+
+- RuboCop:
+  `gem install rubocop -v "$(bin/lint --version rubocop)" --no-document`
+- ShellCheck: install `v$(bin/lint --version shellcheck)` from the
+  [ShellCheck releases](https://github.com/koalaman/shellcheck/releases) and
+  put `shellcheck` on `PATH`.
+- actionlint:
+  `go install "github.com/rhysd/actionlint/cmd/actionlint@v$(bin/lint --version actionlint)"`.
+  Then add Go's configured binary directory (or its default) to `PATH`:
+  `go_bin="$(go env GOBIN)"; export PATH="${go_bin:-$(go env GOPATH)/bin}:$PATH"`.
+- markdownlint-cli2:
+  `npm install --global --ignore-scripts "markdownlint-cli2@$(bin/lint --version markdownlint-cli2)"`
+- yamllint:
+  `pipx install --force "yamllint==$(bin/lint --version yamllint)"`
+
+If `pipx` is unavailable, install yamllint into an activated Python virtual
+environment with the same version expression. Run `bin/lint` afterward; it
+reports any missing tool or version mismatch before linting.
 
 ## Ruby Style
 

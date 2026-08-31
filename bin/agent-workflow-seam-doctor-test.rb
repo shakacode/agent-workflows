@@ -10,6 +10,8 @@ require "open3"
 require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflow-seam-doctor", __dir__)
+SOURCE_REPO_ROOT = File.expand_path("..", __dir__)
+PRIVATE_COORDINATION_BACKEND = "agent-coord private backend"
 load SCRIPT
 
 module AgentWorkflowSeamDoctorTestHelpers
@@ -155,10 +157,41 @@ module AgentWorkflowSeamDoctorTestHelpers
       "waiver_mode" => "forbidden"
     }
   end
+
+  def selected_hosted_ci_policy
+    {
+      "executable" => ".agents/bin/selected-hosted-ci-receipts",
+      "credential_env" => ["HOSTED_CI_TOKEN"]
+    }
+  end
+
+  def coordination_backend_contract(*allowed_identifiers)
+    {
+      "version" => 1,
+      "allowed_identifiers" => allowed_identifiers
+    }
+  end
 end
 
 class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   include AgentWorkflowSeamDoctorTestHelpers
+
+  def test_missing_writing_style_companion_has_an_actionable_failure
+    Dir.mktmpdir("agent-workflow-seam-doctor-partial-install") do |installed_root|
+      installed_bin = File.join(installed_root, "bin")
+      installed_script = File.join(installed_bin, "agent-workflow-seam-doctor")
+      FileUtils.mkdir_p(installed_bin)
+      FileUtils.cp_r(File.join(__dir__, "agent_doctor"), installed_bin)
+      FileUtils.cp(SCRIPT, installed_script)
+
+      out, status = Open3.capture2e("ruby", installed_script, "--help")
+
+      refute status.success?
+      assert_includes out, "missing required companion agent-workflow-writing-style"
+      assert_includes out, "install or upgrade Agent Workflows and retry"
+      refute_includes out, "LoadError"
+    end
+  end
 
   def test_complete_binstub_contract_passes
     with_repo do |root|
@@ -415,14 +448,16 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
           Dir.mktmpdir("agent-workflow-seam-doctor-installed") do |installed_root|
             Dir.mktmpdir("agent-workflow-seam-doctor-shared") do |shared_root|
               installed_script = File.join(installed_root, "bin/agent-workflow-seam-doctor")
+              installed_resolver = File.join(installed_root, "bin/agent-workflow-writing-style")
               companion_scanner = File.join(installed_root, "lib/agent-workflows/secure_github_actions_scanner.rb")
               shared_scanner = File.join(shared_root, layout.fetch(:scanner))
               shared_skill = File.join(shared_root, layout.fetch(:skill))
-              [installed_script, companion_scanner, shared_scanner, shared_skill].each do |path|
+              [installed_script, installed_resolver, companion_scanner, shared_scanner, shared_skill].each do |path|
                 FileUtils.mkdir_p(File.dirname(path))
               end
               FileUtils.cp_r(File.join(__dir__, "agent_doctor"), File.dirname(installed_script))
               FileUtils.cp(SCRIPT, installed_script)
+              FileUtils.cp(File.join(__dir__, "agent-workflow-writing-style"), installed_resolver)
               File.write(companion_scanner, fake_scanner_source([]))
               File.write(shared_scanner, fake_scanner_source([scanner_finding("explicit-shared-scanner")]))
               File.write(shared_skill, "# Secure GitHub Actions\n")
@@ -452,6 +487,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
         Dir.mktmpdir("agent-workflow-seam-doctor-shared-first") do |first_root|
           Dir.mktmpdir("agent-workflow-seam-doctor-shared-second") do |second_root|
             installed_script = File.join(installed_root, "bin/agent-workflow-seam-doctor")
+            installed_resolver = File.join(installed_root, "bin/agent-workflow-writing-style")
             companion_scanner = File.join(installed_root, "lib/agent-workflows/secure_github_actions_scanner.rb")
             first_scanner = File.join(first_root, "lib/secure_github_actions_scanner.rb")
             second_scanner = File.join(
@@ -459,11 +495,12 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
             )
             skill_paths = [File.join(first_root, "SKILL.md"),
                            File.join(second_root, "skills/secure-github-actions/SKILL.md")]
-            [installed_script, companion_scanner, first_scanner, second_scanner, *skill_paths].each do |path|
+            [installed_script, installed_resolver, companion_scanner, first_scanner, second_scanner, *skill_paths].each do |path|
               FileUtils.mkdir_p(File.dirname(path))
             end
             FileUtils.cp_r(File.join(__dir__, "agent_doctor"), File.dirname(installed_script))
             FileUtils.cp(SCRIPT, installed_script)
+            FileUtils.cp(File.join(__dir__, "agent-workflow-writing-style"), installed_resolver)
             File.write(companion_scanner, fake_scanner_source([]))
             File.write(first_scanner, fake_scanner_source([scanner_finding("first-explicit-scanner")]))
             File.write(second_scanner, fake_scanner_source([scanner_finding("second-explicit-scanner")]))
@@ -570,6 +607,622 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       refute status.success?
       assert_includes out, "invalid hosted_qa_gate policy: $.hosted_qa_gate contains duplicate key \"target\""
     end
+  end
+
+  def test_writing_style_rejects_malformed_explicit_repository_value
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "writing_style" => { "guide" => "Inline prose is no longer accepted." }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid writing_style policy"
+      assert_includes out, "expected a nonblank relative Markdown-file path"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_rejects_unknown_mapping_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      write_policy(
+        root,
+        POLICY.merge(
+          "selected_hosted_ci_receipts" => selected_hosted_ci_policy.merge("shell" => "bash")
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid selected_hosted_ci_receipts policy: keys must be exactly " \
+                      "credential_env, executable"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_rejects_lowercase_credential_names
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      write_policy(
+        root,
+        POLICY.merge(
+          "selected_hosted_ci_receipts" => selected_hosted_ci_policy.merge(
+            "credential_env" => ["hosted_ci_token"]
+          )
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid selected_hosted_ci_receipts policy: credential_env must contain " \
+                      "uppercase credential environment names"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_requires_an_existing_executable_helper
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid selected_hosted_ci_receipts policy: executable is missing or inaccessible"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_requires_an_executable_helper
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      helper = write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      File.chmod(0o644, helper)
+      write_policy(
+        root,
+        POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid selected_hosted_ci_receipts policy: executable is not executable"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_accepts_the_complete_closed_mapping
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      write_policy(
+        root,
+        POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_writing_style_accepts_a_repository_relative_markdown_file
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      FileUtils.mkdir_p(File.join(root, "docs"))
+      File.write(File.join(root, "docs/writing-style.md"), "Lead with the outcome.\nPreserve evidence.\n")
+      write_policy(
+        root,
+        POLICY.merge("writing_style" => "docs/writing-style.md")
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_writing_style_rejects_a_missing_repository_markdown_file
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("writing_style" => "docs/missing.md"))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid writing_style policy file"
+      assert_includes out, "expected a readable regular Markdown file"
+    end
+  end
+
+  def test_writing_style_file_accepts_legacy_angle_bracket_phrases
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      FileUtils.mkdir_p(File.join(root, "docs"))
+      File.write(File.join(root, "docs/writing-style.md"), "Write the <main branch> in angle brackets.\n")
+      write_policy(
+        root,
+        POLICY.merge("writing_style" => "docs/writing-style.md")
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_accepts_an_empty_credential_allowlist
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      write_policy(
+        root,
+        POLICY.merge(
+          "selected_hosted_ci_receipts" => selected_hosted_ci_policy.merge("credential_env" => [])
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_requires_a_tracked_executable_git_mode
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+      helper = write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+      relative_helper = ".agents/bin/selected-hosted-ci-receipts"
+      run_git!(root, "init", "-q")
+
+      untracked_out, untracked_status = run_doctor(root)
+      refute untracked_status.success?
+      assert_includes untracked_out,
+                      "invalid selected_hosted_ci_receipts policy: executable is not tracked by git"
+
+      run_git!(root, "add", "--", relative_helper)
+      run_git!(root, "update-index", "--chmod=-x", "--", relative_helper)
+      File.chmod(0o755, helper)
+      mode_out, mode_status = run_doctor(root)
+      refute mode_status.success?
+      assert_includes mode_out,
+                      "invalid selected_hosted_ci_receipts policy: executable git mode must be 100755"
+
+      run_git!(root, "update-index", "--chmod=+x", "--", relative_helper)
+      valid_out, valid_status = run_doctor(root)
+      assert valid_status.success?, valid_out
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_requires_a_runtime_supported_shebang
+    cases = {
+      "missing" => "puts 'receipt'\n",
+      "env options" => "#!/usr/bin/env -S\nputs 'receipt'\n"
+    }
+
+    cases.each do |label, contents|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(
+          root,
+          POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+        )
+        write_skill(root, "No commands here.\n")
+        helper = File.join(root, ".agents/bin/selected-hosted-ci-receipts")
+        File.write(helper, contents)
+        File.chmod(0o755, helper)
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out,
+                        "invalid selected_hosted_ci_receipts policy: executable needs a " \
+                        "supported explicit shebang",
+                        label
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_requires_a_resolvable_external_interpreter
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge("selected_hosted_ci_receipts" => selected_hosted_ci_policy)
+      )
+      write_skill(root, "No commands here.\n")
+      helper = File.join(root, ".agents/bin/selected-hosted-ci-receipts")
+      local_interpreter = File.join(root, "local-interpreter")
+      File.write(local_interpreter, "#!/bin/sh\nexit 0\n")
+      File.chmod(0o755, local_interpreter)
+      cases = {
+        "missing absolute" => "#!/definitely/missing/interpreter\n",
+        "repo local absolute" => "#!#{local_interpreter}\n",
+        "missing env program" => "#!/usr/bin/env definitely-missing-interpreter\n"
+      }
+
+      cases.each do |label, shebang|
+        File.write(helper, "#{shebang}puts 'receipt'\n")
+        File.chmod(0o755, helper)
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out,
+                        "invalid selected_hosted_ci_receipts policy: executable interpreter",
+                        label
+      end
+    end
+  end
+
+  def test_selected_hosted_ci_receipts_rejects_duplicate_and_noncredential_names
+    cases = {
+      "duplicate" => {
+        names: %w[HOSTED_CI_TOKEN HOSTED_CI_TOKEN],
+        diagnostic: "credential_env must not contain duplicates"
+      },
+      "noncredential" => {
+        names: ["ARBITRARY_NAME"],
+        diagnostic: "credential_env contains non-credential names: ARBITRARY_NAME"
+      }
+    }
+
+    cases.each do |label, fixture|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_script(root, "selected-hosted-ci-receipts", "exec true\n")
+        write_policy(
+          root,
+          POLICY.merge(
+            "selected_hosted_ci_receipts" => selected_hosted_ci_policy.merge(
+              "credential_env" => fixture.fetch(:names)
+            )
+          )
+        )
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out,
+                        "invalid selected_hosted_ci_receipts policy: " \
+                        "#{fixture.fetch(:diagnostic)}",
+                        label
+      end
+    end
+  end
+
+  def test_writing_style_rejects_duplicate_yaml_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.merge("writing_style" => "docs/first.md").to_yaml.sub(
+        "writing_style: docs/first.md\n",
+        "writing_style: docs/first.md\nwriting_style: docs/last.md\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid writing_style policy: duplicate key \"writing_style\""
+    end
+  end
+
+  def test_multidocument_policy_is_reported_as_invalid_shared_policy
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      File.write(
+        File.join(root, ".agents/agent-workflow.yml"),
+        "#{POLICY.to_yaml}---\nwriting_style: docs/hidden.md\n"
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?, out
+      assert_includes out,
+                      "invalid policy config: .agents/agent-workflow.yml " \
+                      "(expected one YAML document)"
+      refute_includes out, "invalid writing_style policy"
+    end
+  end
+
+  def test_coordination_backend_contract_accepts_an_exact_selected_identifier
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+          "coordination_backend_contract" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND)
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_a_selected_identifier_outside_the_allowlist
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+          "coordination_backend_contract" => coordination_backend_contract("another private backend")
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend_contract policy"
+      assert_includes out, "coordination_backend must exactly match an allowed identifier"
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_an_embedded_unknown_marker
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      unknown_identifier = "backend UNKNOWN state"
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => unknown_identifier,
+          "coordination_backend_contract" => coordination_backend_contract(unknown_identifier)
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend_contract policy"
+      assert_includes out, "must not contain an UNKNOWN marker"
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_a_binary_identifier_with_json_output
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      binary_identifier = "\xFF".b
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => binary_identifier,
+          "coordination_backend_contract" => coordination_backend_contract(binary_identifier)
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root, "--json")
+
+      refute status.success?
+      result = JSON.parse(out)
+      assert_equal "FAIL", result.fetch("status")
+      assert(result.fetch("issues").any? { |issue| issue.include?("must be valid UTF-8") })
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_a_unicode_whitespace_only_identifier
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      whitespace_identifier = "\u00A0"
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => whitespace_identifier,
+          "coordination_backend_contract" => coordination_backend_contract(whitespace_identifier)
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend_contract policy"
+      assert_includes out, "must be a known nonblank string"
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_html_comment_markers
+    ["private <!-- backend", "private --> backend"].each do |identifier|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(
+          root,
+          POLICY.merge(
+            "coordination_backend" => identifier,
+            "coordination_backend_contract" => coordination_backend_contract(identifier)
+          )
+        )
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, identifier
+        assert_includes out, "invalid coordination_backend_contract policy", identifier
+        assert_includes out, "must not contain an HTML comment marker", identifier
+      end
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_malformed_closed_values
+    fixtures = {
+      "not a mapping" => PRIVATE_COORDINATION_BACKEND,
+      "unsupported version" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND).merge("version" => 2),
+      "unknown key" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND).merge("endpoint" => "private"),
+      "empty allowlist" => coordination_backend_contract,
+      "duplicate identifier" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND, PRIVATE_COORDINATION_BACKEND),
+      "blank identifier" => coordination_backend_contract(" "),
+      "unknown identifier" => coordination_backend_contract("UNKNOWN")
+    }
+
+    fixtures.each do |label, contract|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(
+          root,
+          POLICY.merge(
+            "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+            "coordination_backend_contract" => contract
+          )
+        )
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, "#{label}: #{out}"
+        assert_includes out, "invalid coordination_backend_contract policy", label
+      end
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_duplicate_yaml_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.merge(
+        "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+        "coordination_backend_contract" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND)
+      ).to_yaml.sub(
+        "  version: 1\n",
+        "  version: 1\n  version: 2\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend_contract policy: " \
+                           "$.coordination_backend_contract contains duplicate key \"version\""
+    end
+  end
+
+  def test_coordination_backend_contract_rejects_duplicate_selected_backend_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.merge(
+        "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+        "coordination_backend_contract" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND)
+      ).to_yaml.sub(
+        "coordination_backend: #{PRIVATE_COORDINATION_BACKEND}\n",
+        "coordination_backend: another private backend\n" \
+        "coordination_backend: #{PRIVATE_COORDINATION_BACKEND}\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend policy: " \
+                           "$ contains duplicate key \"coordination_backend\""
+    end
+  end
+
+  def test_coordination_backend_rejects_duplicate_root_keys_without_an_optional_contract
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.to_yaml.sub(
+        "coordination_backend: public claim-comment fallback.\n",
+        "coordination_backend: another private backend\n" \
+        "coordination_backend: public claim-comment fallback.\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid coordination_backend policy: " \
+                           "$ contains duplicate key \"coordination_backend\""
+    end
+  end
+
+  def test_policy_is_read_once_so_all_validators_share_one_snapshot
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
+          "coordination_backend_contract" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND)
+        )
+      )
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      first_snapshot = File.read(policy_path, encoding: "UTF-8")
+      later_snapshot = first_snapshot.sub(PRIVATE_COORDINATION_BACKEND, "unreviewed backend")
+      original_file_read = File.method(:read)
+      policy_reads = 0
+      File.singleton_class.define_method(:read) do |path, *arguments, **keywords|
+        if File.expand_path(path) == File.expand_path(policy_path)
+          policy_reads += 1
+          policy_reads == 1 ? first_snapshot : later_snapshot
+        else
+          original_file_read.call(path, *arguments, **keywords)
+        end
+      end
+
+      begin
+        issues = AgentWorkflowSeamDoctor.policy_issues(root)
+      ensure
+        File.singleton_class.define_method(:read, original_file_read)
+      end
+
+      assert_empty issues
+      assert_equal 1, policy_reads
+    end
+  end
+
+  def test_source_repository_selects_the_reviewed_private_backend_under_a_fail_closed_contract
+    out, status = run_doctor(SOURCE_REPO_ROOT, "--shared", SOURCE_REPO_ROOT)
+    config = YAML.safe_load(
+      File.read(File.join(SOURCE_REPO_ROOT, ".agents/agent-workflow.yml"), encoding: "UTF-8"),
+      aliases: false
+    )
+
+    assert status.success?, out
+    assert_equal PRIVATE_COORDINATION_BACKEND, config.fetch("coordination_backend")
+    assert_equal coordination_backend_contract(PRIVATE_COORDINATION_BACKEND),
+                 config.fetch("coordination_backend_contract")
   end
 
   def test_incomplete_untrusted_contributor_intake_policy_fails
@@ -1210,7 +1863,9 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   def test_trailing_policy_document_without_trusted_actions_fails_without_actions
     policy_text = "#{POLICY.to_yaml}---\nmetadata: trailing\n"
 
-    assert_trusted_actions_policy_text_fails(policy_text)
+    out = assert_trusted_actions_policy_text_fails(policy_text)
+
+    refute_includes out, "invalid writing_style policy"
   end
 
   def test_duplicate_trusted_actions_keys_fail_without_actions
@@ -1309,6 +1964,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       refute status.success?, out
       assert_match(/trusted[_-]actions|invalid policy config/i, out)
+      out
     end
   end
 
@@ -2090,6 +2746,7 @@ class AgentWorkflowSeamDoctorInitCliTest < Minitest::Test
       policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")))
       assert_equal "main", policy.fetch("base_branch")
       assert_equal({ "mode" => "direct" }, policy.fetch("merge_submission"))
+      refute policy.key?("writing_style"), "initializer must not mask the user-global writing style fallback"
       trust = YAML.safe_load(File.read(File.join(root, ".agents/trusted-github-actors.yml")))
       assert_equal [], trust.fetch("trusted_users")
       assert_equal [], trust.fetch("trusted_bots")

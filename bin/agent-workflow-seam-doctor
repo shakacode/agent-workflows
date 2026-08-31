@@ -8,10 +8,18 @@ require "etc"
 require "fileutils"
 require "open3"
 require "optparse"
+require "rbconfig"
 require "shellwords"
 require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
 require_relative "agent_doctor/hosted_qa_policy"
+writing_style_resolver = File.expand_path("agent-workflow-writing-style", __dir__)
+unless File.file?(writing_style_resolver)
+  warn "agent-workflow-seam-doctor: missing required companion agent-workflow-writing-style; " \
+       "install or upgrade Agent Workflows and retry."
+  exit 1
+end
+load writing_style_resolver
 
 module AgentWorkflowSeamDoctor
   SECTION = "Agent Workflow Configuration"
@@ -129,6 +137,8 @@ module AgentWorkflowSeamDoctor
   ].freeze
   REPO_PREFIX_POLICY_KEY = "repo_prefix"
   REPO_PREFIX_PATTERN = /\A[A-Z0-9]{1,6}\z/
+  COORDINATION_BACKEND_CONTRACT_POLICY_KEY = "coordination_backend_contract"
+  COORDINATION_BACKEND_CONTRACT_KEYS = %w[version allowed_identifiers].freeze
   MERGE_SUBMISSION_POLICY_KEY = "merge_submission"
   MERGE_SUBMISSION_MODES = %w[direct merge_queue_only merge_queue_or_guarded_direct].freeze
   MERGE_SUBMISSION_KEYS = %w[mode guarded_direct].freeze
@@ -136,6 +146,16 @@ module AgentWorkflowSeamDoctor
   NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
   MERGE_METHODS = %w[merge rebase squash].freeze
   GUARDED_DIRECT_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
+  SELECTED_HOSTED_CI_POLICY_KEY = "selected_hosted_ci_receipts"
+  SELECTED_HOSTED_CI_POLICY_KEYS = %w[credential_env executable].freeze
+  SELECTED_HOSTED_CI_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
+  SELECTED_HOSTED_CI_ENV_NAME = /\A[A-Z][A-Z0-9_]*\z/
+  SELECTED_HOSTED_CI_CREDENTIAL_ENV = /
+    \A[A-Z][A-Z0-9_]*(?:
+      _TOKEN|_API_KEY|_SECRET|_PASSWORD|_CREDENTIALS|_ACCESS_KEY_ID|
+      _SECRET_ACCESS_KEY|_PRIVATE_KEY
+    )\z
+  /x
   SYSTEM_TOOL_DIRS = [
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -144,6 +164,7 @@ module AgentWorkflowSeamDoctor
     "/usr/sbin",
     "/sbin"
   ].freeze
+  TRUSTED_INTERPRETER_DIRS = ([File.dirname(RbConfig.ruby)] + SYSTEM_TOOL_DIRS).uniq.freeze
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY = "untrusted_contributor_intake"
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEYS = %w[
     trusted_github_host
@@ -1712,7 +1733,13 @@ module AgentWorkflowSeamDoctor
     path = File.join(root, POLICY_CONFIG)
     return ["missing policy config: #{POLICY_CONFIG}"] unless File.file?(path)
 
-    config = load_policy_config(path)
+    yaml = File.read(path, encoding: "UTF-8")
+    structure_error = AgentWorkflowWritingStyle.policy_structure_error(yaml)
+    if structure_error
+      return ["invalid policy config: #{POLICY_CONFIG} (#{structure_error})"]
+    end
+
+    config = parse_policy_config(yaml)
     return ["invalid policy config: #{POLICY_CONFIG}"] unless config.is_a?(Hash)
 
     issues = []
@@ -1727,12 +1754,13 @@ module AgentWorkflowSeamDoctor
     config.each do |key, value|
       next if REQUIRED_POLICY_KEYS.include?(key)
       next if key == "trusted_actions" && value == []
+      next if key == "writing_style"
 
-      autonomous_merge = key == "autonomous_merge"
+      closed_policy = ["autonomous_merge", SELECTED_HOSTED_CI_POLICY_KEY].include?(key)
       next unless unresolved_policy_value?(
         value,
-        empty_collections_unresolved: !autonomous_merge,
-        placeholder_mode: autonomous_merge ? :full_string : :legacy
+        empty_collections_unresolved: !closed_policy,
+        placeholder_mode: closed_policy ? :full_string : :legacy
       )
 
       issues << "unresolved policy value for key: #{key}"
@@ -1746,11 +1774,15 @@ module AgentWorkflowSeamDoctor
                 "(expected 1-6 uppercase ASCII letters or digits)"
     end
 
+    issues.concat(coordination_backend_policy_issues(yaml))
+    issues.concat(writing_style_policy_issues(root, config, yaml))
+    issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
-    issues.concat(hosted_qa_policy_issues(root, File.read(path, encoding: "UTF-8")))
+    issues.concat(selected_hosted_ci_receipts_policy_issues(root, config))
+    issues.concat(hosted_qa_policy_issues(root, yaml))
     if config.key?("autonomous_merge")
-      autonomous_policy = AutonomousMergePolicy.parse(File.read(path, encoding: "UTF-8"))
+      autonomous_policy = AutonomousMergePolicy.parse(yaml)
       autonomous_policy.errors.each do |error|
         issues << "invalid autonomous_merge policy: #{error}"
       end
@@ -1759,6 +1791,82 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def writing_style_policy_issues(root, config, yaml)
+    return [] unless config.key?("writing_style")
+
+    structure_error = AgentWorkflowWritingStyle.writing_style_structure_error(yaml)
+    return ["invalid writing_style policy: #{structure_error}"] if structure_error
+
+    AgentWorkflowWritingStyle.extract_guide(config, label: "repository", owner_root: root)
+    []
+  rescue AgentWorkflowWritingStyle::ConfigurationError => e
+    [e.message.sub("invalid repository writing_style", "invalid writing_style policy")]
+  end
+
+  def coordination_backend_policy_issues(yaml)
+    duplicate_errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
+      error == '$ contains duplicate key "coordination_backend"'
+    end
+    duplicate_errors.map { |error| "invalid coordination_backend policy: #{error}" }
+  end
+
+  def coordination_backend_contract_policy_issues(config, yaml)
+    key = COORDINATION_BACKEND_CONTRACT_POLICY_KEY
+    return [] unless config.key?(key)
+
+    contract_path = "$.#{key}"
+    errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
+      error.start_with?("#{contract_path}.") ||
+        error.start_with?("#{contract_path} ") ||
+        error == "$ contains duplicate key #{key.inspect}"
+    end
+    contract = config[key]
+    unless contract.is_a?(Hash)
+      errors << "must be a closed version 1 mapping"
+      return errors.map { |error| "invalid #{key} policy: #{error}" }.uniq
+    end
+
+    unknown_keys = contract.keys.reject { |contract_key| COORDINATION_BACKEND_CONTRACT_KEYS.include?(contract_key) }
+    unknown_keys.each { |contract_key| errors << "contains unknown key #{contract_key.inspect}" }
+    missing_keys = COORDINATION_BACKEND_CONTRACT_KEYS.reject { |contract_key| contract.key?(contract_key) }
+    missing_keys.each { |contract_key| errors << "is missing key #{contract_key.inspect}" }
+    errors << "keys must be strings" unless contract.keys.all?(String)
+    errors << "version must be 1" unless contract["version"] == 1
+
+    identifiers = contract["allowed_identifiers"]
+    unless identifiers.is_a?(Array) && !identifiers.empty?
+      errors << "allowed_identifiers must be a nonempty list"
+      identifiers = []
+    end
+    identifiers.each_with_index do |identifier, index|
+      unless identifier.is_a?(String)
+        errors << "allowed_identifiers[#{index}] must be a known nonblank string"
+      end
+      if identifier.is_a?(String)
+        if identifier.encoding != Encoding::UTF_8 || !identifier.valid_encoding?
+          errors << "allowed_identifiers[#{index}] must be valid UTF-8"
+        else
+          normalized_identifier = identifier.unicode_normalize(:nfkc).gsub(/[[:space:]]+/, " ").strip
+          if normalized_identifier.empty?
+            errors << "allowed_identifiers[#{index}] must be a known nonblank string"
+          elsif normalized_identifier.match?(/UNKNOWN/i)
+            errors << "allowed_identifiers[#{index}] must not contain an UNKNOWN marker"
+          elsif normalized_identifier.include?("<!--") || normalized_identifier.include?("-->")
+            errors << "allowed_identifiers[#{index}] must not contain an HTML comment marker"
+          end
+        end
+      end
+    end
+    if identifiers.uniq.length != identifiers.length
+      errors << "allowed_identifiers contains duplicate identifiers"
+    end
+    unless identifiers.include?(config["coordination_backend"])
+      errors << "coordination_backend must exactly match an allowed identifier"
+    end
+
+    errors.map { |error| "invalid #{key} policy: #{error}" }.uniq
   end
 
   def hosted_qa_policy_issues(root, yaml)
@@ -1848,6 +1956,125 @@ module AgentWorkflowSeamDoctor
     issues.concat(guarded_direct_file_issues(root, executable)) if
       valid_guarded_direct_executable_value?(executable)
     issues
+  end
+
+  def selected_hosted_ci_receipts_policy_issues(root, config)
+    return [] unless config.key?(SELECTED_HOSTED_CI_POLICY_KEY)
+
+    seam = config[SELECTED_HOSTED_CI_POLICY_KEY]
+    unless exact_string_keys?(seam, SELECTED_HOSTED_CI_POLICY_KEYS)
+      return ["invalid selected_hosted_ci_receipts policy: keys must be exactly " \
+              "#{SELECTED_HOSTED_CI_POLICY_KEYS.sort.join(', ')}"]
+    end
+
+    credential_env = seam["credential_env"]
+    unless credential_env.is_a?(Array) && credential_env.all? do |name|
+      name.is_a?(String) && name.match?(SELECTED_HOSTED_CI_ENV_NAME)
+    end
+      return ["invalid selected_hosted_ci_receipts policy: credential_env must contain " \
+              "uppercase credential environment names"]
+    end
+
+    if credential_env.uniq.length != credential_env.length
+      return ["invalid selected_hosted_ci_receipts policy: credential_env must not contain duplicates"]
+    end
+
+    noncredentials = credential_env.reject do |name|
+      name.match?(SELECTED_HOSTED_CI_CREDENTIAL_ENV)
+    end
+    unless noncredentials.empty?
+      return ["invalid selected_hosted_ci_receipts policy: credential_env contains " \
+              "non-credential names: #{noncredentials.sort.join(', ')}"]
+    end
+
+    executable = seam["executable"]
+    unless executable.is_a?(String) && executable.match?(SELECTED_HOSTED_CI_EXECUTABLE) &&
+           !%w[. ..].include?(File.basename(executable))
+      return ["invalid selected_hosted_ci_receipts policy: executable must name one " \
+              "repository-root-relative file under .agents/bin"]
+    end
+
+    selected_hosted_ci_file_issues(root, executable)
+  end
+
+  def selected_hosted_ci_file_issues(root, relative_path)
+    live_path = File.join(root, relative_path)
+    %w[.agents .agents/bin].each do |component|
+      stat = File.lstat(File.join(root, component))
+      return ["invalid selected_hosted_ci_receipts policy: executable path contains a symlink"] if
+        stat.symlink?
+      return ["invalid selected_hosted_ci_receipts policy: executable parent is not a directory"] unless
+        stat.directory?
+    end
+
+    stat = File.lstat(live_path)
+    return ["invalid selected_hosted_ci_receipts policy: executable must be a regular file"] if
+      stat.symlink? || !stat.file?
+    return ["invalid selected_hosted_ci_receipts policy: executable is not executable"] unless
+      File.executable?(live_path)
+    return ["invalid selected_hosted_ci_receipts policy: executable is not readable"] if
+      (stat.mode & 0o444).zero? || !File.readable?(live_path)
+
+    issues = selected_hosted_ci_git_issues(root, relative_path)
+    issues.concat(selected_hosted_ci_interpreter_issues(root, live_path))
+    issues
+  rescue Errno::ENOTDIR
+    ["invalid selected_hosted_ci_receipts policy: executable parent is not a directory"]
+  rescue Errno::ENOENT, Errno::EACCES
+    ["invalid selected_hosted_ci_receipts policy: executable is missing or inaccessible"]
+  end
+
+  def selected_hosted_ci_git_issues(root, relative_path)
+    guarded_direct_git_issues(root, relative_path).map do |issue|
+      issue.sub(
+        "invalid merge_submission policy: guarded_direct.executable",
+        "invalid selected_hosted_ci_receipts policy: executable"
+      )
+    end
+  end
+
+  def selected_hosted_ci_interpreter_issues(root, path)
+    shebang = File.open(path, "rb", &:gets)
+    match = shebang&.match(%r{\A#!(?<interpreter>/\S+?)(?:[ \t]+(?<argument>\S+))?\r?\n?\z})
+    unless match
+      return ["invalid selected_hosted_ci_receipts policy: executable needs a " \
+              "supported explicit shebang"]
+    end
+
+    interpreter = match[:interpreter]
+    if interpreter == "/usr/bin/env"
+      program = match[:argument]
+      unless program&.match?(/\A[A-Za-z0-9][A-Za-z0-9_.+-]*\z/)
+        return ["invalid selected_hosted_ci_receipts policy: executable needs a " \
+                "supported explicit shebang"]
+      end
+      interpreter = if program == "ruby" || program == File.basename(RbConfig.ruby)
+                      RbConfig.ruby
+                    else
+                      TRUSTED_INTERPRETER_DIRS
+                        .map { |directory| File.join(directory, program) }
+                        .find { |candidate| File.file?(candidate) && File.executable?(candidate) }
+                    end
+      unless interpreter
+        return ["invalid selected_hosted_ci_receipts policy: executable interpreter " \
+                "is unavailable: #{program}"]
+      end
+    end
+
+    realpath = File.realpath(interpreter)
+    root_realpath = File.realpath(root)
+    root_prefix = "#{root_realpath}#{File::SEPARATOR}"
+    stat = File.stat(realpath)
+    if realpath == root_realpath || realpath.start_with?(root_prefix) ||
+       !stat.file? || !File.executable?(realpath)
+      return ["invalid selected_hosted_ci_receipts policy: executable interpreter " \
+              "is unsafe: #{interpreter}"]
+    end
+
+    []
+  rescue Errno::ENOENT, Errno::EACCES
+    ["invalid selected_hosted_ci_receipts policy: executable interpreter " \
+     "is unavailable: #{interpreter}"]
   end
 
   def exact_string_keys?(mapping, expected_keys)
@@ -1960,7 +2187,11 @@ module AgentWorkflowSeamDoctor
   end
 
   def load_policy_config(path)
-    YAML.safe_load(File.read(path, encoding: "UTF-8"), aliases: false) || {}
+    parse_policy_config(File.read(path, encoding: "UTF-8"))
+  end
+
+  def parse_policy_config(yaml)
+    YAML.safe_load(yaml, aliases: false) || {}
   end
 
   def unresolved_policy_value?(value, placeholder_mode:, empty_collections_unresolved: true)

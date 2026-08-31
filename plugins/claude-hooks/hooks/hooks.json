@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "matcher": "clear|logout|prompt_input_exit|other",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/plugins/claude-hooks/hooks/close-lane-on-session-end",
+            "args": ["--project-dir", "${CLAUDE_PROJECT_DIR}"],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
