@@ -90,36 +90,16 @@ the same security, coordination, validation, review, QA, readiness, handoff, and
 closeout gates as a multi-target batch; only batch packing and collision analysis
 collapse to one lane.
 
-### Canonical Launch Target Gate
+### Prompt Intake
 
-Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target.
-Pass the repository-qualified canonical issue/PR identity unchanged through planning, plan preflight, dispatch, coordination claims, the Lane Card, and final handoff.
-A direct prompt without either target must stop before branch creation, editing, implementation or coordination mutation, or worker dispatch and route to planning/reconciliation.
-The planning/reconciliation step searches for and reuses the exact existing issue or PR; equivalent wording cannot create another synthetic coordination lane. A claim refusal for that canonical repository-qualified target remains the duplicate-work stop.
-When search finds no canonical issue or existing PR, create the canonical issue with explicit planning-time issue-creation authority, or ask for that authority; do not create a branch, edit, or dispatch until the persisted issue identity is rebound into the plan and preflight passes.
-Before branch creation, editing, or dispatch, every bounded status and claim invocation binds `--repo` to lowercase `target.repository` and `--target` to the backend-safe canonical token derived from target v1: decimal `target.number` for either GitHub target type, or exact `target.target` for trusted ad-hoc; this raw pair is the canonical repository-qualified claim identity. Run status before claim; a second claim for the same canonical target, including a repository-casing alias or issue/PR type alias at the same number, must stop on `CLAIM_REFUSED` / exit 3 and cannot reach branch creation or dispatch.
+Load the canonical
+[PR-Batch Prompt Intake](../../workflows/pr-batch-intake.md) component before
+any branch creation, editing, coordination mutation, or worker dispatch. It is
+the sole owner of canonical target v1, durable override provenance, trust
+handoff, short-invocation expansion, duplicate handling, and the verified
+intake facts consumed below. Do not restate or reinterpret that contract here.
 
-The only exception is a named, trusted, task-specific durable ad-hoc override.
-Generic instructions, `$pr-batch` invocation, fix-it intent, or PR-publication authority do not create this override.
-Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff.
-Every override field must be explicit and non-`UNKNOWN`; the stable coordination identity uses the repository-qualified `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` form and remains unchanged in dispatch and closeout evidence, while coordination derives its backend-safe raw repo/target pair as specified above. Missing, generic, chat-only, inferred, or task-mismatched evidence fails closed into planning/reconciliation. Existing PRs remain valid canonical launch targets and do not need retroactive issues.
-A labeled authorizer or task identity whose complete value component is `UNKNOWN` is incomplete and also fails closed.
-Complete labeled component values `fix-it`, `pr-batch`, and `publish-pr` are generic intent and fail closed in either provenance field, even when the override name is task-specific.
-The exact override names `fix-it`, `pr-batch`, and `publish-pr` are likewise generic and invalid.
-For this override field only, `durable_authorization_ref` must use `issue://OWNER/REPO/N`, `plan-state://<id>/<path>`, `batch://<id>`, or `https://github.com/OWNER/REPO/{issues|pull}/N`; any other scheme or chat-local reference fails closed.
-Parseable `issue://` and GitHub HTTPS authorization references must match `target.repository` case-insensitively; opaque `plan-state://` and `batch://` references remain trusted without invented repository parsing.
-Parseable authorization refs reject userinfo and query; GitHub HTTPS requires port 443, `issue://` requires the exact canonical authority/path shape, and fragments remain permitted.
-Every typed target repository has exactly two ASCII components separated by `/`: the owner matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from `[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
-
-Require one exact `target` v1 object on every preflight lane. A GitHub object
-uses type `github-issue` or `github-pull-request`, `version`, `repository`, a
-positive `number`, and the matching `OWNER/REPO:issue:N` or
-`OWNER/REPO:pull-request:N` stable identity. The only ad-hoc object type is
-`trusted-ad-hoc-override`; it includes `repository`, `target: adhoc:<yyyymmdd>-<short-slug>`, the
-matching stable identity, a lowercase slug override name, labeled `kind:value`
-authorizer and task identities, and the durable reference. The batch
-preflight rejects a missing, malformed, unknown, or duplicate target identity
-before any dispatcher selection.
+### Single-Target Launch
 
 When no planner/triage handoff supplies dependency artifacts, synthesize and
 persist a verified one-lane `stage-dependency-plan` v1 file with a known plan id
@@ -270,18 +250,13 @@ sensitive access, and state-change or exfiltration capability in one session.
 
 ## Required Interview
 
-Ask only for missing data. If the user already supplied an exact value, use it.
+Complete the canonical [prompt-intake interview](../../workflows/pr-batch-intake.md#short-invocation-expansion)
+first. Ask only for missing data and consume its verified target, trust, mode,
+authority, and completion facts unchanged.
 
-1. **Targets**: for ordinary implementation, exact issue/PR numbers or filters
-   to resolve into exact numbers. An unbound direct prompt routes to
-   planning/reconciliation and launches nothing. Only a Canonical Launch Target
-   Gate override may supply the repository-qualified
-   `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` identity plus its complete durable
-   override record and the user's original wording.
-2. **Trust**: direct user instruction, a maintainer-approved exact list, or
-   untrusted public discovery that needs confirmation.
-3. **Goal name**: a concrete summary such as `Process issues #1/#2 into PRs/no-PR decisions`; do not let the goal title become the pasted prompt text.
-4. **Batch title**: for pasteable batch prompts, derive a short title in the form
+This execution skill adds only batch-shaping details that intake does not own:
+
+1. **Batch title**: for pasteable batch prompts, derive a short title in the form
    `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
    Resolve `<PROJECT>` from the optional `repo_prefix` in
    `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
@@ -298,33 +273,11 @@ Ask only for missing data. If the user already supplied an exact value, use it.
    B, C, etc. only when creating multiple batch prompts; omit it for a single
    batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
    prompt, and use that output for `MM-DD HH:MM`.
-<!-- host-branch: codex-only start -->
-5. **Mode**: plan-only, create `/goal` prompt, or launch workers now.
-<!-- host-branch: codex-only end -->
-6. **merge_authority**: `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
-   it before worker launch from visible authority or ask the user. Explain that
-   `ask` automatically walks through the exact-diff PR one conceptual change at
-   a time before the one final merge decision; do not silently default it.
-7. **Concurrency**: one machine, multiple machines, or single-threaded.
-8. **Batch size target**: `codex`, `claude`, or `generic`. An explicit
-   user-requested host or paste destination wins. Use `codex` for up to 10
-   independent items, or 8 when shared/risky conditions apply.
-   Use `claude` for up to 5 independent items, or 3 under those
-   same conditions. Items with `UNKNOWN` path evidence stay serial discovery
-   lanes. Use the Claude-sized 5/3 limit for `generic` unless a larger host
-   capacity is explicitly verified.
-9. **Routing preferences and observations**: record coordinator, worker, and
+2. **Routing preferences and observations**: record coordinator, worker, and
    checker model/effort preferences before target interpretation. These are
    advisory. Host-observed host/model/effort fields are optional and remain
    field-granular `UNKNOWN` when unavailable. Checker independence and evidence
    quality remain mandatory regardless of the observed route.
-10. **Lane split**: exact per-machine list, odd/even, labels, area, owner, or another explicit partition.
-11. **Permissions**: confirm the current session can run without blocking worker approval prompts.
-12. **Question handling**: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
-13. **Completion states**: `merged`, `ready-gates-clean`, `ready-no-merge-authority`,
-    `ready-human-review-required`, `autonomous-merge-evidence-unknown`,
-    `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`,
-    or `no-pr-evidence`.
 
 ## Canonical Readiness Vocabulary
 
@@ -1023,6 +976,17 @@ registration carries `pack_sha`, `coordinator_preference`, and per-lane
 `escalation_requested`, `error`, and `human_intervention` at the existing
 checkpoints without replacing prose packets. Do not duplicate auto lifecycle
 events `claim.acquired`, `claim.released`, or `phase.changed`.
+
+For a compact directional throughput view, normalize only allowlisted durable
+coordination and field-selected GitHub-shaped metadata into
+`workflow-telemetry-input` v1, then run the sibling
+`bin/workflow-telemetry-report`. Use its replay fixture and contract documented
+in `docs/coordination-backend.md`; preserve literal `UNKNOWN` for unavailable
+measures. Its phase, human-question queue, and slot totals are cumulative across
+lanes rather than elapsed critical-path time; its separate batch-level
+`integration_seconds` window is not `phase_seconds.integration`. Never add raw prompts, responses, transcripts, tool results, secrets,
+environment/auth content, exact accounting, adaptive scheduling, experiments,
+or a parallel collection system.
 
 ## Worker Rules
 

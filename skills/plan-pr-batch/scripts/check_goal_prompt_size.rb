@@ -742,6 +742,7 @@ skill_text = File.read(skill_path, encoding: "UTF-8")
 assert_goal_prompt_heading_is_line_anchored
 assert_token_budget_legend_tamper_controls
 workflow_text = read_repo_file("workflows/pr-processing.md")
+prompt_intake_text = read_repo_file("workflows/pr-batch-intake.md")
 pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill_text = read_repo_file("skills/triage/SKILL.md")
 batch_plan_preflight_text = read_repo_file("skills/plan-pr-batch/bin/batch-plan-preflight")
@@ -905,7 +906,6 @@ host_aware_batch_sizing_phrase_checks = {
     ["`codex`: up to 10 independent items, or 8", 1],
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
-    ["- Batch size target: `codex`, `claude`, or `generic`", 1],
     ["less than 300 characters of headroom", 1],
     ["Default single-target future coordinator: Sol/high", 1],
     ["Affirmatively simple single-target future coordinator: Terra/high", 1],
@@ -928,9 +928,6 @@ host_aware_batch_sizing_phrase_checks = {
     ["If any field needed for comparison is `UNKNOWN`, make no", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
-    ["Use `codex` for up to 10", 1],
-    ["Use `claude` for up to 5", 1],
-    ["Claude-sized 5/3", 1],
     ["Codex-targeted waves may use up to 10 independent", 1],
     ["Claude and generic waves use up to 5 lanes, or up to 3", 1],
     ["if the dispatcher or runtime inherits", 1]
@@ -951,6 +948,9 @@ host_aware_batch_sizing_phrase_checks = {
     ["300 characters of headroom", 2],
     ["Codex 10/8", 2],
     ["Claude/generic 5/3", 1]
+  ],
+  "workflows/pr-batch-intake.md" => [
+    ["- **Batch size target:** `codex`, `claude`, or `generic`", 1]
   ]
 }
 
@@ -958,10 +958,22 @@ host_aware_batch_sizing_text_by_path = {
   "workflows/pr-processing.md" => workflow_text,
   "skills/plan-pr-batch/SKILL.md" => skill_text,
   "skills/pr-batch/SKILL.md" => pr_batch_skill_text,
+  "skills/triage/SKILL.md" => triage_skill_text,
+  "workflows/pr-batch-intake.md" => prompt_intake_text
+}
+
+canonical_intake_text_by_path = {
+  "workflows/pr-batch-intake.md" => prompt_intake_text,
+  "skills/triage/SKILL.md" => triage_skill_text
+}
+implementation_pr_file_touch_text_by_path = {
+  "workflows/pr-processing.md" => workflow_text,
+  "skills/plan-pr-batch/SKILL.md" => skill_text,
+  "skills/pr-batch/SKILL.md" => pr_batch_skill_text,
   "skills/triage/SKILL.md" => triage_skill_text
 }
 
-host_aware_batch_sizing_text_by_path.each do |path, text|
+canonical_intake_text_by_path.each do |path, text|
   require_occurrence_count(
     text,
     CANONICAL_ISSUE_CREATION_SOURCE_PIN,
@@ -974,6 +986,9 @@ host_aware_batch_sizing_text_by_path.each do |path, text|
     1,
     "#{path} canonical repository grammar"
   )
+end
+
+implementation_pr_file_touch_text_by_path.each do |path, text|
   require_occurrence_count(
     text,
     IMPLEMENTATION_PR_FILE_TOUCH_REPLAY_SOURCE_PIN,
