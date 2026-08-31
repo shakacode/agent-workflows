@@ -419,6 +419,7 @@ The installer writes:
 
 - `<target>/skills/*` in `flat` delivery mode only
 - `<target>/LICENSE`
+- `<target>/THIRD_PARTY-NOTICES.md`
 - `<target>/workflows/*`
 - `<target>/docs/coordination-backend.md`
 - `<target>/docs/execution-provenance-schema.md`
@@ -439,10 +440,10 @@ The installer writes:
 - `<target>/bin/upgrade-agent-workflows`
 - `<target>/.agent-workflows-install.json`
 
-Copy mode replaces this pack's license file, skill and workflow names, plus the
-pack-owned docs listed above; it preserves unrelated files already present in
-the target agent home, including generic consumer-owned docs under
-`<target>/docs`.
+Copy mode replaces this pack's license and third-party notice files, skill and
+workflow names, plus the pack-owned docs listed above; it preserves unrelated
+files already present in the target agent home, including generic
+consumer-owned docs under `<target>/docs`.
 
 The metadata file records host, artifact mode, skill delivery mode, source
 clone, pack version, source revision, branch, remote, and install time. Copy
