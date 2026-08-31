@@ -62,6 +62,8 @@ COMMON_GUIDANCE_PHRASES = [
 ].freeze
 
 LAUNCHER_RECORD_FIELDS = [
+  "Run ID: <immutable unique per-execution run_id>",
+  "Record destination: <exact selected issue or pull-request work-item URL, or existing durable plan/backend destination for a wholly non-GitHub trusted-ad-hoc run>",
   "Prompt created at: <timestamp>",
   "Model at prompt creation: <observed value or UNKNOWN>",
   "Workflow at prompt creation: <version or UNKNOWN>",
@@ -197,7 +199,9 @@ require_phrases(
     "Reruns append a new collapsed record",
     "Directly append the cheap lane launch timestamp and digest",
     "existing immutable replay identity",
-    "only to the exactly matching replay identity",
+    "only to the exactly matching `run_id` and replay identity",
+    "not the deterministic launch token",
+    "Do not add either field to the human-authored prompt",
     "do not invent another snapshot, byte encoding, or record schema",
     "not applicable — trusted-ad-hoc-override",
     "`auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`",

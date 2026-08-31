@@ -151,6 +151,8 @@ class ReadableGoalPromptContractTest < Minitest::Test
     launcher_record = extract_markdown_section(@workflow, "### Launcher Run Record")
 
     [
+      "Run ID: <immutable unique per-execution run_id>",
+      "Record destination: <exact selected issue or pull-request work-item URL, or existing durable plan/backend destination for a wholly non-GitHub trusted-ad-hoc run>",
       "Prompt created at: <timestamp>",
       "Model at prompt creation: <observed value or UNKNOWN>",
       "Workflow at prompt creation: <version or UNKNOWN>",
@@ -179,7 +181,9 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes normalized, "Reruns append a new collapsed record"
     assert_includes normalized, "Directly append the cheap lane launch timestamp and digest"
     assert_includes normalized, "existing immutable replay identity"
-    assert_includes normalized, "only to the exactly matching replay identity"
+    assert_includes normalized, "only to the exactly matching `run_id` and replay identity"
+    assert_includes normalized, "not the deterministic launch token"
+    assert_includes normalized, "Do not add either field to the human-authored prompt"
     assert_includes normalized, "do not invent another snapshot, byte encoding, or record schema"
     assert_includes normalized, "not applicable — trusted-ad-hoc-override"
     assert_includes normalized, "exact GitHub API `body` string"

@@ -349,23 +349,31 @@ omit the queue summary and note that queue state is unavailable.
    checks fetch the same object and field and hash only those bytes.
 
    The launcher keeps one compact collapsed run record with one entry per target
-   lane. It fetches each lane's canonical source bytes when selected and writes
+   lane. Before prompt creation, it persists one immutable unique per-execution
+   `run_id` and one exact canonical `record_destination` in the Batch Plan. A
+   GitHub-backed or mixed run explicitly chooses one exact selected issue or PR
+   work-item URL; a maintainer-comment source anchors to its parent work item. A
+   wholly non-GitHub trusted-ad-hoc run uses its existing durable plan/backend
+   destination. Neither field belongs in the human prompt. The launcher fetches
+   each lane's canonical source bytes when selected and writes
    its selection timestamp plus `Prompt digest at selection`, then records the
    run-level prompt-creation timestamp after rendering. Immediately before each
    dispatch it re-fetches that lane's source and directly appends `Launched at`
    plus `Prompt digest at launch`. If the selection and launch digests differ,
    that dispatch stops until the changed source is deliberately reselected as a
    new run and the security preflight is rerun. The Batch Plan or its exact
-   durable reference gives each worker its lane's launch digest and existing
-   immutable replay identity (`lane_id`, dispatcher, `instance_id`, and launch
-   token). The worker resolves the exactly matching run, re-fetches the source,
-   and verifies both identity and digest before it interprets the source or
-   appends its start and observations; a mismatch stops work and is recorded.
+   durable reference gives each worker that destination, `run_id`, lane launch
+   digest, and existing immutable replay identity (`lane_id`, dispatcher,
+   `instance_id`, and launch token). The worker opens the destination, resolves
+   the exactly matching `run_id` and replay identity, re-fetches the source, and
+   verifies both identity and digest before it interprets the source or appends its start and
+   observations; a mismatch stops work and is recorded.
    The launcher records directional model
    and Agent Workflows observations at prompt creation and worker start, using
    `UNKNOWN` field by field without inference, and appends later workflow
    observations with timestamps. Reruns append new collapsed `<details>`
-   history without rewriting earlier runs or lane values.
+   history keyed by the unique per-execution `run_id`, not the deterministic
+   launch token, without rewriting earlier runs or lane values.
    For the narrow non-GitHub trusted-ad-hoc exception, record the accepted
    durable reference as the prompt source and write each source-digest field as
    exact `not applicable — trusted-ad-hoc-override`. Reverify that the reference

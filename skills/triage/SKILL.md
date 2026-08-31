@@ -294,12 +294,19 @@ precise blocker.
    unambiguous.
 
    Follow the canonical Launcher Run Record with one entry per target lane.
-   Bind each entry to the existing immutable replay identity (`lane_id`,
+   Before prompt creation, persist one immutable unique per-execution `run_id`
+   and one exact canonical `record_destination` in the Batch Plan. A
+   GitHub-backed or mixed run explicitly chooses one exact selected issue or PR
+   work-item URL; a comment source anchors to its parent work item. A wholly
+   non-GitHub trusted-ad-hoc run uses its existing durable plan/backend
+   destination. Keep both fields outside the human prompt and give them to each
+   worker. Bind each entry to the existing immutable replay identity (`lane_id`,
    dispatcher, `instance_id`, and launch token) and give that identity to the
    worker with the launch digest. For a GitHub lane, record its source URL,
    selection timestamp and digest, directly append its launch timestamp and
    digest at dispatch, and append worker-start observations only to the exactly
-   matching run after the worker digest matches. For the
+   matching `run_id` and replay identity at that destination after the worker
+   digest matches. For the
    narrow non-GitHub override, use the accepted durable reference and existing
    provenance/authority evidence without inventing a snapshot schema. Keep the
    run-level prompt-creation metadata and append-only rerun history outside the
@@ -443,8 +450,9 @@ Return:
   `plan-state://` or `batch://` reference for a trusted ad-hoc override—task
   name, instruction, human `auto` or `ask` merge authority, and optional
   human-availability time. Its launcher run
-  record carries one entry per target lane with its existing immutable replay
-  identity; selection, launch, and worker-observed source digests;
+  record carries its immutable unique per-execution `run_id`, exact canonical
+  `record_destination`, and one entry per target lane with its existing
+  immutable replay identity; selection, launch, and worker-observed source digests;
   selection/launch/worker-start timestamps; and observed runtime/workflow
   versions, plus run-level prompt-creation metadata.
   For that narrow non-GitHub override, record the three source-digest fields as

@@ -1114,6 +1114,9 @@ class ModelRoutingContractTest < Minitest::Test
     assert_includes launcher_record, "Workflow observed at worker start: <version or UNKNOWN>"
     assert_includes launcher_record, "Later workflow observations: <timestamped append-only entries or none>"
     assert_includes launcher_record, "Launched at: <timestamp or pending>"
+    assert_includes launcher_record, "Run ID: <immutable unique per-execution run_id>"
+    assert_includes launcher_record,
+                    "Record destination: <exact selected issue or pull-request work-item URL, or existing durable plan/backend destination for a wholly non-GitHub trusted-ad-hoc run>"
     assert_includes launcher_record,
                     "Replay identity: <existing lane_id, dispatcher, instance_id, and launch token>"
     assert_includes normalized(launcher_record), "one entry for every planned target lane"
