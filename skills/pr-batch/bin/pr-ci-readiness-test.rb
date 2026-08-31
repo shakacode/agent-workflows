@@ -1584,6 +1584,7 @@ class PrCiReadinessCliTest < Minitest::Test
       suite = {
         "id" => suite_id,
         "created_at" => "2026-08-25T#{format('%02d', 10 + index)}:00:00Z",
+        "updated_at" => "2026-08-25T#{format('%02d', 10 + index)}:00:00Z",
         "head_sha" => suite_head,
         "app" => app,
         "status" => suite_status,
@@ -3959,11 +3960,13 @@ class PrCiReadinessCliTest < Minitest::Test
     head = "a" * 40
     initial_suite = {
       "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "updated_at" => "2026-08-25T10:00:00Z",
       "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
       "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
     }
     late_suite = initial_suite.merge(
       "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+      "updated_at" => "2026-08-25T12:00:00Z",
       "app" => { "id" => 19, "slug" => "dormant-app" },
       "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
     )
@@ -3997,6 +4000,7 @@ class PrCiReadinessCliTest < Minitest::Test
     suites = [10, 20].map do |suite_id|
       {
         "id" => suite_id, "created_at" => "2026-08-25T#{suite_id}:00:00Z",
+        "updated_at" => "2026-08-25T#{suite_id}:00:00Z",
         "head_sha" => head, "app" => { "id" => suite_id, "slug" => "ci-#{suite_id}" },
         "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
       }
@@ -4038,6 +4042,7 @@ class PrCiReadinessCliTest < Minitest::Test
     head = "a" * 40
     suite = {
       "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "updated_at" => "2026-08-25T10:00:00Z",
       "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
       "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
     }
@@ -4075,11 +4080,13 @@ class PrCiReadinessCliTest < Minitest::Test
     head = "a" * 40
     initial_suite = {
       "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "updated_at" => "2026-08-25T10:00:00Z",
       "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
       "status" => "completed", "conclusion" => "success", "latest_check_runs_count" => 1
     }
     late_suite = initial_suite.merge(
       "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+      "updated_at" => "2026-08-25T12:00:00Z",
       "status" => "in_progress", "conclusion" => nil, "latest_check_runs_count" => 0
     )
     suite_fetches = 0
@@ -4118,8 +4125,10 @@ class PrCiReadinessCliTest < Minitest::Test
         _validate_page = validate_page
         if key == "check_suites"
           [
-            { "id" => 10, "created_at" => "2026-08-25T10:00:00Z" },
-            { "id" => 20, "created_at" => "2026-08-25T12:00:00Z" }
+            { "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+              "updated_at" => "2026-08-25T10:00:00Z" },
+            { "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+              "updated_at" => "2026-08-25T12:00:00Z" }
           ].map do |suite|
             latest_conclusion_for_suite = if suite.fetch("id") == 10
                                             latest_conclusion == "success" ? "failure" : "success"
@@ -4177,6 +4186,7 @@ class PrCiReadinessCliTest < Minitest::Test
         latest_status, latest_conclusion, expected_complete = values
       suite = {
         "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+        "updated_at" => "2026-08-25T10:00:00Z",
         "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
         "status" => suite_status, "conclusion" => suite_conclusion, "latest_check_runs_count" => 2
       }
@@ -4227,10 +4237,12 @@ class PrCiReadinessCliTest < Minitest::Test
           [
             {
               "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+              "updated_at" => "2026-08-25T10:00:00Z",
               "status" => latest_status, "conclusion" => latest_conclusion
             },
             {
               "id" => 20, "created_at" => "2026-08-25T12:00:00Z",
+              "updated_at" => "2026-08-25T12:00:00Z",
               "status" => "completed", "conclusion" => "success"
             }
           ].map do |suite|
@@ -4274,8 +4286,9 @@ class PrCiReadinessCliTest < Minitest::Test
         _validate_page = validate_page
         if key == "check_suites"
           [
-            { "id" => 10, "created_at" => "2026-08-25T10:00:00Z" },
-            { "id" => 20, "created_at" => second_created_at }
+            { "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+              "updated_at" => "2026-08-25T10:00:00Z" },
+            { "id" => 20, "created_at" => second_created_at, "updated_at" => second_created_at }
           ].map do |suite|
             suite.merge(
               "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
@@ -4319,6 +4332,7 @@ class PrCiReadinessCliTest < Minitest::Test
       if key == "check_suites"
         [{
           "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+          "updated_at" => "2026-08-25T10:00:00Z",
           "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
           "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
         }]
@@ -4338,6 +4352,7 @@ class PrCiReadinessCliTest < Minitest::Test
     head = "a" * 40
     placeholder = {
       "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "updated_at" => "2026-08-25T10:00:00Z",
       "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
       "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
     }
@@ -4362,6 +4377,60 @@ class PrCiReadinessCliTest < Minitest::Test
     assert_equal 2, suite_fetches
   end
 
+  def test_queued_placeholder_updated_at_change_fails_suite_snapshot_continuity
+    head = "a" * 40
+    placeholder = {
+      "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+      "updated_at" => "2026-08-25T10:00:00Z",
+      "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
+      "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
+    }
+    updated = placeholder.merge("updated_at" => "2026-08-25T10:01:00Z")
+    suite_fetches = 0
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        suite_fetches += 1
+        [suite_fetches == 1 ? placeholder : updated]
+      else
+        []
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    refute complete
+    assert_empty rows
+    assert_includes error, "changed during run materialization"
+    assert_equal 2, suite_fetches
+  end
+
+  def test_check_suite_updated_at_must_be_present_and_rfc3339
+    head = "a" * 40
+    [nil, "not-a-timestamp"].each do |updated_at|
+      runner = PrCiReadiness::Runner.new
+      runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+        _validate_page = validate_page
+        if key == "check_suites"
+          [{
+            "id" => 10, "created_at" => "2026-08-25T10:00:00Z", "updated_at" => updated_at,
+            "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
+            "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
+          }]
+        else
+          []
+        end
+      end
+
+      rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+      refute complete, updated_at.inspect
+      assert_empty rows, updated_at.inspect
+      assert_includes error, "updated_at", updated_at.inspect
+    end
+  end
+
   def test_empty_nonqueued_or_malformed_check_suite_is_not_complete
     head = "a" * 40
     %w[requested in_progress waiting pending UNKNOWN].each do |suite_status|
@@ -4371,6 +4440,7 @@ class PrCiReadinessCliTest < Minitest::Test
         if key == "check_suites"
           [{
             "id" => 10, "created_at" => "2026-08-25T10:00:00Z",
+            "updated_at" => "2026-08-25T10:00:00Z",
             "head_sha" => head, "app" => { "id" => 9, "slug" => "ci-app" },
             "status" => suite_status, "conclusion" => nil, "latest_check_runs_count" => 0
           }]

@@ -735,6 +735,11 @@ module PrCiReadiness
         fetch_exact_head_check_runs(resolved_repo, target_pr.fetch(:head_sha))
       raise Error, checks_error unless checks_complete
 
+      required_fetch = fetch_checks(resolved_repo, validated_pr, required: true)
+      raise Error, "required-check inventory was unavailable during final CI inventory" unless
+        required_fetch.fetch(:known_good)
+
+      required_inventory = canonical_check_snapshot(PrCiReadiness.parse_rows(required_fetch.fetch(:raw)))
       statuses, statuses_complete, statuses_error =
         fetch_exact_head_statuses(resolved_repo, target_pr.fetch(:head_sha))
       raise Error, statuses_error unless statuses_complete
@@ -752,7 +757,9 @@ module PrCiReadiness
 
       {
         "head_sha" => target_pr.fetch(:head_sha), "actions_rows" => rows,
-        "check_inventory" => check_inventory, "statuses" => statuses,
+        "check_inventory" => check_inventory,
+        "required_check_inventory" => required_inventory,
+        "status_inventory" => canonical_status_snapshot(statuses),
         "viewer_review_inventory" => viewer_review
       }
     end
@@ -1028,6 +1035,8 @@ module PrCiReadiness
       )
       merged["authenticated_check_inventory"] = inventory.fetch(:check_inventory_snapshot) if
         inventory.fetch(:check_inventory_snapshot).is_a?(Hash)
+      merged["authenticated_required_check_inventory"] = canonical_check_snapshot(final_required_rows)
+      merged["authenticated_status_inventory"] = canonical_status_snapshot(inventory.fetch(:statuses))
       merged["ci_policy"] = trusted_ci_policy if trusted_ci_policy
       merged
     end
@@ -1295,7 +1304,7 @@ module PrCiReadiness
       end
 
       selected_rows_by_suite = selected_rows.group_by { |_row, _created_at, suite_id| suite_id }
-      validated_suites.each do |_suite, suite_id, _app, _created_at, status, conclusion, _latest_count|
+      validated_suites.each do |_suite, suite_id, _app, _created_at, _updated_at, status, conclusion, _latest_count|
         suite_rows = selected_rows_by_suite.fetch(suite_id, []).map(&:first)
         validate_check_suite_phase!(suite_rows, status:, conclusion:)
       end
@@ -1313,7 +1322,8 @@ module PrCiReadiness
     def materialize_check_suite_runs(repo, head_sha, validated_suites)
       suite_ids = {}
       validated_suites.flat_map do |validated_suite|
-        _suite, suite_id, suite_app, suite_created_at, suite_status, _suite_conclusion, latest_count =
+        _suite, suite_id, suite_app, suite_created_at, _suite_updated_at, suite_status,
+          _suite_conclusion, latest_count =
           validated_suite
         raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
 
@@ -1330,10 +1340,10 @@ module PrCiReadiness
     end
 
     def canonical_check_suite_snapshot(validated_suites)
-      validated_suites.map do |_suite, suite_id, app, created_at, status, conclusion, latest_count|
+      validated_suites.map do |_suite, suite_id, app, created_at, updated_at, status, conclusion, latest_count|
         JSON.generate([
                         suite_id, app.fetch("id"), app.fetch("slug"), created_at.utc.iso8601(9),
-                        status, conclusion, latest_count
+                        updated_at.utc.iso8601(9), status, conclusion, latest_count
                       ])
       end.sort
     end
@@ -1358,6 +1368,7 @@ module PrCiReadiness
       end
 
       created_at = strict_rfc3339_time!(suite["created_at"], "check suite created_at")
+      updated_at = strict_rfc3339_time!(suite["updated_at"], "check suite updated_at")
       status = suite["status"]
       conclusion = suite["conclusion"]
       latest_count = suite["latest_check_runs_count"]
@@ -1371,7 +1382,7 @@ module PrCiReadiness
         raise Error, "check suite phase or latest-run count was malformed or unknown"
       end
 
-      [suite_id, app, created_at, status, conclusion, latest_count]
+      [suite_id, app, created_at, updated_at, status, conclusion, latest_count]
     end
 
     def validate_check_suite_materialization!(rows, status:, latest_count:)

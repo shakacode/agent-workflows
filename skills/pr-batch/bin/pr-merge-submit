@@ -421,8 +421,8 @@ module PrMergeSubmit
         requested_hosted_runs: requested_run_ids, trusted_repo_root: @repo_root,
         diff_base_sha: ci_result["diff_base_sha"]
       )
-      complete_scopes = %w[github_actions dependabot other]
-      if complete_scopes.all? { |scope| refreshed.dig("scopes", scope, "complete") == true }
+      gated_scopes = %w[required_status_check_rollup github_actions dependabot other]
+      if gated_scopes.all? { |scope| refreshed.dig("scopes", scope, "complete") == true }
         ci_snapshot = readiness.authenticated_ci_snapshot(
           repo: options[:repo], pr_number: options[:pr], host: options[:host]
         )
@@ -474,11 +474,10 @@ module PrMergeSubmit
       unless canonical.call(initial_rows) == canonical.call(Array(snapshot["actions_rows"]))
         raise Error, "current CI Actions runs or jobs changed during final reassessment"
       end
-
-      initial_statuses = Array(refreshed.dig("scopes", "other", "rows")).select do |row|
-        row.is_a?(Hash) && row["kind"] == "status"
+      unless refreshed["authenticated_required_check_inventory"] == snapshot["required_check_inventory"]
+        raise Error, "current CI required checks changed during final reassessment"
       end
-      unless canonical.call(initial_statuses) == canonical.call(Array(snapshot["statuses"]))
+      unless refreshed["authenticated_status_inventory"] == snapshot["status_inventory"]
         raise Error, "current CI commit statuses changed during final reassessment"
       end
 

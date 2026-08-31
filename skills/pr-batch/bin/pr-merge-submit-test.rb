@@ -1813,7 +1813,7 @@ class PrMergeSubmitTest < Minitest::Test
         assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
         assert_includes result.fetch(:stderr), "current CI", "#{mode}/#{transition}"
         assert_includes result.fetch(:stderr), "other", "#{mode}/#{transition}"
-        expected_status_reads = mode == :guard_success ? 6 : 2
+        expected_status_reads = mode == :guard_success ? 5 : 2
         assert_equal expected_status_reads, log.scan("/status?per_page=").length,
                      "#{mode}/#{transition}"
         refute_includes log, mutation, "#{mode}/#{transition}"
@@ -1845,6 +1845,18 @@ class PrMergeSubmitTest < Minitest::Test
         assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
       end
     end
+  end
+
+  def test_required_check_change_after_authenticated_assessment_stops_before_mutation
+    result, log = run_cli(
+      mode: "direct", receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" }, ci_transition: :required_race_pending
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "required checks changed"
+    assert_equal 3, log.scan("pr checks 42").length
+    refute_includes log, "mergePullRequest"
   end
 
   def test_complete_ci_surface_inventory_errors_stop_before_direct_mutation
@@ -3273,6 +3285,9 @@ class PrMergeSubmitTest < Minitest::Test
                         when :required_failure then ["FAILURE", "fail"]
                         when :required_pending, :empty_suite_queued_required_pending
                           ["PENDING", "pending"]
+                        when :required_race_pending
+                          required_reads = File.read(ENV.fetch("GH_LOG")).scan("pr checks 42").length
+                          required_reads >= 3 ? ["PENDING", "pending"] : ["SUCCESS", "pass"]
                         else ["SUCCESS", "pass"]
                         end
         puts JSON.generate([
@@ -3366,7 +3381,7 @@ class PrMergeSubmitTest < Minitest::Test
         exit 1 if transition == :status_inventory_missing
 
         status_reads = File.read(ENV.fetch("GH_LOG")).scan("/status?per_page=").length
-        race_threshold = #{mode.inspect} == "guard_success" ? 4 : 2
+        race_threshold = #{mode.inspect} == "guard_success" ? 5 : 2
         status_rows = case transition
                       when :status_failure
                         [{ "id" => 701, "context" => "current-status", "state" => "failure",
@@ -3599,6 +3614,7 @@ class PrMergeSubmitTest < Minitest::Test
                        end
           { "id" => row.fetch("fixture_suite_id", default_id),
             "created_at" => created_at,
+            "updated_at" => created_at,
             "head_sha" => #{current_check_head.inspect},
             "app" => { "id" => slug == "circleci-checks" ? 901 : 902, "slug" => slug } }
         end
@@ -3639,6 +3655,7 @@ class PrMergeSubmitTest < Minitest::Test
         if empty_suite_status
           suites << {
             "id" => 899, "created_at" => "2026-08-25T12:30:00Z",
+            "updated_at" => "2026-08-25T12:30:00Z",
             "head_sha" => #{current_check_head.inspect},
             "app" => { "id" => 999, "slug" => "empty-suite-app" },
             "status" => empty_suite_status,
