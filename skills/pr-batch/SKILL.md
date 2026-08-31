@@ -508,7 +508,7 @@ Use the canonical [Merge Assurance Gate](../../workflows/pr-batch-integration-cl
 ## Goal Prompt Template
 
 Keep this template aligned with the matching plan-to-goal prompt in the
-resolved `pr-processing.md`. The human-readable work request lives in exactly
+resolved `pr-batch-intake.md`. The human-readable work request lives in exactly
 one accepted canonical issue or pull-request body, or one trusted maintainer
 comment. A direct accepted PR target uses its exact PR URL without requiring a
 synthetic comment. A later trusted maintainer comment may define or override
