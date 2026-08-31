@@ -8,6 +8,7 @@ module HostTaskCapabilityPreflight
   RESULT_TYPE = "host-task-capability-preflight-result"
   VERSION = 1
   TASK_CREATION_AUTHORIZATIONS = %w[explicit-user-authorization not-authorized].freeze
+  OBSERVED_CAPABILITIES = [true, false, "UNKNOWN"].freeze
   CAPABILITY_KEYS = %w[
     task_creation
     task_read
@@ -55,7 +56,7 @@ module HostTaskCapabilityPreflight
   end
 
   def observed_capability?(value)
-    value == true || value == false || value == "UNKNOWN"
+    OBSERVED_CAPABILITIES.include?(value)
   end
 
   def unavailable_reasons(authorization, task, capabilities)

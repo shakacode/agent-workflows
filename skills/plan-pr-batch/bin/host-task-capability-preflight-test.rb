@@ -12,8 +12,11 @@ CASES = File.expand_path("../fixtures/host-task-capability-preflight-cases.json"
 class HostTaskCapabilityPreflightTest < Minitest::Test
   def test_capability_cases
     JSON.parse(File.read(CASES)).each do |test_case|
-      stdout, stderr, status = Open3.capture3(RbConfig.ruby, HELPER,
-                                               stdin_data: JSON.generate(test_case.fetch("input")))
+      stdout, stderr, status = Open3.capture3(
+        RbConfig.ruby,
+        HELPER,
+        stdin_data: JSON.generate(test_case.fetch("input"))
+      )
 
       assert status.success?, "#{test_case.fetch('name')}: #{stderr}"
       assert_equal test_case.fetch("expected"), JSON.parse(stdout), test_case.fetch("name")
