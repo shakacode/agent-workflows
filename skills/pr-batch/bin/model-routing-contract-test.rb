@@ -1114,6 +1114,8 @@ class ModelRoutingContractTest < Minitest::Test
     assert_includes launcher_record, "Workflow observed at worker start: <version or UNKNOWN>"
     assert_includes launcher_record, "Later workflow observations: <timestamped append-only entries or none>"
     assert_includes launcher_record, "Launched at: <timestamp or pending>"
+    assert_includes launcher_record,
+                    "Replay identity: <existing lane_id, dispatcher, instance_id, and launch token>"
     assert_includes normalized(launcher_record), "one entry for every planned target lane"
     assert_includes launcher_record, "field by field"
     assert_includes launcher_record, "does not block launch"

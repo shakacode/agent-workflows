@@ -356,10 +356,12 @@ omit the queue summary and note that queue state is unavailable.
    plus `Prompt digest at launch`. If the selection and launch digests differ,
    that dispatch stops until the changed source is deliberately reselected as a
    new run and the security preflight is rerun. The Batch Plan or its exact
-   durable reference gives each worker its lane's launch digest. The worker
-   re-fetches the source, and its observed digest must match that launch digest
-   before it interprets the source or appends its start and observations; a
-   mismatch stops work and is recorded. The launcher records directional model
+   durable reference gives each worker its lane's launch digest and existing
+   immutable replay identity (`lane_id`, dispatcher, `instance_id`, and launch
+   token). The worker resolves the exactly matching run, re-fetches the source,
+   and verifies both identity and digest before it interprets the source or
+   appends its start and observations; a mismatch stops work and is recorded.
+   The launcher records directional model
    and Agent Workflows observations at prompt creation and worker start, using
    `UNKNOWN` field by field without inference, and appends later workflow
    observations with timestamps. Reruns append new collapsed `<details>`

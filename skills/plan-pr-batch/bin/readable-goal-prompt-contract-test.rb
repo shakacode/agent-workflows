@@ -141,7 +141,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "deliberately reselected as a new run and the security preflight is rerun",
       "one compact collapsed run record with one entry per target lane",
       "directly appends `Launched at` plus `Prompt digest at launch`",
-      "observed digest must match that launch digest before it interprets the source",
+      "verifies both identity and digest before it interprets the source",
       "complete Batch Plan for that coordinator group or an exact durable plan-state reference",
       "multi-target group remains one coordinator launch with one target per worker lane"
     ].each { |phrase| assert_includes normalized, phrase }
@@ -158,6 +158,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "Target lanes:",
       "Lane: <lane id; repeat this entry once per planned target>",
       "Target: <exact issue, pull-request, or durable override identity>",
+      "Replay identity: <existing lane_id, dispatcher, instance_id, and launch token>",
       "Prompt source: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>",
       "Selected at: <timestamp>",
       "Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected; or not applicable — trusted-ad-hoc-override>",
@@ -177,11 +178,13 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes normalized, "without replacing earlier values"
     assert_includes normalized, "Reruns append a new collapsed record"
     assert_includes normalized, "Directly append the cheap lane launch timestamp and digest"
+    assert_includes normalized, "existing immutable replay identity"
+    assert_includes normalized, "only to the exactly matching replay identity"
     assert_includes normalized, "do not invent another snapshot, byte encoding, or record schema"
     assert_includes normalized, "not applicable — trusted-ad-hoc-override"
     assert_includes normalized, "exact GitHub API `body` string"
     assert_includes normalized, "without Unicode normalization, Markdown rendering, whitespace trimming, or newline insertion or removal"
-    assert_includes normalized, "must match the lane's `Prompt digest at launch` before it interprets the source"
+    assert_includes normalized, "verifies both the replay identity and observed digest before it interprets the source"
     assert_includes normalized, "`auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`"
     assert_includes normalized, "machine-only `merge_authority: none`"
   end

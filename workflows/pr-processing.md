@@ -1765,11 +1765,13 @@ run. Immediately before each target dispatch, re-fetch that lane's source,
 compare its launch digest with its selection digest, and directly append the
 lane's `Launched at` timestamp and launch digest. A mismatch stops only that
 dispatch until the changed source is deliberately reselected as a new run and
-the security preflight is rerun. Give each worker its lane's launch digest
-through the Batch Plan or its exact durable reference. Before a worker
-interprets the source, it re-fetches the exact bytes and verifies its observed
-digest against that lane's launch digest; a mismatch stops work and records the
-changed digest. Append `Worker started at` only after that match. Do not wait
+the security preflight is rerun. Give each worker its lane's launch digest and
+existing immutable replay identity (`lane_id`, dispatcher, `instance_id`, and
+launch token) through the Batch Plan or its exact durable reference. Before a
+worker interprets the source, it resolves the exactly matching run, re-fetches
+the exact bytes, and verifies its observed digest against that lane's launch
+digest; a replay-identity or digest mismatch stops work and records the changed
+evidence. Append `Worker started at` only to that matching run after both checks. Do not wait
 for a telemetry aggregator; these are cheap launcher and worker measurements
 and do not depend on telemetry aggregation work.
 
@@ -1813,9 +1815,11 @@ Each execution appends one compact visible state plus one collapsed `<details>`
 record. A GitHub-backed run appends it in the issue or PR. The narrow
 non-GitHub trusted-ad-hoc exception appends the same compact/history record to
 its existing durable plan or backend state; do not create another storage or
-record schema. That record has one entry for every planned target lane. Within
-a lane entry, write selection provenance first, then append launch provenance,
-then append worker observations without replacing earlier values.
+record schema. That record has one entry for every planned target lane. Bind
+each lane entry to the existing immutable replay identity: `lane_id`,
+dispatcher, `instance_id`, and launch token. Within a lane entry, write
+selection provenance first, then append launch provenance, then append worker
+observations without replacing earlier values.
 Reruns append a new collapsed record instead of replacing or folding earlier
 runs into the newest values. Later workflow observations are timestamped
 append-only entries on the run that observed them.
@@ -1830,10 +1834,11 @@ digest at selection`. Immediately before that target's dispatch, re-fetch those
 bytes and append `Launched at` plus `Prompt digest at launch`. If the selection
 and launch digests differ, stop that dispatch until the changed source is
 deliberately selected as a new run and security preflight is rerun. Give the
-lane-keyed launch digest to its worker through the Batch Plan or its exact
-durable reference. The worker re-fetches the exact source and its observed
-digest must match the lane's `Prompt digest at launch` before it interprets the
-source or appends `Worker started at`; a mismatch stops work and is recorded. A
+lane-keyed launch digest and exact replay identity to its worker through the
+Batch Plan or its exact durable reference. The worker resolves the exactly
+matching run, re-fetches the exact source, and verifies both the replay identity
+and observed digest before it interprets the source or appends `Worker started
+at`; a mismatch stops work and is recorded. A
 later trusted maintainer comment may become the source for a later run, but a
 lane entry never combines the selected target body and comment or synthesizes a
 new source.
@@ -1867,6 +1872,7 @@ override evidence stops at that boundary.
 - Target lanes:
   - Lane: <lane id; repeat this entry once per planned target>
     - Target: <exact issue, pull-request, or durable override identity>
+    - Replay identity: <existing lane_id, dispatcher, instance_id, and launch token>
     - Prompt source: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
     - Selected at: <timestamp>
     - Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected; or not applicable — trusted-ad-hoc-override>
@@ -1884,8 +1890,9 @@ actually exposes it. Never infer a missing model or workflow version; use exact
 `UNKNOWN`, which does not block launch. For GitHub sources, source digests are
 integrity fields, not optional telemetry: a missing or mismatched required
 digest stops dispatch or worker execution at its boundary. Directly append the
-cheap lane launch timestamp and digest when dispatch begins, then append the worker-start
-timestamp and observations only after the worker digest matches. Until an event
+cheap lane launch timestamp and digest when dispatch begins, then append the
+worker-start timestamp and observations only to the exactly matching replay
+identity after the worker digest matches. Until an event
 occurs, its template value remains `pending`; never infer it from telemetry.
 Do not wait for a telemetry aggregator.
 
