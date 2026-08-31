@@ -26,6 +26,12 @@ module HostTaskLaunch
 
   def evaluate(input)
     validate_input!(input)
+    with_fence_lock(input.fetch("local_fence_path")) { evaluate_locked(input) }
+  rescue ContractError, AgentRunRecord::ContractError, KeyError
+    invalid_input
+  end
+
+  def evaluate_locked(input)
     intent = input.fetch("intent")
     fence_path = input.fetch("local_fence_path")
     immutable = immutable_intent(intent)
@@ -66,8 +72,6 @@ module HostTaskLaunch
       "action" => action_for(operation, launch_safety(input), publication, record, lane, create_attempt_already_fenced),
       "control_tower" => render_control_tower(record)
     }
-  rescue ContractError, AgentRunRecord::ContractError, KeyError
-    invalid_input
   end
 
   def validate_input!(input)
@@ -177,7 +181,7 @@ module HostTaskLaunch
       return record
     end
 
-    {
+    candidate = {
       "run_id" => SecureRandom.uuid,
       "launch_idempotency_key" => SecureRandom.uuid,
       "intent_digest" => digest,
@@ -210,8 +214,42 @@ module HostTaskLaunch
       "human_input_needed" => "no",
       "reconciliation_due" => "no"
     }
+    return candidate if create_initial_fence(path, candidate) == :created
+
+    load_or_create_fence(path, immutable)
   rescue JSON::ParserError
     :mismatch
+  end
+
+  def with_fence_lock(path)
+    lock_path = "#{path}.lock"
+    if (metadata = fence_metadata(lock_path)) && !(metadata.file? && !metadata.symlink?)
+      raise ContractError
+    end
+
+    File.open(lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+      lock.flock(File::LOCK_EX)
+      begin
+        yield
+      ensure
+        lock.flock(File::LOCK_UN)
+      end
+    end
+  end
+
+  def create_initial_fence(path, candidate)
+    File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+      file.write(JSON.generate(candidate))
+      file.flush
+      file.fsync
+    end
+    File.chmod(0o600, path)
+    File.open(File.dirname(path), File::RDONLY, &:fsync)
+    :created
+  rescue Errno::EEXIST
+    :exists
+  rescue SystemCallError
+    raise ContractError
   end
 
   def publication_gate(input, record)

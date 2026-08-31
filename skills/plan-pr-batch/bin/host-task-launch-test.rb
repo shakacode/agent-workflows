@@ -77,6 +77,33 @@ class HostTaskLaunchTest < Minitest::Test
     end
   end
 
+  def test_concurrent_begin_create_fences_exactly_one_host_create
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      publish(input)
+      input["operation"] = "begin-create"
+      payload = JSON.generate(input)
+      start = Queue.new
+      results = 2.times.map do
+        Thread.new do
+          start.pop
+          invoke_payload(payload)
+        end
+      end
+      2.times { start << true }
+      responses = results.map(&:value)
+
+      responses.each { |_stdout, stderr, status| assert status.success?, stderr }
+      records = responses.map { |stdout, _stderr, _status| JSON.parse(stdout).fetch("record") }
+      actions = responses.map { |stdout, _stderr, _status| JSON.parse(stdout).dig("action", "kind") }
+
+      assert_equal 1, actions.count("create-task")
+      assert_equal 1, actions.count("reconcile-by-run-id")
+      assert_equal 1, records.map { |record| record.fetch("run_id") }.uniq.length
+      assert_equal 1, records.map { |record| record.fetch("launch_idempotency_key") }.uniq.length
+    end
+  end
+
   def test_binds_immediate_and_provisional_task_identities_and_renders_only_the_outer_marker
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
@@ -286,9 +313,13 @@ class HostTaskLaunchTest < Minitest::Test
   end
 
   def invoke(input)
-    stdout, stderr, status = Open3.capture3(RbConfig.ruby, HELPER, stdin_data: JSON.generate(input))
+    stdout, stderr, status = invoke_payload(JSON.generate(input))
     assert status.success?, stderr
     JSON.parse(stdout)
+  end
+
+  def invoke_payload(payload)
+    Open3.capture3(RbConfig.ruby, HELPER, stdin_data: payload)
   end
 
   def uuid_v4
