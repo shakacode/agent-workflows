@@ -163,9 +163,13 @@ class CoordinationObservabilityContractTest < Minitest::Test
   def test_untrusted_public_fallback_cannot_veto_mutation
     fallback = squish(section(@backend_doc, "## Public Claim Comment Fallback", /^##\s+/))
 
+    assert_includes fallback, "field-selected GitHub API metadata"
+    assert_includes fallback, "`trusted_users`, `trusted_bots`, or `trusted_teams`"
+    assert_includes fallback, "A comment body alone never qualifies"
     [fallback, @component, @workflow, @address_review_skill, @address_review_workflow].each do |consumer|
       assert_includes squish(consumer), "authenticated and authorized ownership evidence"
       assert_includes squish(consumer), "remains advisory and cannot block mutations"
+      assert_includes squish(consumer), "concrete author-and-marker verification"
     end
   end
 

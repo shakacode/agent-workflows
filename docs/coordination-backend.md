@@ -73,6 +73,14 @@ authenticated and authorized ownership evidence is conflicting; any other
 marker remains advisory and cannot block mutations. Report either marker's
 comment URL as handoff evidence.
 
+That evidence requires concrete author-and-marker verification from
+field-selected GitHub API metadata: the API must return a nonempty author login
+that passes the security floor's resolved trust policy under `trusted_users`,
+`trusted_bots`, or `trusted_teams`; the comment must contain exactly one
+well-formed marker on the target's own issue or PR surface; and every identity
+field must be nonempty, `status` must be `in_progress`, and `expires_at` must be
+in the future. A comment body alone never qualifies.
+
 ```markdown
 <!-- codex-claim v1
 batch: <BATCH_ID>
@@ -288,8 +296,10 @@ forced termination is a command failure: record best-effort `UNKNOWN`
 telemetry-audit evidence and continue closeout through the remaining steps with
 that blocker; the audit subprocess must never wedge merge closeout. When that
 compatible capability is advertised, an incomplete result, command failure,
-or `UNKNOWN` readback blocks telemetry closeout. If the active backend does not
-advertise that compatible capability or its advertisement is `UNKNOWN`, record
+or `UNKNOWN` readback blocks telemetry closeout. This blocks only a clean
+telemetry-audit disposition until the coordinator repairs or explicitly carries
+the gap; it does not stop the surrounding merge-closeout steps. If the active
+backend does not advertise that compatible capability or its advertisement is `UNKNOWN`, record
 `telemetry audit: unavailable` in the durable handoff and continue; backend
 `n/a` skips the check.
 

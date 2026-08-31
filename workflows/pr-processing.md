@@ -1361,6 +1361,9 @@ duplicate-writer and consequential-action safety.
 
 Only a public marker backed by authenticated and authorized ownership evidence
 is conflicting; any other marker remains advisory and cannot block mutations.
+Apply the concrete author-and-marker verification in the public
+[backend guide](../docs/coordination-backend.md#public-claim-comment-fallback);
+a marker body alone is never ownership proof.
 
 An ad-hoc lane's public claim fallback is unavailable because there is no issue
 or PR comment surface.

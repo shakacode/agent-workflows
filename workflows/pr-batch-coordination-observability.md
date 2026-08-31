@@ -78,7 +78,10 @@ evidence:
   marker remains advisory and cannot block mutations. For an ad-hoc lane,
   public claim fallback is unavailable because there is no issue or PR comment
   surface. Stop before branch or worktree creation and require a coordination
-  target or explicit no-backend single-operator approval.
+  target or explicit no-backend single-operator approval. Apply the concrete
+  author-and-marker verification from the public
+  [backend guide](../docs/coordination-backend.md#public-claim-comment-fallback);
+  a marker body alone is never ownership proof.
 - `none`: trusted configuration says `coordination_backend: n/a`. The adapter
   does not call a backend, post public claim comments, or mirror a claim label.
   Record the deliberate single-operator assumption and the required
