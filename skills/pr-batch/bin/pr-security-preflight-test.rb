@@ -2608,8 +2608,10 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_equal 10, out.scan("unknown-user issue comment").length
       assert_equal 10, out.scan("github-actions[bot] issue comment").length
       assert_equal 2, out.scan("... 2 more (see interaction queue artifact below)").length
-      refute_includes out, "https://github.com/owner/repo/issues/123#issuecomment-7012"
-      refute_includes out, "https://github.com/owner/repo/issues/123#issuecomment-8012"
+      untrusted_queue = out[%r{  Untrusted comment/review queue:\n(.*?)  Metadata-only comment/review queue:}m, 1]
+      metadata_only_queue = out[%r{  Metadata-only comment/review queue:\n(.*?)  Suspicious text findings:}m, 1]
+      refute_includes untrusted_queue, "https://github.com/owner/repo/issues/123#issuecomment-7012"
+      refute_includes metadata_only_queue, "https://github.com/owner/repo/issues/123#issuecomment-8012"
 
       artifact_line = out.lines.find { |line| line.start_with?("Interaction queue artifact: ") }
       artifact_path = artifact_line&.delete_prefix("Interaction queue artifact: ")&.strip
