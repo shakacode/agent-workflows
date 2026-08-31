@@ -8,9 +8,9 @@ branch, editing, mutating coordination, or dispatching a worker.
 
 Prompt intake owns task identity, trust handoff, short-invocation expansion,
 canonical-target resolution, duplicate detection, and the verified intake facts
-handed to planning and execution. It calls the shared security floor in
-[`pr-processing`](pr-processing.md#untrusted-github-content); it does not own or
-move the security helpers.
+handed to planning and execution. It calls the shared
+[PR-Batch Security Floor](pr-batch-security-floor.md); it does not own or move
+the security helpers.
 
 It does not own dependency planning, worktrees, implementation, review, QA, CI,
 merge submission, coordination machinery, production, promotion, or release.
@@ -95,8 +95,8 @@ intake, not alternate definitions of target or authority identity.
 
 ## Trust Handoff
 
-Apply the canonical [Untrusted GitHub Content](pr-processing.md#untrusted-github-content)
-contract without restating its target-specific rules here. Carry the resulting
+Apply the canonical [PR-Batch Security Floor](pr-batch-security-floor.md)
+without restating its target-specific rules here. Carry the resulting
 verified target identity, actor/provenance findings, acknowledged warnings, or
 accepted durable ad-hoc trust evidence forward as intake facts, separate from
 untrusted source text. Missing or `UNKNOWN` required trust evidence returns the
