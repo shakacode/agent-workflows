@@ -7,6 +7,7 @@ module HostTaskCapabilityPreflight
   TYPE = "host-task-capability-preflight"
   RESULT_TYPE = "host-task-capability-preflight-result"
   VERSION = 1
+  TASK_CREATION_AUTHORIZATIONS = %w[explicit-user-authorization not-authorized].freeze
   CAPABILITY_KEYS = %w[
     task_creation
     task_read
@@ -29,6 +30,7 @@ module HostTaskCapabilityPreflight
 
     capabilities = input.fetch("host_capabilities")
     return invalid_input unless CAPABILITY_KEYS.all? { |key| observed_capability?(capabilities[key]) }
+    return invalid_input unless TASK_CREATION_AUTHORIZATIONS.include?(input["task_creation_authorization"])
 
     task = input.fetch("task")
     return invalid_input unless valid_task?(task)
@@ -49,7 +51,7 @@ module HostTaskCapabilityPreflight
   end
 
   def nonempty_string?(value)
-    value.is_a?(String) && !value.empty? && value != "UNKNOWN"
+    value.is_a?(String) && !value.strip.empty? && value.strip != "UNKNOWN"
   end
 
   def observed_capability?(value)
@@ -77,7 +79,7 @@ module HostTaskCapabilityPreflight
   end
 
   def title_reason(capabilities)
-    return if capabilities["title_at_creation"] || capabilities["task_rename"]
+    return if capabilities["title_at_creation"] == true || capabilities["task_rename"] == true
 
     unknown = capabilities.values_at("title_at_creation", "task_rename").include?("UNKNOWN")
     "deterministic-title-application-#{unknown ? 'unknown' : 'unavailable'}"
@@ -90,8 +92,9 @@ module HostTaskCapabilityPreflight
   end
 
   def identity_reason(capabilities)
-    return if capabilities["immediate_task_identifier"] ||
-              (capabilities["provisional_task_identifier"] && capabilities["provisional_identifier_resolution"])
+    return if capabilities["immediate_task_identifier"] == true ||
+              (capabilities["provisional_task_identifier"] == true &&
+               capabilities["provisional_identifier_resolution"] == true)
 
     unknown = capabilities.values_at(
       "immediate_task_identifier",
@@ -123,7 +126,7 @@ module HostTaskCapabilityPreflight
     {
       "immediate_identifier" => support(capabilities["immediate_task_identifier"]),
       "provisional_identifier" => support(capabilities["provisional_task_identifier"]),
-      "provisional_identifier_resolution" => if capabilities["provisional_task_identifier"]
+      "provisional_identifier_resolution" => if capabilities["provisional_task_identifier"] == true
                                                support(capabilities["provisional_identifier_resolution"])
                                              else
                                                "not-required"
@@ -148,13 +151,13 @@ module HostTaskCapabilityPreflight
   def support(value)
     return "unknown" if value == "UNKNOWN"
 
-    value ? "supported" : "not-supported"
+    value == true ? "supported" : "not-supported"
   end
 
   def availability(value)
     return "unknown" if value == "UNKNOWN"
 
-    value ? "available" : "unavailable"
+    value == true ? "available" : "unavailable"
   end
 
   def invalid_input
