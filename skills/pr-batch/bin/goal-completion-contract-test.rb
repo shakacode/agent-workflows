@@ -19,6 +19,7 @@ load receipt_parser_path
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
+PROMPT_INTAKE_PATH = File.join(ROOT, "workflows/pr-batch-intake.md")
 SPEC_SKILL_PATH = File.join(ROOT, "skills/spec/SKILL.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
@@ -544,6 +545,7 @@ end
 class GoalCompletionContractTest < Minitest::Test
   def setup
     @workflow = read_repo_file(WORKFLOW_PATH)
+    @prompt_intake = read_repo_file(PROMPT_INTAKE_PATH)
     @spec_skill = read_repo_file(SPEC_SKILL_PATH)
     @pr_batch_skill = read_repo_file(PR_BATCH_SKILL_PATH)
     @plan_pr_batch_skill = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
@@ -1124,8 +1126,8 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_completion_state_checklists_match_canonical_readiness_vocabulary
     surfaces = {
-      "skills/pr-batch/SKILL.md Required Interview" => [@pr_batch_skill, "## Required Interview", /^##\s+/],
-      "workflows/pr-processing.md Short Invocation" => [@workflow, "### Short Invocation", /^###\s+/]
+      "workflows/pr-batch-intake.md Short Invocation Expansion" =>
+        [@prompt_intake, "## Short Invocation Expansion", /^##\s+/]
     }
     mismatches = surfaces.filter_map do |label, (text, heading, end_heading)|
       actual = completion_state_checklist(text, heading:, end_heading:)
@@ -1140,11 +1142,11 @@ class GoalCompletionContractTest < Minitest::Test
   def test_completion_state_checklists_ignore_earlier_duplicate_paragraphs
     decoy = "Completion states: #{CANONICAL_READINESS_STATES.map { |state| "`#{state}`" }.join(', ')}.\n\n"
     surfaces = {
-      "skills/pr-batch/SKILL.md Required Interview" => [@pr_batch_skill, "## Required Interview", /^##\s+/],
-      "workflows/pr-processing.md Short Invocation" => [@workflow, "### Short Invocation", /^###\s+/]
+      "workflows/pr-batch-intake.md Short Invocation Expansion" =>
+        [@prompt_intake, "## Short Invocation Expansion", /^##\s+/]
     }
     false_positives = surfaces.filter_map do |label, (text, heading, end_heading)|
-      mutation = text.sub("`ready-human-review-required`, ", "")
+      mutation = text.sub("`ready-human-review-required`", "`removed-readiness-state`")
       raise "fixture mutation missed #{label}" if mutation == text
 
       actual = completion_state_checklist("#{decoy}#{mutation}", heading:, end_heading:)

@@ -129,36 +129,14 @@ Plan a PR batch
 
 ## Workflow
 
-### Canonical Launch Target Gate
+### Prompt Intake
 
-Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target.
-Pass the repository-qualified canonical issue/PR identity unchanged through planning, plan preflight, dispatch, coordination claims, the Lane Card, and final handoff.
-A direct prompt without either target must stop before branch creation, editing, implementation or coordination mutation, or worker dispatch and route to planning/reconciliation.
-Planning/reconciliation searches the repository for the exact existing issue or PR and reuses that identity, so equivalent prompt wording cannot create independently claimable synthetic lanes.
-When search finds no canonical issue or existing PR, create the canonical issue with explicit planning-time issue-creation authority, or ask for that authority; do not create a branch, edit, or dispatch until the persisted issue identity is rebound into the plan and preflight passes.
-
-The only exception is a named, trusted, task-specific durable ad-hoc override.
-Generic instructions, `$pr-batch` invocation, fix-it intent, or PR-publication authority do not create this override.
-Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff.
-All override fields must be explicit, trusted, task-matched, durable, and non-`UNKNOWN`. Use `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` as the stable coordination identity and preserve it unchanged in durable evidence; coordination derives the backend-safe raw pair of lowercase repository plus exact `adhoc:<yyyymmdd>-<short-slug>` target token. Fail closed to planning/reconciliation when any override evidence is missing or inferred. An existing PR is sufficient and never requires a retroactive issue.
-A labeled authorizer or task identity whose complete value component is `UNKNOWN` is incomplete and also fails closed.
-Complete labeled component values `fix-it`, `pr-batch`, and `publish-pr` are generic intent and fail closed in either provenance field, even when the override name is task-specific.
-The exact override names `fix-it`, `pr-batch`, and `publish-pr` are likewise generic and invalid.
-For this override field only, `durable_authorization_ref` must use `issue://OWNER/REPO/N`, `plan-state://<id>/<path>`, `batch://<id>`, or `https://github.com/OWNER/REPO/{issues|pull}/N`; any other scheme or chat-local reference fails closed.
-Parseable `issue://` and GitHub HTTPS authorization references must match `target.repository` case-insensitively; opaque `plan-state://` and `batch://` references remain trusted without invented repository parsing.
-Parseable authorization refs reject userinfo and query; GitHub HTTPS requires port 443, `issue://` requires the exact canonical authority/path shape, and fragments remain permitted.
-Every typed target repository has exactly two ASCII components separated by `/`: the owner matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from `[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
-
-Every preflight lane carries one exact `target` v1 record. GitHub targets use
-`type`, `version`, `repository`, positive `number`, and a matching
-`stable_coordination_identity`; their types are `github-issue` and
-`github-pull-request`, with identities `OWNER/REPO:issue:N` and
-`OWNER/REPO:pull-request:N`. The sole ad-hoc form uses type
-`trusted-ad-hoc-override`, `repository`, `target: adhoc:<yyyymmdd>-<short-slug>`, matching stable
-identity, a lowercase slug `override_name`, labeled `kind:value` authorizer and
-task identities, and the durable reference. Missing,
-malformed, unknown, or duplicate identities make `batch-plan-preflight` reject
-the whole launch before dispatch.
+Load the canonical
+[PR-Batch Prompt Intake](../../workflows/pr-batch-intake.md) component before
+interpreting targets or shaping lanes. It alone defines canonical target v1,
+durable override provenance, trust handoff, short-invocation expansion,
+duplicate handling, and the verified facts this planner consumes. Planning may
+add scope, dependency, route, and capacity facts, but must not redefine intake.
 
 1. Intake
    - Before reading GitHub targets or shaping the batch, record future
