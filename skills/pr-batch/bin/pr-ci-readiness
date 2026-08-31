@@ -97,6 +97,35 @@ module PrCiReadiness
     end
   end
 
+  # The GraphQL fallback may be newer than the exact-head REST inventory. Only
+  # let an authenticated disposition explain that mismatch when every blocking
+  # fallback row is the same pending CircleCI workflow observed by REST.
+  def policy_dispositions_own_fallback_rows?(rows, required_cancellations:, other_scope:)
+    dispositions = other_scope["policy_dispositions"]
+    exact_rows = other_scope["rows"]
+    return false unless dispositions.is_a?(Array) && dispositions.any? && exact_rows.is_a?(Array)
+
+    disposition_rows = dispositions.filter_map do |disposition|
+      matches = exact_rows.select { |row| disposition_matches_row?(disposition, row) }
+      matches.first if matches.one?
+    end
+    return false unless disposition_rows.length == dispositions.length
+
+    blocking_rows = readiness_rows(
+      rows, required_used: false, required_cancellations:
+    ).select { |row| %w[cancel fail pending].include?(row["bucket"].to_s) }
+    return false if blocking_rows.empty?
+
+    blocking_rows.all? do |row|
+      link = row["link"]
+      row["bucket"] == "pending" && link.is_a?(String) && !link.empty? &&
+        disposition_rows.one? do |exact_row|
+          row["name"] == exact_row["name"] && link == exact_row["details_url"] &&
+            (row["workflow"].to_s.empty? || row["workflow"] == exact_row["app_slug"])
+        end
+    end
+  end
+
   def failing_names(rows)
     rows.select { |row| row["bucket"].to_s == "fail" }.map { |row| row["name"].to_s }
   end
@@ -1019,8 +1048,11 @@ module PrCiReadiness
       disposition_owns_fallback = !required_used && ordinary_checks_verdict == "NOT_READY" &&
                                   result.fetch("invalid").empty? &&
                                   contract.fetch("verdict") == "READY" &&
-                                  scopes.dig("other", "policy_dispositions").is_a?(Array) &&
-                                  scopes.dig("other", "policy_dispositions").any?
+                                  PrCiReadiness.policy_dispositions_own_fallback_rows?(
+                                    rows,
+                                    required_cancellations:,
+                                    other_scope: scopes.fetch("other")
+                                  )
       ordinary_verdict = disposition_owns_fallback ? contract.fetch("verdict") : ordinary_checks_verdict
       supplemental_verdict = supplemental_readiness_verdict(result)
       overall_verdict =

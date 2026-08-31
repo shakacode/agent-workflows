@@ -3034,9 +3034,13 @@ class PrCiReadinessCliTest < Minitest::Test
         },
         "html_url" => "https://example/check/31"
       }
+      held_rollup = {
+        "workflow" => "", "name" => "storybook-review-app", "bucket" => "pending",
+        "state" => "IN_PROGRESS", "link" => details_url
+      }
       with_fake_gh(
         required_json: "",
-        full_json: '[{"workflow":"circleci-checks","name":"storybook-review-app","bucket":"pending"}]',
+        full_json: JSON.generate([held_rollup]),
         pr_head: head,
         pr_identity:,
         exact_check_runs: [held]
@@ -3053,6 +3057,29 @@ class PrCiReadinessCliTest < Minitest::Test
         refute_empty data.dig("scopes", "other", "policy_dispositions")
       end
 
+      graphql_only_pending = {
+        "workflow" => "external-ci", "name" => "security", "bucket" => "pending",
+        "state" => "IN_PROGRESS", "link" => "https://example/check/32"
+      }
+      with_fake_gh(
+        required_json: "",
+        full_json: JSON.generate([held_rollup, graphql_only_pending]),
+        pr_head: head,
+        pr_identity:,
+        exact_check_runs: [held]
+      ) do |env|
+        out, status = run_script(
+          env, "123", "--repo", "owner/repo", "--trusted-repo-root", root
+        )
+        assert status.success?, out
+        data = JSON.parse(out)
+
+        assert_equal "NOT_READY", data.fetch("verdict")
+        assert_equal "NOT_READY", data.fetch("ordinary_verdict")
+        assert_equal "READY", data.dig("scopes", "other", "state")
+        refute_empty data.dig("scopes", "other", "policy_dispositions")
+      end
+
       running = {
         "id" => 32, "name" => "security", "status" => "in_progress",
         "conclusion" => nil, "started_at" => "2026-07-30T11:58:00Z", "head_sha" => head,
@@ -3060,8 +3087,7 @@ class PrCiReadinessCliTest < Minitest::Test
       }
       with_fake_gh(
         required_json: "",
-        full_json: '[{"workflow":"circleci-checks","name":"storybook-review-app","bucket":"pending"},' \
-                   '{"workflow":"external-ci","name":"security","bucket":"pending"}]',
+        full_json: JSON.generate([held_rollup, graphql_only_pending]),
         pr_head: head,
         pr_identity:,
         exact_check_runs: [held, running]
