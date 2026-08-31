@@ -3230,9 +3230,14 @@ The closeout lane is:
    hosted-CI waitback: autonomous nit outcomes, human decision-point count, current
    confidence or readiness note, and any remaining `UNKNOWN` facts.
 9. Under the current task's merge authority, mark ready or merge PRs that satisfy
-   the ordinary merge qualification rules and merge-endgame debounce; report
-   only remaining blockers, questions, or `UNKNOWN` live state. When the
-   production/release component is loaded, also apply its
+   the ordinary merge qualification rules and merge-endgame debounce. Immediately
+   before that ready or merge decision, repeat the bounded tracker-discovery check
+   when the consumer repo defines tracker-discovery policy, even when the release
+   component was not loaded initially. If the refreshed tracker selects release
+   handling, load the component; if the defined discovery cannot complete or is
+   ambiguous, record `UNKNOWN` and block the action. Report only remaining
+   blockers, questions, or `UNKNOWN` live state. When the production/release
+   component is loaded, also apply its
    **Release Closeout Extension** section from the resolved component:
    apply the extension's pre-action rules before the ready or merge action and
    its post-merge rule before ordinary closeout step 10.

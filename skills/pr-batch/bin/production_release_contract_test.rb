@@ -105,8 +105,16 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes squish(@workflow), "Do not bypass the queue with administrator privileges"
     assert_includes normalized, "## Release Closeout Extension"
     assert_includes normalized, "accelerated-RC waiver-soak"
-    closeout = @workflow.split("The closeout lane is:", 2).last
-                        .split("## Self-Review Gate", 2).first
+    assert_includes normalized, "authenticated finalizer record names the exact current head SHA and score"
+    assert_includes normalized, "timestamp is at or after the PR body's `lastEditedAt`"
+    assert_includes normalized, "Any later head or PR-body edit invalidates the finalization"
+    assert_includes normalized, "does not replace re-finalization"
+    assert_includes normalized, "re-fetches the current PR body, its `lastEditedAt`, and the current head"
+    closeout = squish(@workflow.split("The closeout lane is:", 2).last
+                               .split("## Self-Review Gate", 2).first)
+    assert_includes closeout, "repeat the bounded tracker-discovery check"
+    assert_includes closeout, "If the refreshed tracker selects release handling"
+    assert_includes closeout, "record `UNKNOWN` and block the action"
     assert_includes closeout, "**Release Closeout Extension** section from the resolved component"
     assert_includes closeout, "its post-merge rule before ordinary closeout step 10"
     refute_includes closeout, "Agent Merge Confidence"

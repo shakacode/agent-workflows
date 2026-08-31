@@ -20,6 +20,7 @@ module AutonomousMergePolicy
     bin/agent_doctor/autonomous_merge_policy_yaml.rb
     skills/pr-batch/bin/autonomous-merge-eligibility skills/pr-batch/bin/autonomous-merge-calibrate
     skills/pr-batch/bin/autonomous-merge-closeout skills/pr-batch/bin/*contract-test.rb
+    skills/pr-batch/bin/*_contract_test.rb
     skills/pr-batch/lib/autonomous_merge_*.rb
     skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json
     skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
@@ -37,7 +38,7 @@ module AutonomousMergePolicy
   PORTABLE_POLICY_EXCLUDES = %w[
     AGENTS.md **/AGENTS.md CLAUDE.md **/CLAUDE.md **/SKILL.md
     **/autonomous_merge_*.rb **/autonomous-merge-* **/check_goal_prompt_size.rb
-    **/*contract-test.rb workflows/** .agents/** docs/adr/**
+    **/*contract-test.rb **/*_contract_test.rb workflows/** .agents/** docs/adr/**
   ].freeze
 
   # Portable safe path groups. Absent, empty, or partial consumer configuration
