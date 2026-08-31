@@ -383,6 +383,7 @@ module MergeAssurance
                                 scope,
                                 required_rows:,
                                 authenticated_policy:,
+                                expected_head_sha: context["head_sha"],
                                 failures:
                               )
                             else
@@ -612,7 +613,9 @@ module MergeAssurance
     false
   end
 
-  def validated_ci_policy_dispositions(scope, required_rows:, authenticated_policy:, failures:)
+  def validated_ci_policy_dispositions(
+    scope, required_rows:, authenticated_policy:, expected_head_sha:, failures:
+  )
     dispositions = scope["policy_dispositions"]
     return [] if dispositions.nil?
     return [] unless scope["rows"].is_a?(Array)
@@ -659,6 +662,10 @@ module MergeAssurance
         next
       end
       row = matching_rows.first
+      if row && row["head_sha"] != expected_head_sha
+        failures << "ci_result scope other policy disposition row head mismatch"
+        next
+      end
       rule = rules.find do |candidate|
         candidate["id"] == disposition["rule_id"] &&
           candidate["app_slug"] == disposition["app_slug"] &&

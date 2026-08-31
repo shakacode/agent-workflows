@@ -162,6 +162,24 @@ class MergeAssuranceTest < Minitest::Test
     assert accepted.fetch("eligible")
   end
 
+  def test_optional_policy_cannot_disposition_a_row_from_a_different_head
+    trusted_policy = optional_held_policy
+    ci_result = optional_held_ci(trusted_policy)
+    ci_result.dig("scopes", "other", "rows", 0)["head_sha"] = "c" * 40
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      trusted_ci_policy: trusted_policy,
+      now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result scope other policy disposition row head mismatch"
+  end
+
   def test_ci_policy_tampering_fails_closed_and_pending_row_is_recomputed
     ci_result = optional_held_ci(optional_held_policy)
     authenticated = optional_held_policy
@@ -4920,6 +4938,7 @@ class MergeAssuranceTest < Minitest::Test
     workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
     held = {
       "kind" => "check_run", "id" => 31, "suite_id" => 10, "name" => "storybook-review-app",
+      "head_sha" => HEAD_SHA,
       "status" => "in_progress", "conclusion" => nil,
       "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
       "app_slug" => "circleci-checks", "dependabot" => false, "actions" => nil,

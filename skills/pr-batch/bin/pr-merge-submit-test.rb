@@ -2812,6 +2812,7 @@ class PrMergeSubmitTest < Minitest::Test
       workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
       held = {
         "kind" => "check_run", "id" => 31, "suite_id" => 801, "name" => "storybook-review-app",
+        "head_sha" => head,
         "status" => "in_progress", "conclusion" => nil,
         "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
         "app_slug" => "circleci-checks", "dependabot" => false, "actions" => nil,
