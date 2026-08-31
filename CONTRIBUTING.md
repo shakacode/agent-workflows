@@ -17,6 +17,27 @@ focused, and easy for consumer repos to adopt.
 - Review changed Markdown manually for stale paths, broken links, and accidental
   consumer-repo assumptions.
 
+## Lint Toolchain Setup
+
+`bin/lint` checks tool versions but does not install software. Install each
+tool at the version reported by the command:
+
+- RuboCop:
+  `gem install rubocop -v "$(bin/lint --version rubocop)" --no-document`
+- ShellCheck: install `v$(bin/lint --version shellcheck)` from the
+  [ShellCheck releases](https://github.com/koalaman/shellcheck/releases) and
+  put `shellcheck` on `PATH`.
+- actionlint:
+  `go install "github.com/rhysd/actionlint/cmd/actionlint@v$(bin/lint --version actionlint)"`
+- markdownlint-cli2:
+  `npm install --global --ignore-scripts "markdownlint-cli2@$(bin/lint --version markdownlint-cli2)"`
+- yamllint:
+  `pipx install "yamllint==$(bin/lint --version yamllint)"`
+
+If `pipx` is unavailable, install yamllint into an activated Python virtual
+environment with the same version expression. Run `bin/lint` afterward; it
+reports any missing tool or version mismatch before linting.
+
 ## Ruby Style
 
 Ruby files in this repo use double-quoted strings. The RuboCop configuration
