@@ -1489,6 +1489,28 @@ class PrMergeSubmitTest < Minitest::Test
     assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
   end
 
+  def test_requested_hosted_run_change_after_assessment_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      %i[requested_run_race_pending requested_run_race_rerun requested_job_race_pending].each do |transition|
+        result, log, guard_log = run_cli(
+          mode: mode.to_s, receipt_mode: :optional_held_requested,
+          merge_submission:, requested_hosted_runs: %w[42 43], ci_transition: transition
+        )
+
+        assert_equal 1, result.fetch(:status).exitstatus, "#{mode}/#{transition}"
+        assert_includes result.fetch(:stderr), "requested hosted runs changed", "#{mode}/#{transition}"
+        refute_includes log, mutation, "#{mode}/#{transition}"
+        assert_empty guard_log, "#{mode}/#{transition}" if mutation == "GUARD_EXECUTION"
+      end
+    end
+  end
+
   def test_viewer_draft_opened_after_assessment_stops_every_submission_route
     routes = {
       direct: [{ "mode" => "direct" }, "mergePullRequest"],
@@ -3336,13 +3358,47 @@ class PrMergeSubmitTest < Minitest::Test
       end
       if requested_run_endpoint
         run_id = requested_run_endpoint[%r{/runs/(\\d+)\\z}, 1].to_i
-        requested_pending = transition == :empty_suite_queued_requested_pending && run_id == 42
+        requested_reads = File.readlines(ENV.fetch("GH_LOG")).count do |line|
+          line.strip.end_with?("actions/runs/\#{run_id}")
+        end
+        requested_race_threshold = #{mode.inspect} == "guard_success" ? 4 : 2
+        requested_pending = run_id == 42 &&
+                            (transition == :empty_suite_queued_requested_pending ||
+                             transition == :requested_run_race_pending &&
+                               requested_reads >= requested_race_threshold)
+        requested_attempt = if transition == :requested_run_race_rerun && run_id == 42 &&
+                               requested_reads >= requested_race_threshold
+                              2
+                            else
+                              1
+                            end
         puts JSON.generate(
           "id" => run_id, "name" => "requested-\#{run_id}", "head_sha" => #{head.inspect},
+          "run_attempt" => requested_attempt,
           "status" => requested_pending ? "in_progress" : "completed",
           "conclusion" => requested_pending ? nil : "success",
           "html_url" => "https://#{HOST}/#{repo}/actions/runs/\#{run_id}"
         )
+        exit 0
+      end
+      requested_jobs_endpoint = ARGV.find do |arg|
+        arg.match?(%r{repos/#{repo}/actions/runs/(42|43)/jobs\\?})
+      end
+      if requested_jobs_endpoint
+        run_id = requested_jobs_endpoint[%r{/runs/(\\d+)/jobs}, 1].to_i
+        requested_job_reads = File.readlines(ENV.fetch("GH_LOG")).count do |line|
+          line.include?("actions/runs/\#{run_id}/jobs?")
+        end
+        requested_job_race_threshold = #{mode.inspect} == "guard_success" ? 4 : 2
+        requested_job_pending = transition == :requested_job_race_pending && run_id == 42 &&
+                                requested_job_reads >= requested_job_race_threshold
+        job = {
+          "id" => run_id * 100, "name" => "requested-\#{run_id} / job",
+          "status" => requested_job_pending ? "in_progress" : "completed",
+          "conclusion" => requested_job_pending ? nil : "success",
+          "html_url" => "https://#{HOST}/#{repo}/actions/runs/\#{run_id}/job"
+        }
+        puts JSON.generate("total_count" => 1, "jobs" => [job])
         exit 0
       end
       actions_endpoint = ARGV.find { |arg| arg.include?("repos/#{repo}/actions/runs?head_sha=") }

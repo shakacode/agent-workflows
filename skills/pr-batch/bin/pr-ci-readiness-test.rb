@@ -1445,7 +1445,9 @@ class PrCiReadinessCliTest < Minitest::Test
         "printf #{template.inspect} \"$FAKE_PR_NUMBER\""
       end
     run_cases = runs.map do |run_id, payload|
-      run_json = JSON.generate(payload.fetch(:run))
+      run = payload.fetch(:run)
+      run = run.merge("run_attempt" => 1) unless run.key?("run_attempt")
+      run_json = JSON.generate(run)
       jobs_json = JSON.generate(
         "total_count" => payload.fetch(:jobs_total_count, payload.fetch(:jobs).length),
         "jobs" => payload.fetch(:jobs)
@@ -4348,6 +4350,30 @@ class PrCiReadinessCliTest < Minitest::Test
     assert_nil error
   end
 
+  def test_fresh_stable_queued_zero_run_suite_is_not_yet_a_dormant_placeholder
+    head = "a" * 40
+    fresh_at = Time.now.utc.iso8601
+    runner = PrCiReadiness::Runner.new
+    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
+      _validate_page = validate_page
+      if key == "check_suites"
+        [{
+          "id" => 10, "created_at" => fresh_at, "updated_at" => fresh_at,
+          "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
+          "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
+        }]
+      else
+        []
+      end
+    end
+
+    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
+
+    refute complete
+    assert_empty rows
+    assert_includes error, "not dormant"
+  end
+
   def test_queued_placeholder_materializing_a_run_fails_suite_snapshot_continuity
     head = "a" * 40
     placeholder = {
@@ -5021,6 +5047,31 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_requested_hosted_pending_job_blocks_even_when_run_reports_success
+    with_fake_gh(
+      required_json: '[{"name":"unit","bucket":"pass"}]',
+      full_json: '[{"name":"unit","bucket":"pass"}]',
+      pr_head: "abc123",
+      runs: {
+        "42" => {
+          run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
+                 "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "in_progress", "conclusion" => nil,
+              "html_url" => "https://example.test/jobs/7" }
+          ]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo", "--requested-hosted-run", "42")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      pending = data.fetch("requested_hosted").fetch("pending").map { |row| row["name"] }
+      assert_equal ["hosted / linux"], pending
+    end
+  end
+
   def test_requested_hosted_failure_blocks_ready_required_gate
     with_fake_gh(
       required_json: '[{"name":"unit","bucket":"pass"}]',
@@ -5072,7 +5123,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_requested_hosted_success_does_not_fetch_jobs
+  def test_requested_hosted_success_preserves_complete_job_inventory
     with_fake_gh(
       required_json: '[{"name":"unit","bucket":"pass"}]',
       full_json: '[{"name":"unit","bucket":"pass"}]',
@@ -5081,8 +5132,10 @@ class PrCiReadinessCliTest < Minitest::Test
         "42" => {
           run: { "id" => 42, "name" => "hosted", "head_sha" => "abc123", "status" => "completed",
                  "conclusion" => "success", "html_url" => "https://example.test/runs/42" },
-          jobs: [],
-          jobs_error: true
+          jobs: [
+            { "id" => 7, "name" => "hosted / linux", "status" => "completed", "conclusion" => "success",
+              "html_url" => "https://example.test/jobs/7" }
+          ]
         }
       }
     ) do |env|
@@ -5091,6 +5144,8 @@ class PrCiReadinessCliTest < Minitest::Test
       data = JSON.parse(out)
       assert_equal "READY", data["verdict"]
       assert_empty data.fetch("requested_hosted").fetch("unknown")
+      kinds = data.fetch("authenticated_requested_hosted_inventory").map { |row| row["kind"] }
+      assert_equal %w[run job], kinds
     end
   end
 

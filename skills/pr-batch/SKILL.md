@@ -696,9 +696,10 @@ only app/name, that multiplicity cannot receive an optional disposition.
 A missing or null retry timestamp, malformed timestamp, or tie is `UNKNOWN`.
 Every suite also requires a recognized status/conclusion pair and an exact
 `latest_check_runs_count` materialized by the paginated latest-run response.
-A stable queued zero-run suite is retained in the authenticated first/final
-suite snapshots as a dormant-app placeholder and emits no check row. A new or
-changed placeholder, any other zero-run suite, a count mismatch, or a
+A stable queued zero-run suite whose authenticated `updated_at` is at least 24
+hours old is retained in the authenticated first/final suite snapshots as a
+dormant-app placeholder and emits no check row. A fresh, new, or changed
+placeholder, any other zero-run suite, a count mismatch, or a
 phase-contradictory suite is `UNKNOWN`; required and explicitly requested
 pending evidence still blocks through its authoritative scope.
 

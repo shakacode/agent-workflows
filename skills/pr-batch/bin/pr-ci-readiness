@@ -677,6 +677,7 @@ module PrCiReadiness
       action_required cancelled failure neutral success skipped stale startup_failure timed_out
     ].freeze
     CHECK_SUITE_READY_CONCLUSIONS = %w[neutral skipped success].freeze
+    CHECK_SUITE_PLACEHOLDER_DORMANCY_SECONDS = 24 * 60 * 60
 
     def initialize(command_runner: nil)
       @command_runner = command_runner
@@ -722,7 +723,7 @@ module PrCiReadiness
       result
     end
 
-    def authenticated_ci_snapshot(repo:, pr_number:, host:)
+    def authenticated_ci_snapshot(repo:, pr_number:, host:, requested_hosted_runs: [])
       resolved_host = resolve_host!(host)
       @gh_env = { "GH_HOST" => resolved_host }
       resolved_repo = resolve_repo!(repo)
@@ -744,6 +745,9 @@ module PrCiReadiness
         fetch_exact_head_statuses(resolved_repo, target_pr.fetch(:head_sha))
       raise Error, statuses_error unless statuses_complete
 
+      requested_hosted, requested_hosted_inventory = requested_hosted_summary(
+        resolved_repo, validated_pr, requested_hosted_runs, target_pr.fetch(:head_sha)
+      )
       viewer_review = viewer_pending_review_draft_inventory(
         resolved_repo, validated_pr, target_pr.fetch(:head_sha)
       )
@@ -760,6 +764,8 @@ module PrCiReadiness
         "check_inventory" => check_inventory,
         "required_check_inventory" => required_inventory,
         "status_inventory" => canonical_status_snapshot(statuses),
+        "requested_hosted" => requested_hosted,
+        "requested_hosted_inventory" => requested_hosted_inventory,
         "viewer_review_inventory" => viewer_review
       }
     end
@@ -1322,7 +1328,7 @@ module PrCiReadiness
     def materialize_check_suite_runs(repo, head_sha, validated_suites)
       suite_ids = {}
       validated_suites.flat_map do |validated_suite|
-        _suite, suite_id, suite_app, suite_created_at, _suite_updated_at, suite_status,
+        _suite, suite_id, suite_app, suite_created_at, suite_updated_at, suite_status,
           _suite_conclusion, latest_count =
           validated_suite
         raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
@@ -1334,7 +1340,9 @@ module PrCiReadiness
         ).map do |row|
           normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
         end
-        validate_check_suite_materialization!(suite_rows, status: suite_status, latest_count:)
+        validate_check_suite_materialization!(
+          suite_rows, status: suite_status, latest_count:, updated_at: suite_updated_at
+        )
         suite_rows.map { |row| [row, suite_created_at, suite_id] }
       end
     end
@@ -1385,9 +1393,13 @@ module PrCiReadiness
       [suite_id, app, created_at, updated_at, status, conclusion, latest_count]
     end
 
-    def validate_check_suite_materialization!(rows, status:, latest_count:)
+    def validate_check_suite_materialization!(rows, status:, latest_count:, updated_at:)
       if latest_count.zero?
-        return if rows.empty? && status == "queued"
+        if rows.empty? && status == "queued"
+          return if updated_at <= Time.now.utc - CHECK_SUITE_PLACEHOLDER_DORMANCY_SECONDS
+
+          raise Error, "queued zero-run check suite was not dormant for at least 24 hours"
+        end
 
         raise Error, "check suite latest-run inventory was empty and cannot prove readiness"
       end
@@ -1792,10 +1804,12 @@ module PrCiReadiness
 
     def apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs, expected_head_sha)
       result["requested_hosted"] = empty_requested_hosted
+      result["authenticated_requested_hosted_inventory"] = []
       return result if requested_hosted_runs.empty?
 
-      requested = requested_hosted_summary(repo, pr_number, requested_hosted_runs, expected_head_sha)
+      requested, inventory = requested_hosted_summary(repo, pr_number, requested_hosted_runs, expected_head_sha)
       result["requested_hosted"] = requested
+      result["authenticated_requested_hosted_inventory"] = inventory
       if requested["pending"].any? || requested["failing"].any?
         result["verdict"] = "NOT_READY"
       elsif result["verdict"] == "READY" && (requested["stale"].any? || requested["unknown"].any?)
@@ -1930,7 +1944,9 @@ module PrCiReadiness
     end
 
     def requested_hosted_summary(repo, _pr_number, requested_hosted_runs, expected_head_sha)
-      requested_hosted_runs.each_with_object(empty_requested_hosted) do |input, summary|
+      summary = empty_requested_hosted
+      inventory = []
+      requested_hosted_runs.each do |input|
         run_id = requested_hosted_run_id(input)
         summary["run_ids"] << run_id
         run = fetch_actions_run(repo, run_id)
@@ -1938,10 +1954,14 @@ module PrCiReadiness
           raise Error, "requested hosted run payload id did not match requested id #{run_id}"
         end
 
-        classify_requested_run(summary, repo, run_id, run, expected_head_sha)
+        inventory << requested_hosted_inventory_row("run", run_id, run)
+        jobs = fetch_actions_jobs(repo, run_id)
+        inventory.concat(jobs.map { |job| requested_hosted_inventory_row("job", run_id, job) })
+        classify_requested_run(summary, run_id, run, jobs, expected_head_sha)
       rescue Error => e
         summary["unknown"] << { "run_id" => run_id || input.to_s, "reason" => e.message }
       end
+      [summary, inventory]
     end
 
     def requested_hosted_run_id(input)
@@ -1952,7 +1972,7 @@ module PrCiReadiness
       run_id
     end
 
-    def classify_requested_run(summary, repo, run_id, run, expected_head_sha)
+    def classify_requested_run(summary, run_id, run, jobs, expected_head_sha)
       actual_head_sha = run.fetch("head_sha", "").to_s
       if actual_head_sha.empty? || !actual_head_sha.casecmp?(expected_head_sha)
         summary["stale"] << run_record(run_id, run).merge(
@@ -1963,11 +1983,26 @@ module PrCiReadiness
       end
 
       classify_status_row(summary, "run", run_id, run_record(run_id, run))
-      return if run.fetch("status", "").to_s == "completed" && successful_conclusion?(run.fetch("conclusion", "").to_s)
-
-      fetch_actions_jobs(repo, run_id).each do |job|
+      jobs.each do |job|
         classify_status_row(summary, "job", run_id, run_record(run_id, job))
       end
+    end
+
+    def requested_hosted_inventory_row(kind, run_id, payload)
+      id = payload["id"]
+      unless id.is_a?(Integer) && id.positive?
+        raise Error, "requested hosted #{kind} id was not a positive integer"
+      end
+
+      record = run_record(run_id, payload).merge("kind" => kind, "id" => id)
+      return record unless kind == "run"
+
+      run_attempt = payload["run_attempt"]
+      unless run_attempt.is_a?(Integer) && run_attempt.positive?
+        raise Error, "requested hosted run attempt was not a positive integer"
+      end
+
+      record.merge("run_attempt" => run_attempt)
     end
 
     def classify_status_row(summary, kind, run_id, row)

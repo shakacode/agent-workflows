@@ -424,7 +424,8 @@ module PrMergeSubmit
       gated_scopes = %w[required_status_check_rollup github_actions dependabot other]
       if gated_scopes.all? { |scope| refreshed.dig("scopes", scope, "complete") == true }
         ci_snapshot = readiness.authenticated_ci_snapshot(
-          repo: options[:repo], pr_number: options[:pr], host: options[:host]
+          repo: options[:repo], pr_number: options[:pr], host: options[:host],
+          requested_hosted_runs: requested_run_ids
         )
         validate_ci_snapshot_continuity!(refreshed, ci_snapshot, options)
       end
@@ -479,6 +480,10 @@ module PrMergeSubmit
       end
       unless refreshed["authenticated_status_inventory"] == snapshot["status_inventory"]
         raise Error, "current CI commit statuses changed during final reassessment"
+      end
+      unless refreshed["requested_hosted"] == snapshot["requested_hosted"] &&
+             refreshed["authenticated_requested_hosted_inventory"] == snapshot["requested_hosted_inventory"]
+        raise Error, "current CI requested hosted runs changed during final reassessment"
       end
 
       refreshed_viewer_review_inventory = refreshed.fetch("viewer_review_inventory")
