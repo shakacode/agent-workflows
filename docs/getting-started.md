@@ -251,7 +251,7 @@ If the agent cannot find the skill, re-check Step 1 (`agent-workflows-status`
 should say `UP_TO_DATE`) and restart the agent host so it reloads its skill
 directory.
 
-## Step 4 — Your First Issue-To-PR Lane
+## Step 4 — Your First Issue-To-PR Workflow
 
 Once `$verify` works, the workflow to try next is `$pr-batch` pointed at one
 GitHub issue. It is the pack's issue-to-PR machine; given a single target it
