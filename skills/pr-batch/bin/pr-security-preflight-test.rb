@@ -2597,15 +2597,22 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def test_all_target_numbers_are_validated_before_any_scan
-    with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, log_path|
-      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123", "bad")
+    %w[bad 0 -1].each do |invalid_target|
+      with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, log_path|
+        out, status = run_script(
+          env,
+          "--repo", "owner/repo",
+          "--trust-config", trust_config_path,
+          "--", "123", invalid_target
+        )
 
-      refute status.success?, out
-      assert_equal 1, status.exitstatus
-      assert_includes out, 'Invalid issue/PR number: "bad"'
-      refute File.exist?(log_path), "target validation should run before any gh command"
-      refute_includes out, "Untrusted comment/review queue:"
-      refute_includes out, "Interaction queue artifact:"
+        refute status.success?, out
+        assert_equal 1, status.exitstatus
+        assert_includes out, "Invalid issue/PR number: #{invalid_target.inspect}"
+        refute File.exist?(log_path), "target validation should run before any gh command"
+        refute_includes out, "Untrusted comment/review queue:"
+        refute_includes out, "Interaction queue artifact:"
+      end
     end
   end
 

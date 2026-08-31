@@ -121,7 +121,7 @@ end
 
 target_number_list = ARGV.map do |arg|
   number = Integer(arg, exception: false)
-  abort "Invalid issue/PR number: #{arg.inspect}" unless number
+  abort "Invalid issue/PR number: #{arg.inspect}" unless number&.positive?
 
   number
 end
