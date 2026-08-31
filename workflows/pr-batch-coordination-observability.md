@@ -96,6 +96,12 @@ backend's schema. Dispatch waits for bounded readback of those exact refs;
 missing or `UNKNOWN` state stops only the affected lane. The public adapter does
 not invent a private backend schema. Apply these target-scoped rules:
 
+Known backend `depends_on`/`blocked_on` facts refresh the corresponding typed
+live edge state and evidence; they do not decide lifecycle capabilities. Run
+`stage-dependency-gate` and obey its returned permissions for the requested
+action. Set a blocked heartbeat or move away only when that permission is false.
+Missing or `UNKNOWN` backend dependency state remains a blanket hard stop.
+
 1. Run bounded target status before claim. If doctor or target-status reads are
    degraded, an exact independent lane with no `depends_on` refs may attempt one
    bounded direct claim. A successful compare-and-swap proceeds as

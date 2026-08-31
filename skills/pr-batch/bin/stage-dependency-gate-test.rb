@@ -9,6 +9,7 @@ require "tempfile"
 ROOT = File.expand_path("../../..", __dir__)
 HELPER = File.expand_path("stage-dependency-gate", __dir__)
 REPLAY_FIXTURES = File.expand_path("../fixtures/stage-dependency-gate-replays.json", __dir__)
+COORDINATION_COMPONENT = File.join(ROOT, "workflows/pr-batch-coordination-observability.md")
 SHA_A = "1111111111111111111111111111111111111111"
 SHA_B = "2222222222222222222222222222222222222222"
 BASE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -114,7 +115,9 @@ class StageDependencyGateTest < Minitest::Test
     refute merge_permissions.fetch("merge")
 
     workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8").gsub(/\s+/, " ").strip
-    assert_includes workflow, BACKEND_TYPED_GATE_CONTRACT
+    coordination = File.read(COORDINATION_COMPONENT, encoding: "UTF-8").gsub(/\s+/, " ").strip
+    assert_includes coordination, BACKEND_TYPED_GATE_CONTRACT
+    refute_includes workflow, BACKEND_TYPED_GATE_CONTRACT
     %w[workflows/pr-processing.md skills/pr-batch/SKILL.md].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ").strip
       assert_includes text, REQUIRED_DEPENDENCY_CLOSEOUT_CONTRACT,
