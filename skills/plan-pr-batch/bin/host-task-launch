@@ -35,14 +35,20 @@ module HostTaskLaunch
     return invalid_input if record == :mismatch
 
     operation = input.fetch("operation")
-    update_task_identity!(record, input.fetch("task_identity")) if operation == "bind-task"
-    publication = publication_gate(input)
+    update_task_identity!(record, input.fetch("task_identity")) if %w[bind-provisional bind-task].include?(operation)
+    publication = publication_gate(input, record)
     return invalid_input if publication == :invalid
 
-    record["state"] = "waiting" if input["dependency_state"] == "waiting"
+    record.fetch("lanes").first["state"] = "waiting" if input["dependency_state"] == "waiting"
     record["reconciliation_due"] = publication.fetch("reconciliation_due")
     record["coordination"] = publication.fetch("coordination")
     record["no_backend_override"] = publication["override"] if publication.key?("override")
+    record["publication"] = publication.fetch("evidence") if publication.key?("evidence")
+    create_attempt_already_fenced = record.dig("lanes", 0, "transition") == "create-attempted"
+    if operation == "begin-create" && publication.fetch("ready")
+      lane = record.fetch("lanes").first
+      lane["transition"] = "create-attempted" unless lane["transition"] == "create-attempted"
+    end
     record["latest"] = operation == "bind-task" ? "task identity bound" : "launch prepared"
     persist_fence(fence_path, record)
 
@@ -52,7 +58,7 @@ module HostTaskLaunch
       "status" => "ready",
       "launch_mode" => "host-native-user-task",
       "record" => record,
-      "action" => action_for(operation, input.fetch("capabilities"), publication, record.fetch("state")),
+      "action" => action_for(operation, input.fetch("capabilities"), publication, record, create_attempt_already_fenced),
       "control_tower" => render_control_tower(record)
     }
   rescue ContractError, AgentRunRecord::ContractError, KeyError
@@ -61,7 +67,7 @@ module HostTaskLaunch
 
   def validate_input!(input)
     raise ContractError unless input.is_a?(Hash) && input["type"] == TYPE && input["version"] == VERSION
-    raise ContractError unless %w[prepare retry bind-task].include?(input["operation"])
+    raise ContractError unless %w[prepare publish begin-create retry bind-provisional bind-task update].include?(input["operation"])
     raise ContractError if input.key?("dependency_state") && !%w[ready waiting].include?(input["dependency_state"])
     raise ContractError unless input["task_creation_authorization"].is_a?(String)
     raise ContractError unless input["local_fence_path"].is_a?(String) && !input["local_fence_path"].strip.empty?
@@ -127,7 +133,9 @@ module HostTaskLaunch
 
   def load_or_create_fence(path, immutable)
     digest = Digest::SHA256.hexdigest(JSON.generate(canonicalize(immutable)))
-    if File.exist?(path)
+    if (metadata = fence_metadata(path))
+      raise ContractError unless metadata.file? && !metadata.symlink?
+
       record = JSON.parse(File.binread(path))
       return :mismatch unless record["intent_digest"] == digest
 
@@ -145,7 +153,18 @@ module HostTaskLaunch
       "runner" => immutable.fetch("runner"),
       "configured_machine_alias" => immutable.fetch("configured_machine_alias"),
       "purpose" => immutable.fetch("purpose"),
-      "lanes" => immutable.fetch("lanes"),
+      "lanes" => immutable.fetch("lanes").map do |lane|
+        work_item = lane.fetch("helper_evidence").fetch("work_item")
+        lane.merge(
+          "transition" => "prepared",
+          "state" => "launch-pending",
+          "outcome" => "pending",
+          "task_title" => "#{immutable.fetch('repository')} ##{work_item.fetch('number')} — #{immutable.fetch('purpose')}",
+          "task" => { "id" => "UNKNOWN", "url" => "UNKNOWN", "provisional_id" => "UNKNOWN" },
+          "branch" => "UNKNOWN", "pr" => "UNKNOWN", "latest" => "launch prepared",
+          "blocker" => nil, "human_input_needed" => "no"
+        )
+      end,
       "state" => "launch-pending",
       "outcome" => "pending",
       "task" => { "id" => "UNKNOWN", "url" => "UNKNOWN", "provisional_id" => "UNKNOWN" },
@@ -160,20 +179,33 @@ module HostTaskLaunch
     :mismatch
   end
 
-  def publication_gate(input)
+  def publication_gate(input, record)
     publication = input.fetch("publication")
     return :invalid unless publication.is_a?(Hash)
-    return published_gate(input) if publication["status"] == "durably-published"
+    return published_gate(input, record) if publication["status"] == "durably-published"
+    return { "ready" => false, "reconciliation_due" => "no", "coordination" => "not recorded" } if publication["status"] == "not-published" && !input.key?("no_backend_override")
     return :invalid unless publication["status"] == "not-published"
 
     no_backend_gate(input.fetch("no_backend_override", nil))
   end
 
-  def published_gate(input)
+  def published_gate(input, record)
     coordination = input.fetch("coordination")
     return :invalid unless valid_coordination?(coordination)
 
-    { "reconciliation_due" => "no", "coordination" => coordination.fetch("status") }
+    required = %w[run_id record_destination marker_type evidence_ref rendered_record_sha256]
+    return :invalid unless required.all? do |key|
+      publication = input.fetch("publication")
+      scalar_value?(publication[key])
+    end
+
+    publication = input.fetch("publication")
+    return :invalid unless publication["run_id"] == record["run_id"] &&
+                           publication["record_destination"] == record["record_destination"] &&
+                           publication["marker_type"] == "agent-launcher-run-record:v1" &&
+                           SHA256.match?(publication["rendered_record_sha256"])
+
+    { "ready" => true, "reconciliation_due" => "no", "coordination" => coordination.fetch("status"), "evidence" => publication }
   end
 
   def no_backend_gate(override)
@@ -189,6 +221,7 @@ module HostTaskLaunch
     return :invalid unless valid_coordination?(coordination) && %w[clear unavailable].include?(coordination["status"])
 
     {
+      "ready" => true,
       "reconciliation_due" => "yes",
       "coordination" => coordination.fetch("status"),
       "override" => override.slice(
@@ -202,12 +235,14 @@ module HostTaskLaunch
       scalar_value?(coordination["retry_evidence"])
   end
 
-  def action_for(operation, capabilities, publication, state)
-    return { "kind" => "publish-control-tower" } if publication == :pending
-    return { "kind" => "copy-paste" } unless publication
-    return { "kind" => "wait-for-dependencies" } if state == "waiting"
+  def action_for(operation, capabilities, publication, record, create_attempt_already_fenced)
+    return { "kind" => "publish-control-tower" } if operation == "prepare" && !publication.fetch("ready")
+    return { "kind" => "publish-control-tower" } unless publication.fetch("ready")
+    return { "kind" => "wait-for-dependencies" } if record.dig("lanes", 0, "state") == "waiting"
+    return { "kind" => "begin-create" } if operation == "publish"
+    return { "kind" => "monitor-task" } if %w[bind-provisional bind-task update].include?(operation)
 
-    if operation == "retry"
+    if operation == "retry" || (operation == "begin-create" && create_attempt_already_fenced)
       return { "kind" => "retry-create-task", "same_launch_idempotency_key" => true } if capabilities["host_creation_idempotency"] == true
 
       return { "kind" => "reconcile-by-run-id", "run_id_lookup" => true } if capabilities["reconciliation_by_run_id"] == true
@@ -226,39 +261,77 @@ module HostTaskLaunch
 
       scalar!(task_identity.fetch(key))
     end
-    record.fetch("task")["provisional_id"] = task_identity.fetch("provisional_id") if task_identity.key?("provisional_id")
-    record.fetch("task")["id"] = task_identity.fetch("task_id") if task_identity.key?("task_id")
-    record.fetch("task")["url"] = task_identity.fetch("task_url") if task_identity.key?("task_url")
+    lane = record.fetch("lanes").first
+    lane.fetch("task")["provisional_id"] = task_identity.fetch("provisional_id") if task_identity.key?("provisional_id")
+    return unless task_identity.key?("task_id")
+
+    lane.fetch("task")["id"] = task_identity.fetch("task_id")
+    lane.fetch("task")["url"] = task_identity.fetch("task_url") if task_identity.key?("task_url")
+    lane["state"] = "active"
+    lane["transition"] = "task-bound"
   end
 
   def persist_fence(path, record)
     directory = File.dirname(path)
     raise ContractError unless Dir.exist?(directory)
 
-    File.open(path, File::WRONLY | File::CREAT | File::TRUNC, 0o600) do |file|
+    if (metadata = fence_metadata(path)) && !(metadata.file? && !metadata.symlink?)
+      raise ContractError
+    end
+
+    temporary = File.join(directory, ".#{File.basename(path)}.#{Process.pid}.#{SecureRandom.hex(8)}.tmp")
+    File.open(temporary, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
       file.write(JSON.generate(record))
       file.flush
       file.fsync
     end
-    File.chmod(0o600, path)
+    File.chmod(0o600, temporary)
+    File.rename(temporary, path)
+    File.open(directory, File::RDONLY, &:fsync)
+  rescue SystemCallError
+    File.delete(temporary) if temporary && File.exist?(temporary)
+    raise ContractError
   end
 
   def render_control_tower(record)
-    lines = ["<!-- agent-launcher-run-record:v1 -->", "Task launch: #{plain(record.fetch('state'))} / #{plain(record.fetch('outcome'))}", ""]
+    lines = ["<!-- agent-launcher-run-record:v1 -->", "Task launch: #{plain(record.dig('lanes', 0, 'state'))} / #{plain(record.dig('lanes', 0, 'outcome'))}", ""]
     record.fetch("lanes").each do |lane|
+      work_item = lane.fetch("helper_evidence").fetch("work_item")
       lines.concat([
                      "Lane: #{code(lane.fetch('lane_id'))}",
-                     "- Repository/issue: #{code(record.fetch('repository'))} / #{plain(record.dig('work_item', 'kind'))} ##{record.dig('work_item', 'number')}",
-                     "- Task title: #{code(record.fetch('task_title'))}",
+                     "- Repository/issue: #{code(lane.fetch('helper_evidence').fetch('repository'))} / #{plain(work_item.fetch('kind'))} ##{work_item.fetch('number')}",
+                     "- Task title: #{code(lane.fetch('task_title'))}",
                      "- Runner: #{plain(record.fetch('runner'))}",
                      "- Machine alias: #{code(record.fetch('configured_machine_alias'))}",
-                     "- Task ID/link: #{code(record.dig('task', 'id'))} / #{code(record.dig('task', 'url'))}",
-                     "- Branch/PR: #{code(record.fetch('branch'))} / #{code(record.fetch('pr'))}",
-                     "- State/outcome: #{code(record.fetch('state'))} / #{code(record.fetch('outcome'))}",
-                     "- Human input needed: #{plain(record.fetch('human_input_needed'))}",
+                     "- Task ID/link: #{code(lane.dig('task', 'id'))} / #{code(lane.dig('task', 'url'))}",
+                     "- Branch/PR: #{code(lane.fetch('branch'))} / #{code(lane.fetch('pr'))}",
+                     "- State/outcome: #{code(lane.fetch('state'))} / #{code(lane.fetch('outcome'))}",
+                     "- Human input needed: #{plain(lane.fetch('human_input_needed'))}",
                      "- GitHub reconciliation due: #{plain(record.fetch('reconciliation_due'))}"
                    ])
     end
+    lines.concat([
+                   "",
+                   "<details>",
+                   "<summary>Run details</summary>",
+                   "",
+                   "- Run ID: #{code(record.fetch('run_id'))}",
+                   "- Launch retry key: #{code(record.fetch('launch_idempotency_key'))}",
+                   "- Record destination: #{code(record.fetch('record_destination'))}",
+                   *record.fetch("lanes").flat_map do |lane|
+                     evidence = lane.fetch("helper_evidence")
+                     source = evidence.fetch("prompt_source")
+                     [
+                       "- Replay identity: #{code("lane_id=#{lane.fetch('lane_id')}; dispatcher=#{lane.fetch('dispatcher')}; instance_id=#{lane.fetch('instance_id')}; launch_token=#{lane.fetch('launch_token')}")}",
+                       "- Helper evidence: #{code(evidence.fetch('run_id'))} / #{code(evidence.fetch('launch_idempotency_key'))}",
+                       "- Prompt source/digests: #{code(source.fetch('url'))} / #{code(source.fetch('digest_at_selection'))} / #{code(source.fetch('digest_at_launch'))}",
+                       "- Prompt transport: #{code(evidence.fetch('prompt_transport').to_s)}"
+                     ]
+                   end,
+                   "- Coordination: #{plain(record.fetch('coordination', 'not recorded (optional)'))}",
+                   "",
+                   "</details>"
+                 ])
     lines.join("\n")
   end
 
@@ -276,6 +349,12 @@ module HostTaskLaunch
 
   def scalar!(value)
     raise ContractError unless scalar_value?(value)
+  end
+
+  def fence_metadata(path)
+    File.lstat(path)
+  rescue Errno::ENOENT
+    nil
   end
 
   def scalar_value?(value)

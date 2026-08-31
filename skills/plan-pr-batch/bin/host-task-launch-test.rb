@@ -11,14 +11,13 @@ HELPER = File.expand_path("host-task-launch", __dir__)
 FIXTURES = JSON.parse(File.read(File.expand_path("../fixtures/host-task-launch-cases.json", __dir__)))
 
 class HostTaskLaunchTest < Minitest::Test
-  def test_prepares_a_private_native_fence_and_reuses_its_outer_identity
+  def test_prepare_publishes_before_one_durable_create_attempt
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
       first = invoke(input)
 
       assert_equal "host-native-user-task", first.fetch("launch_mode")
-      assert_equal "create-task", first.dig("action", "kind")
-      assert_equal true, first.dig("action", "create_attempt_fenced")
+      assert_equal "publish-control-tower", first.dig("action", "kind")
       assert_equal 0o600, File.stat(input.fetch("local_fence_path")).mode & 0o777
       assert_match uuid_v4, first.dig("record", "run_id")
       assert_match uuid_v4, first.dig("record", "launch_idempotency_key")
@@ -26,6 +25,17 @@ class HostTaskLaunchTest < Minitest::Test
       repeated = invoke(input)
       assert_equal first.dig("record", "run_id"), repeated.dig("record", "run_id")
       assert_equal first.dig("record", "launch_idempotency_key"), repeated.dig("record", "launch_idempotency_key")
+
+      input["operation"] = "publish"
+      input["publication"] = publication_evidence(first.fetch("record"))
+      assert_equal "begin-create", invoke(input).dig("action", "kind")
+
+      input["operation"] = "begin-create"
+      created = invoke(input)
+      assert_equal "create-task", created.dig("action", "kind")
+      assert_equal true, created.dig("action", "create_attempt_fenced")
+      assert_equal "create-attempted", created.dig("record", "lanes", 0, "transition")
+      assert_equal "reconcile-by-run-id", invoke(input).dig("action", "kind")
     end
   end
 
@@ -55,7 +65,7 @@ class HostTaskLaunchTest < Minitest::Test
   def test_retry_uses_the_same_key_only_when_host_idempotency_is_supported
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
-      created = invoke(input)
+      created = begin_create(input)
       input["operation"] = "retry"
       retry_result = invoke(input)
 
@@ -71,22 +81,24 @@ class HostTaskLaunchTest < Minitest::Test
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
       input["intent"]["task_title"] = "[hostile](javascript:alert(1)) <script>"
-      input["operation"] = "bind-task"
+      input["operation"] = "bind-provisional"
       input["task_identity"] = { "provisional_id" => "provisional-1" }
       provisional = invoke(input)
-      assert_equal "provisional-1", provisional.dig("record", "task", "provisional_id")
-      assert_equal "UNKNOWN", provisional.dig("record", "task", "id")
+      assert_equal "provisional-1", provisional.dig("record", "lanes", 0, "task", "provisional_id")
+      assert_equal "UNKNOWN", provisional.dig("record", "lanes", 0, "task", "id")
 
+      input["operation"] = "bind-task"
       input["task_identity"] = { "task_id" => "task-1", "task_url" => "https://example.test/<bad>" }
       result = invoke(input)
       rendered = result.fetch("control_tower")
 
-      assert_equal "task-1", result.dig("record", "task", "id")
-      assert_equal "provisional-1", result.dig("record", "task", "provisional_id")
+      assert_equal "task-1", result.dig("record", "lanes", 0, "task", "id")
+      assert_equal "provisional-1", result.dig("record", "lanes", 0, "task", "provisional_id")
       assert_equal 1, rendered.scan("<!-- agent-launcher-run-record:v1 -->").length
       refute_includes rendered, "<!-- agent-run-record:v1 -->"
       assert_includes rendered, "&lt;bad&gt;"
-      assert_includes rendered, "&lt;script&gt;"
+      refute_includes rendered, "<script>"
+      refute_includes rendered, "hostile"
       assert_includes rendered, "Repository/issue:"
       assert_includes rendered, "Human input needed:"
     end
@@ -95,11 +107,12 @@ class HostTaskLaunchTest < Minitest::Test
   def test_waits_for_dependencies_without_returning_a_create_action
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
+      publish(input)
       input["dependency_state"] = "waiting"
 
       result = invoke(input)
 
-      assert_equal "waiting", result.dig("record", "state")
+      assert_equal "waiting", result.dig("record", "lanes", 0, "state")
       assert_equal "wait-for-dependencies", result.dig("action", "kind")
     end
   end
@@ -149,7 +162,7 @@ class HostTaskLaunchTest < Minitest::Test
   def test_does_not_offer_a_blind_retry_without_idempotency_or_run_id_reconciliation
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
-      invoke(input)
+      begin_create(input)
       input["operation"] = "retry"
       input["capabilities"]["reconciliation_by_run_id"] = false
 
@@ -166,7 +179,7 @@ class HostTaskLaunchTest < Minitest::Test
       "version" => 1,
       "operation" => "prepare",
       "local_fence_path" => File.join(directory, "launch-fence.json"),
-      "publication" => { "status" => "durably-published" },
+      "publication" => { "status" => "not-published" },
       "coordination" => { "status" => "clear", "retry_evidence" => "bounded status read succeeded" },
       "intent" => {
         "repository" => "owner/repo",
@@ -185,6 +198,30 @@ class HostTaskLaunchTest < Minitest::Test
         }]
       }
     )
+  end
+
+  def publication_evidence(record)
+    {
+      "status" => "durably-published",
+      "run_id" => record.fetch("run_id"),
+      "record_destination" => record.fetch("record_destination"),
+      "marker_type" => "agent-launcher-run-record:v1",
+      "evidence_ref" => "https://github.com/owner/repo/issues/561#issuecomment-1",
+      "rendered_record_sha256" => "b" * 64
+    }
+  end
+
+  def publish(input)
+    prepared = invoke(input)
+    input["operation"] = "publish"
+    input["publication"] = publication_evidence(prepared.fetch("record"))
+    invoke(input)
+  end
+
+  def begin_create(input)
+    publish(input)
+    input["operation"] = "begin-create"
+    invoke(input)
   end
 
   def valid_helper_evidence
