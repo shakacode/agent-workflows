@@ -35,9 +35,12 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
   end
 
   def test_failed_dashboard_source_is_not_executed
-    payload = AgentDoctor::Orchestrator.new(options, runner: non_deadline_runner,
-                                                     sanitizer: AgentDoctor::Sanitizer.new,
-                                                     environment: @environment).call
+    payload = AgentDoctor::Orchestrator.new(
+      options.merge(source_git_timeout: nil),
+      runner: non_deadline_runner,
+      sanitizer: AgentDoctor::Sanitizer.new,
+      environment: @environment
+    ).call
     dashboard = payload.fetch("components").last
     checks = dashboard.fetch("checks")
     ids = checks.map { |check| check.fetch("id") }
@@ -340,7 +343,7 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
   end
 
   def orchestrator(selected_options = options)
-    AgentDoctor::Orchestrator.new(selected_options,
+    AgentDoctor::Orchestrator.new(selected_options.merge(source_git_timeout: nil),
                                   runner: non_deadline_runner,
                                   sanitizer: AgentDoctor::Sanitizer.new,
                                   environment: @environment)

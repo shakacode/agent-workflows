@@ -89,7 +89,8 @@ class LintRunner
   end
 
   def missing_tool_message(tool)
-    "Install #{tool} #{VERSIONS.fetch(tool)} before running bin/lint"
+    "Install #{tool} #{VERSIONS.fetch(tool)} before running bin/lint; " \
+      "see CONTRIBUTING.md#lint-toolchain-setup"
   end
 end
 
