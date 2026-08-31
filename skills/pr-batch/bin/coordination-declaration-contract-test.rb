@@ -76,6 +76,14 @@ def normalize_prose(text)
   text.gsub(/\s+/, " ")
 end
 
+def with_default_external_encoding(encoding)
+  original = Encoding.default_external
+  Encoding.default_external = encoding
+  yield
+ensure
+  Encoding.default_external = original
+end
+
 # Anchored to a whole heading line so a heading quoted in prose or a sync comment
 # cannot capture the section.
 def extract_anchored_section(text, heading, end_heading:)
@@ -570,20 +578,22 @@ class CoordinationDeclarationContractTest < Minitest::Test
   end
 
   def test_near_miss_declarations_are_rejected_with_an_exact_correction
-    [
-      "`coordination: registered aw-1`",
-      "**coordination:** registered aw-1",
-      "Coordination: registered aw-1",
-      "coordination - registered aw-1",
-      "coordination – registered aw-1"
-    ].each do |near_miss|
-      blockers = coordination_declaration_blockers("#{near_miss}\n")
+    with_default_external_encoding(Encoding::US_ASCII) do
+      [
+        "`coordination: registered aw-1`",
+        "**coordination:** registered aw-1",
+        "Coordination: registered aw-1",
+        "coordination - registered aw-1",
+        "coordination – registered aw-1"
+      ].each do |near_miss|
+        blockers = coordination_declaration_blockers("#{near_miss}\n")
 
-      refute_empty blockers, "#{near_miss.inspect} must remain rejected"
-      assert_includes blockers.first, "near-miss"
-      assert_includes blockers.first, near_miss
-      assert_includes blockers.first, "coordination: registered <batch-id>"
-      assert_includes blockers.first, "coordination: unavailable #{EM_DASH} <reason>"
+        refute_empty blockers, "#{near_miss.inspect} must remain rejected"
+        assert_includes blockers.first, "near-miss"
+        assert_includes blockers.first, near_miss
+        assert_includes blockers.first, "coordination: registered <batch-id>"
+        assert_includes blockers.first, "coordination: unavailable #{EM_DASH} <reason>"
+      end
     end
   end
 

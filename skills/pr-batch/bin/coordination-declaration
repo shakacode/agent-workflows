@@ -181,7 +181,7 @@ module CoordinationDeclaration
     if values.empty?
       near_misses = near_miss_lines(handoff_text)
       unless near_misses.empty?
-        return ["final handoff contains a near-miss coordination declaration #{near_misses.first.inspect}; " \
+        return ["final handoff contains a near-miss coordination declaration #{JSON.generate(near_misses.first)}; " \
                 "use exact `coordination: registered <batch-id>` or " \
                 "`coordination: unavailable #{EM_DASH} <reason>` syntax"]
       end
