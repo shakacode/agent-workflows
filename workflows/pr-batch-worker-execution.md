@@ -1,6 +1,6 @@
 # PR-Batch Worker Execution
 
-This component owns bounded implementation for an accepted PR-batch lane.
+This component owns bounded implementation for an accepted lane.
 Load after prompt intake, planning, dependency preflight, and dispatch, before
 creating the lane worktree or editing files.
 
@@ -131,9 +131,10 @@ owner runs the clean committed full validation and all current-head gates.
 
 Use reversible best judgment for naming, ordinary conflicts, test selection,
 changelog deferral, documentation placement, and other non-consequential
-choices allowed by repository policy. Record the decision for integration.
+choices allowed by repository policy. Record it for integration.
 
-Stop at a safe checkpoint when contradictory evidence appears; goal/behavior changes; unrelated work;
+Stop at a safe checkpoint when contradictory evidence appears; the approved
+goal, accepted behavior, or acceptance criteria changes; unrelated work;
 repository/trust-boundary crossings; destructive or hard-to-reverse actions;
 new secrets, permissions, deployments, billing, or external effects;
 consequential architecture, performance, compatibility, or product decisions;

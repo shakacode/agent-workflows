@@ -7,6 +7,10 @@ ROOT = File.expand_path("../../..", __dir__)
 COMPONENT_PATH = File.join(ROOT, "workflows/pr-batch-worker-execution.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
+DEPENDENCY_POLICY_LINK =
+  "[Dependency And Conflict Throughput Policy]" \
+  "(../../workflows/pr-processing.md#dependency-and-conflict-throughput-policy)"
+ACCEPTANCE_CRITERIA_STOP = "the approved goal, accepted behavior, or acceptance criteria changes"
 
 def section(text, heading, next_heading)
   match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
@@ -66,7 +70,7 @@ class WorkerExecutionContractTest < Minitest::Test
   def test_skill_preserves_the_dependency_policy_route
     route = squish(section(@skill, "## Worker Rules", /^##\s+/))
 
-    assert_equal 1, route.scan("dependency-and-conflict-throughput-policy").length
+    assert_equal 1, route.scan(DEPENDENCY_POLICY_LINK).length
     assert_includes route, "Non-safety coordination override:"
     assert_includes route, "Batch Plan"
     assert_includes route, "Lane Cards"
@@ -124,6 +128,7 @@ class WorkerExecutionContractTest < Minitest::Test
     assert_includes attention, "`permission`, otherwise `question`, otherwise"
     assert_includes attention, "one exact decision or action required"
     assert_includes attention, "Do not ask merely"
+    assert_includes attention, ACCEPTANCE_CRITERIA_STOP
     assert_includes attention, "verification would be weakened"
   end
 
