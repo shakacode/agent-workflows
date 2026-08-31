@@ -1154,11 +1154,19 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_includes docs, "invalid_usage_timestamp"
 
     workflow = File.read(File.join(root, "workflows/pr-processing.md"), encoding: "UTF-8")
+    component = File.read(
+      File.join(root, "workflows/pr-batch-integration-closeout.md"),
+      encoding: "UTF-8"
+    )
     skill = File.read(File.join(root, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
-    [workflow, skill].each do |surface|
+    [component].each do |surface|
       assert_includes surface, "`bin/batch-usage-receipt` helper"
       assert_includes surface, "durable artifact reference"
       assert_includes surface, "informational"
+    end
+    [workflow, skill].each do |surface|
+      assert_includes surface,
+                      "pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay"
     end
   end
 

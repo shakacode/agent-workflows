@@ -8,6 +8,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
   DOC = "docs/user-facing-coordination.md"
   WORKFLOW = "workflows/pr-processing.md"
+  INTEGRATION_CLOSEOUT = "workflows/pr-batch-integration-closeout.md"
   PR_BATCH = "skills/pr-batch/SKILL.md"
   PLAN_PR_BATCH = "skills/plan-pr-batch/SKILL.md"
   TRIAGE = "skills/triage/SKILL.md"
@@ -37,7 +38,11 @@ class UserFacingCoordinationContractTest < Minitest::Test
     full_path = File.join(ROOT, path)
     return "" unless File.file?(full_path)
 
-    File.read(full_path, encoding: "UTF-8").gsub(/\s+/, " ").strip
+    source = File.read(full_path, encoding: "UTF-8")
+    if [WORKFLOW, PR_BATCH].include?(path)
+      source = "#{File.read(File.join(ROOT, INTEGRATION_CLOSEOUT), encoding: 'UTF-8')}\n#{source}"
+    end
+    source.gsub(/\s+/, " ").strip
   end
 
   def normalized_section(path, heading, end_heading:)
@@ -198,8 +203,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   def test_ambiguity_guard_synthesizes_ownership_without_raw_events
     sections = {
       DOC => ["## Ambiguity Guard", /^##\s+/],
-      WORKFLOW => ["### Coordinator Closeout Lane", /^###\s+/],
-      PR_BATCH => ["## Coordinator Closeout Lane", /^##\s+/],
+      INTEGRATION_CLOSEOUT => ["### Coordinator Closeout Lane", /^##\s+/],
       CLOSE_SESSION => ["## User-Facing Coordination Contract", /^##\s+/]
     }
     sections.each do |path, (heading, end_heading)|
@@ -218,7 +222,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes contract,
                     "state the smallest action that clears the blocker and whether to reply here or start a new task"
 
-    [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION,
+    [WORKFLOW, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION,
      PAUSE, PR_MONITORING, PR_WALKTHROUGH, SPEC, PLAN_ISSUE_TRIAGE, QA_STRESS].each do |path|
       text = normalized(path)
       assert_includes text,
@@ -226,7 +230,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
                       path
     end
 
-    [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION].each do |path|
+    [WORKFLOW, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION].each do |path|
       text = normalized(path)
       assert_includes text, "`Next: Archive this task.`", path
     end
@@ -235,11 +239,14 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes pause, "end with explicit `Action needed:` and `Next:` lines"
     assert_includes pause, "the exact same-task resume command or new-task handoff action"
 
-    [PR_BATCH, PLAN_PR_BATCH, TRIAGE, PR_MONITORING].each do |path|
+    [PLAN_PR_BATCH, TRIAGE, PR_MONITORING].each do |path|
       text = normalized(path)
       assert_includes text, "Keep `Action needed:` separate", path
       assert_includes text, "exact user action or `none`", path
     end
+
+    assert_includes normalized(PR_BATCH), "../../docs/user-facing-coordination.md",
+                    "skills/pr-batch/SKILL.md must route terminal wording to the shared contract"
 
     monitoring = normalized(PR_MONITORING)
     assert_includes monitoring, "`Next: Archive this task.`"

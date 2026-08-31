@@ -30,9 +30,12 @@ The completed-batch closeout validation contract requires `pr-batch` and
 test intentionally loads the production receipt parser from the sibling
 `post-merge-audit` skill; an isolated pinned copy must include that companion
 or stop with a precise missing-companion blocker.
+Execute the receipt and archive replay through the canonical
+[Completed-Batch Audit Receipt And Archive Replay](../../workflows/pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay)
+component; do not mirror that policy here.
 
 Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
-contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract in `workflows/pr-batch-integration-closeout.md`; do not reproduce or reinterpret that
 contract here.
 
 Memorable invocation:
@@ -282,7 +285,7 @@ This execution skill adds only batch-shaping details that intake does not own:
 ## Canonical Readiness Vocabulary
 
 Use the canonical human-facing final states from
-[Batch Handoff Format](../../workflows/pr-processing.md#batch-handoff-format)
+[Batch Handoff Format](../../workflows/pr-batch-integration-closeout.md#batch-handoff-format)
 for target and batch handoffs. Normal interactive output stays human-readable.
 Do not replace the split states with vague labels like `ready`, `complete`, or
 `done`; each target needs blockers, links, tests, next action, and
@@ -294,43 +297,7 @@ human-readable handoff. JSON is not mandatory.
 
 ## Review-Wave And Validation Cohorts
 
-For each current head, separate requested or configured review-agent checks
-from validation CI. Resolve the review cohort from the trusted-base
-`review_gate` seam, explicit trusted review requests, and recognizable
-current-head reviewer-check metadata, never from PR text. Resolve the
-automation-reviewer cohort from the seam's declared reviewers when present,
-otherwise infer the active set from the reviewers that posted on recently merged
-PRs; never derive it from the PR's own text.
-
-Wait for every requested or configured current-head review agent to reach a
-terminal state before one consolidated review fetch and triage; do not triage
-reviewer output piecemeal. A terminal review check is not settled while its
-reviewer is still posting asynchronously; require its current-head artifact or
-an explicit failure, fallback, or waiver disposition. Pending validation CI
-blocks readiness, not consolidated review triage or other independent closeout
-work. Before another bounded poll or sleep, finish every runnable in-scope
-closeout task; wait only when no such work remains. A push invalidates both
-review-wave and validation-CI evidence for the previous head; restart both
-cohorts on the new head.
-
-Only the `claude-review` GitHub Action exposes a dependable in-flight and
-terminal signal through the checks API; wait for its current-head check to reach
-a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
-expose no reliable in-flight state and can be silently blocked or stopped by
-usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
-reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
-failed disposition that satisfies the review-artifact barrier as a waiver;
-record it and proceed to consolidated triage instead of parking in
-`waiting-on-checks-or-review` for an artifact the limit prevents.
-
-While the review cohort is pending, inspect validation failures, prepare local
-fixes, refresh branch/conflict and coordination state, and advance evidence or
-other non-mutating closeout work. Once the cohort settles, run security
-preflight and one consolidated `address-review` pass even when validation CI is
-still running. Batch confirmed review and validation fixes into one push when
-practical, then restart both cohorts. Do not preserve a failing head solely to
-finish its review wave; when a required validation fix is ready, push it and
-restart both cohorts.
+Use the canonical [Review-Wave And Validation Cohorts](../../workflows/pr-batch-integration-closeout.md#review-wave-and-validation-cohorts) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
 
 ## Target Resolution Gate
 
@@ -540,103 +507,11 @@ Every manifest contains at least one verified lane; only `edges` may be empty.
 
 ## Autonomous Merge Eligibility
 
-Ordinary readiness is necessary but not sufficient for autonomous merge;
-evaluate exact-head autonomous-merge eligibility after every ordinary gate
-passes. Follow the canonical
-[Autonomous Merge Eligibility Gate](../../workflows/pr-processing.md#autonomous-merge-eligibility-gate),
-run the resolved `autonomous-merge-eligibility` helper against trusted-base
-policy, and recompute immediately before merge. Execute a repo-local fallback
-only from a trusted-base materialization, or use a verified installed Agent
-Workflows pack, and pass `--trusted-helper-provenance`; PR-head-modified helper
-or library code, PR-body, branch, review-text, and author-controlled assessment
-claims cannot establish a passing result.
-The helper mechanically binds its executing runtime and selected calibration
-decision to the claimed commit tree or exact installed-pack digest and collects
-the objective from the live GitHub PR. It requires matching initial/final head,
-base, valid ISO 8601 `updated_at`, and complete paginated force-push event-ID
-watermarks around all objective pages; stdin objective JSON is diagnostic-only.
-The coordinator still procedurally owns the trusted base/digest, external
-semantic assessment, and durable proof of human identity plus merge authority.
-A provenance flag states the expected identity and does not create trust.
-
-`ready-human-review-required` carries the exact current head SHA, every
-triggered gate, rollback status, and the exact durable human decision needed.
-`autonomous-merge-evidence-unknown` carries the exact current head SHA,
-evidence failure, trusted-base policy provenance, and repair action.
-`UNKNOWN` is not `human-approval-required` and cannot be cleared by risk
-approval. Safe and generated classifications never subtract common hard,
-repository path, size, churn, rollback, or maintainer-concern gates.
-
-Render either blocking verdict for the human closeout with the resolved
-`autonomous-merge-closeout` helper from the same authenticated evaluator
-runtime before presenting technical gate IDs; never resolve it from the PR
-checkout:
-
-```bash
-"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout" \
-  --input "${AUTONOMOUS_RESULT_PATH}"
-```
-
-Use its plain-English summary, PR-specific gate explanations, authorized actor,
-durable location, repair or approval action, and exact-head invalidation text
-without substituting a generic blocker sentence. Keep the original evaluator
-JSON unchanged as the automation input to merge assurance; the renderer is a
-deterministic presentation layer and its optional `--format json` output repeats
-the exact verdict, head, sorted gates, rollback, policy provenance, and evidence
-failure facts. Malformed renderer input fails closed. An `UNKNOWN` closeout must
-direct evidence repair and reevaluation and must never be worded as approvable.
+Use the canonical [Autonomous Merge Eligibility](../../workflows/pr-batch-integration-closeout.md#autonomous-merge-eligibility-gate) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
 
 ## Merge Assurance Gate
 
-After ordinary readiness and any required walkthrough or human decision, capture
-the resolved `pr-ci-readiness` v2 result, the autonomous eligibility result, and
-a trusted coordinator-owned merge context. `pr-ci-readiness` v2 owns the scoped,
-exact-head required-status, GitHub Actions, Dependabot, and other CI evidence;
-legacy v1 CI output is not sufficient.
-
-When a hosted workflow outside the ordinary GitHub check scopes is explicitly
-selected, add its exact `{provider, run_id}` to merge-context
-`selected_hosted_runs`. A nonempty selection requires the trusted-base
-`selected_hosted_ci_receipts` seam with exact `executable` and `credential_env`
-keys. `credential_env` is a unique array of uppercase names ending in exactly
-one of `_TOKEN`, `_API_KEY`, `_SECRET`, `_PASSWORD`, `_CREDENTIALS`,
-`_ACCESS_KEY_ID`, `_SECRET_ACCESS_KEY`, or `_PRIVATE_KEY`; every declared value
-must be present and nonempty. Loader controls and arbitrary names are rejected.
-Only declared credential environment values are forwarded, and target-binding
-or hardened runtime variables cannot be declared. `merge-assurance` runs the
-one repository-owned `.agents/bin` executable from a private materialization of
-the trusted base, never from PR-head bytes. The seam process alone receives a
-fresh empty `0700` `HOME` inside that private temp directory, distinct from the
-account home; raw trusted-base Git-object materialization does not receive it.
-Account dotfiles and provider credential files are therefore absent from that
-private `HOME`.
-Credential values copied into the seam environment enter only through declared
-`credential_env` names. Its provider-neutral records bind repository, PR,
-exact head, run ID, selection time, and terminal result.
-Seam execution defaults to a 60-second bound, configurable only as a positive
-finite `MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS` value. Timeout or a
-surviving descendant terminates the entire process group and blocks without a
-receipt.
-Missing, mismatched, cancelled, failed, nonterminal, malformed, or `UNKNOWN`
-selected-run evidence blocks. `success` is the only passing result. An empty
-selection invokes no seam and gates no incidental hosted run.
-
-Run:
-
-```bash
-"${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
-  --ci-result "${CI_RESULT_PATH}" \
-  --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
-```
-
-`merge-assurance` alone owns merge-authority, follow-up accounting, and
-`UNKNOWN` policy at this final boundary. Every merge caller must generate a
-fresh eligible receipt and pass it to `pr-merge-submit`; the submit helper
-requires it unconditionally and replays the selected-run records before either
-queue or guarded-direct submission. `merge_authority: none` remains a no-merge
-state and can never produce an eligible receipt. Keep this gate conceptually
-separate from batch-plan preflight.
+Use the canonical [Merge Assurance Gate](../../workflows/pr-batch-integration-closeout.md#merge-assurance-gate) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
 
 ## Goal Prompt Template
 
@@ -748,104 +623,7 @@ detailed policy belongs in the canonical workflow.
 
 ## Batch Handoff Format
 
-> **A handoff is a comment, not a new issue.** Per `AGENTS.md` → _Tracking Issues
-> And Handoffs_: record a handoff on the relevant parent tracking issue (or the
-> coordination backend if one is in use), or — when there is no parent umbrella
-> — in the batch's own PR comment/description; and append point-in-time audits to
-> the standing release audit ledger in place. Never spawn a standalone handoff or
-> audit issue. Close superseded process issues on
-> sight; closure follows the work, not whoever opened the tracker.
-
-<!-- Keep this handoff summary in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
-
-Use the canonical Batch Handoff Format in
-`.agents/workflows/pr-processing.md`. In short, split final batch handoffs into
-**Immediate maintainer attention** for true blockers and questions only, and
-**FYI / decisions made** for decisions, validations, review state, hosted-CI
-requests already handled, no-PR rationales, autonomous nit outcomes,
-confidence notes, decision-point counts per PR, QA Evidence blocks, and per-PR
-merge-ledger summaries.
-
-At terminal closeout, use the resolved sibling
-`bin/batch-usage-receipt` helper for supported Codex rollout JSONL plus
-`state_5.sqlite` evidence, following
-[Batch Usage Receipt v1](../../docs/batch-usage-receipt.md). Put the compact
-batch total or a durable artifact reference in FYI / decisions made, alongside
-the shadow-only `coordinator-narration-volume v1` marker. Preserve
-structured `UNKNOWN` for unavailable evidence, keep requested and observed
-routes separate, and never attach raw rollout/database data or emit prompt,
-response, tool-result, auth, secret, or environment content. Usage telemetry is
-informational and never replaces a closeout gate.
-
-Every target handoff repeats the repository-qualified canonical launch identity
-from plan/preflight and claim evidence. A durably overridden ad-hoc handoff also
-repeats the accepted override name, trusted authorizer, durable authorization
-reference, original task identity, and unchanged stable coordination identity.
-A missing, changed, duplicate, or `UNKNOWN` identity is a non-ready blocker.
-
-<!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
-
-Batch Coordination Declaration: every final batch handoff must carry exactly one
-`coordination:` line, and no handoff is complete or clean without it. Use
-`coordination: registered <batch-id>` only when this batch actually registered
-with the coordination backend, and quote the exact backend batch id. Otherwise
-use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
-a repo seam that sets `coordination_backend: n/a`, an unreachable or degraded
-backend, or a deliberately uncoordinated single-operator run. A missing
-`coordination:` line, an empty or `UNKNOWN` batch id, an empty or `UNKNOWN`
-reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
-a clean handoff.
-Silence is not an accepted value; a batch that wrote nothing to the coordination
-backend must say so in the declaration.
-
-When QA Evidence or P0/P1/P2/Must-Fix review-finding dispositions are part of a
-ready/merge claim, include replayable `qa-evidence v2` and
-`priority-finding-dispositions v1` markers as defined by the repository-resolved
-workflow contract selected through its `AGENTS.md` seam, or state why replay is
-not applicable.
-Historical `qa-evidence v1` remains replayable but must not be emitted for new
-closeout evidence. Every current user-visible UI change requires durable
-before/after evidence, explicit `interaction_change` and `visual_fix`
-classifications, an interaction clip or measured substitute when applicable, an
-unfixed negative control for a visual fix, and repository performance-seam
-`source=<stable command/report/ref>` plus
-`baseline_value=<number><unit>` / `candidate_value=<number><unit>` evidence for
-rendered-page/asset/bundle impact; non-byte `bundle_hygiene` values require
-`metric_name=<bundle/asset shape metric>`, while `measured_metric` requires
-`metric_name=<runtime/user metric>`.
-Replay current UI evidence with `--expected-head-sha <full-final-head-SHA>
---require-visual-evidence-v2`; the strict v2 flag is invalid without the
-expected head. GitHub-only work should use an authenticated GitHub UI uploader
-when available. Prepared local artifacts keep readiness blocked until either
-that flow or a human attachment produces durable GitHub URLs.
-Replay validates URL and destination shape, not authorization, retention, or
-liveness; before readiness, an intended reviewer must open every evidence URL
-using intended reviewer access and reject dead, inaccessible, private-only, or
-expiring evidence.
-Do not call a target `complete` while its ledger has `UNKNOWN` fields or
-`complete_allowed: false`.
-Do not report a batch that requires QA as ready while required QA
-coverage/scope evidence is missing, stale, scope-mismatched, `blocked`,
-`in_progress`, `unknown`, or still `UNKNOWN`; the only allowed fallback is a QA
-lane whose private coordination claim/heartbeat is `UNKNOWN` while documented QA
-evidence is otherwise complete.
-Record the selected `merge_authority` value in the handoff and use the canonical
-split final states from `.agents/workflows/pr-processing.md`.
-
-End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them.
-
-Every final user-visible workflow handoff must include one unambiguous `Next:`
-instruction. When the applicable archive gate passes, use
-`Next: Archive this task.` When user input blocks progress, state the smallest
-action that clears the blocker and whether to reply here or start a new task.
-When the current task will continue without input, state its exact next action.
-A durable issue, receipt, or blocker list is evidence, not a next step. Place
-this guidance before any receipt that is required to immediately precede the
-final `Conversation status:` line.
-
-Keep `Action needed:` separate: name the exact user action or `none`. Do not
-make the operator infer whether action is required from the readiness state,
-durable references, or the `Next:` instruction.
+Use the canonical [Batch Handoff Format](../../workflows/pr-batch-integration-closeout.md#batch-handoff-format) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
 
 ## Coordination State
 
@@ -894,6 +672,10 @@ coordination, security, and closeout decisions into that component. Do not
 mirror or reinterpret its execution contract here. The integration/PR-closeout
 owner consumes the returned head and evidence and remains responsible for PR
 publication, current-head review/CI, readiness, and merge sequencing.
+
+## Integration And PR Publication
+
+Use the canonical [Integration And PR Publication](../../workflows/pr-batch-integration-closeout.md#integration-and-pr-publication) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
 
 ## Pausing Or Stopping A Batch
 
@@ -962,246 +744,5 @@ termination and claim release, without waiting further on the drain event.
 
 ## Coordinator Closeout Lane
 
-The current task remains the sole user-facing coordinator through closeout. If
-ownership is ambiguous or the user asks who is working, emit only:
-
-```text
-Current task: <responsibility and scoped outcome>
-Internal workers: <owned implementation, review, QA, or audit roles; or none>
-External tasks: <request or evidence role only; ownership did not transfer; or none>
-Next: <current-task action or exact required decision>
-```
-
-Do not append raw cross-task messages, coordination backend events, heartbeat
-logs, worker transcripts, or claim telemetry. For an approval or readiness
-handoff, report `Technical readiness:`, `Ownership:`, `Repository submission
-policy:`, and `Merge authority:` separately. Act under existing authority; ask
-one exact question only when new authority or a product decision is required.
-
-Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
-
-For the complete numbered sequence, follow the canonical closeout lane in
-`.agents/workflows/pr-processing.md` instead of stopping at PR creation. The
-coordinator owns the live re-fetch, current-head checks and review-thread triage,
-per-PR merge-ledger run, stale release-mode classification updates and the finalized PR-body
-`Agent Merge Confidence` block refresh required for accelerated-RC readiness (kept
-distinct), hosted-CI request and waitback when uncertainty remains, and any
-authorized ready/merge action, required QA Evidence verification, and the late
-post-merge bot-finding sweep before final batch handoff. Once every batch target
-has a final state, run a read-only check after terminal releases only when the
-active backend advertises an `agent-coord`-compatible telemetry-completeness
-audit capability bound to the following process contract. Executable:
-`agent-coord`. Arguments, in order and as separate
-values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`. Pass the
-opaque batch ID as exactly one argument value through a process/argument-vector
-API. Shell interpolation, `eval`, `sh -c`, and equivalent shell-evaluation
-paths are forbidden. Run that exact child contract through the resolved
-pr-batch `bin/agent-coord-bounded` process-control seam with a positive hard
-deadline; the helper must preserve the exact child executable and separate
-argument vector, launch it in its own process group, and terminate the whole
-process group when the deadline expires. A timeout or forced termination is a
-command failure: record best-effort `UNKNOWN` telemetry-audit evidence and
-continue closeout through steps 13-14 with that blocker; the audit subprocess
-must never wedge merge closeout. When that compatible capability is advertised, incomplete
-coverage, command failure, or `UNKNOWN` readback blocks telemetry closeout. If
-the active backend does not advertise
-that compatible capability or its advertisement is `UNKNOWN`, record
-`telemetry audit: unavailable` in the durable handoff and continue; backend
-`n/a` skips the check. Once every batch target has a
-final state, the batch coordinator must run its completed-batch audit before
-its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff. The qualifying checker must
-be independent from every maker and satisfy the evidence-quality contract; a
-preferred checker route is advisory, while a non-independent or unevidenced
-checker keeps the audit verdict `UNKNOWN`. The audit deep-audits only
-the verified batch subset; coverage catch-up mode handles user-requested
-un-audited PR/commit ranges; release/range audit remains reserved for
-final-release readiness, suspected bad merges, unverified batch scope, or
-credible release-readiness risk. A clean audit with no OUTSTANDING findings,
-follow-ups, unresolved questions, pending work, or `UNKNOWN` facts ends with
-`Conversation status: Ready for archiving.` Otherwise the final user-visible
-line must be `Conversation status: Follow-ups remain — <each exact action or
-blocker>.` A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails.
-
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment; the full wrapper is never a final-chat example or output. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`. Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
-
-Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
-
-Immediately before the exact final `Conversation status` line, emit only:
-
-Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
-
-A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`. Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid. `UNKNOWN` validation is fail-closed: only literal ASCII exact `UNKNOWN` may use an exact-sentinel path; NFKC-normalize a copy of every scalar and record value before case-insensitive nested-`UNKNOWN` rejection, so compatibility forms cannot count as evidence. Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported. Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records. Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens. Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union. After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union.
-
-Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback.
-
-A marker has separate well-formed, archive-ready, and blocker-union outputs. Clean/none accepts only no records or fully evidenced terminal records; blocked/follow-ups/OUTSTANDING accepts non-ready records. `UNKNOWN` current status is never ready and cannot appear in a clean/none marker.
-
-Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it. This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed.
-
-The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number.
-Before publication, bind `original_receipt_sha256` to the exact local blocked marker and use `not-published` for its URL plus `not-applicable` for author and both timestamps. After publication, copy those five bindings from the verified compact predecessor reference; the decision timestamp must be later than the original receipt.
-
-Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union.
-
-When `merge_authority` is `auto_merge_when_gates_pass`, definition of done for a
-target is merged + closed out (or a true blocker / no-PR with evidence), not
-"stopped at a recommendation." When `merge_authority` is `ask` and gates are
-clean, automatically start the exact-diff PR walkthrough before approval: use
-`$pr-walkthrough` when available, use full interactive mode for large or complex
-PRs and concise interactive mode for smaller cohesive PRs, and do not repeat a
-walkthrough completed for the same diff identity. Honor an explicit request to
-skip it. After it completes or is skipped, refresh the diff identity and
-ordinary readiness. If the diff identity changed, invalidate the walkthrough
-and readiness evidence, then restart the walkthrough or stop. If an ordinary
-gate newly fails, stop. Ask one final merge decision only when the refreshed
-diff identity matches the recorded identity, ordinary readiness remains clean,
-and merge is allowed; a completed walkthrough must have explained that same diff
-identity. Walkthrough participation is not merge approval.
-If approval is declined or not granted by handoff, record
-`ready-no-merge-authority` and do not ask again. When `merge_authority` is
-`none`, done is a
-`ready-no-merge-authority` handoff per `AGENTS.md`: all current-head checks and
-review threads satisfied, with evidence and the generic `Confidence note:`
-recorded (the `Agent Merge Confidence` block is the accelerated-RC auto-merge
-block, not the normal-handoff note) for the maintainer to merge. Do not merge
-without authorization. Either way, do not surface merge readiness while review
-threads are still unresolved.
-When a merge is authorized, generate a fresh eligible `merge-assurance` receipt,
-then submit the reviewed host, base, and exact head through the canonical
-`pr-merge-submit` helper described by `workflows/pr-processing.md`, passing that
-receipt unconditionally. The helper preserves read-only, idempotent observation
-of an exact terminal merge. Absent policy and explicit `mode: direct` use an
-expected-head-bound direct merge on a queue-disabled base; a queue-enabled base
-fails before mutation until the repository explicitly opts into
-`merge_queue_only` or `merge_queue_or_guarded_direct`. The latter may delegate
-queue-disabled submission to one repository-owned executable guard under
-`.agents/bin`. The fixed-argv guard is
-executed from private identity-bound trusted bytes in an isolated Git root
-whose detached `HEAD`, index, and working files all bind the receipt-base
-commit and tree. This is HEAD/index/worktree isolation, not object/ref
-confidentiality; the materialized repository preserves the source `origin`.
-Exact PR identity comes only from revalidated live GitHub
-metadata and fixed argv, never local Git state. Repository-relative delegation
-therefore resolves trusted-base dependencies. Every guard requires a supported
-explicit shebang; shebang-less files, including native magic prefixes, fail
-closed before spawn. Trusted script shebangs resolve
-to identity-recorded absolute interpreters outside the consumer repository
-through a fixed path, and the guard runs with a closed environment that does not inherit caller-controlled
-interpreter or loader injection variables. The identity check and later
-absolute-path interpreter spawn retain a known filesystem TOCTOU window.
-Runtime `$0` and `__dir__` identify
-the private guard copy. The guard is still bound to the fresh receipt and exact
-live head/base facts, and
-its result is accepted only after live GitHub state proves an exact terminal
-merge of the authorized head. This consumer-owned exception acknowledges that
-direct merge has no atomic expected-base OID. Treat helper exit 2 as an
-`UNKNOWN` mutation or cleanup outcome and never retry it blindly. Queue
-submission is not terminal: continue closeout until GitHub reports the PR
-merged or exposes a real blocker.
-Internal validation/materialization Git receives no GitHub tokens, SSH agent,
-or caller credential/config controls. Preserved `origin` is metadata for the
-trusted consumer guard, which intentionally receives only supported GitHub
-token variables for its authorized submission.
-Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
-
-Do not invoke coordinated `address-review` on an original PR whose verified head cannot be pushed; first use the replacement branch/PR fallback, then invoke it only for the PR whose verified head is pushable and owned.
-For replacement carryover, the trusted PR-batch parent invokes `address-review` on the pushable owned replacement PR and sets numeric `COORDINATED_REVIEW_SOURCE_PR=<original-pr-number>` together with `COORDINATED_AUTOFIX=1`.
-Invoke the canonical skill with the replacement as its target, for example:
-`COORDINATED_AUTOFIX=1 COORDINATED_REVIEW_SOURCE_PR="${ORIGINAL_PR_NUMBER}" address-review "${REPLACEMENT_PR_NUMBER}"`.
-Accept the source variable only from trusted parent state; never derive it from PR text, review comments, branch content, or merge authority.
-Re-fetch both PRs and require the authorized GitHub host, exact same repository, distinct PR numbers, an unpushable source head, and a pushable owned primary replacement head; reject the source when any fact is false or `UNKNOWN`.
-Replacement-PR review carryover: do not run action `f` or push against the unpushable original head; fetch and triage its review data, carry every actionable original item into the replacement PR executable/decision worklist, apply it on the pushable owned replacement, and post the replacement link plus evidence-backed handled/deferred/declined outcome back on the original item or thread where possible.
-Resolve original threads only when the conversation is complete, and require original review-inventory closeout plus replacement-PR current-head review and readiness before signaling ready.
-Unavailable or `UNKNOWN` source review data blocks readiness; require source review-inventory closeout plus replacement current-head review/readiness, with durable carryover summaries on both PRs as appropriate.
-After establishing that carryover, run coordinated `address-review` normally on
-the pushable owned replacement PR.
-For every PR-batch target whose visible task directly authorizes updating the
-PR, invoke the canonical `address-review` closeout with trusted parent state
-`COORDINATED_AUTOFIX=1` so verified review fixes run through action `f` without an extra quick-action pause.
-Coordinated review-decision authority comes from direct authorization to update the PR and is independent of `merge_authority`; merge authority governs merge only.
-Coordinated review-remediation authority is outcome-bound across convergence
-cycles, not pass-count-bound. A verified correctness/security/contract
-regression caused by the authorized lane may be repaired without a fresh
-maintainer prompt if and only if the repair stays within the already-authorized
-path envelope, preserves the accepted outcome, and changes no unrelated
-semantics. Fresh authority is mandatory for a new path, unrelated behavior or
-product semantics, a material tradeoff or judgment, a new security, release, or
-merge-policy expansion, destructive or risky publication not already
-authorized, or a new actor, replacement, or resource. `Bounded pass` binds
-paths/semantics/risk; pass count alone does not expire authority.
-Complete the coordinated verification checkpoint before final triage display, TodoWrite construction, coordinated executable-work construction, or action `f`.
-If verification changes any tier or recommendation, rebuild and re-number the triage, rebuild the TodoWrite `MUST-FIX` list and coordinated executable-work list from verified classifications, and remove stale work items.
-For every coordinated `DISCUSS` outcome, record one evidence-backed recommendation: `fix now`, `defer`, `decline`, or `ask user`.
-A coordinated `SKIPPED` item gets an evidence-backed `decline`/no-action outcome by default.
-If inspection shows a `SKIPPED` item merits a fix, defer, or maintainer choice, reclassify it to `MUST-FIX`, `DISCUSS`, or `OPTIONAL` as appropriate before assigning or executing a recommendation.
-Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`
-because no safe choice can be made without maintainer help.
-Only a trusted `COORDINATED_AUTOFIX=1` invocation that passed security and coordination gates and verified the item as in-scope and safe at the checkpoint may execute an evidence-backed `DISCUSS` recommendation of `fix now`; bot priority or severity alone never qualifies.
-Anything outside the active task or behavior, security, scope, or release-policy boundaries, or still requiring material judgment, must be `ask user`, `defer`, or `decline` as appropriate, never auto-fixed.
-A non-blocking defer
-defaults to durable PR summary or decision-log evidence unless existing
-repository policy selects a tracker. If policy requires tracking, use its
-already-resolved existing destination and contract; missing or ambiguous tracker
-configuration becomes `ask user`. Coordinated mode never creates a new
-follow-up issue. Follow `workflows/pr-processing.md` and the child
-workflow's verification, audit, and independent-current-head-review
-requirements; this does not expand task, security, behavior, scope, release
-policy, or merge authority.
-
-For Goal-mode closeout, follow the canonical
-[Goal Mode Completion Contract](../../workflows/pr-processing.md#goal-mode-completion-contract).
-In short, `waiting-on-checks-or-review` is per-target progress, not an overall
-terminal state; keep polling, triaging, and fixing, or report NOT COMPLETE /
-blocked with exact resume instructions only after a watch window or real
-external blocker.
-
-For autonomously clearable blockers, prefer a deterministic state-change
-watcher that can run without a model continuation. Bind one stable monitor
-identity and persisted state, reduce sanitized observations through
-the `goal-state-change-monitor` helper in this skill's `bin` directory, and do not wake this parent task for
-`baseline-recorded`, `suppress-unchanged`, `suppress-stale-probe`,
-`suppress-replayed-probe`, or `suppress-acknowledgement-retry`. Treat
-`wake_parent: true` as authoritative and resume on `wake-state-change`,
-`fallback-model-poll`, `stop-dependency-terminal`, or `redeliver-pending-wake` with its compact delta
-when present, durably enqueue that resume, and then acknowledge its `wake_id`;
-acknowledgement retries are idempotent. Redeliver an unacknowledged pending
-wake after restart; its returned `acknowledgement_payload` is the exact bounded
-payload to submit after durable enqueue, not a payload rebuilt from a newer live
-observation. Then rerun every
-security, origin, coordination, overlap, review, readiness, and exact-head gate.
-Keep acknowledgement state bounded: a delayed retry replays its original
-canonical observation and probe sequence so the reducer can derive and verify
-the exact waking identity without retaining an ever-growing membership ledger.
-If only model-mediated same-thread polling is available, use the bounded
-15-minute fast window, exponential backoff, and finite unchanged-run/call/token
-ceilings from the canonical contract; conservatively count every fallback
-continuation as at least one model call. Use the least-expensive safe configured
-route for each unavoidable probe; reserve the coordinator route for an actual
-transition or recovery decision. Stop or pause on terminal, non-resumable,
-user-input, or budget outcomes; for user input, preserve the exact question and
-manual-resume instruction in the restart-safe handoff. Rollback
-to that bounded fallback, never an indefinite 15-minute wake loop. This trades
-some detection latency for avoiding repeated full-context model work while the
-authoritative state is unchanged.
-
-When that external blocker publishes an exact future retry time and the host can
-re-enter this same thread on schedule, schedule one same-thread heartbeat for
-that time before handing off, because neither the deterministic watcher nor the
-bounded fallback cadence guarantees a probe at that exact published time.
-Use it as the single scheduled mechanism for that blocker and gate; do not start
-or retain either watcher mode for the same gate, and create or update its durable
-record before stopping or replacing any existing watcher so no wake is lost.
-Update the existing heartbeat instead of
-duplicating it, stop it once the target is terminal, and report in the handoff
-whether one was created, its exact scheduled time, and its durable identifier,
-or else the exact scheduling blocker. An `UNKNOWN` or absent retry time, a
-`blocked-user-input` blocker, or no scheduling capability creates no automation
-and preserves the exact manual resume instructions. A heartbeat never widens
-target scope, permissions, merge authority, dependency gates, or the retry
-count, and never becomes an unbounded polling loop. The canonical rule is the
-Scheduled Retry Heartbeat paragraph in that contract.
-
-Converge the review loop instead of chasing it: each push re-triggers every configured
-review bot on the new head, so resolve advisory threads in-thread (reply + resolve)
-**without a commit**, and reserve pushes for batched confirmed blockers. See
-[Review-Loop Convergence](../../workflows/pr-processing.md#review-loop-convergence-push-amplification).
+Use the canonical [Coordinator Closeout Lane](../../workflows/pr-batch-integration-closeout.md#coordinator-closeout-lane) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+Also load [Goal Mode Completion Contract](../../workflows/pr-processing.md#goal-mode-completion-contract) and [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle).
