@@ -57,6 +57,22 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_includes result.fetch("evidence_failures").first, "neither-delta-reuse-safe"
   end
 
+  def test_copied_file_source_is_not_mistaken_for_a_changed_path
+    result = evaluate do |recorded_base, root|
+      copied_stale_evaluation(
+        root:,
+        recorded_base:,
+        source_path: "lib/source.rb",
+        destination_path: "lib/copied.rb",
+        base_delta_path: "docs/guide.md"
+      )
+    end
+
+    assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+    assert_equal "reuse-exact-head", result.dig("current_integration", "reuse", "decision")
+    assert_equal ["base-delta-reuse-safe"], result.dig("current_integration", "reuse", "reasons")
+  end
+
   def test_live_collection_returns_a_verdict_with_non_ascii_payload_in_a_c_locale
     result = evaluate(subprocess_env: { "LANG" => "C", "LC_ALL" => "C" }) do |base_sha|
       evidence(
@@ -1744,6 +1760,42 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     candidate_tree = git!(root, "merge-tree", "--write-tree", current_base, head_sha).lines.first.strip
 
     evidence(base_sha: recorded_base, files: [file(head_path)]).tap do |input|
+      objective = input.fetch("objective")
+      objective["head_sha"] = head_sha
+      objective["test_current_base_sha"] = current_base
+      objective["test_candidate_oid"] = "d" * 40
+      objective["test_candidate_tree"] = candidate_tree
+    end
+  end
+
+  def copied_stale_evaluation(root:, recorded_base:, source_path:, destination_path:, base_delta_path:)
+    git!(root, "switch", "--quiet", "--detach", recorded_base)
+    FileUtils.mkdir_p(File.join(root, File.dirname(source_path)))
+    File.write(File.join(root, source_path), "source\n")
+    git!(root, "add", source_path)
+    git!(root, "commit", "--quiet", "-m", "add copy source")
+    recorded_with_source = git!(root, "rev-parse", "HEAD").strip
+
+    git!(root, "switch", "--quiet", "-c", "feature-copy")
+    FileUtils.mkdir_p(File.join(root, File.dirname(destination_path)))
+    FileUtils.cp(File.join(root, source_path), File.join(root, destination_path))
+    git!(root, "add", destination_path)
+    git!(root, "commit", "--quiet", "-m", "copy source")
+    head_sha = git!(root, "rev-parse", "HEAD").strip
+
+    git!(root, "switch", "--quiet", "--detach", recorded_with_source)
+    FileUtils.mkdir_p(File.join(root, File.dirname(base_delta_path)))
+    File.write(File.join(root, base_delta_path), "base delta\n")
+    git!(root, "add", base_delta_path)
+    git!(root, "commit", "--quiet", "-m", "advance base")
+    current_base = git!(root, "rev-parse", "HEAD").strip
+    git!(root, "update-ref", "refs/heads/trusted-base", current_base)
+    candidate_tree = git!(root, "merge-tree", "--write-tree", current_base, head_sha).lines.first.strip
+
+    evidence(
+      base_sha: recorded_with_source,
+      files: [file(destination_path, status: "copied", previous_path: source_path)]
+    ).tap do |input|
       objective = input.fetch("objective")
       objective["head_sha"] = head_sha
       objective["test_current_base_sha"] = current_base

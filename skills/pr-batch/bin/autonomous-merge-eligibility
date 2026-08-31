@@ -293,7 +293,8 @@ end
 changelog_path = trusted_config["changelog"]
 changelog_path = nil unless changelog_path.is_a?(String) && !changelog_path.empty?
 current_integration_paths = objective.fetch("files").flat_map do |file|
-  [file.fetch("path"), file["previous_path"]]
+  previous_path = file["previous_path"] if file["status"] == "renamed"
+  [file.fetch("path"), previous_path]
 end.compact.uniq
 begin
   integration_arguments = {

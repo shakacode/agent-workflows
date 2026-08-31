@@ -123,6 +123,103 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
     end
   end
 
+  def test_base_unchanged_verifies_the_live_base_snapshot_is_stable
+    with_repository(base_delta_path: nil) do |fixture|
+      reads = 0
+      reader = lambda do |**|
+        reads += 1
+        value = snapshot(fixture)
+        value["base_sha"] = "f" * 40 if reads == 2
+        value
+      end
+
+      error = assert_raises(CurrentIntegrationEvidence::Error) do
+        CurrentIntegrationEvidence.base_unchanged(
+          repo_root: fixture.fetch(:root),
+          repo: "example/repo",
+          pr_number: 7,
+          recorded_base_sha: fixture.fetch(:recorded_base),
+          head_sha: fixture.fetch(:head),
+          trusted_base_sha: fixture.fetch(:current_base),
+          pr_paths: [fixture.fetch(:head_path)],
+          policy: AutonomousMergePolicy.parse("{}"),
+          snapshot_reader: reader
+        )
+      end
+
+      assert_includes error.message, "live base ref does not match trusted current base"
+    end
+  end
+
+  def test_base_unchanged_ignores_provider_candidate_oid_churn
+    with_repository(base_delta_path: nil) do |fixture|
+      reads = 0
+      reader = lambda do |**|
+        reads += 1
+        value = snapshot(fixture)
+        value.fetch("candidate")["oid"] = (reads == 1 ? "d" : "e") * 40
+        value
+      end
+
+      result = CurrentIntegrationEvidence.base_unchanged(
+        repo_root: fixture.fetch(:root),
+        repo: "example/repo",
+        pr_number: 7,
+        recorded_base_sha: fixture.fetch(:recorded_base),
+        head_sha: fixture.fetch(:head),
+        trusted_base_sha: fixture.fetch(:current_base),
+        pr_paths: [fixture.fetch(:head_path)],
+        policy: AutonomousMergePolicy.parse("{}"),
+        snapshot_reader: reader
+      )
+
+      assert_equal "base-unchanged", result.dig("reuse", "decision")
+    end
+  end
+
+  def test_local_git_fallback_ignores_ambient_git_overrides_and_repository_state
+    with_repository(base_delta_path: "docs/guide.md") do |fixture|
+      value = snapshot(fixture)
+      value["candidate"] = nil
+      wrapper_dir = Dir.mktmpdir("current-integration-untrusted-git")
+      wrapper = File.join(wrapper_dir, "git")
+      marker = File.join(wrapper_dir, "invoked")
+      system_git = CurrentIntegrationEvidence::SYSTEM_TOOL_DIRS
+                   .map { |directory| File.join(directory, "git") }
+                   .find { |path| File.file?(path) && File.executable?(path) }
+      refute_nil system_git
+      File.write(
+        wrapper,
+        "#!/bin/sh\nprintf 'invoked\\n' >> #{marker.inspect}\nexec #{system_git.inspect} \"$@\"\n"
+      )
+      FileUtils.chmod(0o755, wrapper)
+      original_git = ENV["CURRENT_INTEGRATION_GIT"]
+      original_git_dir = ENV["GIT_DIR"]
+      ENV["CURRENT_INTEGRATION_GIT"] = wrapper
+      ENV["GIT_DIR"] = File.join(wrapper_dir, "poisoned.git")
+
+      result = collect(fixture, snapshot_reader: ->(**) { value })
+
+      assert_equal "git-merge-tree", result.dig("candidate", "source")
+      refute File.exist?(marker), "untrusted CURRENT_INTEGRATION_GIT was executed"
+    ensure
+      original_git ? ENV["CURRENT_INTEGRATION_GIT"] = original_git : ENV.delete("CURRENT_INTEGRATION_GIT")
+      original_git_dir ? ENV["GIT_DIR"] = original_git_dir : ENV.delete("GIT_DIR")
+      FileUtils.remove_entry(wrapper_dir) if wrapper_dir && File.exist?(wrapper_dir)
+    end
+  end
+
+  def test_library_loads_its_policy_dependency_without_caller_ordering
+    library = File.expand_path("../lib/current_integration_evidence", __dir__)
+    _stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby,
+      "-e",
+      "require #{library.inspect}; abort 'missing policy' unless defined?(AutonomousMergePolicy)"
+    )
+
+    assert status.success?, stderr
+  end
+
   def test_stale_provider_candidate_falls_back_to_trusted_local_merge_tree
     with_repository(base_delta_path: "docs/guide.md") do |fixture|
       stale = snapshot(fixture)
@@ -195,7 +292,9 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
     values = [
       { repo: "@owner/repo" },
       { repo: "owner/@repo" },
-      { base_ref: "@main" }
+      { base_ref: "@main" },
+      { base_ref: "main@{1}" },
+      { base_ref: "-main" }
     ]
 
     values.each do |override|

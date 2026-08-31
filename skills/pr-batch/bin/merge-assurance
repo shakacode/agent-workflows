@@ -630,6 +630,7 @@ module MergeAssurance
            (telemetry["elapsed_seconds_saved"].nil? ||
             (telemetry["elapsed_seconds_saved"].is_a?(Numeric) && telemetry["elapsed_seconds_saved"] >= 0))
       failures << "autonomous_result current integration telemetry is invalid"
+      return
     end
 
     case reuse["decision"]

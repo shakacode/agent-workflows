@@ -1,10 +1,12 @@
 # frozen_string_literal: true
 
 require "digest"
+require "etc"
 require "fileutils"
 require "json"
 require "open3"
 require "tmpdir"
+require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
 
 module CurrentIntegrationEvidence
   class Error < StandardError; end
@@ -14,6 +16,9 @@ module CurrentIntegrationEvidence
   SHA = /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/
   REPOSITORY = %r{\A[^/\s]+/[^/\s]+\z}
   BASE_REF = /\A[^\s~^:?*\[\\]+\z/
+  SYSTEM_TOOL_DIRS = %w[
+    /opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin
+  ].freeze
   BUILTIN_HIGH_RISK_PATTERNS = %w[
     .github/workflows/**
     .github/actions/**
@@ -39,12 +44,20 @@ module CurrentIntegrationEvidence
 
   def base_unchanged(
     repo_root:, repo:, pr_number:, recorded_base_sha:, head_sha:, trusted_base_sha:,
-    pr_paths:, policy:, base_ref: "main"
+    pr_paths:, policy:, base_ref: "main", snapshot_reader: method(:github_snapshot)
   )
     validate_inputs!(repo_root:, repo:, pr_number:, base_ref:, recorded_base_sha:, head_sha:,
                      trusted_base_sha:, pr_paths:, policy:)
     raise Error, "base-unchanged evidence requires matching recorded and current bases" unless
       recorded_base_sha == trusted_base_sha
+    initial = snapshot_reader.call(repo:, pr_number:, base_ref:)
+    validate_snapshot!(initial, base_ref:, head_sha:, trusted_base_sha:)
+    final = snapshot_reader.call(repo:, pr_number:, base_ref:)
+    validate_snapshot!(final, base_ref:, head_sha:, trusted_base_sha:)
+    live_identity = %w[head_sha base_ref base_sha]
+    unless final.values_at(*live_identity) == initial.values_at(*live_identity)
+      raise Error, "current integration changed during evidence collection"
+    end
 
     {
       "contract" => CONTRACT,
@@ -178,6 +191,9 @@ module CurrentIntegrationEvidence
            !base_ref.include?("..") && !base_ref.start_with?("@")
       raise Error, "base ref is invalid"
     end
+    unless git_success?(repo_root, "check-ref-format", "--branch", base_ref)
+      raise Error, "base ref is invalid"
+    end
 
     [recorded_base_sha, head_sha, trusted_base_sha].each do |sha|
       unless sha.is_a?(String) && sha.match?(SHA)
@@ -223,15 +239,17 @@ module CurrentIntegrationEvidence
   def local_candidate(repo_root, trusted_base_sha, head_sha)
     Dir.mktmpdir("current-integration-merge-tree") do |directory|
       bare = File.join(directory, "repo.git")
-      run_git_external!("init", "--bare", "--quiet", bare)
+      run_git_external!(repo_root, "init", "--bare", "--quiet", bare)
       object_path = git_output!(repo_root, "rev-parse", "--git-path", "objects").strip
       object_path = File.expand_path(object_path, repo_root) unless object_path.start_with?("/")
       object_dir = File.realpath(object_path)
       alternates = File.join(bare, "objects", "info", "alternates")
       FileUtils.mkdir_p(File.dirname(alternates))
       File.write(alternates, "#{object_dir}\n")
-      stdout, stderr, status = safe_git_capture("--git-dir", bare, "merge-tree", "--write-tree",
-                                                trusted_base_sha, head_sha)
+      stdout, stderr, status = safe_git_capture(
+        "--git-dir", bare, "merge-tree", "--write-tree", trusted_base_sha, head_sha,
+        outside_root: repo_root
+      )
       raise Error, "trusted local synthetic merge is conflicted or unavailable: #{stderr.lines.first.to_s.strip}" unless
         status.success?
 
@@ -328,32 +346,67 @@ module CurrentIntegrationEvidence
   end
 
   def git_output!(repo_root, *arguments)
-    stdout, stderr, status = safe_git_capture("-C", repo_root, *arguments)
+    stdout, stderr, status = safe_git_capture("-C", repo_root, *arguments, outside_root: repo_root)
     raise Error, "Git evidence command failed: #{stderr.lines.first.to_s.strip}" unless status.success?
 
     stdout
   end
 
   def git_success?(repo_root, *arguments)
-    _stdout, _stderr, status = safe_git_capture("-C", repo_root, *arguments)
+    _stdout, _stderr, status = safe_git_capture("-C", repo_root, *arguments, outside_root: repo_root)
     status.success?
   end
 
-  def run_git_external!(*arguments)
-    _stdout, stderr, status = safe_git_capture(*arguments)
+  def run_git_external!(repo_root, *arguments)
+    _stdout, stderr, status = safe_git_capture(*arguments, outside_root: repo_root)
     raise Error, "Git evidence setup failed: #{stderr.lines.first.to_s.strip}" unless status.success?
   end
 
-  def safe_git_capture(*arguments)
+  def safe_git_capture(*arguments, outside_root:)
+    account = Etc.getpwuid(Process.uid)
     environment = {
+      "HOME" => account.dir,
+      "USER" => account.name,
+      "LOGNAME" => account.name,
+      "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
       "GIT_CONFIG_NOSYSTEM" => "1",
       "GIT_CONFIG_GLOBAL" => File::NULL,
       "GIT_NO_REPLACE_OBJECTS" => "1",
       "GIT_OPTIONAL_LOCKS" => "0",
       "GIT_TERMINAL_PROMPT" => "0"
     }
-    Open3.capture3(environment, ENV.fetch("CURRENT_INTEGRATION_GIT", "git"), *arguments)
-  rescue Errno::ENOENT
-    raise Error, "Git is unavailable"
+    Open3.capture3(
+      environment,
+      resolve_system_git!(outside_root:),
+      *arguments,
+      unsetenv_others: true
+    )
+  rescue ArgumentError
+    raise Error, "local account identity is unavailable for uid #{Process.uid}"
+  rescue Errno::ENOENT, Errno::EACCES => e
+    raise Error, "Git could not be launched after trusted resolution: #{e.message}"
+  end
+
+  def resolve_system_git!(outside_root:)
+    candidate = SYSTEM_TOOL_DIRS
+                .map { |directory| File.join(directory, "git") }
+                .find { |path| File.file?(path) && File.executable?(path) }
+    raise Error, "Git is unavailable in approved system tool directories" unless candidate
+
+    realpath = File.realpath(candidate)
+    root = File.realpath(outside_root)
+    prefix = "#{root}#{File::SEPARATOR}"
+    if realpath == root || realpath.start_with?(prefix)
+      raise Error, "Git must resolve outside the consumer repository"
+    end
+
+    stat = File.stat(realpath)
+    unless stat.file? && File.executable?(realpath)
+      raise Error, "Git is not an executable regular file"
+    end
+
+    realpath
+  rescue Errno::ENOENT, Errno::EACCES
+    raise Error, "Git is unavailable in approved system tool directories"
   end
 end

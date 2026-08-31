@@ -143,6 +143,32 @@ class MergeAssuranceTest < Minitest::Test
     assert_equal integration, result.dig("bindings", "current_integration")
   end
 
+  def test_malformed_current_integration_telemetry_blocks_without_raising
+    malformed_values = [
+      nil,
+      {
+        "validator_replays_avoided" => "1",
+        "review_replays_avoided" => 0,
+        "elapsed_seconds_saved" => nil
+      }
+    ]
+
+    malformed_values.each do |telemetry|
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous.fetch("current_integration")["telemetry"] = telemetry
+
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+
+      assert_equal false, result.fetch("eligible"), telemetry.inspect
+      assert_includes result.fetch("failures"), "autonomous_result current integration telemetry is invalid"
+    end
+  end
+
   def test_selected_hosted_ci_hichee_10049_cancelled_replay_blocks
     replay = HOSTED_CI_REPLAYS.fetch("cases").find { |item| item.fetch("pr") == 10_049 }
     context = context(
