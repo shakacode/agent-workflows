@@ -181,12 +181,11 @@ module HostTaskLaunch
       "configured_machine_alias" => immutable.fetch("configured_machine_alias"),
       "purpose" => immutable.fetch("purpose"),
       "lanes" => immutable.fetch("lanes").map do |lane|
-        work_item = lane.fetch("helper_evidence").fetch("work_item")
         lane.merge(
           "transition" => "prepared",
           "state" => "launch-pending",
           "outcome" => "pending",
-          "task_title" => "#{immutable.fetch('repository')} ##{work_item.fetch('number')} — #{immutable.fetch('purpose')}",
+          "task_title" => immutable.fetch("task_title"),
           "task" => { "id" => "UNKNOWN", "url" => "UNKNOWN", "provisional_id" => "UNKNOWN" },
           "branch" => "UNKNOWN", "pr" => "UNKNOWN", "latest" => "launch prepared",
           "blocker" => nil, "human_input_needed" => "no"

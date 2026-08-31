@@ -258,7 +258,8 @@ class HostTaskLaunchTest < Minitest::Test
   def test_binds_immediate_and_provisional_task_identities_and_renders_only_the_outer_marker
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
-      input["intent"]["task_title"] = "[hostile](javascript:alert(1)) <script>"
+      requested_title = "[hostile](javascript:alert(1)) <script>"
+      input["intent"]["task_title"] = requested_title
       input["operation"] = "bind-provisional"
       input["task_identity"] = { "provisional_id" => "provisional-1" }
       provisional = invoke(input)
@@ -272,11 +273,12 @@ class HostTaskLaunchTest < Minitest::Test
 
       assert_equal "task-1", result.dig("record", "lanes", 0, "task", "id")
       assert_equal "provisional-1", result.dig("record", "lanes", 0, "task", "provisional_id")
+      assert_equal requested_title, result.dig("record", "lanes", 0, "task_title")
       assert_equal 1, rendered.scan("<!-- agent-launcher-run-record:v1 -->").length
       refute_includes rendered, "<!-- agent-run-record:v1 -->"
+      assert_includes rendered, "- Task title: `\u005bhostile\u005d(javascript:alert(1)) &lt;script&gt;`"
       assert_includes rendered, "&lt;bad&gt;"
       refute_includes rendered, "<script>"
-      refute_includes rendered, "hostile"
       assert_includes rendered, "Repository/issue:"
       assert_includes rendered, "Human input needed:"
     end
