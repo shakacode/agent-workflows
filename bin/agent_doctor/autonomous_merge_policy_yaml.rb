@@ -12,7 +12,7 @@ module AutonomousMergePolicy
   # add repository-specific policy documents and helpers; they can never remove
   # a built-in entry.
   SOURCE_POLICY_PATTERNS = %w[
-    workflows/pr-processing.md
+    workflows/pr-processing.md workflows/pr-batch-security-floor.md
     skills/pr-batch/SKILL.md skills/pr-monitoring/SKILL.md
     skills/plan-pr-batch/SKILL.md skills/triage/SKILL.md
     bin/agent_doctor/autonomous_merge_policy.rb bin/agent_doctor/autonomous_merge_policy_globs.rb
