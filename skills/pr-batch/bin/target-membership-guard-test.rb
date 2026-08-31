@@ -582,6 +582,24 @@ class TargetMembershipGuardTest < Minitest::Test
                     "invoke it at that adapter's mutation boundary and fail closed on bypass or `UNKNOWN`"
   end
 
+  def test_canonical_workflow_requires_a_trusted_runtime_for_the_guard
+    workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    section = workflow[/### Cross-Task Target Membership Gate(.*?)### Coordination State/m, 1]
+
+    refute_nil section
+    normalized_section = section.gsub(/\s+/, " ")
+    assert_includes normalized_section, "trusted-base materialization outside the evaluated repository"
+    assert_includes normalized_section, "verified installed Agent Workflows pack"
+    assert_includes normalized_section, "Never execute the guard from the candidate head"
+    assert_includes normalized_section, "lacks a verified trusted runtime, return structured `UNKNOWN`"
+    assert_includes normalized_section, "Do not execute its shebang"
+    assert_includes section, '"${TRUSTED_RUBY}"'
+    assert_includes section, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/target-membership-guard"'
+    refute_includes normalized_section,
+                    "resolve `PR_BATCH_SKILL_DIR` through the explicit env-var / loaded-skill / repo-local pinned-copy chain"
+    refute_includes section, '"${PR_BATCH_SKILL_DIR}/bin/target-membership-guard"'
+  end
+
   def test_canonical_skill_summary_distinguishes_foreign_evidence_from_unknown_identity
     relative_path = "skills/pr-batch/SKILL.md"
     text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")

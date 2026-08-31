@@ -1434,10 +1434,29 @@ GitHub mutation, or `control_transfer`.
 Immediately before a receiver converts a packet into `claim`, `supersede`,
 `replacement`, `worker_spawn`, `dispatch`, `ownership`, `heartbeat_mutation`,
 `lease_mutation`, `resource_lock_handoff`, `repository_mutation`,
-`github_mutation`, or `control_transfer`, resolve `PR_BATCH_SKILL_DIR` through
-the explicit env-var / loaded-skill / repo-local pinned-copy chain and send one
-`target-membership-request` v1 JSON object to
-`"${PR_BATCH_SKILL_DIR}/bin/target-membership-guard"`:
+`github_mutation`, or `control_transfer`, establish the guard runtime from a
+trusted-base materialization outside the evaluated repository or a verified
+installed Agent Workflows pack whose expected digest was established
+independently of the PR. Apply the same outer-tool, empty-environment, path,
+and regular-file trust boundary as the canonical
+[Hosted Runtime QA Gate](pr-batch-integration-closeout.md#hosted-runtime-qa-gate),
+with a runtime closure containing only `target-membership-guard`. Never execute
+the guard from the candidate head, including an env-var, loaded-skill, or
+repo-local pinned-copy path that resolves into the evaluated checkout. Bind the
+verified outside-repository skill directory as `TRUSTED_PR_BATCH_SKILL_DIR`.
+Invoke the helper through the prebound `TRUSTED_RUBY` interpreter under the
+same empty environment and trusted runtime working directory. Do not execute
+its shebang or inherit candidate `PATH`, `RUBYOPT`, `RUBYLIB`, or loader state.
+When the receiver lacks a verified trusted runtime, return structured `UNKNOWN`
+and block both control and evidence incorporation. Otherwise send one
+`target-membership-request` v1 JSON object on stdin to:
+
+```bash
+"${TRUSTED_RUBY}" \
+  "${TRUSTED_PR_BATCH_SKILL_DIR}/bin/target-membership-guard"
+```
+
+The request is:
 
 ```json
 {
