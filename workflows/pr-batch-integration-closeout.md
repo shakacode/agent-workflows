@@ -1585,7 +1585,7 @@ readiness evidence, then restart the walkthrough or stop. If an ordinary gate
 newly fails, stop. Ask one final merge decision only when the refreshed diff
 identity matches the recorded identity, ordinary readiness remains clean, and
 merge is allowed; a completed walkthrough must have explained that same diff
-identity. Walkthrough participation is not merge approval; merge still requires
+identity. Walkthrough participation is not merge approval. Merge still requires
 the explicit authority decision.
 
 ### Autonomous Merge Eligibility Gate

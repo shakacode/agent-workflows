@@ -198,8 +198,8 @@ facts remain fail-closed and stop before mutation.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
   visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
   for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
-  automatic interactive exact-diff walkthrough before the one final merge
-  decision. Do not silently default it.
+  [automatic interactive exact-diff walkthrough](../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)
+  before the one final merge decision. Do not silently default it.
 
 The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
 a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
