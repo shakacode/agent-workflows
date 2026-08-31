@@ -362,8 +362,13 @@ module GoalPromptDriftContract
 
     require_phrases(
       lifecycle,
-      [PARENT_RECONCILIATION_PIN, PARENT_AUDIT_PIN, PARENT_MARKER_PIN],
+      [PARENT_RECONCILIATION_PIN, PARENT_AUDIT_PIN],
       "parent reconciliation source pins"
+    )
+    require_phrases(
+      read(repo_root, "workflows/pr-batch-integration-closeout.md"),
+      [PARENT_MARKER_PIN],
+      "integration-closeout marker source pin"
     )
   end
 end
