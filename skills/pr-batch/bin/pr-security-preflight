@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "json"
 require "open3"
 require "optparse"
@@ -649,6 +650,29 @@ def visible_rest_actor_logins(rest_context)
   users.merge(rest_context.fetch(:reviews).filter_map { |review| review.dig("user", "login") })
   users.delete(nil)
   users
+end
+
+def prompt_source_snapshots(rest_context)
+  sources = [
+    rest_context.fetch(:issue),
+    *rest_context.fetch(:issue_comments),
+    *rest_context.fetch(:review_comments),
+    *rest_context.fetch(:reviews)
+  ]
+
+  snapshots = sources.filter_map do |source|
+    body = source["body"]
+    url = source["html_url"]
+    next unless body.is_a?(String) && url.is_a?(String) && !url.empty?
+
+    {
+      "url" => url,
+      "field" => "body",
+      "sha256" => Digest::SHA256.hexdigest(body.encode("UTF-8"))
+    }
+  end
+
+  snapshots.sort_by { |source| source.fetch("url") }
 end
 
 def paginated_reaction_users(repo, endpoint)
@@ -1465,6 +1489,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     risky_files: high_risk_files(files),
     suspicious: suspicious_findings.fetch(:suspicious),
     suspicious_warnings: suspicious_findings.fetch(:suspicious_warnings),
+    prompt_source_snapshots: prompt_source_snapshots(rest),
     target:,
     target_is_pr:,
     metadata_only_interactions:,
@@ -1638,6 +1663,7 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
   puts "#{target_label} ##{result.fetch(:number)}"
   puts "  URL: #{target.fetch('url')}"
   puts "  Head: #{target.fetch('headRefOid')}" if result.fetch(:target_is_pr)
+  puts "  Prompt source snapshots: #{JSON.generate(result.fetch(:prompt_source_snapshots))}"
   print_graph_coverage_findings(result.fetch(:graph_coverage_findings))
   print_participant_findings(result.fetch(:participant_findings))
   print_untrusted_interactions(result.fetch(:untrusted_interactions))

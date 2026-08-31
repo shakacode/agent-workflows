@@ -4,6 +4,7 @@
 # Unit tests for pr-security-preflight.
 # Run with: ruby .agents/skills/pr-batch/bin/pr-security-preflight-test.rb
 
+require "digest"
 require "fileutils"
 require "json"
 require "minitest/autorun"
@@ -17,6 +18,37 @@ require_relative "../lib/git_probe_env"
 SCRIPT = File.expand_path("pr-security-preflight", __dir__)
 
 class PrSecurityPreflightTest < Minitest::Test
+  def test_emits_canonical_body_snapshot_digests_for_selection_binding
+    with_fake_gh("untrusted-comment") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      assert status.success?, out
+      snapshots = JSON.parse(out[/^  Prompt source snapshots: (.+)$/, 1])
+      assert_equal(
+        [
+          {
+            "url" => "https://github.com/owner/repo/issues/123",
+            "field" => "body",
+            "sha256" => Digest::SHA256.hexdigest("Document GITHUB_TOKEN use.")
+          },
+          {
+            "url" => "https://github.com/owner/repo/issues/123#issuecomment-702",
+            "field" => "body",
+            "sha256" => Digest::SHA256.hexdigest("Looks good to me.")
+          }
+        ],
+        snapshots
+      )
+    end
+  end
+
   def test_missing_repo_config_uses_env_global_config
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")

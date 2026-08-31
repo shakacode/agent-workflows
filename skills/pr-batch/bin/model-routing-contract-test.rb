@@ -1116,7 +1116,9 @@ class ModelRoutingContractTest < Minitest::Test
     assert_includes launcher_record, "Launched at: <timestamp or pending>"
     assert_includes launcher_record, "Run ID: <immutable unique per-execution run_id>"
     assert_includes launcher_record,
-                    "Record destination: <exact selected issue or pull-request work-item URL, or existing durable plan/backend destination for a wholly non-GitHub trusted-ad-hoc run>"
+                    "Record destination: <exact issue or pull-request work-item URL authorized for every lane, or existing durable plan/backend destination authorized for every lane>"
+    assert_includes launcher_record,
+                    "Batch Plan binding: <SHA-256 of exact delivered UTF-8 plan bytes, or immutable reference plus exact revision/content digest>"
     assert_includes launcher_record,
                     "Replay identity: <existing lane_id, dispatcher, instance_id, and launch token>"
     assert_includes normalized(launcher_record), "one entry for every planned target lane"

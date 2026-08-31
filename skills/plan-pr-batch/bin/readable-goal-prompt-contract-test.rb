@@ -144,7 +144,11 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "deliberately reselected as a new run and the security preflight is rerun",
       "one compact collapsed run record with one entry per target lane",
       "directly appends `Launched at` plus `Prompt digest at launch`",
-      "verifies both identity and digest before it interprets the source",
+      "successful security-preflight source URL, `body` field, and SHA-256 snapshot",
+      "verifies identity and digest before it interprets the source",
+      "`batch_plan_binding`",
+      "workers never race GitHub read-modify-write updates",
+      "split the trust boundaries into separate runs",
       "complete Batch Plan for that coordinator group or an exact durable plan-state reference",
       "multi-target group remains one coordinator launch with one target per worker lane"
     ].each { |phrase| assert_includes normalized, phrase }
@@ -155,7 +159,8 @@ class ReadableGoalPromptContractTest < Minitest::Test
 
     [
       "Run ID: <immutable unique per-execution run_id>",
-      "Record destination: <exact selected issue or pull-request work-item URL, or existing durable plan/backend destination for a wholly non-GitHub trusted-ad-hoc run>",
+      "Record destination: <exact issue or pull-request work-item URL authorized for every lane, or existing durable plan/backend destination authorized for every lane>",
+      "Batch Plan binding: <SHA-256 of exact delivered UTF-8 plan bytes, or immutable reference plus exact revision/content digest>",
       "Prompt created at: <timestamp>",
       "Model at prompt creation: <observed value or UNKNOWN>",
       "Workflow at prompt creation: <version or UNKNOWN>",
@@ -182,11 +187,16 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes normalized, "one entry for every planned target lane"
     assert_includes normalized, "without replacing earlier values"
     assert_includes normalized, "Reruns append a new collapsed record"
-    assert_includes normalized, "Directly append the cheap lane launch timestamp and digest"
+    assert_includes normalized, "coordinator directly appends the cheap lane launch timestamp and digest"
     assert_includes normalized, "existing immutable replay identity"
-    assert_includes normalized, "only to the exactly matching `run_id` and replay identity"
+    assert_includes normalized, "exactly matching `run_id`, replay identity, and `batch_plan_binding`"
     assert_includes normalized, "not the deterministic launch token"
-    assert_includes normalized, "Do not add either field to the human-authored prompt"
+    assert_includes normalized, "Do not add these fields to the human-authored prompt"
+    assert_includes normalized, "successful `pr-security-preflight` snapshot"
+    assert_includes normalized, "do not put the digest inside the bytes it hashes"
+    assert_includes normalized, "sole writer for that record"
+    assert_includes normalized, "workers return bound observation payloads"
+    assert_includes normalized, "Never put a private `plan-state://` or `batch://` identity in a public run record"
     assert_includes normalized, "do not invent another snapshot, byte encoding, or record schema"
     assert_includes normalized, "not applicable — trusted-ad-hoc-override"
     assert_includes normalized, "exact GitHub API `body` string"

@@ -683,7 +683,9 @@ prompt. The canonical lifecycle rules live in
 - `copy-paste` — deliver the exact generated goal prompt together with the
   complete Batch Plan for that coordinator group, or an exact durable
   plan-state reference that the new coordinator can resolve before preflight
-  or dispatch. This is the portable default and the fallback whenever a richer
+  or dispatch, plus the exact `batch_plan_binding` from the canonical Launcher
+  Run Record. The coordinator reverifies that immutable binding before
+  preflight, every dispatch, and worker start. This is the portable default and the fallback whenever a richer
   mode is unavailable.
 - `same-thread` — continue in the current chat as the batch coordinator. This is
   the same-chat self-launch described above, and it takes the lifecycle
@@ -707,7 +709,8 @@ group; for a multi-target group, the plan or reference is what preserves every
 target, lane, dependency, and ownership assignment.
 
 A created task receives the exact generated goal prompt and complete Batch Plan
-or exact durable plan-state reference in the same initial handoff, the saved
+or exact durable plan-state reference in the same initial handoff, plus its
+exact `batch_plan_binding`, the saved
 repository project, the host's normal isolated-worktree default for Git
 repositories unless the user explicitly requests the saved checkout, and the
 user's configured default model/effort unless the user explicitly requests an
