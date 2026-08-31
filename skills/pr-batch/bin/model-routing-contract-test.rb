@@ -1091,7 +1091,7 @@ class ModelRoutingContractTest < Minitest::Test
 
   def test_goal_prompts_keep_directional_observations_in_the_launcher_record
     prompts = {
-      "workflow" => extract_prompt(read_repo_file("workflows/pr-processing.md"), "### Plan To Goal Handoff"),
+      "prompt intake" => extract_prompt(read_repo_file("workflows/pr-batch-intake.md"), "## Plan To Goal Handoff"),
       "pr-batch" => extract_prompt(read_repo_file("skills/pr-batch/SKILL.md"), "## Goal Prompt Template"),
       "plan-pr-batch" => extract_prompt(read_repo_file("skills/plan-pr-batch/SKILL.md"), "## Goal Prompt for pr-batch")
     }
@@ -1106,8 +1106,8 @@ class ModelRoutingContractTest < Minitest::Test
       refute_includes prompt, "exact-policy", label
     end
 
-    workflow = read_repo_file("workflows/pr-processing.md")
-    launcher_record = extract_markdown_section(workflow, "### Launcher Run Record")
+    prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
+    launcher_record = extract_markdown_section(prompt_intake, "## Launcher Run Record")
     assert_includes launcher_record, "Model at prompt creation: <observed value or UNKNOWN>"
     assert_includes launcher_record, "Model observed by worker: <observed value or UNKNOWN>"
     assert_includes launcher_record, "Workflow at prompt creation: <version or UNKNOWN>"
@@ -1411,7 +1411,7 @@ class ModelRoutingContractTest < Minitest::Test
     ].each { |phrase| assert_includes guide, phrase }
     assert_includes workflow, "MODEL_ESCALATION_REQUEST"
     assert_includes workflow, "old and replacement instances must not overlap"
-    assert_includes workflow, "stop and reconcile"
+    assert_includes workflow, "ownership is reconciled"
   end
 
   def test_lane_cards_separate_preference_from_optional_observation

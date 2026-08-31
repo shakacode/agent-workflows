@@ -1130,12 +1130,16 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_closeout_workflow_uses_the_authenticated_runtime_directory
-    workflow = File.read(File.expand_path("../../../workflows/pr-processing.md", __dir__), encoding: "UTF-8")
+    workflow = File.read(
+      File.expand_path("../../../workflows/pr-batch-integration-closeout.md", __dir__),
+      encoding: "UTF-8"
+    )
+    index = File.read(File.expand_path("../../../workflows/pr-processing.md", __dir__), encoding: "UTF-8")
     skill = File.read(File.expand_path("../SKILL.md", __dir__), encoding: "UTF-8")
 
-    [workflow, skill].each do |document|
-      assert_includes document, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout"'
-    end
+    assert_includes workflow, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout"'
+    assert_includes skill, "pr-batch-integration-closeout.md#autonomous-merge-eligibility-gate"
+    assert_includes index, "pr-batch-integration-closeout.md#autonomous-merge-eligibility"
     assert_includes workflow,
                     'git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-closeout"'
     assert_includes workflow,

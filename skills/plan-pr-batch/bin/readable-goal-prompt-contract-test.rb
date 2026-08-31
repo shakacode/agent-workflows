@@ -38,7 +38,8 @@ def extract_markdown_section(text, heading)
   raise "missing #{heading}" unless heading_match
 
   body_start = heading_match.end(0)
-  next_heading = text.match(/^###\s+/, body_start)
+  heading_level = heading[/\A#+/].length
+  next_heading = text.match(/^#{Regexp.escape("#" * heading_level)}\s+/, body_start)
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
 end
@@ -53,11 +54,11 @@ class ReadableGoalPromptContractTest < Minitest::Test
     @source_docs = read_repo_file("docs/pr-batch-skills.md")
     @batch_plan_preflight = read_repo_file("skills/plan-pr-batch/bin/batch-plan-preflight")
 
-    workflow_handoff = extract_markdown_section(@workflow, "### Plan To Goal Handoff")
+    prompt_intake_handoff = extract_markdown_section(@prompt_intake, "## Plan To Goal Handoff")
     @prompts = {
       "plan-pr-batch" => extract_prompt(@plan_skill, "## Goal Prompt for pr-batch"),
       "pr-batch" => extract_prompt(@pr_batch_skill, "## Goal Prompt Template"),
-      "workflow" => workflow_handoff.split("### ", 2).first.then { |text| extract_prompt("## Prompt\n\n#{text}", "## Prompt") }
+      "prompt intake" => extract_prompt("## Prompt\n\n#{prompt_intake_handoff}", "## Prompt")
     }
   end
 
@@ -123,7 +124,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
   end
 
   def test_generation_rules_make_one_trusted_source_authoritative
-    [@plan_skill, @pr_batch_skill, @workflow, @triage_skill].each do |text|
+    [@plan_skill, @pr_batch_skill, @prompt_intake, @triage_skill].each do |text|
       normalized = text.gsub(/\s+/, " ")
       assert_includes normalized, "Fix issue #123 using $pr-batch with merge authority ask."
       assert_includes normalized, "accepted canonical issue or pull-request body"
@@ -155,7 +156,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
   end
 
   def test_launcher_record_owns_launch_provenance_and_append_only_observations
-    launcher_record = extract_markdown_section(@workflow, "### Launcher Run Record")
+    launcher_record = extract_markdown_section(@prompt_intake, "## Launcher Run Record")
 
     [
       "Run ID: <immutable unique per-execution run_id>",
@@ -201,6 +202,8 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes normalized, "not applicable — trusted-ad-hoc-override"
     assert_includes normalized, "exact GitHub API `body` string"
     assert_includes normalized, "without Unicode normalization, Markdown rendering, whitespace trimming, or newline insertion or removal"
+    assert_includes normalized, "When GitHub returns `body: null` for a title-only issue or pull request"
+    assert_includes normalized, "Retain that SHA-256 digest in the selection, launch, and worker fields"
     assert_includes normalized, "verifies both the replay identity and observed digest before it interprets the source"
     assert_includes normalized, "`auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`"
     assert_includes normalized, "machine-only `merge_authority: none`"

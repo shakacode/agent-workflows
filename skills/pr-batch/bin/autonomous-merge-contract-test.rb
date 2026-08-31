@@ -7,11 +7,14 @@ require_relative "../lib/autonomous_merge_runtime_trust"
 
 ROOT = File.expand_path("../../..", __dir__)
 PARITY_PATHS = %w[
-  workflows/pr-processing.md
-  skills/pr-batch/SKILL.md
+  workflows/pr-batch-integration-closeout.md
   skills/pr-monitoring/SKILL.md
   skills/plan-pr-batch/SKILL.md
   skills/triage/SKILL.md
+].freeze
+ROUTE_PATHS = %w[
+  workflows/pr-processing.md
+  skills/pr-batch/SKILL.md
 ].freeze
 NECESSARY_NOT_SUFFICIENT = "Ordinary readiness is necessary but not sufficient for autonomous merge; " \
                            "evaluate exact-head autonomous-merge eligibility after every ordinary gate passes."
@@ -63,10 +66,15 @@ class AutonomousMergeContractTest < Minitest::Test
       assert_includes text, HUMAN_STATE, path
       assert_includes text, UNKNOWN_STATE, path
     end
+
+    ROUTE_PATHS.each do |path|
+      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      assert_includes text, "pr-batch-integration-closeout.md#autonomous-merge-eligibility-gate", path
+    end
   end
 
   def test_canonical_workflow_binds_helper_to_trusted_base_and_exact_current_head
-    workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    workflow = File.read(File.join(ROOT, "workflows/pr-batch-integration-closeout.md"), encoding: "UTF-8")
 
     assert_includes workflow, "autonomous-merge-eligibility"
     assert_includes workflow, "--trusted-base"
@@ -258,6 +266,8 @@ class AutonomousMergeContractTest < Minitest::Test
     builtin = AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS
 
     refute_empty AutonomousMergePolicy::SOURCE_POLICY_PATTERNS
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, "workflows/pr-batch-security-floor.md"
+    assert_includes builtin, ".agents/workflows/pr-batch-security-floor.md"
     AutonomousMergePolicy::SOURCE_POLICY_PATTERNS.each do |pattern|
       assert_includes builtin, pattern
       assert_includes builtin, ".agents/#{pattern}"

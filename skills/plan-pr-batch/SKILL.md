@@ -568,8 +568,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      `plan-state://` or `batch://` durable authorization reference; do not invent
      another source record.
    - Follow the canonical
-     [Plan To Goal Handoff](../../workflows/pr-processing.md#plan-to-goal-handoff)
-     and [Launcher Run Record](../../workflows/pr-processing.md#launcher-run-record)
+     [Plan To Goal Handoff](../../workflows/pr-batch-intake.md#plan-to-goal-handoff)
+     and [Launcher Run Record](../../workflows/pr-batch-intake.md#launcher-run-record)
      for source selection, one provenance sequence per target lane, cheap launch
      and worker timestamps, digest gates, directional model/workflow
      observations, and append-only rerun history. Do not wait for a telemetry
@@ -760,8 +760,8 @@ not synthesize or restate it. `Fix issue #123
 using $pr-batch with merge authority ask.` is a valid one-line shortcut when
 repository context resolves the target.
 
-Follow the canonical [Plan To Goal Handoff](../../workflows/pr-processing.md#plan-to-goal-handoff)
-and [Launcher Run Record](../../workflows/pr-processing.md#launcher-run-record)
+Follow the canonical [Plan To Goal Handoff](../../workflows/pr-batch-intake.md#plan-to-goal-handoff)
+and [Launcher Run Record](../../workflows/pr-batch-intake.md#launcher-run-record)
 for source selection, one provenance sequence per target lane, cheap launch and
 worker timestamps, digest gates, directional model/workflow observations, and
 append-only rerun history. Do not wait for a telemetry aggregator.

@@ -9,6 +9,7 @@ require "optparse"
 # rubocop:disable Lint/RedundantRequireStatement
 require "set"
 # rubocop:enable Lint/RedundantRequireStatement
+require "tempfile"
 require "timeout"
 require "uri"
 require "yaml"
@@ -26,6 +27,7 @@ options = {
 
 GH_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GH_TIMEOUT_SECONDS", "60"))
 GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS", "10"))
+INTERACTION_QUEUE_DISPLAY_LIMIT = 10
 ACKNOWLEDGEABLE_RISKS = Set.new(
   %w[
     github-api-coverage
@@ -117,7 +119,13 @@ if ARGV.empty?
   exit 64
 end
 
-target_numbers = ARGV.filter_map { |arg| Integer(arg, exception: false) }.to_set
+target_number_list = ARGV.map do |arg|
+  number = Integer(arg, exception: false)
+  abort "Invalid issue/PR number: #{arg.inspect}" unless number&.positive?
+
+  number
+end
+target_numbers = target_number_list.to_set
 unused_acknowledgement_targets = options.fetch(:acknowledged_risks).keys.reject do |number|
   target_numbers.include?(number)
 end
@@ -471,7 +479,11 @@ end
 
 def load_trust_config(path:, global:)
   path = File.expand_path(path)
-  data = File.exist?(path) ? YAML.safe_load_file(path, aliases: false) || {} : {}
+  contents = File.exist?(path) ? File.binread(path) : ""
+  parse_contents = contents.dup.force_encoding(Encoding::UTF_8)
+  abort "Invalid trust config #{path}: expected valid UTF-8" unless parse_contents.valid_encoding?
+
+  data = parse_contents.empty? ? {} : YAML.safe_load(parse_contents, aliases: false, filename: path) || {}
   abort "Invalid trust config #{path}: expected a YAML mapping at the top level" unless data.is_a?(Hash)
 
   trusted_bots = Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) }
@@ -484,12 +496,15 @@ def load_trust_config(path:, global:)
   end
 
   {
+    content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}",
     path:,
     trusted_bots:,
     trusted_metadata_bots:,
     trusted_teams: normalized_trusted_teams(data["trusted_teams"], require_owner: global),
     trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
   }
+rescue Psych::Exception
+  abort "Invalid trust config #{path}: malformed YAML"
 end
 
 def bot_login_in_set?(login, trusted_set)
@@ -1539,10 +1554,11 @@ def print_untrusted_interactions(findings)
   end
 
   puts "  Untrusted comment/review queue:"
-  findings.first(10).each do |finding|
+  findings.first(INTERACTION_QUEUE_DISPLAY_LIMIT).each do |finding|
     puts "    - #{finding.fetch(:author)} #{finding.fetch(:kind)} (#{finding.fetch(:url)})"
   end
-  puts "    - ... #{findings.size - 10} more" if findings.size > 10
+  overflow = findings.size - INTERACTION_QUEUE_DISPLAY_LIMIT
+  puts "    - ... #{overflow} more (see interaction queue artifact below)" if overflow.positive?
 end
 
 def print_metadata_only_interactions(findings)
@@ -1552,10 +1568,76 @@ def print_metadata_only_interactions(findings)
   end
 
   puts "  Metadata-only comment/review queue:"
-  findings.first(10).each do |finding|
+  findings.first(INTERACTION_QUEUE_DISPLAY_LIMIT).each do |finding|
     puts "    - #{finding.fetch(:author)} #{finding.fetch(:kind)} (#{finding.fetch(:url)})"
   end
-  puts "    - ... #{findings.size - 10} more" if findings.size > 10
+  overflow = findings.size - INTERACTION_QUEUE_DISPLAY_LIMIT
+  puts "    - ... #{overflow} more (see interaction queue artifact below)" if overflow.positive?
+end
+
+def interaction_queue_entry(finding)
+  {
+    "actor" => finding.fetch(:author),
+    "kind" => finding.fetch(:kind),
+    "url" => finding.fetch(:url)
+  }
+end
+
+def interaction_queue_artifact_target(result)
+  target = result.fetch(:target)
+  {
+    "number" => target.fetch("number"),
+    "url" => target.fetch("url"),
+    "untrusted" => result.fetch(:untrusted_interactions).map { |finding| interaction_queue_entry(finding) },
+    "metadata_only" => result.fetch(:metadata_only_interactions).map do |finding|
+      interaction_queue_entry(finding)
+    end
+  }
+end
+
+def interaction_queue_artifact_payload(repo, targets)
+  {
+    "contract" => "pr-security-preflight-interaction-queues",
+    "version" => 1,
+    "repository" => repo,
+    "targets" => targets
+  }
+end
+
+def interaction_queue_overflow?(target)
+  target.fetch("untrusted").size > INTERACTION_QUEUE_DISPLAY_LIMIT ||
+    target.fetch("metadata_only").size > INTERACTION_QUEUE_DISPLAY_LIMIT
+end
+
+def write_interaction_queue_artifact(repo, targets)
+  contents = "#{JSON.generate(interaction_queue_artifact_payload(repo, targets))}\n"
+  file = Tempfile.create(["pr-security-preflight-interaction-queues-", ".json"])
+  file.binmode
+  file.write(contents)
+  file.flush
+  file.fsync
+  path = file.path
+  file.close
+
+  {
+    path:,
+    content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}",
+    entry_count: targets.sum do |target|
+      target.fetch("untrusted").size + target.fetch("metadata_only").size
+    end
+  }
+rescue SystemCallError => e
+  abort "Could not write interaction queue artifact: #{e.message}"
+end
+
+def print_interaction_queue_artifact(repo, targets)
+  return unless targets.any? { |target| interaction_queue_overflow?(target) }
+
+  artifact = write_interaction_queue_artifact(repo, targets)
+  puts "Interaction queue artifact: #{artifact.fetch(:path)}"
+  puts "Interaction queue artifact digest: #{artifact.fetch(:content_digest)}"
+  puts "Interaction queue artifact entries: #{artifact.fetch(:entry_count)}"
+  puts
 end
 
 def print_findings_list(findings, label)
@@ -1751,6 +1833,7 @@ acknowledged_findings = []
 permission_cache = {}
 team_cache = {}
 canonical_bot_cache = {}
+interaction_queue_targets = []
 trust_config_resolution = resolved_trust_config(options.fetch(:trust_config), repo:, github_host:)
 puts "Trust config: #{trust_config_resolution.fetch(:path)}"
 puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
@@ -1758,24 +1841,28 @@ trust_config = load_trust_config(
   path: trust_config_resolution.fetch(:path),
   global: trust_config_resolution.fetch(:global)
 )
+puts "Trust config content digest: #{trust_config.fetch(:content_digest)}"
 
-ARGV.each do |arg|
-  number = Integer(arg, exception: false)
-  abort "Invalid issue/PR number: #{arg.inspect}" unless number
-
-  result = scan_target(
-    repo:,
-    owner:,
-    name:,
-    number:,
-    pr_query:,
-    issue_query:,
-    include_reactions: options[:include_reactions],
-    permission_cache:,
-    trust_config:,
-    team_cache:,
-    canonical_bot_cache:
-  )
+target_number_list.each do |number|
+  result = begin
+    scan_target(
+      repo:,
+      owner:,
+      name:,
+      number:,
+      pr_query:,
+      issue_query:,
+      include_reactions: options[:include_reactions],
+      permission_cache:,
+      trust_config:,
+      team_cache:,
+      canonical_bot_cache:
+    )
+  rescue StandardError
+    print_interaction_queue_artifact(repo, interaction_queue_targets)
+    raise
+  end
+  interaction_queue_targets << interaction_queue_artifact_target(result)
   print_scan_result(
     result,
     overall_blockers,
@@ -1785,6 +1872,8 @@ ARGV.each do |arg|
     strict_trust: options[:strict_trust]
   )
 end
+
+print_interaction_queue_artifact(repo, interaction_queue_targets)
 
 if overall_blockers.any?
   if acknowledged_findings.any?

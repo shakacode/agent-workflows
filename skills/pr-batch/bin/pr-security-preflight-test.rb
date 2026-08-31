@@ -1309,6 +1309,55 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_trust_config_preserves_resolved_path_and_source
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      File.write(trust_config_path, "trusted_users: [\n")
+
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 1, status.exitstatus
+      assert_includes out, "Trust config: #{trust_config_path}"
+      assert_includes out, "Trust config source: explicit"
+      assert_includes out, "Invalid trust config #{trust_config_path}: malformed YAML"
+      refute_includes out, "Psych::SyntaxError"
+      refute_match(/\n\tfrom /, out)
+      refute_includes out, "Trust config content digest:"
+    end
+  end
+
+  def test_trust_config_hashes_raw_bytes_and_parses_valid_utf8
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      File.write(trust_config_path, <<~YAML, mode: "w:UTF-8")
+        trusted_users:
+          - justin808
+        trusted_bots: []
+        trusted_metadata_bots: []
+        trusted_teams:
+          - réviewers
+      YAML
+
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_trust_config_evidence(out, path: trust_config_path, source: "explicit")
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_trust_config_rejects_invalid_utf8
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      File.binwrite(trust_config_path, "trusted_users:\n  - \xFF\n".b)
+
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 1, status.exitstatus
+      assert_includes out, "Invalid trust config #{trust_config_path}: expected valid UTF-8"
+      refute_includes out, "Trust config content digest:"
+    end
+  end
+
   def test_repo_local_config_is_resolved_from_git_root_when_run_from_subdirectory
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")
@@ -2551,12 +2600,89 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_interaction_queues_report_every_entry_beyond_ten
+    with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_equal 10, out.scan("unknown-user issue comment").length
+      assert_equal 10, out.scan("github-actions[bot] issue comment").length
+      assert_equal 2, out.scan("... 2 more (see interaction queue artifact below)").length
+      refute_includes out, "https://github.com/owner/repo/issues/123#issuecomment-7012"
+      refute_includes out, "https://github.com/owner/repo/issues/123#issuecomment-8012"
+
+      artifact_line = out.lines.find { |line| line.start_with?("Interaction queue artifact: ") }
+      artifact_path = artifact_line&.delete_prefix("Interaction queue artifact: ")&.strip
+      refute_nil artifact_path, out
+      assert_equal 0o600, File.stat(artifact_path).mode & 0o777
+      artifact_contents = File.binread(artifact_path)
+      artifact = JSON.parse(artifact_contents)
+      target = artifact.fetch("targets").fetch(0)
+      assert_equal "pr-security-preflight-interaction-queues", artifact.fetch("contract")
+      assert_equal %w[metadata_only number untrusted url], target.keys.sort
+      assert_equal 12, target.fetch("untrusted").length
+      assert_equal 12, target.fetch("metadata_only").length
+      assert_equal "https://github.com/owner/repo/issues/123#issuecomment-7012",
+                   target.fetch("untrusted").last.fetch("url")
+      assert_equal "https://github.com/owner/repo/issues/123#issuecomment-8012",
+                   target.fetch("metadata_only").last.fetch("url")
+      assert_includes out, "Interaction queue artifact digest: sha256:#{Digest::SHA256.hexdigest(artifact_contents)}"
+      assert_includes out, "Interaction queue artifact entries: 24"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    ensure
+      File.delete(artifact_path) if artifact_path && File.exist?(artifact_path)
+    end
+  end
+
+  def test_prior_overflow_artifact_is_emitted_when_a_later_target_scan_fails
+    with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, _log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123", "456")
+
+      refute status.success?, out
+      assert_equal 1, status.exitstatus
+      assert_includes out, "gh api repos/owner/repo/issues/456 failed"
+      artifact_line = out.lines.find { |line| line.start_with?("Interaction queue artifact: ") }
+      artifact_path = artifact_line&.delete_prefix("Interaction queue artifact: ")&.strip
+      refute_nil artifact_path, out
+      artifact_contents = File.binread(artifact_path)
+      artifact = JSON.parse(artifact_contents)
+      artifact_target_numbers = artifact.fetch("targets").map { |target| target.fetch("number") }
+      assert_equal [123], artifact_target_numbers
+      assert_includes out, "Interaction queue artifact digest: sha256:#{Digest::SHA256.hexdigest(artifact_contents)}"
+      assert_includes out, "Interaction queue artifact entries: 24"
+    ensure
+      File.delete(artifact_path) if artifact_path && File.exist?(artifact_path)
+    end
+  end
+
+  def test_all_target_numbers_are_validated_before_any_scan
+    %w[bad 0 -1].each do |invalid_target|
+      with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, log_path|
+        out, status = run_script(
+          env,
+          "--repo", "owner/repo",
+          "--trust-config", trust_config_path,
+          "--", "123", invalid_target
+        )
+
+        refute status.success?, out
+        assert_equal 1, status.exitstatus
+        assert_includes out, "Invalid issue/PR number: #{invalid_target.inspect}"
+        refute File.exist?(log_path), "target validation should run before any gh command"
+        refute_includes out, "Untrusted comment/review queue:"
+        refute_includes out, "Interaction queue artifact:"
+      end
+    end
+  end
+
   private
 
   def assert_trust_config_evidence(out, path:, source:)
     lines = out.lines.map(&:chomp)
     assert_includes lines, "Trust config: #{File.expand_path(path)}"
     assert_includes lines, "Trust config source: #{source}"
+    digest = "sha256:#{Digest::SHA256.hexdigest(File.binread(File.expand_path(path)))}"
+    assert_includes lines, "Trust config content digest: #{digest}"
   end
 
   def run_script(env, *args, chdir: nil, clear_git_env: true)
@@ -2662,6 +2788,27 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def fake_gh_script(log_path)
+    overflow_interaction_comments = JSON.generate(
+      [
+        Array.new(12) do |index|
+          number = 7001 + index
+          {
+            id: number,
+            html_url: "https://github.com/owner/repo/issues/123#issuecomment-#{number}",
+            user: { login: "unknown-user" },
+            body: "Untrusted comment #{index + 1}."
+          }
+        end + Array.new(12) do |index|
+          number = 8001 + index
+          {
+            id: number,
+            html_url: "https://github.com/owner/repo/issues/123#issuecomment-#{number}",
+            user: { login: "github-actions[bot]" },
+            body: "Metadata comment #{index + 1}."
+          }
+        end
+      ]
+    )
     paginated_timeline_first = JSON.generate(
       data: {
         repository: {
@@ -3113,6 +3260,9 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<'JSON'
       [[{"id":702,"html_url":"https://github.com/owner/repo/issues/123#issuecomment-702","user":{"login":"unknown-user"},"body":"Looks good to me."}]]
       JSON
+          exit 0
+        elif [ "$mode" = "overflow-interaction-queues" ]; then
+          printf '%s\n' #{Shellwords.shellescape(overflow_interaction_comments)}
           exit 0
         fi
         printf '[[]]'
