@@ -93,15 +93,14 @@ module HostTaskCapabilityPreflight
   end
 
   def identity_reason(capabilities)
-    return if capabilities["immediate_task_identifier"] == true ||
-              (capabilities["provisional_task_identifier"] == true &&
-               capabilities["provisional_identifier_resolution"] == true)
+    immediate = capabilities["immediate_task_identifier"]
+    provisional = capabilities["provisional_task_identifier"]
+    resolution = capabilities["provisional_identifier_resolution"]
+    return if immediate == true || (provisional == true && resolution == true)
 
-    unknown = capabilities.values_at(
-      "immediate_task_identifier",
-      "provisional_task_identifier",
-      "provisional_identifier_resolution"
-    ).include?("UNKNOWN")
+    unknown = immediate == "UNKNOWN" ||
+              (provisional == "UNKNOWN" && resolution != false) ||
+              (provisional == true && resolution == "UNKNOWN")
     "task-identity-#{unknown ? 'unknown' : 'unavailable'}"
   end
 
