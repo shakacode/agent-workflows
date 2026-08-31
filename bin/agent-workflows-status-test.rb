@@ -27,6 +27,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
       #!#{RbConfig.ruby}
       abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV[0, 3] == %w[plugin list --marketplace] && ARGV.length == 4
       marketplace = ARGV.fetch(3)
+      File.open(ENV.fetch("QA_CODEX_CALLS"), "a") { |file| file.puts(marketplace) } if ENV["QA_CODEX_CALLS"]
       case marketplace
       when "agent-workflows"
         puts "PLUGIN STATUS VERSION PATH"
@@ -356,6 +357,37 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal "CHECK_FAILED", payload.fetch("status")
         assert_includes payload.fetch("reason"), "cannot be active"
         assert_includes payload.fetch("guidance"), "--delivery-mode plugin-companion"
+      end
+    end
+  end
+
+  def test_incompatible_delivery_reuses_the_helpers_superpowers_advisory
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        calls = File.join(target, "codex-calls")
+        FileUtils.mkdir_p(File.join(source, "skills/example"))
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        File.write(File.join(source, "skills/example/SKILL.md"), "example\n")
+        write_codex_native_state(target)
+        write_metadata(
+          target,
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "",
+          "delivery_mode" => "flat"
+        )
+
+        out, status = run_status({ "QA_CODEX_CALLS" => calls }, "--target", target, "--host", "codex", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 3, status.exitstatus, out
+        assert_equal "CHECK_FAILED", payload.fetch("status")
+        assert_includes payload.fetch("reason"), "cannot be active"
+        assert payload.key?("superpowers"), out
+        marketplaces = File.readlines(calls, chomp: true)
+        assert_equal 1, marketplaces.count("openai-curated")
+        assert_equal 1, marketplaces.count("openai-curated-remote")
+        assert_equal 1, marketplaces.count("superpowers-dev")
       end
     end
   end
