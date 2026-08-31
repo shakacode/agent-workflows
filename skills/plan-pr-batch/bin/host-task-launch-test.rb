@@ -161,6 +161,25 @@ class HostTaskLaunchTest < Minitest::Test
     end
   end
 
+  def test_refresh_helper_evidence_after_creation_only_monitors_the_existing_task
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      prepared = invoke(input)
+      input["operation"] = "publish"
+      input["publication"] = publication_evidence(prepared.fetch("record"))
+      invoke(input)
+      input["operation"] = "begin-create"
+      assert_equal "create-task", invoke(input).dig("action", "kind")
+
+      input["operation"] = "refresh-helper-evidence"
+      input["helper_evidence"] = valid_helper_evidence
+      refreshed = invoke(input)
+
+      assert_equal "monitor-task", refreshed.dig("action", "kind")
+      refute_equal "create-task", refreshed.dig("action", "kind")
+    end
+  end
+
   def test_refresh_allows_one_pending_to_verified_launch_transition
     Dir.mktmpdir("host-task-launch-test") do |directory|
       pending = pending_helper_evidence

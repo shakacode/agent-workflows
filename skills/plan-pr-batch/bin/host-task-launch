@@ -339,7 +339,7 @@ module HostTaskLaunch
     return { "kind" => "publish-control-tower" } unless publication.fetch("ready")
     return { "kind" => "wait-for-dependencies" } if lane && lane["state"] == "waiting"
     return { "kind" => "begin-create" } if operation == "publish"
-    return { "kind" => "monitor-task" } if %w[bind-provisional bind-task update].include?(operation)
+    return { "kind" => "monitor-task" } if %w[bind-provisional bind-task update refresh-helper-evidence].include?(operation)
 
     if operation == "retry" || (operation == "begin-create" && create_attempt_already_fenced)
       return { "kind" => "retry-create-task", "same_launch_idempotency_key" => true } if capabilities["host_creation_idempotency"] == true
