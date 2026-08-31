@@ -976,7 +976,7 @@ class GoalCompletionContractTest < Minitest::Test
     }
     actual_counts = surfaces.transform_values { |text| text.scan(GMCC_ALIGNMENT_SENTENCE).length }
     expected_counts = {
-      "workflows/pr-processing.md" => 1,
+      "workflows/pr-batch-integration-closeout.md" => 1,
       "skills/triage/SKILL.md" => 0,
       "skills/pr-batch/SKILL.md" => 0,
       "skills/plan-pr-batch/SKILL.md" => 0
@@ -1405,7 +1405,7 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_task_name_identifies_repository_work_item_and_purpose
     {
-      "workflows/pr-processing.md" => @workflow,
+      "workflows/pr-batch-intake.md" => @prompt_intake,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
