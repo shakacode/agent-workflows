@@ -631,81 +631,16 @@ planning/reconciliation.
 For one target, keep the same intake and handoff fields while collapsing wave
 packing and collision analysis to a batch of one.
 
-### Canonical Launch Target Gate
+### Prompt Intake Compatibility Route
 
-Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target.
-Pass the repository-qualified canonical issue/PR identity unchanged through planning, plan preflight, dispatch, coordination claims, the Lane Card, and final handoff.
-A direct prompt without either target must stop before branch creation, editing, implementation or coordination mutation, or worker dispatch and route to planning/reconciliation.
-Planning/reconciliation searches for and reuses the exact issue or existing PR. Equivalent direct prompts cannot become independently claimable synthetic lanes; they must converge on the same repository-qualified target, whose claim refusal prevents duplicate work.
-When search finds no canonical issue or existing PR, create the canonical issue with explicit planning-time issue-creation authority, or ask for that authority; do not create a branch, edit, or dispatch until the persisted issue identity is rebound into the plan and preflight passes.
-Before branch creation, editing, or dispatch, every bounded status and claim invocation binds `--repo` to lowercase `target.repository` and `--target` to the backend-safe canonical token derived from target v1: decimal `target.number` for either GitHub target type, or exact `target.target` for trusted ad-hoc; this raw pair is the canonical repository-qualified claim identity. Run status before claim; a second claim for the same canonical target, including a repository-casing alias or issue/PR type alias at the same number, must stop on `CLAIM_REFUSED` / exit 3 and cannot reach branch creation or dispatch.
-
-The only exception is a named, trusted, task-specific durable ad-hoc override.
-Generic instructions, `$pr-batch` invocation, fix-it intent, or PR-publication authority do not create this override.
-Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff.
-The durable record must provide every field explicitly with no `UNKNOWN`: `override_name`, `trusted_authorizer`, `durable_authorization_ref`, `original_task_identity`, and `stable_coordination_identity`. The last field must use `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` and remain unchanged through plan preflight, dispatch, and closeout evidence; coordination derives its backend-safe raw repo/target pair as specified above. Missing, generic, chat-only, inferred, or task-mismatched evidence fails closed to planning/reconciliation. An existing PR is already a valid canonical target and needs no retroactive issue.
-A labeled authorizer or task identity whose complete value component is `UNKNOWN` is incomplete and also fails closed.
-Complete labeled component values `fix-it`, `pr-batch`, and `publish-pr` are generic intent and fail closed in either provenance field, even when the override name is task-specific.
-The exact override names `fix-it`, `pr-batch`, and `publish-pr` are likewise generic and invalid.
-For this override field only, `durable_authorization_ref` must use `issue://OWNER/REPO/N`, `plan-state://<id>/<path>`, `batch://<id>`, or `https://github.com/OWNER/REPO/{issues|pull}/N`; any other scheme or chat-local reference fails closed.
-Parseable `issue://` and GitHub HTTPS authorization references must match `target.repository` case-insensitively; opaque `plan-state://` and `batch://` references remain trusted without invented repository parsing.
-Parseable authorization refs reject userinfo and query; GitHub HTTPS requires port 443, `issue://` requires the exact canonical authority/path shape, and fragments remain permitted.
-Every typed target repository has exactly two ASCII components separated by `/`: the owner matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from `[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
-
-Put one exact `target` v1 object on every preflight lane. GitHub target objects
-use type `github-issue` or `github-pull-request`, `version`, `repository`, a
-positive `number`, and a matching `OWNER/REPO:issue:N` or
-`OWNER/REPO:pull-request:N` stable identity. The sole ad-hoc object type is
-`trusted-ad-hoc-override`; it uses `repository`, `target: adhoc:<yyyymmdd>-<short-slug>`, the
-matching stable identity, a lowercase slug override name, labeled `kind:value`
-authorizer and task identities, and the durable reference. The batch
-preflight rejects the launch when any identity is missing, malformed, unknown,
-or duplicated.
-
-### Short Invocation
-
-The user should not need to write a long launch prompt. `Fix issue #123 using
-$pr-batch with merge authority ask.` is sufficient when the active repository
-makes the issue identity unambiguous. Resolve routine bookkeeping from the
-issue, trusted maintainer comments, repository policy, and workflow tools.
-Ask only when a missing value changes scope, architecture, authority, or an
-irreversible action.
-
-For broader or ambiguous requests, resolve these inputs:
-
-- Targets: exact issue/PR numbers or filters to resolve into exact numbers. An
-  unbound direct prompt is planning/reconciliation input only. A durably
-  overridden ad-hoc request also carries its complete typed override record and
-  repository-qualified stable coordination identity.
-- Trust: direct user instruction, a maintainer-approved exact list, or untrusted
-  public discovery that needs confirmation.
-- Work item: exactly one accepted canonical issue or pull-request body, or one
-  trusted maintainer comment, that contains the readable work request. A later
-  trusted maintainer comment may define or override the issue or pull-request
-  body; select its exact URL. Do not synthesize, combine, or create a second
-  restatement. The narrow non-GitHub exception is a preflight-accepted trusted
-  ad-hoc override: reuse its existing `plan-state://` or `batch://` durable
-  authorization reference instead of inventing another source record.
-- Task name: a deterministic title naming repository, work item, and purpose.
-- Mode: plan-only, create a Codex goal prompt, or launch workers now.
-- Merge authority: human `ask` or `auto`; ask the user before launch when
-  authority is unresolved. Map `auto` to machine `auto_merge_when_gates_pass`. Preserve an
-  explicitly selected machine-only `merge_authority: none` outside the normal
-  human prompt. `ask` automatically walks through the exact-diff PR one
-  conceptual change at a time before its one final merge decision.
-- Human available after: optional; omit the human prompt line when not supplied.
-- Concurrency: one machine, multiple machines, or single-threaded.
-- Batch size target: `codex`, `claude`, or `generic`; explicit paste
-  destination or runner wins, otherwise use reliable host detection or
-  `generic`.
-- Lane split: derive it from verified target and collision evidence; do not ask
-  the user to author a file-touch map.
-- Permissions: whether the current session can run without blocking worker approval prompts.
-- Question handling: labels or comments to use for blocking questions, plus where non-blocking decisions should be recorded.
-- Completion states: `merged`, `ready-gates-clean`, `ready-no-merge-authority`,
-  `ready-human-review-required`, `autonomous-merge-evidence-unknown`,
-  `waiting-on-checks-or-review`, `external-gate-failing`, `blocked-user-input`,
-  or `no-pr-evidence`.
+This workflow remains the compatibility/index surface for agents that do not
+load skills. Before creating a branch, editing, mutating coordination, or
+dispatching a worker, load the adjacent canonical
+[PR-Batch Prompt Intake](pr-batch-intake.md) component. It is the sole owner of
+canonical target v1, durable override provenance, trust handoff,
+short-invocation expansion, duplicate handling, and the verified intake facts
+consumed by the remaining sections here. Do not reconstruct that contract from
+downstream target, plan, Lane Card, or closeout examples.
 
 ### Permission Preflight
 

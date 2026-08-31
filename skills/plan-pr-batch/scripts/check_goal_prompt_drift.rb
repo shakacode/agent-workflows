@@ -48,12 +48,6 @@ module GoalPromptDriftContract
       ["planner generic", %w[generic], %r{`generic`:\s+use the Claude-sized (?<normal>\d+)/(?<risky>\d+) limit}]
     ],
     "skills/pr-batch/SKILL.md" => [
-      ["intake codex", %w[codex], /Use `codex` for up to (?<normal>\d+)\s+independent items, or (?<risky>\d+) when/],
-      ["intake claude", %w[claude], /Use `claude` for up to (?<normal>\d+) independent items, or (?<risky>\d+) under/],
-      ["intake generic", %w[generic], %r{Use the Claude-sized (?<normal>\d+)/(?<risky>\d+) limit for `generic`}],
-      ["checklist codex", %w[codex], %r{`codex` up to (?<normal>\d+)/(?<risky>\d+)}],
-      ["checklist claude", %w[claude], %r{`claude` up to (?<normal>\d+)/(?<risky>\d+)}],
-      ["checklist generic", %w[generic], %r{`generic` up to (?<normal>\d+)/(?<risky>\d+)}],
       ["execution codex", %w[codex], /Codex-targeted waves may use up to (?<normal>\d+) independent\s+lanes, or (?<risky>\d+) when/],
       ["execution claude and generic", %w[claude generic], /Claude and generic waves use up to (?<normal>\d+) lanes, or up to (?<risky>\d+) under/]
     ],

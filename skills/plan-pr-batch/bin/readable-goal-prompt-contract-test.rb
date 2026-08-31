@@ -48,6 +48,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
     @plan_skill = read_repo_file("skills/plan-pr-batch/SKILL.md")
     @pr_batch_skill = read_repo_file("skills/pr-batch/SKILL.md")
     @workflow = read_repo_file("workflows/pr-processing.md")
+    @prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
     @triage_skill = read_repo_file("skills/triage/SKILL.md")
     @source_docs = read_repo_file("docs/pr-batch-skills.md")
     @batch_plan_preflight = read_repo_file("skills/plan-pr-batch/bin/batch-plan-preflight")
@@ -66,6 +67,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "skills/plan-pr-batch/SKILL.md" => @plan_skill,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill,
+      "workflows/pr-batch-intake.md" => @prompt_intake,
       "docs/pr-batch-skills.md" => @source_docs
     }
     GoalPromptDriftContract.check_host_caps!(surfaces)
@@ -87,12 +89,13 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "workflows/pr-processing.md" => @workflow,
       "skills/plan-pr-batch/SKILL.md" => @plan_skill,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/triage/SKILL.md" => @triage_skill
+      "skills/triage/SKILL.md" => @triage_skill,
+      "workflows/pr-batch-intake.md" => @prompt_intake
     }
     GoalPromptDriftContract.check_security_pins!(surfaces:, batch_plan_preflight: @batch_plan_preflight)
 
     mutated = surfaces.transform_values(&:dup)
-    mutated.fetch("skills/pr-batch/SKILL.md").sub!(
+    mutated.fetch("workflows/pr-batch-intake.md").sub!(
       "When search finds no canonical issue or existing PR",
       "When no canonical issue or existing PR is found"
     )

@@ -19,6 +19,7 @@ load receipt_parser_path
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
+PROMPT_INTAKE_PATH = File.join(ROOT, "workflows/pr-batch-intake.md")
 SPEC_SKILL_PATH = File.join(ROOT, "skills/spec/SKILL.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
@@ -567,6 +568,7 @@ end
 class GoalCompletionContractTest < Minitest::Test
   def setup
     @workflow = read_repo_file(WORKFLOW_PATH)
+    @prompt_intake = read_repo_file(PROMPT_INTAKE_PATH)
     @spec_skill = read_repo_file(SPEC_SKILL_PATH)
     @pr_batch_skill = read_repo_file(PR_BATCH_SKILL_PATH)
     @plan_pr_batch_skill = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
@@ -1096,8 +1098,8 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_completion_state_checklists_match_canonical_readiness_vocabulary
     surfaces = {
-      "skills/pr-batch/SKILL.md Required Interview" => [@pr_batch_skill, "## Required Interview", /^##\s+/],
-      "workflows/pr-processing.md Short Invocation" => [@workflow, "### Short Invocation", /^###\s+/]
+      "workflows/pr-batch-intake.md Short Invocation Expansion" =>
+        [@prompt_intake, "## Short Invocation Expansion", /^##\s+/]
     }
     mismatches = surfaces.filter_map do |label, (text, heading, end_heading)|
       actual = completion_state_checklist(text, heading:, end_heading:)
@@ -1112,11 +1114,11 @@ class GoalCompletionContractTest < Minitest::Test
   def test_completion_state_checklists_ignore_earlier_duplicate_paragraphs
     decoy = "Completion states: #{CANONICAL_READINESS_STATES.map { |state| "`#{state}`" }.join(', ')}.\n\n"
     surfaces = {
-      "skills/pr-batch/SKILL.md Required Interview" => [@pr_batch_skill, "## Required Interview", /^##\s+/],
-      "workflows/pr-processing.md Short Invocation" => [@workflow, "### Short Invocation", /^###\s+/]
+      "workflows/pr-batch-intake.md Short Invocation Expansion" =>
+        [@prompt_intake, "## Short Invocation Expansion", /^##\s+/]
     }
     false_positives = surfaces.filter_map do |label, (text, heading, end_heading)|
-      mutation = text.sub("`ready-human-review-required`, ", "")
+      mutation = text.sub("`ready-human-review-required`", "`removed-readiness-state`")
       raise "fixture mutation missed #{label}" if mutation == text
 
       actual = completion_state_checklist("#{decoy}#{mutation}", heading:, end_heading:)
@@ -1312,12 +1314,9 @@ class GoalCompletionContractTest < Minitest::Test
       refute_includes text, "default the normal human prompt to `ask`", label
     end
 
-    assert_squished_includes @workflow,
-                             "ask the user before launch when authority is unresolved",
-                             "workflow"
-    assert_squished_includes @pr_batch_skill,
-                             "before worker launch from visible authority or ask the user",
-                             "pr-batch skill"
+    assert_squished_includes @prompt_intake,
+                             "before worker launch from visible authority or ask",
+                             "prompt intake"
     assert_squished_includes @plan_pr_batch_skill,
                              "ask whether the normal human prompt should use `ask` or `auto`",
                              "plan-pr-batch skill"
@@ -1674,14 +1673,14 @@ class GoalCompletionContractTest < Minitest::Test
                              "docs/pr-batch-skills.md must scope the status line to the batch-level message"
   end
 
-  def test_goal_prompt_skills_use_task_name_instead_of_batch_title
+  def test_goal_prompts_use_task_name_instead_of_batch_title
     {
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
-      "skills/triage/SKILL.md" => @triage_skill
-    }.each do |label, text|
-      assert_text_includes text, "Task name:", label
-      refute_includes text, "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch/SKILL.md goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch/SKILL.md goal prompt" => @plan_goal_prompt
+    }.each do |label, prompt|
+      assert_text_includes prompt, "Task name:", label
+      refute_includes prompt, "<PROJECT> <A?> <MM-DD HH:MM> - <short title>",
                       "#{label} should not use the old batch-title prompt placeholder"
     end
   end
