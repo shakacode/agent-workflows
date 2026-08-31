@@ -286,6 +286,15 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
   end
 
+  def test_current_integration_policy_components_are_portably_self_protecting
+    source_pattern = "skills/pr-batch/lib/current_integration_*.rb"
+
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_pattern
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_pattern
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_pattern}"
+    assert_includes AutonomousMergePolicy::PORTABLE_POLICY_EXCLUDES, "**/current_integration_*.rb"
+  end
+
   def test_portable_safe_path_group_constants_are_frozen_and_not_mutated_by_callers
     groups = AutonomousMergePolicy.portable_safe_path_groups
     groups.fetch("documentation").fetch("include") << "mutated/**"
