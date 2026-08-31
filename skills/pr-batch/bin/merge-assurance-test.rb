@@ -3466,6 +3466,7 @@ class MergeAssuranceTest < Minitest::Test
       "/repo/.github/workflows/ci.yml",
       "https://example.com/repo/.github/workflows/ci.yml",
       "C:/repo/.github/actions/setup/action.yml",
+      "C:repo/.github/workflows/ci.yml",
       "../.github/workflows/ci.yml",
       "sim/../.github/workflows/ci.yml",
       "./.github/workflows/ci.yml",

@@ -887,7 +887,7 @@ module MergeAssurance
 
     components = path.split("/", -1)
     return false if components.empty? || path.start_with?("/") || path.include?("\\")
-    return false if path.match?(%r{\A[A-Za-z]:/})
+    return false if path.match?(/\A[A-Za-z]:/)
     return false if components.any? { |component| component.empty? || %w[. ..].include?(component) }
 
     components.each_cons(3).any? do |first, second, _file|
