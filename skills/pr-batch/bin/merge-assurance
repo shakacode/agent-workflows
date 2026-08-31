@@ -56,6 +56,7 @@ module MergeAssurance
   CI_CONCLUSION_NOT_READY_VALUES = %w[
     action_required cancelled failure stale startup_failure timed_out
   ].freeze
+  CI_OPAQUE_TEXT_KEYS = %w[name summary title].freeze
   AUTHORITIES = %w[auto_merge_when_gates_pass ask explicit_approval none].freeze
   AUTONOMOUS_VERDICTS = %w[
     autonomous-merge-eligible human-approval-required human-approved-for-current-head
@@ -257,7 +258,7 @@ module MergeAssurance
       validate_selected_hosted_run_duplicates(safe_context, failures)
     end
     validate_autonomous(autonomous_result, safe_context, failures)
-    failures << "ci_result contains UNKNOWN" if contains_unknown?(ci_result)
+    failures << "ci_result contains UNKNOWN" if contains_unknown_ci_result?(ci_result)
     failures << "autonomous_result contains UNKNOWN" if contains_unknown?(autonomous_result)
     failures << "context contains UNKNOWN" if contains_unknown?(context)
     failures << "selected_hosted_ci_receipts contains UNKNOWN" if
@@ -284,6 +285,23 @@ module MergeAssurance
     when Array
       value.any? { |nested| contains_unknown?(nested) }
     when String
+      value.include?("UNKNOWN")
+    else
+      false
+    end
+  end
+
+  def contains_unknown_ci_result?(value, parent_key: nil)
+    case value
+    when Hash
+      value.any? do |key, nested|
+        contains_unknown?(key) || contains_unknown_ci_result?(nested, parent_key: key)
+      end
+    when Array
+      value.any? { |nested| contains_unknown_ci_result?(nested, parent_key:) }
+    when String
+      return value == "UNKNOWN" if CI_OPAQUE_TEXT_KEYS.include?(parent_key)
+
       value.include?("UNKNOWN")
     else
       false

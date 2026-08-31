@@ -471,6 +471,26 @@ class MergeAssuranceTest < Minitest::Test
     assert_includes result.fetch("failures"), "ci_result contains UNKNOWN"
   end
 
+  def test_optional_policy_check_names_containing_unknown_are_not_unknown_evidence
+    ["Approval UNKNOWN state", "NOT-UNKNOWN"].each do |name|
+      trusted_policy = optional_held_policy
+      trusted_policy.fetch("optional_approval_held_checks").first["name"] = name
+      ci_result = optional_held_ci(trusted_policy)
+
+      result = MergeAssurance.assess(
+        ci_result:,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context("auto_merge_when_gates_pass"),
+        trusted_ci_policy: trusted_policy,
+        now: NOW
+      )
+
+      failures = Array(result["failures"])
+      assert result.fetch("eligible"), "#{name}: #{failures.join('; ')}"
+      refute_includes failures, "ci_result contains UNKNOWN"
+    end
+  end
+
   def test_diff_identity_must_equal_the_canonical_base_and_head_derivation
     stale = context("auto_merge_when_gates_pass")
     stale["diff_identity"] = "f" * 64
@@ -4934,17 +4954,18 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def optional_held_ci(policy)
+    check_name = policy.fetch("optional_approval_held_checks").first.fetch("name")
     result = ready_ci
     workflow_url = "https://app.circleci.com/workflow/00000000-0000-4000-8000-000000000031"
     held = {
-      "kind" => "check_run", "id" => 31, "suite_id" => 10, "name" => "storybook-review-app",
+      "kind" => "check_run", "id" => 31, "suite_id" => 10, "name" => check_name,
       "head_sha" => HEAD_SHA,
       "status" => "in_progress", "conclusion" => nil,
       "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
       "app_slug" => "circleci-checks", "dependabot" => false, "actions" => nil,
       "details_url" => workflow_url,
       "output" => {
-        "title" => "Workflow: storybook-review-app",
+        "title" => "Workflow: #{check_name}",
         "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - Blocked\n"
       }
     }
@@ -4958,7 +4979,7 @@ class MergeAssuranceTest < Minitest::Test
           "kind" => "check_run",
           "id" => 31,
           "app_slug" => "circleci-checks",
-          "name" => "storybook-review-app"
+          "name" => check_name
         }
       ]
     )
