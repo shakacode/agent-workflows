@@ -8,15 +8,19 @@ require_relative "../../bin/agent_doctor/source_checks"
 
 class AgentDoctorSourceChecksTest < Minitest::Test
   class RecordingRunner
-    attr_reader :commands
+    attr_reader :calls
 
     def initialize(delegate)
       @delegate = delegate
-      @commands = []
+      @calls = []
+    end
+
+    def commands
+      @calls.map(&:first)
     end
 
     def capture(command, **options)
-      @commands << command
+      @calls << [command, options]
       @delegate.capture(command, **options)
     end
   end
@@ -114,6 +118,23 @@ class AgentDoctorSourceChecksTest < Minitest::Test
         assert_includes command, "core.fsmonitor=false"
         assert_includes command, "core.hooksPath=/dev/null"
       end
+    end
+  end
+
+  def test_checkout_inherits_the_configured_runner_timeout_for_git_probes
+    Dir.mktmpdir do |directory|
+      checkout = create_checkout(directory, "agent-workflows")
+      runner = RecordingRunner.new(@runner)
+      checks = AgentDoctor::SourceChecks.new(
+        runner: runner, environment: { "AGENT_STACK_AGENT_WORKFLOWS_URL" => File.join(directory, "origin.git") }
+      )
+
+      check = checks.checkout("agent-workflows", checkout)
+
+      assert_equal "healthy", check["status"]
+      refute_empty runner.calls
+      refute runner.calls.any? { |_, options| options.key?(:timeout) },
+             "source Git probes replaced the configured runner timeout"
     end
   end
 
