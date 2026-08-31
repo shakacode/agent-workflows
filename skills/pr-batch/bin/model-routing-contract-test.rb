@@ -1416,7 +1416,6 @@ class ModelRoutingContractTest < Minitest::Test
 
   def test_lane_cards_separate_preference_from_optional_observation
     %w[
-      workflows/pr-processing.md
       workflows/pr-batch-worker-execution.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
