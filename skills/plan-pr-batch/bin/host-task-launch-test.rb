@@ -72,7 +72,7 @@ class HostTaskLaunchTest < Minitest::Test
       assert_equal "reconcile-by-run-id", retry_result.dig("action", "kind")
       assert_equal created.dig("record", "run_id"), retry_result.dig("record", "run_id")
 
-      input["capabilities"]["host_creation_idempotency"] = true
+      input.dig("capability_preflight", "launch_safety")["task_creation_idempotency"] = "available"
       assert_equal "retry-create-task", invoke(input).dig("action", "kind")
     end
   end
@@ -164,7 +164,7 @@ class HostTaskLaunchTest < Minitest::Test
       input = input_for(directory)
       begin_create(input)
       input["operation"] = "retry"
-      input["capabilities"]["reconciliation_by_run_id"] = false
+      input.dig("capability_preflight", "launch_safety")["reconciliation_by_outer_run_id"] = "unavailable"
 
       assert_equal "reconciliation-unavailable", invoke(input).dig("action", "kind")
     end
@@ -178,6 +178,7 @@ class HostTaskLaunchTest < Minitest::Test
       "type" => "host-task-launch",
       "version" => 1,
       "operation" => "prepare",
+      "capability_preflight" => capability_preflight(fixture),
       "local_fence_path" => File.join(directory, "launch-fence.json"),
       "publication" => { "status" => "not-published" },
       "coordination" => { "status" => "clear", "retry_evidence" => "bounded status read succeeded" },
@@ -198,6 +199,19 @@ class HostTaskLaunchTest < Minitest::Test
         }]
       }
     )
+  end
+
+  def capability_preflight(fixture)
+    native = fixture == "native"
+    {
+      "type" => "host-task-capability-preflight-result", "version" => 1,
+      "status" => native ? "capability-selected" : "copy-paste-required",
+      "launch_mode" => native ? "host-native-user-task" : "copy-paste",
+      "launch_safety" => {
+        "task_creation_idempotency" => "unavailable",
+        "reconciliation_by_outer_run_id" => "available"
+      }
+    }
   end
 
   def publication_evidence(record)

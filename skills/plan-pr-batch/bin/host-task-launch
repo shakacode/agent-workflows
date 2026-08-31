@@ -26,13 +26,16 @@ module HostTaskLaunch
 
   def evaluate(input)
     validate_input!(input)
-    return copy_paste_result(input) unless native_capable?(input)
-
     intent = input.fetch("intent")
     fence_path = input.fetch("local_fence_path")
     immutable = immutable_intent(intent)
     record = load_or_create_fence(fence_path, immutable)
     return invalid_input if record == :mismatch
+
+    unless native_capable?(input)
+      persist_fence(fence_path, record)
+      return copy_paste_result(record)
+    end
 
     operation = input.fetch("operation")
     update_task_identity!(record, input.fetch("task_identity")) if %w[bind-provisional bind-task].include?(operation)
@@ -58,7 +61,7 @@ module HostTaskLaunch
       "status" => "ready",
       "launch_mode" => "host-native-user-task",
       "record" => record,
-      "action" => action_for(operation, input.fetch("capabilities"), publication, record, create_attempt_already_fenced),
+      "action" => action_for(operation, launch_safety(input), publication, record, create_attempt_already_fenced),
       "control_tower" => render_control_tower(record)
     }
   rescue ContractError, AgentRunRecord::ContractError, KeyError
@@ -72,7 +75,7 @@ module HostTaskLaunch
     raise ContractError unless input["task_creation_authorization"].is_a?(String)
     raise ContractError unless input["local_fence_path"].is_a?(String) && !input["local_fence_path"].strip.empty?
 
-    validate_capabilities!(input.fetch("capabilities"))
+    validate_capability_preflight!(input.fetch("capability_preflight"))
     validate_intent!(input.fetch("intent"))
   end
 
@@ -103,25 +106,25 @@ module HostTaskLaunch
     raise ContractError unless lane_ids.uniq.length == lane_ids.length
   end
 
-  def native_capable?(input)
-    result = input["capability_preflight"]
-    if result
-      return result.is_a?(Hash) && result["type"] == "host-task-capability-preflight-result" &&
-             result["version"] == 1 && result["status"] == "capability-selected" &&
-             result["launch_mode"] == "host-native-user-task" &&
-             %w[available unavailable].include?(result.dig("launch_safety", "task_creation_idempotency")) &&
-             result.dig("launch_safety", "reconciliation_by_outer_run_id") == "available"
-    end
+  def validate_capability_preflight!(result)
+    raise ContractError unless result.is_a?(Hash) && result["type"] == "host-task-capability-preflight-result" && result["version"] == 1
 
-    capabilities = input.fetch("capabilities")
-    input["task_creation_authorization"] == "explicit-user-authorization" &&
-      capabilities["task_creation"] == true &&
-      (capabilities["title_at_creation"] == true || capabilities["task_rename"] == true) &&
-      capabilities["saved_project_selection"] == true && capabilities["isolated_worktree"] == true &&
-      capabilities["task_status_read"] == true &&
-      (capabilities["immediate_task_identifier"] == true ||
-        (capabilities["provisional_task_identifier"] == true &&
-         capabilities["provisional_identifier_resolution"] == true))
+    safety = result["launch_safety"]
+    raise ContractError unless safety.is_a?(Hash) && %w[available unavailable].include?(safety["task_creation_idempotency"]) &&
+                               %w[available unavailable].include?(safety["reconciliation_by_outer_run_id"])
+  end
+
+  def native_capable?(input)
+    result = input.fetch("capability_preflight")
+    result["status"] == "capability-selected" && result["launch_mode"] == "host-native-user-task"
+  end
+
+  def launch_safety(input)
+    safety = input.fetch("capability_preflight").fetch("launch_safety")
+    {
+      "host_creation_idempotency" => safety.fetch("task_creation_idempotency") == "available",
+      "reconciliation_by_run_id" => safety.fetch("reconciliation_by_outer_run_id") == "available"
+    }
   end
 
   def immutable_intent(intent)
@@ -344,10 +347,11 @@ module HostTaskLaunch
     lines.join("\n")
   end
 
-  def copy_paste_result(_input)
+  def copy_paste_result(record)
     {
       "type" => "host-task-launch-result", "version" => VERSION, "status" => "ready",
-      "launch_mode" => "copy-paste", "action" => { "kind" => "copy-paste" },
+      "launch_mode" => "copy-paste", "action" => { "kind" => "copy-paste" }, "record" => record,
+      "control_tower" => render_control_tower(record),
       "reason" => "native-capability-or-authorization-unavailable"
     }
   end
