@@ -3465,6 +3465,8 @@ class MergeAssuranceTest < Minitest::Test
       "notes-about-.github/workflows/ci.yml".sub("/", "-"),
       "/repo/.github/workflows/ci.yml",
       "https://example.com/repo/.github/workflows/ci.yml",
+      "http:/evil.com/.github/workflows/ci.yml",
+      "git+ssh:host/repo/.github/actions/setup/action.yml",
       "C:/repo/.github/actions/setup/action.yml",
       "C:repo/.github/workflows/ci.yml",
       "../.github/workflows/ci.yml",
