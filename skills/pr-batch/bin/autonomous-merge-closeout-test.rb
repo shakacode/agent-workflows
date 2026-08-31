@@ -732,6 +732,7 @@ class AutonomousMergeCloseoutTest < Minitest::Test
       stdout, stderr, status = Open3.capture3(
         {
           "AUTONOMOUS_MERGE_GH" => gh_path,
+          "CURRENT_INTEGRATION_GH" => gh_path,
           "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path
         },
         "ruby", ELIGIBILITY_SCRIPT,
@@ -772,6 +773,22 @@ class AutonomousMergeCloseoutTest < Minitest::Test
       require "json"
 
       objective = JSON.parse(File.read(ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")))
+      if ARGV.include?("graphql")
+        puts JSON.generate(
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "headRefOid" => objective.fetch("head_sha"),
+                "baseRefName" => "main",
+                "potentialMergeCommit" => nil
+              },
+              "ref" => { "target" => { "oid" => objective.fetch("base_sha") } }
+            }
+          }
+        )
+        exit
+      end
+
       request = ARGV.fetch(-1)
       response = case request
                  when "repos/owner/repo/pulls/42"
