@@ -104,6 +104,15 @@ module HostTaskLaunch
   end
 
   def native_capable?(input)
+    result = input["capability_preflight"]
+    if result
+      return result.is_a?(Hash) && result["type"] == "host-task-capability-preflight-result" &&
+             result["version"] == 1 && result["status"] == "capability-selected" &&
+             result["launch_mode"] == "host-native-user-task" &&
+             %w[available unavailable].include?(result.dig("launch_safety", "task_creation_idempotency")) &&
+             result.dig("launch_safety", "reconciliation_by_outer_run_id") == "available"
+    end
+
     capabilities = input.fetch("capabilities")
     input["task_creation_authorization"] == "explicit-user-authorization" &&
       capabilities["task_creation"] == true &&

@@ -23,6 +23,7 @@ module HostTaskCapabilityPreflight
     remote_host_read
     portfolio_read
   ].freeze
+  LAUNCH_SAFETY_KEYS = %w[task_creation_idempotency reconciliation_by_outer_run_id].freeze
 
   module_function
 
@@ -31,6 +32,7 @@ module HostTaskCapabilityPreflight
 
     capabilities = input.fetch("host_capabilities")
     return invalid_input unless CAPABILITY_KEYS.all? { |key| observed_capability?(capabilities[key]) }
+    return invalid_input unless LAUNCH_SAFETY_KEYS.all? { |key| !capabilities.key?(key) || observed_capability?(capabilities[key]) }
     return invalid_input unless TASK_CREATION_AUTHORIZATIONS.include?(input["task_creation_authorization"])
 
     task = input.fetch("task")
@@ -106,7 +108,7 @@ module HostTaskCapabilityPreflight
 
   def result(input, capabilities, reasons)
     native = reasons.empty?
-    {
+    output = {
       "type" => RESULT_TYPE,
       "version" => VERSION,
       "status" => native ? "capability-selected" : "copy-paste-required",
@@ -120,6 +122,12 @@ module HostTaskCapabilityPreflight
       "control_tower" => control_tower(capabilities),
       "launch_authority" => "not-granted"
     }
+    if LAUNCH_SAFETY_KEYS.all? { |key| capabilities.key?(key) }
+      output["launch_safety"] = LAUNCH_SAFETY_KEYS.to_h do |key|
+        [key, availability(capabilities.fetch(key))]
+      end
+    end
+    output
   end
 
   def identity(capabilities)
