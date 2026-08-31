@@ -143,6 +143,7 @@ plan_skill = read_repo_file("skills/plan-pr-batch/SKILL.md")
 pr_batch_skill = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill = read_repo_file("skills/triage/SKILL.md")
 workflow = read_repo_file("workflows/pr-processing.md")
+source_checkout = ENV[SOURCE_CHECKOUT_ENV] == "1"
 
 workflow_handoff = extract_markdown_section(
   workflow,
@@ -182,40 +183,52 @@ reject_phrases(
   "readable-prompt guidance"
 )
 
-launcher_record = extract_markdown_section(
+launcher_record_router = extract_markdown_section(
   workflow,
   "### Launcher Run Record",
   "workflow"
 )
-require_phrases(launcher_record, LAUNCHER_RECORD_FIELDS, "canonical launcher run record")
 require_phrases(
-  launcher_record,
+  launcher_record_router,
   [
-    "field by field",
-    "does not block launch",
-    "collapsed `<details>`",
-    "one entry for every planned target lane",
-    "without replacing earlier values",
-    "Reruns append a new collapsed record",
-    "Directly append the cheap lane launch timestamp and digest",
-    "existing immutable replay identity",
-    "only to the exactly matching `run_id` and replay identity",
-    "not the deterministic launch token",
-    "Do not add either field to the human-authored prompt",
-    "do not invent another snapshot, byte encoding, or record schema",
-    "not applicable — trusted-ad-hoc-override",
-    "`auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`",
-    "machine-only `merge_authority: none`"
+    "canonical [agent-run-record v1 contract](../docs/github-task-prompts-and-run-records.md#launcher-composition-boundary)",
+    "[`agent-run-record` CLI](../skills/pr-batch/bin/agent-run-record)",
+    "supplies only GitHub source and digest evidence",
+    "launcher separately owns the outer destination, run identity, retry key, replay tuple, cheap launch timestamp, and worker handoff",
+    "never inject those values through the helper",
+    "A `trusted-ad-hoc-override` lane bypasses the helper",
+    "Persist helper output at every boundary; nonzero stops"
   ],
-  "canonical launcher run record"
+  "launcher run-record router"
 )
+
+if source_checkout
+  launcher_record_contract = read_repo_file("docs/github-task-prompts-and-run-records.md")
+  require_phrases(launcher_record_contract, LAUNCHER_RECORD_FIELDS, "canonical launcher run record")
+  require_phrases(
+    launcher_record_contract,
+    [
+      "one exact canonical `record_destination` in the durable Batch Plan",
+      "Each execution publishes exactly one `agent-launcher-run-record:v1` comment or durable record at that destination",
+      "one compact visible state, one collapsed details block, and one unique entry per planned lane",
+      "Reruns append a new outer record instead of replacing history",
+      "`lane_id`, dispatcher, `instance_id`, and launch token",
+      "A deterministic launch token is not unique across reruns and never substitutes for `run_id`",
+      "does not inject outer identity, destination, or replay values into the helper",
+      "not applicable — trusted-ad-hoc-override",
+      "That worker-start value is immutable for the remainder of the run",
+      "append a directly timestamped object to `workflow_versions.later_observations`"
+    ],
+    "canonical launcher run record"
+  )
+end
 
 codex_prompt = "/goal\n#{prompts.fetch('plan-pr-batch')}"
 
 begin
   GoalPromptDriftContract.check!(
     repo_root: REPO_ROOT,
-    source_checkout: ENV[SOURCE_CHECKOUT_ENV] == "1"
+    source_checkout: source_checkout
   )
 rescue RuntimeError => e
   abort_with_failure(e.message)

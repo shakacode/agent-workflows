@@ -94,6 +94,22 @@ module GoalPromptDriftContract
   HST_SKILL_REFERENCE = "Use `HST-v1` from the canonical " \
                         "[Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) " \
                         "for every recurring wake or workflow-owned heartbeat."
+  MODEL_EFFORT_DOC_PHRASES = [
+    "Group lanes by model/effort preference",
+    "MODEL_ESCALATION_REQUEST",
+    "stronger-model plan review",
+    "if the runtime inherits"
+  ].freeze
+  MODEL_EFFORT_CONTEXT_PHRASES = [
+    "**Coordinator model/effort preference**",
+    "**Observed host/model/effort**",
+    "**Worker execution envelope**",
+    "**Worker model/effort route**",
+    "**Model escalation request**",
+    "**Model replacement handoff**",
+    "**Dispatch-resolved model class**",
+    "prompt target"
+  ].freeze
   HST_WORKFLOW_PHRASES = [
     "### Human-Status Translation Contract",
     "internal telemetry",
@@ -328,6 +344,12 @@ module GoalPromptDriftContract
     if source_checkout
       restart_docs = read(repo_root, "docs/agent-runner-restarts.md")
       fail!("restart docs snippet drifted") unless restart_docs.include?(RESUME_SNIPPET)
+      require_phrases(source_docs, MODEL_EFFORT_DOC_PHRASES, "docs/pr-batch-skills.md model/effort routing")
+      require_phrases(
+        read(repo_root, "CONTEXT.md"),
+        MODEL_EFFORT_CONTEXT_PHRASES,
+        "CONTEXT.md model/effort vocabulary"
+      )
     end
 
     continuation_section = section(workflow, "### Generic PR-Batch Continuation Prompt")

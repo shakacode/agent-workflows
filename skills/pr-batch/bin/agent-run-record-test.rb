@@ -1248,19 +1248,27 @@ class AgentRunRecordTest < Minitest::Test
     assert_includes stdout, "\\[click\\]\\(https&#58;//example.invalid\\)"
   end
 
-  def test_outer_dynamic_values_use_the_hostile_value_rendering_contract
+  def test_contract_requires_outer_dynamic_values_to_use_the_hostile_value_rendering_contract
     document = File.read(CONTRACT_DOC, encoding: "UTF-8")
-    hostile_values = {
-      "target title" => "[click](javascript:alert(1))",
-      "lane ID" => "lane-1<img src=x onerror=alert(1)>",
-      "replay tuple" => "`tuple`](data:text/html,pwn)",
-      "record destination" => "https://example.invalid)[open](javascript:alert(1))",
-      "durable reference" => "plan-state://run/path<img src=x onerror=alert(1)>"
-    }
+    assert_match(
+      /The outer renderer applies the helper renderer's HTML escaping, Markdown\s+neutralization, URI-scheme neutralization, and inert-code treatment/m,
+      document
+    )
 
     ["target titles", "lane IDs", "every replay-tuple value", "record destinations", "durable references"].each do |field|
       assert_includes document, field
     end
+    assert_match(/No outer dynamic value may create a Markdown link, HTML element, or\s+active URI\./m, document)
+  end
+
+  def test_helper_title_rendering_primitives_neutralize_representative_hostile_values
+    hostile_values = {
+      "Markdown link with an active URI" => "[click](javascript:alert(1))",
+      "HTML element" => "lane-1<img src=x onerror=alert(1)>",
+      "inline-code break with a data URI" => "`tuple`](data:text/html,pwn)",
+      "link termination with an active URI" => "https://example.invalid)[open](javascript:alert(1))",
+      "custom scheme with an HTML element" => "plan-state://run/path<img src=x onerror=alert(1)>"
+    }
 
     hostile_values.each do |label, hostile_value|
       record = valid_record
