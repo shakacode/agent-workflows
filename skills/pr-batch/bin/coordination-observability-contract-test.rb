@@ -175,6 +175,16 @@ class CoordinationObservabilityContractTest < Minitest::Test
     end
   end
 
+  def test_public_fallback_does_not_conflict_with_its_own_renewable_marker
+    fallback = squish(section(@backend_doc, "## Public Claim Comment Fallback", /^##\s+/))
+
+    [fallback, squish(@component)].each do |consumer|
+      assert_includes consumer, "batch, machine, thread, and branch"
+      assert_includes consumer, "different lane or instance"
+      assert_includes consumer, "same comment"
+    end
+  end
+
   def test_restart_replacement_and_cancellation_are_replayable
     recovery = squish(section(@component, "## Restart, Replacement, And Cancellation", /^##\s+/))
 

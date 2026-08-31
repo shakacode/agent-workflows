@@ -78,11 +78,14 @@ evidence:
   The comment never overrides a private refusal and is not machine-readable
   cancellation, terminal, or authority evidence. Only a marker backed by
   authenticated and authorized ownership evidence is conflicting; any other
-  marker remains advisory and cannot block mutations. For an ad-hoc lane,
-  public claim fallback is unavailable because there is no issue or PR comment
-  surface. Stop before branch or worktree creation and require a coordination
-  target or explicit no-backend single-operator approval. Apply the concrete
-  author-and-marker verification from the public
+  marker remains advisory and cannot block mutations. Among verified markers,
+  only one owned by a different lane or instance conflicts. When batch,
+  machine, thread, and branch all match the current lane, refresh the same
+  comment rather than blocking the lane on its own renewable marker. For an
+  ad-hoc lane, public claim fallback is unavailable because there is no issue
+  or PR comment surface. Stop before branch or worktree creation and require a
+  coordination target or explicit no-backend single-operator approval. Apply
+  the concrete author-and-marker verification from the public
   [backend guide](../docs/coordination-backend.md#public-claim-comment-fallback);
   a marker body alone is never ownership proof.
 - `none`: trusted configuration says `coordination_backend: n/a`. The adapter

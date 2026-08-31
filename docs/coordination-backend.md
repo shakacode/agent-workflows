@@ -73,6 +73,12 @@ authenticated and authorized ownership evidence is conflicting; any other
 marker remains advisory and cannot block mutations. Report either marker's
 comment URL as handoff evidence.
 
+Among verified markers, only one owned by a different lane or instance is
+conflicting. A marker whose batch, machine, thread, and branch all match the
+current lane is that lane's renewable marker; refresh the same comment instead
+of blocking itself. Any ambiguous identity remains `UNKNOWN` and blocks the
+affected lane.
+
 That evidence requires concrete author-and-marker verification from
 field-selected GitHub API metadata: the API must return a nonempty author login
 that passes the security floor's resolved trust policy under `trusted_users`,
