@@ -571,10 +571,14 @@ class CoordinationDeclarationContractTest < Minitest::Test
   end
 
   def test_unrecognized_declaration_form_fails
-    blockers = coordination_declaration_blockers("coordination: fine\n")
+    with_default_external_encoding(Encoding::US_ASCII) do
+      declaration = "fíne"
+      blockers = coordination_declaration_blockers("coordination: #{declaration}\n")
 
-    refute_empty blockers
-    assert_includes blockers.first, "unrecognized"
+      refute_empty blockers
+      assert_includes blockers.first, "unrecognized"
+      assert_includes blockers.first, declaration
+    end
   end
 
   def test_near_miss_declarations_are_rejected_with_an_exact_correction
@@ -598,12 +602,15 @@ class CoordinationDeclarationContractTest < Minitest::Test
   end
 
   def test_both_forms_on_one_line_fail
-    handoff = "coordination: registered aw-1 unavailable #{EM_DASH} backend flaky\n"
-    blockers = coordination_declaration_blockers(handoff)
+    with_default_external_encoding(Encoding::US_ASCII) do
+      batch_id = "aw-1 unavailable #{EM_DASH} backend flaky"
+      blockers = coordination_declaration_blockers("coordination: registered #{batch_id}\n")
 
-    refute_empty blockers, "one line carrying both forms must not pass as a clean declaration"
-    assert_includes blockers.first, "single token"
-    assert_includes blockers.first, "never both on one line"
+      refute_empty blockers, "one line carrying both forms must not pass as a clean declaration"
+      assert_includes blockers.first, "single token"
+      assert_includes blockers.first, batch_id
+      assert_includes blockers.first, "never both on one line"
+    end
   end
 
   def test_registered_batch_id_rejects_trailing_prose
