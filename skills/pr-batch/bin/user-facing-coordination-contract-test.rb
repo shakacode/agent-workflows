@@ -38,11 +38,22 @@ class UserFacingCoordinationContractTest < Minitest::Test
     full_path = File.join(ROOT, path)
     return "" unless File.file?(full_path)
 
-    source = File.read(full_path, encoding: "UTF-8")
-    if [WORKFLOW, PR_BATCH].include?(path)
-      source = "#{File.read(File.join(ROOT, INTEGRATION_CLOSEOUT), encoding: 'UTF-8')}\n#{source}"
+    File.read(full_path, encoding: "UTF-8").gsub(/\s+/, " ").strip
+  end
+
+  def normalized_with_integration_closeout(path)
+    [normalized(INTEGRATION_CLOSEOUT), normalized(path)].join(" ").strip
+  end
+
+  def test_normalization_keeps_compatibility_files_scoped_and_composition_explicit
+    [WORKFLOW, PR_BATCH].each do |path|
+      source = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      assert_equal source.gsub(/\s+/, " ").strip, normalized(path), path
+
+      combined = normalized_with_integration_closeout(path)
+      assert_includes combined, normalized(INTEGRATION_CLOSEOUT), path
+      assert_includes combined, normalized(path), path
     end
-    source.gsub(/\s+/, " ").strip
   end
 
   def normalized_section(path, heading, end_heading:)

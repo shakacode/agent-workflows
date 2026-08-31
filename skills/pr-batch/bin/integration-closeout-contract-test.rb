@@ -137,9 +137,22 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes normalized_churn, "directional and informational"
 
     assert_includes @validate_workflow,
-                    "group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
+                    "group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
     assert_includes @validate_workflow,
                     "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+  end
+
+  def test_retained_processing_contracts_use_existing_compatibility_routes
+    assert_equal 2,
+                 @component.scan("pr-processing.md#production-and-release-compatibility-route").length
+    assert_equal 2,
+                 @component.scan("pr-processing.md#accelerated-rc-auto-merge-compatibility-route").length
+    assert_includes @component,
+                    "[Ordinary Review Fallback](pr-processing.md#ordinary-review-fallback)"
+    assert_includes @component,
+                    "[Process Gap Disposition](pr-processing.md#process-gap-disposition)"
+    refute_includes @component, "pr-processing.md#release-mode-preflight"
+    refute_includes @component, "pr-processing.md#accelerated-rc-auto-merge)"
   end
 
   def test_workflow_is_an_index_and_compatibility_shim
@@ -217,8 +230,8 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes @component, "Production and release remain downstream"
     assert_includes @component, "pr-processing.md#coordination-state"
     assert_includes @component, "pr-processing.md#coordination-telemetry-and-provenance"
-    assert_includes @component, "pr-processing.md#release-mode-preflight"
-    assert_includes @component, "pr-processing.md#accelerated-rc-auto-merge"
+    assert_includes @component, "pr-processing.md#production-and-release-compatibility-route"
+    assert_includes @component, "pr-processing.md#accelerated-rc-auto-merge-compatibility-route"
     refute_includes @component, "agent-coord`-compatible telemetry-completeness"
     refute_includes @component, "Arguments, in order and as separate values: `batch-audit`"
     refute_includes @component, "Refresh stale release-mode classification"

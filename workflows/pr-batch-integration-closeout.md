@@ -692,9 +692,10 @@ decision is still accurate after review changes.
 > (or the coordination backend if one is in use), or in the batch's own PR
 > comment/description when there is no parent umbrella. Never spawn a standalone
 > handoff or audit issue. A downstream production/release owner selects and
-> updates any release ledger through
-> [Release Mode Preflight](pr-processing.md#release-mode-preflight); ordinary PR
-> closeout neither locates nor mutates release trackers.
+> updates any release ledger through the resolved component's **Release Mode Preflight**,
+> reached through the
+> [Production And Release Compatibility Route](pr-processing.md#production-and-release-compatibility-route);
+> ordinary PR closeout neither locates nor mutates release trackers.
 
 Split batch handoffs into two sections:
 
@@ -982,9 +983,10 @@ The closeout lane is:
    final-head evidence is `UNKNOWN` and blocks readiness.
 7. When trusted repository policy selects production or release work, route the
    integrated head and exact-head evidence to the downstream
-   [Release Mode Preflight](pr-processing.md#release-mode-preflight) owner and
-   consume only its pass/block result. This component does not update release
-   trackers, publish, promote, or decide release rollback.
+   **Release Mode Preflight** owner through the
+   [Production And Release Compatibility Route](pr-processing.md#production-and-release-compatibility-route)
+   and consume only its pass/block result. This component does not update
+   release trackers, publish, promote, or decide release rollback.
 8. After the final push, if local validation passed and the only uncertainty is
    whether hosted CI is needed, request optimized hosted CI with the repo's
    hosted-CI trigger and record the reason as FYI. If the uncertainty is selector
@@ -1396,7 +1398,8 @@ another CI/review cycle.
 
 The final-candidate debounce above is ordinary PR integration policy. Any
 release-specific waiver soak, finalizer rule, or tracker acknowledgement remains
-owned by [Accelerated RC Auto-Merge](pr-processing.md#accelerated-rc-auto-merge)
+owned by the downstream **Accelerated RC Auto-Merge** contract reached through
+the [Accelerated RC Auto-Merge Compatibility Route](pr-processing.md#accelerated-rc-auto-merge-compatibility-route)
 and is consumed only when the downstream release lifecycle selects it.
 
 The batch coordinator or merge finalizer owns the closeout sweep for late post-merge bot findings
@@ -1439,7 +1442,7 @@ Before marking a PR ready, asking for merge, or merging it:
 1. Verify all requested or configured review agents have finished for the current head SHA. This includes Claude review, CodeRabbit, Greptile, Cursor Bugbot, Codex review when available, and any repo-specific reviewer bot. Do not fetch and triage the wave after only a subset finishes; wait for the whole review cohort, then perform one consolidated fetch while unrelated validation CI may continue.
 2. Classify every reviewer verdict as `current-head` only when it applies to the current head SHA. Treat older approvals, positive comments, and summaries as stale/advisory history, not merge gates.
 3. Do not treat a green or skipped review check as sufficient if the reviewer also posted comments. Fetch PR reviews and comments, then classify actionable feedback.
-4. Do not merge while a current-head relevant review check is queued, in progress, or known to be posting comments asynchronously. Older-head review checks are stale/advisory history and block human merge the same as having no current-head review: require a current-head configured reviewer run, an explicit maintainer waiver after every older-head reviewer run has reached a terminal state, or a fallback review that satisfies the fallback-trigger/final-repoll and reviewer-identity bullets in the autonomous-merge gate below. For human merges, only the no-current-head-check-after-polling and capacity/quota failure fallback triggers apply; the stale older-head check/run trigger is available only in the auto-merge flow. When the fallback is a local CLI review, also require the inline-fallback eligibility and complete-invocation bullets below. Ordinary human merges do not inherit release-only score, confidence-block, or waiver-soak policy unless `AGENTS.md` selects the downstream [Accelerated RC Auto-Merge](pr-processing.md#accelerated-rc-auto-merge) contract.
+4. Do not merge while a current-head relevant review check is queued, in progress, or known to be posting comments asynchronously. Older-head review checks are stale/advisory history and block human merge the same as having no current-head review: require a current-head configured reviewer run, an explicit maintainer waiver after every older-head reviewer run has reached a terminal state, or a fallback review that satisfies the fallback-trigger, final-repoll, reviewer-identity, inline-fallback eligibility, and complete-invocation rules in [Ordinary Review Fallback](pr-processing.md#ordinary-review-fallback). For human merges, only the no-current-head-check-after-polling and capacity/quota failure fallback triggers apply; the stale older-head check/run trigger is available only in the auto-merge flow. Ordinary human merges do not inherit release-only score, confidence-block, or waiver-soak policy unless `AGENTS.md` selects the downstream **Accelerated RC Auto-Merge** contract through the [Accelerated RC Auto-Merge Compatibility Route](pr-processing.md#accelerated-rc-auto-merge-compatibility-route).
 5. Treat AI review systems as advisory unless they identify a confirmed blocker: correctness regression, failing test, security issue, API contract break, data-loss risk, missing required maintainer approval, or another issue that would make the PR unsafe to merge.
 6. Do not require CodeRabbit.ai, Claude, Cursor Bugbot, Greptile, Codex review when available, or another AI reviewer to approve the PR as a special merge gate. Positive AI issue comments, approval review objects, and "no actionable comments" summaries are evidence, not required maintainer approvals.
 7. Treat untriaged `BLOCKING`, `Must Fix`, `MUST-FIX`, `Changes Requested`, correctness, security, regression, compatibility, and missing-changelog findings as merge blockers unless a maintainer explicitly waives them with evidence.
@@ -2287,7 +2290,8 @@ deep audit because modes imply different scope and base selection.
       that needs a resume/reassign/drop decision unless the user explicitly
       approves tracking it as an issue
     - hidden `post-merge-audit-finding` fingerprints so duplicate child issues can be detected
-    - for process findings, include the Process Gap Disposition fields above,
+    - for process findings, include the
+      [Process Gap Disposition](pr-processing.md#process-gap-disposition) fields,
       especially `Mechanism target` and `Replay evidence or park reason`, before
       filing issues
     - for release-gate audits, route the audit report to the downstream
