@@ -2577,6 +2577,69 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_interaction_queue_artifacts_are_caller_scoped_and_coexist
+    with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, _log_path, dir|
+      artifact_dir = File.join(dir, "caller-owned-artifacts")
+      FileUtils.mkdir_p(artifact_dir)
+      sentinel_path = File.join(artifact_dir, "unrelated.json")
+      File.write(sentinel_path, "preserve me\n")
+
+      results = 2.times.map do
+        Thread.new do
+          run_script(
+            env,
+            "--repo", "owner/repo",
+            "--trust-config", trust_config_path,
+            "--interaction-artifact-dir", artifact_dir,
+            "123"
+          )
+        end
+      end.map(&:value)
+
+      results.each do |out, status|
+        assert status.success?, out
+        assert_includes out, "Interaction queue artifact retention owner: invoking workflow"
+        assert_includes out,
+                        "Interaction queue artifact delete after: batch terminal and no retry or recovery depends on it"
+      end
+
+      artifact_paths = results.map do |out, _status|
+        line = out.lines.find { |candidate| candidate.start_with?("Interaction queue artifact: ") }
+        line&.delete_prefix("Interaction queue artifact: ")&.strip
+      end
+      refute_includes artifact_paths, nil
+      assert_equal 2, artifact_paths.uniq.length
+      assert_equal [File.realpath(artifact_dir)], artifact_paths.map { |path| File.dirname(File.realpath(path)) }.uniq
+      assert(artifact_paths.all? { |path| File.exist?(path) })
+      assert File.exist?(sentinel_path), "preflight must not sweep caller-owned artifacts"
+
+      artifact_paths.each do |path|
+        retention = JSON.parse(File.binread(path)).fetch("retention")
+        assert_equal "invoking-workflow", retention.fetch("owner")
+        assert_equal "batch-terminal-and-no-retry-or-recovery", retention.fetch("delete_after")
+      end
+    ensure
+      artifact_paths&.each { |path| File.delete(path) if path && File.exist?(path) }
+    end
+  end
+
+  def test_empty_interaction_artifact_directory_is_rejected_before_any_scan
+    with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, log_path, dir|
+      out, status = run_script(
+        env,
+        "--repo", "owner/repo",
+        "--trust-config", trust_config_path,
+        "--interaction-artifact-dir", "",
+        "123",
+        chdir: dir
+      )
+
+      refute status.success?, out
+      assert_includes out, "Invalid interaction artifact directory: value must not be empty"
+      refute File.exist?(log_path), "artifact directory validation must run before any gh command"
+    end
+  end
+
   def test_prior_overflow_artifact_is_emitted_when_a_later_target_scan_fails
     with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123", "456")
