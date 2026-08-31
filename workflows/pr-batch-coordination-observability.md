@@ -53,7 +53,13 @@ evidence:
   the helper is still unavailable. Invoke
   `${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded`; a target status read is
   preflight, while the claim operation is the compare-and-swap ownership gate.
-  Use only advertised flags and capabilities.
+  Use only advertised flags and capabilities. A representative bounded doctor
+  probe is:
+
+  ```bash
+  "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
+  ```
+
   When lane-metadata support has not already been verified, inspect bounded
   `claim --help`. Pass extended claim metadata only when advertised:
   `--thread-handle`, `--chat-handle`, `--host`, `--operator`, `--phase`,
@@ -62,10 +68,11 @@ evidence:
   Record extended metadata there only when advertised; otherwise send a core
   heartbeat and preserve each unsupported value or literal `UNKNOWN` in durable
   lane evidence. Never infer support from another backend implementation.
-- `public-fallback`: an issue or PR lane cannot start the configured private
-  claim because of a definitive non-timeout setup or authentication failure,
-  and repository policy permits the advisory claim-comment fallback. The
-  comment never overrides a private refusal and is not machine-readable
+- `public-fallback`: trusted configuration directly selects
+  `public claim-comment fallback`, or an issue or PR lane cannot start the
+  configured private claim because of a definitive non-timeout setup or
+  authentication failure and repository policy permits that advisory fallback.
+  The comment never overrides a private refusal and is not machine-readable
   cancellation, terminal, or authority evidence. For an ad-hoc lane, public
   claim fallback is unavailable because there is no issue or PR comment surface.
   Stop before branch or worktree creation and require a coordination target or

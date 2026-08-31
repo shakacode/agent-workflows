@@ -84,6 +84,14 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes result, "never a fleet-wide fence"
   end
 
+  def test_configured_public_fallback_does_not_require_private_failure
+    result = squish(section(@component, "## Adapter Result", /^##\s+/))
+
+    assert_includes result, "trusted configuration directly selects `public claim-comment fallback`"
+    assert_includes result,
+                    '"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json'
+  end
+
   def test_reliable_conflict_stops_only_duplicate_execution
     ownership = squish(section(@component, "## Ownership And Liveness", /^##\s+/))
 
