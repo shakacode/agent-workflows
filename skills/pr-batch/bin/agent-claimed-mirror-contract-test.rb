@@ -5,26 +5,6 @@ require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
 
-# An agent lane claim mirrors to a visible claim label (the seam's
-# `agent_claimed_label`, default `agent-claimed`) so humans and other agents can
-# see owned work, but the backend claim + heartbeat TTL stay the source of truth
-# (labels go stale after restarts). Ownership is symmetric and decays: humans via
-# the stale-assignment sweep, agents via heartbeat TTL. Selection and triage must
-# skip agent-claimed items, or the label would be applied but never respected.
-SEAM_LABEL = "the seam's claim\n  label (`agent_claimed_label`, default `agent-claimed`)".gsub(/\s+/, " ")
-APPLY_ON_CLAIM = "apply it after a successful `agent-coord claim`, and remove it when the claim is released — but " \
-                 "only for the lane's own claim"
-CLAIM_SPECIFIC_REMOVAL = "verify this lane is still the claim holder (the holder/generation check) before removing, " \
-                         "so a replacement or retried claim that has already reapplied the label is not cleared."
-DAEMON_EXPIRY = "Let the coordination daemon remove it for claims that expire without a clean release, and " \
-                "reconcile the label to the live claim otherwise."
-HINT_NOT_LOCK = "it is a visible hint for people browsing GitHub, not the durable lock — the backend claim and " \
-                "its heartbeat TTL remain the source of truth"
-BACKEND_NA_SKIP = "Skip label mirroring entirely when `coordination_backend: n/a`"
-OWNED_SYMMETRY = "Owned means skip is symmetric for humans and agents: a human assignee (see the assignee-aware " \
-                 "batch selection and the stale-assignment sweep) or an `agent-claimed` label both mean skip, and " \
-                 "both decay"
-SWEEP_SKIPS_CLAIMED = "The stale-assignment sweep skips `agent-claimed` items"
 # Selection/triage must exclude an agent-claimed item, closing the loop so the
 # mirrored label is actually respected as an ownership marker. The check goes
 # through the seam label, not a hardcoded name, so a renamed consumer label works.

@@ -239,6 +239,11 @@ packets and handoffs:
 | human intervention | `human_intervention` | `kind` |
 | serious error | `error` | `severity`, `category`, `message` |
 
+Every required event field must contain a nonempty usable value. When one is
+unavailable, do not emit an invalid event; record
+`UNKNOWN (missing required event field: <field>)` and preserve the prose
+handoff.
+
 Choose exactly one `help_requested.reason` using this precedence: `permission`
 for a missing approval or capability; otherwise `question` for a required
 maintainer or product answer; otherwise `blocked-user-input` for other required

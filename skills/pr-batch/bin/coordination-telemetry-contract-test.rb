@@ -28,6 +28,9 @@ HELP_REQUESTED_REASON_PRECEDENCE =
   "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
   "approval or capability; otherwise `question` for a required maintainer or product answer; " \
   "otherwise `blocked-user-input` for other required user input."
+NONEMPTY_EVENT_FIELD_REQUIREMENT =
+  "Every required event field must contain a nonempty usable value. When one is unavailable, do not emit an " \
+  "invalid event; record `UNKNOWN (missing required event field: <field>)` and preserve the prose handoff."
 AUDIT_COMPATIBLE_CAPABILITY = "`agent-coord`-compatible telemetry-completeness audit capability"
 AUDIT_ARGV_REQUIRED_CONCEPTS = {
   "executable" => "Executable: `agent-coord`.",
@@ -493,6 +496,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_includes telemetry, "best-effort"
     assert_includes telemetry, "Backend `n/a` skips silently."
     assert_includes telemetry, "`UNKNOWN`"
+    assert_includes telemetry.gsub(/\s+/, " "), NONEMPTY_EVENT_FIELD_REQUIREMENT
   end
 
   def test_typed_event_transport_fallback_is_section_local_and_nonblocking
