@@ -1,0 +1,1213 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "digest"
+require "open3"
+require "optparse"
+require "securerandom"
+require "time"
+require "uri"
+require "yaml"
+
+module AgentRunRecord
+  class ContractError < StandardError; end
+
+  class WorkerDigestMismatch < ContractError
+    attr_reader :record
+
+    def initialize(message, record)
+      super(message)
+      @record = record
+    end
+  end
+
+  STATES = %w[launch-pending active waiting blocked PR-ready completed].freeze
+  OUTCOMES = %w[pending merged closed failed reverted].freeze
+  UNKNOWN = "UNKNOWN"
+  UUID_V4 = /\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
+  SHA256 = /\A[0-9a-f]{64}\z/
+  GIT_SHA = /\A[0-9a-f]{40}\z/
+  UTC_MILLISECONDS = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\z/
+  REPOSITORY = %r{\A[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\z}
+  PLAN_STATE_REF = %r{\Aplan-state://[A-Za-z0-9._-]+/[^\s?#]+\z}
+  WORKER_DIGEST_MISMATCH_BLOCKER = "worker prompt digest mismatch; source interpretation refused"
+
+  module_function
+
+  def validate!(record)
+    object!(record, "record")
+    exact!(record, "contract", "agent-run-record")
+    exact!(record, "version", 1)
+    match!(record, "run_id", UUID_V4)
+    match!(record, "launch_idempotency_key", UUID_V4)
+    match!(record, "repository", REPOSITORY)
+    work_item = object_field!(record, "work_item")
+    member!(work_item, "kind", %w[issue pull-request])
+    positive_integer!(work_item, "number")
+    scalar!(work_item, "title")
+    scalar!(work_item, "url")
+    prompt_source = object_field!(record, "prompt_source")
+    source_kind = member!(prompt_source, "kind", %w[issue-body pull-request-body maintainer-comment])
+    expected_body_kind = "#{work_item.fetch('kind')}-body"
+    unless source_kind == "maintainer-comment" || source_kind == expected_body_kind
+      raise ContractError, "prompt source kind does not match the selected work item"
+    end
+
+    scalar!(prompt_source, "url")
+    if source_kind != "maintainer-comment" && prompt_source.fetch("url") != work_item.fetch("url")
+      raise ContractError, "direct body prompt source URL must equal the selected work-item URL"
+    end
+
+    selection_digest = prompt_source.fetch("digest_at_selection")
+    match!(prompt_source, "digest_at_selection", SHA256)
+    launch_digest = digest_or_pending!(prompt_source, "digest_at_launch")
+    worker_digest = digest_or_pending!(prompt_source, "digest_observed_by_worker")
+    if prompt_source.fetch("kind") == "maintainer-comment"
+      scalar!(prompt_source, "author")
+      member!(prompt_source, "author_association", %w[OWNER MEMBER COLLABORATOR])
+    end
+    prompt_transport = record.fetch("prompt_transport") do
+      raise ContractError, "prompt_transport is required"
+    end
+    if launch_digest == "pending"
+      raise ContractError, "prompt_transport must be null before launch verification" unless prompt_transport.nil?
+      unless worker_digest == "pending"
+        raise ContractError, "worker digest must remain pending before launch verification"
+      end
+    else
+      unless launch_digest == selection_digest
+        raise ContractError, "Prompt digest at launch must equal Prompt digest at selection"
+      end
+
+      validate_prompt_transport!(prompt_transport, launch_digest)
+    end
+    current_main = object_field!(record, "current_main")
+    scalar!(current_main, "branch")
+    main_sha = scalar!(current_main, "sha")
+    unless main_sha == UNKNOWN || GIT_SHA.match?(main_sha)
+      raise ContractError, "current_main.sha must be a full git SHA or UNKNOWN"
+    end
+
+    runner = object_field!(record, "runner")
+    %w[name machine model_at_prompt_creation model_at_worker_start].each { |key| scalar!(runner, key) }
+    workflows = object_field!(record, "workflow_versions")
+    prompt_creation = object_field!(workflows, "prompt_creation")
+    validate_workflow_observation!(prompt_creation, "workflow_versions.prompt_creation")
+    worker_start = object_field!(workflows, "worker_start")
+    validate_workflow_observation!(worker_start, "workflow_versions.worker_start", allow_pending: true)
+    later = workflows.fetch("later_observations") do
+      raise ContractError, "workflow_versions.later_observations is required"
+    end
+    unless later.is_a?(Array)
+      raise ContractError, "workflow_versions.later_observations must be an array"
+    end
+
+    later_times = later.each_with_index.map do |observation, index|
+      object!(observation, "workflow_versions.later_observations[#{index}]")
+      validate_workflow_observation!(observation, "workflow_versions.later_observations[#{index}]")
+      timestamp_value!(observation.fetch("observed_at"), "workflow_versions.later_observations[#{index}].observed_at")
+    end
+    task = object_field!(record, "task")
+    %w[title id url].each { |key| scalar!(task, key) }
+    scalar!(record, "branch")
+    pr = object_field!(record, "pr")
+    pr_number!(pr.fetch("number") { raise ContractError, "pr.number is required" })
+    scalar!(pr, "url")
+    state = member!(record, "state", STATES)
+    outcome = member!(record, "outcome", OUTCOMES)
+    validate_lifecycle!(state, outcome)
+    latest = object_field!(record, "latest_material_update")
+    latest_time = timestamp!(latest, "at")
+    scalar!(latest, "summary")
+    blocker = record.fetch("blocker") { raise ContractError, "blocker is required" }
+    scalar_value!(blocker, "blocker") unless blocker.nil?
+    if state == "blocked" && outcome == "pending" && blocker.nil?
+      raise ContractError, "blocked/pending requires one meaningful blocker"
+    end
+
+    timestamps = object_field!(record, "timestamps")
+    selected_time = timestamp!(timestamps, "selected_at")
+    prompt_created_time = timestamp!(timestamps, "prompt_created_at")
+    worker_digest_observed_at = scalar!(timestamps, "worker_digest_observed_at")
+    worker_digest_time = if worker_digest_observed_at == "pending"
+                           nil
+                         else
+                           timestamp_value!(worker_digest_observed_at, "worker_digest_observed_at")
+                         end
+    worker_started_at = scalar!(timestamps, "worker_started_at")
+    worker_started_time = if worker_started_at == "pending"
+                            nil
+                          else
+                            timestamp_value!(worker_started_at, "worker_started_at")
+                          end
+    observed_time = timestamp!(timestamps, "observed_at")
+    unless prompt_creation.fetch("observed_at") == timestamps.fetch("prompt_created_at")
+      raise ContractError, "workflow prompt-creation observation must match prompt_created_at"
+    end
+    unless worker_start.fetch("observed_at") == worker_started_at
+      raise ContractError, "workflow worker-start observation must match worker_started_at"
+    end
+
+    validate_timeline!(
+      selected_time:, prompt_created_time:, worker_digest_time:, worker_started_time:,
+      observed_time:, latest_time:, later_times:
+    )
+    validate_worker_digest_state!(
+      record:, selection_digest:, launch_digest:, worker_digest:, worker_digest_observed_at:,
+      worker_started_at:, state:, outcome:
+    )
+
+    coordination = record["coordination"]
+    scalar_value!(coordination, "coordination") unless coordination.nil?
+    record
+  end
+
+  def render(record)
+    validate!(record)
+    runner = record.fetch("runner")
+    work_item = record.fetch("work_item")
+    task = record.fetch("task")
+    latest = record.fetch("latest_material_update")
+    prompt_source = record.fetch("prompt_source")
+    prompt_transport = record.fetch("prompt_transport")
+    current_main = record.fetch("current_main")
+    workflows = record.fetch("workflow_versions")
+    worker_start = workflows.fetch("worker_start")
+    later_workflows = workflows.fetch("later_observations")
+    timestamps = record.fetch("timestamps")
+    pr = record.fetch("pr")
+    coordination = record["coordination"] ? plain(record.fetch("coordination")) : "not recorded (optional)"
+    prompt_author = if prompt_source["author"]
+                      "; author #{plain(prompt_source.fetch('author'))} " \
+                        "(#{plain(prompt_source.fetch('author_association'))})"
+                    else
+                      ""
+                    end
+
+    lines = [
+      "<!-- agent-run-record:v1 -->",
+      "Agent run: #{plain(runner.fetch('name'))} on #{plain(runner.fetch('machine'))} — " \
+        "#{plain(record.fetch('state'))} / #{plain(record.fetch('outcome'))}",
+      "",
+      "Task: #{code(task.fetch('title'))} · Branch: #{code(record.fetch('branch'))} · " \
+        "PR: #{code(pr.fetch('url'))}",
+      "Latest: #{plain(latest.fetch('at'))} — #{plain(latest.fetch('summary'))}",
+      "Blocker: #{record['blocker'] ? plain(record.fetch('blocker')) : 'none'}",
+      "",
+      "<details>",
+      "<summary>Run details</summary>",
+      "",
+      "- Run ID: #{code(record.fetch('run_id'))}",
+      "- Launch retry key: #{code(record.fetch('launch_idempotency_key'))}",
+      "- Repository: #{code(record.fetch('repository'))}",
+      "- Work item: #{plain(work_item.fetch('kind'))} ##{work_item.fetch('number')} — " \
+        "#{plain(work_item.fetch('title'))} (#{code(work_item.fetch('url'))})",
+      "- Prompt source: #{plain(prompt_source.fetch('kind'))} — #{code(prompt_source.fetch('url'))}" \
+        "#{prompt_author}",
+      "- Prompt digest at selection: #{code(prompt_source.fetch('digest_at_selection'))}",
+      "- Prompt digest at launch: #{code(prompt_source.fetch('digest_at_launch'))}",
+      "- Prompt digest observed by worker: #{code(prompt_source.fetch('digest_observed_by_worker'))}",
+      *render_prompt_transport(prompt_transport),
+      "- Selected at: #{plain(timestamps.fetch('selected_at'))}",
+      "- Prompt created at: #{plain(timestamps.fetch('prompt_created_at'))}",
+      "- Worker prompt digest observed at: #{plain(timestamps.fetch('worker_digest_observed_at'))}",
+      "- Worker started at: #{plain(timestamps.fetch('worker_started_at'))}",
+      "- Configured base at launch: #{code(current_main.fetch('branch'))}@#{code(current_main.fetch('sha'))}",
+      "- Runner: #{plain(runner.fetch('name'))}",
+      "- Model at prompt creation: #{plain(runner.fetch('model_at_prompt_creation'))}",
+      "- Model observed by worker: #{plain(runner.fetch('model_at_worker_start'))}",
+      "- Task ID/link: #{code(task.fetch('id'))} / #{code(task.fetch('url'))}",
+      "- Branch/PR: #{code(record.fetch('branch'))} / #{code(pr.fetch('url'))}",
+      "- State/outcome: #{code(record.fetch('state'))} / #{code(record.fetch('outcome'))}",
+      *render_workflow_observation("Workflow at prompt creation", workflows.fetch("prompt_creation")),
+      *render_workflow_observation("Workflow observed at worker start", worker_start),
+      *render_later_workflow_observations(later_workflows),
+      "- Coordination: #{coordination}",
+      "- Record observed at: #{plain(timestamps.fetch('observed_at'))}",
+      "",
+      "</details>",
+      ""
+    ]
+    lines.join("\n")
+  end
+
+  def prepare(arguments)
+    options = {
+      "model" => UNKNOWN,
+      "task_id" => UNKNOWN,
+      "task_url" => UNKNOWN,
+      "branch" => UNKNOWN,
+      "pr_number" => UNKNOWN,
+      "pr_url" => UNKNOWN,
+      "state" => "launch-pending",
+      "outcome" => "pending",
+      "latest_update" => "launch prepared",
+      "format" => "markdown"
+    }
+    blocker_seen = false
+    parser = OptionParser.new do |opts|
+      opts.banner = "usage: agent-run-record prepare (--issue N | --pull-request N) " \
+                    "--runner NAME --machine NAME --prompt-digest-at-selection SHA256 " \
+                    "--identity-file PATH [options]"
+      opts.on("--issue N", Integer) { |value| options["issue"] = value }
+      opts.on("--pull-request N", Integer) { |value| options["pull_request"] = value }
+      opts.on("--repo OWNER/REPO") { |value| options["repository"] = value }
+      opts.on("--selected-at TIMESTAMP") { |value| options["selected_at"] = value }
+      opts.on("--prompt-created-at TIMESTAMP") { |value| options["prompt_created_at"] = value }
+      opts.on("--prompt-digest-at-selection SHA256") { |value| options["prompt_digest_at_selection"] = value }
+      opts.on("--prompt-source KIND") { |value| options["prompt_source_kind"] = value }
+      opts.on("--comment-url URL") { |value| options["comment_url"] = value }
+      opts.on("--trusted-comment-author LOGIN") { |value| options["trusted_comment_author"] = value }
+      opts.on("--runner NAME") { |value| options["runner"] = value }
+      opts.on("--machine NAME") { |value| options["machine"] = value }
+      opts.on("--model NAME") { |value| options["model"] = value }
+      opts.on("--task-id ID") { |value| options["task_id"] = value }
+      opts.on("--task-url URL") { |value| options["task_url"] = value }
+      opts.on("--task-title TITLE") { |value| options["task_title"] = value }
+      opts.on("--branch NAME") { |value| options["branch"] = value }
+      opts.on("--pr NUMBER", Integer) { |value| options["pr_number"] = value }
+      opts.on("--pr-url URL") { |value| options["pr_url"] = value }
+      opts.on("--state STATE") { |value| options["state"] = value }
+      opts.on("--outcome OUTCOME") { |value| options["outcome"] = value }
+      opts.on("--latest-update SUMMARY") { |value| options["latest_update"] = value }
+      opts.on("--blocker SUMMARY") do |value|
+        raise OptionParser::InvalidOption, "--blocker may be supplied at most once" if blocker_seen
+
+        blocker_seen = true
+        options["blocker"] = value
+      end
+      opts.on("--coordination SUMMARY") { |value| options["coordination"] = value }
+      opts.on("--repo-root PATH") { |value| options["repo_root"] = File.expand_path(value) }
+      opts.on("--pack-root PATH") { |value| options["pack_root"] = File.expand_path(value) }
+      opts.on("--identity-file PATH") { |value| options["identity_file"] = File.expand_path(value) }
+      opts.on("--format FORMAT") { |value| options["format"] = value }
+    end
+    parser.parse!(arguments)
+    raise ContractError, "unexpected arguments: #{arguments.join(' ')}" unless arguments.empty?
+
+    %w[runner machine identity_file selected_at prompt_created_at prompt_digest_at_selection].each do |key|
+      raise ContractError, "--#{key.tr('_', '-')} is required" unless options[key]
+    end
+    targets = %w[issue pull_request].select { |key| options.key?(key) }
+    unless targets.one?
+      raise ContractError, "exactly one of --issue or --pull-request is required"
+    end
+
+    target = targets.fetch(0)
+    raise ContractError, "--#{target.tr('_', '-')} must be positive" unless options.fetch(target).positive?
+
+    options["work_item_kind"] = target.tr("_", "-")
+    options["work_item_number"] = options.fetch(target)
+    options["prompt_source_kind"] ||= "#{options.fetch('work_item_kind')}-body"
+    raise ContractError, "--format must be json or markdown" unless %w[json markdown].include?(options.fetch("format"))
+
+    state = options.fetch("state")
+    outcome = options.fetch("outcome")
+    unless STATES.include?(state)
+      raise ContractError, "--state must be one of: #{STATES.join(', ')}"
+    end
+    unless OUTCOMES.include?(outcome)
+      raise ContractError, "--outcome must be one of: #{OUTCOMES.join(', ')}"
+    end
+
+    validate_lifecycle!(state, outcome)
+    if options.fetch("prompt_source_kind") != "maintainer-comment" &&
+       (options.key?("comment_url") || options.key?("trusted_comment_author"))
+      raise ContractError, "comment options require --prompt-source maintainer-comment"
+    end
+
+    expected_body_kind = "#{options.fetch('work_item_kind')}-body"
+    unless [expected_body_kind, "maintainer-comment"].include?(options.fetch("prompt_source_kind"))
+      raise ContractError, "prompt source must be #{expected_body_kind} or maintainer-comment"
+    end
+
+    %w[runner machine model task_id task_url branch pr_url latest_update].each do |key|
+      scalar_value!(options.fetch(key), "--#{key.tr('_', '-')}")
+    end
+    scalar_value!(options.fetch("task_title"), "--task-title") if options.key?("task_title")
+    scalar_value!(options.fetch("blocker"), "--blocker") if options.key?("blocker")
+    scalar_value!(options.fetch("coordination"), "--coordination") if options.key?("coordination")
+    unless SHA256.match?(options.fetch("prompt_digest_at_selection"))
+      raise ContractError, "--prompt-digest-at-selection has invalid format"
+    end
+
+    if state == "blocked" && outcome == "pending" && !options.key?("blocker")
+      raise ContractError, "blocked/pending requires one meaningful blocker"
+    end
+
+    if state == "blocked" && outcome == "failed"
+      raise ContractError, "blocked/failed can only be recorded after a worker digest mismatch"
+    end
+
+    if options.fetch("pr_number") != UNKNOWN && !options.fetch("pr_number").positive?
+      raise ContractError, "--pr must be a positive integer"
+    end
+
+    selected_time = timestamp_value!(options.fetch("selected_at"), "--selected-at")
+    prompt_created_time = timestamp_value!(options.fetch("prompt_created_at"), "--prompt-created-at")
+    preflight_now = timestamp_now
+    preflight_time = timestamp_value!(preflight_now, "preflight_now")
+    if selected_time > prompt_created_time
+      raise ContractError, "Selected at must not be after Prompt created at"
+    end
+
+    if prompt_created_time > preflight_time
+      raise ContractError, "Prompt created at must not be after preparation preflight time"
+    end
+
+    options
+  end
+
+  def build_prepared_record(options)
+    repo_root = options["repo_root"] || command!("git", "rev-parse", "--show-toplevel").strip
+    pack_root = resolve_pack_root(repo_root, options["pack_root"])
+    repository = options["repository"] || github_json("repo", "view", "--json", "nameWithOwner")
+                 .fetch("nameWithOwner")
+    raise ContractError, "repository has invalid format" unless REPOSITORY.match?(repository)
+
+    work_item_fields = if options.fetch("prompt_source_kind") == "maintainer-comment"
+                         "number,title,url"
+                       else
+                         "number,title,body,url"
+                       end
+    command = options.fetch("work_item_kind") == "pull-request" ? "pr" : "issue"
+    work_item = github_json(
+      command, "view", options.fetch("work_item_number").to_s,
+      "--repo", repository,
+      "--json", work_item_fields
+    )
+    unless work_item["number"] == options.fetch("work_item_number")
+      raise ContractError,
+            "GitHub returned work item ##{work_item['number'].inspect}, " \
+            "expected ##{options.fetch('work_item_number')}"
+    end
+
+    work_item["kind"] = options.fetch("work_item_kind")
+    prompt_source = resolve_prompt_source(options, repository, work_item)
+    observed_at = timestamp_now
+    config = workflow_config(repo_root)
+    prefix = task_prefix(config, repository)
+    task_title = options["task_title"] || "#{prefix} ##{work_item.fetch('number')} — #{work_item.fetch('title')}"
+    current_main = observe_current_main(repo_root, config)
+    selected_at = options.fetch("selected_at")
+    prompt_created_at = options.fetch("prompt_created_at")
+    prompt_creation_workflow = observe_workflow_versions(pack_root, prompt_created_at)
+    immutable = {
+      "repository" => repository,
+      "work_item_kind" => work_item.fetch("kind"),
+      "work_item_number" => work_item.fetch("number"),
+      "prompt_source_kind" => prompt_source.fetch("kind"),
+      "prompt_source_url" => prompt_source.fetch("url"),
+      "prompt_digest_at_selection" => prompt_source.fetch("digest_at_selection"),
+      "current_main" => current_main,
+      "prompt_creation_workflow" => prompt_creation_workflow,
+      "runner" => options.fetch("runner"),
+      "machine" => options.fetch("machine"),
+      "model_at_prompt_creation" => options.fetch("model")
+    }
+    identity = launch_identity(
+      options.fetch("identity_file"), immutable, selected_at, prompt_created_at
+    )
+    record = {
+      "contract" => "agent-run-record",
+      "version" => 1,
+      "run_id" => identity.fetch("run_id"),
+      "launch_idempotency_key" => identity.fetch("launch_idempotency_key"),
+      "repository" => repository,
+      "work_item" => {
+        "kind" => work_item.fetch("kind"),
+        "number" => work_item.fetch("number"),
+        "title" => work_item.fetch("title"),
+        "url" => work_item.fetch("url")
+      },
+      "prompt_source" => prompt_source,
+      "prompt_transport" => nil,
+      "current_main" => identity.fetch("binding").fetch("current_main"),
+      "runner" => {
+        "name" => options.fetch("runner"),
+        "machine" => options.fetch("machine"),
+        "model_at_prompt_creation" => options.fetch("model"),
+        "model_at_worker_start" => UNKNOWN
+      },
+      "workflow_versions" => {
+        "prompt_creation" => identity.fetch("binding").fetch("prompt_creation_workflow"),
+        "worker_start" => pending_workflow_observation,
+        "later_observations" => []
+      },
+      "task" => {
+        "title" => task_title,
+        "id" => options.fetch("task_id"),
+        "url" => options.fetch("task_url")
+      },
+      "branch" => options.fetch("branch"),
+      "pr" => {
+        "number" => options.fetch("pr_number"),
+        "url" => options.fetch("pr_url")
+      },
+      "state" => options.fetch("state"),
+      "outcome" => options.fetch("outcome"),
+      "latest_material_update" => {
+        "at" => observed_at,
+        "summary" => options.fetch("latest_update")
+      },
+      "blocker" => options["blocker"],
+      "timestamps" => {
+        "selected_at" => identity.fetch("selected_at"),
+        "prompt_created_at" => identity.fetch("prompt_created_at"),
+        "worker_digest_observed_at" => "pending",
+        "worker_started_at" => "pending",
+        "observed_at" => observed_at
+      }
+    }
+    record["coordination"] = options.fetch("coordination") if options.key?("coordination")
+    validate!(record)
+  end
+
+  def append_workflow_observation(record, pack_root)
+    validate!(record)
+    workflows = record.fetch("workflow_versions")
+    if record.dig("timestamps", "worker_started_at") == "pending"
+      raise ContractError, "cannot append later workflow observations before worker start"
+    end
+
+    history = workflows.fetch("later_observations")
+    previous = history.last || workflows.fetch("worker_start")
+    observation = observe_workflow_versions(pack_root, timestamp_now)
+    return record if workflow_observation_values(previous) == workflow_observation_values(observation)
+
+    history << observation
+    record.fetch("timestamps")["observed_at"] = observation.fetch("observed_at")
+    record["latest_material_update"] = {
+      "at" => observation.fetch("observed_at"),
+      "summary" => "workflow versions changed"
+    }
+    validate!(record)
+  end
+
+  def mark_worker_started(record, pack_root, model)
+    validate!(record)
+    unless record.dig("timestamps", "worker_started_at") == "pending"
+      raise ContractError, "worker-start observation is immutable once recorded"
+    end
+    unless record.dig("prompt_source", "digest_observed_by_worker") == "pending"
+      raise ContractError, "worker prompt verification failure is terminal for this run"
+    end
+
+    launch_digest = record.dig("prompt_source", "digest_at_launch")
+    if launch_digest == "pending" || record["prompt_transport"].nil?
+      raise ContractError,
+            "transported Prompt digest at launch is required through the complete Batch Plan " \
+            "or exact durable plan-state reference"
+    end
+
+    observed_digest = refetch_prompt_digest(record)
+    unless observed_digest == launch_digest &&
+           observed_digest == record.dig("prompt_transport", "digest_at_launch")
+      observed_at = timestamp_now
+      record.fetch("prompt_source")["digest_observed_by_worker"] = observed_digest
+      record.fetch("timestamps")["worker_digest_observed_at"] = observed_at
+      record.fetch("timestamps")["observed_at"] = observed_at
+      record["state"] = "blocked"
+      record["outcome"] = "failed"
+      record["blocker"] = WORKER_DIGEST_MISMATCH_BLOCKER
+      record["latest_material_update"] = {
+        "at" => observed_at,
+        "summary" => WORKER_DIGEST_MISMATCH_BLOCKER
+      }
+      validate!(record)
+      raise WorkerDigestMismatch.new(
+        "worker prompt digest does not match transported launch digest; stop before interpreting source",
+        record
+      )
+    end
+
+    observed_at = timestamp_now
+    record.fetch("timestamps")["worker_digest_observed_at"] = observed_at
+    record.fetch("timestamps")["worker_started_at"] = observed_at
+    record.fetch("timestamps")["observed_at"] = observed_at
+    record.fetch("runner")["model_at_worker_start"] = model
+    record.fetch("prompt_source")["digest_observed_by_worker"] = observed_digest
+    record.fetch("workflow_versions")["worker_start"] = observe_workflow_versions(pack_root, observed_at)
+    record["state"] = "active" if record.fetch("state") == "launch-pending"
+    record["latest_material_update"] = {
+      "at" => observed_at,
+      "summary" => "worker started"
+    }
+    validate!(record)
+  end
+
+  def verify_launch(record, prompt_transport)
+    validate!(record)
+    unless record.dig("prompt_source", "digest_at_launch") == "pending"
+      raise ContractError, "Prompt digest at launch is immutable once verified"
+    end
+
+    launch_digest = refetch_prompt_digest(record)
+    unless launch_digest == record.dig("prompt_source", "digest_at_selection")
+      raise ContractError,
+            "prompt source changed since selection; deliberately start a new run, reselect the source, " \
+            "and rerun the security preflight"
+    end
+
+    record.fetch("prompt_source")["digest_at_launch"] = launch_digest
+    record["prompt_transport"] = prompt_transport.merge("digest_at_launch" => launch_digest)
+    validate!(record)
+  end
+
+  def pending_workflow_observation
+    {
+      "observed_at" => "pending",
+      "pack_head" => UNKNOWN,
+      "pr_batch_sha256" => UNKNOWN,
+      "pr_processing_sha256" => UNKNOWN
+    }
+  end
+
+  def refetch_prompt_digest(record)
+    source = record.fetch("prompt_source")
+    work_item = record.fetch("work_item")
+    content = case source.fetch("kind")
+              when "issue-body", "pull-request-body"
+                command = source.fetch("kind") == "pull-request-body" ? "pr" : "issue"
+                response = github_json(
+                  command, "view", work_item.fetch("number").to_s,
+                  "--repo", record.fetch("repository"), "--json", "body,url"
+                )
+                unless response.fetch("url") == source.fetch("url")
+                  raise ContractError, "GitHub returned a different work-item prompt source URL"
+                end
+
+                response.fetch("body")
+              when "maintainer-comment"
+                comment_id = selected_comment_id!(
+                  source.fetch("url"), record.fetch("repository"), work_item
+                )
+                response = github_json(
+                  "api", "repos/#{record.fetch('repository')}/issues/comments/#{comment_id}",
+                  "--jq", "{body: .body, url: .html_url}"
+                )
+                unless response.fetch("url") == source.fetch("url")
+                  raise ContractError, "GitHub returned a different maintainer comment prompt source URL"
+                end
+
+                response.fetch("body")
+              end
+    canonical_body_digest(content, "prompt source content")
+  rescue KeyError => e
+    raise ContractError, "invalid prompt source response: #{e.message}"
+  end
+
+  def resolve_prompt_source(options, repository, work_item)
+    case options.fetch("prompt_source_kind")
+    when "issue-body", "pull-request-body"
+      digest = canonical_body_digest(work_item.fetch("body"), "work-item body")
+      verify_selection_digest!(digest, options.fetch("prompt_digest_at_selection"))
+      {
+        "kind" => options.fetch("prompt_source_kind"),
+        "url" => work_item.fetch("url"),
+        "digest_at_selection" => options.fetch("prompt_digest_at_selection"),
+        "digest_at_launch" => "pending",
+        "digest_observed_by_worker" => "pending"
+      }
+    when "maintainer-comment"
+      resolve_comment_prompt_source(options, repository, work_item)
+    else
+      raise ContractError, "unsupported prompt source"
+    end
+  end
+
+  def resolve_comment_prompt_source(options, repository, work_item)
+    comment_url = options["comment_url"]
+    trusted_author = options["trusted_comment_author"]
+    raise ContractError, "--comment-url is required for a maintainer-comment prompt source" unless comment_url
+    unless one_line?(trusted_author) && trusted_author != UNKNOWN
+      raise ContractError, "--trusted-comment-author is required from trusted launcher state"
+    end
+
+    comment_id = selected_comment_id!(comment_url, repository, work_item)
+
+    comment = github_json(
+      "api", "repos/#{repository}/issues/comments/#{comment_id}",
+      "--jq", "{body: .body, url: .html_url, author: .user.login, author_association: .author_association}"
+    )
+    unless comment.fetch("url") == comment_url
+      raise ContractError, "GitHub returned a different maintainer comment URL"
+    end
+
+    author = comment.fetch("author")
+    unless author.is_a?(String) && author.casecmp?(trusted_author)
+      raise ContractError, "maintainer comment author does not match trusted launcher state"
+    end
+
+    association = comment.fetch("author_association")
+    unless %w[OWNER MEMBER COLLABORATOR].include?(association)
+      raise ContractError, "maintainer comment author association is not trusted"
+    end
+
+    digest = canonical_body_digest(comment.fetch("body"), "maintainer comment body")
+    verify_selection_digest!(digest, options.fetch("prompt_digest_at_selection"))
+    {
+      "kind" => "maintainer-comment",
+      "url" => comment_url,
+      "digest_at_selection" => options.fetch("prompt_digest_at_selection"),
+      "digest_at_launch" => "pending",
+      "digest_observed_by_worker" => "pending",
+      "author" => author,
+      "author_association" => association
+    }
+  rescue URI::InvalidURIError, KeyError => e
+    raise ContractError, "invalid maintainer comment response: #{e.message}"
+  end
+
+  def selected_comment_id!(comment_url, repository, work_item)
+    uri = URI.parse(comment_url)
+    match = uri.path.match(%r{\A/([^/]+)/([^/]+)/(issues|pull)/([1-9][0-9]*)\z})
+    fragment = uri.fragment.to_s.match(/\Aissuecomment-([1-9][0-9]*)\z/)
+    valid_origin = uri.scheme == "https" && uri.host&.casecmp?("github.com") && uri.port == 443 &&
+                   uri.userinfo.nil? && uri.query.nil?
+    expected_path_kind = work_item.fetch("kind") == "pull-request" ? "pull" : "issues"
+    unless valid_origin && match && fragment &&
+           "#{match[1]}/#{match[2]}".casecmp?(repository) && match[3] == expected_path_kind &&
+           match[4].to_i == work_item.fetch("number")
+      raise ContractError, "maintainer comment URL must name the selected work item and repository"
+    end
+
+    fragment[1]
+  rescue URI::InvalidURIError => e
+    raise ContractError, "invalid maintainer comment URL: #{e.message}"
+  end
+
+  def canonical_body_digest(content, path)
+    raise ContractError, "#{path} must be a string" unless content.is_a?(String)
+
+    Digest::SHA256.hexdigest(content.encode(Encoding::UTF_8))
+  rescue EncodingError => e
+    raise ContractError, "#{path} must encode as UTF-8: #{e.message}"
+  end
+
+  def verify_selection_digest!(observed_digest, selected_digest)
+    return if observed_digest == selected_digest
+
+    raise ContractError,
+          "prompt source changed since selection; deliberately start a new run, reselect the source, " \
+          "and rerun the security preflight"
+  end
+
+  def workflow_config(repo_root)
+    path = File.join(repo_root, ".agents/agent-workflow.yml")
+    return {} unless File.file?(path)
+
+    parsed = YAML.safe_load(File.read(path, encoding: "UTF-8"), aliases: false)
+    parsed.is_a?(Hash) ? parsed : {}
+  rescue Psych::Exception, SystemCallError
+    {}
+  end
+
+  def observe_current_main(repo_root, config)
+    branch = config["base_branch"]
+    return { "branch" => UNKNOWN, "sha" => UNKNOWN } unless one_line?(branch)
+
+    stdout, _stderr, status = Open3.capture3("git", "-C", repo_root, "rev-parse", "origin/#{branch}")
+    sha = status.success? && GIT_SHA.match?(stdout.strip) ? stdout.strip : UNKNOWN
+    { "branch" => branch, "sha" => sha }
+  end
+
+  def resolve_pack_root(repo_root, explicit_pack_root)
+    candidate = explicit_pack_root || repo_root
+    required = [
+      File.join(candidate, "skills/pr-batch/SKILL.md"),
+      File.join(candidate, "workflows/pr-processing.md")
+    ]
+    return candidate if required.all? { |path| File.file?(path) }
+
+    if explicit_pack_root
+      raise ContractError, "--pack-root must contain skills/pr-batch/SKILL.md and workflows/pr-processing.md"
+    end
+
+    raise ContractError,
+          "--pack-root is required when the loaded Agent Workflows pack is separate from the consumer repository"
+  end
+
+  def observe_workflow_versions(pack_root, observed_at)
+    top_stdout, _top_stderr, top_status = Open3.capture3(
+      "git", "-C", pack_root, "rev-parse", "--show-toplevel"
+    )
+    pack_head = UNKNOWN
+    if top_status.success? && same_path?(top_stdout.strip, pack_root)
+      head_stdout, _head_stderr, head_status = Open3.capture3("git", "-C", pack_root, "rev-parse", "HEAD")
+      pack_head = head_stdout.strip if head_status.success? && GIT_SHA.match?(head_stdout.strip)
+    end
+    {
+      "observed_at" => observed_at,
+      "pack_head" => pack_head,
+      "pr_batch_sha256" => file_digest(File.join(pack_root, "skills/pr-batch/SKILL.md")),
+      "pr_processing_sha256" => file_digest(File.join(pack_root, "workflows/pr-processing.md"))
+    }
+  end
+
+  def same_path?(left, right)
+    File.realpath(left) == File.realpath(right)
+  rescue SystemCallError
+    File.expand_path(left) == File.expand_path(right)
+  end
+
+  def file_digest(path)
+    File.file?(path) ? "sha256:#{Digest::SHA256.file(path).hexdigest}" : UNKNOWN
+  rescue SystemCallError
+    UNKNOWN
+  end
+
+  def task_prefix(config, repository)
+    if config.key?("repo_prefix")
+      configured = config["repo_prefix"]
+      unless configured.is_a?(String) && configured.match?(/\A[A-Z0-9]{1,6}\z/)
+        raise ContractError, "configured repo_prefix must be 1-6 uppercase ASCII letters or digits"
+      end
+
+      return configured
+    end
+
+    name = repository.split("/", 2).last
+    segments = name.split(/[-_ ]+/).reject(&:empty?)
+    if segments.length > 1
+      segments.first(6).map { |segment| segment[0] }.join.upcase
+    else
+      name[0, 4].upcase
+    end
+  end
+
+  def launch_identity(path, binding, selected_at, prompt_created_at)
+    candidate = {
+      "contract" => "agent-run-launch-identity",
+      "version" => 1,
+      "run_id" => SecureRandom.uuid,
+      "launch_idempotency_key" => SecureRandom.uuid,
+      "selected_at" => selected_at,
+      "prompt_created_at" => prompt_created_at,
+      "binding" => binding
+    }
+    begin
+      File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+        file.write("#{JSON.pretty_generate(candidate)}\n")
+        file.flush
+        file.fsync
+      end
+      candidate
+    rescue Errno::EEXIST
+      existing = JSON.parse(File.read(path, encoding: "UTF-8"))
+      validate_identity!(existing, binding)
+      existing
+    rescue JSON::ParserError, SystemCallError => e
+      raise ContractError, "cannot persist launch identity: #{e.message}"
+    end
+  end
+
+  def validate_identity!(identity, binding)
+    exact!(identity, "contract", "agent-run-launch-identity")
+    exact!(identity, "version", 1)
+    match!(identity, "run_id", UUID_V4)
+    match!(identity, "launch_idempotency_key", UUID_V4)
+    selected_time = timestamp!(identity, "selected_at")
+    prompt_created_time = timestamp!(identity, "prompt_created_at")
+    if selected_time > prompt_created_time
+      raise ContractError, "identity selected_at must not be after prompt_created_at"
+    end
+
+    existing_binding = identity["binding"]
+    object!(existing_binding, "binding")
+    immutable_observations = %w[current_main prompt_creation_workflow]
+    comparable_existing = existing_binding.reject { |key, _value| immutable_observations.include?(key) }
+    comparable_candidate = binding.reject { |key, _value| immutable_observations.include?(key) }
+    unless comparable_existing == comparable_candidate
+      raise ContractError, "launch retry binding changed; start a new run"
+    end
+
+    current_main = existing_binding["current_main"]
+    object!(current_main, "binding.current_main")
+    scalar!(current_main, "branch")
+    main_sha = scalar!(current_main, "sha")
+    unless main_sha == UNKNOWN || GIT_SHA.match?(main_sha)
+      raise ContractError, "binding.current_main.sha must be a full git SHA or UNKNOWN"
+    end
+
+    prompt_creation_workflow = existing_binding["prompt_creation_workflow"]
+    object!(prompt_creation_workflow, "binding.prompt_creation_workflow")
+    validate_workflow_observation!(prompt_creation_workflow, "binding.prompt_creation_workflow")
+  end
+
+  def github_json(*arguments)
+    stdout = command!("gh", *arguments)
+    parsed = JSON.parse(stdout)
+    raise ContractError, "GitHub query did not return an object" unless parsed.is_a?(Hash)
+
+    parsed
+  rescue JSON::ParserError => e
+    raise ContractError, "GitHub query returned invalid JSON: #{e.message}"
+  end
+
+  def command!(*arguments)
+    stdout, stderr, status = Open3.capture3(*arguments)
+    return stdout if status.success?
+
+    raise ContractError, "command failed (#{arguments.first}): #{stderr.strip}"
+  rescue Errno::ENOENT
+    raise ContractError, "command unavailable: #{arguments.first}"
+  end
+
+  def timestamp_now
+    Time.now.utc.iso8601(3)
+  end
+
+  def one_line?(value)
+    value.is_a?(String) && !value.empty? && !value.match?(/[\r\n\0]/)
+  end
+
+  def object!(value, path)
+    raise ContractError, "#{path} must be an object" unless value.is_a?(Hash)
+  end
+
+  def object_field!(object, key)
+    value = object.fetch(key) { raise ContractError, "#{key} is required" }
+    object!(value, key)
+    value
+  end
+
+  def exact!(object, key, expected)
+    actual = object.fetch(key) { raise ContractError, "#{key} is required" }
+    raise ContractError, "#{key} must be #{expected.inspect}" unless actual == expected
+  end
+
+  def scalar!(object, key)
+    value = object.fetch(key) { raise ContractError, "#{key} is required" }
+    scalar_value!(value, key)
+    value
+  end
+
+  def scalar_value!(value, path)
+    return if value.is_a?(String) && !value.empty? && !value.match?(/[\r\n\0]/)
+
+    raise ContractError, "#{path} must be one nonempty line"
+  end
+
+  def match!(object, key, pattern)
+    value = scalar!(object, key)
+    raise ContractError, "#{key} has invalid format" unless pattern.match?(value)
+  end
+
+  def member!(object, key, values)
+    value = scalar!(object, key)
+    raise ContractError, "#{key} must be one of: #{values.join(', ')}" unless values.include?(value)
+
+    value
+  end
+
+  def positive_integer!(object, key)
+    value = object.fetch(key) { raise ContractError, "#{key} is required" }
+    raise ContractError, "#{key} must be a positive integer" unless value.is_a?(Integer) && value.positive?
+  end
+
+  def pr_number!(value)
+    return if value == UNKNOWN || (value.is_a?(Integer) && value.positive?)
+
+    raise ContractError, "pr.number must be a positive integer or UNKNOWN"
+  end
+
+  def validate_lifecycle!(state, outcome)
+    valid = case state
+            when "launch-pending", "active", "waiting", "PR-ready"
+              outcome == "pending"
+            when "completed"
+              %w[merged closed failed reverted].include?(outcome)
+            when "blocked"
+              %w[pending failed].include?(outcome)
+            end
+    return if valid
+
+    raise ContractError, "invalid state/outcome lifecycle: #{state}/#{outcome}"
+  end
+
+  def validate_timeline!(selected_time:, prompt_created_time:, worker_digest_time:, worker_started_time:,
+                         observed_time:, latest_time:, later_times:)
+    if selected_time > prompt_created_time
+      raise ContractError, "Selected at must not be after Prompt created at"
+    end
+    if prompt_created_time > observed_time
+      raise ContractError, "Prompt created at must not be after record observation"
+    end
+    if worker_digest_time && prompt_created_time > worker_digest_time
+      raise ContractError, "Prompt created at must not be after worker digest observation"
+    end
+    if worker_started_time && prompt_created_time > worker_started_time
+      raise ContractError, "Prompt created at must not be after Worker started at"
+    end
+    if worker_digest_time && worker_digest_time > observed_time
+      raise ContractError, "worker digest observation must not be after record observation"
+    end
+    if worker_started_time && worker_started_time > observed_time
+      raise ContractError, "Worker started at must not be after record observation"
+    end
+    if latest_time > observed_time
+      raise ContractError, "latest material update must not be after record observation"
+    end
+    if worker_started_time.nil? && later_times.any?
+      raise ContractError, "later workflow observations require Worker started at"
+    end
+    if later_times.any? &&
+       (later_times.first < worker_started_time || later_times.each_cons(2).any? { |left, right| right < left })
+      raise ContractError, "later workflow observations must be nondecreasing after Worker started at"
+    end
+    return unless later_times.any? { |time| time > observed_time }
+
+    raise ContractError, "later workflow observations must not be after record observation"
+  end
+
+  def validate_worker_digest_state!(record:, selection_digest:, launch_digest:, worker_digest:,
+                                    worker_digest_observed_at:, worker_started_at:, state:, outcome:)
+    if worker_digest == "pending"
+      unless worker_digest_observed_at == "pending"
+        raise ContractError, "worker digest observation time must remain pending with the worker digest"
+      end
+      raise ContractError, "worker digest is required before Worker started at" unless worker_started_at == "pending"
+      if state == "blocked" && outcome == "failed"
+        raise ContractError, "blocked/failed is reserved for a recorded worker digest mismatch"
+      end
+
+      return
+    end
+
+    if worker_digest_observed_at == "pending"
+      raise ContractError, "worker digest observation time is required with an observed worker digest"
+    end
+
+    if worker_started_at == "pending"
+      unless worker_digest != launch_digest && state == "blocked" && outcome == "failed" &&
+             record.fetch("blocker") == WORKER_DIGEST_MISMATCH_BLOCKER &&
+             record.dig("latest_material_update", "summary") == WORKER_DIGEST_MISMATCH_BLOCKER &&
+             record.dig("latest_material_update", "at") == worker_digest_observed_at &&
+             record.dig("timestamps", "observed_at") == worker_digest_observed_at
+        raise ContractError, "nonmatching worker digest requires the blocked/failed pre-start failure record"
+      end
+
+      return
+    end
+
+    unless worker_digest == selection_digest && worker_digest == launch_digest
+      raise ContractError, "successful worker start requires selection, launch, transport, and worker digests to match"
+    end
+    unless worker_digest_observed_at == worker_started_at
+      raise ContractError, "successful worker digest observation must match Worker started at"
+    end
+    return unless state == "blocked" && outcome == "failed"
+
+    raise ContractError, "blocked/failed is reserved for a recorded worker digest mismatch"
+  end
+
+  def timestamp!(object, key)
+    value = scalar!(object, key)
+    timestamp_value!(value, key)
+  end
+
+  def timestamp_value!(value, path)
+    unless value.is_a?(String) && UTC_MILLISECONDS.match?(value)
+      raise ContractError, "#{path} must be UTC RFC3339 with millisecond precision"
+    end
+
+    Time.iso8601(value)
+  rescue ArgumentError
+    raise ContractError, "#{path} must be UTC RFC3339 with millisecond precision"
+  end
+
+  def validate_workflow_observation!(observation, path, allow_pending: false)
+    observed_at = scalar!(observation, "observed_at")
+    pack_head = scalar!(observation, "pack_head")
+    digests = %w[pr_batch_sha256 pr_processing_sha256].to_h do |key|
+      [key, scalar!(observation, key)]
+    end
+    if observed_at == "pending"
+      unless allow_pending && [pack_head, *digests.values].all? { |value| value == UNKNOWN }
+        raise ContractError, "#{path} pending observation must contain only UNKNOWN values"
+      end
+
+      return
+    end
+    timestamp_value!(observed_at, "#{path}.observed_at")
+    unless pack_head == UNKNOWN || GIT_SHA.match?(pack_head)
+      raise ContractError, "#{path}.pack_head must be a full git SHA or UNKNOWN"
+    end
+
+    digests.each do |key, value|
+      next if value == UNKNOWN || value.match?(/\Asha256:[0-9a-f]{64}\z/)
+
+      raise ContractError, "#{path}.#{key} must be sha256:<digest> or UNKNOWN"
+    end
+  end
+
+  def digest_or_pending!(object, key)
+    value = scalar!(object, key)
+    return value if value == "pending" || SHA256.match?(value)
+
+    raise ContractError, "#{key} must be a SHA-256 digest or pending"
+  end
+
+  def validate_prompt_transport!(transport, launch_digest)
+    object!(transport, "prompt_transport")
+    kind = member!(transport, "kind", %w[complete-batch-plan durable-plan-state])
+    reference = scalar!(transport, "reference")
+    digest = scalar!(transport, "digest_at_launch")
+    raise ContractError, "prompt_transport.digest_at_launch has invalid format" unless SHA256.match?(digest)
+    unless digest == launch_digest
+      raise ContractError, "prompt transport digest must equal Prompt digest at launch"
+    end
+
+    if kind == "complete-batch-plan"
+      raise ContractError, "complete Batch Plan transport reference must be inline" unless reference == "inline"
+    elsif !PLAN_STATE_REF.match?(reference)
+      raise ContractError, "durable plan-state reference must use plan-state://<id>/<path>"
+    end
+  end
+
+  def prompt_transport(complete_batch_plan, plan_state_ref)
+    return { "kind" => "complete-batch-plan", "reference" => "inline" } if complete_batch_plan
+
+    scalar_value!(plan_state_ref, "--plan-state-ref")
+    unless PLAN_STATE_REF.match?(plan_state_ref)
+      raise ContractError, "--plan-state-ref must use plan-state://<id>/<path>"
+    end
+
+    { "kind" => "durable-plan-state", "reference" => plan_state_ref }
+  end
+
+  def workflow_observation_values(observation)
+    observation.slice("pack_head", "pr_batch_sha256", "pr_processing_sha256")
+  end
+
+  def render_later_workflow_observations(observations)
+    return ["- Later workflow observations: none"] if observations.empty?
+
+    ["- Later workflow observations:"] + observations.map do |observation|
+      "  - #{plain(observation.fetch('observed_at'))}: pack #{code(observation.fetch('pack_head'))}; " \
+        "pr-batch #{code(observation.fetch('pr_batch_sha256'))}; " \
+        "pr-processing #{code(observation.fetch('pr_processing_sha256'))}"
+    end
+  end
+
+  def render_prompt_transport(transport)
+    return ["- Prompt transport: pending"] if transport.nil?
+
+    ["- Prompt transport: #{plain(transport.fetch('kind'))} — #{code(transport.fetch('reference'))}"]
+  end
+
+  def render_workflow_observation(label, observation)
+    [
+      "- #{label} (#{plain(observation.fetch('observed_at'))}): " \
+      "pack #{code(observation.fetch('pack_head'))}; " \
+      "pr-batch #{code(observation.fetch('pr_batch_sha256'))}; " \
+      "pr-processing #{code(observation.fetch('pr_processing_sha256'))}"
+    ]
+  end
+
+  def plain(value)
+    escaped = html_escape(value).gsub(/([\\`*_\[\]()!~])/, '\\\\\1')
+    escaped.gsub(/\b(https?):/i, '\1&#58;')
+  end
+
+  def code(value)
+    "`#{html_escape(value).gsub('`', '&#96;')}`"
+  end
+
+  def html_escape(value)
+    value.to_s.gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;")
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  command = ARGV.shift
+
+  begin
+    case command
+    when "render"
+      raise AgentRunRecord::ContractError, "render accepts no arguments" unless ARGV.empty?
+
+      record = JSON.parse($stdin.read)
+      $stdout.write(AgentRunRecord.render(record))
+    when "prepare"
+      options = AgentRunRecord.prepare(ARGV)
+      record = AgentRunRecord.build_prepared_record(options)
+      if options.fetch("format") == "json"
+        $stdout.write("#{JSON.pretty_generate(record)}\n")
+      else
+        $stdout.write(AgentRunRecord.render(record))
+      end
+    when "verify-launch"
+      complete_batch_plan = false
+      plan_state_ref = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "usage: agent-run-record verify-launch " \
+                      "(--complete-batch-plan | --plan-state-ref REF) < record.json"
+        opts.on("--complete-batch-plan") { complete_batch_plan = true }
+        opts.on("--plan-state-ref REF") { |value| plan_state_ref = value }
+      end
+      parser.parse!(ARGV)
+      raise AgentRunRecord::ContractError, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+      unless complete_batch_plan ^ !plan_state_ref.nil?
+        raise AgentRunRecord::ContractError,
+              "complete Batch Plan or exact durable plan-state reference is required (choose one)"
+      end
+
+      prompt_transport = AgentRunRecord.prompt_transport(complete_batch_plan, plan_state_ref)
+      record = JSON.parse($stdin.read)
+      updated = AgentRunRecord.verify_launch(record, prompt_transport)
+      $stdout.write("#{JSON.pretty_generate(updated)}\n")
+    when "observe-workflows"
+      repo_root = nil
+      pack_root = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "usage: agent-run-record observe-workflows [--repo-root PATH] [--pack-root PATH] < record.json"
+        opts.on("--repo-root PATH") { |value| repo_root = File.expand_path(value) }
+        opts.on("--pack-root PATH") { |value| pack_root = File.expand_path(value) }
+      end
+      parser.parse!(ARGV)
+      raise AgentRunRecord::ContractError, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+
+      repo_root ||= AgentRunRecord.command!("git", "rev-parse", "--show-toplevel").strip
+      pack_root = AgentRunRecord.resolve_pack_root(repo_root, pack_root)
+      record = JSON.parse($stdin.read)
+      updated = AgentRunRecord.append_workflow_observation(record, pack_root)
+      $stdout.write("#{JSON.pretty_generate(updated)}\n")
+    when "mark-worker-started"
+      repo_root = nil
+      pack_root = nil
+      model = AgentRunRecord::UNKNOWN
+      parser = OptionParser.new do |opts|
+        opts.banner = "usage: agent-run-record mark-worker-started [--repo-root PATH] " \
+                      "[--pack-root PATH] [--model NAME] < record.json"
+        opts.on("--repo-root PATH") { |value| repo_root = File.expand_path(value) }
+        opts.on("--pack-root PATH") { |value| pack_root = File.expand_path(value) }
+        opts.on("--model NAME") { |value| model = value }
+      end
+      parser.parse!(ARGV)
+      raise AgentRunRecord::ContractError, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+
+      AgentRunRecord.scalar_value!(model, "--model")
+      repo_root ||= AgentRunRecord.command!("git", "rev-parse", "--show-toplevel").strip
+      pack_root = AgentRunRecord.resolve_pack_root(repo_root, pack_root)
+      record = JSON.parse($stdin.read)
+      updated = AgentRunRecord.mark_worker_started(record, pack_root, model)
+      $stdout.write("#{JSON.pretty_generate(updated)}\n")
+    else
+      raise AgentRunRecord::ContractError,
+            "usage: agent-run-record render < record.json | agent-run-record prepare [options] | " \
+            "agent-run-record verify-launch [transport] < record.json | " \
+            "agent-run-record mark-worker-started [options] < record.json | " \
+            "agent-run-record observe-workflows [options] < record.json"
+    end
+  rescue AgentRunRecord::WorkerDigestMismatch => e
+    $stdout.write("#{JSON.pretty_generate(e.record)}\n")
+    warn "agent-run-record: #{e.message}"
+    exit 1
+  rescue JSON::ParserError, OptionParser::ParseError, AgentRunRecord::ContractError => e
+    warn "agent-run-record: #{e.message}"
+    exit 1
+  end
+end
