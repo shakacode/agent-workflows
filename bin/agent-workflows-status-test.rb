@@ -27,6 +27,7 @@ class AgentWorkflowsStatusTest < Minitest::Test
       #!#{RbConfig.ruby}
       abort "unexpected arguments: \#{ARGV.inspect}" unless ARGV[0, 3] == %w[plugin list --marketplace] && ARGV.length == 4
       marketplace = ARGV.fetch(3)
+      File.open(ENV.fetch("QA_CODEX_CALLS"), "a") { |file| file.puts(marketplace) } if ENV["QA_CODEX_CALLS"]
       case marketplace
       when "agent-workflows"
         puts "PLUGIN STATUS VERSION PATH"
@@ -360,6 +361,37 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_incompatible_delivery_reuses_the_helpers_superpowers_advisory
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        calls = File.join(target, "codex-calls")
+        FileUtils.mkdir_p(File.join(source, "skills/example"))
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        File.write(File.join(source, "skills/example/SKILL.md"), "example\n")
+        write_codex_native_state(target)
+        write_metadata(
+          target,
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "",
+          "delivery_mode" => "flat"
+        )
+
+        out, status = run_status({ "QA_CODEX_CALLS" => calls }, "--target", target, "--host", "codex", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 3, status.exitstatus, out
+        assert_equal "CHECK_FAILED", payload.fetch("status")
+        assert_includes payload.fetch("reason"), "cannot be active"
+        assert payload.key?("superpowers"), out
+        marketplaces = File.readlines(calls, chomp: true)
+        assert_equal 1, marketplaces.count("openai-curated")
+        assert_equal 1, marketplaces.count("openai-curated-remote")
+        assert_equal 1, marketplaces.count("superpowers-dev")
+      end
+    end
+  end
+
   def test_delivery_mode_override_previews_flat_to_companion_migration
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|
@@ -445,6 +477,34 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_malformed_nested_delivery_mode_preserves_active_superpowers_advisory
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "", "delivery_mode" => [])
+        environment = {
+          "QA_SUPERPOWERS_STATE" => "active",
+          "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev"
+        }
+
+        json_out, json_status = run_status(environment, "--target", target, "--host", "codex", "--json")
+        payload = JSON.parse(json_out)
+
+        assert_equal 3, json_status.exitstatus, json_out
+        assert_equal "CHECK_FAILED", payload.fetch("status")
+        assert_includes payload.fetch("reason"), "delivery-state check failed"
+        assert_equal "active", payload.dig("superpowers", "state")
+
+        text_out, text_status = run_status(environment, "--target", target, "--host", "codex")
+
+        assert_equal 3, text_status.exitstatus, text_out
+        assert_includes text_out, "CHECK_FAILED"
+        assert_includes text_out, "superpowers=active"
+        assert_includes text_out, "WARNING Agent Workflows remains the sole delivery orchestrator"
+      end
+    end
+  end
+
   def test_helper_system_call_failure_becomes_check_failed
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|
@@ -467,6 +527,49 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal 3, status.exitstatus, out
         assert_equal "CHECK_FAILED", payload.fetch("status")
         assert_includes payload.fetch("reason"), "Permission denied"
+        refute payload.key?("superpowers"), out
+      end
+    end
+  end
+
+  def test_delivery_helper_system_call_failure_preserves_active_superpowers_advisory
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        injection = File.join(target, "raise-delivery-helper-system-call.rb")
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+        File.write(injection, <<~RUBY)
+          require "open3"
+          module RaiseDeliveryHelperSystemCall
+            def capture3(*arguments)
+              helper = arguments.find { |argument| argument.to_s.end_with?("/agent-workflows-delivery-state") }
+              raise Errno::EACCES, "delivery helper" if helper
+
+              super
+            end
+          end
+          Open3.singleton_class.prepend(RaiseDeliveryHelperSystemCall)
+        RUBY
+        environment = {
+          "RUBYOPT" => "-r#{injection}",
+          "QA_SUPERPOWERS_STATE" => "active",
+          "QA_SUPERPOWERS_MARKETPLACE" => "superpowers-dev"
+        }
+
+        json_out, json_status = run_status(environment, "--target", target, "--host", "codex", "--json")
+        payload = JSON.parse(json_out)
+
+        assert_equal 3, json_status.exitstatus, json_out
+        assert_equal "CHECK_FAILED", payload.fetch("status")
+        assert_includes payload.fetch("reason"), "Permission denied"
+        assert_equal "active", payload.dig("superpowers", "state")
+
+        text_out, text_status = run_status(environment, "--target", target, "--host", "codex")
+
+        assert_equal 3, text_status.exitstatus, text_out
+        assert_includes text_out, "CHECK_FAILED"
+        assert_includes text_out, "superpowers=active"
+        assert_includes text_out, "WARNING Agent Workflows remains the sole delivery orchestrator"
       end
     end
   end
