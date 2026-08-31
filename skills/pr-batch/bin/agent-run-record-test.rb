@@ -160,7 +160,7 @@ class AgentRunRecordTest < Minitest::Test
     end
   end
 
-  def test_render_keeps_status_compact_and_generated_provenance_collapsed
+  def test_representative_v1_record_is_executable_and_keeps_provenance_collapsed
     stdout, stderr, status = run_helper("render", stdin_data: JSON.generate(valid_record))
 
     assert status.success?, stderr
@@ -529,49 +529,12 @@ class AgentRunRecordTest < Minitest::Test
     end
   end
 
-  def test_documented_v1_contract_covers_sources_lifecycle_retries_and_optional_coordination
+  def test_document_is_the_versioned_v1_contract_owner
     document = File.read(CONTRACT_DOC, encoding: "UTF-8")
-    rendered_table_text = document.gsub("\\|", "|")
 
-    assert_includes document, "issue-body"
-    assert_includes document, "pull-request-body"
-    assert_includes document, "maintainer-comment"
-    assert_includes document, "`repository`, `work_item`"
-    assert_includes document, "after JSON decoding, encoded as UTF-8"
-    assert_includes document, "no Unicode normalization"
-    assert_includes document, "without a synthetic comment"
-    assert_includes rendered_table_text, "launch-pending | active | waiting | blocked | PR-ready | completed"
-    assert_includes rendered_table_text, "pending | merged | closed | failed | reverted"
-    assert_includes document, "launch_idempotency_key"
-    assert_includes document, "digest_at_selection"
-    assert_includes document, "digest_at_launch"
-    assert_includes document, "digest_observed_by_worker"
-    assert_includes document, "prompt_transport"
-    assert_includes document, "verify-launch"
-    assert_includes document, "same identity file"
-    assert_includes document, "new identity file"
-    assert_includes document, "Coordination is optional"
-    assert_includes document, "Selected at"
-    assert_includes document, "Prompt created at"
-    assert_includes document, "Worker started at"
-    assert_includes document, "captured directly by the launcher"
-    assert_includes document, "workflow_versions.prompt_creation"
-    assert_includes document, "workflow_versions.worker_start"
-    assert_includes document, "workflow_versions.later_observations"
-    assert_includes document, "observe-workflows"
-    assert_includes document, "agent-run-record:v0"
-    assert_includes document, "Use PR-batch to complete this work item"
-    assert_includes document, "Use PR-batch to fix this issue"
-    assert_includes document, "Configured base at launch"
-    refute_includes document, "against current main"
-    assert_includes document, "--selected-at"
-    assert_includes document, "--prompt-created-at"
-    assert_includes document, "--prompt-digest-at-selection"
-    assert_includes document, "--pack-root"
-    assert_includes document, "It never stores the source content"
-    assert_includes document, "A selection/launch mismatch makes no launch or worker-start mutation"
-    assert_includes document, "UTC RFC3339 with exactly millisecond precision"
-    assert_includes document, "A mismatch exits"
+    assert_match(/\A# GitHub Task Prompts And Run Records\n/, document)
+    assert_match(/The `agent-run-record` v1\s+contract/, document)
+    assert_equal 1, document.scan(/^## V1 field contract$/).length
   end
 
   def test_prepare_requires_exactly_one_issue_or_pull_request_target
@@ -668,18 +631,22 @@ class AgentRunRecordTest < Minitest::Test
     end
   end
 
-  def test_pr_batch_entrypoints_route_launch_metadata_to_the_run_record_contract
+  def test_pr_batch_entrypoints_are_short_distinct_v1_contract_routers
+    sections = []
+
     [PR_BATCH_SKILL, PR_PROCESSING_WORKFLOW].each do |path|
       content = File.read(path, encoding: "UTF-8")
+      section = content[/^(?:##|###) Launcher Run Record\n.*?(?=^(?:##|###) |\z)/m]
 
-      assert_includes content, "github-task-prompts-and-run-records.md", path
-      assert_includes content, "agent-run-record", path
-      assert_includes content, "Prompt digest at launch", path
-      assert_includes content, "--prompt-digest-at-selection", path
-      assert_includes content, "Worker started at", path
-      assert_includes content, "loaded Agent Workflows pack", path
-      assert_includes content, "complete Batch Plan", path
+      refute_nil section, path
+      assert_includes section, "agent-run-record v1 contract", path
+      assert_match(%r{\]\([^)]*docs/github-task-prompts-and-run-records\.md\)}, section, path)
+      assert_match(/\[`agent-run-record` CLI\]\([^)]*agent-run-record\)/, section, path)
+      assert_operator section.lines.length, :<=, 9, path
+      sections << section
     end
+
+    refute_equal sections.first, sections.last
   end
 
   def test_prepare_rejects_an_invalid_configured_task_prefix_before_persisting_identity

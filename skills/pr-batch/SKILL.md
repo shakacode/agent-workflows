@@ -741,32 +741,12 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
 
 ## Launcher Run Record
 
-Use the canonical [Launcher Run Record](../../workflows/pr-processing.md#launcher-run-record)
-and its [`agent-run-record` helper contract](../../docs/github-task-prompts-and-run-records.md).
-Keep generated metadata and complete Batch Plan bookkeeping outside the readable
-human prompt. Preserve distinct selection, pre-dispatch launch, and
-worker-observed source digests for one accepted canonical issue or pull-request
-body, or one trusted maintainer comment. A direct PR target uses its exact PR
-URL without a synthetic comment. Canonical bytes are the selected GitHub API
-`body` string after JSON decoding, encoded as UTF-8 without normalization,
-rendering, whitespace trimming, or newline changes. All three boundaries fetch
-the same object and field and hash only those bytes. The trusted launcher passes
-`--prompt-digest-at-selection` from the bytes fetched at `Selected at`;
-preparation re-fetches them and creates no identity on mismatch, instead
-requiring a deliberate new run, reselection, and security preflight. Transport
-`Prompt digest at launch` through the complete Batch Plan or an exact resolvable durable
-plan-state reference. Copy-paste and host-native multi-target coordinator
-launches carry the human prompt together with that complete plan or reference.
-Resolve the loaded Agent Workflows pack
-separately from the consumer repository, preserve immutable worker-start
-workflow evidence, append timestamped later observations, and append a new run
-comment for each rerun.
-Before interpreting source content or recording `Worker started at`, the worker
-must re-fetch the selected source and match `Prompt digest observed by worker`
-to the transported launch digest. Success requires selection, launch,
-transport, and worker digests to match. On a worker mismatch, retain the
-helper's nonzero output as the same run's durable blocked/failed record, post
-its visible blocker, and leave worker-start time and workflow pending.
+For each GitHub-backed lane, the trusted launcher owns record preparation,
+transport handoff, and durable persistence. Follow the versioned
+[agent-run-record v1 contract](../../docs/github-task-prompts-and-run-records.md)
+through the [`agent-run-record` CLI](bin/agent-run-record), keeping its generated
+metadata outside the readable human prompt. Persist any helper-produced failure
+record before stopping; this skill does not redefine the record protocol.
 
 ## Question And Decision Handling
 

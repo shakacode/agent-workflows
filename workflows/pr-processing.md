@@ -1810,37 +1810,12 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
 
 ### Launcher Run Record
 
-The launcher and worker use the canonical
-[`agent-run-record` v1 helper contract](../docs/github-task-prompts-and-run-records.md)
-outside the human-authored prompt. It records one exact accepted prompt source,
-direct timestamps, field-granular model/workflow observations, and three distinct
-source digests: selection, immediately pre-dispatch launch, and worker-observed.
-The source is one accepted canonical issue or pull-request body, or one trusted
-maintainer comment; a direct PR target uses its exact PR URL without a synthetic
-comment. Canonical bytes are the selected GitHub API `body` string after JSON
-decoding, encoded as UTF-8 without normalization, rendering, whitespace trimming,
-or newline changes. All three boundaries fetch the same object and field and
-hash only those bytes.
-The trusted launcher supplies `--prompt-digest-at-selection` from the bytes
-fetched at `Selected at`. Preparation re-fetches them and creates no identity
-on mismatch, instead requiring a deliberate new run, reselection, and security
-preflight.
-Selection/launch mismatch refuses dispatch and requires a deliberate new run,
-source reselection, and rerun security preflight. Before interpreting source
-content or recording `Worker started at`, the worker must match its re-fetch
-against the transported launch digest. Success requires selection, launch,
-transport, and worker digests to match. A worker mismatch exits nonzero with
-the same run's durable blocked/failed JSON record; persist it, update the run
-comment with its visible blocker, and leave worker-start time and workflow
-pending.
-
-`Prompt digest at launch` reaches the worker through the complete Batch Plan or
-an exact resolvable durable plan-state reference. Copy-paste and host-native multi-target
-coordinator launches carry the readable human prompt together with that complete
-plan or reference; this bookkeeping stays outside the prompt. Resolve the loaded
-Agent Workflows pack separately from the consumer repository, keep worker-start
-workflow evidence immutable, append timestamped later observations, append a
-new comment for each rerun, and update only same-run mutable state in place.
+The coordinator carries the run record alongside the human prompt; the worker
+must accept that record before interpreting the prompt source. Use the versioned
+[agent-run-record v1 contract](../docs/github-task-prompts-and-run-records.md)
+through the [`agent-run-record` CLI](../skills/pr-batch/bin/agent-run-record).
+Persist the helper result at each boundary and treat a nonzero result as a stop;
+this workflow does not duplicate the contract's fields or transition rules.
 
 ### Question And Decision Handling
 
