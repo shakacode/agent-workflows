@@ -25,19 +25,21 @@ coordinator does not calculate an adaptive target or silently tune a threshold.
 | --- | --- | --- |
 | Set the window | Record the two operator inputs: concurrent task target and next availability. Derive `attended` mode from `available now`; otherwise use `overnight`. Record later plain-language overrides separately. Refresh the authorized task list and current dependencies before launch. | One current operator card with both inputs, the derived mode, and any overrides, plus a ready-task list. |
 | Classify the portfolio | Once per attended session and before every unattended launch wave, refresh current `main` or base, every open PR head, every active task/run record, and dependency state. Classify each with the [canonical portfolio dispositions](https://github.com/shakacode/agent-workflows/blob/main/docs/plans/2026-08-29-throughput-first-human-agent-workflow.md#r12--in-flight-portfolio-control-p1) as `accelerate`, `continue`, `hold`, `replace`, `close`, or `integration-ready` using current live state, value, explicit dependencies, conflicts, remaining work, and expected integration cost. | One current combined portfolio view that authorizes the next launch wave and integration order. |
-| Fill ready slots | While the running-task count is below the target and a host or service slot is available, start the highest-priority authorized, dependency-ready task. Append a compact GitHub run record for each execution; do not replace earlier run history. | Running-task count reaches the target when capacity provides enough active slots, without losing task-to-PR traceability. |
+| Fill ready slots | While the running-task count is below the target and a host or service slot is available, start the highest-priority authorized, dependency-ready task. Append a compact GitHub run record for each execution under [#582's canonical contract](https://github.com/shakacode/agent-workflows/blob/b264192d041e02c9fca191dafc584292ca7b453a/docs/github-task-prompts-and-run-records.md#launcher-composition-boundary); do not replace earlier run history. | Running-task count reaches the target when capacity provides enough active slots, without losing task-to-PR traceability. |
 | Attend | Keep ready slots filled while maintaining a queue of meaningful decisions. Present only the next-highest-priority question; routine status, mechanical retries, and safe local choices stay out of the queue. | One exact question for the operator and a durable queue behind it. |
 | Run overnight | Before the operator leaves, prefer work with deterministic done checks and no expected human decision. Record the next check or wake for each nonterminal run, and prepare every conceptual section of likely PR walkthroughs in advance. | Independent work can finish or reach an honest blocked state without waiting for routine input. |
 | Wait on a dependency | Complete independent preparation, then checkpoint the task and record the exact dependency or blocker. For an external blocker with an exact future retry time, use one same-thread heartbeat only when the blocker can clear without input, the checkpoint is durable, the host can inspect, update, and stop the schedule, and automatic follow-ups remain enabled. If any heartbeat condition fails, create no automation and preserve exact manual-resume instructions. For a separately eligible autonomously clearable state-change blocker, use a deterministic watcher or bounded-backoff fallback. A task waiting for human input gets no monitor. If the slot can be released, fill it with the next ready task; otherwise record that it remains occupied. | Waiting is visible, dependency-aware, bounded, and does not cause noisy polling or fictitious capacity. |
 | Return and review | At the availability time, refresh GitHub rather than trusting cached run records. Review current heads, checks, reviews, unresolved threads, dependencies, and merge state across the active PRs; then update each run record and select the next integration or decision. | A live PR view, an ordered decision queue, and a current integration choice. |
 | Walk through or retarget | Refresh the exact diff before using the prepared walkthrough map; rebuild stale sections and present one conceptual section at a time. Discard later prepared sections if an earlier discussion sends the work back to development. Apply simple non-safety overrides at the next safe checkpoint. | The operator gets a prepared, current walkthrough or an immediately visible new target, return time, queue order, hold, or priority. |
 
-Each compact run record links the exact prompt source and its launch-time digest,
-runner, observed machine, task, branch or PR, current state, meaningful blocker,
-and last material update. Put detailed provenance in the existing collapsed
-agent-details surface instead of making the operator scan it during live review.
-Issue [#560](https://github.com/shakacode/agent-workflows/issues/560) owns the
-canonical GitHub surface and append mechanism; this guide does not define them.
+Under that contract, the trusted launcher persists one exact issue or pull-request
+work-item URL before prompt creation and appends one outer
+`agent-launcher-run-record:v1` record per execution there. Its compact visible
+state contains the runner, observed machine, state and outcome, task, branch or
+PR, latest material update, and at most one meaningful blocker. Generated
+metadata and provenance remain in the record's single collapsed `Run details`
+block. A rerun appends a new outer record; the helper's `agent-run-record:v1`
+output is nested GitHub lane evidence only and is never independently published.
 
 ## Keep The Decision Queue Meaningful
 
