@@ -64,6 +64,26 @@ class AgentDoctorProcessRunnerTest < Minitest::Test
     assert_nil result[:exit]
   end
 
+  def test_spawn_retry_consumes_the_original_capture_deadline
+    attempts = 0
+    spawn = lambda do |*arguments|
+      attempts += 1
+      raise Errno::EPERM if attempts == 1
+
+      Process.spawn(*arguments)
+    end
+    ticks = [0.0, 0.01, 0.05, 0.11]
+    process_runner = runner(timeout: 0.1, spawn: spawn)
+    process_runner.define_singleton_method(:monotonic) { ticks.shift || 0.11 }
+    process_runner.define_singleton_method(:sleep) { |_seconds| nil }
+
+    result = process_runner.capture([RbConfig.ruby, "-e", "exit 0"])
+
+    assert_equal 2, attempts
+    assert_equal "diagnostic timed out", result[:failure]
+    assert_nil result[:exit]
+  end
+
   def test_timeout_terminates_descendant_process_group
     Dir.mktmpdir do |directory|
       pid_file = File.join(directory, "child")
