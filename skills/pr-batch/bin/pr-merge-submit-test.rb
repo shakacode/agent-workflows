@@ -1489,6 +1489,37 @@ class PrMergeSubmitTest < Minitest::Test
     assert_ci_refresh_immediately_precedes_mutation(log, "mergePullRequest")
   end
 
+  def test_viewer_draft_opened_after_assessment_stops_every_submission_route
+    routes = {
+      direct: [{ "mode" => "direct" }, "mergePullRequest"],
+      queue: [merge_queue_policy, "enqueuePullRequest"],
+      guard_queue_race: [guarded_direct_policy, "enqueuePullRequest"],
+      guard_success: [guarded_direct_policy, "GUARD_EXECUTION"]
+    }
+    routes.each do |mode, (merge_submission, mutation)|
+      result, log, guard_log = run_cli(
+        mode: mode.to_s, receipt_mode: :optional_held,
+        merge_submission:, ci_transition: :viewer_draft_race
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), "viewer review drafts changed", mode
+      refute_includes log, mutation, mode
+      assert_empty guard_log, mode if mutation == "GUARD_EXECUTION"
+    end
+  end
+
+  def test_submitted_review_pagination_change_does_not_block_submission
+    result, log = run_cli(
+      mode: "direct", receipt_mode: :optional_held,
+      merge_submission: { "mode" => "direct" },
+      ci_transition: :viewer_submitted_review_pagination_race
+    )
+
+    assert_equal 0, result.fetch(:status).exitstatus, "#{result.fetch(:stderr)}\n#{log}"
+    assert_includes log, "mergePullRequest"
+  end
+
   def test_receipt_cannot_delete_authenticated_requested_run_bindings
     result, log = run_cli(mode: "direct", receipt_mode: :requested_hosted_missing)
 
@@ -3255,9 +3286,32 @@ class PrMergeSubmitTest < Minitest::Test
         exit 0
       end
       if ARGV.any? { |arg| arg.include?("reviews(first:100") }
+        review_reads = File.read(ENV.fetch("GH_LOG")).scan("reviews(first:100").length
+        review_race_threshold = #{mode.inspect} == "guard_success" ? 6 : 3
+        review_nodes = if transition == :viewer_draft_race && review_reads >= review_race_threshold
+                         [{ "id" => "PRR_draft", "state" => "PENDING", "submittedAt" => nil,
+                            "commit" => { "oid" => #{head.inspect} } }]
+                       else
+                         []
+                       end
+        pagination_race = transition == :viewer_submitted_review_pagination_race && review_reads >= 3
+        pagination_cursor = ARGV.include?("endCursor=viewer-page-2")
+        if pagination_race
+          review_nodes = if pagination_cursor
+                           []
+                         else
+                           [{ "id" => "PRR_submitted", "state" => "COMMENTED",
+                              "submittedAt" => "2026-07-20T14:00:00Z",
+                              "commit" => { "oid" => #{head.inspect} } }]
+                         end
+        end
         puts JSON.generate(
           "data" => { "repository" => { "pullRequest" => {
-            "reviews" => { "nodes" => [], "pageInfo" => { "hasNextPage" => false, "endCursor" => nil } }
+            "reviews" => { "nodes" => review_nodes,
+                           "pageInfo" => {
+                             "hasNextPage" => pagination_race && !pagination_cursor,
+                             "endCursor" => pagination_race && !pagination_cursor ? "viewer-page-2" : nil
+                           } }
           } } }
         )
         exit 0

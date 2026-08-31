@@ -481,6 +481,22 @@ module PrMergeSubmit
       unless canonical.call(initial_statuses) == canonical.call(Array(snapshot["statuses"]))
         raise Error, "current CI commit statuses changed during final reassessment"
       end
+      refreshed_viewer_review_inventory = refreshed.fetch("viewer_review_inventory")
+      snapshot_viewer_review_inventory = snapshot.fetch("viewer_review_inventory")
+      unless refreshed_viewer_review_inventory.fetch("complete") == true &&
+             snapshot_viewer_review_inventory.fetch("complete") == true
+        raise Error, "current CI viewer review draft inventory was incomplete during final reassessment"
+      end
+
+      canonical_viewer_drafts = lambda do |drafts|
+        Array(drafts).map do |draft|
+          [draft.fetch("id"), draft.fetch("commit_oid")]
+        end.sort
+      end
+      unless canonical_viewer_drafts.call(refreshed.fetch("viewer_pending_review_drafts")) ==
+             canonical_viewer_drafts.call(snapshot_viewer_review_inventory.fetch("viewer_pending_review_drafts"))
+        raise Error, "current CI viewer review drafts changed during final reassessment"
+      end
       return if refreshed["authenticated_check_inventory"] == snapshot["check_inventory"]
 
       raise Error, "current CI check suites or runs changed during final reassessment"
