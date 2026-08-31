@@ -481,6 +481,7 @@ module PrMergeSubmit
       unless canonical.call(initial_statuses) == canonical.call(Array(snapshot["statuses"]))
         raise Error, "current CI commit statuses changed during final reassessment"
       end
+
       refreshed_viewer_review_inventory = refreshed.fetch("viewer_review_inventory")
       snapshot_viewer_review_inventory = snapshot.fetch("viewer_review_inventory")
       unless refreshed_viewer_review_inventory.fetch("complete") == true &&
