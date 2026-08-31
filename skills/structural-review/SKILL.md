@@ -219,5 +219,5 @@ Adapted from the upstream
 [`thermo-nuclear-code-review` skill](https://github.com/intercom/2x-skills/blob/59213af0a2db9321ef10355ff24e9bd619151b6b/plugins/code-review-tools/skills/thermo-nuclear-code-review/SKILL.md)
 in [intercom/2x-skills](https://github.com/intercom/2x-skills), reworked here as
 a portable seam-driven axis with this pack's severity vocabulary and
-review-boundary rules. See [Third-Party Notices](../../THIRD_PARTY-NOTICES.md)
-for the applicable MIT copyright and license notice.
+review-boundary rules. See the pinned upstream [MIT license and copyright
+notice](https://github.com/intercom/2x-skills/blob/59213af0a2db9321ef10355ff24e9bd619151b6b/LICENSE).

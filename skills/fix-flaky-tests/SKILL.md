@@ -284,5 +284,5 @@ Adapted from the upstream
 in [intercom/2x-skills](https://github.com/intercom/2x-skills). The hard gate,
 fast exits, and reproduction/verification split are preserved; the
 provider-specific log-fetch tier is replaced by this pack's repository seam.
-See [Third-Party Notices](../../THIRD_PARTY-NOTICES.md) for the applicable MIT
-copyright and license notice.
+See the pinned upstream [MIT license and copyright
+notice](https://github.com/intercom/2x-skills/blob/59213af0a2db9321ef10355ff24e9bd619151b6b/LICENSE).
