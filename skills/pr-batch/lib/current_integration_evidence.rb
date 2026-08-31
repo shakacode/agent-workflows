@@ -50,6 +50,7 @@ module CurrentIntegrationEvidence
                      trusted_base_sha:, pr_paths:, policy:)
     raise Error, "base-unchanged evidence requires matching recorded and current bases" unless
       recorded_base_sha == trusted_base_sha
+
     initial = snapshot_reader.call(repo:, pr_number:, base_ref:)
     validate_snapshot!(initial, base_ref:, head_sha:, trusted_base_sha:)
     final = snapshot_reader.call(repo:, pr_number:, base_ref:)
