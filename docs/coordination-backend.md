@@ -34,15 +34,20 @@ claim-comment fallback, no-backend mode, and `UNKNOWN` coordination state.
 Individual skills should refer here instead of duplicating backend-specific
 operating details unless they need an exact command snippet.
 
+PR-batch consumes those modes through the stable
+[Coordination And Observability](../workflows/pr-batch-coordination-observability.md)
+adapter. That component owns target-scoped ownership, liveness, capacity,
+monitoring, recovery, and telemetry behavior without turning this backend into
+an authority system.
+
 ## Supported Models
 
 - **Private backend**: use when an organization has a tool such as
   `agent-coord` that can store claims, heartbeats, dependencies, release phase,
   and cancellation state.
 - **Public claim-comment fallback**: use GitHub issue/PR comments with the
-  structured `codex-claim` marker described in
-  [workflows/pr-processing.md](../workflows/pr-processing.md#coordination-state)
-  when no private backend is available.
+  structured `codex-claim` marker below when no private backend is available
+  and repository policy permits the fallback.
 - **No coordination backend**: acceptable for single-agent work; write `n/a` in
   `coordination_backend` and keep batch guidance serial or explicitly low
   concurrency.
@@ -56,6 +61,32 @@ operating details unless they need an exact command snippet.
   the run as single-operator or serial.
 - Preserve `UNKNOWN` when coordination facts cannot be verified. A missing or
   degraded backend is not evidence that no one owns a target.
+
+## Public Claim Comment Fallback
+
+Use one advisory public claim only after the private claim cannot start or
+definitively fails with a non-timeout setup or authentication error. A timeout
+or private claim refusal never permits fallback. Before posting, inspect recent
+comments for an unexpired marker on the same target; a conflicting marker stops
+that lane.
+
+```markdown
+<!-- codex-claim v1
+batch: <BATCH_ID>
+machine: <MACHINE_ID>
+thread: <stable-session-or-thread-id>
+branch: <BRANCH_NAME>
+status: in_progress
+expires_at: <ISO8601_UTC>
+-->
+```
+
+Use a bounded advisory expiry, normally the active batch window and no more
+than the repository-configured fallback cap. Refresh the same comment when the
+lane continues beyond that window. This comment is a human-visible hint only:
+it cannot override a private refusal, express cancellation, prove terminal
+state, or grant scope or authority. Ad-hoc targets have no issue or PR comment
+surface and therefore cannot use this fallback.
 
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 

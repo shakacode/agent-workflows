@@ -36,6 +36,8 @@ class AgentClaimedMirrorContractTest < Minitest::Test
   def setup
     @workflow = read("workflows/pr-processing.md")
     @pr_batch = read("skills/pr-batch/SKILL.md")
+    @component = read("workflows/pr-batch-coordination-observability.md")
+    @backend_doc = read("docs/coordination-backend.md")
     @seam = read(".agents/agent-workflow.yml")
     @selection = {
       "plan-pr-batch" => read("skills/plan-pr-batch/SKILL.md"),
@@ -47,10 +49,15 @@ class AgentClaimedMirrorContractTest < Minitest::Test
   end
 
   def test_workflow_defines_the_claim_label_mirror_and_symmetry
-    [SEAM_LABEL, APPLY_ON_CLAIM, CLAIM_SPECIFIC_REMOVAL, DAEMON_EXPIRY,
-     HINT_NOT_LOCK, BACKEND_NA_SKIP, OWNED_SYMMETRY, SWEEP_SKIPS_CLAIMED].each do |rule|
-      assert_rule @workflow, rule
-    end
+    assert_includes @component, "`agent_claimed_label` (default\n   `agent-claimed`)"
+    assert_rule @component, "After claim, mirror"
+    assert_rule @component, "visible hint, not the lock"
+    assert_rule @component, "only after verifying the same holder/generation"
+    assert_rule @component, "does not call a backend, post public claim comments, or mirror a claim label"
+    assert_rule @backend_doc,
+                "plus a daemon backstop that removes the label for claims whose heartbeat lease expires without a clean release."
+    assert_rule @backend_doc, "The label is a visible hint, not the lock"
+    assert_includes @workflow, "pr-batch-coordination-observability.md"
   end
 
   def test_claim_label_is_seam_configurable
@@ -58,9 +65,7 @@ class AgentClaimedMirrorContractTest < Minitest::Test
   end
 
   def test_pr_batch_skill_mirrors_the_claim_to_a_label
-    assert_includes @pr_batch, "agent-claimed"
-    assert_rule @pr_batch, "apply on claim, remove on release"
-    assert_rule @pr_batch, "hint not lock"
+    assert_includes @pr_batch, "pr-batch-coordination-observability.md"
   end
 
   def test_selection_and_triage_skip_agent_claimed_items

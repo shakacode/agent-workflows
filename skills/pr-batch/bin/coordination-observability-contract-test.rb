@@ -1,0 +1,159 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "minitest/autorun"
+
+ROOT = File.expand_path("../../..", __dir__)
+COMPONENT_PATH = File.join(ROOT, "workflows/pr-batch-coordination-observability.md")
+WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
+SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
+BACKEND_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
+VALIDATE_PATH = File.join(ROOT, "bin/validate")
+
+def section(text, heading, next_heading)
+  match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  raise "missing section #{heading}" unless match
+
+  finish = text.match(next_heading, match.end(0))
+  text[match.end(0)...(finish ? finish.begin(0) : text.length)]
+end
+
+def squish(text)
+  text.gsub(/\s+/, " ").strip
+end
+
+class CoordinationObservabilityContractTest < Minitest::Test
+  def setup
+    @component = File.read(COMPONENT_PATH, encoding: "UTF-8")
+    @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
+    @skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    @backend_doc = File.read(BACKEND_DOC_PATH, encoding: "UTF-8")
+  end
+
+  def test_component_exposes_one_small_optional_adapter
+    [
+      "Boundary",
+      "Adapter Result",
+      "Ownership And Liveness",
+      "Capacity And Isolation",
+      "Status, Monitoring, And Telemetry",
+      "Restart, Replacement, And Cancellation",
+      "Compatibility And Evidence"
+    ].each do |heading|
+      assert_match(/^## #{Regexp.escape(heading)}$/, @component, heading)
+    end
+
+    assert_includes @component, "coordination-observability v1"
+    assert_includes @component, "private | public-fallback | none"
+    assert_operator @component.bytesize, :<=, 18_000,
+                    "coordination/observability must stay smaller than the prose it replaces"
+  end
+
+  def test_adapter_never_becomes_an_authority_system
+    boundary = squish(section(@component, "## Boundary", /^##\s+/))
+
+    assert_includes boundary, "optional adapter"
+    assert_includes boundary, "task mapping, liveness, telemetry, and recovery"
+    assert_includes boundary, "cannot grant"
+    %w[scope security merge promotion release destructive-action].each do |authority|
+      assert_includes boundary, authority
+    end
+    assert_includes boundary, "Core work remains usable"
+  end
+
+  def test_result_is_lane_scoped_and_honest_about_absence
+    result = squish(section(@component, "## Adapter Result", /^##\s+/))
+
+    %w[
+      canonical_target
+      mode
+      backend
+      capabilities
+      ownership
+      liveness
+      telemetry
+      evidence
+    ].each { |field| assert_includes result, field }
+    assert_includes result, "`coordination_backend: n/a`"
+    assert_includes result, "does not call a backend"
+    assert_includes result, "literal `UNKNOWN`"
+    assert_includes result, "affected lane"
+    assert_includes result, "never a fleet-wide fence"
+  end
+
+  def test_reliable_conflict_stops_only_duplicate_execution
+    ownership = squish(section(@component, "## Ownership And Liveness", /^##\s+/))
+
+    assert_includes ownership, "Contradictory reliable live ownership"
+    assert_includes ownership, "exact target, branch, and worktree"
+    assert_includes ownership, "refuses duplicate execution"
+    assert_includes ownership, "does not freeze unrelated"
+    assert_includes ownership, "claim timeout"
+    assert_includes ownership, "UNKNOWN (claim outcome)"
+    assert_includes ownership, "durable takeover receipt"
+    assert_includes ownership, "Preserve existing commits"
+  end
+
+  def test_capacity_is_separate_from_ownership_and_writer_safety
+    capacity = squish(section(@component, "## Capacity And Isolation", /^##\s+/))
+
+    assert_includes capacity, "configurable per-host resource budget"
+    assert_includes capacity, "fresh normalized-load and healthy-memory evidence"
+    assert_includes capacity, "one writer per branch/worktree"
+    assert_includes capacity, "read-only validators and reviewers"
+    assert_includes capacity, "isolated committed checkouts"
+    assert_includes capacity, "merge, release, deployment, and destructive actions"
+    refute_match(/\bM[15]\b/, capacity, "portable component must not hardcode host aliases")
+  end
+
+  def test_status_monitoring_and_telemetry_degrade_without_blocking_correctness
+    status = squish(section(@component, "## Status, Monitoring, And Telemetry", /^##\s+/))
+
+    assert_includes status, "HST-v1"
+    assert_includes status, "no-change"
+    assert_includes status, "no user-visible notification"
+    assert_includes status, "goal-state-change-monitor"
+    assert_includes status, "workflow-telemetry-report"
+    assert_includes status, "queue time"
+    assert_includes status, "useful-worker time"
+    assert_includes status, "human-decision frequency"
+    assert_includes status, "memory/load"
+    assert_includes status, "retry/review churn"
+    assert_includes status, "raw prompts, responses, transcripts, tool results, secrets"
+    assert_includes status, "Optional telemetry"
+  end
+
+  def test_restart_replacement_and_cancellation_are_replayable
+    recovery = squish(section(@component, "## Restart, Replacement, And Cancellation", /^##\s+/))
+
+    assert_includes recovery, "Bounded Status Recovery"
+    assert_includes recovery, "MODEL_REPLACEMENT_HANDOFF"
+    assert_includes recovery, "holder/generation/instance"
+    assert_includes recovery, "old and replacement instances must not overlap"
+    assert_includes recovery, "cooperative drain"
+    assert_includes recovery, "human_intervention"
+    assert_includes recovery, "kind: drain"
+    assert_includes recovery, "release"
+  end
+
+  def test_workflow_skill_and_public_backend_doc_route_without_mirroring
+    route = "pr-batch-coordination-observability.md"
+    [@workflow, @skill, @backend_doc].each { |consumer| assert_includes consumer, route }
+
+    workflow_route = squish(section(@workflow, "### Coordination State", /^###\s+/))
+    skill_route = squish(section(@skill, "## Coordination State", /^##\s+/))
+    assert_operator workflow_route.bytesize, :<, 1_600
+    assert_operator skill_route.bytesize, :<, 1_600
+    refute_includes workflow_route, "Public claim comment"
+    refute_includes skill_route, "Public claim comment"
+  end
+
+  def test_repository_validation_runs_the_component_contract
+    validation = File.read(VALIDATE_PATH, encoding: "UTF-8")
+
+    assert_includes validation, "ruby skills/pr-batch/bin/coordination-observability-contract-test.rb"
+    assert_includes validation, "ruby skills/pr-batch/bin/coordination-telemetry-contract-test.rb"
+    assert_includes validation, "ruby skills/pr-batch/bin/agent-coord-bounded-test.rb"
+    assert_includes validation, "ruby skills/pr-batch/bin/stale-assignment-sweep-test.rb"
+  end
+end

@@ -847,42 +847,19 @@ durable references, or the `Next:` instruction.
 
 ## Coordination State
 
-Use [.agents/workflows/pr-processing.md](../../workflows/pr-processing.md) as the
-canonical source for coordination state and worker rules. Keep this skill as a
-routing entry point; do not duplicate the full protocol here.
+Load [PR-Batch Coordination And Observability](../../workflows/pr-batch-coordination-observability.md)
+after prompt intake and dependency planning, before branch or worktree creation.
+It is the canonical interface for private, public-fallback, and no-backend
+modes; target-scoped claims and heartbeats; liveness; capacity evidence;
+status translation; monitoring; telemetry; restart recovery; replacement
+fencing; cancellation; and terminal release.
 
-In short: exact lane assignments beat labels; a selected private backend is the
-source of truth when bounded health and target-scoped status probes pass; claim
-refusals hard-stop machine agents; workers heartbeat at phase transitions;
-dependency-sensitive lanes re-check coordination before rebase, push, readiness,
-and closeout; broad status reads are audit-only; exact independent lanes may
-proceed in claim-only mode only after the canonical workflow allows it; and
-structured public claim comments are advisory fallback state only when the repo
-seam allows that fallback. Timed-out claims stop as `UNKNOWN (claim outcome)`
-for backend reconciliation. An issue/PR lane claim also mirrors to the seam's
-claim label (`agent_claimed_label`, default `agent-claimed`; apply on claim,
-remove on release for this lane's own claim; hint not lock; skip when backend
-n/a), and selection/triage skip claimed items — see the canonical rule in
-`pr-processing.md`.
-
-The same canonical section defines provenance and operational telemetry. Batch
-registration carries `pack_sha`, `coordinator_preference`, and per-lane
-`worker_preference` plus optional `observed_host`. Workers emit `help_requested`,
-`escalation_requested`, `error`, and `human_intervention` at the existing
-checkpoints without replacing prose packets. Do not duplicate auto lifecycle
-events `claim.acquired`, `claim.released`, or `phase.changed`.
-
-For a compact directional throughput view, normalize only allowlisted durable
-coordination and field-selected GitHub-shaped metadata into
-`workflow-telemetry-input` v1, then run the sibling
-`bin/workflow-telemetry-report`. Use its replay fixture and contract documented
-in `docs/coordination-backend.md`; preserve literal `UNKNOWN` for unavailable
-measures. Its phase, human-question queue, and slot totals are cumulative across
-lanes rather than elapsed critical-path time; its separate batch-level
-`integration_seconds` window is not `phase_seconds.integration`. Never add raw prompts, responses, transcripts, tool results, secrets,
-environment/auth content, exact accounting, adaptive scheduling, experiments,
-or a parallel collection system.
-
+Consume its `coordination-observability v1` result without reconstructing the
+backend protocol here. Reliable contradictory ownership refuses duplicate work
+only for the affected target. Missing optional telemetry remains
+field-granular `UNKNOWN` and never freezes unrelated work. Preserve exact
+loaded-pack provenance, requested routes separately from host-observed values,
+the canonical coordination declaration, and every action-specific blocker.
 ## Worker Rules
 
 Codex-targeted waves may use up to 10 independent lanes, or 8 when shared/risky
