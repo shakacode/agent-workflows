@@ -676,22 +676,18 @@ resolved `pr-processing.md`. The human-readable work request lives in exactly
 one accepted canonical issue or pull-request body, or one trusted maintainer
 comment. A direct accepted PR target uses its exact PR URL without requiring a
 synthetic comment. A later trusted maintainer comment may define or override
-the issue or pull-request body; select its exact URL for that run. Do not
+the issue or pull-request body; select its exact URL for that run. A
+preflight-accepted trusted ad-hoc override with no GitHub surface uses its
+existing `plan-state://` or `batch://` durable authorization reference. Do not
 synthesize, compress, combine, or restate the source. `Fix
 issue #123 using $pr-batch with merge authority ask.` is a valid one-line
 shortcut when repository context resolves the target.
 
-Use the canonical source bytes defined by the Launcher Run Record when selecting
-the URL and directly record
-`Selected at` plus `Prompt digest at selection`; record `Prompt created at`
-after rendering the minimal prompt. Immediately before dispatch, re-fetch the
-source and compute `Prompt digest at launch`. A mismatch stops dispatch until
-the changed source is deliberately selected as a new run and the security
-preflight is rerun. Give the launch digest to the worker through the Batch Plan
-or its exact durable reference. The worker's re-fetched digest must match
-`Prompt digest at launch` before the worker interprets the source or records
-`Worker started at`; a mismatch stops work and is recorded. Do not wait for a
-telemetry aggregator.
+Follow the canonical [Plan To Goal Handoff](../../workflows/pr-processing.md#plan-to-goal-handoff)
+and [Launcher Run Record](../../workflows/pr-processing.md#launcher-run-record)
+for source selection, one provenance sequence per target lane, cheap launch and
+worker timestamps, digest gates, directional model/workflow observations, and
+append-only rerun history. Do not wait for a telemetry aggregator.
 
 Use the same readable prompt vocabulary for every host. Host budget changes
 batch item count only. Keep file-touch evidence, workflow-contract details,
@@ -705,29 +701,16 @@ preflight or dispatch. Multi-target groups remain one coordinator launch with
 one target per internal worker lane; the plan or reference preserves every
 target, lane, dependency, and ownership assignment without expanding the
 human-readable prompt.
-The canonical [Launcher Run Record](../../workflows/pr-processing.md#launcher-run-record)
-stores model and Agent Workflows observations at prompt creation and worker
-start, plus timestamped append-only later workflow observations. Use `UNKNOWN`
-field by field without inference; unavailable telemetry does not block launch.
-Each rerun appends a collapsed `<details>` record instead of replacing history.
-Human `auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine
-`ask`. Machine-only `merge_authority: none` remains outside this normal human
-prompt for explicitly no-merge workflows.
+The resolved canonical workflow owns launcher provenance, telemetry, recurring
+wake translation, manifest grammar, and merge-planning policy. Keep those
+machine contracts out of the generated prompt and do not restate them here.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
-The durable manifest uses this exact machine grammar:
-`Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses`
-
-Outside the prompt, preserve this merge-planning contract in durable state:
-Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
-`ready-human-review-required` carries the exact current head SHA, every triggered gate, rollback status, and the exact durable human decision needed.
-`autonomous-merge-evidence-unknown` carries the exact current head SHA, evidence failure, trusted-base policy provenance, and repair action.
-`UNKNOWN` is not `human-approval-required` and cannot be cleared by risk approval.
 
 Use this template when creating goal text:
 
 ```text
 Repository: OWNER/REPO
-Work item: <exact issue, pull-request, or trusted maintainer-comment URL>
+Work item: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
 Task name: <repository, work item, and purpose>
 Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
 Merge authority: <auto|ask>

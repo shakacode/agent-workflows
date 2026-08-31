@@ -328,7 +328,9 @@ omit the queue summary and note that queue state is unavailable.
    target uses its exact PR URL without requiring a synthetic comment. A later
    trusted maintainer comment may define or override the issue or pull-request
    body; select its exact URL. Do not synthesize or combine
-   sources. `Fix issue #123 using $pr-batch with merge authority ask.` is a
+   sources. A preflight-accepted trusted ad-hoc override with no GitHub surface
+   uses its existing `plan-state://` or `batch://` durable authorization
+   reference. `Fix issue #123 using $pr-batch with merge authority ask.` is a
    sufficient one-line shortcut when the repository makes the target
    unambiguous.
 
@@ -346,19 +348,26 @@ omit the queue summary and note that queue state is unavailable.
    trimming, or newline insertion or removal. Selection, launch, and worker
    checks fetch the same object and field and hash only those bytes.
 
-   The launcher fetches those canonical source bytes when selected and directly
-   records the selection timestamp plus `Prompt digest at selection`, then the
-   prompt-creation timestamp after rendering. Immediately before dispatch it
-   re-fetches the source and records `Prompt digest at launch`. If the selection
-   and launch digests differ, dispatch stops until the changed source is
-   deliberately reselected as a new run and the security preflight is rerun.
-   The Batch Plan or its exact durable reference gives the launch digest to the
-   worker. The worker re-fetches the source, and its observed digest must match
-   `Prompt digest at launch` before it interprets the source or records its
-   start; a mismatch stops work and is recorded. The launcher also records
-   model and Agent Workflows observations at prompt creation and worker start,
-   using `UNKNOWN` field by field without inference, and appends later workflow
-   observations with timestamps. Reruns append collapsed `<details>` history.
+   The launcher keeps one compact collapsed run record with one entry per target
+   lane. It fetches each lane's canonical source bytes when selected and writes
+   its selection timestamp plus `Prompt digest at selection`, then records the
+   run-level prompt-creation timestamp after rendering. Immediately before each
+   dispatch it re-fetches that lane's source and directly appends `Launched at`
+   plus `Prompt digest at launch`. If the selection and launch digests differ,
+   that dispatch stops until the changed source is deliberately reselected as a
+   new run and the security preflight is rerun. The Batch Plan or its exact
+   durable reference gives each worker its lane's launch digest. The worker
+   re-fetches the source, and its observed digest must match that launch digest
+   before it interprets the source or appends its start and observations; a
+   mismatch stops work and is recorded. The launcher records directional model
+   and Agent Workflows observations at prompt creation and worker start, using
+   `UNKNOWN` field by field without inference, and appends later workflow
+   observations with timestamps. Reruns append new collapsed `<details>`
+   history without rewriting earlier runs or lane values.
+   For the narrow non-GitHub trusted-ad-hoc exception, record the accepted
+   durable reference as the prompt source, preserve and reverify its existing
+   provenance/authority evidence, and write each source-digest field as exact
+   `not applicable — trusted-ad-hoc-override`; do not invent a snapshot schema.
    Do not wait for a telemetry aggregator. Human `auto` maps to machine
    `auto_merge_when_gates_pass`; `ask` maps to machine `ask`; machine-only
    `merge_authority: none` remains outside the normal human prompt.

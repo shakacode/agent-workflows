@@ -12,7 +12,7 @@ SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 
 EXPECTED_PROMPT = <<~TEXT
   Repository: OWNER/REPO
-  Work item: <exact issue, pull-request, or trusted maintainer-comment URL>
+  Work item: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
   Task name: <repository, work item, and purpose>
   Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
   Merge authority: <auto|ask>
@@ -52,32 +52,32 @@ FORBIDDEN_PROMPT_FRAGMENTS = [
   "none"
 ].freeze
 
-GUIDANCE_PHRASES = [
+COMMON_GUIDANCE_PHRASES = [
   "Fix issue #123 using $pr-batch with merge authority ask.",
   "accepted canonical issue or pull-request body",
   "later trusted maintainer comment",
   "Do not synthesize",
-  "Prompt digest at launch",
-  "Do not wait for a telemetry aggregator",
-  "Prompt digest at selection",
-  "must match `Prompt digest at launch` before the worker interprets the source",
   "same readable prompt vocabulary for every host",
   "outside the human-authored prompt"
 ].freeze
 
 LAUNCHER_RECORD_FIELDS = [
-  "Prompt source: <exact issue, pull-request, or trusted maintainer-comment URL>",
-  "Selected at: <timestamp>",
-  "Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected>",
   "Prompt created at: <timestamp>",
-  "Worker started at: <timestamp or pending>",
-  "Prompt digest at launch: <SHA-256 of the canonical source bytes re-fetched at launch>",
-  "Prompt digest observed by worker: <SHA-256 of the canonical source bytes re-fetched by the worker or pending>",
   "Model at prompt creation: <observed value or UNKNOWN>",
-  "Model observed by worker: <observed value or UNKNOWN>",
   "Workflow at prompt creation: <version or UNKNOWN>",
-  "Workflow observed at worker start: <version or UNKNOWN>",
-  "Later workflow observations: <timestamped append-only entries or none>"
+  "Later workflow observations: <timestamped append-only entries or none>",
+  "Target lanes:",
+  "Lane: <lane id; repeat this entry once per planned target>",
+  "Target: <exact issue, pull-request, or durable override identity>",
+  "Prompt source: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>",
+  "Selected at: <timestamp>",
+  "Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected; or not applicable — trusted-ad-hoc-override>",
+  "Launched at: <timestamp or pending>",
+  "Prompt digest at launch: <SHA-256 of the canonical source bytes re-fetched at launch or pending; or not applicable — trusted-ad-hoc-override>",
+  "Worker started at: <timestamp or pending>",
+  "Prompt digest observed by worker: <SHA-256 of the canonical source bytes re-fetched by the worker or pending; or not applicable — trusted-ad-hoc-override>",
+  "Model observed by worker: <observed value or UNKNOWN>",
+  "Workflow observed at worker start: <version or UNKNOWN>"
 ].freeze
 
 def abort_with_failure(message)
@@ -109,6 +109,16 @@ def extract_first_prompt(text, label)
   text[body_start...body_end]
 end
 
+def extract_markdown_section(text, heading, label)
+  heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+  abort_with_failure("#{label} is missing #{heading}") unless heading_match
+
+  body_start = heading_match.end(0)
+  next_heading = text.match(/^###\s+/, body_start)
+  body_end = next_heading ? next_heading.begin(0) : text.length
+  text[body_start...body_end]
+end
+
 def normalized(text)
   text.gsub(/\s+/, " ")
 end
@@ -131,8 +141,11 @@ pr_batch_skill = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill = read_repo_file("skills/triage/SKILL.md")
 workflow = read_repo_file("workflows/pr-processing.md")
 
-workflow_handoff = workflow.split("### Plan To Goal Handoff", 2)[1]
-abort_with_failure("workflow is missing Plan To Goal Handoff") unless workflow_handoff
+workflow_handoff = extract_markdown_section(
+  workflow,
+  "### Plan To Goal Handoff",
+  "workflow"
+)
 
 prompts = {
   "plan-pr-batch" => extract_heading_prompt(plan_skill, "## Goal Prompt for pr-batch", "plan-pr-batch"),
@@ -155,20 +168,22 @@ end
   "skills/triage/SKILL.md" => triage_skill,
   "workflows/pr-processing.md" => workflow
 }.each do |path, text|
-  require_phrases(text, GUIDANCE_PHRASES, path)
+  require_phrases(text, COMMON_GUIDANCE_PHRASES, path)
 end
 
-# Keep the opaque legacy "split-brain" coordination jargon out of all
-# human-facing prompt guidance, including prose outside the fenced templates.
+# Keep this example of ad hoc coordination diagnosis out of human-facing
+# prompt guidance; it was never a canonical prompt field.
 reject_phrases(
   [plan_skill, pr_batch_skill, triage_skill, workflow].join("\n"),
   ["split-brain"],
   "readable-prompt guidance"
 )
 
-launcher_record = workflow.split("### Launcher Run Record", 2)[1]
-abort_with_failure("workflow is missing Launcher Run Record") unless launcher_record
-launcher_record = launcher_record.split(/^### /, 2).first
+launcher_record = extract_markdown_section(
+  workflow,
+  "### Launcher Run Record",
+  "workflow"
+)
 require_phrases(launcher_record, LAUNCHER_RECORD_FIELDS, "canonical launcher run record")
 require_phrases(
   launcher_record,
@@ -176,7 +191,12 @@ require_phrases(
     "field by field",
     "does not block launch",
     "collapsed `<details>`",
-    "Reruns append",
+    "one entry for every planned target lane",
+    "without replacing earlier values",
+    "Reruns append a new collapsed record",
+    "Directly append the cheap lane launch timestamp and digest",
+    "do not invent another snapshot, byte encoding, or record schema",
+    "not applicable — trusted-ad-hoc-override",
     "`auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`",
     "machine-only `merge_authority: none`"
   ],

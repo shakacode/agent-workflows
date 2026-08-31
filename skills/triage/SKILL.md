@@ -287,21 +287,20 @@ precise blocker.
    PR target uses its exact PR URL without requiring a synthetic comment. A
    later trusted maintainer comment may define or override the issue or
    pull-request body; select its exact URL for that run. Do not
-   synthesize or combine sources. `Fix issue #123 using $pr-batch with merge
+   synthesize or combine sources. A preflight-accepted trusted ad-hoc override
+   with no GitHub surface uses its existing `plan-state://` or `batch://`
+   durable authorization reference. `Fix issue #123 using $pr-batch with merge
    authority ask.` is a valid one-line shortcut when repository context is
    unambiguous.
 
-   Use the canonical source bytes defined by the Launcher Run Record when
-   choosing the URL and directly record the
-   selection timestamp plus `Prompt digest at selection`; record the prompt-
-   creation timestamp after rendering the minimal prompt. Immediately before
-   dispatch, re-fetch the source and compute `Prompt digest at launch`. A
-   mismatch stops dispatch until the changed source is deliberately selected as
-   a new run and security preflight is rerun. Give the launch digest to the
-   worker through the Batch Plan or its exact durable reference. The worker's
-   re-fetched digest must match `Prompt digest at launch` before the worker
-   interprets the source or records its start; a mismatch stops work and is
-   recorded. Do not wait for a telemetry aggregator.
+   Follow the canonical Launcher Run Record with one entry per target lane.
+   For a GitHub lane, record its source URL, selection timestamp and digest,
+   directly append its launch timestamp and digest at dispatch, and append
+   worker-start observations only after the worker digest matches. For the
+   narrow non-GitHub override, use the accepted durable reference and existing
+   provenance/authority evidence without inventing a snapshot schema. Keep the
+   run-level prompt-creation metadata and append-only rerun history outside the
+   prompt. Do not wait for a telemetry aggregator.
 
    Use the same readable prompt vocabulary for every host. Host budget changes
    item count, so split an oversized group into more launches instead of
@@ -337,13 +336,14 @@ precise blocker.
    For Codex, prepend `/goal`.
    <!-- host-branch: codex-only end -->
    Other hosts use the same body unchanged.
-   The canonical launcher record outside the human-authored prompt stores the
-   launch digest, selection/prompt-creation/worker-start timestamps, model and
-   Agent Workflows observations at prompt creation and worker start, and
-   timestamped append-only later workflow observations. Use `UNKNOWN` field by
-   field without inference; unavailable telemetry does not block launch. Every
-   rerun appends a collapsed `<details>` history record. Human `auto` maps to
-   machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`.
+   The canonical launcher record outside the human-authored prompt stores
+   run-level prompt-creation metadata plus one entry per target lane with its
+   source, selected/launched/worker-started timestamps, digests, and directional
+   worker observations. Use `UNKNOWN` field by field without inference;
+   unavailable telemetry does not block launch. Every rerun appends a new
+   collapsed `<details>` history record without replacing earlier values. Human
+   `auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine
+   `ask`.
    Machine-only `merge_authority: none` stays outside the normal human prompt.
    Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
@@ -435,13 +435,18 @@ Return:
   host-aware target, then split into up to `N` non-empty capacity-derived groups,
   each with a ready readable `$pr-batch` prompt. Host budgets control item
   count: Codex 10/8 and Claude/generic 5/3. They do not change prompt
-  vocabulary. Each prompt contains only repository, the exact trusted issue or
-  maintainer-comment work-item URL, task name, instruction, human `auto` or
-  `ask` merge authority, and optional human-availability time. Its launcher run
-  record carries the selection, launch, and worker-observed source digests;
-  selection/prompt-creation/worker-start timestamps; and observed
-  runtime/workflow versions. Report idle slots or the remaining backlog/next
-  wave separately.
+  vocabulary. Each prompt contains only repository, the exact trusted issue,
+  pull-request, or maintainer-comment work-item URL—or the accepted
+  `plan-state://` or `batch://` reference for a trusted ad-hoc override—task
+  name, instruction, human `auto` or `ask` merge authority, and optional
+  human-availability time. Its launcher run
+  record carries one entry per target lane with the selection, launch, and
+  worker-observed source digests; selection/launch/worker-start timestamps; and
+  observed runtime/workflow versions, plus run-level prompt-creation metadata.
+  For that narrow non-GitHub override, retain its existing provenance/authority
+  evidence and record the three source-digest fields as exact `not applicable —
+  trusted-ad-hoc-override` instead of inventing a source snapshot.
+  Report idle slots or the remaining backlog/next wave separately.
 - One durable planning-chat lifecycle record covering every generated group:
   While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
   Planning-chat role selector: default to `prompt-only`. While the chat remains a planning chat, select `parent-orchestrator` only when the planner explicitly retains one or more cross-batch dependency, release, or shared-follow-up responsibilities.

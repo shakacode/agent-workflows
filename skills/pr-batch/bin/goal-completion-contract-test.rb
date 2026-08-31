@@ -181,7 +181,7 @@ PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-appl
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 MINIMAL_HUMAN_PROMPT = <<~TEXT
   Repository: OWNER/REPO
-  Work item: <exact issue, pull-request, or trusted maintainer-comment URL>
+  Work item: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
   Task name: <repository, work item, and purpose>
   Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
   Merge authority: <auto|ask>

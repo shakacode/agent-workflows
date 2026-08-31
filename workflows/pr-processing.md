@@ -683,7 +683,9 @@ For broader or ambiguous requests, resolve these inputs:
   trusted maintainer comment, that contains the readable work request. A later
   trusted maintainer comment may define or override the issue or pull-request
   body; select its exact URL. Do not synthesize, combine, or create a second
-  restatement.
+  restatement. The narrow non-GitHub exception is a preflight-accepted trusted
+  ad-hoc override: reuse its existing `plan-state://` or `batch://` durable
+  authorization reference instead of inventing another source record.
 - Task name: a deterministic title naming repository, work item, and purpose.
 - Mode: plan-only, create a Codex goal prompt, or launch workers now.
 - Merge authority: human `ask` or `auto`; unresolved authority defaults to
@@ -1747,24 +1749,29 @@ Keep this goal prompt aligned with `.agents/skills/pr-batch/SKILL.md`. The
 human-readable work request lives in exactly one accepted canonical issue or
 pull-request body, or one trusted maintainer comment. A later trusted maintainer
 comment may define or override the issue or pull-request body; select that exact
-comment URL for the new run. Do not synthesize a restatement. `Fix issue #123 using $pr-batch with merge authority
+comment URL for the new run. A preflight-accepted trusted ad-hoc override with
+no GitHub surface uses its existing `plan-state://` or `batch://` durable
+authorization reference. Do not synthesize a restatement. `Fix issue #123 using $pr-batch with merge authority
 ask.` is a valid one-line shortcut when repository context resolves the target
 unambiguously.
 
-Select the exact work-item URL after the security preflight, fetch its canonical
-source bytes, and directly record `Selected at` plus `Prompt digest at
-selection` in the launcher record. Render the minimal prompt and directly
-record `Prompt created at`. Immediately before worker dispatch, re-fetch the
-source, compute `Prompt digest at launch`, and compare it with the selection
-digest. A mismatch stops dispatch until the changed source is deliberately
-reselected as a new run and the security preflight is rerun. Give the worker
-the launch digest through the Batch Plan or its exact durable reference. Before
-the worker interprets the source, it re-fetches the exact bytes and verifies
-that its observed digest matches `Prompt digest at launch`; a mismatch stops
-work and records the changed digest. Record `Worker started at` only after that
-match, or retain `pending`. Do not wait for a telemetry aggregator; these are
-cheap launcher and worker measurements and do not depend on telemetry
-aggregation work.
+Select the exact work-item source after the security preflight. For every
+GitHub target lane in the coordinator group, fetch its selected source's
+canonical bytes and record the lane-keyed selection provenance in the launcher
+record. For a preflight-accepted non-GitHub override, follow the narrow
+durable-reference exception in the Launcher Run Record. Render the
+minimal coordinator prompt and directly record `Prompt created at` once for the
+run. Immediately before each target dispatch, re-fetch that lane's source,
+compare its launch digest with its selection digest, and directly append the
+lane's `Launched at` timestamp and launch digest. A mismatch stops only that
+dispatch until the changed source is deliberately reselected as a new run and
+the security preflight is rerun. Give each worker its lane's launch digest
+through the Batch Plan or its exact durable reference. Before a worker
+interprets the source, it re-fetches the exact bytes and verifies its observed
+digest against that lane's launch digest; a mismatch stops work and records the
+changed digest. Append `Worker started at` only after that match. Do not wait
+for a telemetry aggregator; these are cheap launcher and worker measurements
+and do not depend on telemetry aggregation work.
 
 Host budget changes the number of items in a batch, not prompt language: use
 the same readable prompt vocabulary for every host and split oversized batches
@@ -1792,7 +1799,7 @@ that line when the maintainer did not supply a time. For Codex, prepend only
 
 ```text
 Repository: OWNER/REPO
-Work item: <exact issue, pull-request, or trusted maintainer-comment URL>
+Work item: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
 Task name: <repository, work item, and purpose>
 Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
 Merge authority: <auto|ask>
@@ -1803,23 +1810,30 @@ Human available after: <optional time; omit this line when not supplied>
 
 The launcher, not the maintainer, writes launch provenance and execution state.
 Each execution appends one compact visible state plus one collapsed `<details>`
-record in the issue or PR. Reruns append new history instead of replacing or
-collapsing earlier runs into the newest values. Later workflow observations are
-also timestamped append-only entries.
+record in the issue or PR. That record has one entry for every planned target
+lane. Within a lane entry, write selection provenance first, then append launch
+provenance, then append worker observations without replacing earlier values.
+Reruns append a new collapsed record instead of replacing or folding earlier
+runs into the newest values. Later workflow observations are timestamped
+append-only entries on the run that observed them.
 
-Select exactly one accepted canonical issue or pull-request body, or one trusted
-maintainer comment, for each run. A direct accepted PR target therefore uses
-its exact PR URL without requiring a synthetic comment. Fetch the canonical
-source bytes when selected and record `Selected at` plus `Prompt digest at selection`.
-Immediately before dispatch, re-fetch those bytes and compute `Prompt digest at
-launch`. If the selection and launch digests differ, stop dispatch until the
-changed source is deliberately selected as a new run and security preflight is
-rerun. Give the launch digest to the worker through the Batch Plan or its exact
+For every GitHub target lane, select exactly one accepted canonical issue or
+pull-request body, or one trusted maintainer comment. A direct accepted PR
+target therefore uses its exact PR URL without requiring a synthetic comment.
+The same trusted comment may define multiple lanes, but its URL and digest
+sequence are still recorded separately in every affected lane entry. Fetch the
+canonical source bytes when selected and write `Selected at` plus `Prompt
+digest at selection`. Immediately before that target's dispatch, re-fetch those
+bytes and append `Launched at` plus `Prompt digest at launch`. If the selection
+and launch digests differ, stop that dispatch until the changed source is
+deliberately selected as a new run and security preflight is rerun. Give the
+lane-keyed launch digest to its worker through the Batch Plan or its exact
 durable reference. The worker re-fetches the exact source and its observed
-digest must match `Prompt digest at launch` before the worker interprets the
-source or records `Worker started at`; a mismatch stops work and is recorded.
-A later trusted maintainer comment may become the source for a later run, but a
-run never combines the selected target body and comment or synthesizes a new source.
+digest must match the lane's `Prompt digest at launch` before it interprets the
+source or appends `Worker started at`; a mismatch stops work and is recorded. A
+later trusted maintainer comment may become the source for a later run, but a
+lane entry never combines the selected target body and comment or synthesizes a
+new source.
 
 Canonical source bytes are the exact GitHub API `body` string for the selected
 issue, pull request, or comment after JSON decoding, encoded as UTF-8 without
@@ -1827,32 +1841,48 @@ Unicode normalization, Markdown rendering, whitespace trimming, or newline
 insertion or removal. Selection, launch, and worker checks fetch the same object
 and field by stable URL or object identifier and hash only those bytes.
 
+The narrow non-GitHub exception is a preflight-accepted
+`trusted-ad-hoc-override` backed by an existing `plan-state://` or `batch://`
+durable authorization reference. Record that exact reference as `Prompt
+source`; do not invent another snapshot, byte encoding, or record schema. The
+existing override contract exposes provenance and authority evidence, not
+canonical source bytes, so record each source-digest field as exact `not
+applicable — trusted-ad-hoc-override` and reverify the complete accepted
+override evidence at selection, launch, and worker start. Missing, changed, or
+`UNKNOWN` override evidence stops at that boundary.
+
 ```markdown
 <details>
 <summary>Run details</summary>
 
-- Prompt source: <exact issue, pull-request, or trusted maintainer-comment URL>
-- Selected at: <timestamp>
-- Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected>
 - Prompt created at: <timestamp>
-- Worker started at: <timestamp or pending>
-- Prompt digest at launch: <SHA-256 of the canonical source bytes re-fetched at launch>
-- Prompt digest observed by worker: <SHA-256 of the canonical source bytes re-fetched by the worker or pending>
 - Model at prompt creation: <observed value or UNKNOWN>
-- Model observed by worker: <observed value or UNKNOWN>
 - Workflow at prompt creation: <version or UNKNOWN>
-- Workflow observed at worker start: <version or UNKNOWN>
 - Later workflow observations: <timestamped append-only entries or none>
+- Target lanes:
+  - Lane: <lane id; repeat this entry once per planned target>
+    - Target: <exact issue, pull-request, or durable override identity>
+    - Prompt source: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
+    - Selected at: <timestamp>
+    - Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected; or not applicable — trusted-ad-hoc-override>
+    - Launched at: <timestamp or pending>
+    - Prompt digest at launch: <SHA-256 of the canonical source bytes re-fetched at launch or pending; or not applicable — trusted-ad-hoc-override>
+    - Worker started at: <timestamp or pending>
+    - Prompt digest observed by worker: <SHA-256 of the canonical source bytes re-fetched by the worker or pending; or not applicable — trusted-ad-hoc-override>
+    - Model observed by worker: <observed value or UNKNOWN>
+    - Workflow observed at worker start: <version or UNKNOWN>
 </details>
 ```
 
 Record each observation field by field from the launcher or worker that
 actually exposes it. Never infer a missing model or workflow version; use exact
-`UNKNOWN`, which does not block launch. Source digests are integrity fields, not
-optional telemetry: a missing or mismatched required digest stops dispatch or
-worker execution at its boundary. Record launch-pending before dispatch, then
-append the worker-start timestamp only after the worker digest matches, or
-retain `pending`. Do not wait for a telemetry aggregator.
+`UNKNOWN`, which does not block launch. For GitHub sources, source digests are
+integrity fields, not optional telemetry: a missing or mismatched required
+digest stops dispatch or worker execution at its boundary. Directly append the
+cheap lane launch timestamp and digest when dispatch begins, then append the worker-start
+timestamp and observations only after the worker digest matches. Until an event
+occurs, its template value remains `pending`; never infer it from telemetry.
+Do not wait for a telemetry aggregator.
 
 Human `auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine
 `ask`. Preserve machine-only `merge_authority: none` outside the normal human

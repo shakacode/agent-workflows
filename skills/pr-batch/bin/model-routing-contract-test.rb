@@ -1107,12 +1107,14 @@ class ModelRoutingContractTest < Minitest::Test
     end
 
     workflow = read_repo_file("workflows/pr-processing.md")
-    launcher_record = workflow.split("### Launcher Run Record", 2).fetch(1).split("### ", 2).first
+    launcher_record = extract_markdown_section(workflow, "### Launcher Run Record")
     assert_includes launcher_record, "Model at prompt creation: <observed value or UNKNOWN>"
     assert_includes launcher_record, "Model observed by worker: <observed value or UNKNOWN>"
     assert_includes launcher_record, "Workflow at prompt creation: <version or UNKNOWN>"
     assert_includes launcher_record, "Workflow observed at worker start: <version or UNKNOWN>"
     assert_includes launcher_record, "Later workflow observations: <timestamped append-only entries or none>"
+    assert_includes launcher_record, "Launched at: <timestamp or pending>"
+    assert_includes normalized(launcher_record), "one entry for every planned target lane"
     assert_includes launcher_record, "field by field"
     assert_includes launcher_record, "does not block launch"
   end
