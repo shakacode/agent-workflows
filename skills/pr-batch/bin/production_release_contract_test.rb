@@ -53,11 +53,17 @@ class ProductionReleaseContractTest < Minitest::Test
     review_gate = @workflow.split("## Review Completion Gate", 2).last
                            .split("### Adversarial Review Gate", 2).first
     refute_includes review_gate, "pr-production-release.md"
+    assert_includes review_gate, "unless `AGENTS.md` says they do."
 
-    assert_includes skill, "[PR Production And Release](../../workflows/pr-production-release.md)"
-    assert_includes skill, "Do not restate its tracker, phase, promotion, or release rules here."
+    assert_includes skill, "load the resolved `pr-production-release.md`"
+    assert_includes skill, "prefer the repo-local `.agents/workflows/pr-production-release.md` when present"
+    assert_includes skill, "installed workflow adjacent to the resolved `pr-processing.md`"
+    assert_includes skill, "Do not restate the component's tracker, phase, promotion, or release rules here."
     assert_includes skill, "production deployment or promotion"
     assert_includes skill, "unless repository policy or the live release tracker selects release handling for that PR"
+
+    assert_includes @component,
+                    "[ordinary fallback reviewer-identity and attestation rules](pr-processing.md#ordinary-review-fallback)"
 
     assert_includes @handbook, "../workflows/pr-production-release.md#release-mode-preflight"
     assert_includes @handbook, "../workflows/pr-production-release.md#release-phase-gate"

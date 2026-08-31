@@ -215,14 +215,17 @@ order: explicit environment variable; the loaded skill's base directory when the
 host exposes it; repo-local `.agents/skills/pr-batch`; then stop with a precise
 blocker if the helper is still missing.
 For release-mode coordination, auto-merge confidence, shared release trackers,
-production deployment or promotion, or publishing, load
-[PR Production And Release](../../workflows/pr-production-release.md) and follow
-the consumer repo's `AGENTS.md` release policy. Do not restate its tracker,
-phase, promotion, or release rules here. Ordinary base-branch feature work does
-not load that downstream component unless repository policy or the live release
-tracker selects release handling for that PR. If any target's value, priority,
-or proposed fix scope is unclear, use the installed or repo-local
-`evaluate-issue` skill before assigning implementation workers.
+production deployment or promotion, or publishing, load the resolved
+`pr-production-release.md`: prefer the repo-local
+`.agents/workflows/pr-production-release.md` when present; otherwise use the
+installed workflow adjacent to the resolved `pr-processing.md` in the same
+Agent Workflows pack. Follow the consumer repo's `AGENTS.md` release policy. Do
+not restate the component's tracker, phase, promotion, or release rules here.
+Ordinary base-branch feature work does not load that downstream component unless
+repository policy or the live release tracker selects release handling for that
+PR. If any target's value, priority, or proposed fix scope is unclear, use the
+installed or repo-local `evaluate-issue` skill before assigning implementation
+workers.
 Skip issues labeled `needs-customer-feedback` unless the user explicitly provides customer evidence or maintainer approval for that issue; report each skipped target with `needs-customer-feedback` as the reason.
 
 ## Non-Negotiable Safety Rules
