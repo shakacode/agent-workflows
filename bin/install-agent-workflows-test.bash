@@ -543,6 +543,46 @@ test_third_party_notices_are_installed_for_every_delivery_mode() {
   done
 }
 
+test_third_party_notices_copy_upgrade_uses_fingerprint_without_git_history() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat > "$tmp/first.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_pack_root_copy_fingerprints")
+    abort metadata.inspect unless fingerprints.key?("THIRD_PARTY-NOTICES.md")
+  ' "$target/.agent-workflows-install.json"
+
+  mv "$source/.git" "$tmp/source.git"
+  printf '\nnon-git notice-v2\n' >> "$source/THIRD_PARTY-NOTICES.md"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat > "$tmp/non-git-upgrade.out"
+  grep -qxF 'non-git notice-v2' "$target/THIRD_PARTY-NOTICES.md" || \
+    fail "recorded fingerprint did not authorize an untouched non-git notice upgrade"
+
+  cp "$target/.agent-workflows-install.json" "$tmp/metadata.before"
+  printf '\npersonal notice edit\n' >> "$target/THIRD_PARTY-NOTICES.md"
+  printf '\nnon-git notice-v3\n' >> "$source/THIRD_PARTY-NOTICES.md"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "non-git upgrade replaced a modified installed notice"
+  assert_contains "$output" "Refusing to replace unowned pack root file"
+  grep -qxF 'personal notice edit' "$target/THIRD_PARTY-NOTICES.md" || \
+    fail "blocked non-git upgrade changed the modified installed notice"
+  cmp -s "$tmp/metadata.before" "$target/.agent-workflows-install.json" || \
+    fail "blocked non-git notice upgrade changed install metadata"
+}
+
 test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation() {
   local tmp target canonical_target outside output status mode variant unsafe_ancestor expected_ancestor outside_scanner
 
@@ -8401,6 +8441,7 @@ main() {
     test_invalid_explicit_target_diagnostics_preserve_exact_path
     test_plugin_companion_installs_non_skill_assets_and_records_mode
     test_third_party_notices_are_installed_for_every_delivery_mode
+    test_third_party_notices_copy_upgrade_uses_fingerprint_without_git_history
     test_plugin_companion_refuses_unsafe_scanner_ancestors_before_mutation
     test_plugin_companion_refuses_unknown_direct_skill_and_preserves_all_skills
     test_direct_migration_does_not_remove_skills_before_other_install_checks_pass

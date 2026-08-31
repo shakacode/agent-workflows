@@ -446,9 +446,10 @@ the target agent home, including generic consumer-owned docs under
 
 The metadata file records host, artifact mode, skill delivery mode, source
 clone, pack version, source revision, branch, remote, and install time. Copy
-installs also record `managed_skill_copy_fingerprints` and
-`managed_pack_doc_copy_fingerprints`, including every installed
-`<target>/docs/solutions/*` document. On repeat installation, these fingerprints
+installs also record `managed_skill_copy_fingerprints`,
+`managed_pack_doc_copy_fingerprints`, and `managed_pack_root_copy_fingerprints`,
+including every installed `<target>/docs/solutions/*` document and the
+third-party notice. On repeat installation, these fingerprints
 prove that an installed managed copy has not been edited even when the recorded
 Git object is unavailable; an exact recorded-revision or current-source match is
 the backward-compatible fallback for older metadata. The installer refuses to

@@ -254,7 +254,11 @@ read_installed_metadata_value() {
       end
       invalid_enum = (metadata.key?("host") && !%w[codex claude].include?(metadata["host"])) ||
                      (metadata.key?("mode") && !%w[copy symlink].include?(metadata["mode"]))
-      invalid_fingerprints = %w[managed_skill_copy_fingerprints managed_pack_doc_copy_fingerprints].any? do |field|
+      invalid_fingerprints = %w[
+        managed_skill_copy_fingerprints
+        managed_pack_doc_copy_fingerprints
+        managed_pack_root_copy_fingerprints
+      ].any? do |field|
         next false unless metadata.key?(field)
         fingerprints = metadata[field]
         !fingerprints.is_a?(Hash) || fingerprints.any? do |name, digest|
@@ -1906,6 +1910,17 @@ prepare_metadata() {
                        else
                          {}
                        end
+    root_fingerprints = if mode == "copy"
+                          name = "THIRD_PARTY-NOTICES.md"
+                          root_file = File.join(source, name)
+                          unless File.file?(root_file) && !File.symlink?(root_file)
+                            abort "missing pack root file while preparing install metadata: #{root_file}"
+                          end
+
+                          { name => Digest::SHA256.file(root_file).hexdigest }
+                        else
+                          {}
+                        end
     metadata = {
       "host" => host,
       "mode" => mode,
@@ -1917,7 +1932,8 @@ prepare_metadata() {
       "source_remote" => remote,
       "installed_at" => installed_at,
       "managed_skill_copy_fingerprints" => skill_fingerprints,
-      "managed_pack_doc_copy_fingerprints" => doc_fingerprints
+      "managed_pack_doc_copy_fingerprints" => doc_fingerprints,
+      "managed_pack_root_copy_fingerprints" => root_fingerprints
     }
     serialized_metadata = JSON.pretty_generate(metadata) + "\n"
     abort unless File.const_defined?(:NOFOLLOW)
@@ -3420,9 +3436,10 @@ pack_doc_destination_owned() {
   fi
 }
 
-recorded_pack_doc_copy_fingerprint_matches() {
-  local doc_name="$1"
-  local destination="$2"
+recorded_copy_fingerprint_matches() {
+  local field="$1"
+  local entry_name="$2"
+  local destination="$3"
   local metadata_path="$target/$metadata_name"
   local matches=false
   if [[ "${install_metadata_binding_state:-}" = "present" ]]; then
@@ -3435,21 +3452,29 @@ recorded_pack_doc_copy_fingerprint_matches() {
   [[ -f "$destination" && ! -L "$destination" ]] || return 1
 
   if ruby -rjson -rdigest -e '
-    metadata_path, doc_name, destination = ARGV
+    metadata_path, field, entry_name, destination = ARGV
     metadata = JSON.parse(File.binread(metadata_path))
     exit 1 unless metadata.is_a?(Hash) && metadata["mode"] == "copy"
-    fingerprints = metadata["managed_pack_doc_copy_fingerprints"]
+    fingerprints = metadata[field]
     exit 1 unless fingerprints.is_a?(Hash)
-    expected = fingerprints[doc_name]
+    expected = fingerprints[entry_name]
     exit 1 unless expected.is_a?(String) && expected.match?(/\A[0-9a-f]{64}\z/i)
     exit(Digest::SHA256.file(destination).hexdigest == expected ? 0 : 1)
-  ' "$metadata_path" "$doc_name" "$destination"; then
+  ' "$metadata_path" "$field" "$entry_name" "$destination"; then
     matches=true
   fi
   if [[ "${install_metadata_binding_state:-}" = "present" ]]; then
     require_install_metadata_binding
   fi
   [[ "$matches" = "true" ]]
+}
+
+recorded_pack_doc_copy_fingerprint_matches() {
+  recorded_copy_fingerprint_matches "managed_pack_doc_copy_fingerprints" "$1" "$2"
+}
+
+recorded_pack_root_copy_fingerprint_matches() {
+  recorded_copy_fingerprint_matches "managed_pack_root_copy_fingerprints" "$1" "$2"
 }
 
 verify_pack_doc_destinations() {
@@ -3527,7 +3552,8 @@ verify_third_party_notices_destination() {
   [[ -e "$destination" || -L "$destination" ]] || return 0
 
   if [[ "$mode" = "copy" ]]; then
-    recorded_revision_root_file_matches "$file_name" "$destination" ||
+    recorded_pack_root_copy_fingerprint_matches "$file_name" "$destination" ||
+      recorded_revision_root_file_matches "$file_name" "$destination" ||
       { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
       root_file_symlink_matches_recorded_source "$file_name" "$destination" || {
         echo "Refusing to replace unowned pack root file: $destination" >&2
