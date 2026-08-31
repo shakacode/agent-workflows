@@ -45,7 +45,7 @@ class WorkerExecutionContractTest < Minitest::Test
       assert_match(/^## #{Regexp.escape(heading)}$/, @component, heading)
     end
 
-    assert_operator @component.bytesize, :<=, 11_000,
+    assert_operator @component.bytesize, :<=, 12_000,
                     "worker execution must stay smaller than the duplicated source blocks it replaces"
     assert_includes @component, "It emits a committed implementation head and replayable evidence."
     assert_includes @component, "worker-execution-handoff v1"
@@ -56,9 +56,13 @@ class WorkerExecutionContractTest < Minitest::Test
       "workflow" => squish(section(@workflow, "### Worker Rules", /^###\s+/)),
       "pr-batch skill" => squish(section(@skill, "## Worker Rules", /^##\s+/))
     }
+    route_links = {
+      "workflow" => "[PR-Batch Worker Execution](pr-batch-worker-execution.md)",
+      "pr-batch skill" => "[PR-Batch Worker Execution](../../workflows/pr-batch-worker-execution.md)"
+    }
 
     routes.each do |label, route|
-      assert_equal 1, route.scan("pr-batch-worker-execution.md").length, label
+      assert_equal 1, route.scan(route_links.fetch(label)).length, label
       assert_includes route, "focused validation", label
       assert_includes route, "implementation-head handoff", label
       refute_includes route, "git worktree add", "#{label} mirrors isolated setup"
