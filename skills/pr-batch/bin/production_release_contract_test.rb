@@ -17,8 +17,9 @@ class ProductionReleaseContractTest < Minitest::Test
   def test_component_owns_the_release_lifecycle_boundary
     normalized = squish(@component)
     assert_includes normalized, "# PR Production And Release"
-    assert_includes normalized, "Production and release are downstream"
-    assert_includes normalized, "does not own ordinary prompt intake, worker execution, or PR integration"
+    assert_includes normalized, "Production and release continue downstream"
+    assert_includes normalized, "release-selected PRs enter this component during merge readiness"
+    assert_includes normalized, "does not own ordinary prompt intake, worker execution, or the mechanics of PR integration"
     assert_includes normalized, "explicit production or release authority"
     assert_includes normalized, "production deployment"
   end

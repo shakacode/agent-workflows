@@ -15,13 +15,17 @@ do not assume a relative sibling file exists.
 
 ## Boundary
 
-Production and release are downstream from ordinary PR integration. This
-component consumes an integrated or merged change plus repository delivery
-policy. It owns release-mode and phase resolution, release trackers, production
-promotion, release candidates, publishing, release rollback, and the explicit
-authority required for those consequential actions.
+Production and release continue downstream from ordinary PR integration, but
+release-selected PRs enter this component during merge readiness so its
+pre-merge release gates cannot be skipped. The component consumes the current
+PR or an integrated or merged change plus repository delivery policy. It owns
+release-mode and phase resolution, release trackers, production promotion,
+release candidates, publishing, release rollback, and the explicit authority
+required for those consequential actions.
 
-It does not own ordinary prompt intake, worker execution, or PR integration.
+It does not own ordinary prompt intake, worker execution, or the mechanics of
+PR integration; it supplies the release-specific gates that integration must
+honor.
 Ordinary base-branch feature work does not load the downstream component unless
 repository policy or the live release tracker selects release handling for that
 PR.
