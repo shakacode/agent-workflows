@@ -2640,6 +2640,41 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_missing_interaction_artifact_directory_is_rejected_before_any_scan
+    with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, log_path, dir|
+      missing_directory = File.join(dir, "missing-artifact-directory")
+      out, status = run_script(
+        env,
+        "--repo", "owner/repo",
+        "--trust-config", trust_config_path,
+        "--interaction-artifact-dir", missing_directory,
+        "123"
+      )
+
+      refute status.success?, out
+      assert_includes out, "Invalid interaction artifact directory #{missing_directory.inspect}"
+      refute File.exist?(log_path), "artifact directory validation must run before any gh command"
+    end
+  end
+
+  def test_non_directory_interaction_artifact_path_is_rejected_before_any_scan
+    with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, log_path, dir|
+      artifact_file = File.join(dir, "artifact-file.json")
+      File.write(artifact_file, "not a directory\n")
+      out, status = run_script(
+        env,
+        "--repo", "owner/repo",
+        "--trust-config", trust_config_path,
+        "--interaction-artifact-dir", artifact_file,
+        "123"
+      )
+
+      refute status.success?, out
+      assert_includes out, "Invalid interaction artifact directory #{artifact_file.inspect}: not a directory"
+      refute File.exist?(log_path), "artifact directory validation must run before any gh command"
+    end
+  end
+
   def test_prior_overflow_artifact_is_emitted_when_a_later_target_scan_fails
     with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, _log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123", "456")
