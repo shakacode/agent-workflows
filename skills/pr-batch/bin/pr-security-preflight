@@ -503,6 +503,8 @@ def load_trust_config(path:, global:)
     trusted_teams: normalized_trusted_teams(data["trusted_teams"], require_owner: global),
     trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
   }
+rescue Psych::Exception
+  abort "Invalid trust config #{path}: malformed YAML"
 end
 
 def bot_login_in_set?(login, trusted_set)

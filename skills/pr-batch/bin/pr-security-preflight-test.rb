@@ -1262,7 +1262,9 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_equal 1, status.exitstatus
       assert_includes out, "Trust config: #{trust_config_path}"
       assert_includes out, "Trust config source: explicit"
-      assert_includes out, trust_config_path
+      assert_includes out, "Invalid trust config #{trust_config_path}: malformed YAML"
+      refute_includes out, "Psych::SyntaxError"
+      refute_match(/\n\tfrom /, out)
       refute_includes out, "Trust config content digest:"
     end
   end
