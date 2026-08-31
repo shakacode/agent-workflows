@@ -170,6 +170,29 @@ class HostTaskLaunchTest < Minitest::Test
     end
   end
 
+  def test_updates_only_the_named_second_lane_and_rejects_invalid_mutable_input
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      second = Marshal.load(Marshal.dump(input.dig("intent", "lanes", 0)))
+      second["lane_id"] = "issue-562"
+      second["launch_token"] = "launch-2"
+      input.dig("intent", "lanes") << second
+      publish(input)
+      input["operation"] = "update"
+      input["lane_id"] = "issue-562"
+      input["update"] = { "state" => "blocked", "outcome" => "pending", "blocker" => "<blocked>", "human_input_needed" => "yes", "latest" => "[latest](https://bad)" }
+      result = invoke(input)
+      assert_equal "launch-pending", result.dig("record", "lanes", 0, "state")
+      assert_equal "blocked", result.dig("record", "lanes", 1, "state")
+      assert_includes result.fetch("control_tower"), "&lt;blocked&gt;"
+
+      input["lane_id"] = "missing"
+      assert_equal "invalid-input", invoke(input).fetch("status")
+      input.delete("lane_id")
+      assert_equal "invalid-input", invoke(input).fetch("status")
+    end
+  end
+
   private
 
   def input_for(directory, fixture: "native")

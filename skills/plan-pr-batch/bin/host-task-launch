@@ -287,6 +287,10 @@ module HostTaskLaunch
   def update_lane!(lane, update)
     raise ContractError unless update.is_a?(Hash)
 
+    %w[branch pr latest].each { |key| scalar!(update.fetch(key)) if update.key?(key) }
+    raise ContractError if update.key?("human_input_needed") && !%w[yes no].include?(update.fetch("human_input_needed"))
+    raise ContractError if update.key?("blocker") && !update.fetch("blocker").nil? && !scalar_value?(update.fetch("blocker"))
+
     %w[state outcome branch pr latest blocker human_input_needed].each do |key|
       next unless update.key?(key)
 
@@ -349,6 +353,8 @@ module HostTaskLaunch
                      "- Branch/PR: #{code(lane.fetch('branch'))} / #{code(lane.fetch('pr'))}",
                      "- State/outcome: #{code(lane.fetch('state'))} / #{code(lane.fetch('outcome'))}",
                      "- Human input needed: #{plain(lane.fetch('human_input_needed'))}",
+                     "- Latest: #{plain(lane.fetch('latest'))}",
+                     "- Blocker: #{lane.fetch('blocker') ? plain(lane.fetch('blocker')) : 'none'}",
                      "- GitHub reconciliation due: #{plain(record.fetch('reconciliation_due'))}"
                    ])
     end
