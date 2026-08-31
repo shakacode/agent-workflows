@@ -99,6 +99,12 @@ MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_preference=<model>/<effort>;" \
                                   "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
                                   "UNKNOWN=field;no guesses"
+TOKEN_BUDGET_PROMPT_LINE = "Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop"
+TOKEN_BUDGET_PROMPT_LEGEND_LINE =
+  "For v1, A/R/L=aggregate/coordinator/lane limits, " \
+  "W/P/H=warning/approval-or-pause/hard-stop thresholds, " \
+  "a/d=freshness age/delegation threshold, and " \
+  "S/T/I/D=state path/trusted-plan path/id/digest."
 MANIFEST_WHOLE_COORDINATOR_PREFERENCE_UNKNOWN_FRAGMENT =
   "coordinator_preference=<model/effort|UNKNOWN>"
 BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
@@ -112,7 +118,7 @@ CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
   "#{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
   "overlap=>integration advisory;deps/resv/UNKNOWN=>coord".freeze
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
-MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
+MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium->implementation(max1); strongest/high->qa-review(max0); escalate both to strongest/high after MODEL_ESCALATION_REQUEST."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
 MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory."
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
@@ -282,6 +288,7 @@ GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{OBSERVED_HOST_PROMPT_LINE}
   #{MANIFEST_PROVENANCE_PROMPT_LINE}
+  #{TOKEN_BUDGET_PROMPT_LINE}
   #{WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE}
   #{DISPATCH_PLAN_PROMPT_LINE}
   #{STAGE_DEPENDENCY_PROMPT_LINE}
@@ -576,6 +583,90 @@ def assert_goal_prompt_heading_is_line_anchored
   abort_with_failure("goal prompt extractor must ignore headings quoted outside a real heading line")
 end
 
+def token_budget_legend_contract_errors(source_text, prompt_template)
+  errors = []
+  legend_count = source_text.scan(TOKEN_BUDGET_PROMPT_LEGEND_LINE).length
+  errors << "legend occurrence count is #{legend_count}, expected 1" unless legend_count == 1
+
+  ordered_contract_count = prompt_template.scan(GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET).length
+  unless ordered_contract_count == 1
+    errors << "generated prompt ordered contract count is #{ordered_contract_count}, expected 1"
+  end
+
+  canonical_fence = "#{TEXT_FENCE}#{prompt_template}"
+  canonical_fence_count = source_text.scan(canonical_fence).length
+  if canonical_fence_count == 1
+    canonical_fence_offset = source_text.index(canonical_fence)
+    legend_prefix = "#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n\n"
+    legend_offset = canonical_fence_offset - legend_prefix.length
+    legend_is_adjacent = legend_offset >= 0 && source_text[legend_offset, legend_prefix.length] == legend_prefix
+    errors << "legend is not immediately before the canonical generated prompt" unless legend_is_adjacent
+  else
+    errors << "canonical generated prompt fence count is #{canonical_fence_count}, expected 1"
+  end
+  errors << "legend is inside the generated prompt" if prompt_template.include?(TOKEN_BUDGET_PROMPT_LEGEND_LINE)
+  errors
+end
+
+def assert_token_budget_legend_contract(source_text, prompt_template, label)
+  errors = token_budget_legend_contract_errors(source_text, prompt_template)
+  return if errors.empty?
+
+  abort_with_failure("#{label} token budget legend contract failed: #{errors.join('; ')}")
+end
+
+def assert_token_budget_legend_tamper_controls
+  valid_source = <<~MARKDOWN
+    #{TOKEN_BUDGET_PROMPT_LEGEND_LINE}
+
+    ```text
+    #{GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET}
+    ```
+  MARKDOWN
+  valid_prompt = extract_first_text_fence_body(valid_source, "token budget legend fixture")
+  unless token_budget_legend_contract_errors(valid_source, valid_prompt).empty?
+    abort_with_failure("token budget legend baseline fixture must pass")
+  end
+
+  missing_source = valid_source.sub("#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n\n", "")
+  missing_prompt = extract_first_text_fence_body(missing_source, "missing token budget legend fixture")
+  missing_errors = token_budget_legend_contract_errors(missing_source, missing_prompt)
+  unless missing_errors.any? { |error| error.include?("occurrence count is 0") }
+    abort_with_failure("token budget legend missing-content tamper must fail")
+  end
+
+  inside_source = valid_source.sub(
+    "#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n\n#{TEXT_FENCE}",
+    "#{TEXT_FENCE}#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n"
+  )
+  inside_prompt = extract_first_text_fence_body(inside_source, "inside-prompt token budget legend fixture")
+  inside_errors = token_budget_legend_contract_errors(inside_source, inside_prompt)
+  return if inside_errors.include?("legend is inside the generated prompt")
+
+  abort_with_failure("token budget legend inside-prompt tamper must fail")
+end
+
+def assert_token_budget_wrong_fence_tamper_controls(sources)
+  legend_prefix = "#{TOKEN_BUDGET_PROMPT_LEGEND_LINE}\n\n"
+
+  sources.each do |path, (source_text, generated_prompt)|
+    source_without_legend = source_text.sub(legend_prefix, "")
+    canonical_fence = "#{TEXT_FENCE}#{generated_prompt}"
+    canonical_fence_offset = source_without_legend.index(canonical_fence)
+    abort_with_failure("#{path} wrong-fence fixture cannot find canonical prompt fence") unless canonical_fence_offset
+
+    fence_offsets = []
+    source_without_legend.to_enum(:scan, TEXT_FENCE).each { fence_offsets << Regexp.last_match.begin(0) }
+    wrong_fence_offset = fence_offsets.find { |offset| offset != canonical_fence_offset }
+    abort_with_failure("#{path} wrong-fence fixture needs a noncanonical text fence") unless wrong_fence_offset
+
+    relocated_source = source_without_legend.dup.insert(wrong_fence_offset, legend_prefix)
+    next unless token_budget_legend_contract_errors(relocated_source, generated_prompt).empty?
+
+    abort_with_failure("#{path} wrong-fence legend relocation must fail")
+  end
+end
+
 def with_items(prompt_template, items)
   updated_prompt = prompt_template.sub(/Items:\n.*?\nExecution rules:/m) do
     "Items:\n#{items}\nExecution rules:"
@@ -649,6 +740,7 @@ abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(ski
 
 skill_text = File.read(skill_path, encoding: "UTF-8")
 assert_goal_prompt_heading_is_line_anchored
+assert_token_budget_legend_tamper_controls
 workflow_text = read_repo_file("workflows/pr-processing.md")
 prompt_intake_text = read_repo_file("workflows/pr-batch-intake.md")
 pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
@@ -668,6 +760,15 @@ workflow_prompt_template = extract_first_text_fence_body(
   workflow_goal_section,
   "canonical workflow plan-to-goal prompt"
 )
+token_budget_legend_sources = {
+  "skills/plan-pr-batch/SKILL.md" => [skill_text, prompt_template],
+  "skills/pr-batch/SKILL.md" => [pr_batch_skill_text, pr_batch_prompt_template],
+  "workflows/pr-processing.md" => [workflow_text, workflow_prompt_template]
+}
+assert_token_budget_wrong_fence_tamper_controls(token_budget_legend_sources)
+token_budget_legend_sources.each do |path, (source_text, generated_prompt)|
+  assert_token_budget_legend_contract(source_text, generated_prompt, path)
+end
 enforce_restart_docs_drift = ENV[SOURCE_CHECKOUT_ENV] == "1"
 pr_batch_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/pr-batch-skills.md") : nil
 context_text = enforce_restart_docs_drift ? read_optional_repo_file("CONTEXT.md") : nil
@@ -838,6 +939,7 @@ host_aware_batch_sizing_phrase_checks = {
     ["Each generated prompt must include `Batch size target: <codex|claude|generic>; wave:", 1],
     ["`Coordinator model/effort preference: <model/class>/<effort>.`", 1],
     ["`Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.`", 1],
+    ["`#{TOKEN_BUDGET_PROMPT_LINE}`", 1],
     ["`Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`", 1],
     ["`#{DISPATCH_PLAN_PROMPT_LINE}`", 1],
     ["classify every lane by the canonical staged model/effort routing", 1],

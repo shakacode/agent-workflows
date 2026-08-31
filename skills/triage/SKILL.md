@@ -293,8 +293,14 @@ precise blocker.
    `Coordinator model/effort preference: <model/class>/<effort>.` and
    `Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.` and
    `Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses` and
+   `Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop` and
    `Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord` and
    `Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`
+   In the v1 budget form, `A/R/L` is aggregate/coordinator/lane limits, `W/P/H` is
+   warning/approval-or-pause/hard-stop thresholds, `a/d` is freshness
+   age/delegation threshold, and `S/T/I/D` is the exact state
+   path/trusted-plan path/id/digest; substitute the actual values rather than
+   those field initials.
    It must also say `Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.`
    and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle` It must include this exact self-contained completion line:
    `- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.`

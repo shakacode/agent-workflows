@@ -4,10 +4,15 @@
 require "json"
 require "date"
 require "digest"
+require "openssl"
 require "uri"
+require "pathname"
 
 module BatchPlanPreflight
+  class DuplicateJSONKey < StandardError; end
+
   BACKENDS = %w[codex claude generic].freeze
+  TRUSTED_PLAN_MAX_BYTES = 1024 * 1024
   PURPOSES = %w[implementation investigation].freeze
   RISK_SURFACES = %w[
     ci_workflow
@@ -113,6 +118,72 @@ module BatchPlanPreflight
   }.freeze
 
   module_function
+
+  def json_string_end(raw, start)
+    index = start + 1
+    escaped = false
+    while index < raw.length
+      character = raw[index]
+      if escaped
+        escaped = false
+      elsif character == "\\"
+        escaped = true
+      elsif character == '"'
+        break
+      end
+      index += 1
+    end
+    index
+  end
+
+  def parse_json_strict(raw)
+    containers = []
+    index = 0
+    while index < raw.length
+      case raw[index]
+      when '"'
+        start = index
+        index = json_string_end(raw, start)
+        probe = index + 1
+        probe += 1 while probe < raw.length && raw[probe].match?(/\s/)
+        if probe < raw.length && raw[probe] == ":" && containers.last&.fetch(:type) == :object
+          key = JSON.parse(raw[start..index])
+          raise DuplicateJSONKey, key if containers.last.fetch(:keys).key?(key)
+
+          containers.last.fetch(:keys)[key] = true
+        end
+      when "{"
+        containers << { type: :object, keys: {} }
+      when "["
+        containers << { type: :array }
+      when "}", "]"
+        containers.pop
+      end
+      index += 1
+    end
+    JSON.parse(raw)
+  rescue DuplicateJSONKey
+    raise JSON::ParserError, "duplicate-object-key"
+  end
+
+  def read_trusted_plan(path)
+    file = File.open(path, File::RDONLY | File::NONBLOCK, encoding: Encoding::UTF_8)
+    stat = file.stat
+    return [nil, :nonregular] unless stat.file?
+    return [nil, :oversized] if stat.size > TRUSTED_PLAN_MAX_BYTES
+
+    contents = file.read(TRUSTED_PLAN_MAX_BYTES + 1)
+    return [nil, :oversized] if contents.bytesize > TRUSTED_PLAN_MAX_BYTES
+
+    contents.force_encoding(Encoding::UTF_8)
+    return [nil, :invalid_encoding] unless contents.valid_encoding?
+
+    [contents, nil]
+  rescue ArgumentError, IOError, SystemCallError
+    [nil, :unreadable]
+  ensure
+    file&.close
+  end
 
   def violation(code, path, message, lane_ids: nil)
     item = { "code" => code, "path" => path, "message" => message }
@@ -348,6 +419,7 @@ module BatchPlanPreflight
                                 lane_ids: [lane["id"]])
       end
     end
+    violations.concat(validate_token_budget(plan, lane_ids))
     valid_target_identities = plan.fetch("lanes").filter_map do |lane|
       target = lane["target"]
       launch_target_identity_key(target) if valid_launch_target?(target)
@@ -481,6 +553,286 @@ module BatchPlanPreflight
       !%w[. ..].include?(repository) &&
       !owner.casecmp?("UNKNOWN") &&
       !repository.casecmp?("UNKNOWN")
+  end
+
+  def validate_token_budget(plan, lane_ids)
+    inline_budget = plan.fetch("lanes").any? { |lane| lane.is_a?(Hash) && lane.key?("token_budget") }
+    budget = plan["token_budget"]
+    anchor = plan["token_budget_anchor"]
+    violations = []
+    if inline_budget
+      violations << violation(
+        "token-budget-placement-invalid",
+        "$.plan.lanes",
+        "Place the complete batch-token-budget v1 object at plan.token_budget; inline partial lane budgets are invalid."
+      )
+    end
+    if budget.nil?
+      if anchor
+        violations << violation(
+          "token-budget-anchor-without-budget",
+          "$.plan.token_budget_anchor",
+          "A trusted token-budget anchor is valid only with a complete plan.token_budget object."
+        )
+      end
+      return violations
+    end
+
+    unless budget.is_a?(Hash) && budget["type"] == "batch-token-budget" && budget["version"] == 1
+      violations << violation(
+        "token-budget-contract-invalid",
+        "$.plan.token_budget",
+        "Token budget metadata must be a complete batch-token-budget v1 object."
+      )
+      return violations
+    end
+    unless budget.keys.sort == %w[
+      batch_id delegation scopes state_path telemetry thresholds trusted_verifiers type version
+    ]
+      violations << violation(
+        "token-budget-fields-invalid",
+        "$.plan.token_budget",
+        "Token budget requires exactly the pinned batch-token-budget v1 fields."
+      )
+    end
+    if budget["batch_id"] != plan["id"]
+      violations << violation(
+        "token-budget-batch-id-mismatch",
+        "$.plan.token_budget.batch_id",
+        "Token budget batch_id must equal the batch plan id."
+      )
+    end
+    unless absolute_path?(budget["state_path"])
+      violations << violation(
+        "token-budget-state-path-invalid",
+        "$.plan.token_budget.state_path",
+        "Token budget requires an absolute coordinator-owned durable state path."
+      )
+    end
+    expected_budget_digest = "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(budget)))}"
+    valid_anchor = anchor.is_a?(Hash) && anchor.keys.sort == %w[
+      trusted_plan_digest trusted_plan_id trusted_plan_path
+    ] && absolute_path?(anchor["trusted_plan_path"]) &&
+                   anchor["trusted_plan_id"] == budget["batch_id"] &&
+                   anchor["trusted_plan_digest"] == expected_budget_digest
+    unless valid_anchor
+      violations << violation(
+        "token-budget-anchor-invalid",
+        "$.plan.token_budget_anchor",
+        "Persist the external trusted plan path, matching batch id, and exact canonical sha256 budget digest."
+      )
+    end
+    trusted_plan_artifact = nil
+    trusted_plan_parsed = false
+    if valid_anchor
+      trusted_plan_path = anchor.fetch("trusted_plan_path")
+      trusted_plan_json, trusted_plan_error = read_trusted_plan(trusted_plan_path)
+      case trusted_plan_error
+      when :oversized
+        violations << violation(
+          "token-budget-trusted-plan-oversized",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must not exceed the pinned 1 MiB artifact limit."
+        )
+      when :nonregular
+        violations << violation(
+          "token-budget-trusted-plan-nonregular",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must resolve to a regular file opened without blocking."
+        )
+      when :invalid_encoding
+        violations << violation(
+          "token-budget-trusted-plan-invalid-encoding",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must contain valid UTF-8 before JSON validation."
+        )
+      when :unreadable
+        violations << violation(
+          "token-budget-trusted-plan-unreadable",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must be a readable persisted file before preflight."
+        )
+      else
+        begin
+          trusted_plan_artifact = parse_json_strict(trusted_plan_json)
+          trusted_plan_parsed = true
+        rescue JSON::ParserError
+          violations << violation(
+            "token-budget-trusted-plan-malformed",
+            "$.plan.token_budget_anchor.trusted_plan_path",
+            "Trusted token-budget plan must contain one strict JSON object without duplicate keys."
+          )
+        end
+      end
+    end
+    if trusted_plan_parsed
+      trusted_plan_digest = "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(trusted_plan_artifact)))}"
+      unless trusted_plan_artifact.is_a?(Hash) &&
+             trusted_plan_artifact["batch_id"] == anchor["trusted_plan_id"] &&
+             trusted_plan_digest == anchor["trusted_plan_digest"] &&
+             canonicalize(trusted_plan_artifact) == canonicalize(budget)
+        violations << violation(
+          "token-budget-trusted-plan-mismatch",
+          "$.plan.token_budget_anchor.trusted_plan_path",
+          "Trusted token-budget plan must equal the inline budget and match the anchored batch id and canonical digest."
+        )
+      end
+    end
+    if anchor.is_a?(Hash) && absolute_path?(anchor["trusted_plan_path"]) &&
+       absolute_path?(budget["state_path"]) &&
+       artifact_path_collision?(anchor["trusted_plan_path"], budget["state_path"])
+      violations << violation(
+        "token-budget-artifact-collision",
+        "$.plan.token_budget_anchor.trusted_plan_path",
+        "Trusted token-budget plan and mutable runtime state must be distinct canonical artifacts."
+      )
+    end
+
+    scopes = budget["scopes"]
+    unless scopes.is_a?(Hash) && scopes.keys.sort == %w[aggregate coordinator lanes]
+      violations << violation(
+        "token-budget-scopes-invalid",
+        "$.plan.token_budget.scopes",
+        "Declare exact aggregate, coordinator, and lanes token budget scopes."
+      )
+      return violations
+    end
+    aggregate_limit = token_limit(scopes["aggregate"])
+    coordinator_limit = token_limit(scopes["coordinator"])
+    lane_scopes = scopes["lanes"]
+    unless (lane_ids & %w[aggregate coordinator]).empty?
+      violations << violation(
+        "token-budget-lane-id-reserved",
+        "$.plan.lanes",
+        "Budgeted lane ids cannot use the reserved aggregate or coordinator parent scope names."
+      )
+    end
+    unless lane_scopes.is_a?(Hash) && lane_scopes.keys.tally == lane_ids.tally
+      violations << violation(
+        "token-budget-lane-scopes-mismatch",
+        "$.plan.token_budget.scopes.lanes",
+        "Token budget lane scope ids must exactly match all planned lane ids."
+      )
+    end
+    lane_limits = lane_scopes.is_a?(Hash) ? lane_scopes.values.map { |scope| token_limit(scope) } : []
+    unless aggregate_limit && coordinator_limit && lane_scopes.is_a?(Hash) && lane_limits.length == lane_scopes.length &&
+           lane_limits.all?
+      violations << violation(
+        "token-budget-limits-invalid",
+        "$.plan.token_budget.scopes",
+        "Every scope requires exactly one positive integer limit_tokens value."
+      )
+    end
+    if aggregate_limit && coordinator_limit &&
+       (coordinator_limit > aggregate_limit || lane_limits.compact.any? { |limit| limit > aggregate_limit })
+      violations << violation(
+        "token-budget-hierarchy-invalid",
+        "$.plan.token_budget.scopes",
+        "Coordinator and lane token limits cannot exceed the aggregate batch limit."
+      )
+    end
+
+    thresholds = budget["thresholds"]
+    warning = thresholds["warning_percent"] if thresholds.is_a?(Hash)
+    approval = thresholds["approval_percent"] if thresholds.is_a?(Hash)
+    hard = thresholds["hard_percent"] if thresholds.is_a?(Hash)
+    unless thresholds.is_a?(Hash) && thresholds.keys.sort == %w[approval_percent hard_percent warning_percent] &&
+           [warning, approval, hard].all? { |value| value.is_a?(Integer) && value.positive? } &&
+           warning < approval && approval < hard && hard == 100
+      violations << violation(
+        "token-budget-thresholds-invalid",
+        "$.plan.token_budget.thresholds",
+        "Require increasing positive warning and approval percentages with hard_percent exactly 100."
+      )
+    end
+    telemetry = budget["telemetry"]
+    delegation = budget["delegation"]
+    unless single_positive_integer_field?(telemetry, "max_age_seconds")
+      violations << violation(
+        "token-budget-telemetry-policy-invalid",
+        "$.plan.token_budget.telemetry",
+        "Telemetry policy requires exactly one positive max_age_seconds value."
+      )
+    end
+    unless single_positive_integer_field?(delegation, "approval_threshold_tokens")
+      violations << violation(
+        "token-budget-delegation-policy-invalid",
+        "$.plan.token_budget.delegation",
+        "Delegation policy requires exactly one positive approval_threshold_tokens value."
+      )
+    end
+    unless valid_trusted_verifiers?(budget["trusted_verifiers"])
+      violations << violation(
+        "token-budget-trusted-verifiers-invalid",
+        "$.plan.token_budget.trusted_verifiers",
+        "Declare one or more unique RSA-PSS-SHA256 verifier ids with canonical RSA public keys of at least 2048 bits."
+      )
+    end
+    violations
+  end
+
+  def valid_trusted_verifiers?(verifiers)
+    return false unless verifiers.is_a?(Array) && !verifiers.empty?
+    return false unless verifiers.map { |record| record["id"] if record.is_a?(Hash) }.uniq.length == verifiers.length
+
+    canonical_keys = verifiers.map do |record|
+      return false unless record.is_a?(Hash) && record.keys.sort == %w[algorithm id public_key_pem] &&
+                          nonempty_identity?(record["id"]) && record["algorithm"] == "rsa-pss-sha256" &&
+                          nonempty_identity?(record["public_key_pem"])
+
+      key = OpenSSL::PKey.read(record["public_key_pem"])
+      return false unless key.is_a?(OpenSSL::PKey::RSA) && !key.private? && key.n.num_bits >= 2048
+
+      canonical_pem = key.public_key.to_pem
+      return false unless record["public_key_pem"] == canonical_pem
+
+      canonical_pem
+    end
+    canonical_keys.uniq.length == canonical_keys.length
+  rescue OpenSSL::PKey::PKeyError
+    false
+  end
+
+  def token_limit(scope)
+    return unless single_positive_integer_field?(scope, "limit_tokens")
+
+    scope["limit_tokens"]
+  end
+
+  def absolute_path?(value)
+    value.is_a?(String) && !value.empty? && value != "UNKNOWN" && Pathname.new(value).absolute?
+  rescue ArgumentError
+    false
+  end
+
+  def canonical_artifact_path(path)
+    candidate = Pathname.new(File.expand_path(path))
+    suffix = []
+    until candidate.exist? || candidate.symlink?
+      suffix.unshift(candidate.basename.to_s)
+      candidate = candidate.parent
+    end
+
+    File.join(File.realpath(candidate), *suffix)
+  end
+
+  def artifact_path_collision?(left, right)
+    expanded_left = File.expand_path(left)
+    expanded_right = File.expand_path(right)
+    canonical_left = canonical_artifact_path(expanded_left)
+    canonical_right = canonical_artifact_path(expanded_right)
+    return true if canonical_left == canonical_right
+    return true if canonical_left.start_with?("#{canonical_right}#{File::SEPARATOR}") ||
+                   canonical_right.start_with?("#{canonical_left}#{File::SEPARATOR}")
+    return false unless File.exist?(expanded_left) && File.exist?(expanded_right)
+
+    File.identical?(expanded_left, expanded_right)
+  rescue SystemCallError
+    true
+  end
+
+  def single_positive_integer_field?(value, field)
+    value.is_a?(Hash) && value.keys == [field] && value[field].is_a?(Integer) && value[field].positive?
   end
 
   def validate_lane_lifecycle_states(states, plan, stage_dependency_plan_id)
@@ -1008,19 +1360,23 @@ module BatchPlanPreflight
     right_paths = right_map.fetch("paths")
     paths = left_paths & right_paths
     left_map.fetch("renames").each do |rename|
-      paths.concat(right_paths.select { |path| rename.values.any? { |endpoint| path.start_with?("#{endpoint}/") } })
+      paths.concat(right_paths.select { |path| rename.values.any? { |endpoint| paths_overlap?(path, endpoint) } })
     end
     right_map.fetch("renames").each do |rename|
-      paths.concat(left_paths.select { |path| rename.values.any? { |endpoint| path.start_with?("#{endpoint}/") } })
+      paths.concat(left_paths.select { |path| rename.values.any? { |endpoint| paths_overlap?(path, endpoint) } })
     end
     paths.uniq
+  end
+
+  def paths_overlap?(left, right)
+    left == right || left.start_with?("#{right}/") || right.start_with?("#{left}/")
   end
 
   def reservation_collides_with_path?(reservation, path)
     return reservation["path"] == path unless reservation["type"] == "expansion-rename-reservation"
 
     reservation.fetch("rename").values.any? do |endpoint|
-      path == endpoint || path.start_with?("#{endpoint}/")
+      paths_overlap?(path, endpoint)
     end
   end
 
@@ -1214,7 +1570,7 @@ module BatchPlanPreflight
 end
 
 begin
-  parsed_input = JSON.parse($stdin.read)
+  parsed_input = BatchPlanPreflight.parse_json_strict($stdin.read)
 rescue JSON::ParserError
   parsed_input = nil
   output = BatchPlanPreflight.result(

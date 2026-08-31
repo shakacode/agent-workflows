@@ -17,7 +17,7 @@ require "set"
 require "time"
 
 module BatchUsageReceipt
-  SCHEMA = "batch-usage-receipt-v1"
+  SCHEMA = "batch-usage-receipt-v2"
   MANIFEST_SCHEMA = "batch-usage-manifest-v1"
   RATE_CARD_SCHEMA = "batch-usage-rate-card-v1"
   EXPLICIT_UTC_OFFSET = /(?:Z|[+-]\d{2}(?::?\d{2})?)\z/i
@@ -152,6 +152,11 @@ module BatchUsageReceipt
       @unknown_reason_keys = Set.new
       @global_unknown_usage_fields = []
       @route_usage = {}
+      @current_turn_segment = nil
+      @current_turn_started_at = nil
+      @next_turn_segment = 0
+      @contributing_turn_segments = Set.new
+      @turn_evidence_unknown = false
       @first_session_id = nil
       @first_session_seen = false
       @forked_physical_session = false
@@ -238,19 +243,42 @@ module BatchUsageReceipt
           @accounting["compactions"] += 1
           compaction_since_usage = true
         when "turn_context"
-          next if replay_prefix || !payload.is_a?(Hash)
+          next if replay_prefix
+
+          unless payload.is_a?(Hash)
+            @current_turn_segment = nil
+            @current_turn_started_at = nil
+            turn_context_at = parsed_timestamp(record["timestamp"])
+            unknown_turn("invalid_turn_context", line: line_number) unless turn_context_at && turn_context_at < @from_time
+            next
+          end
 
           current_route = observed_route(payload)
+          turn_started_at = parsed_timestamp(record["timestamp"])
+          unless turn_started_at
+            @current_turn_segment = nil
+            @current_turn_started_at = nil
+            unknown_turn("invalid_turn_timestamp", line: line_number)
+            next
+          end
+          @next_turn_segment += 1
+          @current_turn_segment = @next_turn_segment
+          @current_turn_started_at = turn_started_at
         when "event_msg"
           next unless payload.is_a?(Hash) && payload["type"] == "token_count"
 
-          @accounting["usage_samples"] += 1
-          usage_timestamp_valid = !parsed_timestamp(record["timestamp"]).nil?
+          usage_timestamp = parsed_timestamp(record["timestamp"])
+          usage_timestamp_valid = !usage_timestamp.nil?
+          post_window = usage_timestamp_valid && usage_timestamp >= @to_time
           unknown("invalid_usage_timestamp", line: line_number) unless usage_timestamp_valid
+          @accounting["usage_samples"] += 1
+
           info = payload["info"]
           total = canonical_usage(info.is_a?(Hash) ? info["total_token_usage"] : nil)
           last = canonical_usage(info.is_a?(Hash) ? info["last_token_usage"] : nil)
           unless total
+            next if post_window
+
             if replay_prefix
               @accounting["replay_records_omitted"] += 1
               replay_prefix_deferred_reasons << ["missing_total_token_usage", { line: line_number }]
@@ -265,6 +293,8 @@ module BatchUsageReceipt
             "last_token_usage" => last
           }.select { |_counter_source, usage| usage && invalid_known_usage_vector?(usage) }
           unless invalid_sources.empty?
+            next if post_window
+
             if replay_prefix
               @accounting["replay_records_omitted"] += 1
               invalid_sources.each_key do |counter_source|
@@ -332,6 +362,7 @@ module BatchUsageReceipt
           next unless usage_timestamp_valid
           next unless in_window?(record["timestamp"], @from_time, @to_time)
 
+          record_turn_contribution(delta, usage_timestamp, line_number)
           add_route_usage(
             current_route, delta, line: line_number, explained_unknown_fields: explained_unknown_fields
           )
@@ -361,6 +392,10 @@ module BatchUsageReceipt
         route = JSON.parse(key)
         route.merge("usage" => apply_global_unknowns(@route_usage.fetch(key)))
       end
+    end
+
+    def contributing_turn_count
+      @turn_evidence_unknown ? UNKNOWN : @contributing_turn_segments.length
     end
 
     def validate_state_thread_id(state_thread_id)
@@ -406,6 +441,23 @@ module BatchUsageReceipt
       unknown("usage_counter_missing", line: line, fields: missing_fields, affects_usage: false)
     end
 
+    def record_turn_contribution(usage, usage_timestamp, line_number)
+      total_tokens = usage["total_tokens"]
+      if !total_tokens.is_a?(Integer)
+        unknown_turn("ambiguous_turn_usage", line: line_number)
+      elsif total_tokens.positive?
+        if @current_turn_segment
+          if usage_timestamp >= @current_turn_started_at
+            @contributing_turn_segments.add(@current_turn_segment)
+          else
+            unknown_turn("ambiguous_turn_timestamp", line: line_number)
+          end
+        else
+          unknown_turn("turn_context_missing_for_usage", line: line_number)
+        end
+      end
+    end
+
     def apply_global_unknowns(usage)
       usage.merge(@global_unknown_usage_fields.to_h { |field| [field, UNKNOWN] })
     end
@@ -421,7 +473,13 @@ module BatchUsageReceipt
       reason = { "status" => UNKNOWN, "code" => code }.merge(extra.transform_keys(&:to_s))
       @unknown_reasons << reason if @unknown_reason_keys.add?(reason)
       @global_unknown_usage_fields |= TOKEN_FIELDS if affects_usage
+      @turn_evidence_unknown = true if affects_usage
       reason
+    end
+
+    def unknown_turn(code, **extra)
+      @turn_evidence_unknown = true
+      unknown(code, affects_usage: false, **extra)
     end
 
     def flush_replay_prefix_reasons(reasons)
@@ -475,6 +533,7 @@ module BatchUsageReceipt
       )
       lanes = @manifest.fetch("lanes").map { |lane| lane_receipt(lane) }
       batch_usage = aggregate(batch_thread_ids)
+      batch_turns = aggregate_turns(batch_thread_ids)
       attributed_ids = [@manifest.dig("coordinator", "root_thread_id")]
       lanes.each { |lane| attributed_ids.concat(lane.fetch("_thread_ids")) }
       unattributed_ids = batch_thread_ids - attributed_ids.uniq
@@ -488,8 +547,14 @@ module BatchUsageReceipt
             "descendant_inclusive" => batch_usage,
             "unattributed" => aggregate(unattributed_ids)
           },
+          "turns" => {
+            "descendant_inclusive" => batch_turns,
+            "unattributed" => aggregate_turns(unattributed_ids)
+          },
           "reconciliation" => {
-            "status" => reconciliation_status(batch_usage, coordinator, lanes, unattributed_ids),
+            "status" => reconciliation_status(
+              batch_usage, batch_turns, coordinator, lanes, unattributed_ids
+            ),
             "equation" => "batch descendant-inclusive = coordinator self-only + lane descendant-inclusive + unattributed"
           }
         },
@@ -815,6 +880,14 @@ module BatchUsageReceipt
       selected.reduce(blank_usage) { |sum, reader| add_usage(sum, reader.totals) }
     end
 
+    def aggregate_turns(thread_ids)
+      selected = readers(thread_ids)
+      return UNKNOWN if thread_ids.any? { |id| reader_for(id).nil? }
+
+      counts = selected.map(&:contributing_turn_count)
+      counts.all? { |count| count.is_a?(Integer) } ? counts.sum : UNKNOWN
+    end
+
     def scope_receipt(scope, id, root_thread_id, requested_route)
       inclusive_ids = closure(root_thread_id)
       selected_readers = readers(inclusive_ids)
@@ -828,6 +901,10 @@ module BatchUsageReceipt
           "self_only" => aggregate([root_thread_id]),
           "descendant_inclusive" => aggregate(inclusive_ids)
         },
+        "turns" => {
+          "self_only" => aggregate_turns([root_thread_id]),
+          "descendant_inclusive" => aggregate_turns(inclusive_ids)
+        },
         "evidence" => evidence_for(selected_readers, inclusive_ids),
         "_thread_ids" => inclusive_ids
       }
@@ -840,14 +917,28 @@ module BatchUsageReceipt
       end
       attributed = workers.flat_map { |worker| worker.fetch("_thread_ids") }.uniq
       receipt["usage"]["unattributed"] = aggregate(receipt.fetch("_thread_ids") - attributed)
+      receipt["turns"]["unattributed"] = aggregate_turns(receipt.fetch("_thread_ids") - attributed)
       receipt["workers"] = workers
       worker_sum = workers.reduce(blank_usage) do |sum, worker|
         add_usage(sum, worker.dig("usage", "descendant_inclusive"))
       end
       reconciled = add_usage(worker_sum, receipt.dig("usage", "unattributed"))
+      worker_turn_sum = workers.sum(0) do |worker|
+        count = worker.dig("turns", "descendant_inclusive")
+        count.is_a?(Integer) ? count : 0
+      end
+      reconciled_turns = if workers.all? { |worker| worker.dig("turns", "descendant_inclusive").is_a?(Integer) } &&
+                            receipt.dig("turns", "unattributed").is_a?(Integer)
+                           worker_turn_sum + receipt.dig("turns", "unattributed")
+                         else
+                           UNKNOWN
+                         end
       receipt["reconciliation"] = {
         "status" => if !@topology_unknown_lane_ids.include?(lane.fetch("id")) &&
-                       known_usage?(reconciled) && reconciled == receipt.dig("usage", "descendant_inclusive")
+                       known_usage?(reconciled) && reconciled == receipt.dig("usage", "descendant_inclusive") &&
+                       reconciled_turns.is_a?(Integer) &&
+                       receipt.dig("turns", "descendant_inclusive").is_a?(Integer) &&
+                       reconciled_turns == receipt.dig("turns", "descendant_inclusive")
                       "balanced"
                     else
                       UNKNOWN
@@ -905,13 +996,19 @@ module BatchUsageReceipt
       end.sort.to_h
     end
 
-    def reconciliation_status(batch_usage, coordinator, lanes, unattributed_ids)
+    def reconciliation_status(batch_usage, batch_turns, coordinator, lanes, unattributed_ids)
       return UNKNOWN if @batch_reconciliation_topology_unknown
 
       parts = coordinator.dig("usage", "self_only")
       lanes.each { |lane| parts = add_usage(parts, lane.dig("usage", "descendant_inclusive")) }
       parts = add_usage(parts, aggregate(unattributed_ids))
-      known_usage?(batch_usage) && known_usage?(parts) && parts == batch_usage ? "balanced" : UNKNOWN
+      turn_parts = [coordinator.dig("turns", "self_only"), aggregate_turns(unattributed_ids)] +
+                   lanes.map { |lane| lane.dig("turns", "descendant_inclusive") }
+      turn_sum = turn_parts.sum if turn_parts.all? { |count| count.is_a?(Integer) }
+      return UNKNOWN unless known_usage?(batch_usage) && known_usage?(parts) && parts == batch_usage &&
+                            batch_turns.is_a?(Integer) && turn_sum == batch_turns
+
+      "balanced"
     end
 
     def credit_equivalents(batch_usage)

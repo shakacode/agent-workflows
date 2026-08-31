@@ -5,8 +5,10 @@ require "digest"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "openssl"
 require "rbconfig"
 require "tempfile"
+require "timeout"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
 STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
@@ -14,6 +16,7 @@ REPLAY_FIXTURE = File.expand_path("../fixtures/ror-wave-a-plan-replay.json", __d
 UNSIGNED_LIFECYCLE_FIXTURE = File.expand_path("../fixtures/unsigned-lifecycle-smoke.json", __dir__)
 
 class BatchPlanPreflightTest < Minitest::Test
+  TEST_VERIFIER_KEY = OpenSSL::PKey::RSA.generate(2048)
   RISK_SURFACES = %w[
     ci_workflow
     developer_tooling
@@ -277,6 +280,57 @@ class BatchPlanPreflightTest < Minitest::Test
     input
   end
 
+  def token_budget(lane_limits: { "lane-a" => 600 })
+    {
+      "type" => "batch-token-budget",
+      "version" => 1,
+      "batch_id" => "batch-plan-1",
+      "state_path" => "/var/tmp/batch-plan-1-token-budget.json",
+      "scopes" => {
+        "aggregate" => { "limit_tokens" => 1_000 },
+        "coordinator" => { "limit_tokens" => 300 },
+        "lanes" => lane_limits.transform_values { |limit| { "limit_tokens" => limit } }
+      },
+      "thresholds" => {
+        "warning_percent" => 50,
+        "approval_percent" => 80,
+        "hard_percent" => 100
+      },
+      "telemetry" => { "max_age_seconds" => 900 },
+      "delegation" => { "approval_threshold_tokens" => 250 },
+      "trusted_verifiers" => [{
+        "id" => "coordinator-399",
+        "algorithm" => "rsa-pss-sha256",
+        "public_key_pem" => TEST_VERIFIER_KEY.public_key.to_pem
+      }]
+    }
+  end
+
+  def persist_token_budget(budget)
+    artifact = Tempfile.new(["batch-token-budget-plan", ".json"])
+    artifact.write(JSON.generate(canonicalize(budget)))
+    artifact.flush
+    (@trusted_plan_artifacts ||= []) << artifact
+    artifact.path
+  end
+
+  def teardown
+    Array(@trusted_plan_artifacts).each(&:close!)
+  end
+
+  def token_budget_anchor(budget)
+    {
+      "trusted_plan_path" => persist_token_budget(budget),
+      "trusted_plan_id" => budget.fetch("batch_id"),
+      "trusted_plan_digest" => "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(budget)))}"
+    }
+  end
+
+  def enable_token_budget(input, candidate = token_budget)
+    input.fetch("plan")["token_budget"] = candidate
+    input.fetch("plan")["token_budget_anchor"] = token_budget_anchor(candidate)
+  end
+
   def test_ordinary_durable_lane_state_advances_serialized_work_without_trust_material
     lanes = [lane("lane-b"), lane("lane-a")]
     lanes.each { |record| record["serialization_group"] = "changelog-writers" }
@@ -324,6 +378,34 @@ class BatchPlanPreflightTest < Minitest::Test
   def evaluate_raw(input)
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, HELPER, stdin_data: input)
     [JSON.parse(stdout), stderr, status]
+  end
+
+  def evaluate_with_watchdog(input, env:, timeout_seconds:)
+    stdin, stdout, stderr, wait_thread = Open3.popen3(
+      env,
+      RbConfig.ruby,
+      HELPER,
+      pgroup: true
+    )
+    stdin.write(JSON.generate(input))
+    stdin.close
+    stdout_reader = Thread.new { stdout.read }
+    stderr_reader = Thread.new { stderr.read }
+    timed_out = false
+    begin
+      status = Timeout.timeout(timeout_seconds) { wait_thread.value }
+    rescue Timeout::Error
+      timed_out = true
+      Process.kill("KILL", -wait_thread.pid)
+      status = wait_thread.value
+    ensure
+      stdout.close unless stdout.closed?
+      stderr.close unless stderr.closed?
+    end
+
+    stdout_text = stdout_reader.value
+    stderr_text = stderr_reader.value
+    [stdout_text.empty? ? nil : JSON.parse(stdout_text), stderr_text, status, timed_out]
   end
 
   def evaluate_stage_dependency_gate(plan, lanes:, edges:)
@@ -863,6 +945,517 @@ class BatchPlanPreflightTest < Minitest::Test
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "canonical-launch-target-duplicate"
+  end
+
+  def test_complete_opt_in_hierarchical_token_budget_is_accepted
+    input = input_for
+    enable_token_budget(input)
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    assert_empty result.fetch("violations")
+  end
+
+  def test_token_budget_rejects_child_limits_above_the_aggregate_limit
+    {
+      "coordinator" => proc { |candidate| candidate.dig("scopes", "coordinator")["limit_tokens"] = 1_001 },
+      "lane" => proc { |candidate| candidate.dig("scopes", "lanes", "lane-a")["limit_tokens"] = 1_001 }
+    }.each do |name, mutate|
+      input = input_for
+      candidate = token_budget
+      mutate.call(candidate)
+      enable_token_budget(input, candidate)
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, name
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-hierarchy-invalid", name
+    end
+  end
+
+  def test_opt_in_token_budget_requires_an_exact_external_anchor_binding
+    missing = input_for
+    missing.fetch("plan")["token_budget"] = token_budget
+
+    result, _stderr, status = evaluate(missing)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-anchor-invalid"
+
+    orphan = input_for
+    orphan.fetch("plan")["token_budget_anchor"] = token_budget_anchor(token_budget)
+    orphan_result, _orphan_stderr, orphan_status = evaluate(orphan)
+    refute orphan_status.success?
+    assert_includes orphan_result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-anchor-without-budget"
+
+    mismatches = {
+      "unknown-path" => proc { |anchor| anchor["trusted_plan_path"] = "UNKNOWN" },
+      "relative-path" => proc { |anchor| anchor["trusted_plan_path"] = "tmp/budget-plan.json" },
+      "wrong-id" => proc { |anchor| anchor["trusted_plan_id"] = "different-batch" },
+      "wrong-digest" => proc { |anchor| anchor["trusted_plan_digest"] = "sha256:#{'0' * 64}" }
+    }
+    mismatches.each do |name, mutate|
+      input = input_for
+      enable_token_budget(input)
+      mutate.call(input.dig("plan", "token_budget_anchor"))
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, name
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-anchor-invalid", name
+    end
+  end
+
+  def test_token_budget_requires_a_readable_persisted_trusted_plan
+    Dir.mktmpdir("batch-plan-missing-trusted-budget") do |directory|
+      input = input_for
+      candidate = token_budget
+      input.fetch("plan")["token_budget"] = candidate
+      input.fetch("plan")["token_budget_anchor"] = token_budget_anchor(candidate).merge(
+        "trusted_plan_path" => File.join(directory, "missing.json")
+      )
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-trusted-plan-unreadable"
+    end
+  end
+
+  def test_token_budget_trusted_plan_fifo_swap_is_rejected_without_blocking
+    Dir.mktmpdir("batch-plan-trusted-budget-fifo-swap") do |directory|
+      input = input_for
+      enable_token_budget(input)
+      trusted_plan_path = input.dig("plan", "token_budget_anchor", "trusted_plan_path")
+      fifo_path = File.join(directory, "replacement.fifo")
+      assert system("mkfifo", fifo_path)
+      swap_hook = File.join(directory, "swap-hook.rb")
+      File.write(swap_hook, <<~'RUBY')
+        module TrustedPlanFifoSwap
+          def file?(path)
+            result = super
+            swap_trusted_plan(path) if result
+            result
+          end
+
+          def open(path, *args, **kwargs, &block)
+            swap_trusted_plan(path)
+            super
+          end
+
+          private
+
+          def swap_trusted_plan(path)
+            return unless path.to_s == ENV["BATCH_PLAN_PREFLIGHT_SWAP_TARGET"]
+
+            source = ENV["BATCH_PLAN_PREFLIGHT_SWAP_SOURCE"]
+            File.rename(source, path) if source && File.exist?(source)
+          end
+        end
+
+        File.singleton_class.prepend(TrustedPlanFifoSwap)
+      RUBY
+
+      result, stderr, status, timed_out = evaluate_with_watchdog(
+        input,
+        env: {
+          "RUBYOPT" => "-r#{swap_hook}",
+          "BATCH_PLAN_PREFLIGHT_SWAP_TARGET" => trusted_plan_path,
+          "BATCH_PLAN_PREFLIGHT_SWAP_SOURCE" => fifo_path
+        },
+        timeout_seconds: 2
+      )
+
+      refute timed_out, "trusted-plan read blocked after a regular-path-to-FIFO swap"
+      refute status.success?, stderr
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-trusted-plan-nonregular"
+    end
+  end
+
+  def test_token_budget_trusted_plan_symlink_to_regular_artifact_remains_valid
+    Dir.mktmpdir("batch-plan-trusted-budget-symlink") do |directory|
+      input = input_for
+      enable_token_budget(input)
+      trusted_plan_path = input.dig("plan", "token_budget_anchor", "trusted_plan_path")
+      symlink_path = File.join(directory, "trusted-plan.json")
+      File.symlink(trusted_plan_path, symlink_path)
+      input.dig("plan", "token_budget_anchor")["trusted_plan_path"] = symlink_path
+
+      result, stderr, status = evaluate(input)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_token_budget_trusted_plan_descriptor_stat_and_read_failures_are_structured
+    %w[stat read].each do |operation|
+      Dir.mktmpdir("batch-plan-trusted-budget-#{operation}-failure") do |directory|
+        input = input_for
+        enable_token_budget(input)
+        trusted_plan_path = input.dig("plan", "token_budget_anchor", "trusted_plan_path")
+        failure_hook = File.join(directory, "failure-hook.rb")
+        File.write(failure_hook, <<~'RUBY')
+          module TrustedPlanDescriptorFailure
+            def stat
+              fail_if_target("stat")
+              super
+            end
+
+            def read(*args)
+              fail_if_target("read")
+              super
+            end
+
+            private
+
+            def fail_if_target(operation)
+              return unless path == ENV["BATCH_PLAN_PREFLIGHT_FAILURE_TARGET"]
+              return unless operation == ENV["BATCH_PLAN_PREFLIGHT_FAILURE_OPERATION"]
+
+              raise Errno::EIO, "injected trusted-plan descriptor #{operation} failure"
+            end
+          end
+
+          File.prepend(TrustedPlanDescriptorFailure)
+        RUBY
+
+        result, stderr, status = evaluate(
+          input,
+          env: {
+            "RUBYOPT" => "-r#{failure_hook}",
+            "BATCH_PLAN_PREFLIGHT_FAILURE_TARGET" => trusted_plan_path,
+            "BATCH_PLAN_PREFLIGHT_FAILURE_OPERATION" => operation
+          }
+        )
+
+        refute status.success?, stderr
+        assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                        "token-budget-trusted-plan-unreadable", operation
+      end
+    end
+  end
+
+  def test_token_budget_enforces_the_pinned_trusted_plan_artifact_size_limit
+    input = input_for
+    candidate = token_budget
+    enable_token_budget(input, candidate)
+    artifact_path = input.dig("plan", "token_budget_anchor", "trusted_plan_path")
+    artifact_json = JSON.generate(canonicalize(candidate))
+    File.write(artifact_path, artifact_json.ljust(1_048_576))
+
+    accepted, accepted_stderr, accepted_status = evaluate(input)
+
+    assert accepted_status.success?, accepted_stderr
+    assert_equal "accepted", accepted.fetch("status")
+
+    File.write(artifact_path, artifact_json.ljust(1_048_577))
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-trusted-plan-oversized"
+  end
+
+  def test_token_budget_rejects_invalid_utf8_trusted_plan_before_canonicalization
+    input = input_for
+    candidate = token_budget
+    enable_token_budget(input, candidate)
+    artifact_path = input.dig("plan", "token_budget_anchor", "trusted_plan_path")
+    artifact_json = JSON.generate(canonicalize(candidate)).b
+    File.binwrite(artifact_path, artifact_json.sub("coordinator-399", "coordinator-\xFF".b))
+
+    result, stderr, status = evaluate(input)
+
+    refute status.success?, stderr
+    assert_empty stderr
+    assert_equal(
+      [{
+        "code" => "token-budget-trusted-plan-invalid-encoding",
+        "path" => "$.plan.token_budget_anchor.trusted_plan_path",
+        "message" => "Trusted token-budget plan must contain valid UTF-8 before JSON validation."
+      }],
+      result.fetch("violations")
+    )
+  end
+
+  def test_token_budget_accepts_valid_multibyte_trusted_plan_content
+    input = input_for
+    candidate = token_budget
+    candidate.fetch("trusted_verifiers").first["id"] = "coordinator-résumé"
+    enable_token_budget(input, candidate)
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+  end
+
+  def test_token_budget_rejects_malformed_or_duplicate_key_trusted_plan_artifacts
+    candidate = token_budget
+    duplicate_key_json = JSON.generate(candidate).sub(
+      '"batch_id":"batch-plan-1"',
+      '"batch_id":"batch-plan-1","batch_id":"shadow-batch"'
+    )
+    outcomes = ["{", duplicate_key_json].map do |artifact_json|
+      input = input_for
+      enable_token_budget(input, candidate)
+      File.write(input.dig("plan", "token_budget_anchor", "trusted_plan_path"), artifact_json)
+
+      result, _stderr, status = evaluate(input)
+      [status.success?, result.fetch("violations").map { |violation| violation.fetch("code") }]
+    end
+
+    assert_equal(
+      Array.new(2) { [false, ["token-budget-trusted-plan-malformed"]] },
+      outcomes
+    )
+  end
+
+  def test_token_budget_rejects_a_stale_trusted_plan_artifact
+    input = input_for
+    candidate = token_budget
+    enable_token_budget(input, candidate)
+    stale_budget = JSON.parse(JSON.generate(candidate))
+    stale_budget.dig("scopes", "aggregate")["limit_tokens"] += 1
+    File.write(
+      input.dig("plan", "token_budget_anchor", "trusted_plan_path"),
+      JSON.generate(canonicalize(stale_budget))
+    )
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-trusted-plan-mismatch"
+  end
+
+  def test_token_budget_rejects_a_non_object_trusted_plan_artifact
+    outcomes = %w[null false].map do |artifact_json|
+      input = input_for
+      enable_token_budget(input)
+      File.write(input.dig("plan", "token_budget_anchor", "trusted_plan_path"), artifact_json)
+
+      result, _stderr, status = evaluate(input)
+      [status.success?, result.fetch("violations").map { |violation| violation.fetch("code") }]
+    end
+
+    assert_equal(
+      Array.new(2) { [false, ["token-budget-trusted-plan-mismatch"]] },
+      outcomes
+    )
+  end
+
+  def test_token_budget_rejects_same_aliased_or_ancestor_trusted_plan_and_state_artifacts
+    Dir.mktmpdir("batch-plan-budget-artifacts") do |directory|
+      same_path = File.join(directory, "same.json")
+      same_budget = token_budget
+      same_budget["state_path"] = same_path
+      same_input = input_for
+      enable_token_budget(same_input, same_budget)
+      same_input.dig("plan", "token_budget_anchor")["trusted_plan_path"] = same_path
+
+      same_result, _same_stderr, same_status = evaluate(same_input)
+      refute same_status.success?
+      assert_includes same_result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-artifact-collision"
+
+      plan_path = File.join(directory, "trusted-plan.json")
+      alias_state_path = File.join(directory, "state-alias.json")
+      File.write(plan_path, "trusted-plan-placeholder")
+      File.symlink(plan_path, alias_state_path)
+      alias_budget = token_budget
+      alias_budget["state_path"] = alias_state_path
+      alias_input = input_for
+      enable_token_budget(alias_input, alias_budget)
+      alias_input.dig("plan", "token_budget_anchor")["trusted_plan_path"] = plan_path
+
+      alias_result, _alias_stderr, alias_status = evaluate(alias_input)
+      refute alias_status.success?
+      assert_includes alias_result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-artifact-collision"
+
+      ancestor_budget = token_budget
+      ancestor_budget["state_path"] = File.join(directory, "budget-artifact", "state.json")
+      ancestor_input = input_for
+      enable_token_budget(ancestor_input, ancestor_budget)
+      ancestor_input.dig("plan", "token_budget_anchor")["trusted_plan_path"] = File.join(directory, "budget-artifact")
+
+      ancestor_result, _ancestor_stderr, ancestor_status = evaluate(ancestor_input)
+      refute ancestor_status.success?
+      assert_includes ancestor_result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-artifact-collision"
+
+      actual_parent = File.join(directory, "actual")
+      aliased_parent = File.join(directory, "aliased")
+      Dir.mkdir(actual_parent)
+      File.symlink(actual_parent, aliased_parent)
+      parent_alias_budget = token_budget
+      parent_alias_budget["state_path"] = File.join(aliased_parent, "trusted-plan.json", "state.json")
+      parent_alias_input = input_for
+      enable_token_budget(parent_alias_input, parent_alias_budget)
+      parent_alias_input.dig("plan", "token_budget_anchor")["trusted_plan_path"] =
+        File.join(actual_parent, "trusted-plan.json")
+
+      parent_alias_result, _parent_alias_stderr, parent_alias_status = evaluate(parent_alias_input)
+      refute parent_alias_status.success?
+      assert_includes parent_alias_result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-artifact-collision"
+    end
+  end
+
+  def test_token_budget_rejects_untrusted_or_malformed_verifier_records
+    mutations = {
+      "unknown-algorithm" => proc { |records| records[0]["algorithm"] = "UNKNOWN" },
+      "malformed-key" => proc { |records| records[0]["public_key_pem"] = "not-a-public-key" },
+      "private-key" => proc { |records| records[0]["public_key_pem"] = TEST_VERIFIER_KEY.to_pem },
+      "duplicate-id" => proc { |records| records << records[0].dup },
+      "duplicate-key-different-id" => proc do |records|
+        records << records[0].merge("id" => "different-verifier-id")
+      end,
+      "empty" => proc(&:clear)
+    }
+    mutations.each do |name, mutate|
+      input = input_for
+      input.fetch("plan")["token_budget"] = token_budget
+      mutate.call(input.dig("plan", "token_budget", "trusted_verifiers"))
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, name
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      "token-budget-trusted-verifiers-invalid", name
+    end
+  end
+
+  def test_top_level_token_budget_cannot_coexist_with_inline_lane_budget_metadata
+    input = input_for
+    input.fetch("plan")["token_budget"] = token_budget
+    input.dig("plan", "lanes", 0)["token_budget"] = { "limit_tokens" => 100 }
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_equal "rejected", result.fetch("status")
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-placement-invalid"
+  end
+
+  def test_budgetless_plan_rejects_inline_lane_token_budget_metadata
+    input = input_for
+    input.dig("plan", "lanes", 0)["token_budget"] = { "limit_tokens" => 100 }
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_equal "rejected", result.fetch("status")
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-placement-invalid"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_budgetless_plan_without_any_budget_metadata_preserves_legacy_compatibility
+    result, stderr, status = evaluate(input_for)
+
+    assert status.success?, stderr
+    assert_equal "accepted", result.fetch("status")
+    refute_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-placement-invalid"
+  end
+
+  def test_each_token_budget_contract_violation_has_a_direct_trigger
+    cases = {
+      "token-budget-contract-invalid" => proc { |candidate| candidate["type"] = "not-a-token-budget" },
+      "token-budget-fields-invalid" => proc { |candidate| candidate["unexpected"] = true },
+      "token-budget-batch-id-mismatch" => proc { |candidate| candidate["batch_id"] = "other-batch" },
+      "token-budget-scopes-invalid" => proc { |candidate| candidate.fetch("scopes").delete("coordinator") },
+      "token-budget-limits-invalid" => proc do |candidate|
+        candidate.dig("scopes", "lanes", "lane-a")["limit_tokens"] = 0
+      end,
+      "token-budget-hierarchy-invalid" => proc do |candidate|
+        candidate.dig("scopes", "lanes", "lane-a")["limit_tokens"] = 1_001
+      end,
+      "token-budget-thresholds-invalid" => proc do |candidate|
+        candidate["thresholds"]["warning_percent"] = candidate.dig("thresholds", "approval_percent")
+      end,
+      "token-budget-telemetry-policy-invalid" => proc do |candidate|
+        candidate["telemetry"]["max_age_seconds"] = 0
+      end,
+      "token-budget-delegation-policy-invalid" => proc do |candidate|
+        candidate["delegation"]["approval_threshold_tokens"] = 0
+      end
+    }
+
+    cases.each do |expected_code, mutate|
+      input = input_for
+      candidate = token_budget
+      mutate.call(candidate)
+      enable_token_budget(input, candidate)
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, expected_code
+      assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                      expected_code, expected_code
+    end
+  end
+
+  def test_partial_or_mismatched_token_budget_fails_closed_without_affecting_legacy_plans
+    input = input_for(lanes: [lane("lane-a"), lane("lane-b")])
+    input.fetch("plan")["token_budget"] = token_budget
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_equal "rejected", result.fetch("status")
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-lane-scopes-mismatch"
+
+    legacy = input_for
+    legacy_result, legacy_stderr, legacy_status = evaluate(legacy)
+    assert legacy_status.success?, legacy_stderr
+    assert_equal "accepted", legacy_result.fetch("status")
+  end
+
+  def test_opt_in_token_budget_requires_an_absolute_durable_state_path
+    input = input_for
+    input.fetch("plan")["token_budget"] = token_budget
+    input.dig("plan", "token_budget").delete("state_path")
+
+    missing, _stderr, missing_status = evaluate(input)
+
+    refute missing_status.success?
+    assert_includes missing.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-state-path-invalid"
+
+    input.dig("plan", "token_budget")["state_path"] = "tmp/budget.json"
+    relative, _stderr, relative_status = evaluate(input)
+
+    refute relative_status.success?
+    assert_includes relative.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-state-path-invalid"
+  end
+
+  def test_token_budget_rejects_lane_ids_reserved_for_parent_scopes
+    reserved_lane = lane("coordinator")
+    input = input_for(lanes: [reserved_lane])
+    input.fetch("plan")["token_budget"] = token_budget(lane_limits: { "coordinator" => 200 })
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_includes result.fetch("violations").map { |violation| violation.fetch("code") },
+                    "token-budget-lane-id-reserved"
   end
 
   def test_unsupported_contract_fails_closed_with_structured_violation
@@ -1421,6 +2014,27 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_directory_rename_endpoints_report_ancestor_touches_as_integration_advisories
+    %w[old new].each do |endpoint|
+      lanes = [lane("lane-a"), lane("lane-b")]
+      ancestor = "lib/#{endpoint}"
+      maps = {
+        "lane-a" => touch_map(1, %w[lib/old/sub lib/new/sub]).merge(
+          "renames" => [{ "old" => "lib/old/sub", "new" => "lib/new/sub" }]
+        ),
+        "lane-b" => touch_map(2, [ancestor])
+      }
+
+      result, _stderr, status = evaluate(input_for(lanes: lanes, maps: maps))
+
+      assert status.success?, endpoint
+      assert_empty result.fetch("violations"), endpoint
+      advisory = result.fetch("advisories").find { |item| item.fetch("code") == "file-overlap-advisory" }
+      assert_equal %w[lane-a lane-b], advisory.fetch("lane_ids"), endpoint
+      assert_includes advisory.fetch("message"), ancestor, endpoint
+    end
+  end
+
   def test_reserved_directory_rename_endpoints_collide_with_descendant_touches
     %w[old new].each do |endpoint|
       lanes = [lane("lane-a"), lane("lane-b")]
@@ -1438,6 +2052,36 @@ class BatchPlanPreflightTest < Minitest::Test
       collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
       assert_equal %w[lane-a lane-b], collision.fetch("lane_ids"), endpoint
       assert_includes collision.fetch("message"), descendant, endpoint
+    end
+  end
+
+  def test_reserved_directory_rename_endpoints_collide_with_ancestor_touches
+    %w[old new].each do |endpoint|
+      lanes = [lane("lane-a"), lane("lane-b")]
+      ancestor = "lib/#{endpoint}"
+      maps = {
+        "lane-a" => touch_map(1, ["lib/lane-a.rb"]),
+        "lane-b" => touch_map(2, [ancestor])
+      }
+      edges = [{ "id" => "lane-a-before-lane-b", "from" => "lane-a", "to" => "lane-b", "type" => "edit" }]
+      gate_lanes = [gate_lane("lane-a"), gate_lane("lane-b", patch_edit: false)]
+      reservation = expansion_rename_reservation(old_path: "lib/old/sub", new_path: "lib/new/sub")
+      input = input_for(
+        lanes: lanes,
+        maps: maps,
+        reservations: [reservation],
+        edges: edges,
+        gate_lanes: gate_lanes
+      )
+      input.fetch("stage_dependency_gate")["status"] = "gated"
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, endpoint
+      collision = result.fetch("violations").find { |item| item.fetch("code") == "unsafe-concurrent-edit" }
+      assert_equal %w[lane-a lane-b], collision.fetch("lane_ids"), endpoint
+      assert_includes collision.fetch("message"), "max-1 serialization", endpoint
+      assert_includes collision.fetch("message"), ancestor, endpoint
     end
   end
 
@@ -1690,13 +2334,13 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.dig("launch", "completed_lane_ids")
   end
 
-  def test_helper_has_no_project_lifecycle_signing_or_fixed_trust_contract
+  def test_helper_keeps_lifecycle_unsigned_while_validating_opt_in_budget_verifiers
     source = File.read(HELPER, encoding: "UTF-8")
 
     refute_includes source, "workflow-control-lifecycle-trust"
-    refute_includes source, "OpenSSL"
-    refute_includes source, "signature"
     refute_includes source, "lane_lifecycle_receipts"
+    assert_includes source, "valid_trusted_verifiers?"
+    assert_includes source, "rsa-pss-sha256"
   end
 
   def test_typed_edit_edge_serializes_shared_path_and_gate_holds_consumer
@@ -2236,6 +2880,31 @@ class BatchPlanPreflightTest < Minitest::Test
     refute status.success?
     assert_empty stderr
     assert_equal(["invalid-envelope"], result.fetch("violations").map { |item| item.fetch("code") })
+  end
+
+  def test_duplicate_json_plan_fields_fail_closed_before_evaluation
+    input = input_for
+    input.fetch("plan")["token_budget"] = token_budget
+    raw = JSON.generate(input).sub(
+      '"id":"batch-plan-1"',
+      '"id":"batch-plan-1","id":"shadow-plan"'
+    )
+
+    result, stderr, status = evaluate_raw(raw)
+
+    refute status.success?
+    assert_empty stderr
+    assert_equal(["malformed-json"], result.fetch("violations").map { |item| item.fetch("code") })
+
+    duplicate_budget = JSON.generate(input).sub(
+      '"batch_id":"batch-plan-1"',
+      '"batch_id":"batch-plan-1","batch_id":"shadow-batch"'
+    )
+    nested_result, nested_stderr, nested_status = evaluate_raw(duplicate_budget)
+
+    refute nested_status.success?
+    assert_empty nested_stderr
+    assert_equal(["malformed-json"], nested_result.fetch("violations").map { |item| item.fetch("code") })
   end
 
   def test_completed_stage_gate_preserves_boolean_permission_decisions

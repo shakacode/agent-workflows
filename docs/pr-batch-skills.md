@@ -91,6 +91,21 @@ Other runtimes continue to use the portable `fastest-low-cost`, `balanced`, and
 supported pair, the closest available route, or the runtime default; record the
 requested and observed route honestly without blocking on the binding alone.
 
+## Token Budgets
+
+Use opt-in [`batch-token-budget v1`](token-budgets.md) when a batch needs an
+explicit raw-token ceiling. The plan declares aggregate, coordinator, and every
+lane scope. The runtime helper atomically reserves headroom before model turns,
+spawns, retries, review waves, scheduled continuations, monitors, resumes, or
+cross-task delegation, then reconciles atomic, contiguous
+`batch-usage-receipt-v2` windows from the receipt helper. Each window maps the
+batch descendant-inclusive total into coordinator self-only plus batch
+unattributed use and each lane descendant-inclusive total. Scope-bound
+reservations coalesce nested work; unreserved observed use is unattributed and
+blocks closeout. Warning persists a compact checkpoint; approval and hard
+states stop automatic continuation. A scoped approval or budget increase never
+grants security, review, QA, exact-head, ownership, or merge authority.
+
 ## Skill Roles
 
 | Skill                | Use when                                                                                                    | Output                                                                                |
@@ -433,7 +448,7 @@ record it and proceed to consolidated triage instead of parking in
 - Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 - Use `$replicate-ci` when local validation is green but hosted CI is red, or
   when a failing hosted check appears to depend on runner/toolchain parity.
-- Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, explicit `UNKNOWN` entries, and the exact archive-readiness status line required by [`workflows/pr-processing.md` -> Batch Handoff Format](../workflows/pr-processing.md#batch-handoff-format), either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`. That status line belongs to the batch-level final message only; a lane-level worker handoff does not carry it. For supported Codex evidence, also include the compact `batch-usage-receipt-v1` total or a durable artifact reference; see [Batch Usage Receipt v1](batch-usage-receipt.md). Structured usage `UNKNOWN` is informational and never substitutes for a closeout gate.
+- Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, explicit `UNKNOWN` entries, and the exact archive-readiness status line required by [`workflows/pr-processing.md` -> Batch Handoff Format](../workflows/pr-processing.md#batch-handoff-format), either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`. That status line belongs to the batch-level final message only; a lane-level worker handoff does not carry it. For supported Codex evidence, also include the compact `batch-usage-receipt-v2` total or a durable artifact reference; see [Batch Usage Receipts v1 And v2](batch-usage-receipt.md). Structured usage `UNKNOWN` is informational and never substitutes for a closeout gate.
 
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 

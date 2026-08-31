@@ -546,6 +546,28 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      best-effort field-granular `UNKNOWN`, names reconciliation, and does not
      block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
+   - When token-budget enforcement is requested, add one complete opt-in
+     `batch-token-budget v1` at `plan.token_budget`: the exact plan/batch id;
+     positive raw-token limits for aggregate, coordinator, and every planned
+     lane id; warning/approval/hard percentages; telemetry freshness; and the
+     delegation approval threshold; and an absolute coordinator-owned
+     `state_path`; plus a nonempty exact allowlist of unique trusted verifier
+     ids with canonical RSA public keys of at least 2048 bits and algorithm
+     `rsa-pss-sha256`, rejecting duplicate canonical key fingerprints across
+     ids. Persist that exact budget object separately and add
+     `plan.token_budget_anchor` with its absolute coordinator-selected path,
+     matching plan id, and canonical `sha256:` digest. Keep private keys outside plans/state and resolve
+     consumer-specific custody/signing through `AGENTS.md`. Do not invent universal absolute limits.
+     Reserve `aggregate` and `coordinator` for the parent scopes; they cannot be
+     lane ids.
+     Require trusted-plan and mutable-state paths to be distinct canonical
+     artifacts; equal, resolvable aliases, and ancestor/file collisions fail
+     preflight.
+     Partial, inline, stale, malformed, duplicate-key, or `UNKNOWN` budget metadata fails the
+     batch-plan preflight. A plan with no budget metadata remains legacy
+     compatible. Record the coordinator-owned durable runtime state path and
+     exact trusted-plan invocation binding in the Batch Plan and goal prompt. See
+     [Hierarchical Token Budgets](../../docs/token-budgets.md).
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
@@ -705,6 +727,11 @@ backend must say so in the declaration.
 - Batch manifest provenance: `pack_sha`, `coordinator_preference` model/effort,
   and each lane's `worker_preference` plus optional `observed_host` fields;
   name the registration evidence or the durable backend-`n/a` handoff.
+- Token budget: `none` for a plan with no budget metadata, or the complete
+  `batch-token-budget v1` aggregate/coordinator/all-lanes object, thresholds,
+  telemetry/delegation policy, durable state path, and separately persisted
+  trusted-plan path/id/digest passed on every helper operation. Any present
+  budget field makes complete valid scope coverage mandatory.
 - Batch size target: `codex`, `claude`, or `generic`; max items per wave and
   split rationale.
 - While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
@@ -811,6 +838,8 @@ triggered gate, rollback status, and the exact durable human decision needed.
 evidence failure, trusted-base policy provenance, and repair action. `UNKNOWN`
 is not `human-approval-required` and cannot be cleared by risk approval.
 
+For v1, A/R/L=aggregate/coordinator/lane limits, W/P/H=warning/approval-or-pause/hard-stop thresholds, a/d=freshness age/delegation threshold, and S/T/I/D=state path/trusted-plan path/id/digest.
+
 ```text
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
@@ -825,6 +854,7 @@ Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
+Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam

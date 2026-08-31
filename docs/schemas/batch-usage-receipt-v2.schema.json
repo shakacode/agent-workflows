@@ -1,0 +1,471 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shakacode.github.io/agent-workflows/schemas/batch-usage-receipt-v2.schema.json",
+  "title": "Batch Usage Receipt v2",
+  "type": "object",
+  "required": ["schema", "batch", "coordinator", "lanes", "window", "accounting", "evidence", "privacy"],
+  "properties": {
+    "schema": {"const": "batch-usage-receipt-v2"},
+    "batch": {"$ref": "#/$defs/batchScope"},
+    "coordinator": {"$ref": "#/$defs/coordinatorScope"},
+    "lanes": {"type": "array", "items": {"$ref": "#/$defs/laneScope"}},
+    "window": {
+      "type": "object",
+      "required": ["from_inclusive", "to_exclusive", "differencing"],
+      "properties": {
+        "from_inclusive": {"type": "string", "format": "date-time"},
+        "to_exclusive": {"type": "string", "format": "date-time"},
+        "differencing": {"const": "full_history_before_window_filter"}
+      },
+      "additionalProperties": false
+    },
+    "accounting": {
+      "type": "object",
+      "required": ["compactions", "counter_resets", "duplicate_samples_omitted", "inherited_seeds_omitted", "replay_records_omitted", "session_rebind_attempts_ignored", "usage_samples"],
+      "properties": {
+        "compactions": {"type": "integer", "minimum": 0},
+        "counter_resets": {"type": "integer", "minimum": 0},
+        "duplicate_samples_omitted": {"type": "integer", "minimum": 0},
+        "inherited_seeds_omitted": {"type": "integer", "minimum": 0},
+        "replay_records_omitted": {"type": "integer", "minimum": 0},
+        "session_rebind_attempts_ignored": {"type": "integer", "minimum": 0},
+        "usage_samples": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["status", "sources", "unknown"],
+      "properties": {
+        "status": {"enum": ["complete", "UNKNOWN"]},
+        "sources": {"const": ["codex_rollout_jsonl", "state_5.sqlite"]},
+        "unknown": {"type": "array", "items": {"$ref": "#/$defs/unknownReason"}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "UNKNOWN"}}, "required": ["status"]},
+          "then": {"properties": {"unknown": {"minItems": 1}}}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "privacy": {
+      "type": "object",
+      "required": ["mode", "emitted_or_persisted_content", "excluded"],
+      "properties": {
+        "mode": {"const": "metadata_only"},
+        "emitted_or_persisted_content": {"const": false},
+        "excluded": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "credit_equivalents": {"$ref": "#/$defs/creditEquivalents"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "counter": {"oneOf": [{"type": "integer", "minimum": 0}, {"const": "UNKNOWN"}]},
+    "turnCounter": {"oneOf": [{"type": "integer", "minimum": 0}, {"const": "UNKNOWN"}]},
+    "usage": {
+      "type": "object",
+      "required": ["input_tokens", "output_tokens", "reasoning_output_tokens", "cache_read_tokens", "total_tokens"],
+      "properties": {
+        "input_tokens": {"$ref": "#/$defs/counter"},
+        "output_tokens": {"$ref": "#/$defs/counter"},
+        "reasoning_output_tokens": {"$ref": "#/$defs/counter"},
+        "cache_read_tokens": {"$ref": "#/$defs/counter"},
+        "total_tokens": {"$ref": "#/$defs/counter"}
+      },
+      "additionalProperties": false
+    },
+    "requestedRoute": {
+      "type": "object",
+      "required": ["host", "model", "effort"],
+      "properties": {
+        "host": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "effort": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "observedRoute": {
+      "type": "object",
+      "required": ["host", "provider", "model", "effort", "usage"],
+      "properties": {
+        "host": {"type": "string", "minLength": 1},
+        "provider": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "effort": {"type": "string", "minLength": 1},
+        "usage": {"$ref": "#/$defs/usage"}
+      },
+      "additionalProperties": false
+    },
+    "scopeEvidence": {
+      "type": "object",
+      "required": ["status", "physical_rollout_ids", "first_session_ids"],
+      "properties": {
+        "status": {"enum": ["complete", "UNKNOWN"]},
+        "physical_rollout_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}},
+        "first_session_ids": {"type": "array", "items": {"type": "string"}},
+        "first_session_id": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["status"],
+            "properties": {"status": {"const": "complete"}}
+          },
+          "then": {
+            "properties": {
+              "physical_rollout_ids": {"minItems": 1},
+              "first_session_ids": {"minItems": 1}
+            },
+            "allOf": [
+              {
+                "if": {"properties": {"first_session_ids": {"maxItems": 1}}},
+                "then": {"required": ["first_session_id"]},
+                "else": {"not": {"required": ["first_session_id"]}}
+              }
+            ]
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "executionTurns": {
+      "type": "object",
+      "required": ["self_only", "descendant_inclusive"],
+      "properties": {
+        "self_only": {"$ref": "#/$defs/turnCounter"},
+        "descendant_inclusive": {"$ref": "#/$defs/turnCounter"}
+      },
+      "additionalProperties": false
+    },
+    "laneTurns": {
+      "type": "object",
+      "required": ["self_only", "descendant_inclusive", "unattributed"],
+      "properties": {
+        "self_only": {"$ref": "#/$defs/turnCounter"},
+        "descendant_inclusive": {"$ref": "#/$defs/turnCounter"},
+        "unattributed": {"$ref": "#/$defs/turnCounter"}
+      },
+      "additionalProperties": false
+    },
+    "batchTurns": {
+      "type": "object",
+      "required": ["descendant_inclusive", "unattributed"],
+      "properties": {
+        "descendant_inclusive": {"$ref": "#/$defs/turnCounter"},
+        "unattributed": {"$ref": "#/$defs/turnCounter"}
+      },
+      "additionalProperties": false
+    },
+    "executionScope": {
+      "type": "object",
+      "required": ["scope", "id", "root_thread_id", "requested_route", "observed_routes", "usage", "turns", "evidence"],
+      "properties": {
+        "scope": {"enum": ["coordinator", "worker"]},
+        "id": {"type": "string", "minLength": 1},
+        "root_thread_id": {"type": "string", "minLength": 1},
+        "requested_route": {"$ref": "#/$defs/requestedRoute"},
+        "observed_routes": {"type": "array", "items": {"$ref": "#/$defs/observedRoute"}},
+        "usage": {
+          "type": "object",
+          "required": ["self_only", "descendant_inclusive"],
+          "properties": {
+            "self_only": {"$ref": "#/$defs/usage"},
+            "descendant_inclusive": {"$ref": "#/$defs/usage"}
+          },
+          "additionalProperties": false
+        },
+        "turns": {"$ref": "#/$defs/executionTurns"},
+        "evidence": {"$ref": "#/$defs/scopeEvidence"}
+      },
+      "additionalProperties": false
+    },
+    "coordinatorScope": {
+      "allOf": [
+        {"$ref": "#/$defs/executionScope"},
+        {"properties": {"scope": {"const": "coordinator"}}}
+      ]
+    },
+    "workerScope": {
+      "allOf": [
+        {"$ref": "#/$defs/executionScope"},
+        {"properties": {"scope": {"const": "worker"}}}
+      ]
+    },
+    "laneScope": {
+      "type": "object",
+      "required": ["scope", "id", "root_thread_id", "requested_route", "observed_routes", "usage", "turns", "evidence", "workers", "reconciliation"],
+      "properties": {
+        "scope": {"const": "lane"},
+        "id": {"type": "string", "minLength": 1},
+        "root_thread_id": {"type": "string", "minLength": 1},
+        "requested_route": {"$ref": "#/$defs/requestedRoute"},
+        "observed_routes": {"type": "array", "items": {"$ref": "#/$defs/observedRoute"}},
+        "usage": {
+          "type": "object",
+          "required": ["self_only", "descendant_inclusive", "unattributed"],
+          "properties": {
+            "self_only": {"$ref": "#/$defs/usage"},
+            "descendant_inclusive": {"$ref": "#/$defs/usage"},
+            "unattributed": {"$ref": "#/$defs/usage"}
+          },
+          "additionalProperties": false
+        },
+        "turns": {"$ref": "#/$defs/laneTurns"},
+        "evidence": {"$ref": "#/$defs/scopeEvidence"},
+        "workers": {"type": "array", "items": {"$ref": "#/$defs/workerScope"}},
+        "reconciliation": {
+          "type": "object",
+          "required": ["status", "equation"],
+          "properties": {
+            "status": {"enum": ["balanced", "UNKNOWN"]},
+            "equation": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "batchScope": {
+      "type": "object",
+      "required": ["scope", "id", "usage", "turns", "reconciliation"],
+      "properties": {
+        "scope": {"const": "batch"},
+        "id": {"type": "string", "minLength": 1},
+        "usage": {
+          "type": "object",
+          "required": ["descendant_inclusive", "unattributed"],
+          "properties": {
+            "descendant_inclusive": {"$ref": "#/$defs/usage"},
+            "unattributed": {"$ref": "#/$defs/usage"}
+          },
+          "additionalProperties": false
+        },
+        "turns": {"$ref": "#/$defs/batchTurns"},
+        "reconciliation": {
+          "type": "object",
+          "required": ["status", "equation"],
+          "properties": {
+            "status": {"enum": ["balanced", "UNKNOWN"]},
+            "equation": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "unknownReason": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "code"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"enum": ["state_database_missing", "state_database_unsupported", "sqlite3_cli_unavailable"]}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "lane_id", "thread_id"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "coordinator_root_in_lane_scope"},
+            "lane_id": {"type": "string", "minLength": 1},
+            "thread_id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "lane_ids", "thread_ids"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "lane_scope_overlap"},
+            "lane_ids": {
+              "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "thread_ids": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "lane_id", "worker_id"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "worker_outside_lane_scope"},
+            "lane_id": {"type": "string", "minLength": 1},
+            "worker_id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "lane_id", "worker_ids"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "worker_scope_overlap"},
+            "lane_id": {"type": "string", "minLength": 1},
+            "worker_ids": {
+              "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"enum": ["thread_missing", "rollout_path_missing"]},
+            "thread_id": {"type": "string", "minLength": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {
+              "enum": [
+                "rollout_missing", "missing_first_session_id", "state_thread_first_session_mismatch",
+                "copied_history_boundary_missing", "missing_first_session_meta", "missing_usage_evidence"
+              ]
+            },
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id", "line"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {
+              "enum": [
+                "malformed_jsonl", "non_object_rollout_record", "invalid_boundary_timestamp",
+                "invalid_turn_context", "invalid_turn_timestamp", "invalid_usage_timestamp",
+                "missing_total_token_usage", "ambiguous_turn_usage", "ambiguous_turn_timestamp",
+                "turn_context_missing_for_usage"
+              ]
+            },
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "line": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id", "detail"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "rollout_read_error"},
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "detail": {"type": "string", "minLength": 1},
+            "line": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id", "line", "counter_source"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "invalid_token_usage_vector"},
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "line": {"type": "integer", "minimum": 1},
+            "counter_source": {"enum": ["total_token_usage", "last_token_usage"]}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id", "line", "fields"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"enum": ["missing_first_last_token_usage", "ambiguous_counter_decrease", "usage_counter_missing"]},
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "line": {"type": "integer", "minimum": 1},
+            "fields": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"enum": ["input_tokens", "output_tokens", "reasoning_output_tokens", "cache_read_tokens", "total_tokens"]}
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "code", "thread_id", "physical_rollout_id", "line", "fields"],
+          "properties": {
+            "status": {"const": "UNKNOWN"},
+            "code": {"const": "route_metadata_missing"},
+            "thread_id": {"type": "string", "minLength": 1},
+            "physical_rollout_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "line": {"type": "integer", "minimum": 1},
+            "fields": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"enum": ["provider", "model", "effort"]}
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "availableCreditModelValue": {
+      "type": "object",
+      "required": ["host", "model", "status", "credits"],
+      "properties": {
+        "host": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "status": {"const": "available"},
+        "credits": {"type": "number", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "unknownCreditModelValue": {
+      "type": "object",
+      "required": ["host", "model", "status", "code"],
+      "properties": {
+        "host": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "status": {"const": "UNKNOWN"},
+        "code": {"enum": ["rate_mapping_missing", "route_identity_unknown", "usage_unknown"]}
+      },
+      "additionalProperties": false
+    },
+    "creditEquivalents": {
+      "type": "object",
+      "required": ["status", "source", "effective_date", "model_values", "disclaimer"],
+      "properties": {
+        "status": {"enum": ["available", "UNKNOWN"]},
+        "source": {"type": "string", "minLength": 1},
+        "effective_date": {"type": "string", "format": "date"},
+        "model_values": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {"$ref": "#/$defs/availableCreditModelValue"},
+              {"$ref": "#/$defs/unknownCreditModelValue"}
+            ]
+          }
+        },
+        "disclaimer": {"type": "string", "pattern": "not a bill"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -104,7 +104,7 @@ class BatchUsageReceiptTest < Minitest::Test
   def test_forked_copied_history_is_not_rebound_or_double_counted
     receipt, = run_fixture("replay")
 
-    assert_equal "batch-usage-receipt-v1", receipt.fetch("schema")
+    assert_equal "batch-usage-receipt-v2", receipt.fetch("schema")
     assert_equal 30, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
     assert_equal 20, receipt.dig("coordinator", "usage", "self_only", "total_tokens")
     assert_equal 10, receipt.dig("lanes", 0, "usage", "descendant_inclusive", "total_tokens")
@@ -115,6 +115,119 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "gpt-requested-worker", receipt.dig("lanes", 0, "workers", 0, "requested_route", "model")
     assert_equal "gpt-test-worker", receipt.dig("lanes", 0, "workers", 0, "observed_routes", 0, "model")
     assert_equal 2, receipt.dig("accounting", "session_rebind_attempts_ignored")
+  end
+
+  def test_window_contributing_turn_counts_roll_up_through_nested_scopes
+    fixture = fixture_copy("descendants")
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 6, receipt.dig("batch", "turns", "descendant_inclusive")
+    assert_equal 1, receipt.dig("batch", "turns", "unattributed")
+    assert_equal 1, receipt.dig("coordinator", "turns", "self_only")
+    assert_equal 6, receipt.dig("coordinator", "turns", "descendant_inclusive")
+    assert_equal 3, receipt.dig("lanes", 0, "turns", "descendant_inclusive")
+    assert_equal 1, receipt.dig("lanes", 0, "turns", "self_only")
+    assert_equal 2, receipt.dig("lanes", 0, "turns", "unattributed")
+    assert_equal 1, receipt.dig("lanes", 0, "workers", 0, "turns", "descendant_inclusive")
+    assert_equal 1, receipt.dig("lanes", 1, "turns", "descendant_inclusive")
+  end
+
+  def test_turn_segment_spanning_window_counts_once_until_the_next_turn_context
+    fixture = fixture_copy("descendants")
+    fixture["window"]["from"] = "2026-08-04T00:00:01Z"
+    root_records = fixture.dig("rollouts", "root.jsonl")
+    root_records.fetch(1)["timestamp"] = "2026-08-04T00:00:00.500Z"
+    root_records << token_count_record("2026-08-04T00:00:02Z", total: 15, last: 5)
+    root_records << token_count_record("2026-08-04T00:00:02.500Z", total: 15, last: 5)
+    root_records << turn_context_record("2026-08-04T00:00:03Z")
+    root_records << token_count_record("2026-08-04T00:00:04Z", total: 20, last: 5)
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 2, receipt.dig("coordinator", "turns", "self_only")
+    assert_equal 20, receipt.dig("coordinator", "usage", "self_only", "total_tokens")
+    assert_equal 1, receipt.dig("accounting", "duplicate_samples_omitted")
+  end
+
+  def test_superseded_pre_window_malformed_turn_context_does_not_poison_in_window_usage
+    fixture = fixture_copy("descendants")
+    fixture["window"]["from"] = "2026-08-04T00:00:00.750Z"
+    fixture.dig("rollouts", "root.jsonl").insert(
+      1,
+      { "timestamp" => "2026-08-04T00:00:00.250Z", "type" => "turn_context", "payload" => [] }
+    )
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal 1, receipt.dig("coordinator", "turns", "self_only")
+    refute receipt.dig("evidence", "unknown").any? do |reason|
+      reason["code"] == "invalid_turn_context" && reason["thread_id"] == "root"
+    end
+  end
+
+  def test_positive_usage_without_a_turn_context_has_unknown_turn_evidence
+    fixture = fixture_copy("descendants")
+    fixture.dig("rollouts", "root.jsonl").reject! { |record| record["type"] == "turn_context" }
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "turns", "self_only")
+    assert_equal "UNKNOWN", receipt.dig("batch", "turns", "descendant_inclusive")
+    assert_equal "UNKNOWN", receipt.dig("batch", "reconciliation", "status")
+    assert receipt.dig("evidence", "unknown").any? do |reason|
+      reason["code"] == "turn_context_missing_for_usage" && reason["thread_id"] == "root"
+    end
+  end
+
+  def test_lane_reconciliation_is_unknown_when_both_turn_operands_are_unknown
+    fixture = fixture_copy("descendants")
+    %w[lane-a.jsonl unnamed-a.jsonl worker-a.jsonl].each do |rollout|
+      fixture.dig("rollouts", rollout).reject! { |record| record["type"] == "turn_context" }
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("lanes", 0, "turns", "descendant_inclusive")
+    assert_equal "UNKNOWN", receipt.dig("lanes", 0, "reconciliation", "status")
+  end
+
+  def test_positive_usage_after_an_invalid_turn_context_has_unknown_turn_evidence
+    fixture = fixture_copy("descendants")
+    fixture.dig("rollouts", "root.jsonl", 1)["timestamp"] = "not-a-time"
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "turns", "self_only")
+    assert_equal "UNKNOWN", receipt.dig("evidence", "status")
+    assert(receipt.dig("evidence", "unknown").any? { |reason| reason["code"] == "invalid_turn_timestamp" })
+  end
+
+  def test_malformed_turn_context_cannot_leave_the_prior_turn_segment_authoritative
+    fixture = fixture_copy("descendants")
+    root_records = fixture.dig("rollouts", "root.jsonl")
+    usage_index = root_records.index { |record| record.dig("payload", "type") == "token_count" }
+    root_records.insert(
+      usage_index,
+      { "timestamp" => "2026-08-04T00:00:00.750Z", "type" => "turn_context", "payload" => [] }
+    )
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "turns", "self_only")
+    assert(receipt.dig("evidence", "unknown").any? { |reason| reason["code"] == "invalid_turn_context" })
+  end
+
+  def test_usage_timestamp_before_its_turn_context_is_ambiguous
+    fixture = fixture_copy("descendants")
+    fixture.dig("rollouts", "root.jsonl").each do |record|
+      record["timestamp"] = "2026-08-04T00:00:02Z" if record["type"] == "turn_context"
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal "UNKNOWN", receipt.dig("coordinator", "turns", "self_only")
+    assert(receipt.dig("evidence", "unknown").any? { |reason| reason["code"] == "ambiguous_turn_timestamp" })
   end
 
   def test_reused_rollout_path_is_validated_against_every_state_thread
@@ -372,6 +485,68 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal 0, receipt.dig("accounting", "session_rebind_attempts_ignored"),
                  "resume metadata with the same first session identity is not a rebind"
     assert_equal "full_history_before_window_filter", receipt.dig("window", "differencing")
+  end
+
+  def test_malformed_token_counts_at_or_after_window_end_do_not_taint_an_earlier_receipt
+    control, = run_fixture(fixture: fixture_copy("descendants"))
+    fixture = fixture_copy("descendants")
+    records = fixture.fetch("rollouts").fetch("root.jsonl")
+    [fixture.dig("window", "to"), "2026-08-05T00:00:01Z"].each do |timestamp|
+      records << {
+        "timestamp" => timestamp,
+        "type" => "event_msg",
+        "payload" => { "type" => "token_count", "info" => {} }
+      }
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal control.dig("batch", "usage"), receipt.dig("batch", "usage")
+    assert_equal control.dig("accounting", "usage_samples") + 2, receipt.dig("accounting", "usage_samples")
+    assert_equal "complete", receipt.dig("evidence", "status")
+    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    refute_includes unknown_codes, "missing_total_token_usage"
+  end
+
+  def test_complete_rollout_diagnostics_include_valid_samples_after_window_end
+    control, = run_fixture(fixture: fixture_copy("descendants"))
+    fixture = fixture_copy("descendants")
+    records = fixture.fetch("rollouts").fetch("root.jsonl")
+    last_usage = records.reverse.find do |record|
+      record["type"] == "event_msg" && record.dig("payload", "type") == "token_count"
+    end
+    duplicate = JSON.parse(JSON.generate(last_usage))
+    duplicate["timestamp"] = fixture.dig("window", "to")
+    records << duplicate
+    records << { "timestamp" => "2026-08-05T00:00:00.500Z", "type" => "compacted", "payload" => {} }
+    records << token_count_record("2026-08-05T00:00:01Z", total: 1, last: 1)
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_equal control.dig("batch", "usage"), receipt.dig("batch", "usage")
+    assert_equal control.dig("accounting", "duplicate_samples_omitted") + 1,
+                 receipt.dig("accounting", "duplicate_samples_omitted")
+    assert_equal control.dig("accounting", "counter_resets") + 1,
+                 receipt.dig("accounting", "counter_resets")
+    assert_equal control.dig("accounting", "usage_samples") + 2,
+                 receipt.dig("accounting", "usage_samples")
+  end
+
+  def test_token_counts_only_at_or_after_window_end_still_prove_rollout_usage_evidence
+    fixture = fixture_copy("descendants")
+    fixture.fetch("rollouts").each_value do |records|
+      records.each do |record|
+        next unless record["type"] == "event_msg" && record.dig("payload", "type") == "token_count"
+
+        record["timestamp"] = fixture.dig("window", "to")
+      end
+    end
+
+    receipt, = run_fixture(fixture: fixture)
+
+    assert_operator receipt.dig("accounting", "usage_samples"), :>, 0
+    unknown_codes = receipt.dig("evidence", "unknown").map { |item| item.fetch("code") }
+    refute_includes unknown_codes, "missing_usage_evidence"
   end
 
   def test_emitted_window_preserves_fractional_second_precision
@@ -689,6 +864,10 @@ class BatchUsageReceiptTest < Minitest::Test
     receipt, = run_fixture("compaction-reset")
 
     assert_equal 40, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 1, receipt.dig("batch", "turns", "descendant_inclusive")
+    assert_equal 0, receipt.dig("batch", "turns", "unattributed")
+    assert_equal 1, receipt.dig("coordinator", "turns", "self_only")
+    assert_equal 1, receipt.dig("coordinator", "turns", "descendant_inclusive")
     assert_equal 1, receipt.dig("accounting", "counter_resets")
     assert_equal 0, receipt.dig("accounting", "replay_records_omitted")
     assert_equal 1, receipt.dig("accounting", "duplicate_samples_omitted")
@@ -723,6 +902,7 @@ class BatchUsageReceiptTest < Minitest::Test
 
     assert_equal blank_usage_for_test.transform_values { "UNKNOWN" },
                  receipt.dig("batch", "usage", "descendant_inclusive")
+    assert_equal "UNKNOWN", receipt.dig("batch", "turns", "descendant_inclusive")
     assert_equal "UNKNOWN", receipt.dig("coordinator", "evidence", "status")
     reason = receipt.dig("evidence", "unknown").find { |item| item["code"] == "invalid_usage_timestamp" }
     assert_equal 3, reason.fetch("line")
@@ -789,6 +969,15 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal 20, receipt.dig("batch", "usage", "descendant_inclusive", "total_tokens")
     assert_equal 10, receipt.dig("lanes", 0, "usage", "descendant_inclusive", "total_tokens")
     assert_equal 5, receipt.dig("lanes", 0, "workers", 0, "usage", "descendant_inclusive", "total_tokens")
+    assert_equal 3, receipt.dig("batch", "turns", "descendant_inclusive")
+    assert_equal 0, receipt.dig("batch", "turns", "unattributed")
+    assert_equal 1, receipt.dig("coordinator", "turns", "self_only")
+    assert_equal 3, receipt.dig("coordinator", "turns", "descendant_inclusive")
+    assert_equal 1, receipt.dig("lanes", 0, "turns", "self_only")
+    assert_equal 2, receipt.dig("lanes", 0, "turns", "descendant_inclusive")
+    assert_equal 1, receipt.dig("lanes", 0, "turns", "unattributed")
+    assert_equal 1, receipt.dig("lanes", 0, "workers", 0, "turns", "self_only")
+    assert_equal 1, receipt.dig("lanes", 0, "workers", 0, "turns", "descendant_inclusive")
     assert_equal 3, receipt.dig("accounting", "replay_records_omitted")
     assert_equal "complete", receipt.dig("evidence", "status")
   end
@@ -851,7 +1040,7 @@ class BatchUsageReceiptTest < Minitest::Test
   def test_topology_invalid_lane_reconciliation_is_unknown_even_when_zero_usage_balances
     fixture = fixture_copy("descendants")
     fixture.dig("manifest", "lanes", 0, "workers", 0)["thread_id"] = "lane-b"
-    token_info = fixture.dig("rollouts", "lane-b.jsonl", 1, "payload", "info")
+    token_info = first_token_info(fixture, "lane-b.jsonl")
     token_info.each_value { |usage| usage.transform_values! { 0 } }
 
     receipt, = run_fixture(fixture: fixture, with_rate_card: true)
@@ -866,7 +1055,7 @@ class BatchUsageReceiptTest < Minitest::Test
     fixture = fixture_copy("descendants")
     root_to_lane_b = fixture.fetch("edges").find { |edge| edge[1] == "lane-b" }
     root_to_lane_b[0] = "lane-a"
-    token_info = fixture.dig("rollouts", "lane-b.jsonl", 1, "payload", "info")
+    token_info = first_token_info(fixture, "lane-b.jsonl")
     token_info.each_value { |usage| usage.transform_values! { 0 } }
 
     receipt, = run_fixture(fixture: fixture)
@@ -882,7 +1071,7 @@ class BatchUsageReceiptTest < Minitest::Test
     root_to_lane_a[0] = "lane-a"
     root_to_lane_a[1] = "root"
     %w[root.jsonl lane-b.jsonl unattributed-root.jsonl].each do |rollout|
-      token_info = fixture.dig("rollouts", rollout, 1, "payload", "info")
+      token_info = first_token_info(fixture, rollout)
       token_info.each_value { |usage| usage.transform_values! { 0 } }
     end
 
@@ -1107,6 +1296,220 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal "route_identity_unknown", receipt.dig("credit_equivalents", "model_values", 0, "code")
   end
 
+  def test_published_v1_schema_remains_compatible_and_rejects_v2_turns
+    receipt_with_turns, = run_fixture("replay")
+    v1_with_turns = JSON.parse(JSON.generate(receipt_with_turns))
+    v1_with_turns["schema"] = "batch-usage-receipt-v1"
+    main_era_v1 = JSON.parse(JSON.generate(v1_with_turns))
+    main_era_v1.fetch("batch").delete("turns")
+    main_era_v1.fetch("coordinator").delete("turns")
+    main_era_v1.fetch("lanes").each do |lane|
+      lane.delete("turns")
+      lane.fetch("workers").each { |worker| worker.delete("turns") }
+    end
+    schema = receipt_schema(1)
+
+    assert_equal "batch-usage-receipt-v1", main_era_v1.fetch("schema")
+    assert_empty JSONSchemer.schema(schema).validate(main_era_v1).to_a
+    refute_empty JSONSchemer.schema(schema).validate(v1_with_turns).to_a
+  end
+
+  def test_v2_schema_requires_turns_and_validates_current_producer_output
+    receipt, = run_fixture("replay")
+    schema = receipt_schema(2)
+
+    assert_equal "batch-usage-receipt-v2", receipt.fetch("schema")
+    assert_equal "Batch Usage Receipt v2", schema.fetch("title")
+    assert_equal "batch-usage-receipt-v2", schema.dig("properties", "schema", "const")
+    assert_empty JSONSchemer.schema(schema).validate(receipt).to_a
+
+    missing_turns = JSON.parse(JSON.generate(receipt))
+    missing_turns.fetch("coordinator").delete("turns")
+    refute_empty JSONSchemer.schema(schema).validate(missing_turns).to_a
+  end
+
+  def test_v2_schema_conditionally_requires_complete_scope_evidence_identities
+    receipt, = run_fixture("replay")
+    schema = JSONSchemer.schema(receipt_schema(2))
+    scopes = [receipt.fetch("coordinator")] + receipt.fetch("lanes") +
+             receipt.fetch("lanes").flat_map { |lane| lane.fetch("workers") }
+
+    scopes.each do |scope|
+      evidence = scope.fetch("evidence")
+      assert_equal "complete", evidence.fetch("status"), scope.fetch("id")
+      refute_empty evidence.fetch("physical_rollout_ids"), scope.fetch("id")
+      refute_empty evidence.fetch("first_session_ids"), scope.fetch("id")
+      assert_equal evidence.fetch("physical_rollout_ids").length,
+                   evidence.fetch("first_session_ids").length,
+                   scope.fetch("id")
+      if evidence.fetch("first_session_ids").one?
+        assert_equal evidence.fetch("first_session_ids").first, evidence.fetch("first_session_id"), scope.fetch("id")
+      else
+        refute evidence.key?("first_session_id"), scope.fetch("id")
+      end
+    end
+
+    empty_complete = JSON.parse(JSON.generate(receipt))
+    empty_complete_evidence = empty_complete.dig("coordinator", "evidence")
+    empty_complete_evidence["physical_rollout_ids"] = []
+    empty_complete_evidence["first_session_ids"] = []
+    empty_complete_evidence.delete("first_session_id")
+    refute_empty schema.validate(empty_complete).to_a
+
+    missing_singleton_alias = JSON.parse(JSON.generate(receipt))
+    missing_singleton_alias.dig("lanes", 0, "workers", 0, "evidence").delete("first_session_id")
+    refute_empty schema.validate(missing_singleton_alias).to_a
+
+    multiple_with_singleton_alias = JSON.parse(JSON.generate(receipt))
+    multiple_evidence = multiple_with_singleton_alias.dig("lanes", 0, "workers", 0, "evidence")
+    multiple_evidence.fetch("first_session_ids") << "second-session"
+    multiple_evidence.fetch("physical_rollout_ids") << "sha256:#{'f' * 64}"
+    refute_empty schema.validate(multiple_with_singleton_alias).to_a
+
+    empty_unknown = JSON.parse(JSON.generate(empty_complete))
+    empty_unknown.dig("coordinator", "evidence")["status"] = "UNKNOWN"
+    assert_empty schema.validate(empty_unknown).to_a
+  end
+
+  def test_v2_schema_requires_top_level_unknown_evidence_to_name_at_least_one_exact_reason
+    receipt, = run_fixture("replay")
+    receipt.fetch("evidence").merge!("status" => "UNKNOWN", "unknown" => [])
+
+    refute_empty JSONSchemer.schema(receipt_schema(2)).validate(receipt).to_a
+  end
+
+  def test_v2_schema_rejects_accounting_extensions_the_budget_evaluator_does_not_accept
+    receipt, = run_fixture("replay")
+    receipt.fetch("accounting")["future_counter"] = 0
+
+    refute_empty JSONSchemer.schema(receipt_schema(2)).validate(receipt).to_a
+  end
+
+  def test_v2_schema_accepts_only_producer_defined_unknown_reason_metadata
+    receipt, = run_fixture("replay")
+    schema = JSONSchemer.schema(receipt_schema(2))
+    thread_id = receipt.dig("coordinator", "root_thread_id")
+    physical_rollout_id = receipt.dig("coordinator", "evidence", "physical_rollout_ids").first
+    rollout_identity = {
+      "thread_id" => thread_id,
+      "physical_rollout_id" => physical_rollout_id
+    }
+    valid_reasons = [
+      { "status" => "UNKNOWN", "code" => "state_database_missing" },
+      {
+        "status" => "UNKNOWN", "code" => "coordinator_root_in_lane_scope",
+        "lane_id" => "lane-a", "thread_id" => thread_id
+      },
+      {
+        "status" => "UNKNOWN", "code" => "lane_scope_overlap",
+        "lane_ids" => %w[lane-a lane-b], "thread_ids" => [thread_id]
+      },
+      {
+        "status" => "UNKNOWN", "code" => "worker_outside_lane_scope",
+        "lane_id" => "lane-a", "worker_id" => "worker-a"
+      },
+      {
+        "status" => "UNKNOWN", "code" => "worker_scope_overlap",
+        "lane_id" => "lane-a", "worker_ids" => %w[worker-a worker-b]
+      },
+      { "status" => "UNKNOWN", "code" => "thread_missing", "thread_id" => thread_id },
+      { "status" => "UNKNOWN", "code" => "rollout_missing" }.merge(rollout_identity),
+      { "status" => "UNKNOWN", "code" => "malformed_jsonl", "line" => 2 }.merge(rollout_identity),
+      {
+        "status" => "UNKNOWN", "code" => "rollout_read_error", "detail" => "Errno::EACCES"
+      }.merge(rollout_identity),
+      {
+        "status" => "UNKNOWN", "code" => "rollout_read_error", "line" => 2,
+        "detail" => "Encoding::InvalidByteSequenceError"
+      }.merge(rollout_identity),
+      {
+        "status" => "UNKNOWN", "code" => "invalid_token_usage_vector", "line" => 2,
+        "counter_source" => "total_token_usage"
+      }.merge(rollout_identity),
+      {
+        "status" => "UNKNOWN", "code" => "usage_counter_missing", "line" => 2,
+        "fields" => ["cache_read_tokens"]
+      }.merge(rollout_identity),
+      {
+        "status" => "UNKNOWN", "code" => "route_metadata_missing", "line" => 2,
+        "fields" => ["model"]
+      }.merge(rollout_identity)
+    ]
+    valid_reasons.concat(
+      %w[state_database_unsupported sqlite3_cli_unavailable].map do |code|
+        { "status" => "UNKNOWN", "code" => code }
+      end
+    )
+    valid_reasons << { "status" => "UNKNOWN", "code" => "rollout_path_missing", "thread_id" => thread_id }
+    valid_reasons.concat(
+      %w[
+        missing_first_session_id state_thread_first_session_mismatch copied_history_boundary_missing
+        missing_first_session_meta missing_usage_evidence
+      ].map { |code| { "status" => "UNKNOWN", "code" => code }.merge(rollout_identity) }
+    )
+    valid_reasons.concat(
+      %w[
+        non_object_rollout_record invalid_boundary_timestamp invalid_turn_context invalid_turn_timestamp
+        invalid_usage_timestamp missing_total_token_usage ambiguous_turn_usage ambiguous_turn_timestamp
+        turn_context_missing_for_usage
+      ].map do |code|
+        { "status" => "UNKNOWN", "code" => code, "line" => 2 }.merge(rollout_identity)
+      end
+    )
+    valid_reasons.concat(
+      %w[missing_first_last_token_usage ambiguous_counter_decrease].map do |code|
+        {
+          "status" => "UNKNOWN", "code" => code, "line" => 2,
+          "fields" => ["total_tokens"]
+        }.merge(rollout_identity)
+      end
+    )
+
+    producer_source = File.read(HELPER, encoding: "UTF-8").split("\n    def credit_equivalents", 2).first
+    producer_codes = producer_source.scan(/\bunknown(?:_turn)?\(\s*"([a-z0-9_]+)"/m).flatten
+    producer_codes.concat(producer_source.scan(/"code"\s*=>\s*"([a-z0-9_]+)"/).flatten)
+    schema_codes = receipt_schema(2).dig("$defs", "unknownReason", "oneOf").flat_map do |variant|
+      code_contract = variant.dig("properties", "code")
+      code_contract["enum"] || [code_contract.fetch("const")]
+    end
+    asserted_codes = valid_reasons.map { |reason| reason.fetch("code") }.uniq
+    assert_equal producer_codes.uniq.sort, asserted_codes.sort
+    assert_equal producer_codes.uniq.sort, schema_codes.uniq.sort
+
+    credit_codes = File.read(HELPER, encoding: "UTF-8")
+                       .split("\n    def credit_equivalents", 2).last
+                       .split(/^    def /, 2).first
+                       .scan(/"code"\s*=>\s*"([a-z0-9_]+)"/).flatten.uniq.sort
+    schema_credit_codes = receipt_schema(2).dig(
+      "$defs", "unknownCreditModelValue", "properties", "code", "enum"
+    ).sort
+    assert_equal %w[rate_mapping_missing route_identity_unknown usage_unknown], credit_codes
+    assert_equal credit_codes, schema_credit_codes
+
+    valid_reasons.each do |reason|
+      candidate = JSON.parse(JSON.generate(receipt))
+      candidate.fetch("evidence").merge!("status" => "UNKNOWN", "unknown" => [reason])
+      assert_empty schema.validate(candidate).to_a, reason.fetch("code")
+    end
+
+    canonical_route_reason = valid_reasons.last
+    invalid_reasons = {
+      "nested-sentinel" => canonical_route_reason.merge(
+        "unexpected_content" => { "nested" => ["secret-payload"] }
+      ),
+      "extra-scalar" => canonical_route_reason.merge("unexpected_scalar" => "secret-payload"),
+      "extra-object" => canonical_route_reason.merge("unexpected_object" => { "payload" => "secret-payload" }),
+      "extra-array" => canonical_route_reason.merge("unexpected_array" => ["secret-payload"]),
+      "wrong-code-metadata" => canonical_route_reason.merge("detail" => "ArgumentError"),
+      "unknown-code" => { "status" => "UNKNOWN", "code" => "future_reason" }
+    }
+    invalid_reasons.each do |name, reason|
+      candidate = JSON.parse(JSON.generate(receipt))
+      candidate.fetch("evidence").merge!("status" => "UNKNOWN", "unknown" => [reason])
+      refute_empty schema.validate(candidate).to_a, name
+    end
+  end
+
   def test_output_is_deterministic_across_replays_and_public_contract_is_versioned
     first_receipt, first_output = run_fixture("replay")
     second_receipt, second_output = run_fixture("replay")
@@ -1115,9 +1518,9 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_equal first_output, second_output
 
     root = File.expand_path("../../..", __dir__)
-    schema = JSON.parse(File.read(File.join(root, "docs/schemas/batch-usage-receipt-v1.schema.json")))
-    assert_equal "Batch Usage Receipt v1", schema.fetch("title")
-    assert_equal "batch-usage-receipt-v1", schema.dig("properties", "schema", "const")
+    schema = receipt_schema(2)
+    assert_equal "Batch Usage Receipt v2", schema.fetch("title")
+    assert_equal "batch-usage-receipt-v2", schema.dig("properties", "schema", "const")
     assert schema.dig("$defs", "batchScope")
     assert schema.dig("$defs", "executionScope")
     assert schema.dig("$defs", "coordinatorScope")
@@ -1125,6 +1528,18 @@ class BatchUsageReceiptTest < Minitest::Test
     assert schema.dig("$defs", "laneScope")
     schema_errors = JSONSchemer.schema(schema).validate(first_receipt).to_a
     assert_empty schema_errors, schema_errors.map { |error| error.fetch("error") }.join("\n")
+
+    missing_turns = JSON.parse(JSON.generate(first_receipt))
+    missing_turns.fetch("coordinator").delete("turns")
+    refute_empty JSONSchemer.schema(schema).validate(missing_turns).to_a
+
+    invalid_turn_count = JSON.parse(JSON.generate(first_receipt))
+    invalid_turn_count.dig("batch", "turns")["descendant_inclusive"] = -1
+    refute_empty JSONSchemer.schema(schema).validate(invalid_turn_count).to_a
+
+    unknown_turn_count = JSON.parse(JSON.generate(first_receipt))
+    unknown_turn_count.dig("batch", "turns")["descendant_inclusive"] = "UNKNOWN"
+    assert_empty JSONSchemer.schema(schema).validate(unknown_turn_count).to_a
 
     role_swapped_coordinator = JSON.parse(JSON.generate(first_receipt))
     role_swapped_coordinator.fetch("coordinator")["scope"] = "worker"
@@ -1152,6 +1567,9 @@ class BatchUsageReceiptTest < Minitest::Test
     assert_includes docs, "invalid_token_usage_vector"
     assert_includes docs, "non_object_rollout_record"
     assert_includes docs, "invalid_usage_timestamp"
+    assert_includes docs, "distinct rollout `turn_context` segments"
+    assert_includes docs, "`usage_samples` is diagnostic only"
+    assert_includes docs, "ambiguous_turn_timestamp"
 
     workflow = File.read(File.join(root, "workflows/pr-processing.md"), encoding: "UTF-8")
     skill = File.read(File.join(root, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
@@ -1159,6 +1577,7 @@ class BatchUsageReceiptTest < Minitest::Test
       assert_includes surface, "`bin/batch-usage-receipt` helper"
       assert_includes surface, "durable artifact reference"
       assert_includes surface, "informational"
+      assert_match(/contributing-turn\s+counts/, surface)
     end
   end
 
@@ -1174,6 +1593,40 @@ class BatchUsageReceiptTest < Minitest::Test
   end
 
   private
+
+  def first_token_info(fixture, rollout)
+    record = fixture.dig("rollouts", rollout).find do |candidate|
+      candidate.dig("payload", "type") == "token_count"
+    end
+    record.dig("payload", "info")
+  end
+
+  def turn_context_record(timestamp)
+    {
+      "timestamp" => timestamp,
+      "type" => "turn_context",
+      "payload" => { "model" => "turn-model", "effort" => "high" }
+    }
+  end
+
+  def token_count_record(timestamp, total:, last:)
+    usage = {
+      "input_tokens" => total,
+      "cached_input_tokens" => 0,
+      "output_tokens" => 0,
+      "reasoning_output_tokens" => 0,
+      "total_tokens" => total
+    }
+    last_usage = usage.merge("input_tokens" => last, "total_tokens" => last)
+    {
+      "timestamp" => timestamp,
+      "type" => "event_msg",
+      "payload" => {
+        "type" => "token_count",
+        "info" => { "total_token_usage" => usage, "last_token_usage" => last_usage }
+      }
+    }
+  end
 
   def fixture_copy(name)
     JSON.parse(File.read(File.join(FIXTURES, "#{name}.json"), encoding: "UTF-8"))
@@ -1199,8 +1652,8 @@ class BatchUsageReceiptTest < Minitest::Test
     )
   end
 
-  def receipt_schema
+  def receipt_schema(version = 2)
     root = File.expand_path("../../..", __dir__)
-    JSON.parse(File.read(File.join(root, "docs/schemas/batch-usage-receipt-v1.schema.json")))
+    JSON.parse(File.read(File.join(root, "docs/schemas/batch-usage-receipt-v#{version}.schema.json")))
   end
 end

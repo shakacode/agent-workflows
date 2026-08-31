@@ -697,6 +697,159 @@ reservation until the request is cancelled or the verified PR map reflects the
 path or exact rename pair, then remove it before the next preflight because a
 reflected reservation is stale.
 
+### Hierarchical Token Budget
+
+`batch-token-budget v1` is opt-in. When `plan.token_budget` is absent, legacy
+batch plans keep their existing behavior. When any budget metadata is present,
+the plan must declare the exact batch id, positive raw-token limits for the
+aggregate, coordinator, and every planned lane id, strictly increasing warning
+and approval percentages with hard at 100, a telemetry freshness limit, a
+cross-task delegation approval threshold, and an absolute coordinator-owned
+`state_path`, plus a nonempty immutable allowlist of unique verifier ids with
+canonical RSA public keys of at least 2048 bits using only
+`rsa-pss-sha256`; canonical key fingerprints must also be unique across ids.
+Persist the exact budget object separately and record
+`plan.token_budget_anchor` with its absolute coordinator-selected trusted plan
+path, matching plan id, and canonical `sha256:` digest. Private keys never enter plans or state. Partial, inline,
+stale, malformed, or `UNKNOWN` required data blocks new
+expensive work. Do not invent universal absolute limits or substitute dollars,
+plan meters, cached-token discounts, prompt length, or message count.
+Trusted plan and mutable state are distinct canonical artifacts; equal expanded
+paths, resolvable aliases, and ancestor/file collisions fail preflight.
+
+Resolve `PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
+repo-local pinned-copy chain. Initialize and operate the durable state through:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/batch-token-budget" \
+  --state <plan.token_budget.state_path> \
+  --trusted-plan <plan.token_budget_anchor.trusted_plan_path> \
+  --trusted-plan-id <plan.token_budget_anchor.trusted_plan_id> \
+  --trusted-plan-digest <plan.token_budget_anchor.trusted_plan_digest> \
+  < batch-token-budget-command-v1.json
+```
+
+Pass that external binding on every operation, including restart and closeout.
+The coordinator-selected path is a trust input outside mutable budget state;
+the helper cannot authenticate an arbitrary caller-selected path, but persisted
+state alone cannot replace the budget or verifier authority.
+Compare the trusted budget's expanded `state_path` to CLI `--state` and reject
+plan/state artifact collisions before creating a state directory or lock.
+Open the trusted plan read-only and nonblocking, require the opened descriptor
+to be a regular file of at most 1 MiB, and bound the read to that limit. Exact
+limit regular files and symlinks to them remain valid; oversized plans fail as
+`trusted-plan-oversized`, while FIFOs, other non-regular objects, and filesystem
+read failures fail as `trusted-plan-unreadable` without creating state or lock
+artifacts.
+Initialization requires an exact duplicate projection of the externally trusted
+budget; null or omitted projections are invalid.
+
+Before every coordinator or worker model turn, spawn, retry, review wave,
+scheduled continuation, monitor wake, resume, replacement, escalation, or
+cross-task delegation, reserve conservative target headroom. The helper's file
+lock, fsynced temporary state, and atomic rename serialize concurrent
+reservations and make ids replay-safe. Unchanged active targets coalesce.
+Every valid reservation-id decision, including coalesced and blocked outcomes,
+is durably fenced to the exact request digest; later changed-payload reuse fails
+closed even after the active target or predecessor is released. Exact existing
+IDs replay the recorded outcome before telemetry freshness is evaluated, so
+aged telemetry cannot allocate twice or rewrite a decision.
+At most one reservation is active per accounting scope: same-scope nested work
+coalesces into it while different lanes may remain concurrent.
+Treat command time as a durable monotonic watermark. Capture trusted host time
+once per helper invocation; accept `evaluated_at` only within the inclusive
+30-second window before or after that clock. Reject older commands as
+`command-time-stale` and newer commands as `command-time-future` before fresh
+lock/state artifacts or existing-state expiration, evaluation, event/watermark
+mutation, and persistence. Reject an otherwise valid
+persisted `last_evaluated_at` that is more than 30 seconds ahead of that same
+captured clock. Future-dated human decisions and time rollback also fail
+closed; stale commands cannot store expired approvals or defer override
+expiration. Replacement/escalation always names a released or reconciled
+predecessor, and persisted reservations contain only pinned metadata fields.
+Cross-task admission resolves source and target task/root/batch/lane plus
+canonical issue/PR identities from metadata only, reserves the target batch/lane
+before its turn, and includes retained-child fan-out in the estimate. A paused
+target requires explicit resume admission.
+
+Reconcile predicted use only from an atomic, complete
+`batch-usage-receipt-v2` window generated by the resolved pr-batch
+`bin/batch-usage-receipt` helper. Bind the inline receipt to its canonical
+digest and an exact absolute local `file://` artifact; token-budget version 1 rejects URI
+schemes it cannot dereference and revalidate. Reject plain, `UNKNOWN`,
+self-attested, worker-self-attested, digest/reference-mismatched, or extra-field
+evidence. Map batch descendant-inclusive tokens to aggregate,
+coordinator self-only plus batch unattributed tokens to coordinator, and each
+lane's descendant-inclusive tokens to that lane. Map the receipt's distinct
+contributing-turn counts identically; require token and turn views to balance
+exactly. Initialization persists its command `evaluated_at` as the authoritative
+initial usage cutoff. The first accepted window must begin exactly there and
+binds the batch id, coordinator identity and root, and all planned lane roots.
+Later windows begin at the prior exclusive cutoff. Exact replay does not recount;
+mutation of the same window, gap,
+overlap, rollback, identity drift, stale/future cutoffs, and unknown relevant
+totals or topology fail closed. Route-only or missing non-total counter
+`UNKNOWN` may pass only when raw totals and reconciliation stay known and
+balanced. A top-level complete evidence claim additionally requires complete
+coordinator, lane, and worker evidence; any nested `UNKNOWN` contradiction
+blocks before state, control-event, or usage-cursor mutation. This does not
+widen the narrow route-only top-level `UNKNOWN` exception. Each accepted window
+shifts observed use from reserved to consumed;
+completed reservations release their remaining headroom. Observed use without
+an active scope reservation is unattributed and blocks clean closeout.
+One overshoot boundary may contain at most one verified already-running turn
+for each deduplicated admitted target and retained descendant; zero,
+over-envelope, or repeated overshoot evidence fails closed. A consumed
+overshoot envelope blocks coalescing until its reservation is terminalized and
+a fresh reservation is threshold-evaluated. Reconciliation
+persists warning/approval/hard state from actual use before another coalesced
+or newly reserved turn can start.
+Cross-task charge-back records source causality for actual target self plus
+descendant use without incrementing physical aggregate totals twice. It retains
+an exact bidirectional link to the matching reconciled reservation.
+Replacement or escalation waits for predecessor release/reconciliation.
+
+Warning persists a compact checkpoint and continues. Approval and override
+commands embed a strict `proven-human-attestation v1` bound to batch, immutable
+budget digest, scope, exact action/id, actor, issuance/expiry, and a
+durable verification receipt reference. The helper canonicalizes every field
+except `signature` and verifies the strict-base64 RSA-PSS-SHA256 signature
+against the freshly loaded external plan's pinned verifier key. Unsupported, unlisted,
+wrong-key, free-form, or self-attested claims do not authorize work.
+Approval starts no new expensive action without a scope-matched unexpired
+attestation.
+Hard returns `budget-exhausted / NOT COMPLETE`, with no unchanged retry or
+automatic continuation until an explicit scoped increase or resume decision
+restores headroom. Approvals and overrides never grant or weaken security,
+review, QA, exact-head, ownership, or merge gates. Overshoot is allowed only
+when the persisted envelope is exactly one in-flight turn and the affected
+scope's verified receipt count is exactly one distinct contributing turn.
+Zero, `UNKNOWN`, multiple turns, a wider envelope, and the diagnostic
+token-sample count cannot authorize overshoot.
+
+Before a hard-stop handoff, persist exact completed work, current branch and
+full head, all six gate states, authoritative receipt cutoff, resume conditions,
+and a copy-paste resume action. Closeout reports allocated, consumed, currently
+reserved, cumulatively released, and unattributed tokens in aggregate,
+coordinator, and every lane plus overshoot. The complete JSON contract and
+examples are in [Hierarchical Token Budgets](../docs/token-budgets.md).
+Duplicate JSON object keys fail before evaluation. Every restart validates
+reservation/usage ledgers against all counters, and complete closeout requires
+zero reserved tokens in every scope.
+Every unresolved `approval-required` decision also keeps closeout `NOT COMPLETE`;
+an approval receipt alone is insufficient until an explicit approved
+admission resolves that decision. Automatic `COMPLETE` additionally requires
+an authoritative non-null `usage_cursor` aged from zero through the configured
+telemetry maximum at the validated closeout `evaluated_at`; missing, future, or
+fractionally stale cursor evidence is `NOT COMPLETE`. Return compact telemetry
+status/cursor/age/reason evidence, while preserving `budget-exhausted` as the
+stronger closeout status.
+It also deterministically replays exact typed control-event payloads from a
+unique external-plan-bound initialization root, checking each pre/post-state and all
+approval, override/expiry, stop, checkpoint, fence, charge-back, and receipt
+cross-references; missing, reordered, rehashed, edited, unknown, or orphaned records
+fail before mutation.
+
 ### Model And Effort Routing
 
 Route the parent coordinator separately from implementation, discovery, review,
@@ -1631,6 +1784,8 @@ lane id or owner slug in the file-touch map, and `<word>` from a short
 coordinator-chosen session word. The coordinator records the handle before
 dispatch; workers copy it unchanged.
 
+For v1, A/R/L=aggregate/coordinator/lane limits, W/P/H=warning/approval-or-pause/hard-stop thresholds, a/d=freshness age/delegation threshold, and S/T/I/D=state path/trusted-plan path/id/digest.
+
 ```text
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
@@ -1645,6 +1800,7 @@ Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
+Budget:<none|v1 A/R/L,W/P/H,a/d,S/T/I/D>;stop
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
@@ -1813,8 +1969,8 @@ Split batch handoffs into two sections:
   decision and rationale, QA lane status, review churn notes, autonomous nit
   outcomes, confidence notes, decision-point counts per PR, already-answered
   questions, a per-PR merge-ledger table or JSON artifact path, the compact
-  `batch-usage-receipt-v1` total or durable artifact reference described in
-  [Batch Usage Receipt v1](../docs/batch-usage-receipt.md), and the shadow-only
+  `batch-usage-receipt-v2` total or durable artifact reference described in
+  [Batch Usage Receipts v1 And v2](../docs/batch-usage-receipt.md), and the shadow-only
   `coordinator-narration-volume v1` marker defined by the
   [Coordinator Output Contract](#coordinator-output-contract). Preserve
   structured `UNKNOWN` when supported host evidence is missing; usage and
@@ -1844,6 +2000,8 @@ Every target must use one explicit final state:
 - `autonomous-merge-evidence-unknown`: ordinary readiness may be clean, but
   autonomous eligibility evidence is missing, malformed, ambiguous, stale, or
   not bound to the exact current head.
+- `budget-exhausted`: token-budget hard stop; always `NOT COMPLETE`. Include the
+  exact work/branch/head/gates/cutoff checkpoint and scoped resume conditions.
 - `no-pr-evidence`: no PR was created; link the evidence-backed issue/PR
   comment and disposition. For a durably overridden ad-hoc target, record the
   evidence, rationale, complete override provenance, original task identity,
@@ -3125,6 +3283,11 @@ The closeout lane is:
     compatible capability or its advertisement is `UNKNOWN`, record
     `telemetry audit: unavailable` in the durable handoff and continue; backend
     `n/a` skips this step.
+    For a budget-enabled batch, also run `batch-token-budget closeout` after all
+    releases/reconciliations and carry aggregate/coordinator/all-lane allocated,
+    consumed, reserved, released, unattributed, and overshoot totals. Active
+    reservations, unattributed usage, stale/`UNKNOWN` telemetry, or a hard-stop
+    checkpoint remains `NOT COMPLETE` and blocks automatic closeout.
 12. Once every batch target has a final state, the batch coordinator must run
     its completed-batch audit before its final handoff. Each completed-batch
     audit is owned by its batch coordinator. A parent orchestration agent only
@@ -3144,7 +3307,7 @@ The closeout lane is:
     do not emit a complete receipt while it is blocked or reuse a prior
     snapshot after any lane, target head/state, or QA evidence changes.
     During this terminal closeout, generate the metadata-only
-    `batch-usage-receipt-v1` from the resolved pr-batch
+    `batch-usage-receipt-v2` from the resolved pr-batch
     `bin/batch-usage-receipt` helper when supported Codex rollout JSONL and
     `state_5.sqlite` evidence are available. Save the JSON to the repository's
     ordinary durable artifact store when one exists, and include either its
