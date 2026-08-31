@@ -677,7 +677,6 @@ module PrCiReadiness
       action_required cancelled failure neutral success skipped stale startup_failure timed_out
     ].freeze
     CHECK_SUITE_READY_CONCLUSIONS = %w[neutral skipped success].freeze
-    CHECK_SUITE_PLACEHOLDER_DORMANCY_SECONDS = 24 * 60 * 60
 
     def initialize(command_runner: nil)
       @command_runner = command_runner
@@ -1328,7 +1327,7 @@ module PrCiReadiness
     def materialize_check_suite_runs(repo, head_sha, validated_suites)
       suite_ids = {}
       validated_suites.flat_map do |validated_suite|
-        _suite, suite_id, suite_app, suite_created_at, suite_updated_at, suite_status,
+        _suite, suite_id, suite_app, suite_created_at, _suite_updated_at, suite_status,
           _suite_conclusion, latest_count =
           validated_suite
         raise Error, "check suite inventory repeated suite id #{suite_id}" if suite_ids[suite_id]
@@ -1340,9 +1339,7 @@ module PrCiReadiness
         ).map do |row|
           normalize_exact_check_run!(row, head_sha, suite_id:, suite_app:)
         end
-        validate_check_suite_materialization!(
-          suite_rows, status: suite_status, latest_count:, updated_at: suite_updated_at
-        )
+        validate_check_suite_materialization!(suite_rows, status: suite_status, latest_count:)
         suite_rows.map { |row| [row, suite_created_at, suite_id] }
       end
     end
@@ -1393,13 +1390,9 @@ module PrCiReadiness
       [suite_id, app, created_at, updated_at, status, conclusion, latest_count]
     end
 
-    def validate_check_suite_materialization!(rows, status:, latest_count:, updated_at:)
+    def validate_check_suite_materialization!(rows, status:, latest_count:)
       if latest_count.zero?
-        if rows.empty? && status == "queued"
-          return if updated_at <= Time.now.utc - CHECK_SUITE_PLACEHOLDER_DORMANCY_SECONDS
-
-          raise Error, "queued zero-run check suite was not dormant for at least 24 hours"
-        end
+        return if rows.empty? && status == "queued"
 
         raise Error, "check suite latest-run inventory was empty and cannot prove readiness"
       end

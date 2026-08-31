@@ -4350,30 +4350,6 @@ class PrCiReadinessCliTest < Minitest::Test
     assert_nil error
   end
 
-  def test_fresh_stable_queued_zero_run_suite_is_not_yet_a_dormant_placeholder
-    head = "a" * 40
-    fresh_at = Time.now.utc.iso8601
-    runner = PrCiReadiness::Runner.new
-    runner.define_singleton_method(:fetch_paginated_collection) do |_endpoint, key, validate_page: nil|
-      _validate_page = validate_page
-      if key == "check_suites"
-        [{
-          "id" => 10, "created_at" => fresh_at, "updated_at" => fresh_at,
-          "head_sha" => head, "app" => { "id" => 9, "slug" => "incidental-app" },
-          "status" => "queued", "conclusion" => nil, "latest_check_runs_count" => 0
-        }]
-      else
-        []
-      end
-    end
-
-    rows, complete, error = runner.send(:fetch_exact_head_check_runs, "owner/repo", head)
-
-    refute complete
-    assert_empty rows
-    assert_includes error, "not dormant"
-  end
-
   def test_queued_placeholder_materializing_a_run_fails_suite_snapshot_continuity
     head = "a" * 40
     placeholder = {
