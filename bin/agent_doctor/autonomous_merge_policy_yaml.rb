@@ -13,6 +13,7 @@ module AutonomousMergePolicy
   # a built-in entry.
   SOURCE_POLICY_PATTERNS = %w[
     workflows/pr-processing.md
+    workflows/pr-production-release.md
     skills/pr-batch/SKILL.md skills/pr-monitoring/SKILL.md
     skills/plan-pr-batch/SKILL.md skills/triage/SKILL.md
     bin/agent_doctor/autonomous_merge_policy.rb bin/agent_doctor/autonomous_merge_policy_globs.rb
