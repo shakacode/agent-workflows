@@ -830,7 +830,10 @@ task creation can be enabled, it needs these exact #560 semantic inputs:
   and host, branch, PR, state, and human-input projection;
 - the durable no-backend local fence and GitHub-reconciliation-due
   representation; and
-- the single human-facing control-tower projection.
+- the single human-facing control-tower binding/projection, with every
+  maintainer-required visible mapping value: repository/issue, deterministic
+  task title, runner (Codex/Claude), observed configured machine alias, task
+  ID/link, branch/PR, compact state, and whether human input is actually needed.
 
 Do not invent a parallel run-record schema, state vocabulary, renderer,
 persistence helper, or record contract here. Until every listed input is
