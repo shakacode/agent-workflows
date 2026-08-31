@@ -2008,8 +2008,7 @@ module AgentWorkflowSeamDoctor
     duplicate_errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
       error == '$ contains duplicate key "ci_readiness"' ||
         error.start_with?("$.ci_readiness contains duplicate key") ||
-        error.start_with?("$.ci_readiness.optional_approval_held_checks contains duplicate key") ||
-        error.start_with?("$.ci_readiness.optional_approval_held_checks[")
+        error.start_with?("$.ci_readiness.optional_approval_held_checks contains duplicate key")
     end
     issues = duplicate_errors.map { |error| "invalid ci_readiness policy: #{error}" }
     policy = config[CI_READINESS_POLICY_KEY]
