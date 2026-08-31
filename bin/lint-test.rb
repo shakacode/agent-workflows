@@ -184,6 +184,9 @@ class LintCommandTest < Minitest::Test
     %w[rubocop shellcheck actionlint markdownlint-cli2 yamllint].each do |tool|
       assert_includes contributing, "bin/lint --version #{tool}"
     end
+    assert_includes contributing, 'go_bin="$(go env GOBIN)"'
+    assert_includes contributing, 'export PATH="${go_bin:-$(go env GOPATH)/bin}:$PATH"'
+    assert_includes contributing, "pipx install --force"
   end
 
   private
