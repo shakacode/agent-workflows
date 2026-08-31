@@ -11,10 +11,21 @@ SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 VALIDATE_WORKFLOW_PATH = File.join(ROOT, ".github/workflows/validate.yml")
 
 def route_after(text, heading)
-  match = text.match(/^\#{2,4} #{Regexp.escape(heading)}[[:blank:]]*$/)
+  match = text.match(/^(\#{2,4}) #{Regexp.escape(heading)}[[:blank:]]*$/)
   raise "missing route #{heading}" unless match
 
-  finish = text.match(/^\#{2,4}\s+/, match.end(0))
+  heading_level = match[1].length
+  cursor = match.end(0)
+  finish = nil
+  while (candidate = text.match(/^(\#{2,4})[[:blank:]]+/, cursor))
+    if candidate[1].length <= heading_level
+      finish = candidate
+      break
+    end
+
+    cursor = candidate.end(0)
+  end
+
   text[match.end(0)...(finish ? finish.begin(0) : text.length)]
 end
 
@@ -53,6 +64,29 @@ class IntegrationCloseoutContractTest < Minitest::Test
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
     @skill = File.read(SKILL_PATH, encoding: "UTF-8")
     @validate_workflow = File.read(VALIDATE_WORKFLOW_PATH, encoding: "UTF-8")
+  end
+
+  def test_route_after_keeps_nested_headings_and_stops_at_the_next_peer
+    markdown = <<~MARKDOWN
+      ## Selected Route
+
+      Parent content.
+
+      ### Nested Route
+
+      Nested content.
+
+      ## Next Route
+
+      Later content.
+    MARKDOWN
+
+    route = route_after(markdown, "Selected Route")
+
+    assert_includes route, "### Nested Route"
+    assert_includes route, "Nested content."
+    refute_includes route, "## Next Route"
+    refute_includes route, "Later content."
   end
 
   def test_component_owns_the_full_closeout_interface
@@ -158,12 +192,15 @@ class IntegrationCloseoutContractTest < Minitest::Test
   def test_workflow_is_an_index_and_compatibility_shim
     WORKFLOW_ROUTES.each do |heading|
       route = route_after(@workflow, heading)
-      assert_includes route, "pr-batch-integration-closeout.md", heading
-      assert_includes route, "compatibility route", heading
-      assert_operator route.bytesize, :<, 450, heading
-      refute_includes route, "priority-finding-dispositions v1", heading
-      refute_includes route, "bin/pr-ci-readiness", heading
-      refute_includes route, "bin/merge-assurance", heading
+      nested_heading = route.match(/^\#{2,4}[[:blank:]]+/)
+      direct_route = route[0...(nested_heading ? nested_heading.begin(0) : route.length)]
+
+      assert_includes direct_route, "pr-batch-integration-closeout.md", heading
+      assert_includes direct_route, "compatibility route", heading
+      assert_operator direct_route.bytesize, :<, 450, heading
+      refute_includes direct_route, "priority-finding-dispositions v1", heading
+      refute_includes direct_route, "bin/pr-ci-readiness", heading
+      refute_includes direct_route, "bin/merge-assurance", heading
     end
 
     assert_includes @workflow,
