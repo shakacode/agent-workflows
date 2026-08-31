@@ -214,14 +214,24 @@ When invoking this skill's helper scripts, resolve `PR_BATCH_SKILL_DIR` in this
 order: explicit environment variable; the loaded skill's base directory when the
 host exposes it; repo-local `.agents/skills/pr-batch`; then stop with a precise
 blocker if the helper is still missing.
-For release-mode coordination, auto-merge confidence, and shared release tracker
-updates, follow `AGENTS.md` and the release-mode sections of the resolved
-`pr-processing.md`; do not invent new labels or overwrite tracker issue bodies
-from stale reads. Select the merge gate by the target branch's release phase:
-follow the **Release Phase Gate** in the resolved `pr-processing.md` and the
-repo's `AGENTS.md` release policy. If any target's value, priority, or proposed
-fix scope is unclear, use the installed or repo-local `evaluate-issue` skill
-before assigning implementation workers.
+For release-mode coordination, auto-merge confidence, shared release trackers,
+production deployment or promotion, publishing, release rollback, or other
+explicit release work, load the resolved
+`pr-production-release.md`: prefer the repo-local
+`.agents/workflows/pr-production-release.md` when present; otherwise use the
+installed workflow from the same Agent Workflows pack as the loaded `pr-batch`
+skill, not relative to a potentially repo-pinned processing override. Follow the
+consumer repo's `AGENTS.md` release policy. Do
+not restate the component's tracker, phase, promotion, or release rules here.
+Ordinary base-branch feature work does not load that downstream component unless
+repository policy or the live release tracker selects release handling for that
+PR. Before skipping it, perform a bounded tracker-discovery check using only the
+consumer repo's `AGENTS.md` tracker labels, title prefix, or other search policy.
+Load the component when an existing applicable tracker unambiguously selects the
+PR; if the repo defines no tracker discovery policy, do not invent one. If any
+target's value, priority, or proposed fix scope is unclear, use the
+installed or repo-local `evaluate-issue` skill before assigning implementation
+workers.
 Skip issues labeled `needs-customer-feedback` unless the user explicitly provides customer evidence or maintainer approval for that issue; report each skipped target with `needs-customer-feedback` as the reason.
 
 ## Non-Negotiable Safety Rules
@@ -1059,9 +1069,7 @@ Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#pla
 For the complete numbered sequence, follow the canonical closeout lane in
 `.agents/workflows/pr-processing.md` instead of stopping at PR creation. The
 coordinator owns the live re-fetch, current-head checks and review-thread triage,
-per-PR merge-ledger run, stale release-mode classification updates and the finalized PR-body
-`Agent Merge Confidence` block refresh required for accelerated-RC readiness (kept
-distinct), hosted-CI request and waitback when uncertainty remains, and any
+per-PR merge-ledger run, hosted-CI request and waitback when uncertainty remains, and any
 authorized ready/merge action, required QA Evidence verification, and the late
 post-merge bot-finding sweep before final batch handoff. Once every batch target
 has a final state, run a read-only check after terminal releases only when the
@@ -1077,7 +1085,7 @@ deadline; the helper must preserve the exact child executable and separate
 argument vector, launch it in its own process group, and terminate the whole
 process group when the deadline expires. A timeout or forced termination is a
 command failure: record best-effort `UNKNOWN` telemetry-audit evidence and
-continue closeout through steps 13-14 with that blocker; the audit subprocess
+continue closeout through steps 12-13 with that blocker; the audit subprocess
 must never wedge merge closeout. When that compatible capability is advertised, incomplete
 coverage, command failure, or `UNKNOWN` readback blocks telemetry closeout. If
 the active backend does not advertise
