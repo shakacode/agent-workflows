@@ -63,6 +63,16 @@ class WorkerExecutionContractTest < Minitest::Test
     end
   end
 
+  def test_skill_preserves_the_dependency_policy_route
+    route = squish(section(@skill, "## Worker Rules", /^##\s+/))
+
+    assert_equal 1, route.scan("dependency-and-conflict-throughput-policy").length
+    assert_includes route, "Non-safety coordination override:"
+    assert_includes route, "Batch Plan"
+    assert_includes route, "Lane Cards"
+    assert_includes route, "protected gates"
+  end
+
   def test_isolation_and_dependency_permissions_fail_closed
     setup = squish(section(@component, "## Isolated Setup", /^##\s+/))
 

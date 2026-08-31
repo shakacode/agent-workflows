@@ -877,23 +877,25 @@ events `claim.acquired`, `claim.released`, or `phase.changed`.
 ## Worker Rules
 
 Codex-targeted waves may use up to 10 independent lanes, or 8 when shared/risky
-conditions apply. Claude and generic waves use up to 5 lanes, or up to 3 under those same
-conditions. Keep requested and observed routes distinct; if the dispatcher or runtime inherits
-or defaults to another route, record it honestly and continue. File overlap is an integration advisory;
-issue-authored semantic dependencies remain the only ordering edges.
+conditions apply. Claude and generic waves use up to 5 lanes, or up to 3 under
+those conditions. Keep requested and observed routes distinct;
+if the dispatcher or runtime inherits or defaults to another route, record it
+honestly. File overlap is an integration advisory.
 
-Load the canonical
-[PR-Batch Worker Execution](../../workflows/pr-batch-worker-execution.md)
-component after prompt intake, plan/dependency preflight, and dispatcher
-selection. It owns isolated setup, the bounded implementation loop, focused
-validation, meaningful stop packets, the worker attention queue, Lane Cards,
-and the implementation-head handoff.
+Use the canonical
+[Dependency And Conflict Throughput Policy](../../workflows/pr-processing.md#dependency-and-conflict-throughput-policy).
+Put `Non-safety coordination override:` in the Batch Plan and affected Lane
+Cards; it never alters protected gates.
 
-This skill routes the accepted lane and surrounding planning, optional
-coordination, security, and closeout decisions into that component. Do not
-mirror or reinterpret its execution contract here. The integration/PR-closeout
-owner consumes the returned head and evidence and remains responsible for PR
-publication, current-head review/CI, readiness, and merge sequencing.
+After prompt intake, plan/dependency preflight, and dispatcher selection, load
+[PR-Batch Worker Execution](../../workflows/pr-batch-worker-execution.md). It owns
+isolated setup, the bounded implementation loop, focused validation, meaningful
+stop packets, the worker attention queue, Lane Cards, and the
+implementation-head handoff.
+
+Keep planning, coordination, security, and PR closeout here; do not mirror the
+execution contract. The integration owner consumes the head/evidence and owns publication,
+current-head review/CI, readiness, and merge sequencing.
 
 ## Pausing Or Stopping A Batch
 
