@@ -1262,6 +1262,15 @@ module BatchTokenBudget
     )
   end
 
+  def non_durable_blocked_result(state, command_result)
+    result(
+      state,
+      command_result.fetch("status"),
+      "reason" => command_result.fetch("reason"),
+      "allowed_actions" => command_result.fetch("allowed_actions")
+    )
+  end
+
   def budget_scope_record(state, scope_id)
     return state.dig("scopes", "aggregate") if scope_id == "aggregate"
 
@@ -3151,11 +3160,11 @@ module BatchTokenBudget
       end
     if command["action"] == "reserve" && command_result["status"] == "blocked" &&
        NON_DURABLE_RESERVATION_REASONS.include?(command_result["reason"])
-      return [pre_command_state, command_result]
+      return [pre_command_state, non_durable_blocked_result(pre_command_state, command_result)]
     end
     if command["action"] == "reconcile" && command_result["status"] == "blocked" &&
        NON_DURABLE_RECONCILIATION_REASONS.include?(command_result["reason"])
-      return [pre_command_state, command_result]
+      return [pre_command_state, non_durable_blocked_result(pre_command_state, command_result)]
     end
 
     if next_state["last_evaluated_at"] != command["evaluated_at"]

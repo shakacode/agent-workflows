@@ -6542,6 +6542,105 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_invalid_receipt_artifact_after_override_expiry_reports_the_unchanged_persisted_state
+    with_state do |state_path|
+      initialize_budget(state_path)
+      override = budget_override(
+        state_path,
+        id: "artifact-mismatch-expiry",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 800,
+        expires_at: "2026-08-12T12:05:00Z"
+      )
+      override_result, override_stderr, override_status = run_helper(
+        state_path,
+        command("override", "override" => override)
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", override_result.fetch("status")
+
+      receipt, receipt_ref, receipt_digest = real_descendants_usage_receipt(state_path)
+      File.open(receipt_ref.delete_prefix("file://"), "ab") { |artifact| artifact.write("\ncorrupt") }
+      reconcile_command = command(
+        "reconcile",
+        "evaluated_at" => "2026-08-12T13:00:00Z",
+        "usage_receipt" => receipt,
+        "usage_receipt_ref" => receipt_ref,
+        "usage_receipt_digest" => receipt_digest,
+        "completed_reservation_ids" => []
+      )
+      state_before = File.binread(state_path)
+      parsed_before = JSON.parse(state_before)
+
+      blocked, stderr, status = run_helper(state_path, reconcile_command)
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-receipt-artifact-mismatch", blocked.fetch("reason")
+      assert_equal parsed_before.fetch("revision"), blocked.fetch("state_revision")
+      assert_equal 800, blocked.dig("totals", "lanes", "lane-a", "limit_tokens")
+      assert_equal state_before, File.binread(state_path)
+
+      repeated, repeated_stderr, repeated_status = run_helper(state_path, reconcile_command)
+      assert repeated_status.success?, repeated_stderr
+      assert_equal blocked, repeated
+      assert_equal state_before, File.binread(state_path)
+    end
+  end
+
+  def test_invalid_reservation_after_override_expiry_reports_the_unchanged_persisted_state
+    with_state do |state_path|
+      initialize_budget(state_path)
+      override = budget_override(
+        state_path,
+        id: "invalid-reservation-expiry",
+        scope_id: "lane-a",
+        old_limit_tokens: 600,
+        new_limit_tokens: 800,
+        expires_at: "2026-08-12T12:05:00Z"
+      )
+      override_result, override_stderr, override_status = run_helper(
+        state_path,
+        command("override", "override" => override)
+      )
+      assert override_status.success?, override_stderr
+      assert_equal "overridden", override_result.fetch("status")
+
+      invalid_reservation = reservation(
+        id: "invalid-after-expiry",
+        overrides: {
+          "unexpected" => "never persist this field",
+          "telemetry" => reservation(id: "ignored").fetch("telemetry").merge(
+            "observed_at" => "2026-08-12T12:59:00Z"
+          )
+        }
+      )
+      reserve_command = command(
+        "reserve",
+        "evaluated_at" => "2026-08-12T13:00:00Z",
+        "reservation" => invalid_reservation
+      )
+      state_before = File.binread(state_path)
+      parsed_before = JSON.parse(state_before)
+
+      blocked, stderr, status = run_helper(state_path, reserve_command)
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "invalid-reservation", blocked.fetch("reason")
+      assert_equal parsed_before.fetch("revision"), blocked.fetch("state_revision")
+      assert_equal 800, blocked.dig("totals", "lanes", "lane-a", "limit_tokens")
+      assert_equal state_before, File.binread(state_path)
+      refute_includes File.binread(state_path), "never persist this field"
+
+      repeated, repeated_stderr, repeated_status = run_helper(state_path, reserve_command)
+      assert repeated_status.success?, repeated_stderr
+      assert_equal blocked, repeated
+      assert_equal state_before, File.binread(state_path)
+    end
+  end
+
   def test_batch_usage_receipt_accepts_a_percent_encoded_space_in_a_file_reference
     with_state do |state_path|
       initialize_budget(state_path)
