@@ -117,12 +117,12 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "mergePullRequest"
   end
 
-  def test_reused_integration_binds_recorded_pr_base_separately_from_live_current_base
+  def test_reused_integration_uses_independent_live_base_not_mutable_pr_base_ref_oid
     accepted, accepted_log, = run_cli(
       mode: "current_integration_match",
       receipt_mode: :reused_integration
     )
-    wrong_recorded_base, wrong_recorded_log, = run_cli(
+    refreshed_provider_base, refreshed_provider_log, = run_cli(
       mode: "current_integration_recorded_base_mismatch",
       receipt_mode: :reused_integration
     )
@@ -133,8 +133,8 @@ class PrMergeSubmitTest < Minitest::Test
 
     assert accepted.fetch(:status).success?, accepted.fetch(:stderr)
     assert_includes accepted_log, "mergePullRequest"
-    assert_includes wrong_recorded_base.fetch(:stderr), "recorded base SHA mismatch"
-    refute_includes wrong_recorded_log, "mergePullRequest"
+    assert refreshed_provider_base.fetch(:status).success?, refreshed_provider_base.fetch(:stderr)
+    assert_includes refreshed_provider_log, "mergePullRequest"
     assert_includes moved_live_base.fetch(:stderr), "receipt base SHA mismatch"
     refute_includes moved_live_log, "mergePullRequest"
   end

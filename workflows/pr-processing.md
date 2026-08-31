@@ -4143,9 +4143,10 @@ candidate. A missing or semantically changed candidate, base movement, head
 movement, or receipt mismatch blocks submission. This is a current-base proof
 for an immutable head, not permission to merge a stale or unknown tree.
 
-The submit replay binds the PR's `baseRefOid` to the recorded base and an
-independent live `refs/heads/<base>` lookup to the receipt's current base. Never
-substitute the recorded PR base for the live target-branch ref.
+The submit replay binds an independent live `refs/heads/<base>` lookup to the
+receipt's current base. The recorded base remains integrity-bound in the
+receipt, but GitHub's mutable or temporarily stale PR `baseRefOid` is not a live
+base oracle and must never substitute for that independent ref lookup.
 
 The helper reads GitHub's live `isMergeQueueEnabled` value for the target PR. It
 always preserves read-only, idempotent observation when the exact reviewed PR

@@ -580,8 +580,9 @@ and `pr-merge-submit` replays the same candidate tree and ordered parents
 immediately before mutation. A provider candidate commit OID is retained as
 provenance but is not semantic identity because GitHub may regenerate that
 synthetic commit object without changing its tree or parents.
-Submission rechecks the PR's recorded base and independently reads the live
-target-branch ref; it never treats the stale PR `baseRefOid` as the live base.
+Submission independently reads the live target-branch ref; it never treats the
+mutable or stale PR `baseRefOid` as the live base. The recorded base remains
+integrity-bound inside the evidence receipt.
 No readiness, review, security, or authority gate is weakened.
 
 `ready-human-review-required` carries the exact current head SHA, every

@@ -864,18 +864,10 @@ module PrMergeSubmit
 
     def validate_receipt_base_sha!(pull_request)
       expected_current = @merge_assurance_receipt.dig("bindings", "base", "sha")
-      unless pull_request["currentBaseRefOid"].to_s.casecmp?(expected_current.to_s)
-        raise Error, "merge-assurance receipt base SHA mismatch: expected " \
-                     "#{expected_current}, found #{pull_request['currentBaseRefOid']}"
-      end
+      return if pull_request["currentBaseRefOid"].to_s.casecmp?(expected_current.to_s)
 
-      expected_recorded = @merge_assurance_receipt.dig(
-        "bindings", "current_integration", "recorded_base_sha"
-      )
-      return if pull_request["baseRefOid"].to_s.casecmp?(expected_recorded.to_s)
-
-      raise Error, "merge-assurance receipt recorded base SHA mismatch: expected " \
-                   "#{expected_recorded}, found #{pull_request['baseRefOid']}"
+      raise Error, "merge-assurance receipt base SHA mismatch: expected " \
+                   "#{expected_current}, found #{pull_request['currentBaseRefOid']}"
     end
 
     def direct_merge_result(options)
@@ -1486,16 +1478,12 @@ module PrMergeSubmit
     def exact_target?(pull_request, options)
       pull_request["baseRefName"] == options[:expected_base] &&
         pull_request["headRefOid"].to_s.casecmp?(options[:expected_head]) &&
-        (!@merge_assurance_receipt || receipt_base_bindings_match?(pull_request))
+        (!@merge_assurance_receipt || receipt_live_base_matches?(pull_request))
     end
 
-    def receipt_base_bindings_match?(pull_request)
+    def receipt_live_base_matches?(pull_request)
       current = @merge_assurance_receipt.dig("bindings", "base", "sha")
-      recorded = @merge_assurance_receipt.dig(
-        "bindings", "current_integration", "recorded_base_sha"
-      )
-      pull_request["currentBaseRefOid"].to_s.casecmp?(current.to_s) &&
-        pull_request["baseRefOid"].to_s.casecmp?(recorded.to_s)
+      pull_request["currentBaseRefOid"].to_s.casecmp?(current.to_s)
     end
 
     def reject_mismatched_queue!(pull_request, options)
