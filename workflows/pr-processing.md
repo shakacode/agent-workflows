@@ -1364,13 +1364,13 @@ or PR comment surface.
 
 ### Coordination Telemetry And Provenance
 
-Use the canonical [Status, Monitoring, And Telemetry](pr-batch-coordination-observability.md#status-monitoring-and-telemetry)
-interface. It owns exact-pack registration, field-granular observations, typed
-operational signals, deterministic monitors, privacy-bounded throughput
-telemetry, and terminal coordination-audit disposition.
-
-Keep the public backend-neutral schemas and replay fixture in
-[coordination-backend.md](../docs/coordination-backend.md). Preserve every
+Use canonical [Status, Monitoring, And Telemetry](pr-batch-coordination-observability.md#status-monitoring-and-telemetry)
+for human-status presentation, deterministic monitors, and privacy-bounded
+throughput telemetry. Use the backend guide's
+[Batch Provenance Manifest](../docs/coordination-backend.md#batch-provenance-manifest)
+for exact-pack registration and field-granular observations, and its
+[Operational Signal Events](../docs/coordination-backend.md#operational-signal-events)
+for typed signals and terminal coordination-audit disposition. Preserve every
 `UNKNOWN` fact, but do not let unavailable optional telemetry block unrelated
 correctness work.
 

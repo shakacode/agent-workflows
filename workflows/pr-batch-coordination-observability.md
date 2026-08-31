@@ -89,7 +89,12 @@ permission to fall back or retry blindly.
 
 Contradictory reliable live ownership for the exact target, branch, and
 worktree refuses duplicate execution. It does not freeze unrelated
-implementation, validation, or review. Apply these target-scoped rules:
+implementation, validation, or review. Coordinators must, before dispatching
+dependency-sensitive lanes, create or update private batch and lane state with
+the exact lane identifiers and `depends_on` refs, following the selected
+backend's schema. Dispatch waits for bounded readback of those exact refs;
+missing or `UNKNOWN` state stops only the affected lane. The public adapter does
+not invent a private backend schema. Apply these target-scoped rules:
 
 1. Run bounded target status before claim. If doctor or target-status reads are
    degraded, an exact independent lane with no `depends_on` refs may attempt one
@@ -193,7 +198,7 @@ mechanism for that blocker and gate; update it instead of duplicating it.
 
 Normalize only allowlisted durable coordination and compact GitHub-shaped
 metadata into `workflow-telemetry-input` v1, then use
-`skills/pr-batch/bin/workflow-telemetry-report`. Record queue time,
+`${PR_BATCH_SKILL_DIR}/bin/workflow-telemetry-report`. Record queue time,
 useful-worker time, human-decision frequency, memory/load, and retry/review
 churn, plus broad phase and integration windows. Preserve field-level
 `UNKNOWN`; Optional telemetry absence does not block correctness or invent a

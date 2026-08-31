@@ -47,6 +47,7 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes @component, "private | public-fallback | none"
     assert_includes @component, "PR_BATCH_SKILL_DIR"
     assert_includes @component, "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded"
+    assert_includes @component, "${PR_BATCH_SKILL_DIR}/bin/workflow-telemetry-report"
     assert_operator @component.bytesize, :<=, 18_000,
                     "coordination/observability must stay smaller than the prose it replaces"
   end
@@ -93,6 +94,10 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes ownership, "claim timeout"
     assert_includes ownership, "UNKNOWN (claim outcome)"
     assert_includes ownership, "private_state: claim-only"
+    assert_includes ownership, "before dispatching dependency-sensitive lanes"
+    assert_includes ownership, "private batch and lane state"
+    assert_includes ownership, "`depends_on`"
+    assert_includes ownership, "selected backend's schema"
     assert_includes ownership, "codex-ready"
     assert_includes ownership, "codex-wip"
     assert_includes ownership, "gh label create"
@@ -171,6 +176,12 @@ class CoordinationObservabilityContractTest < Minitest::Test
     refute_includes isolation_route, "agent-coord-bounded"
     refute_includes isolation_route, "private_state: claim-only"
     refute_includes isolation_route, "Public Claim Comment Fallback"
+
+    telemetry_route = squish(section(@workflow, "### Coordination Telemetry And Provenance", /^###\s+/))
+    assert_includes telemetry_route, "#status-monitoring-and-telemetry"
+    assert_includes telemetry_route, "#batch-provenance-manifest"
+    assert_includes telemetry_route, "#operational-signal-events"
+    refute_includes telemetry_route, "It owns exact-pack registration"
   end
 
   def test_repository_validation_runs_the_component_contract
