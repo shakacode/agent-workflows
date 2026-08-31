@@ -14,7 +14,9 @@ promotion, release candidates, publishing, release rollback, and the explicit
 authority required for those consequential actions.
 
 It does not own ordinary prompt intake, worker execution, or PR integration.
-Ordinary base-branch feature work does not load the downstream component.
+Ordinary base-branch feature work does not load the downstream component unless
+repository policy or the live release tracker selects release handling for that
+PR.
 Per-task merge authority remains separate: permission to merge never grants
 permission to deploy, promote, publish, roll back, or create a release tracker.
 Those actions require explicit production or release authority.
