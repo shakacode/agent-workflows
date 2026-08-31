@@ -328,6 +328,73 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal(%w[READY READY READY READY], scopes.values.map { |scope| scope.fetch("state") })
   end
 
+  def test_exact_head_inventory_ignores_completed_cancelled_non_required_check_runs
+    head = "a" * 40
+    checked_at = "2026-08-31T12:00:00Z"
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at:,
+      required_rows: [{ "workflow" => "required-ci", "name" => "unit", "bucket" => "pass" }],
+      required_complete: true,
+      actions_rows: [],
+      actions_complete: true,
+      check_runs: [
+        {
+          "kind" => "check_run", "id" => 18, "name" => "review-app",
+          "status" => "completed", "conclusion" => "cancelled",
+          "app_slug" => "circleci-checks", "dependabot" => false
+        },
+        {
+          "kind" => "check_run", "id" => 19, "name" => "CodeRabbit",
+          "status" => "completed", "conclusion" => "success",
+          "app_slug" => "coderabbitai", "dependabot" => false
+        }
+      ],
+      check_runs_complete: true,
+      statuses: [],
+      statuses_complete: true
+    )
+    contract = PrCiReadiness.evidence_contract(
+      repo: "owner/repo", pr_number: 7, head_sha: head, checked_at:, scopes:
+    )
+
+    assert_equal(
+      [19],
+      scopes.dig("other", "rows").map { |row| row.fetch("id") }
+    )
+    assert_equal "READY", scopes.dig("other", "state")
+    assert_equal "READY", contract.fetch("verdict")
+  end
+
+  def test_exact_head_inventory_keeps_cancelled_required_context_not_ready
+    head = "a" * 40
+    checked_at = "2026-08-31T12:00:00Z"
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at:,
+      required_rows: [{ "workflow" => "circleci-checks", "name" => "test-suite", "bucket" => "cancel" }],
+      required_complete: true,
+      actions_rows: [],
+      actions_complete: true,
+      check_runs: [
+        {
+          "kind" => "check_run", "id" => 20, "name" => "test-suite",
+          "status" => "completed", "conclusion" => "cancelled",
+          "app_slug" => "circleci-checks", "dependabot" => false
+        }
+      ],
+      check_runs_complete: true,
+      statuses: [],
+      statuses_complete: true
+    )
+    contract = PrCiReadiness.evidence_contract(
+      repo: "owner/repo", pr_number: 7, head_sha: head, checked_at:, scopes:
+    )
+
+    assert_equal "NOT_READY", scopes.dig("required_status_check_rollup", "state")
+    assert_equal "NOT_READY", contract.fetch("verdict")
+  end
+
   def test_required_rollup_filters_other_checks_by_producer_and_context_not_name_alone
     head = "a" * 40
     scopes = PrCiReadiness.inventory_scopes(
