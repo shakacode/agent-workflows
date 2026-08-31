@@ -877,63 +877,12 @@ waits such as pending CI/review, permissions, coordination conflicts, external
 outages, or quota exhaustion do not by themselves prove a capability problem.
 
 Every lane whose risk or bounded delegation requires an execution envelope
-receives one from the coordinator role before editing, regardless of route:
-exact goal and non-goals, owned paths, supported diagnosis, invariants,
-acceptance criteria, required verification, and stop conditions. The worker
-does not redefine scope or substitute a new diagnosis. Necessary in-repository
-path expansion defaults to allowed when repository evidence shows an added path
-is reasonably necessary to complete the already-authorized goal or its required
-validation. Treat owned paths and the execution envelope as coordination and
-collision controls, not as a user-permission boundary. Before editing, record
-each added path and reason in the lane envelope when one is present; otherwise
-use a durable coordinator-owned lane record or Lane Card that the coordinator
-can read. Every added path not yet reflected in its verified file-touch map must
-have an active typed `expansion-path-reservation` before edit. When a lane is the
-sole active editor, the coordinator durably records the reservation, refreshes
-authoritative file-touch maps, lane lifecycle state, and active-lane claim and
-collision checks, and reruns `batch-plan-preflight`; the worker continues without
-user approval or a blocked lifecycle only after the preflight accepts.
-Before a worker in a multi-editor wave changes an added path, it persists a typed
-expansion request, marks its durable lane lifecycle blocked, refreshes its
-heartbeat, emits a Lane Card with the path, reason, and request evidence
-reference, and pauses at a safe checkpoint. The coordinator processes expansion
-requests serially, records an active `expansion_path_reservations` entry,
-refreshes authoritative file-touch maps and lane lifecycle state, and reruns
-`batch-plan-preflight`. For every multi-editor request, acceptance alone does not
-authorize resume: the requester must durably transition out of `blocked`, a fresh
-preflight must accept, and the requester must be absent from
-`launch.held_lane_ids`; when launch or relaunch is needed, it must also be present
-in `launch.eligible_lane_ids`. Under maximum-concurrency-one serialization, the
-current holder must also release the slot before resume. The
-reservation persists until the verified PR file-touch map contains the path or
-the request is cancelled, and it is removed once reflected or cancelled. A
-collision or `UNKNOWN` collision state remains stopped until then. A missing
-path alone is not material scope growth and must not produce
-`blocked-user-input`.
-Directory renames use a distinct `expansion-rename-reservation` v1 record with
-canonical, distinct `old` and `new` endpoints; only this typed rename form adds
-ancestor/descendant collision checks, while scalar path reservations remain
-exact-path collision controls.
-Necessary additions can include contract or type files, tests or fixtures,
-offline demo stubs, and build or generated integration surfaces when repository
-evidence makes them necessary.
-Contradictory evidence remains an immediate stop. Stop and return control when
-any of the following applies: the approved goal, accepted behavior, or acceptance
-criteria changes; the work adds unrelated work; it crosses a repository or trust
-boundary; it requires a destructive or difficult-to-reverse action; it introduces
-secrets, permissions, deployments, billing, or other external effects; it
-requires consequential architecture, performance, compatibility, or product
-judgment; it materially changes security, privacy, compliance, or release policy;
-it collides with another active lane and cannot be safely coordinated; it exposes
-consequential ambiguity; or it weakens verification. An omitted path alone is not
-such a condition.
-
-Before escalating, the worker stops at a safe checkpoint and emits a
-`MODEL_ESCALATION_REQUEST` with lane/claim state, branch/worktree/HEAD, current
-changes, evidence, hypotheses, attempts and exact failures, invariants,
-verification gaps, qualifying trigger, and smallest recommended next action.
-The coordinator accepts, rejects, or narrows the request before any replacement
-starts.
+receives one from the coordinator role before editing, regardless of route.
+The canonical
+[PR-Batch Worker Execution](pr-batch-worker-execution.md#input-contract)
+component owns how the worker consumes that envelope, expands paths, validates
+focused changes, and stops. Model routing supplies the envelope and any
+escalation decision; it does not restate execution behavior.
 
 Resolve coordinator and worker preferences from explicit operator constraints or
 host-exposed runtime/config state. Official vendor docs may confirm capability
@@ -2481,110 +2430,18 @@ that compatible capability or its advertisement is `UNKNOWN`, record
 
 ### Worker Rules
 
-When worker subagents are explicitly authorized:
+This workflow is the compatibility/index surface for agents that do not load
+skills. After prompt intake, dependency preflight, and dispatcher selection,
+load the adjacent canonical
+[PR-Batch Worker Execution](pr-batch-worker-execution.md) component before
+creating a lane worktree or editing. It is the sole owner of isolated setup,
+the bounded implementation loop, focused validation, meaningful stop packets,
+the worker attention queue, Lane Cards, and the implementation-head handoff.
 
-- Assign one target or one semantic lane per worker.
-- Acquire the lane's `agent-coord claim` before creating the worker worktree or
-  branch when the backend is available. If bounded doctor/status is degraded
-  and the lane is exact and independent, the coordinator may provide a
-  successful direct claim result before worker launch. Use an advisory
-  public-claim URL only when the private claim could not be started or
-  definitively failed with a non-timeout setup/auth error before mutation. If
-  the claim is refused, the worker reports the holder and heartbeat liveness,
-  then stops that lane.
-- Give each worker a separate worktree and branch. For in-process subagents
-  (Claude Code `Agent`/`Workflow` tools), "separate worktree" means passing
-  `isolation: 'worktree'`. Never run two file-editing workers in the same working
-  directory at the same time; sharing one checkout corrupts the git index,
-  branch, and working tree as workers overwrite each other.
-- Tell workers they are not alone in the codebase and must not revert others' edits.
-- Keep owned scopes explicit for coordination. Ordinary file overlap does not
-  require file-disjoint workers or launch serialization; record it as an
-  integration advisory. Only issue-authored semantic dependencies and active
-  expansion reservations control launch ordering or max-one serialization.
-- Before editing, when lane risk or bounded delegation requires an execution
-  envelope, restate the coordinator-role-approved goal/non-goals, owned paths,
-  supported diagnosis, invariants, acceptance criteria, verification, and stop
-  conditions regardless of route. Expand owned paths without user approval when
-  repository evidence makes an in-repository path reasonably necessary for the
-  authorized goal or required validation. A sole active editor records the path
-  and reason in the envelope or durable coordinator-owned lane record, then the
-  coordinator records the active reservation, refreshes authoritative file-touch
-  maps, lane lifecycle state, and active claims and collision checks, and reruns
-  `batch-plan-preflight`; the worker continues without user approval or a blocked
-  lifecycle only after the preflight accepts. In a multi-editor wave, the worker
-  persists a typed expansion request, marks its durable lifecycle blocked,
-  refreshes its heartbeat, emits a Lane Card with path, reason, and request
-  evidence reference, and pauses before changing the path. The coordinator
-  processes requests serially, records the active reservation, refreshes
-  authoritative file-touch maps and lane lifecycle state, and reruns
-  `batch-plan-preflight`. For every multi-editor request, acceptance alone does
-  not authorize resume: the requester must durably transition out of `blocked`,
-  a fresh preflight must accept, and the requester must be absent from
-  `launch.held_lane_ids`; when launch or relaunch is needed, it must also be
-  present in `launch.eligible_lane_ids`. Under maximum-concurrency-one
-  serialization, the current holder must also release the slot before resume.
-  The reservation remains active until the
-  verified file-touch map reflects the path or the request is cancelled. A
-  collision or `UNKNOWN` collision state remains stopped. With or without an
-  envelope, contradictory evidence remains an
-  immediate stop. Stop and return control when any of the following applies: the
-  approved goal, accepted behavior, or acceptance criteria changes; the work adds
-  unrelated work; it crosses a repository or trust boundary; it requires a
-  destructive or difficult-to-reverse action; it introduces secrets, permissions,
-  deployments, billing, or other external effects; it requires consequential
-  architecture, performance, compatibility, or product judgment; it materially
-  changes security, privacy, compliance, or release policy; it collides with
-  another active lane and cannot be safely coordinated; it exposes consequential
-  ambiguity; or it weakens verification. An omitted path alone is not such a
-  condition.
-- Refresh that worker's heartbeat whenever it starts an item, pushes or updates a
-  PR, completes a review pass, becomes blocked, resumes, or finishes the lane.
-- Emit a portable Lane Card after a successful claim, on blocked/cancelled state,
-  and as the final handoff header. The actor that opens or updates the PR emits
-  the PR-open Lane Card when the PR is opened. Keep it in markdown and refresh
-  values instead of relying on chat titles:
-  - `Lane Card`
-  - `Thread:` `<thread-handle>`
-  - `Preference:` `<model>/<effort>`; `observed:`
-    `<host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>`; `envelope:`
-    `<coordinator-approved|UNKNOWN>`
-  - `Batch/lane:` `<batch-id>` / `<lane>`; `dashboard_url`: `<url|UNKNOWN>`
-  - `Target:` for a GitHub target is its `<verified GitHub issue/PR link>`; for an ad-hoc target use exactly `n/a — durably overridden ad-hoc; durable_ref=<exact accepted durable_authorization_ref>`
-  - `Canonical launch:` `<repository-qualified issue/PR identity|repository-qualified stable ad-hoc coordination identity>`
-  - `Ad-hoc override:` `none` for an issue/PR; otherwise
-    `<override_name>; authorizer=<trusted_authorizer>; durable_ref=<durable_authorization_ref>; task_identity=<original_task_identity>`
-  - `Branch:` `<branch>`; `pr_url`: `<verified GitHub PR url|backend url|UNKNOWN>`
-  - `Phase:` `<phase>`; `claim:` `<holder|UNKNOWN>/<generation|UNKNOWN>/<instance|UNKNOWN>`;
-    `coordinator:` `<coordinator-id|UNKNOWN>`
-  - `Path expansion:` `<canonical path|none>`; `reason:` `<known reason|n/a>`;
-    `request_ref:` `<durable evidence ref|n/a>`
-    Never infer canonical identity, override evidence, or observed values from
-    prompt text or worker self-report. If the
-    backend does not provide `dashboard_url`, generation, or instance
-    metadata, show `UNKNOWN` and continue with the available GitHub links. If the
-    backend does not provide `pr_url`, use the verified GitHub PR URL from the
-    PR-open step or current PR state; show `UNKNOWN` only when no PR URL can be
-    verified.
-- For a worker lane with `depends_on`, check bounded `agent-coord status` at
-  lane start and before rebase or push. If dependencies are unmet but their
-  backend state is known, the worker reports the `blocked_on` refs, refreshes
-  the corresponding typed live facts, and runs `stage-dependency-gate` for
-  the requested action. It sets heartbeat `--status blocked` or moves to another
-  lane only when the returned permission is false. Missing or `UNKNOWN`
-  dependency state remains a blanket hard stop.
-- Before any push, the worker checks bounded target or batch status and confirms
-  its claim holder, plus generation or instance identifier when reported, still
-  matches. A mismatch hard-stops the lane without pushing; unavailable holder or
-  generation fields are recorded as `UNKNOWN` and fall back to the existing
-  claim/dependency rules.
-- If bounded `agent-coord status` cannot be checked for a worker lane with
-  `depends_on`, treat dependency state as `UNKNOWN` and stop that lane instead
-  of using claim-only mode or advisory fallback.
-- If a worker lane declares `depends_on` but bounded `agent-coord status` shows no
-  matching batch state for that lane, treat dependency state as `UNKNOWN` and
-  stop to report the missing private batch file.
-- The main agent owns final PR creation, status reporting, hosted-CI decisions, and merge sequencing.
+The surrounding sections still own planning, optional coordination, security,
+and integration/PR closeout. Consume their decisions as component inputs; do
+not reconstruct worker behavior from their examples or duplicate the component
+inside this compatibility workflow.
 
 ### Worker Model Replacement And Escalation
 
