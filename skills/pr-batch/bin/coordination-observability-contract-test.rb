@@ -151,6 +151,7 @@ class CoordinationObservabilityContractTest < Minitest::Test
   def test_public_fallback_preserves_bounded_identity_and_expiry
     fallback = squish(section(@backend_doc, "## Public Claim Comment Fallback", /^##\s+/))
 
+    assert_match(/^## Batch Coordination Declaration$/, @backend_doc)
     assert_includes fallback, "stable session, thread, or machine identifier"
     assert_includes fallback, "`thread: unavailable`"
     assert_includes fallback, "machine, branch, and batch fields"
