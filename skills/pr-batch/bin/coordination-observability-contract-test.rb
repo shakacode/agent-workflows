@@ -45,6 +45,8 @@ class CoordinationObservabilityContractTest < Minitest::Test
 
     assert_includes @component, "coordination-observability v1"
     assert_includes @component, "private | public-fallback | none"
+    assert_includes @component, "PR_BATCH_SKILL_DIR"
+    assert_includes @component, "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded"
     assert_operator @component.bytesize, :<=, 18_000,
                     "coordination/observability must stay smaller than the prose it replaces"
   end
@@ -90,6 +92,7 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes ownership, "does not freeze unrelated"
     assert_includes ownership, "claim timeout"
     assert_includes ownership, "UNKNOWN (claim outcome)"
+    assert_includes ownership, "private_state: claim-only"
     assert_includes ownership, "codex-ready"
     assert_includes ownership, "codex-wip"
     assert_includes ownership, "gh label create"

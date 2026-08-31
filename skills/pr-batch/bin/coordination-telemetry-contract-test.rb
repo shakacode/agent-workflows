@@ -481,13 +481,11 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_operational_signal_dry_run_maps_each_checkpoint_to_the_typed_contract
     telemetry = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Operational Signal Events")
+    rows = parse_operational_signal_rows(telemetry)
 
-    EXPECTED_OPERATIONAL_SIGNALS.each_value do |signal|
-      assert_includes telemetry, "`#{signal.fetch('type')}`"
-      signal.fetch("required_fields").each do |field|
-        assert_includes telemetry, "`#{field}`"
-      end
-    end
+    assert_equal EXPECTED_OPERATIONAL_SIGNALS, rows
+    assert_equal %w[error escalation_requested help_requested human_intervention],
+                 rows.values.map { |row| row.fetch("type") }.sort
 
     assert_includes telemetry, "`claim.acquired`"
     assert_includes telemetry, "`claim.released`"

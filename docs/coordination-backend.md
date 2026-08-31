@@ -68,7 +68,7 @@ Use one advisory public claim only after the private claim cannot start or
 definitively fails with a non-timeout setup or authentication error. A timeout
 or private claim refusal never permits fallback. Before posting, inspect recent
 comments for an unexpired marker on the same target; a conflicting marker stops
-that lane.
+that lane and its comment URL is reported as handoff evidence.
 
 ```markdown
 <!-- codex-claim v1
@@ -226,13 +226,18 @@ An active private backend may expose a typed event interface. The portable
 workflow emits these signals at existing checkpoints, alongside its prose
 packets and handoffs:
 
-- `help_requested` requires `reason`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
-- `escalation_requested` requires nonempty `from_route`, `to_route`, and
-  `evidence`.
-- `error` requires `severity` (`P0`, `P1`, `P2`, or `P3`), nonempty `category`,
-  and nonempty `message`.
-- `human_intervention` requires `kind`: `takeover`, `supersede`, `manual-fix`,
-  or `drain`.
+| Checkpoint | Typed event | Required fields |
+| ---------- | ----------- | --------------- |
+| help-needed pause | `help_requested` | `reason` |
+| model escalation request | `escalation_requested` | `from_route`, `to_route`, `evidence` |
+| human intervention | `human_intervention` | `kind` |
+| serious error | `error` | `severity`, `category`, `message` |
+
+Choose exactly one `help_requested.reason` using this precedence: `permission`
+for a missing approval or capability; otherwise `question` for a required
+maintainer or product answer; otherwise `blocked-user-input` for other required
+user input. `severity` is `P0`, `P1`, `P2`, or `P3`; intervention `kind` is
+`takeover`, `supersede`, `manual-fix`, or `drain`.
 
 Include batch, lane, agent, repository, target, branch, and status context when
 known. Typed payload fields remain data rather than path components. Event

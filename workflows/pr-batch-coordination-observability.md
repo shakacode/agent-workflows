@@ -47,9 +47,13 @@ Resolve the mode only from trusted repository configuration and bounded live
 evidence:
 
 - `private`: the configured private backend is usable. Run doctor, target, and
-  batch reads through `skills/pr-batch/bin/agent-coord-bounded` with a finite
-  timeout. A target status read is preflight; the claim operation is the
-  compare-and-swap ownership gate. Use only advertised flags and capabilities.
+  batch reads with a finite timeout. Resolve `PR_BATCH_SKILL_DIR` in this order:
+  an explicit environment value, the loaded skill's base directory, then the
+  repo-local `.agents/skills/pr-batch` copy; stop with a precise blocker when
+  the helper is still unavailable. Invoke
+  `${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded`; a target status read is
+  preflight, while the claim operation is the compare-and-swap ownership gate.
+  Use only advertised flags and capabilities.
 - `public-fallback`: an issue or PR lane cannot start the configured private
   claim because of a definitive non-timeout setup or authentication failure,
   and repository policy permits the advisory claim-comment fallback. The
@@ -63,11 +67,12 @@ evidence:
   coordination is healthy or `UNKNOWN`.
 
 A timeout, ambiguous mutation result, or unavailable required field remains
-literal `UNKNOWN`. It blocks only the affected lane and affected action, never
-a fleet-wide fence. Optional registration, typed events, telemetry, or broad
-audit state may degrade field by field without blocking unrelated correctness
-work. A timed-out claim is `UNKNOWN (claim outcome)`, not permission to fall
-back or retry blindly.
+literal `UNKNOWN`. Except for a degraded preflight read superseded by the
+successful claim-only transition below, it blocks only the affected lane and
+affected action, never a fleet-wide fence. Optional registration, typed events,
+telemetry, or broad audit state may degrade field by field without blocking
+unrelated correctness work. A timed-out claim is `UNKNOWN (claim outcome)`, not
+permission to fall back or retry blindly.
 
 ## Ownership And Liveness
 
@@ -75,10 +80,14 @@ Contradictory reliable live ownership for the exact target, branch, and
 worktree refuses duplicate execution. It does not freeze unrelated
 implementation, validation, or review. Apply these target-scoped rules:
 
-1. Run bounded target status before claim. Acquire the claim before creating
-   the lane branch or worktree. `CLAIM_REFUSED` is a hard stop that reports the
-   current holder and heartbeat liveness; a claim timeout stops as
-   `UNKNOWN (claim outcome)` until reconciled.
+1. Run bounded target status before claim. If doctor or target-status reads are
+   degraded, an exact independent lane with no `depends_on` refs may attempt one
+   bounded direct claim. A successful compare-and-swap proceeds as
+   `private_state: claim-only` and records the degraded read evidence; a refusal
+   remains a hard stop, while a claim timeout stops as
+   `UNKNOWN (claim outcome)` until reconciled. Otherwise acquire the claim
+   normally before creating the lane branch or worktree. Every refusal reports
+   the current holder and heartbeat liveness.
 2. After claim, mirror the repository's `agent_claimed_label` (default
    `agent-claimed`) only for an issue or PR and only when expiry reconciliation
    is available. The label is a visible hint, not the lock. Remove it on release
