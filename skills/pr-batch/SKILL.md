@@ -215,7 +215,8 @@ order: explicit environment variable; the loaded skill's base directory when the
 host exposes it; repo-local `.agents/skills/pr-batch`; then stop with a precise
 blocker if the helper is still missing.
 For release-mode coordination, auto-merge confidence, shared release trackers,
-production deployment or promotion, or publishing, load the resolved
+production deployment or promotion, publishing, release rollback, or other
+explicit release work, load the resolved
 `pr-production-release.md`: prefer the repo-local
 `.agents/workflows/pr-production-release.md` when present; otherwise use the
 installed workflow adjacent to the resolved `pr-processing.md` in the same

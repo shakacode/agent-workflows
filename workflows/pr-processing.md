@@ -409,9 +409,16 @@ gh pr list --search "<key terms from issue>" --state open
 
 ## Production And Release Compatibility Route
 
+Before following a route into the downstream workflow, resolve it by preferring
+repo-local `.agents/workflows/pr-production-release.md` when present; otherwise
+use the installed `workflows/pr-production-release.md` from the same Agent
+Workflows pack that supplied this workflow or its entry skill. Stop with a
+precise blocker if neither path exists. Section names below refer to headings in
+that resolved file; do not assume a relative sibling file exists.
+
 Production and release are a downstream lifecycle, separate from ordinary
 feature implementation and PR integration. Load the canonical
-[PR Production And Release](pr-production-release.md) component only when
+**PR Production And Release** component only when
 repository policy, the target branch, or the explicit task selects production
 deployment, release-candidate, production promotion, publishing, or release
 work. Ordinary base-branch feature work does not load the downstream component
@@ -3226,7 +3233,7 @@ The closeout lane is:
    the ordinary merge qualification rules and merge-endgame debounce; report
    only remaining blockers, questions, or `UNKNOWN` live state. When the
    production/release component is loaded, also apply its
-   [Release Closeout Extension](pr-production-release.md#release-closeout-extension):
+   **Release Closeout Extension** section from the resolved component:
    apply the extension's pre-action rules before the ready or merge action and
    its post-merge rule before ordinary closeout step 10.
 10. After any closeout-lane merge action, run a lightweight sweep for late
@@ -3683,6 +3690,13 @@ does not load the production/release component.
   verified non-empty diff, disabled tools, isolated MCP, a finite budget, and a
   structured terminal verdict. Missing isolation, a non-zero exit, partial
   output, or budget exhaustion blocks use of the result.
+- A repository-configured fallback review may establish its qualifying identity
+  through a named current-head GitHub check/app, a current-head formal GitHub
+  review record, or durable attestation by a reviewer or finalizer with `write`,
+  `maintain`, or `admin` permission. The reviewer or attester must satisfy the
+  same no-authorship, no-merge-actor, and different-account restrictions as a
+  local fallback. This identity route does not waive the fallback trigger,
+  final re-poll, current-head, blocker-triage, or evidence requirements.
 - Before invoking a local reviewer, fetch the PR's real base, verify a merge base
   exists, capture the exact PR diff to a non-empty file, and fail closed if any
   diff step fails. A direct pipeline must use `pipefail` and check the diff
@@ -4341,7 +4355,8 @@ direct-merge command shape.
 ### Accelerated RC Auto-Merge Compatibility Route
 
 For accelerated-RC or final-release handling, load
-[Accelerated RC Auto-Merge](pr-production-release.md#accelerated-rc-auto-merge).
+the **Accelerated RC Auto-Merge** section from the resolved PR Production And
+Release component.
 Ordinary human-merge fallback stays in
 [Ordinary Review Fallback](#ordinary-review-fallback); do not load the release
 component for that path.

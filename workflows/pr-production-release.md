@@ -5,6 +5,14 @@ PR-batch. Load it only when repository policy, the target branch, or the
 explicit task selects production deployment, release-candidate, production
 promotion, publishing, or release work.
 
+Before following a reverse route into ordinary PR integration, resolve the
+ordinary workflow by preferring repo-local `.agents/workflows/pr-processing.md`
+when present; otherwise use the `pr-processing.md` already resolved by the
+calling workflow or skill, or the installed workflow from that same Agent
+Workflows pack. Stop with a precise blocker if none is available. References
+below to **Ordinary Review Fallback** mean that section in the resolved workflow;
+do not assume a relative sibling file exists.
+
 ## Boundary
 
 Production and release are downstream from ordinary PR integration. This
@@ -140,25 +148,17 @@ Auto-merge requires all of the following:
 - Score is at least `8/10`; `7/10` permits human merge after review, but not auto-merge.
 - Before triggering auto-merge, the merge actor verifies `Finalized by` against the GitHub review record, checks, or git log, not only the PR body text.
 - All GitHub checks for the current head SHA are complete. An empty full `gh pr checks <PR>` list is `UNKNOWN` / not ready. Skipped checks count as complete only when CI selector output explains them or a maintainer explicitly waives them.
-- The configured Claude review check for the current head SHA completed with an acceptable conclusion, or a qualifying fallback review completed with the same blocker-triage bar. The portable default check name is `claude-review`; consumer repos that use a differently named review check must define that name under their `AGENTS.md` `Review gate` policy and keep every helper or workflow that polls review status aligned with it before relying on that override. Other repo-configured reviewers, including Cursor Bugbot or Codex review, qualify only when visible as a current-head GitHub check/app result or when they satisfy the [ordinary fallback reviewer-identity and attestation rules](pr-processing.md#ordinary-review-fallback). Acceptable conclusions are `success`, or `skipped` / `neutral` only when CI selector output or a maintainer waiver explains why the run did not review code. A `failure`, `cancelled`, `timed_out`, or unknown conclusion does not satisfy this gate and must route through the fallback/error-evidence rules. An `action_required` conclusion is an external approval gate; it blocks auto-merge until the approval is satisfied or a maintainer leaves an explicit waiver, and it is not a fallback trigger by itself.
+- The configured Claude review check for the current head SHA completed with an acceptable conclusion, or a qualifying fallback review completed with the same blocker-triage bar. The portable default check name is `claude-review`; consumer repos that use a differently named review check must define that name under their `AGENTS.md` `Review gate` policy and keep every helper or workflow that polls review status aligned with it before relying on that override. Other repo-configured reviewers, including Cursor Bugbot or Codex review, qualify only when visible as a current-head GitHub check/app result or when they satisfy the reviewer-identity and attestation rules in **Ordinary Review Fallback** in the resolved processing workflow. Acceptable conclusions are `success`, or `skipped` / `neutral` only when CI selector output or a maintainer waiver explains why the run did not review code. A `failure`, `cancelled`, `timed_out`, or unknown conclusion does not satisfy this gate and must route through the fallback/error-evidence rules. An `action_required` conclusion is an external approval gate; it blocks auto-merge until the approval is satisfied or a maintainer leaves an explicit waiver, and it is not a fallback trigger by itself.
 - **Fallback safety and attestation.** Apply every trigger, final re-poll,
   exact-diff invocation, isolation, budget, reviewer-identity, and attestation
   requirement in
-  [Ordinary Review Fallback](pr-processing.md#ordinary-review-fallback). For
+  **Ordinary Review Fallback** in the resolved processing workflow. For
   accelerated-RC auto-merge only, the fallback path may also open when the only
   configured reviewer result is for an older head SHA, no current-head run is
   queued or running after the same two queries at least 180 seconds apart, and
   trusted evidence records the stale run's head SHA and URL. This release-only
   extension still requires the ordinary final Checks API re-poll and every
   distinct-attester restriction.
-- **Repo-configured fallback identity.** A repo-configured fallback review may
-  establish its qualifying identity through a named current-head GitHub
-  check/app, a current-head formal GitHub review record, or durable attestation
-  by a reviewer or finalizer with `write`, `maintain`, or `admin` permission.
-  The reviewer or attester must satisfy the same no-authorship, no-merge-actor,
-  and different-account restrictions as the ordinary fallback. This identity
-  route does not waive the fallback trigger, final re-poll, current-head,
-  blocker-triage, or evidence requirements.
 - Claude failures not caused by capacity limits are understood before merge.
 - CodeRabbit approval is not required, but concrete CodeRabbit findings still need normal blocker triage.
 - Reviewer verdicts in the confidence block are classified as current-head or stale/advisory with the head SHA each verdict covers. Stale approvals, positive comments, and summaries cannot be cited as merge gates.

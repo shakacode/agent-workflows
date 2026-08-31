@@ -41,8 +41,13 @@ class ProductionReleaseContractTest < Minitest::Test
   def test_compatibility_surfaces_route_without_restatement
     workflow = squish(@workflow)
     skill = squish(@skill)
+    component = squish(@component)
     assert_includes workflow, "## Production And Release Compatibility Route"
-    assert_includes workflow, "[PR Production And Release](pr-production-release.md)"
+    assert_includes workflow, "**PR Production And Release** component"
+    assert_includes workflow, "repo-local `.agents/workflows/pr-production-release.md` when present"
+    assert_includes workflow, "installed `workflows/pr-production-release.md` from the same Agent Workflows pack"
+    assert_includes workflow, "do not assume a relative sibling file exists"
+    refute_match(/\]\(pr-production-release\.md(?:#[^)]+)?\)/, @workflow)
     release_route = "Ordinary base-branch feature work does not load the downstream component " \
                     "unless repository policy or the live release tracker selects release handling for that PR"
     assert_includes workflow, release_route
@@ -65,10 +70,13 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes skill, "installed workflow adjacent to the resolved `pr-processing.md`"
     assert_includes skill, "Do not restate the component's tracker, phase, promotion, or release rules here."
     assert_includes skill, "production deployment or promotion"
+    assert_includes skill, "publishing, release rollback, or other explicit release work"
     assert_includes skill, "unless repository policy or the live release tracker selects release handling for that PR"
 
-    assert_includes @component,
-                    "[ordinary fallback reviewer-identity and attestation rules](pr-processing.md#ordinary-review-fallback)"
+    assert_includes component, "repo-local `.agents/workflows/pr-processing.md` when present"
+    assert_includes component, "`pr-processing.md` already resolved by the calling workflow or skill"
+    assert_includes component, "**Ordinary Review Fallback** mean that section in the resolved workflow"
+    refute_match(/\]\(pr-processing\.md(?:#[^)]+)?\)/, @component)
 
     assert_includes @handbook, "../workflows/pr-production-release.md#release-mode-preflight"
     assert_includes @handbook, "../workflows/pr-production-release.md#release-phase-gate"
@@ -96,14 +104,9 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes squish(@workflow), "Do not bypass the queue with administrator privileges"
     assert_includes normalized, "## Release Closeout Extension"
     assert_includes normalized, "accelerated-RC waiver-soak"
-    assert_includes normalized, "current-head formal GitHub review record"
-    assert_includes normalized, "reviewer or finalizer with `write`, `maintain`, or `admin` permission"
-    assert_includes normalized, "does not waive the fallback trigger, final re-poll, current-head"
-
     closeout = @workflow.split("The closeout lane is:", 2).last
                         .split("## Self-Review Gate", 2).first
-    assert_includes closeout,
-                    "[Release Closeout Extension](pr-production-release.md#release-closeout-extension)"
+    assert_includes closeout, "**Release Closeout Extension** section from the resolved component"
     assert_includes closeout, "its post-merge rule before ordinary closeout step 10"
     refute_includes closeout, "Agent Merge Confidence"
     refute_includes closeout, "Under the current release mode"
@@ -120,6 +123,10 @@ class ProductionReleaseContractTest < Minitest::Test
 
     fallback = squish(@workflow.split("### Ordinary Review Fallback", 2).last
                                 .split("### Adversarial Review Gate", 2).first)
+    assert_includes fallback, "current-head formal GitHub review record"
+    assert_includes fallback, "reviewer or finalizer with `write`, `maintain`, or `admin` permission"
+    assert_includes fallback, "does not waive the fallback trigger, final re-poll, current-head"
+    refute_includes normalized, "**Repo-configured fallback identity.**"
     assert_includes fallback, "fetch the PR's real base"
     assert_includes fallback, "verify a merge base exists"
     assert_includes fallback, "`pipefail`"
