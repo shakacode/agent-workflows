@@ -443,9 +443,12 @@ Return:
   record carries one entry per target lane with the selection, launch, and
   worker-observed source digests; selection/launch/worker-start timestamps; and
   observed runtime/workflow versions, plus run-level prompt-creation metadata.
-  For that narrow non-GitHub override, retain its existing provenance/authority
-  evidence and record the three source-digest fields as exact `not applicable —
-  trusted-ad-hoc-override` instead of inventing a source snapshot.
+  For that narrow non-GitHub override, record the three source-digest fields as
+  exact `not applicable — trusted-ad-hoc-override` and reverify that the durable
+  reference resolves to the same immutable accepted provenance/authority record
+  revision, or an equivalent existing content binding, at selection, launch,
+  and worker start. Missing, mutable, changed, or `UNKNOWN` binding stops; do
+  not invent a source snapshot.
   Report idle slots or the remaining backlog/next wave separately.
 - One durable planning-chat lifecycle record covering every generated group:
   While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.

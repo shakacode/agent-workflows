@@ -1810,9 +1810,12 @@ Human available after: <optional time; omit this line when not supplied>
 
 The launcher, not the maintainer, writes launch provenance and execution state.
 Each execution appends one compact visible state plus one collapsed `<details>`
-record in the issue or PR. That record has one entry for every planned target
-lane. Within a lane entry, write selection provenance first, then append launch
-provenance, then append worker observations without replacing earlier values.
+record. A GitHub-backed run appends it in the issue or PR. The narrow
+non-GitHub trusted-ad-hoc exception appends the same compact/history record to
+its existing durable plan or backend state; do not create another storage or
+record schema. That record has one entry for every planned target lane. Within
+a lane entry, write selection provenance first, then append launch provenance,
+then append worker observations without replacing earlier values.
 Reruns append a new collapsed record instead of replacing or folding earlier
 runs into the newest values. Later workflow observations are timestamped
 append-only entries on the run that observed them.
@@ -1847,9 +1850,11 @@ durable authorization reference. Record that exact reference as `Prompt
 source`; do not invent another snapshot, byte encoding, or record schema. The
 existing override contract exposes provenance and authority evidence, not
 canonical source bytes, so record each source-digest field as exact `not
-applicable — trusted-ad-hoc-override` and reverify the complete accepted
-override evidence at selection, launch, and worker start. Missing, changed, or
-`UNKNOWN` override evidence stops at that boundary.
+applicable — trusted-ad-hoc-override`. The existing durable backend reference
+must resolve to the same immutable accepted provenance/authority record
+revision, or an equivalent existing content binding, at selection, launch, and
+worker start. A missing, mutable, changed, or `UNKNOWN` binding or other
+override evidence stops at that boundary.
 
 ```markdown
 <details>

@@ -365,9 +365,12 @@ omit the queue summary and note that queue state is unavailable.
    observations with timestamps. Reruns append new collapsed `<details>`
    history without rewriting earlier runs or lane values.
    For the narrow non-GitHub trusted-ad-hoc exception, record the accepted
-   durable reference as the prompt source, preserve and reverify its existing
-   provenance/authority evidence, and write each source-digest field as exact
-   `not applicable — trusted-ad-hoc-override`; do not invent a snapshot schema.
+   durable reference as the prompt source and write each source-digest field as
+   exact `not applicable — trusted-ad-hoc-override`. Reverify that the reference
+   resolves to the same immutable accepted provenance/authority record revision,
+   or an equivalent existing content binding, at selection, launch, and worker
+   start; missing, mutable, changed, or `UNKNOWN` binding stops. Do not invent a
+   snapshot schema.
    Do not wait for a telemetry aggregator. Human `auto` maps to machine
    `auto_merge_when_gates_pass`; `ask` maps to machine `ask`; machine-only
    `merge_authority: none` remains outside the normal human prompt.
