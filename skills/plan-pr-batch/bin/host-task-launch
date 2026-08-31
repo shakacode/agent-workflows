@@ -13,13 +13,6 @@ module HostTaskLaunch
   VERSION = 1
   UUID_V4 = AgentRunRecord::UUID_V4
   SHA256 = AgentRunRecord::SHA256
-  CAPABILITY_KEYS = %w[
-    task_creation title_at_creation task_rename saved_project_selection
-    isolated_worktree immediate_task_identifier provisional_task_identifier
-    provisional_identifier_resolution task_status_read host_creation_idempotency
-    reconciliation_by_run_id
-  ].freeze
-
   class ContractError < StandardError; end
 
   module_function
@@ -85,11 +78,6 @@ module HostTaskLaunch
 
     validate_capability_preflight!(input.fetch("capability_preflight"))
     validate_intent!(input.fetch("intent"))
-  end
-
-  def validate_capabilities!(capabilities)
-    raise ContractError unless capabilities.is_a?(Hash)
-    raise ContractError unless CAPABILITY_KEYS.all? { |key| [true, false, "UNKNOWN"].include?(capabilities[key]) }
   end
 
   def validate_intent!(intent)
@@ -377,17 +365,36 @@ module HostTaskLaunch
     immutable_paths = [
       %w[contract], %w[version], %w[run_id], %w[launch_idempotency_key], %w[repository],
       %w[work_item], %w[prompt_source kind], %w[prompt_source url], %w[prompt_source digest_at_selection],
-      %w[prompt_source digest_at_launch], %w[current_main], %w[runner name], %w[runner machine],
+      %w[current_main], %w[runner name], %w[runner machine],
       %w[runner model_at_prompt_creation], %w[workflow_versions prompt_creation],
-      %w[timestamps selected_at], %w[timestamps prompt_created_at], %w[prompt_transport]
+      %w[timestamps selected_at], %w[timestamps prompt_created_at]
     ]
     immutable_paths.each { |path| raise ContractError unless dig_path(existing, path) == dig_path(evidence, path) }
+    validate_launch_refresh!(existing, evidence)
     validate_worker_start_refresh!(existing, evidence)
     old_later = existing.dig("workflow_versions", "later_observations")
     new_later = evidence.dig("workflow_versions", "later_observations")
     raise ContractError unless new_later.first(old_later.length) == old_later
 
     lane["helper_evidence"] = evidence
+  end
+
+  def validate_launch_refresh!(existing, evidence)
+    old_digest = existing.dig("prompt_source", "digest_at_launch")
+    new_digest = evidence.dig("prompt_source", "digest_at_launch")
+    old_transport = existing["prompt_transport"]
+    new_transport = evidence["prompt_transport"]
+    if old_digest == "pending"
+      raise ContractError unless old_transport.nil?
+      return if new_digest == "pending" && new_transport.nil?
+
+      raise ContractError unless new_digest == existing.dig("prompt_source", "digest_at_selection")
+      raise ContractError unless new_transport.is_a?(Hash) && new_transport["digest_at_launch"] == new_digest
+
+      return
+    end
+
+    raise ContractError unless old_digest == new_digest && old_transport == new_transport
   end
 
   def validate_worker_start_refresh!(existing, evidence)

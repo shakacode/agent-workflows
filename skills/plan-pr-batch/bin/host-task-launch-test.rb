@@ -104,6 +104,81 @@ class HostTaskLaunchTest < Minitest::Test
     end
   end
 
+  def test_refresh_allows_one_pending_to_verified_launch_transition
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      pending = pending_helper_evidence
+      input = input_for(directory, helper_evidence: pending)
+      prepared = invoke(input)
+      input["operation"] = "refresh-helper-evidence"
+      input["helper_evidence"] = verified_helper_evidence(pending)
+
+      refreshed = invoke(input)
+
+      assert_equal prepared.dig("record", "run_id"), refreshed.dig("record", "run_id")
+      assert_equal "a" * 64, refreshed.dig("record", "lanes", 0, "helper_evidence", "prompt_source", "digest_at_launch")
+      assert_equal canonical_prompt_transport, refreshed.dig("record", "lanes", 0, "helper_evidence", "prompt_transport")
+    end
+  end
+
+  def test_refresh_rejects_launch_digest_or_transport_rewrite_after_verification
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      pending = pending_helper_evidence
+      input = input_for(directory, helper_evidence: pending)
+      invoke(input)
+      input["operation"] = "refresh-helper-evidence"
+      verified = verified_helper_evidence(pending)
+      input["helper_evidence"] = verified
+      invoke(input)
+
+      rewritten_digest = Marshal.load(Marshal.dump(verified))
+      rewritten_digest["prompt_source"]["digest_at_selection"] = "b" * 64
+      rewritten_digest["prompt_source"]["digest_at_launch"] = "b" * 64
+      rewritten_digest["prompt_transport"]["digest_at_launch"] = "b" * 64
+      input["helper_evidence"] = rewritten_digest
+      assert_equal "invalid-input", invoke(input).fetch("status")
+
+      rewritten_transport = Marshal.load(Marshal.dump(verified))
+      rewritten_transport["prompt_transport"] = {
+        "kind" => "durable-plan-state", "reference" => "plan-state://state-1/launch", "digest_at_launch" => "a" * 64
+      }
+      input["helper_evidence"] = rewritten_transport
+      assert_equal "invalid-input", invoke(input).fetch("status")
+    end
+  end
+
+  def test_refresh_allows_one_pending_to_recorded_worker_start_transition
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      pending = pending_helper_evidence
+      input = input_for(directory, helper_evidence: pending)
+      invoke(input)
+      input["operation"] = "refresh-helper-evidence"
+      input["helper_evidence"] = verified_helper_evidence(pending)
+      invoke(input)
+      input["helper_evidence"] = valid_helper_evidence
+
+      refreshed = invoke(input)
+
+      assert_equal "2026-08-30T02:00:57.829Z", refreshed.dig("record", "lanes", 0, "helper_evidence", "timestamps", "worker_started_at")
+      assert_equal "runner", refreshed.dig("record", "lanes", 0, "helper_evidence", "runner", "name")
+    end
+  end
+
+  def test_refresh_rejects_rewritten_later_workflow_observations
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      invoke(input)
+      input["operation"] = "refresh-helper-evidence"
+      appended = helper_evidence_with_later_observation
+      input["helper_evidence"] = appended
+      assert_equal 1, invoke(input).dig("record", "lanes", 0, "helper_evidence", "workflow_versions", "later_observations").length
+
+      rewritten = Marshal.load(Marshal.dump(appended))
+      rewritten.dig("workflow_versions", "later_observations", 0)["pack_head"] = "f" * 40
+      input["helper_evidence"] = rewritten
+      assert_equal "invalid-input", invoke(input).fetch("status")
+    end
+  end
+
   def test_binds_immediate_and_provisional_task_identities_and_renders_only_the_outer_marker
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
@@ -222,7 +297,7 @@ class HostTaskLaunchTest < Minitest::Test
 
   private
 
-  def input_for(directory, fixture: "native")
+  def input_for(directory, fixture: "native", helper_evidence: valid_helper_evidence)
     fixture_data = Marshal.load(Marshal.dump(FIXTURES.fetch(fixture)))
     fixture_data.merge(
       "type" => "host-task-launch",
@@ -246,7 +321,7 @@ class HostTaskLaunchTest < Minitest::Test
           "dispatcher" => "portable-dispatcher",
           "instance_id" => "instance-1",
           "launch_token" => "launch-1",
-          "helper_evidence" => valid_helper_evidence
+          "helper_evidence" => helper_evidence
         }]
       }
     )
@@ -306,6 +381,42 @@ class HostTaskLaunchTest < Minitest::Test
       "latest_material_update" => { "at" => "2026-08-30T02:00:57.829Z", "summary" => "started" }, "blocker" => nil,
       "timestamps" => { "selected_at" => "2026-08-30T02:00:55.829Z", "prompt_created_at" => "2026-08-30T02:00:56.829Z", "worker_digest_observed_at" => "2026-08-30T02:00:57.829Z", "worker_started_at" => "2026-08-30T02:00:57.829Z", "observed_at" => "2026-08-30T02:00:59.000Z" }
     }
+  end
+
+  def pending_helper_evidence
+    evidence = Marshal.load(Marshal.dump(valid_helper_evidence))
+    evidence["prompt_source"]["digest_at_launch"] = "pending"
+    evidence["prompt_source"]["digest_observed_by_worker"] = "pending"
+    evidence["prompt_transport"] = nil
+    evidence["workflow_versions"]["worker_start"] = pending_workflow_observation
+    evidence["timestamps"]["worker_digest_observed_at"] = "pending"
+    evidence["timestamps"]["worker_started_at"] = "pending"
+    evidence["state"] = "launch-pending"
+    evidence
+  end
+
+  def verified_helper_evidence(pending)
+    evidence = Marshal.load(Marshal.dump(pending))
+    evidence["prompt_source"]["digest_at_launch"] = evidence.dig("prompt_source", "digest_at_selection")
+    evidence["prompt_transport"] = canonical_prompt_transport
+    evidence
+  end
+
+  def canonical_prompt_transport
+    { "kind" => "complete-batch-plan", "reference" => "inline", "digest_at_launch" => "a" * 64 }
+  end
+
+  def helper_evidence_with_later_observation
+    evidence = Marshal.load(Marshal.dump(valid_helper_evidence))
+    observed_at = "2026-08-30T02:01:00.000Z"
+    evidence["workflow_versions"]["later_observations"] = [workflow(observed_at)]
+    evidence["timestamps"]["observed_at"] = observed_at
+    evidence["latest_material_update"] = { "at" => observed_at, "summary" => "workflow versions changed" }
+    evidence
+  end
+
+  def pending_workflow_observation
+    { "observed_at" => "pending", "pack_head" => "UNKNOWN", "pr_batch_sha256" => "UNKNOWN", "pr_processing_sha256" => "UNKNOWN" }
   end
 
   def workflow(observed_at)
