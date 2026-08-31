@@ -8,15 +8,22 @@ require_relative "../../bin/agent_doctor/source_checks"
 
 class AgentDoctorSourceChecksTest < Minitest::Test
   class RecordingRunner
-    attr_reader :commands
+    attr_reader :calls, :effective_timeouts
 
-    def initialize(delegate)
+    def initialize(delegate, default_timeout: nil)
       @delegate = delegate
-      @commands = []
+      @default_timeout = default_timeout
+      @calls = []
+      @effective_timeouts = []
+    end
+
+    def commands
+      @calls.map(&:first)
     end
 
     def capture(command, **options)
-      @commands << command
+      @calls << [command, options]
+      @effective_timeouts << options.fetch(:timeout, @default_timeout)
       @delegate.capture(command, **options)
     end
   end
@@ -114,6 +121,41 @@ class AgentDoctorSourceChecksTest < Minitest::Test
         assert_includes command, "core.fsmonitor=false"
         assert_includes command, "core.hooksPath=/dev/null"
       end
+    end
+  end
+
+  def test_checkout_keeps_the_production_git_probe_timeout
+    Dir.mktmpdir do |directory|
+      checkout = create_checkout(directory, "agent-workflows")
+      runner = RecordingRunner.new(@runner)
+      checks = AgentDoctor::SourceChecks.new(
+        runner: runner, environment: { "AGENT_STACK_AGENT_WORKFLOWS_URL" => File.join(directory, "origin.git") }
+      )
+
+      check = checks.checkout("agent-workflows", checkout)
+
+      assert_equal "healthy", check["status"]
+      refute_empty runner.calls
+      assert runner.calls.all? { |_, options| options[:timeout] == AgentDoctor::SourceChecks::GIT_TIMEOUT_SECONDS },
+             "source Git probes did not retain the production timeout"
+    end
+  end
+
+  def test_checkout_can_inherit_an_injected_non_deadline_runner_timeout
+    Dir.mktmpdir do |directory|
+      checkout = create_checkout(directory, "agent-workflows")
+      runner = RecordingRunner.new(AgentDoctor::ProcessRunner.new(timeout: 30), default_timeout: 30)
+      checks = AgentDoctor::SourceChecks.new(
+        runner: runner,
+        environment: { "AGENT_STACK_AGENT_WORKFLOWS_URL" => File.join(directory, "origin.git") },
+        git_timeout: nil
+      )
+
+      check = checks.checkout("agent-workflows", checkout)
+
+      assert_equal "healthy", check["status"]
+      refute_empty runner.calls
+      assert_equal [30], runner.effective_timeouts.uniq
     end
   end
 
