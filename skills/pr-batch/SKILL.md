@@ -370,9 +370,10 @@ Before implementation or worker launch, produce:
    reject a missing, changed, duplicate, or `UNKNOWN` identity before dispatch.
 9. An integration-advisory check for overlapping files plus the authoritative
    issue-authored dependency check for dependent PRs.
-10. The selected batch-size target and wave split: `codex` up to 10/8,
-    `claude` up to 5/3, or `generic` up to 5/3, with spillover assigned to
-    later waves instead of overfilling the current one.
+10. The canonical `per-host-capacity-envelope` v1: each lane's selected host,
+    separate worker/heavy-root/external-quota budgets, verified or fallback
+    provenance, current admitted lanes, and the ready lanes held for refill.
+    Prompt target controls rendering only; it is not a worker ceiling.
 11. A coordinator model/effort preference, independent-checker preference,
     plus a separate staged worker model/effort preference for every lane,
     grouped by initial/escalation pair with
@@ -532,7 +533,7 @@ PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
 Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
-Batch size target: <codex|claude|generic>;wave: <cap/items>
+Capacity:<id>=<free>/<limit>w,...;admit=<N>;queued=<N>;env=<ref>
 Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
@@ -668,13 +669,15 @@ root, use the optional host-local
 [Heavy-Root Capacity Admission](../../workflows/pr-batch-capacity-admission.md)
 contract whenever independent coordinators may share that host. Reserve on the
 execution host itself; ordinary lightweight implementation remains outside this
-capacity mechanism.
+capacity mechanism. Use the selected host record's `heavy_root.limit` as the
+helper's policy ceiling; only `heavy-root-admission/v1` may decide and reserve
+the live slot.
 
 ## Worker Rules
 
-Codex-targeted waves may use up to 10 independent lanes, or 8 when shared/risky
-conditions apply. Claude and generic waves use up to 5 lanes, or up to 3 under
-those conditions. Keep requested and observed routes distinct;
+Admit only the lane ids returned by batch-plan preflight. Its per-host envelope
+sums independently free worker slots, holds overflow in the same ready queue,
+and refills terminal slots deterministically. Keep requested and observed routes distinct;
 if the dispatcher or runtime inherits or defaults to another route, record it
 honestly. File overlap is an integration advisory.
 

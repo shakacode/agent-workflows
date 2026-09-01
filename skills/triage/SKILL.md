@@ -158,47 +158,54 @@ the selected backend.
 
 ## Phase 2: Capacity-Aware Split
 
-Only start phase 2 after phase 1 has a verified worklist and capacity state.
-Phase 2 requires capacity state from the selected backend or
-gitignored local config; if that state is unavailable, stop after phase 1 with a
-precise blocker.
+Only start phase 2 after phase 1 has a verified worklist plus known ownership
+and host assignment. Prefer capacity state from the selected backend or
+gitignored local config; when only the numeric budgets are unavailable, use the
+canonical documented fallback and label it `source: fallback`. Unknown or stale
+ownership, dependency, or host assignment still stops phase 2 precisely.
 
-1. Convert registered capacity profiles into available lane slots:
+1. Convert registered capacity profiles into the canonical
+   `per-host-capacity-envelope` v1:
    - `profile_id` identifies the runtime profile.
    - `ram_gb` and `max_concurrent_batches` come from runtime registration or a
      gitignored local file such as `.agent-coord.local.json`.
    - enabled inboxes determine where queued work can be assigned.
    - optional routing tags come from config, not hardcoded model or tool names.
-2. Set `N` to the number of available lane slots:
-   - Sum `max_concurrent_batches` across registered capacity profiles.
-   - Bound that sum by the count of enabled inboxes.
-   - Build a unique occupied/reserved lane-ref set from live in-progress lanes,
+   - Map each selected host to independent `worker`, `heavy_root`, and
+     `external_quota` budgets. Use `source: verified` only when the host-local
+     values and occupancy are verified; otherwise use the canonical documented
+     fallback and record `source: fallback`, or stop on `UNKNOWN` ownership or
+     host assignment.
+2. Derive free worker slots independently for each host, then sum them only for
+   the aggregate `N` report:
+   - Build a unique host-local occupied/reserved lane-ref set from live in-progress lanes,
      live blocked lanes, blocked lanes without a live heartbeat, and reserved
-     lanes, then subtract that set size from the bounded total. If lane refs,
+     lanes, then subtract that set size from that host's worker limit. If lane refs,
      heartbeat liveness, blocked state, reserved state, profiles, or inbox
      config cannot be verified, stop phase 2 with a precise blocker instead of
      deriving `N`.
    - If the subtraction result is negative, report "occupied/reserved lanes
-     exceed registered capacity" with the bounded slot count and occupied lane
+     exceed registered capacity" with the host id, worker limit, and occupied lane
      refs, then stop phase 2 instead of clamping or inventing groups.
-   - If `N` is 0 after subtracting occupied/reserved lane refs, report "all
-     lanes currently occupied" and stop phase 2 instead of inventing groups.
+   - A host with zero free workers receives no new lane and reports
+     `worker-budget-full`; other hosts remain independently usable.
 
-3. First cap the current wave to the selected host-aware item limit, then split
-   only those capped items into up to `N` non-empty groups, honoring
+3. Assign ready work in deterministic host-id and lane-id order up to each
+   host's free worker slots. Keep overflow in the same ready queue and honor
    issue-authored semantic dependencies, consequence/risk care, package boundaries, release gates,
-   cross-repo sequencing, and the host-aware `$pr-batch` per-wave cap from
+   cross-repo sequencing, and the canonical per-host capacity contract from
    `workflows/pr-processing.md`:
-   - `codex`: up to 10 independent items, or 8 when verified
-     lanes touch shared/risky surfaces.
-   - `claude` or `generic`: up to 5 independent items, or 3 under
-     those same shared/risky conditions.
    - Ordinary overlapping paths remain parallel capacity and are recorded as
      integration advisories. Only `UNKNOWN` path evidence stays a serial discovery
      lane; active expansion reservations retain their separate max-one gate.
-   Use the prompt target selected for each generated `$pr-batch` prompt; an
+   - `uses_external_quota: true` lanes also consume their selected host's
+     external-quota budget. Heavy validators, tests, reviews, and QA roots use
+     only issue #604's `heavy-root-admission/v1` contract; triage does not reserve
+     those slots.
+   Use the prompt target selected for rendering each generated `$pr-batch` prompt; an
    explicit user-requested host or paste destination wins, otherwise use the
-   detectable current host, or `generic` when detection is ambiguous.
+   detectable current host, or `generic` when detection is ambiguous. The prompt
+   target never changes worker admission.
    Then classify every lane by the canonical staged model/effort routing in
    `workflows/pr-processing.md`. Keep the coordinator model/effort preference
    separate from every worker model/effort preference. When the worker host/provider
@@ -210,7 +217,7 @@ precise blocker.
    escalation route, not a starting assignment: a worker must emit a
    `MODEL_ESCALATION_REQUEST` with evidence before the coordinator authorizes
    replacement or review. Collate matching routes without changing
-   dependencies, active-reservation coordination, or wave caps. If neither exact pairs nor
+   dependencies, active-reservation coordination, or per-host capacity. If neither exact pairs nor
    initial/escalation class-and-effort preferences can be named, keep the
    preference `UNKNOWN`; it never alone blocks prompt readiness or launch.
    Prefer a fresh strongest-capability checker instance distinct from every
@@ -270,10 +277,10 @@ precise blocker.
    collides with another active lane and cannot be safely coordinated; it
    exposes consequential ambiguity; or it weakens verification. An omitted
    path alone is not such a condition.
-   The current-wave item cap applies across all generated groups in aggregate;
-   never multiply it by `N`, registered profiles, inboxes, or machines. If
-   actionable work exceeds the capped current wave, report the remaining
-   backlog/next wave instead of packing oversized groups. If actionable work has
+   Per-host worker admission applies across all generated groups; never reuse a
+   host's free slots independently in each prompt. If
+   actionable work exceeds current free worker capacity, keep the remaining
+   backlog in the ready queue for terminal-slot refill. If actionable work has
    fewer items than available slots, report the idle slots instead of creating
    empty groups.
 4. Keep issue-authored semantic dependencies inside a group where practical. When a dependency must cross
@@ -288,8 +295,8 @@ precise blocker.
    `Scope` data and carry the complete live replay inline or name its durable
    reference; persist or deliver both artifacts with stable planning state.
    Backend storage is optional and must not be assumed.
-   Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
-   with the selected target and current aggregate wave cap. Each generated prompt must include
+   Each generated prompt must include `Capacity:<id>=<free>/<limit>w,...;admit=<N>;queued=<N>;env=<ref>`
+   with selected hosts and compact admission totals. Each generated prompt must include
    `Coordinator model/effort preference: <model/class>/<effort>.` and
    `Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.` and
    `Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses` and
@@ -427,15 +434,15 @@ Return:
   dropped.
 - Current coordination state, including live, stale, dead, blocked, and done
   lanes.
-- Capacity source and derived `N`; if unavailable, the exact phase-2 blocker.
-- One current-wave plan whose total item count is capped in aggregate by the
-  host-aware target, then split into up to `N` non-empty capacity-derived groups,
+- Capacity source, per-host free/limit worker slots, and aggregate `N`; if unavailable, the exact phase-2 blocker.
+- One ready-queue plan admitted independently per host and split only as needed
+  into reviewable capacity-derived groups,
   each with a ready `$pr-batch` prompt within the target-specific prompt size
-  limit: Codex 10/8 and 4 000 characters with at least 300 characters of headroom,
+  limit: Codex under 4 000 characters with at least 300 characters of headroom,
   including the Codex invocation line;
-  Claude/generic 5/3 and under 8 000 measured characters. Each prompt carries
-  its selected batch size target, aggregate wave cap, thread handle, and Lane
-  Card. Report idle slots or remaining backlog/next wave separately.
+  Claude/generic under 8 000 measured characters. Each prompt carries its
+  selected hosts, admitted and queued counts, envelope reference, thread handle,
+  and Lane Card. Report idle slots or remaining ready work separately.
 - One durable planning-chat lifecycle record covering every generated group:
   While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
   Planning-chat role selector: default to `prompt-only`. While the chat remains a planning chat, select `parent-orchestrator` only when the planner explicitly retains one or more cross-batch dependency, release, or shared-follow-up responsibilities.
@@ -461,11 +468,11 @@ Return:
 
 - Do not treat `$plan-issue-triage` as a substitute for this skill; it creates a
   review-only prompt and does not perform capacity-aware splitting.
-- Do not multiply a per-batch item cap by an assumed machine count.
-- Do not pack the full actionable backlog into the available groups when that
-  would exceed the per-batch caps; report the overflow as the next wave.
-- Do not apply the Codex 10/8 cap to Claude or generic prompts; use the
-  host-aware target chosen for each generated prompt.
+- Do not infer host capacity from a prompt destination or installed agent home.
+- Do not discard overflow ready work; hold it for deterministic refill after a
+  terminal lane frees that host's worker slot.
+- Do not combine host-local worker, heavy-root, or external-quota budgets into
+  one global fence.
 - Do not route `needs-customer-feedback` issues into implementation groups
   without customer evidence or explicit maintainer approval.
 - Do not use public issue comments as capacity or queue state when the repo seam

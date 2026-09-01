@@ -1,0 +1,47 @@
+{
+  "type": "per-host-capacity-replay",
+  "version": 1,
+  "capacity": {
+    "type": "per-host-capacity-envelope",
+    "version": 1,
+    "hosts": [
+      {
+        "id": "m5",
+        "source": "verified",
+        "worker": { "limit": 8, "occupied": 1 },
+        "heavy_root": { "limit": 2, "admission": "heavy-root-admission/v1" },
+        "external_quota": { "limit": 3, "occupied": 0 }
+      },
+      {
+        "id": "m1",
+        "source": "verified",
+        "worker": { "limit": 6, "occupied": 1 },
+        "heavy_root": { "limit": 1, "admission": "heavy-root-admission/v1" },
+        "external_quota": { "limit": 2, "occupied": 0 }
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "m5-01", "host_id": "m5" },
+    { "id": "m5-02", "host_id": "m5" },
+    { "id": "m5-03", "host_id": "m5" },
+    { "id": "m5-04", "host_id": "m5" },
+    { "id": "m5-05", "host_id": "m5" },
+    { "id": "m5-06", "host_id": "m5" },
+    { "id": "m5-07", "host_id": "m5" },
+    { "id": "m5-08", "host_id": "m5" },
+    { "id": "m1-01", "host_id": "m1" },
+    { "id": "m1-02", "host_id": "m1" },
+    { "id": "m1-03", "host_id": "m1" },
+    { "id": "m1-04", "host_id": "m1" },
+    { "id": "m1-05", "host_id": "m1" },
+    { "id": "m1-06", "host_id": "m1" }
+  ],
+  "expected": {
+    "eligible_lane_ids": [
+      "m1-01", "m1-02", "m1-03", "m1-04", "m1-05",
+      "m5-01", "m5-02", "m5-03", "m5-04", "m5-05", "m5-06", "m5-07"
+    ],
+    "held_lane_ids": ["m1-06", "m5-08"]
+  }
+}

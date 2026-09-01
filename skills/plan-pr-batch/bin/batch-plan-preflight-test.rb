@@ -12,6 +12,8 @@ HELPER = File.expand_path("batch-plan-preflight", __dir__)
 STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
 REPLAY_FIXTURE = File.expand_path("../fixtures/ror-wave-a-plan-replay.json", __dir__)
 UNSIGNED_LIFECYCLE_FIXTURE = File.expand_path("../fixtures/unsigned-lifecycle-smoke.json", __dir__)
+UNEQUAL_HOST_CAPACITY_FIXTURE = File.expand_path("../fixtures/unequal-host-capacity-replay.json", __dir__)
+READY_SLOT_REFILL_FIXTURE = File.expand_path("../fixtures/ready-slot-refill-replay.json", __dir__)
 
 class BatchPlanPreflightTest < Minitest::Test
   RISK_SURFACES = %w[
@@ -67,11 +69,13 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def lane(id = "lane-a", wave: "wave-a", purpose: "implementation", surfaces: [],
-           target: :default)
+           target: :default, host_id: "test-host", uses_external_quota: false)
     record = {
       "id" => id,
       "wave" => wave,
       "purpose" => purpose,
+      "host_id" => host_id,
+      "uses_external_quota" => uses_external_quota,
       "changed_surfaces" => surfaces,
       "qa" => if surfaces.empty?
                 { "disposition" => "not-required", "rationale" => "No risky changed surface." }
@@ -81,6 +85,32 @@ class BatchPlanPreflightTest < Minitest::Test
     }
     record["target"] = target unless target == :default
     record
+  end
+
+  def host_capacity(id: "test-host", worker_limit: 1, worker_occupied: 0,
+                    heavy_root_limit: 1, external_quota_limit: 1,
+                    external_quota_occupied: 0, source: "verified")
+    {
+      "id" => id,
+      "source" => source,
+      "worker" => { "limit" => worker_limit, "occupied" => worker_occupied },
+      "heavy_root" => {
+        "limit" => heavy_root_limit,
+        "admission" => "heavy-root-admission/v1"
+      },
+      "external_quota" => {
+        "limit" => external_quota_limit,
+        "occupied" => external_quota_occupied
+      }
+    }
+  end
+
+  def capacity_envelope(*hosts)
+    {
+      "type" => "per-host-capacity-envelope",
+      "version" => 1,
+      "hosts" => hosts
+    }
   end
 
   def touch_map(pr_number, paths, repository: "owner/repo")
@@ -203,7 +233,7 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def input_for(lanes: [lane], maps: nil, edges: [], groups: [], premises: [], gate_lanes: nil,
                 backend: "generic", active_wave: "wave-a", batch_plan_id: "batch-plan-1",
-                lifecycle_states: [], reservations: nil)
+                lifecycle_states: [], reservations: nil, capacity: :default)
     if maps.nil?
       maps = lanes.each_with_index.to_h do |record, index|
         target = record["target"]
@@ -273,6 +303,14 @@ class BatchPlanPreflightTest < Minitest::Test
     }
     input.fetch("stage_dependency_gate")["trusted_plan_binding"] =
       stage_dependency_plan_binding(input.fetch("stage_dependency_plan"))
+    input["host_capacity"] = if capacity == :default
+                               capacity_envelope(
+                                 host_capacity(worker_limit: [lanes.length, 1].max,
+                                               external_quota_limit: [lanes.length, 1].max)
+                               )
+                             else
+                               capacity
+                             end
     input["expansion_path_reservations"] = reservations unless reservations.nil?
     input
   end
@@ -1381,25 +1419,6 @@ class BatchPlanPreflightTest < Minitest::Test
                     "expansion-path-reservation-stale"
   end
 
-  def test_backend_risky_capacity_uses_verified_paths_union_active_reservations
-    lanes = Array.new(4) do |index|
-      lane("lane-#{index}").merge("serialization_group" => "expanded-path-writers")
-    end
-    groups = [{ "id" => "expanded-path-writers", "max_concurrency" => 1 }]
-    reservations = [
-      expansion_path_reservation(lane_id: "lane-0", path: "lib/shared-expanded.rb"),
-      expansion_path_reservation(lane_id: "lane-1", path: "lib/shared-expanded.rb")
-    ]
-
-    result, _stderr, status = evaluate(
-      input_for(lanes: lanes, groups: groups, reservations: reservations, backend: "generic")
-    )
-
-    refute status.success?
-    cap = result.fetch("violations").find { |item| item.fetch("code") == "backend-risky-cap-exceeded" }
-    assert_equal lanes.map { |record| record.fetch("id") }, cap.fetch("lane_ids")
-  end
-
   def test_directory_rename_endpoints_are_reported_as_integration_advisories
     %w[old new].each do |endpoint|
       lanes = [lane("lane-a"), lane("lane-b")]
@@ -1753,106 +1772,116 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.fetch("violations")
   end
 
-  def test_backend_lane_and_risky_caps_accept_boundary_and_reject_one_over
-    caps = {
-      "codex" => { lanes: 10, risky: 8 },
-      "claude" => { lanes: 5, risky: 3 },
-      "generic" => { lanes: 5, risky: 3 }
-    }
-    caps.each do |backend, cap|
-      lane_boundary = Array.new(cap.fetch(:lanes)) { |index| lane("lane-#{index}") }
-      _result, stderr, status = evaluate(input_for(lanes: lane_boundary, backend: backend))
-      assert status.success?, "#{backend} lane boundary: #{stderr}"
-
-      risky_boundary = Array.new(cap.fetch(:risky)) do |index|
-        lane("risky-#{index}", surfaces: ["security_boundary"])
-      end
-      _result, stderr, status = evaluate(input_for(lanes: risky_boundary, backend: backend))
-      assert status.success?, "#{backend} risky boundary: #{stderr}"
-
-      one_too_many = Array.new(cap.fetch(:lanes) + 1) { |index| lane("lane-#{index}") }
-      result, _stderr, status = evaluate(input_for(lanes: one_too_many, backend: backend))
-      refute status.success?, "#{backend} lane cap"
-      assert_includes result.fetch("violations").map { |item| item.fetch("code") }, "backend-lane-cap-exceeded"
-
-      too_risky = Array.new(cap.fetch(:risky) + 1) do |index|
-        lane("risky-#{index}", surfaces: ["developer_tooling"])
-      end
-      result, _stderr, status = evaluate(input_for(lanes: too_risky, backend: backend))
-      refute status.success?, "#{backend} risky cap"
-      assert_includes result.fetch("violations").map { |item| item.fetch("code") }, "backend-risky-cap-exceeded"
+  def test_unequal_m5_m1_worker_capacity_sums_without_legacy_backend_ceiling
+    fixture = JSON.parse(File.read(UNEQUAL_HOST_CAPACITY_FIXTURE, encoding: "UTF-8"))
+    lanes = fixture.fetch("lanes").map do |row|
+      lane(row.fetch("id"), host_id: row.fetch("host_id"), surfaces: ["security_boundary"])
     end
-  end
 
-  def test_backend_lane_cap_counts_only_the_active_launch_wave
-    active_lanes = Array.new(5) { |index| lane("active-#{index}", wave: "wave-a") }
-    future_lanes = Array.new(5) { |index| lane("future-#{index}", wave: "wave-b") }
-
-    result, stderr, status = evaluate(input_for(lanes: active_lanes + future_lanes, backend: "generic"))
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, backend: "generic", capacity: fixture.fetch("capacity"))
+    )
 
     assert status.success?, stderr
-    assert_equal active_lanes.map { |record| record.fetch("id") },
-                 result.dig("launch", "eligible_lane_ids")
-    assert_equal future_lanes.map { |record| record.fetch("id") },
-                 result.dig("launch", "held_lane_ids")
+    assert_equal fixture.dig("expected", "eligible_lane_ids"), result.dig("launch", "eligible_lane_ids")
+    assert_equal fixture.dig("expected", "held_lane_ids"), result.dig("launch", "held_lane_ids")
+    assert_equal 12, result.dig("capacity", "admitted_worker_slots")
+    host_ids = result.dig("capacity", "hosts").map { |host| host.fetch("id") }
+    assert_equal %w[m1 m5], host_ids
+    available_by_host = result.dig("capacity", "hosts").to_h do |host|
+      [host.fetch("id"), host.dig("worker", "available")]
+    end
+    assert_equal({ "m1" => 5, "m5" => 7 }, available_by_host)
   end
 
-  def test_any_risky_lane_limits_the_entire_active_wave_to_the_reduced_cap
-    lanes = Array.new(5) do |index|
-      surfaces = index.zero? ? ["security_boundary"] : []
-      lane("lane-#{index}", surfaces: surfaces)
+  def test_terminal_lane_refills_the_same_host_slot_without_rebuilding_the_plan
+    fixture = JSON.parse(File.read(READY_SLOT_REFILL_FIXTURE, encoding: "UTF-8"))
+    lanes = fixture.fetch("lanes").map do |row|
+      lane(row.fetch("id"), host_id: row.fetch("host_id"))
     end
 
-    %w[generic claude].each do |backend|
-      result, _stderr, status = evaluate(input_for(lanes: lanes, backend: backend))
+    fixture.fetch("steps").each do |step|
+      lifecycle_states = step.fetch("completed_lane_ids").map do |lane_id|
+        lane_lifecycle_state(lane_id: lane_id)
+      end
+      result, stderr, status = evaluate(
+        input_for(lanes: lanes, lifecycle_states: lifecycle_states,
+                  capacity: fixture.fetch("capacity"))
+      )
 
-      refute status.success?, backend
-      cap = result.fetch("violations").find { |item| item.fetch("code") == "backend-risky-cap-exceeded" }
-      assert_equal lanes.map { |record| record.fetch("id") }, cap.fetch("lane_ids"), backend
+      assert status.success?, stderr
+      assert_equal step.fetch("expected_eligible_lane_ids"), result.dig("launch", "eligible_lane_ids")
+      assert_equal step.fetch("expected_held_lane_ids"), result.dig("launch", "held_lane_ids")
     end
   end
 
-  def test_safe_changed_path_collisions_still_count_toward_risky_cap
-    lanes = Array.new(4) do |index|
-      lane("lane-#{index}").merge("serialization_group" => "shared-path-writers")
-    end
-    maps = lanes.each_with_index.to_h do |record, index|
-      [record.fetch("id"), touch_map(index + 1, ["CHANGELOG.md"])]
-    end
-    groups = [{ "id" => "shared-path-writers", "max_concurrency" => 1 }]
-    result, _stderr, status = evaluate(
-      input_for(lanes: lanes, maps: maps, groups: groups, backend: "generic")
-    )
-
-    refute status.success?
-    cap = result.fetch("violations").find { |item| item.fetch("code") == "backend-risky-cap-exceeded" }
-    assert_equal lanes.map { |record| record.fetch("id") }, cap.fetch("lane_ids")
-  end
-
-  def test_serialized_directory_rename_collision_counts_toward_risky_cap
+  def test_worker_heavy_root_and_external_quota_budgets_remain_independent
     lanes = [
-      lane("rename").merge("serialization_group" => "directory-writers"),
-      lane("descendant").merge("serialization_group" => "directory-writers"),
-      lane("ordinary-a"),
-      lane("ordinary-b")
+      lane("ordinary", host_id: "m5"),
+      lane("quota-a", host_id: "m5", uses_external_quota: true),
+      lane("quota-b", host_id: "m5", uses_external_quota: true)
     ]
-    maps = {
-      "rename" => touch_map(1, %w[lib/old lib/new]).merge(
-        "renames" => [{ "old" => "lib/old", "new" => "lib/new" }]
-      ),
-      "descendant" => touch_map(2, ["lib/new/nested.rb"]),
-      "ordinary-a" => touch_map(3, ["lib/ordinary-a.rb"]),
-      "ordinary-b" => touch_map(4, ["lib/ordinary-b.rb"])
-    }
-    groups = [{ "id" => "directory-writers", "max_concurrency" => 1 }]
-
-    result, _stderr, status = evaluate(
-      input_for(lanes: lanes, maps: maps, groups: groups, backend: "generic")
+    capacity = capacity_envelope(
+      host_capacity(id: "m5", worker_limit: 3, heavy_root_limit: 0, external_quota_limit: 1)
     )
 
+    result, stderr, status = evaluate(input_for(lanes: lanes, capacity: capacity))
+
+    assert status.success?, stderr
+    assert_equal %w[ordinary quota-a], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["quota-b"], result.dig("launch", "held_lane_ids")
+    assert_equal "external-quota-full", result.dig("launch", "held_reasons", "quota-b")
+    assert_equal "heavy-root-admission/v1", result.dig("capacity", "hosts", 0, "heavy_root", "admission")
+  end
+
+  def test_capacity_envelope_and_lane_host_assignment_fail_closed
+    valid = capacity_envelope(host_capacity)
+    cases = {
+      "missing hosts" => valid.tap { |value| value.delete("hosts") },
+      "UNKNOWN source" => capacity_envelope(host_capacity(source: "UNKNOWN")),
+      "duplicate host" => capacity_envelope(host_capacity, host_capacity),
+      "overcommitted worker snapshot" => capacity_envelope(host_capacity(worker_limit: 1, worker_occupied: 2)),
+      "wrong heavy-root admission" => capacity_envelope(
+        host_capacity.tap { |host| host.fetch("heavy_root")["admission"] = "inline-scheduler/v1" }
+      )
+    }
+
+    cases.each do |label, capacity|
+      result, _stderr, status = evaluate(input_for(capacity: capacity))
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "host-capacity-envelope-invalid", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+
+    unknown_host = input_for(capacity: capacity_envelope(host_capacity))
+    unknown_host.dig("plan", "lanes", 0)["host_id"] = "m1"
+    result, _stderr, status = evaluate(unknown_host)
     refute status.success?
-    cap = result.fetch("violations").find { |item| item.fetch("code") == "backend-risky-cap-exceeded" }
-    assert_equal lanes.map { |record| record.fetch("id") }.sort, cap.fetch("lane_ids")
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-host-capacity-unknown"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+
+    missing_host = input_for(capacity: capacity_envelope(host_capacity))
+    missing_host.dig("plan", "lanes", 0).delete("host_id")
+    result, _stderr, status = evaluate(missing_host)
+    refute status.success?
+    assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                    "lane-host-capacity-unknown"
+    assert_empty result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_missing_capacity_uses_documented_single_slot_fallback
+    lanes = [lane("lane-b"), lane("lane-a")]
+    input = input_for(lanes: lanes)
+    input.delete("host_capacity")
+
+    result, stderr, status = evaluate(input)
+
+    assert status.success?, stderr
+    assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["lane-b"], result.dig("launch", "held_lane_ids")
+    assert_equal "fallback", result.dig("capacity", "hosts", 0, "source")
   end
 
   def test_unknown_external_api_support_blocks_implementation_but_allows_investigation
@@ -1950,7 +1979,6 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal(
       {
         "qa-required-for-risky-surface" => 5,
-        "backend-risky-cap-exceeded" => 1,
         "external-api-support-blocks-implementation" => 1
       },
       result.fetch("violations").map { |item| item.fetch("code") }.tally

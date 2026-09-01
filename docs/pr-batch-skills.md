@@ -190,20 +190,20 @@ coordination state, and a capacity-aware split into implementation groups.
 
 `$triage` is not a fixed-lane batch planner. It must read the current
 `agent-coord` capacity profiles, inbox config, claims, and heartbeats before
-phase 2. The group count is derived by summing registered
-`max_concurrent_batches`, bounding that total by enabled inboxes, and subtracting
-live, blocked, and reserved lanes. If any of those inputs cannot be verified,
-phase 2 stops instead of inventing a group count. The value is never committed in
-this repo or hardcoded in the skill. Each generated implementation group still
-obeys the host-aware per-wave item caps described below; capacity slots do not
-override Codex, Claude, or generic limits, consequence-aware care for
-shared/risky surfaces, or `UNKNOWN` path discovery limits.
+phase 2. It converts those facts into one `per-host-capacity-envelope` v1 with
+separate worker, heavy-root, and external-quota budgets. Free worker slots are
+derived independently per host after subtracting live, blocked, and reserved
+lanes. If any ownership or assignment input cannot be verified, phase 2 stops
+instead of inventing capacity. Prompt destination controls rendering limits,
+not worker admission; semantic dependencies, active ownership, and `UNKNOWN`
+path discovery remain fail-closed.
 
-If live capacity profiles or enabled inbox config are unavailable, `$triage` may
-still produce the phase-1 inventory and graph, but phase 2 must stop with a
-precise blocker instead of inventing machine names, model or tool names, or
-group counts. Queue state is advisory: when the backend does not support it,
-omit the queue summary and note that queue state is unavailable.
+If ownership or host assignment is unavailable, `$triage` may still produce the
+phase-1 inventory and graph, but phase 2 must stop with a precise blocker instead
+of inventing machine names, model or tool names, or group counts. Missing numeric
+budgets alone use the documented fallback instead of pretending to be measured.
+Queue state is advisory: when the backend does not support it, omit the queue
+summary and note that queue state is unavailable.
 
 ## Implementation Batch Planning Flow
 
@@ -247,19 +247,19 @@ omit the queue summary and note that queue state is unavailable.
    A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
 5. Verify every candidate through GitHub. Use `UNKNOWN` for facts that cannot be checked.
 6. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
-7. Shape the batch into independent worker lanes and choose the batch-size
-   target before final lane packing. Codex-targeted waves may use up to 10
-   fully independent items, or 8 when verified independent lanes
-   touch shared or risky surfaces. Claude and generic waves use up to 5
-   independent items, or 3 under those same shared/risky conditions. File
+7. Shape the batch into independent worker lanes and assign each lane to a host
+   declared by the versioned capacity envelope. Admit ready work up to each
+   host's independently free worker budget and keep overflow ready for refill
+   after terminal lanes. File
    overlap is an integration advisory; issue-authored semantic dependencies are
    the only ordering constraints. Record any non-safety coordination override in
    the Batch Plan and affected Lane Cards; it cannot alter protected gates.
    `UNKNOWN` path lanes run as serial discovery;
-   never count them as parallel capacity. Propose a smaller first batch when
-   live coordination, CI, approval, or quota health is uncertain. For multiple
-   concurrent batches, keep this as a per-wave cap and apply the target repo's
-   coordination-backend rules before launching.
+   never count them as parallel capacity. External-quota lanes also consume the
+   selected host's external budget. Heavy validators, tests, reviews, and QA
+   roots remain separately reserved through `heavy-root-admission/v1`; a worker
+   budget never grants a heavy-root slot. Apply the target repo's coordination
+   backend before launching.
    Keep the coordinator model/effort preference separate from every worker
    preference. Resolve the roster on each actual host, start routine workers on the
    fastest or balanced pair justified by lane risk and verification, and reserve

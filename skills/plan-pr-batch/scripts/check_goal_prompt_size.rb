@@ -82,7 +82,8 @@ LEGACY_PLANNING_PASS_PROFILE_PHRASES = [
 ].freeze
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
-BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
+BATCH_SIZE_TARGET_PROMPT_PHRASE =
+  "Capacity:<id>=<free>/<limit>w,...;admit=<N>;queued=<N>;env=<ref>"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
 OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
@@ -278,7 +279,7 @@ REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
-  Batch size target: <codex|claude|generic>;wave: <cap/items>
+  #{BATCH_SIZE_TARGET_PROMPT_PHRASE}
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{OBSERVED_HOST_PROMPT_LINE}
   #{MANIFEST_PROVENANCE_PROMPT_LINE}
@@ -710,8 +711,8 @@ assert_first_text_fence_rejects_nested_bare_fence
 
 required_skill_rule_phrases = [
   "Determine the prompt target",
-  "Host-aware batch sizing",
-  "Installed Codex/Claude homes prove install state",
+  "Host-aware capacity sizing",
+  "agent homes prove neither the active hosts nor their capacity",
   "the agent host/chat where the generated prompt will be pasted",
   "destination wins over host detection",
   "Codex prompt or Codex goal",
@@ -726,7 +727,7 @@ required_skill_rule_phrases = [
   "do not silently fall back",
   "date +'%m-%d %H:%M'",
   "Goal prompt character count: N characters (target: codex|claude|generic)",
-  "Batch size target:",
+  "Host capacity:",
   "Model/effort routing",
   "fastest or balanced",
   "balanced",
@@ -804,10 +805,9 @@ required_all_prompt_phrases = [
 
 host_aware_batch_sizing_phrase_checks = {
   "workflows/pr-processing.md" => [
-    ["`codex`: up to 10 independent items, or 8", 1],
-    ["`claude`: up to 5 independent items, or 3", 1],
-    ["`generic`: use the Claude-sized 5/3", 1],
-    ["less than 300 characters of headroom", 1],
+    ["`per-host-capacity-envelope` v1", 1],
+    ["`heavy-root-admission/v1` contract from issue #604", 1],
+    ["one documented fallback host", 1],
     ["Default single-target future coordinator: Sol/high", 1],
     ["Affirmatively simple single-target future coordinator: Terra/high", 1],
     ["Default single-target future coordinator: Opus 5/high", 1],
@@ -817,9 +817,9 @@ host_aware_batch_sizing_phrase_checks = {
     ["subagents alone do", 1]
   ],
   "skills/plan-pr-batch/SKILL.md" => [
-    ["`codex`: up to 10 independent items, or 8", 1],
-    ["`claude`: up to 5 independent items, or 3", 1],
-    ["`generic`: use the Claude-sized 5/3", 1],
+    ["preflight deterministically admits up to the sum", 1],
+    ["`heavy-root-admission/v1` contract", 1],
+    ["`source: fallback`", 1],
     ["Default single-target future coordinator: Sol/high", 1],
     ["Affirmatively simple single-target future coordinator: Terra/high", 1],
     ["Default single-target future coordinator: Opus 5/high", 1],
@@ -829,15 +829,16 @@ host_aware_batch_sizing_phrase_checks = {
     ["If any field needed for comparison is `UNKNOWN`, make no", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
-    ["Codex-targeted waves may use up to 10 independent", 1],
-    ["Claude and generic waves use up to 5 lanes, or up to 3", 1],
+    ["The canonical `per-host-capacity-envelope` v1", 1],
+    ["sums independently free worker slots", 1],
+    ["only `heavy-root-admission/v1` may decide", 1],
     ["if the dispatcher or runtime inherits", 1]
   ],
   "skills/triage/SKILL.md" => [
-    ["`codex`: up to 10 independent items, or 8", 1],
-    ["`claude` or `generic`: up to 5 independent items, or 3", 1],
-    ["current-wave item cap applies across all generated groups in aggregate", 1],
-    ["Each generated prompt must include `Batch size target: <codex|claude|generic>; wave:", 1],
+    ["Convert registered capacity profiles into the canonical", 1],
+    ["Derive free worker slots independently for each host", 1],
+    ["Per-host worker admission applies across all generated groups", 1],
+    ["Each generated prompt must include `Capacity:<id>=<free>/<limit>w,...;admit=<N>;queued=<N>;env=<ref>`", 1],
     ["`Coordinator model/effort preference: <model/class>/<effort>.`", 1],
     ["`Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.`", 1],
     ["`Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`", 1],
@@ -846,11 +847,11 @@ host_aware_batch_sizing_phrase_checks = {
     ["known host with an unavailable roster may use a dispatch-resolved model class", 1],
     ["Lane Card:", 1],
     ["300 characters of headroom", 2],
-    ["Codex 10/8", 2],
-    ["Claude/generic 5/3", 1]
+    ["Do not combine host-local worker, heavy-root, or external-quota budgets", 1]
   ],
   "workflows/pr-batch-intake.md" => [
-    ["- **Batch size target:** `codex`, `claude`, or `generic`", 1]
+    ["- **Prompt target:** `codex`, `claude`, or `generic`", 1],
+    ["- **Host capacity:** selected host ids", 1]
   ]
 }
 
@@ -916,8 +917,8 @@ if enforce_restart_docs_drift
   end
 
   host_aware_batch_sizing_phrase_checks["docs/pr-batch-skills.md"] = [
-    ["Codex-targeted waves may use up to 10", 1],
-    ["Claude and generic waves use up to 5", 1],
+    ["one `per-host-capacity-envelope` v1", 1],
+    ["derived independently per host after subtracting live", 1],
     ["Default single-target future coordinator: Sol/high", 1],
     ["Affirmatively simple single-target future coordinator: Terra/high", 1],
     ["Default single-target future coordinator: Opus 5/high", 1],

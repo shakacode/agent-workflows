@@ -75,9 +75,11 @@ exact value already supplied:
   walks through the exact-diff PR one conceptual change at a time before its
   one final merge decision; never silently default it.
 - **Concurrency:** one machine, multiple machines, or single-threaded.
-- **Batch size target:** `codex`, `claude`, or `generic`; explicit paste
-  destination or runner wins, otherwise use reliable host detection or
-  `generic`.
+- **Prompt target:** `codex`, `claude`, or `generic`; explicit paste destination
+  wins, otherwise use reliable host detection or `generic`. This controls
+  rendering, not worker capacity.
+- **Host capacity:** selected host ids plus a verified
+  `per-host-capacity-envelope` v1 or the documented conservative fallback.
 - **Lane split:** exact per-machine list, odd/even, labels, area, owner, or
   another explicit partition.
 - **Permissions:** whether the session can run without blocking worker approval
