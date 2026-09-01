@@ -735,6 +735,8 @@ module CloseoutEvidenceReplay
 
   def authority_shaped_https_label?(label)
     leading_token = label.split(/\s/, 2).first
+    return false if leading_token.match?(/\A[A-Za-z][A-Za-z0-9_-]*v\d+(?:\.\d+)+\z/i)
+
     authority = leading_token.split(/[?#]/, 2).first
     authority.include?(".") || authority.include?(":") || authority.start_with?("[")
   end
