@@ -4,6 +4,8 @@
 require "json"
 require "date"
 require "digest"
+require "rbconfig"
+require "tempfile"
 require "uri"
 
 module BatchPlanPreflight
@@ -74,6 +76,23 @@ module BatchPlanPreflight
     wave
   ].freeze
   LIFECYCLE_STATES = %w[planned claimed active blocked completed].freeze
+  HELPER_PATH = File.realpath(__FILE__)
+  INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
+  STAGE_DEPENDENCY_GATE_PATH = File.join(
+    INSTALLATION_ROOT,
+    "skills",
+    "pr-batch",
+    "bin",
+    "stage-dependency-gate"
+  )
+  STAGE_DEPENDENCY_REPLAY_POLL_SECONDS = 0.01
+  STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS = 0.25
+  STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS = 5
+  STAGE_DEPENDENCY_REPLAY_ENV = {
+    "LANG" => "C",
+    "LC_ALL" => "C",
+    "TZ" => "UTC"
+  }.freeze
   EXPANSION_PATH_RESERVATION_KEYS = %w[
     batch_plan_id
     evidence_ref
@@ -155,6 +174,23 @@ module BatchPlanPreflight
     changed_surfaces_valid = !plan_violation_codes.include?("changed-surfaces-invalid")
     stage_dependency_plan = input["stage_dependency_plan"]
     stage_dependency_plan_id = stage_dependency_plan["id"] if stage_dependency_plan.is_a?(Hash)
+    stage_dependency_violations = validate_stage_dependencies(
+      stage_dependency_plan,
+      input["stage_dependency_gate"],
+      lane_ids
+    )
+    violations.concat(stage_dependency_violations)
+    return result("rejected", [], [], violations) unless stage_dependency_violations.empty?
+
+    replay_violations = validate_stage_dependency_replay(
+      stage_dependency_plan,
+      input["stage_dependency_replay"],
+      input["stage_dependency_gate"],
+      lane_ids
+    )
+    violations.concat(replay_violations)
+    return result("rejected", [], [], violations) unless replay_violations.empty?
+
     completed_lane_ids = []
     active_lane_ids = []
     blocked_lane_ids = []
@@ -187,11 +223,6 @@ module BatchPlanPreflight
         [[], []]
       end
     violations.concat(reservation_violations)
-    violations.concat(validate_stage_dependencies(
-                        input["stage_dependency_plan"],
-                        input["stage_dependency_gate"],
-                        lane_ids
-                      ))
     if file_touch_violations.empty? && reservation_violations.empty? && lane_ids_valid
       effective_maps = effective_file_touch_maps(input["file_touch_map"], expansion_path_reservations)
       collision_violations, collision_advisories =
@@ -868,6 +899,309 @@ module BatchPlanPreflight
     PLANNED_PATH_REF_SCHEMES.fetch(source_kind, []).include?(parsed.scheme)
   rescue URI::InvalidURIError
     false
+  end
+
+  def validate_stage_dependency_replay(plan, replay, supplied_gate, lane_ids)
+    unless replay.is_a?(Hash)
+      code = replay.nil? ? "stage-dependency-replay-missing" : "stage-dependency-replay-invalid"
+      return [violation(
+        code,
+        "$.stage_dependency_replay",
+        "Provide the exact stage-dependency-gate v1 input for deterministic replay."
+      )]
+    end
+    unless replay.keys.sort == %w[contract edges lanes version] &&
+           replay["contract"] == "stage-dependency-gate" &&
+           replay["version"] == 1 &&
+           replay["lanes"].is_a?(Array) &&
+           replay["edges"].is_a?(Array)
+      return [violation(
+        "stage-dependency-replay-invalid",
+        "$.stage_dependency_replay",
+        "Replay must contain exactly contract, version, lanes, and edges for stage-dependency-gate v1."
+      )]
+    end
+    if nested_unknown?(replay)
+      return [violation(
+        "stage-dependency-replay-unknown",
+        "$.stage_dependency_replay",
+        "Replay facts must not contain UNKNOWN."
+      )]
+    end
+
+    helper_path, helper_error = resolved_stage_dependency_gate
+    return [helper_error] if helper_error
+
+    recomputed_gate, replay_error = run_stage_dependency_replay(helper_path, plan, replay)
+    return [replay_error] if replay_error
+    unless complete_stage_dependency_gate?(recomputed_gate, plan, lane_ids)
+      return [violation(
+        "stage-dependency-replay-output-invalid",
+        "$.stage_dependency_replay",
+        "The fixed stage-dependency-gate helper did not return a complete valid result."
+      )]
+    end
+    return [] if recomputed_gate == supplied_gate
+
+    [violation(
+      "stage-dependency-replay-mismatch",
+      "$.stage_dependency_gate",
+      "Supplied stage_dependency_gate must exactly equal the deterministic replay result."
+    )]
+  end
+
+  def resolved_stage_dependency_gate
+    helper_uid = File.stat(HELPER_PATH).uid
+    directories = [
+      INSTALLATION_ROOT,
+      File.join(INSTALLATION_ROOT, "skills"),
+      File.join(INSTALLATION_ROOT, "skills", "pr-batch"),
+      File.join(INSTALLATION_ROOT, "skills", "pr-batch", "bin")
+    ]
+    resolved_directories = directories.map { |path| File.realpath(path) }
+    directory_chain = resolved_directories.flat_map do |path|
+      ancestors = []
+      loop do
+        ancestors << path
+        break if path == File.dirname(path)
+
+        path = File.dirname(path)
+      end
+      ancestors
+    end.uniq
+    safe_directories = directory_chain.all? do |path|
+      stat = File.lstat(path)
+      stat.directory? && [0, helper_uid].include?(stat.uid) && (stat.mode & 0o022).zero?
+    end
+    helper_stat = File.lstat(STAGE_DEPENDENCY_GATE_PATH)
+    safe_helper = helper_stat.file? &&
+                  helper_stat.uid == helper_uid &&
+                  (helper_stat.mode & 0o022).zero? &&
+                  (helper_stat.mode & 0o111).positive?
+    return [STAGE_DEPENDENCY_GATE_PATH, nil] if safe_directories && safe_helper
+
+    [nil, violation(
+      "stage-dependency-helper-unsafe",
+      "$.stage_dependency_replay",
+      "The fixed sibling stage-dependency-gate helper or its pack path is unsafe."
+    )]
+  rescue Errno::ENOENT, Errno::ENOTDIR
+    [nil, violation(
+      "stage-dependency-helper-missing",
+      "$.stage_dependency_replay",
+      "The fixed sibling stage-dependency-gate helper is missing."
+    )]
+  rescue SystemCallError
+    [nil, violation(
+      "stage-dependency-helper-unsafe",
+      "$.stage_dependency_replay",
+      "The fixed sibling stage-dependency-gate helper could not be safely resolved."
+    )]
+  end
+
+  def run_stage_dependency_replay(helper_path, plan, replay)
+    Tempfile.create(["stage-dependency-plan", ".json"]) do |plan_file|
+      plan_file.chmod(0o600)
+      plan_file.write(JSON.generate(plan))
+      plan_file.flush
+      Tempfile.create(["stage-dependency-replay", ".json"]) do |replay_file|
+        replay_file.chmod(0o600)
+        replay_file.write(JSON.generate(replay))
+        replay_file.flush
+        Tempfile.create("stage-dependency-replay-stdout") do |stdout_file|
+          Tempfile.create("stage-dependency-replay-stderr") do |stderr_file|
+            pid = Process.spawn(
+              STAGE_DEPENDENCY_REPLAY_ENV,
+              RbConfig.ruby,
+              helper_path,
+              "--trusted-plan",
+              plan_file.path,
+              "--trusted-plan-id",
+              plan.fetch("id"),
+              in: replay_file.path,
+              out: stdout_file.path,
+              err: stderr_file.path,
+              pgroup: true,
+              unsetenv_others: true
+            )
+            status = wait_for_stage_dependency_gate(pid)
+            if status == :timeout
+              return [nil, violation(
+                "stage-dependency-replay-timeout",
+                "$.stage_dependency_replay",
+                "The fixed stage-dependency-gate helper exceeded the bounded replay timeout."
+              )]
+            end
+            unless status.success?
+              return [nil, violation(
+                "stage-dependency-replay-execution-failed",
+                "$.stage_dependency_replay",
+                "The fixed stage-dependency-gate helper exited unsuccessfully."
+              )]
+            end
+
+            stdout_file.rewind
+            return [JSON.parse(stdout_file.read), nil]
+          end
+        end
+      end
+    end
+  rescue JSON::ParserError, TypeError, ArgumentError
+    [nil, violation(
+      "stage-dependency-replay-output-invalid",
+      "$.stage_dependency_replay",
+      "The fixed stage-dependency-gate helper returned invalid JSON."
+    )]
+  rescue SystemCallError
+    [nil, violation(
+      "stage-dependency-replay-execution-failed",
+      "$.stage_dependency_replay",
+      "The fixed stage-dependency-gate helper could not be executed."
+    )]
+  end
+
+  def wait_for_stage_dependency_gate(pid)
+    deadline = monotonic_time + STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS
+    loop do
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      return waited.last if waited
+      break if monotonic_time >= deadline
+
+      sleep STAGE_DEPENDENCY_REPLAY_POLL_SECONDS
+    end
+
+    terminate_stage_dependency_process_group(pid)
+    :timeout
+  rescue Errno::ECHILD
+    :timeout
+  end
+
+  def terminate_stage_dependency_process_group(pid)
+    signal_stage_dependency_process_group("TERM", pid)
+    sleep_until_stage_dependency_deadline(
+      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
+    )
+    signal_stage_dependency_process_group("KILL", pid)
+
+    wait_for_stage_dependency_child(
+      pid,
+      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
+    )
+    wait_for_stage_dependency_process_group_exit(
+      pid,
+      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
+    )
+  end
+
+  def signal_stage_dependency_process_group(signal, pid)
+    Process.kill(signal, -pid)
+  rescue Errno::ESRCH
+    nil
+  end
+
+  def wait_for_stage_dependency_child(pid, deadline)
+    while monotonic_time < deadline
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      return waited.last if waited
+
+      sleep STAGE_DEPENDENCY_REPLAY_POLL_SECONDS
+    end
+    nil
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def stage_dependency_process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def wait_for_stage_dependency_process_group_exit(pid, deadline)
+    while monotonic_time < deadline
+      return true unless stage_dependency_process_group_alive?(pid)
+
+      sleep STAGE_DEPENDENCY_REPLAY_POLL_SECONDS
+    end
+    !stage_dependency_process_group_alive?(pid)
+  end
+
+  def sleep_until_stage_dependency_deadline(deadline)
+    loop do
+      remaining = deadline - monotonic_time
+      return if remaining <= 0
+
+      sleep [STAGE_DEPENDENCY_REPLAY_POLL_SECONDS, remaining].min
+    end
+  end
+
+  def monotonic_time
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  def complete_stage_dependency_gate?(gate, plan, lane_ids)
+    expected_keys = %w[
+      checker_verdict
+      contract
+      critical_path
+      downstream_requirements
+      lanes
+      status
+      trusted_plan_binding
+      trusted_plan_id
+      version
+    ]
+    return false unless gate.is_a?(Hash) && gate.keys.sort == expected_keys
+    return false if nested_unknown?(gate)
+    return false unless validate_stage_dependencies(plan, gate, lane_ids).empty?
+
+    checker_verdict = gate["checker_verdict"]
+    critical_path = gate["critical_path"]
+    downstream = gate["downstream_requirements"]
+    checker_verdict.is_a?(Hash) &&
+      checker_verdict.keys.sort == %w[blockers status] &&
+      %w[blocked eligible].include?(checker_verdict["status"]) &&
+      checker_verdict["blockers"].is_a?(Array) &&
+      valid_critical_path?(critical_path) &&
+      downstream == {
+        "final_combined_tip_validation" => "required-via-repo-seam",
+        "preserved_gates" => %w[exact_head_ci independent_review unresolved_threads merge_readiness]
+      }
+  end
+
+  def valid_critical_path?(critical_path)
+    return false unless critical_path.is_a?(Hash)
+
+    expected_keys = %w[assignments edge_count lane_ids tie_breaker]
+    expected_keys << "reason" if critical_path.key?("reason")
+    critical_path.keys.sort == expected_keys.sort &&
+      critical_path["lane_ids"].is_a?(Array) &&
+      critical_path["edge_count"].is_a?(Integer) &&
+      critical_path["edge_count"] >= 0 &&
+      critical_path["tie_breaker"] ==
+        "maximum-dependency-hops-then-lexicographic-lane-id-sequence" &&
+      critical_path["assignments"].is_a?(Array) &&
+      critical_path["assignments"].all? do |assignment|
+        assignment.is_a?(Hash) &&
+          assignment.keys.sort == %w[checker lane_id maker] &&
+          assignment.values.all? { |value| nonempty_identity?(value) }
+      end
+  end
+
+  def nested_unknown?(value)
+    case value
+    when Hash
+      value.any? { |key, nested| nested_unknown?(key) || nested_unknown?(nested) }
+    when Array
+      value.any? { |nested| nested_unknown?(nested) }
+    when String
+      value.strip.casecmp?("UNKNOWN")
+    else
+      false
+    end
   end
 
   def validate_stage_dependencies(plan, gate, lane_ids)

@@ -23,6 +23,7 @@ class PrMergeSubmitTest < Minitest::Test
   ADVANCED_BASE_SHA = "d" * 40
   MERGE_COMMIT_SHA = "c" * 40
   SOURCE_REPO_POLICY = Object.new.freeze
+  SYSTEM_GIT = AutonomousMergeRuntimeTrust.trusted_git_executable
 
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
   # not just against the hang it is meant to catch.
@@ -105,6 +106,14 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal 1, rejected.fetch(:status).exitstatus
     assert_includes rejected.fetch(:stderr), "live current integration candidate no longer matches"
     refute_includes rejected_log, "mergePullRequest"
+  end
+
+  def test_submit_rejects_receipt_autonomous_evidence_that_differs_from_live_replay
+    result, log, = run_cli(mode: "direct", receipt_mode: :autonomous_replay_mismatch)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "autonomous_result does not match trusted live replay"
+    refute_includes log, "mergePullRequest"
   end
 
   def test_provider_candidate_oid_is_informational_when_tree_and_parents_match
@@ -1408,6 +1417,14 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty log
   end
 
+  def test_trusted_replay_bindings_are_required_before_any_gh_call
+    result, log, = run_cli(mode: "direct", include_replay_bindings: false)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--repo-root is required"
+    assert_empty log
+  end
+
   def test_unavailable_merge_assurance_receipt_stops_before_any_gh_call
     result, log = run_cli(mode: "direct", receipt_mode: :missing)
 
@@ -1652,7 +1669,8 @@ class PrMergeSubmitTest < Minitest::Test
     interpreter_attack: false,
     bash_env_attack: false,
     guard_timeout_seconds: nil,
-    interrupt_guard: false
+    interrupt_guard: false,
+    include_replay_bindings: true
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
@@ -1711,6 +1729,19 @@ class PrMergeSubmitTest < Minitest::Test
                         host: HOST, pr_number: 42, gh_dir: dir
         )
       end
+      semantic_assessment_path = File.join(dir, "autonomous-semantic.json")
+      replayed_autonomous_path = File.join(dir, "autonomous-replayed.json")
+      File.write(semantic_assessment_path, JSON.generate({ "provenance" => "trusted-coordinator" }))
+      if File.file?(receipt_path)
+        receipt = JSON.parse(File.read(receipt_path))
+        autonomous_evidence = receipt.dig("evidence", "autonomous_result")
+        if receipt_mode == :autonomous_replay_mismatch && autonomous_evidence
+          autonomous_evidence = Marshal.load(Marshal.dump(autonomous_evidence))
+          autonomous_evidence["verdict"] = "human-approval-required"
+          autonomous_evidence["triggered_gates"] = ["changed-files-limit"]
+        end
+        File.write(replayed_autonomous_path, JSON.generate(autonomous_evidence)) if autonomous_evidence
+      end
       environment = cli_environment(
         dir, log_path, mode,
         guard_log_path:, guard_marker_path:, attacker_log_path:,
@@ -1718,9 +1749,13 @@ class PrMergeSubmitTest < Minitest::Test
         interpreter_attack_path:, bash_env_attack_path:,
         guard_timeout_seconds:, descendant_pid_path:
       )
+      environment["PR_TEST_AUTONOMOUS_REPLAY"] = replayed_autonomous_path
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
-        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:
+        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:,
+        repo_root:, semantic_assessment_path:, replayed_autonomous_path:,
+        trusted_helper_provenance: "trusted-base:#{receipt_base_sha || base_sha}",
+        include_replay_bindings:
       )
       result = if interrupt_guard
                  capture_with_interrupt(
@@ -1790,15 +1825,27 @@ class PrMergeSubmitTest < Minitest::Test
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
                       base_ref: "main", base_sha:, host: HOST, pr_number: 42, gh_dir: dir
       )
+      semantic_assessment_path = File.join(dir, "autonomous-semantic.json")
+      replayed_autonomous_path = File.join(dir, "autonomous-replayed.json")
+      File.write(semantic_assessment_path, JSON.generate({ "provenance" => "trusted-coordinator" }))
+      receipt = JSON.parse(File.read(receipt_path))
+      File.write(
+        replayed_autonomous_path,
+        JSON.generate(receipt.dig("evidence", "autonomous_result"))
+      )
+      environment = cli_environment(
+        dir, log_path, mode,
+        guard_log_path: File.join(dir, "guard.log"),
+        guard_marker_path: File.join(dir, "guard-called")
+      )
+      environment["PR_TEST_AUTONOMOUS_REPLAY"] = replayed_autonomous_path
       result = Open3.popen3(
-        cli_environment(
-          dir, log_path, mode,
-          guard_log_path: File.join(dir, "guard.log"),
-          guard_marker_path: File.join(dir, "guard-called")
-        ),
+        environment,
         *cli_arguments(
           "owner/repo", HEAD_SHA, true, true,
-          include_merge_assurance_receipt: true, receipt_path:, gh_path:
+          include_merge_assurance_receipt: true, receipt_path:, gh_path:,
+          repo_root:, semantic_assessment_path:, replayed_autonomous_path:,
+          trusted_helper_provenance: "trusted-base:#{base_sha}"
         ),
         chdir: repo_root
       ) do |stdin, stdout, stderr, wait_thread|
@@ -1933,12 +1980,17 @@ class PrMergeSubmitTest < Minitest::Test
   def cli_arguments(
     repo, expected_head, include_expected_head, include_expected_base,
     gh_path:,
+    repo_root: nil, semantic_assessment_path: nil, replayed_autonomous_path: nil,
+    trusted_helper_provenance: nil, include_replay_bindings: true,
     expected_base: "main",
     subject: "Fix the thing (#42)", body: nil,
     include_merge_assurance_receipt: true, receipt_path: nil
   )
     runner = <<~RUBY
       load #{SCRIPT.inspect}
+      MergeAssurance.define_singleton_method(:replay_autonomous_result) do |**_arguments|
+        JSON.parse(File.read(ENV.fetch("PR_TEST_AUTONOMOUS_REPLAY")))
+      end
       test_environment = %w[GH_LOG PR_TEST_GUARD_MARKER PR_TEST_DESCENDANT_PID_FILE].to_h { |name| [name, ENV.fetch(name)] }
       runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => #{gh_path.inspect} })
       runner.define_singleton_method(:system_tool_test_environment) { test_environment }
@@ -1952,6 +2004,13 @@ class PrMergeSubmitTest < Minitest::Test
     args.concat(["--expected-head", expected_head]) if include_expected_head
     args.concat(["--expected-base", expected_base]) if include_expected_base
     args.concat(["--merge-assurance-receipt", receipt_path]) if include_merge_assurance_receipt
+    if include_replay_bindings
+      args.concat(["--repo-root", repo_root])
+      args.concat(["--semantic-assessment", semantic_assessment_path])
+      args.concat(["--trusted-helper-provenance", trusted_helper_provenance])
+      args.concat(["--trusted-git-executable", SYSTEM_GIT])
+      args.concat(["--trusted-gh-executable", gh_path])
+    end
     args
   end
 
@@ -2106,8 +2165,9 @@ class PrMergeSubmitTest < Minitest::Test
     end
     receipt = with_fake_gh(gh_dir) do
       MergeAssurance.assess(
-        ci_result:, autonomous_result:, context:,
+        ci_result:, autonomous_result:, recomputed_autonomous_result: autonomous_result, context:,
         selected_hosted_ci_receipts: selected_hosted_receipts,
+        trusted_gh_executable: File.join(gh_dir, "gh"),
         now:
       )
     end

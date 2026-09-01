@@ -160,7 +160,10 @@ facts remain fail-closed and stop before mutation.
 - **Batch plan preflight**: before dispatcher selection or worker launch, run
   the resolved plan skill's `bin/batch-plan-preflight` with a v1 envelope. It
   owns schema and launch scheduling, including the required active wave and
-  max-one serialization. Preserve real PR verified `pr-file-touch-map` results
+  max-one serialization. Supply the exact top-level `stage_dependency_replay`
+  live input alongside the claimed `stage_dependency_gate`; the preflight runs
+  its fixed sibling gate in a bounded, sanitized process and requires an exact
+  completed-result match before exposing any launch permission. Preserve real PR verified `pr-file-touch-map` results
   unchanged; encode explicit pre-PR paths as typed `planned-path-evidence` v1
   records with durable evidence references. An `issue` source must bind to the
   target's exact repository and number through `issue://OWNER/REPO/N` or an

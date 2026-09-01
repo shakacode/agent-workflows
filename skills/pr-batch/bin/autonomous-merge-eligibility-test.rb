@@ -15,6 +15,101 @@ FIXTURE_DIR = File.expand_path("../fixtures", __dir__)
 
 class AutonomousMergeEligibilityTest < Minitest::Test
   HEAD_SHA = "a" * 40
+  SAFE_TMP_PARENT = ENV.fetch(
+    "AUTONOMOUS_MERGE_TEST_TMP_PARENT",
+    File.expand_path("../../..", __dir__)
+  )
+
+  def test_live_evaluator_uses_the_injected_absolute_git_for_all_trusted_reads
+    Dir.mktmpdir("autonomous-merge-trusted-git", SAFE_TMP_PARENT) do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      executable_root = File.join(root, "trusted-tools")
+      poisoned_root = File.join(root, "poisoned-path")
+      FileUtils.mkdir_p([executable_root, poisoned_root])
+      trusted_git = File.join(executable_root, "git")
+      trusted_log = File.join(root, "trusted-git.log")
+      poisoned_marker = File.join(root, "poisoned-git-ran")
+      poisoned_gh_marker = File.join(root, "poisoned-gh-ran")
+      git_name = "git#{RbConfig::CONFIG.fetch('EXEEXT')}"
+      git_candidates = ENV.fetch("PATH").split(File::PATH_SEPARATOR).map do |directory|
+        File.join(directory, git_name)
+      end
+      real_git_candidate = git_candidates.find { |path| File.file?(path) && File.executable?(path) }
+      refute_nil real_git_candidate, "git must be available on PATH for this test"
+      real_git = File.realpath(real_git_candidate)
+      File.write(trusted_git, <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.open(#{trusted_log.inspect}, "a") { |file| file.puts(ARGV.join("\\t")) }
+        exec(#{real_git.inspect}, *ARGV)
+      RUBY
+      File.chmod(0o755, trusted_git)
+      File.write(File.join(poisoned_root, "git"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.write(#{poisoned_marker.inspect}, "yes")
+        exit 99
+      RUBY
+      File.chmod(0o755, File.join(poisoned_root, "git"))
+      File.write(File.join(poisoned_root, "gh"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.write(#{poisoned_gh_marker.inspect}, "yes")
+        exit 99
+      RUBY
+      File.chmod(0o755, File.join(poisoned_root, "gh"))
+
+      result = invoke(
+        root:,
+        calibration_path:,
+        evaluation: evidence(base_sha:, files: files(1)),
+        subprocess_env: {
+          "AUTONOMOUS_MERGE_GIT" => trusted_git,
+          "PATH" => "#{poisoned_root}:#{ENV.fetch('PATH')}"
+        }
+      )
+
+      assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+      refute File.exist?(poisoned_marker)
+      refute File.exist?(poisoned_gh_marker)
+      assert_operator File.foreach(trusted_log).count, :>=, 5
+    end
+  end
+
+  def test_live_evaluator_rejects_relative_and_writable_git_overrides_before_execution
+    Dir.mktmpdir("autonomous-merge-untrusted-git", SAFE_TMP_PARENT) do |root|
+      calibration_path = write_calibration(root)
+      base_sha = initialize_trusted_base(root, policy_yaml: nil, include_runtime: true)
+      marker = File.join(root, "untrusted-git-ran")
+      writable_root = File.join(root, "writable-tools")
+      FileUtils.mkdir_p(writable_root)
+      File.chmod(0o777, writable_root)
+      unsafe_git = File.join(writable_root, "git")
+      File.write(unsafe_git, "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'yes')\n")
+      File.chmod(0o755, unsafe_git)
+
+      cases = {
+        "relative" => {
+          "AUTONOMOUS_MERGE_GIT" => "git",
+          "PATH" => "#{writable_root}:#{ENV.fetch('PATH')}"
+        },
+        "writable ancestor" => { "AUTONOMOUS_MERGE_GIT" => unsafe_git }
+      }
+      cases.each do |label, environment|
+        result = invoke(
+          root:,
+          calibration_path:,
+          evaluation: evidence(base_sha:, files: files(1)),
+          subprocess_env: environment
+        )
+
+        assert_equal "UNKNOWN", result.fetch("verdict"), label
+        assert result.fetch("evidence_failures").any? { |failure| failure.include?("AUTONOMOUS_MERGE_GIT") },
+               label
+        refute File.exist?(marker), label
+      end
+    ensure
+      File.chmod(0o700, writable_root) if writable_root && File.exist?(writable_root)
+    end
+  end
   def test_changed_files_value_immediately_below_portable_boundary_is_eligible
     result = evaluate { |base_sha| evidence(base_sha:, files: files(29)) }
 

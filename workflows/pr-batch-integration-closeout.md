@@ -1939,7 +1939,13 @@ not gate.
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --repo-root . \
+  --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}" \
+  --trusted-helper-provenance "trusted-base:${TRUSTED_BASE_SHA}" \
+  --trusted-git-executable "${TRUSTED_GIT}" \
+  --trusted-gh-executable "${TRUSTED_GH}" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`
@@ -1947,7 +1953,10 @@ policy and emits a fresh integrity-bound receipt only when the exact-head
 evidence is eligible. The selected hosted-CI record set is part of the receipt
 evidence digest. It is separate from batch-plan preflight. Legacy merge callers
 must now generate and pass this receipt, and `merge_authority: none` remains a
-no-merge result.
+no-merge result. Before assessment, the helper authenticates the complete
+trusted autonomous runtime, reruns the fixed sibling evaluator with the
+coordinator-owned semantic assessment and absolute Git/GitHub executables, and
+requires the supplied autonomous result to match that live replay exactly.
 
 An eligible v2 receipt binds `current-integration-evidence` and the integration
 tree plus ordered base/head parents. `pr-merge-submit` replays that identity
@@ -1969,14 +1978,23 @@ chain, then run:
   --expected-head <FULL_HEAD_SHA> \
   --expected-base <BASE_BRANCH> \
   --method <merge|rebase|squash> \
-  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}" \
+  --repo-root . \
+  --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}" \
+  --trusted-helper-provenance "trusted-base:${TRUSTED_BASE_SHA}" \
+  --trusted-git-executable "${TRUSTED_GIT}" \
+  --trusted-gh-executable "${TRUSTED_GH}"
 ```
 
 `pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
 bindings, freshness, and selected hosted-CI records before any queue or
 guarded-direct mutation. A missing, cancelled, failed, nonterminal, stale-head,
 or mismatched-PR selected record blocks before the first GitHub call or
-repository guard.
+repository guard. It first binds the receipt to the requested host, repository,
+PR, head, base, and trusted-base provenance, then reruns autonomous eligibility
+through the same authenticated runtime and exact-result comparison. Replay
+failure or mismatch stops before any GitHub read, queue mutation, or repository
+guard.
 
 The v2 assurance receipt embeds the exact `current-integration-evidence` used
 by eligibility. Before mutation, `pr-merge-submit` re-reads the live head,

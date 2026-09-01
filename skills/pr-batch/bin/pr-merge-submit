@@ -205,12 +205,16 @@ module PrMergeSubmit
       options = {
         method: nil, subject: nil, body: nil, repo: nil, host: nil,
         expected_head: nil, expected_base: nil, merge_assurance_receipt: nil,
+        repo_root: nil, semantic_assessment: nil, trusted_helper_provenance: nil,
+        trusted_git_executable: nil, trusted_gh_executable: nil,
         help: false, pr: nil
       }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
-                      "--merge-assurance-receipt FILE [options]"
+                      "--merge-assurance-receipt FILE --repo-root PATH " \
+                      "--semantic-assessment FILE --trusted-helper-provenance PROVENANCE " \
+                      "--trusted-git-executable ABS --trusted-gh-executable ABS [options]"
         opts.on("--repo REPO", "GitHub repository in OWNER/REPO form") { |value| options[:repo] = value }
         opts.on("--host HOST", "Exact GitHub hostname, with an optional port") { |value| options[:host] = value }
         opts.on("--expected-head SHA", "Exact PR head SHA already cleared by readiness gates") do |value|
@@ -221,6 +225,21 @@ module PrMergeSubmit
         end
         opts.on("--merge-assurance-receipt FILE", "Fresh eligible merge-assurance receipt") do |value|
           options[:merge_assurance_receipt] = value
+        end
+        opts.on("--repo-root PATH", "Repository containing the exact trusted base") do |value|
+          options[:repo_root] = value
+        end
+        opts.on("--semantic-assessment FILE", "External coordinator-owned semantic assessment") do |value|
+          options[:semantic_assessment] = value
+        end
+        opts.on("--trusted-helper-provenance PROVENANCE", "Coordinator-established runtime identity") do |value|
+          options[:trusted_helper_provenance] = value
+        end
+        opts.on("--trusted-git-executable ABS", "Coordinator-established absolute git executable") do |value|
+          options[:trusted_git_executable] = value
+        end
+        opts.on("--trusted-gh-executable ABS", "Coordinator-established absolute gh executable") do |value|
+          options[:trusted_gh_executable] = value
         end
         opts.on("--method METHOD", METHODS, "Direct method; merge queue configuration controls queued merges") do |value|
           options[:method] = value
@@ -259,10 +278,17 @@ module PrMergeSubmit
       OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
-                      "--merge-assurance-receipt FILE [options]"
+                      "--merge-assurance-receipt FILE --repo-root PATH " \
+                      "--semantic-assessment FILE --trusted-helper-provenance PROVENANCE " \
+                      "--trusted-git-executable ABS --trusted-gh-executable ABS [options]"
         opts.separator "        --subject SUBJECT  Direct merge commit subject"
         opts.separator "        --body BODY        Direct merge commit body"
         opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v2 receipt"
+        opts.separator "        --repo-root PATH  Repository containing the exact trusted base"
+        opts.separator "        --semantic-assessment FILE  External coordinator-owned assessment"
+        opts.separator "        --trusted-helper-provenance PROVENANCE  Expected runtime identity"
+        opts.separator "        --trusted-git-executable ABS  Trusted absolute git executable"
+        opts.separator "        --trusted-gh-executable ABS  Trusted absolute gh executable"
       end
     end
 
@@ -280,6 +306,24 @@ module PrMergeSubmit
       end
       raise Error, "--method is required" unless METHODS.include?(options[:method])
       raise Error, "--merge-assurance-receipt is required" if options[:merge_assurance_receipt].to_s.empty?
+      raise Error, "--repo-root is required" if options[:repo_root].to_s.empty?
+      raise Error, "--semantic-assessment is required" if options[:semantic_assessment].to_s.empty?
+      if options[:trusted_helper_provenance].to_s.empty?
+        raise Error, "--trusted-helper-provenance is required"
+      end
+      raise Error, "--trusted-git-executable is required" if options[:trusted_git_executable].to_s.empty?
+      raise Error, "--trusted-gh-executable is required" if options[:trusted_gh_executable].to_s.empty?
+
+      begin
+        options[:trusted_git_executable] = MergeAssurance.trusted_executable_path(
+          options[:trusted_git_executable], "--trusted-git-executable"
+        )
+        options[:trusted_gh_executable] = MergeAssurance.trusted_executable_path(
+          options[:trusted_gh_executable], "--trusted-gh-executable"
+        )
+      rescue MergeAssurance::Error => e
+        raise Error, e.message
+      end
 
       reject_leading_at!(options, :subject)
       reject_leading_at!(options, :body)
@@ -325,12 +369,24 @@ module PrMergeSubmit
       evidence = receipt["evidence"]
       now = Time.now.utc
       validate_receipt_evidence!(receipt, evidence)
+      validate_receipt_evidence_bindings!(receipt, evidence, options)
+      validate_receipt_option_bindings!(receipt, options)
       validate_receipt_freshness!(receipt, now)
+      recomputed_autonomous_result = MergeAssurance.replay_autonomous_result(
+        repo_root: options[:repo_root],
+        semantic_assessment: options[:semantic_assessment],
+        trusted_helper_provenance: options[:trusted_helper_provenance],
+        trusted_git_executable: options[:trusted_git_executable],
+        trusted_gh_executable: options[:trusted_gh_executable],
+        context: evidence["context"]
+      )
       reassessed = MergeAssurance.assess(
         ci_result: evidence["ci_result"],
         autonomous_result: evidence["autonomous_result"],
+        recomputed_autonomous_result:,
         context: evidence["context"],
         selected_hosted_ci_receipts: evidence["selected_hosted_ci_receipts"],
+        trusted_gh_executable: options[:trusted_gh_executable],
         now:
       )
       unless reassessed["eligible"] == true
@@ -349,11 +405,27 @@ module PrMergeSubmit
       unless receipt["freshness"] == expected_freshness
         raise Error, "merge-assurance receipt freshness contract is malformed"
       end
-
-      validate_receipt_option_bindings!(receipt, options)
       receipt
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "merge-assurance receipt is unavailable: #{e.message}"
+    end
+
+    def validate_receipt_evidence_bindings!(receipt, evidence, options)
+      context = evidence.fetch("context")
+      expected = context.slice(
+        "authority", "base", "diff_identity", "head_sha", "host", "pr", "repo"
+      ).merge(
+        "current_integration" => evidence.dig("autonomous_result", "current_integration")
+      )
+      unless receipt.fetch("bindings") == expected
+        raise Error, "merge-assurance receipt bindings do not match its evidence context"
+      end
+
+      provenance = options[:trusted_helper_provenance]
+                   .to_s[/\Atrusted-base:([0-9a-f]{40})\z/, 1]
+      return if provenance.nil? || provenance == context.dig("base", "sha")
+
+      raise Error, "merge-assurance receipt base SHA does not match trusted helper provenance"
     end
 
     def validate_receipt_evidence!(receipt, evidence)
