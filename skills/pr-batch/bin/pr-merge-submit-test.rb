@@ -402,6 +402,9 @@ class PrMergeSubmitTest < Minitest::Test
     assert_equal 1, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr),
                     "structured review_gate cannot be enforced adjacent to a consumer-owned guarded-direct mutation"
+    assert_includes result.fetch(:stderr), "use direct submission"
+    assert_includes result.fetch(:stderr), "mutation-adjacent consumer protocol"
+    refute_includes result.fetch(:stderr), "Merge Queue"
     assert_equal(2, log.lines.count { |line| line.include?("number=42") })
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"

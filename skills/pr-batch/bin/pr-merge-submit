@@ -1073,7 +1073,7 @@ module PrMergeSubmit
         nil
       when "structured"
         raise Error, "structured review_gate cannot be enforced adjacent to a consumer-owned " \
-                     "guarded-direct mutation; use direct submission, Merge Queue, or an explicit " \
+                     "guarded-direct mutation; use direct submission or implement an explicit " \
                      "mutation-adjacent consumer protocol"
       else
         raise Error, "guarded-direct submission requires trusted-base review_gate: n/a; missing or " \
