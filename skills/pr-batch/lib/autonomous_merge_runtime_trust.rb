@@ -127,7 +127,7 @@ module AutonomousMergeRuntimeTrust
         path: trusted_runtime_source_path(
           source.fetch(:path),
           "autonomous merge #{role}",
-          executable: role == "helper"
+          executable: %w[helper closeout-helper].include?(role)
         )
       )
     end
@@ -208,10 +208,9 @@ module AutonomousMergeRuntimeTrust
     unless stat.directory? && [0, Process.euid].include?(stat.uid)
       raise ExecutableError, "#{label} ancestor is not a trusted directory"
     end
-    raise ExecutableError, "#{label} ancestor is world-writable" if (stat.mode & 0o002).positive?
-    return unless (stat.mode & 0o020).positive? && stat.uid != Process.euid
+    return if (stat.mode & 0o022).zero?
 
-    raise ExecutableError, "#{label} ancestor is group-writable by a foreign owner"
+    raise ExecutableError, "#{label} ancestor is group- or world-writable"
   end
 
   def installed_pack_digest(sources)

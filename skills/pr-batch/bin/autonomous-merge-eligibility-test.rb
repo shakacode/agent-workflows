@@ -1278,6 +1278,37 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
   end
 
+  def test_runtime_trust_requires_the_closeout_renderer_to_be_executable
+    Dir.mktmpdir("autonomous-merge-closeout-mode-test", SAFE_TMP_PARENT) do |root|
+      closeout_path = File.join(root, "autonomous-merge-closeout")
+      File.write(closeout_path, "#!/bin/sh\nexit 0\n")
+      File.chmod(0o644, closeout_path)
+      sources = {
+        "closeout-helper" => {
+          path: closeout_path,
+          tree_paths: ["skills/pr-batch/bin/autonomous-merge-closeout"]
+        }
+      }
+      original_runtime_sources = AutonomousMergeRuntimeTrust.method(:runtime_sources)
+      AutonomousMergeRuntimeTrust.define_singleton_method(:runtime_sources) do |_calibration_path|
+        sources
+      end
+
+      error = assert_raises(AutonomousMergeRuntimeTrust::ExecutableError) do
+        AutonomousMergeRuntimeTrust.trusted_runtime_sources("unused-calibration")
+      end
+
+      assert_includes error.message, "closeout-helper runtime source is not executable"
+    ensure
+      if original_runtime_sources
+        AutonomousMergeRuntimeTrust.define_singleton_method(
+          :runtime_sources,
+          original_runtime_sources
+        )
+      end
+    end
+  end
+
   def test_closeout_workflow_uses_the_authenticated_runtime_directory
     workflow = File.read(
       File.expand_path("../../../workflows/pr-batch-integration-closeout.md", __dir__),

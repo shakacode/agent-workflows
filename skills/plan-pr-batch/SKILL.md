@@ -473,6 +473,9 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      `stage_dependency_replay` live input. The helper reruns its fixed sibling
      stage-dependency gate in a bounded, sanitized process and requires its
      complete result to match the supplied `stage_dependency_gate` exactly;
+     this authenticates the fixed helper and the consistency of the supplied
+     facts, not the truth of caller-supplied live facts, which the coordinator
+     must still obtain from the required trusted reads;
      missing, malformed, timed-out, failed, `UNKNOWN`, or mismatched replay
      stops before launch. Advance max-one groups only from a separate
      ordinary durable `lane-lifecycle-state` v1 record bound to the batch,

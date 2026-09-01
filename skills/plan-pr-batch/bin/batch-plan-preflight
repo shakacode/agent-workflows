@@ -950,6 +950,9 @@ module BatchPlanPreflight
   end
 
   def resolved_stage_dependency_gate
+    # Bind the fixed sibling to the owner of this loaded pack, not the caller's
+    # euid, so root-owned installations remain usable without permitting a
+    # cross-owner sibling replacement inside the pack.
     helper_uid = File.stat(HELPER_PATH).uid
     directories = [
       INSTALLATION_ROOT,

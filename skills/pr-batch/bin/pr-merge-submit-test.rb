@@ -710,6 +710,7 @@ class PrMergeSubmitTest < Minitest::Test
   def test_run_gh_ignores_checkout_controlled_path_shim
     original_path = ENV.fetch("PATH")
     runner = PrMergeSubmit::Runner.new
+    runner.instance_variable_set(:@repo_root, File.expand_path("../../..", __dir__))
 
     Dir.mktmpdir("pr-merge-submit-gh-shim") do |dir|
       marker = File.join(dir, "gh-shim-ran")
@@ -759,6 +760,7 @@ class PrMergeSubmitTest < Minitest::Test
         "GITHUB_TOKEN" => ""
       )
       runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => gh })
+      runner.instance_variable_set(:@repo_root, File.expand_path("../../..", __dir__))
 
       _stdout, stderr, status = runner.send(:run_gh, "--version", host: HOST)
 
@@ -1327,6 +1329,7 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_persistent_cancellation_blocks_a_later_mutation
     runner = PrMergeSubmit::Runner.new
+    runner.instance_variable_set(:@repo_root, File.expand_path("../../..", __dir__))
     runner.instance_variable_set(:@mutation_attempted, true)
     runner.instance_variable_set(:@cancellation_signal, "INT")
     runner.instance_variable_set(:@pending_signal, nil)
