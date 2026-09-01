@@ -1932,6 +1932,10 @@ prepare_metadata() {
       library = File.join(source, "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb")
       return nil unless File.file?(library) && !File.symlink?(library)
 
+      # This is the one place install-agent-workflows executes source-provided code rather than
+      # only copying or hashing it. Intentional: copy mode already fully trusts the source pack,
+      # whose helpers it installs and the host later runs. Never extend this to a less-trusted
+      # input.
       load library
       AutonomousMergeRuntimeTrust.default_installed_pack_digest
     rescue ScriptError, StandardError
