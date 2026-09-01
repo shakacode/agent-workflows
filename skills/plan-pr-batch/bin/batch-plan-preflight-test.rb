@@ -24,6 +24,7 @@ class BatchPlanPreflightTest < Minitest::Test
     release_behavior
     broad_runtime
   ].freeze
+  BACKENDS_UNDER_TEST = %w[codex claude generic].freeze
 
   def test_clean_install_fixture_accepts_without_trust_material
     result, stderr, status = evaluate(JSON.parse(File.read(UNSIGNED_LIFECYCLE_FIXTURE)))
@@ -2127,6 +2128,38 @@ class BatchPlanPreflightTest < Minitest::Test
       refute_includes result.fetch("violations").map { |item| item.fetch("code") },
                       "host-capacity-envelope-invalid", label
       assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+  end
+
+  def test_missing_capacity_derives_valid_fallback_host_for_invalid_backend
+    { "uppercase" => "Generic", "spaced" => "generic backend", "empty" => "" }.each do |label, backend|
+      lanes = [lane("lane-a", host_id: nil), lane("lane-b", host_id: nil)]
+      input = input_for(lanes: lanes, backend: backend)
+      input.delete("host_capacity")
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, label
+      codes = result.fetch("violations").map { |item| item.fetch("code") }
+      assert_includes codes, "backend-invalid", label
+      refute_includes codes, "host-capacity-envelope-invalid", label
+      refute_includes codes, "lane-host-capacity-unknown", label
+      assert_equal "generic-fallback", result.dig("capacity", "hosts", 0, "id"), label
+      assert_equal "fallback", result.dig("capacity", "hosts", 0, "source"), label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+  end
+
+  def test_missing_capacity_keeps_declared_backend_in_fallback_host_id
+    BACKENDS_UNDER_TEST.each do |backend|
+      lanes = [lane("lane-a", host_id: nil), lane("lane-b", host_id: nil)]
+      input = input_for(lanes: lanes, backend: backend)
+      input.delete("host_capacity")
+
+      result, stderr, status = evaluate(input)
+
+      assert status.success?, "#{backend}: #{stderr}"
+      assert_equal "#{backend}-fallback", result.dig("capacity", "hosts", 0, "id"), backend
     end
   end
 

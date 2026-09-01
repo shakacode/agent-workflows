@@ -292,7 +292,8 @@ module BatchPlanPreflight
     capacity_supplied = !raw_capacity.nil?
     if raw_capacity.nil?
       host_ids = lanes.filter_map { |lane| lane["host_id"] if valid_host_id?(lane["host_id"]) }.uniq
-      fallback_host_id = host_ids.length == 1 ? host_ids.first : "#{backend || 'generic'}-fallback"
+      fallback_backend = BACKENDS.include?(backend) ? backend : "generic"
+      fallback_host_id = host_ids.length == 1 ? host_ids.first : "#{fallback_backend}-fallback"
       raw_capacity = {
         "type" => "per-host-capacity-envelope",
         "version" => 1,
