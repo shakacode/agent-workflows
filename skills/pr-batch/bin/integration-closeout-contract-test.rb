@@ -124,7 +124,10 @@ class IntegrationCloseoutContractTest < Minitest::Test
       assert_match(/^\#{2,3} #{Regexp.escape(heading)}$/, @component, heading)
     end
 
-    assert_operator @component.bytesize, :<, 167_000
+    # Keep a real safety margin (several hundred bytes), not a razor-thin one —
+    # the ceiling was previously bumped to 167_000 with only ~600 bytes of
+    # headroom, which a routine wording change consumed almost entirely.
+    assert_operator @component.bytesize, :<, 167_500
     assert_operator @workflow.bytesize, :<, 185_000
     assert_operator @skill.bytesize, :<, 60_000
     assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 395_000

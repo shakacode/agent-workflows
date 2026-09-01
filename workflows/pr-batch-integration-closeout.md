@@ -1588,10 +1588,8 @@ contains the current base by requiring this command to exit zero:
 git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"
 ```
 
-Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh at this point in the
-flow rather than reusing the values fetched earlier for the Hosted Runtime QA
-Gate — the base may have advanced since then, which is exactly what this gate
-exists to catch. Use these same two names throughout; do not introduce a
+Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh here — the base may
+have advanced since the earlier QA gate fetch — and do not introduce a
 second, differently-named pair for the identical base/head facts.
 
 Also require that exact-head `pr-ci-readiness` v2 has normalized successful
