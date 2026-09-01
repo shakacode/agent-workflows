@@ -281,128 +281,115 @@ precise blocker.
    typed edge in the shared `stage-dependency-plan` v1 file and live replay.
    Re-evaluate the affected group after capacity placement; never convert a
    cross-group edge into an untyped ready signal.
-5. Produce one target-specific `$pr-batch` prompt per group. The readable work
-   request is exactly one accepted canonical issue or pull-request body, or one
-   trusted maintainer comment, not a generated restatement. A direct accepted
-   PR target uses its exact PR URL without requiring a synthetic comment. A
-   later trusted maintainer comment may define or override the issue or
-   pull-request body; select its exact URL for that run. Do not
-   synthesize or combine sources. A preflight-accepted trusted ad-hoc override
-   with no GitHub surface uses its existing `plan-state://` or `batch://`
-   durable authorization reference. `Fix issue #123 using $pr-batch with merge
-   authority ask.` is a valid one-line shortcut when repository context is
-   unambiguous.
-
-   Follow the canonical Launcher Run Record with one entry per target lane.
-   Before prompt creation, persist one immutable unique per-execution `run_id`
-   and one exact canonical `record_destination` in the Batch Plan. A
-   GitHub-backed or mixed run explicitly chooses one exact selected issue or PR
-   work-item URL; a comment source anchors to its parent work item. A wholly
-   non-GitHub trusted-ad-hoc run uses its existing durable plan/backend
-   destination. Keep both fields outside the human prompt and give them to each
-   worker. Bind each entry to the existing immutable replay identity (`lane_id`,
-   dispatcher, `instance_id`, and launch token) and give that identity to the
-   worker with the launch digest. For a GitHub lane, record its source URL,
-   selection timestamp and digest, directly append its launch timestamp and
-   digest at dispatch, and append worker-start observations only to the exactly
-   matching `run_id` and replay identity at that destination after the worker
-   digest matches. For the
-   narrow non-GitHub override, use the accepted durable reference and existing
-   provenance/authority evidence without inventing a snapshot schema. Keep the
-   run-level prompt-creation metadata and append-only rerun history outside the
-   prompt. Do not wait for a telemetry aggregator.
-
-   Use the same readable prompt vocabulary for every host. Host budget changes
-   item count, so split an oversized group into more launches instead of
-   compressing its words. Keep typed targets, path/collision evidence, stage
-   dependencies, lane ownership, model preferences, dispatch state, lifecycle,
-   coordination, QA, review, and closeout contracts in the durable Batch Plan,
-   manifest, or backend outside the human-authored prompt. Backend storage is
-   optional; preserve the same state in a durable local artifact when needed.
-   The durable manifest uses this exact machine grammar:
-   `Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses`
-   Durable launch state also retains these exact compact machine contracts:
-   `Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord`
+5. Produce one target-specific `$pr-batch` goal prompt per group, with a stable
+   batch id, lane name, agent id, target list, validation expectations, and
+   coordination hooks. Every separately handed-off prompt must name
+   `STAGE_DEPENDENCY_PLAN_PATH` and `STAGE_DEPENDENCY_PLAN_ID` in existing
+   `Scope` data and carry the complete live replay inline or name its durable
+   reference; persist or deliver both artifacts with stable planning state.
+   Backend storage is optional and must not be assumed.
+   Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
+   with the selected target and current aggregate wave cap. Each generated prompt must include
+   `Coordinator model/effort preference: <model/class>/<effort>.` and
+   `Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.` and
+   `Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses` and
+   `Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord` and
    `Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`
-   `Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.`
-   `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.`
-   `Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle`
+   It must also say `Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.`
+   and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle` It must include this exact self-contained completion line:
    `- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.`
+   Each prompt must also include this exact compact scope line:
    `Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN.`
+   Each prompt must include these exact compact launch lines:
    ``Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop``
    ``PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security``
-   These are generated records, not maintainer-authored prompt fields.
-   Every separately handed-off launch must preserve `STAGE_DEPENDENCY_PLAN_PATH`
-   and `STAGE_DEPENDENCY_PLAN_ID` in its durable Batch Plan or machine-readable
-   launch state and carry the complete live replay or name its durable reference;
-   persist or deliver both artifacts with stable planning state. Backend storage
-   is optional and must not be assumed.
-
-   Use the shared prompt template from `$plan-pr-batch` and
-   `pr-processing.md`. The prompt carries only repository, exact work-item URL,
-   task name, instruction, human `auto` or `ask` merge authority, and the
-   optional human-availability time.
-   <!-- host-branch: codex-only start -->
-   For Codex, prepend `/goal`.
-   <!-- host-branch: codex-only end -->
-   Other hosts use the same body unchanged.
-   The canonical launcher record outside the human-authored prompt stores
-   run-level prompt-creation metadata plus one entry per target lane with its
-   source, selected/launched/worker-started timestamps, digests, and directional
-   worker observations. Use `UNKNOWN` field by field without inference;
-   unavailable telemetry does not block launch. Every rerun appends a new
-   collapsed `<details>` history record without replacing earlier values. Human
-   `auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine
-   `ask`.
-   Machine-only `merge_authority: none` stays outside the normal human prompt.
-   Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
-
-   The durable plan, not the prompt, still emits one exact `target` v1 object
-   per lane. GitHub objects use type `github-issue` or
-   `github-pull-request`, repository, positive number, and matching stable
-   identity. Only `trusted-ad-hoc-override` may omit a GitHub number; it retains
-   `target: adhoc:<yyyymmdd>-<short-slug>`, matching stable identity, lowercase
-   slug override name, labeled `kind:value` authorizer and task identities, and
-   a durable reference. Bare, malformed, or duplicate targets fail closed.
+   Emit the corresponding exact `target` v1 object on every plan lane. GitHub
+   objects use type `github-issue` or `github-pull-request`, repository, positive
+   number, and matching stable identity. Only type `trusted-ad-hoc-override`
+   may omit a GitHub number, and it must include `target: adhoc:<yyyymmdd>-<short-slug>`, matching
+   stable identity, lowercase slug override name, labeled `kind:value`
+   authorizer and task identities, and a durable reference. Bare, malformed, or
+   duplicate targets fail closed.
    For this override field only, the durable reference must use
    `issue://OWNER/REPO/N`, `plan-state://<id>/<path>`, `batch://<id>`, or
    `https://github.com/OWNER/REPO/{issues|pull}/N`; reject every other scheme
    and every chat-local reference.
    A labeled authorizer or task identity whose complete value component is
-   `UNKNOWN` is incomplete and fails closed. Complete labeled component values
-   `fix-it`, `pr-batch`, and `publish-pr` are generic intent and fail closed in
-   either provenance field. Exact override names `fix-it`, `pr-batch`, and
-   `publish-pr` are also invalid.
+   `UNKNOWN` is incomplete and fails closed.
+   Complete labeled component values `fix-it`, `pr-batch`, and `publish-pr`
+   are generic intent and fail closed in either provenance field.
+   Exact override names `fix-it`, `pr-batch`, and `publish-pr` are also invalid.
    Parseable `issue://` and GitHub HTTPS authorization refs must match the target
    repository case-insensitively; do not invent repository parsing for opaque
-   `plan-state://` or `batch://` refs. Parseable authorization refs reject
-   userinfo and query; GitHub HTTPS requires port 443, `issue://` requires the
-   exact canonical authority/path shape, and fragments remain permitted.
+   `plan-state://` or `batch://` refs.
+   Parseable authorization refs reject userinfo and query; GitHub HTTPS requires
+   port 443, `issue://` requires the exact canonical authority/path shape, and
+   fragments remain permitted.
    Every typed target repository has exactly two ASCII components separated by `/`: the owner matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from `[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
+   Each generated item must use this exact contiguous shape:
 
-   Keep stage-dependency plan/replay references, dispatcher choice and
-   authority, `launch-pending`/`active` fencing, preferred model/effort,
-   observed host/model/effort, Lane Cards, and coordination hooks in that durable state. The
-   portable `dispatcher-capability-preflight` helper remains the launch
-   decision seam. Persist `launch-pending` before worker launch and ordinary
-   `active` state after spawn before Goal-mode resume. Record host observations
-   only when exposed; reconcile them field by field when supported and otherwise
-   retain `UNKNOWN` without blocking launch.
-   Replay identity is `lane_id`, dispatcher, `instance_id`, and launch token; route preference, observed host fields, and `candidate_index` are metadata and never trigger replacement.
-   Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
-   Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active.
-   A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
-   When host observations become available, reconcile registration field by field. Before requiring reconciliation, detect advertised registration update/upsert/reconciliation capability. An unadvertised or unsupported create-only backend records each affected field `UNKNOWN`. An advertised update uses the bounded safe executable-plus-opaque-argv contract; failure records affected fields `UNKNOWN` without wedging. Every advertised registration invocation resolves a backend-advertised safe executable plus ordered opaque argv without shell evaluation and runs with a finite hard deadline in its own process group; timeout or whole-group `TERM` then `KILL` records best-effort field-granular `UNKNOWN`, names reconciliation, and does not block worker launch.
-   For Codex prompts, prepend only `/goal`; other hosts use the same readable body unchanged. <!-- host-allow: codex-only -->
+   ```text
+   - Target: <repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+     Original: <prompt|n/a>; ovr: <n/a|name/authorizer/ref/task>
+     Goal: one-line outcome.
+     Notes: scope/branch/dependency.
+     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
+   ```
+
+   Each prompt must include this exact base-resolution line:
+   ``- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.``
+   Each prompt must include this exact `ask` authority line:
+   ``- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
+   GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+   `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+   HST-v1
+   Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
    Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
    `ready-human-review-required` carries the exact current head SHA, every triggered gate, rollback status, and the exact durable human decision needed.
    `autonomous-merge-evidence-unknown` carries the exact current head SHA, evidence failure, trusted-base policy provenance, and repair action.
    `UNKNOWN` is not `human-approval-required` and cannot be cleared by risk approval.
-
-   Put one deterministic `Task name:` in each prompt. It identifies the
-   repository, work item, and purpose without timestamps, runner state, or
-   coordination diagnostics. Keep group and lane identifiers in durable machine
-   state outside the human prompt.
+   The portable `dispatcher-capability-preflight` helper prefers the requested dispatcher and requires explicit dispatch authority for another dispatcher. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. Replay identity is `lane_id`, dispatcher, `instance_id`, and launch token; route preference, observed host fields, and `candidate_index` are metadata and never trigger replacement.
+   Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active.
+   Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
+   Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+   Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
+   A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
+   When host observations become available, reconcile registration field by field. Before requiring reconciliation, detect advertised registration update/upsert/reconciliation capability. An unadvertised or unsupported create-only backend records each affected field `UNKNOWN`. An advertised update uses the bounded safe executable-plus-opaque-argv contract; failure records affected fields `UNKNOWN` without wedging. Every advertised registration invocation resolves a backend-advertised safe executable plus ordered opaque argv without shell evaluation and runs with a finite hard deadline in its own process group; timeout or whole-group `TERM` then `KILL` records best-effort field-granular `UNKNOWN`, names reconciliation, and does not block worker launch.
+   For Codex prompts, keep the
+   prompt under the `$plan-pr-batch` Codex 4 000-character limit with at least
+   300 characters of headroom, including the Codex invocation line; split route
+   groups before overflow when the unsplit prompt breaches that floor. For
+   Claude/generic prompts, measure the actual prompt,
+   keep it under 8 000 characters, and split or compact it when too large rather
+   than applying the Codex split threshold. Put a short `Batch title:` after the
+   target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+   Resolve `<PROJECT>` from the optional `repo_prefix` in
+   `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
+   ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
+   deterministically from the repository name: use the basename of the `origin`
+   remote after stripping `.git`, or the repository root basename when `origin`
+   is unavailable; for a multi-segment name take the first character of each of
+   the first six `-`, `_`, or space-separated segments, and for a single-segment
+   name take its first 4 characters or the whole name when shorter, then
+   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
+   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
+   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
+   Use A/B/C group letters
+   only when multiple prompts are created, and get `MM-DD HH:MM` from
+   `date +'%m-%d %H:%M'` in the local shell.
+   Use `Thread handle:` as the first worker-specific line:
+   `Thread handle: <batch-short>-<lane>-<word>`, deriving `<batch-short>` from
+   the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
+   suffix, `<lane>` from the lane id or owner slug, and `<word>` as a short
+   coordinator-chosen session word. Then add the compact
+   `Lane Card: claim/PR-open/block/cancel/final; preferred model/effort; observed host/model/effort/UNKNOWN; holder/branch/PR/phase/URLs/UNKNOWN`
+   line so workers emit the canonical Lane Card after a successful claim, on
+   blocked/cancelled state, and in final handoff. The actor that opens or
+   updates the PR emits the PR-open Lane Card when the PR is opened. The
+   canonical card carries preferred model/effort, observed host/model/effort,
+   execution-envelope receipt, claim holder and `dashboard_url` from backend
+   metadata, plus `pr_url` from backend metadata or verified GitHub PR state,
+   with `UNKNOWN` when unavailable.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
    worker must still acquire a coordination claim before editing.
@@ -443,25 +430,12 @@ Return:
 - Capacity source and derived `N`; if unavailable, the exact phase-2 blocker.
 - One current-wave plan whose total item count is capped in aggregate by the
   host-aware target, then split into up to `N` non-empty capacity-derived groups,
-  each with a ready readable `$pr-batch` prompt. Host budgets control item
-  count: Codex 10/8 and Claude/generic 5/3. They do not change prompt
-  vocabulary. Each prompt contains only repository, the exact trusted issue,
-  pull-request, or maintainer-comment work-item URL—or the accepted
-  `plan-state://` or `batch://` reference for a trusted ad-hoc override—task
-  name, instruction, human `auto` or `ask` merge authority, and optional
-  human-availability time. Its launcher run
-  record carries its immutable unique per-execution `run_id`, exact canonical
-  `record_destination`, and one entry per target lane with its existing
-  immutable replay identity; selection, launch, and worker-observed source digests;
-  selection/launch/worker-start timestamps; and observed runtime/workflow
-  versions, plus run-level prompt-creation metadata.
-  For that narrow non-GitHub override, record the three source-digest fields as
-  exact `not applicable — trusted-ad-hoc-override` and reverify that the durable
-  reference resolves to the same immutable accepted provenance/authority record
-  revision, or an equivalent existing content binding, at selection, launch,
-  and worker start. Missing, mutable, changed, or `UNKNOWN` binding stops; do
-  not invent a source snapshot.
-  Report idle slots or the remaining backlog/next wave separately.
+  each with a ready `$pr-batch` prompt within the target-specific prompt size
+  limit: Codex 10/8 and 4 000 characters with at least 300 characters of headroom,
+  including the Codex invocation line;
+  Claude/generic 5/3 and under 8 000 measured characters. Each prompt carries
+  its selected batch size target, aggregate wave cap, thread handle, and Lane
+  Card. Report idle slots or remaining backlog/next wave separately.
 - One durable planning-chat lifecycle record covering every generated group:
   While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
   Planning-chat role selector: default to `prompt-only`. While the chat remains a planning chat, select `parent-orchestrator` only when the planner explicitly retains one or more cross-batch dependency, release, or shared-follow-up responsibilities.
@@ -481,7 +455,7 @@ Return:
   queue state is unavailable.
 - Residual risks and maintainer decisions needed.
 - Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
-- Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt and its Batch Plan or exact durable plan-state reference.` and `Next: Paste both into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
+- Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt.` and `Next: Paste the prompt into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
 
 ## Common Mistakes
 

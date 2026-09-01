@@ -41,13 +41,48 @@ That path is relative to `~/.agents`. The file
 installation and upgrades; do not edit it or use it for personal
 customization.
 
-An invalid repository configuration, path, or guide blocks resolution. An
-invalid user-global configuration, path, or guide emits a warning and falls
-back to [the packaged portable default](writing-style.md). When `writing_style`
-is absent from both repository and user-global configuration, the resolver also
-uses that packaged default. Resolution is
+An invalid repository configuration, preset, path, or guide blocks resolution.
+An invalid user-global configuration, preset, path, or guide emits a warning
+and falls back to [the packaged portable default](writing-style.md). When
+`writing_style` is absent from both repository and user-global configuration,
+the resolver also uses that packaged default. Resolution is
 repo → user-global → portable default, and one complete Markdown file wins
 without merging prose.
+
+### Adopt ASD-STE100 for Technical Documentation
+
+A project can opt in to the independently authored packaged adapter with the
+exact preset scalar:
+
+```yaml
+writing_style: asd-ste100
+```
+
+The same scalar can be set once in `~/.agents/agent-workflow.yml` as a personal
+fallback. Any repository `writing_style` value, whether the preset or a
+relative Markdown path, overrides that user-global selection. The portable
+default remains the generic [writing style](writing-style.md).
+
+The preset keeps the generic plain-language baseline and adds
+ASD-STE100-inspired constraints only for human-facing technical-documentation
+prose. It preserves exact identifiers, commands, templates, evidence, quoted
+text, and machine-readable protocol fields. It does not load the standard from
+a URL, fetch remote content, or check conformance, and it does not contain the
+ASD-STE100 specification or dictionary.
+
+Use the official standard as the primary reference:
+
+- [ASD-STE100 official site](https://www.asd-ste100.org/)
+- [Official downloads](https://www.asd-ste100.org/STE_downloads.html)
+- [Official software information](https://www.asd-ste100.org/STEsoftware.html)
+- [Official training information](https://www.asd-ste100.org/STE_training.html)
+- [ASD-STE100 Issue 9 PDF](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf)
+  (Issue 9, 2025-01-15)
+
+Do not vendor or copy the copyrighted standard PDF or its dictionary into this
+repository or a project guide. Formal ASD-STE100 work requires access to an
+authorized specification and review by a qualified human. The packaged adapter
+and AI tools do not establish ASD approval, certification, or conformance.
 
 ## One-Time Adoption
 
@@ -143,51 +178,20 @@ without merging prose.
    `trusted_actions` does not mechanically approve the container. Maintainers
    must manually review the exact registry, image, and digest.
 
-   Initialization adds the optional merge-submission seam in its portable,
-   fail-closed form:
+   Initialization adds the optional merge-submission seam in its portable
+   default form:
 
    ```yaml
    merge_submission:
      mode: direct
    ```
 
-   Keep that value, or omit the mapping, for the normal GitHub direct-merge
-   path. A repository that enables Merge Queue must explicitly select
-   `merge_queue_only` or `merge_queue_or_guarded_direct`; both modes use
-   canonical enqueue while the live base is queue-controlled. Direct mode fails
-   deterministically before mutation in that state so the repository policy
-   cannot silently change the submission route. A consumer that deliberately
-   owns a guarded direct-merge exception may select the latter mode and name one
-   executable guard under
-   `.agents/bin`, an exact merge method, and an explicit acknowledgement plus
-   rationale for the non-atomic base binding. The guard is a path, not a shell
-   command. It receives the fixed argv contract documented in
-   [seam-design.md](seam-design.md), and its return value is accepted only after
-   live GitHub state proves the authorized head merged exactly. Queue-enabled
-   PRs continue through canonical enqueue and never invoke the guard. An
-   explicit `merge_queue_only` policy on a queue-disabled base returns a
-   deterministic configuration error before mutation. The
-   helper executes a private copy of the validated trusted-base bytes from an
-   isolated Git root whose detached `HEAD`, index, and working files all bind
-   the receipt-base commit and tree. This is HEAD/index/worktree isolation, not
-   object/ref confidentiality: the materialized repository preserves its
-   source `origin`, and Git objects or refs may remain observable. The exact PR identity is supplied only by
-   live GitHub metadata and fixed argv. Guards may delegate to trusted-base
-   repository files from that private working directory; they must not infer PR
-   identity from local Git state. Every guard must have a supported explicit
-   shebang; shebang-less files, including native magic prefixes, fail closed
-   before spawn. Script interpreters are resolved from the
-   trusted shebang through a fixed path and invoked by absolute identity under
-   a closed environment; caller-controlled `PATH`, `BASH_ENV`, `RUBYOPT`, and
-   loader settings are not inherited. An absolute shebang interpreter inside
-   the consumer repository is invalid. The recorded absolute-path interpreter
-   check and later spawn retain a known filesystem TOCTOU window. Runtime `$0`
-   and `__dir__` point at the
-   private guard copy. Internal validation and materialization Git runs without
-   GitHub tokens, SSH agent access, or caller credential/config controls.
-   Preserved `origin` is metadata for the trusted consumer guard, which
-   intentionally receives only supported GitHub token variables for the
-   authorized submission.
+   Keep that value, or omit the mapping, for the normal direct-merge path.
+   Repositories using Merge Queue or a repository-owned guarded direct-merge
+   exception must deliberately choose the matching mode and review its safety
+   contract. See [Merge submission](seam-design.md#merge-submission) for the
+   available modes, guard requirements, fixed argument contract, and the
+   non-atomic base-binding caveat.
 
    The optional `autonomous_merge` mapping is seeded as an empty mapping by
    downstream presets without overwriting repo-owned policy. An empty or absent
