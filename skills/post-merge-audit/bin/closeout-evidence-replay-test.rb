@@ -1142,9 +1142,11 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_performance_evidence_keeps_accepting_colon_bearing_refs
-    # Only a leading bare-word scheme is rejected; a ref whose colon follows a path or a dotted
-    # filename stays a valid stable ref.
-    ["bin/perf-report:latest", "reports/perf-report.rb:42", "perf-report.rb:42"].each do |source|
+    # `<rev>:<path>` Git references are the documented "stable ref" form and are structurally
+    # indistinguishable from an opaque URI scheme, so only enumerated schemes may be rejected.
+    ["bin/perf-report:latest", "reports/perf-report.rb:42", "perf-report.rb:42",
+     "HEAD:reports/perf.json", "main:path/to/report", "abc123:report.json",
+     "v1.2.3:bench/out.json", "Makefile:12"].each do |source|
       qa = run_replay(
         v2_marker(
           "performance_impact" => "measured_metric",
@@ -1155,6 +1157,58 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "SATISFIED", qa.fetch("verdict"), source
       assert_empty qa.fetch("missing"), source
+    end
+  end
+
+  def test_hosted_v1_rejects_opaque_uri_scheme_criterion_evidence
+    # URI_SCHEME only matches `scheme://`, so an opaque scheme used as bare criterion evidence
+    # fell through as resolved for a release-gating check.
+    %w[
+      mailto:someone@example.com
+      file:/etc/passwd
+      blob:abc
+      tel:+15551234
+      javascript:alert(1)
+      data:text/plain,x
+    ].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+  end
+
+  def test_hosted_v1_keeps_accepting_authenticated_scalar_and_ref_criterion_evidence
+    ["run-report-8f3a21", "HEAD:reports/perf.json", "main:path/to/report"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), evidence
+      assert_empty hosted.fetch("missing"), evidence
+    end
+  end
+
+  def test_hosted_v1_accepts_trailing_colon_connector_before_the_url
+    ["HTTPS: link: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: artifact: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: see: https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), evidence
+      assert_empty hosted.fetch("missing"), evidence
+    end
+
+    # A trailing colon does not make a host- or port-shaped prefix into prose.
+    ["HTTPS: example.test: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: host:443 https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "UNKNOWN", run_replay(body).dig("hosted_qa_evidence", "verdict"), evidence
     end
   end
 

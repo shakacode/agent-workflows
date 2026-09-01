@@ -98,10 +98,23 @@ module CloseoutEvidenceReplay
     \b(?:missing|unavailable|unmeasured|unknown|tbd|not[ _](?:available|measured))\b|n/a
   }ix
   URI_SCHEME = %r{\A[A-Za-z][A-Za-z0-9+.-]*://}
-  # A repo-seam source is a stable command, report, or ref. Any other URI scheme (`mailto:`,
-  # `file:`, `blob:`) is a reference this gate cannot validate, so only a valid absolute HTTPS URL
-  # may carry one. The scheme shape excludes dots, so a ref such as `perf-report.rb:42` stays a ref.
-  NON_HTTPS_SOURCE_SCHEME = /\A[A-Za-z][A-Za-z0-9+-]*:/
+  # Opaque (non-`scheme://`) schemes denoting a reference this gate cannot validate. URI_SCHEME
+  # covers the `scheme://` forms; this covers the rest. Enumerated rather than inferred from shape:
+  # a Git `<rev>:<path>` reference such as `HEAD:reports/perf.json` or `main:path/to/report` is the
+  # documented stable-ref form and is structurally identical to an opaque scheme, so no shape rule
+  # separates them. http/https are excluded here because `HTTPS:` is also the prose-label form.
+  NON_DURABLE_OPAQUE_SCHEMES = %w[
+    about blob chrome-extension data file filesystem ftp javascript mailto mediastream
+    moz-extension tel ws wss
+  ].freeze
+  NON_DURABLE_OPAQUE_SCHEME = /
+    \A(?:#{NON_DURABLE_OPAQUE_SCHEMES.map { |scheme| Regexp.escape(scheme) }.join('|')}):
+  /ix
+  # A repo-seam source is a command, report, or ref rather than prose, so a schemeless `https:` is
+  # a malformed reference there and joins the opaque set.
+  NON_DURABLE_SOURCE_SCHEME = /
+    \A(?:#{(NON_DURABLE_OPAQUE_SCHEMES + %w[http https]).map { |scheme| Regexp.escape(scheme) }.join('|')}):
+  /ix
 
   def run(argv)
     options, parser = parse_options(argv)
@@ -814,10 +827,11 @@ module CloseoutEvidenceReplay
   end
 
   # A single plain word between `HTTPS:` and the next URL is consumer connector prose (`link`,
-  # `artifact`, `see`) introducing that URL, not a reference of its own. The character class admits
-  # no `.`, `:`, `/`, or bracket, so a host-, path-, or authority-shaped prefix still fails closed.
+  # `artifact`, `see:`) introducing that URL, not a reference of its own. A colon is allowed only as
+  # the final character, matching the trailing-colon prose rule in authority_colon_shape?, so a
+  # host-, port-, path-, or authority-shaped prefix still fails closed.
   def prose_url_boundary_token?(raw_label)
-    raw_label.match?(/\A\p{Alnum}[\p{Alnum}_-]*\z/u)
+    raw_label.match?(/\A\p{Alnum}[\p{Alnum}_-]*:?\z/u)
   end
 
   def authority_shaped_https_label?(label)
@@ -857,6 +871,7 @@ module CloseoutEvidenceReplay
     return false if valid_https_url?(evidence)
     return true if malformed_https_reference?(evidence)
     return true if evidence.match?(URI_SCHEME)
+    return true if evidence.match?(NON_DURABLE_OPAQUE_SCHEME)
 
     evidence.match?(HOSTED_CRITERION_UNRESOLVED_PLACEHOLDER)
   end
@@ -1008,7 +1023,7 @@ module CloseoutEvidenceReplay
     return false if source.match?(/\A(?:command|report|ref|source)\z/i)
 
     return valid_https_url?(source) if source.match?(%r{\Ahttps?://}i)
-    return false if source.match?(NON_HTTPS_SOURCE_SCHEME)
+    return false if source.match?(NON_DURABLE_SOURCE_SCHEME)
     return false if source.include?("://")
 
     source.match?(%r{\A[A-Za-z0-9][A-Za-z0-9._:#@/-]*\z})
