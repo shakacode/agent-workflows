@@ -31,6 +31,10 @@ same value. If that exact identifier lacks the contract, PR-batch records
 before invoking the backend. A different private identifier remains valid repository policy, but
 PR-batch records `UNKNOWN (unsupported private backend adapter)` and stops only
 that lane before invoking any backend until a bounded adapter protocol is added.
+This is an upgrade compatibility boundary: before installing this version in a
+consumer that selects another private identifier, add its bounded adapter
+protocol or keep the prior installed workflow version. Do not assume a custom
+backend continues coordinating merely because the seam still accepts its name.
 
 This source repository uses the exact `agent-coord private backend` identifier,
 which is the reviewed identifier used by its private-backend contracts. The

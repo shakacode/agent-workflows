@@ -44,6 +44,13 @@ record has these known or literal `UNKNOWN` fields:
 Resolve the mode only from trusted repository configuration and bounded live
 evidence:
 
+Before branching on that mode, resolve `PR_BATCH_SKILL_DIR` in this order: an
+explicit environment value, the loaded skill's base directory, then the
+repo-local `.agents/skills/pr-batch` copy. Stop with a precise blocker when a
+helper required by the selected operation is still unavailable. This
+mode-independent resolution also applies to optional telemetry in
+`public-fallback` and `none` mode.
+
 - `private`: trusted configuration selects a private backend: the exact
   `agent-coord private backend` identifier with a closed
   `coordination_backend_contract` that allowlists it. Without that contract,
@@ -55,11 +62,7 @@ evidence:
   before invoking `agent-coord-bounded`, and never guess compatibility. Set
   `private_state: healthy | claim-only`: `healthy` for usable preflight reads,
   or `claim-only` when the compare-and-swap claim succeeds after degraded reads.
-  Run doctor, target, and batch reads with a finite timeout. Resolve
-  `PR_BATCH_SKILL_DIR` in this order:
-  an explicit environment value, the loaded skill's base directory, then the
-  repo-local `.agents/skills/pr-batch` copy; stop with a precise blocker when
-  the helper is still unavailable. Invoke
+  Run doctor, target, and batch reads with a finite timeout. Invoke
   `${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded`; a target status read is
   preflight, while the claim operation is the compare-and-swap ownership gate.
   Use only advertised flags and capabilities. A representative bounded doctor

@@ -29,7 +29,7 @@ class AgentClaimedMirrorContractTest < Minitest::Test
   end
 
   def test_workflow_defines_the_claim_label_mirror_and_symmetry
-    assert_includes @component, "`agent_claimed_label` (default\n   `agent-claimed`)"
+    assert_rule @component, "`agent_claimed_label` (default `agent-claimed`)"
     assert_rule @component, "After claim, mirror"
     assert_rule @component, "visible hint, not the lock"
     assert_rule @component, "only after verifying the same holder/generation"
