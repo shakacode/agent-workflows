@@ -261,7 +261,8 @@ authority, and completion facts unchanged.
 
 This execution skill adds only batch-shaping details that intake does not own:
 
-1. **Batch title**: for pasteable batch prompts, derive a short title in the form
+1. **Batch title**: for durable Batch Plan and task metadata, derive a short
+   title in the form
    `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
    Resolve `<PROJECT>` from the optional `repo_prefix` in
    `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
@@ -274,10 +275,12 @@ This execution skill adds only batch-shaping details that intake does not own:
    uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
    `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
    An invalid configured `repo_prefix` is a blocker; do not silently fall back.
-   Fill the optional `A?` slot with A,
-   B, C, etc. only when creating multiple batch prompts; omit it for a single
-   batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
-   prompt, and use that output for `MM-DD HH:MM`.
+   Fill the optional `A?` slot with A, B, C, etc. only when recording multiple
+   batch titles; omit it for a single batch. Run `date +'%m-%d %H:%M'` in the
+   local shell when creating the metadata, and use that output for
+   `MM-DD HH:MM`. Keep the timestamped `Batch title:` in durable Batch Plan and
+   task metadata only. The readable human prompt uses `Task name:` and must not
+   regain `Batch title:`.
 2. **Routing preferences and observations**: record coordinator, worker, and
    checker model/effort preferences before target interpretation. These are
    advisory. Host-observed host/model/effort fields are optional and remain

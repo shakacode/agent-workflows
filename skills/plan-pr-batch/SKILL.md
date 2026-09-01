@@ -171,10 +171,13 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
    - If the user wants a ready `$pr-batch` goal and has not specified merge
      authority, ask whether the normal human prompt should use `ask` or `auto`.
-     Map those values to machine `ask` and
-     `auto_merge_when_gates_pass`. Preserve an explicitly selected machine-only
-     `merge_authority: none` in durable state outside the normal human prompt.
-     Do not leave the human field unresolved. Explain that `ask` automatically
+     Map those values to machine `ask` and `auto_merge_when_gates_pass`.
+     An explicitly selected machine `merge_authority: none` renders as human
+     `Merge authority: ask` because the worker has no merge authority and must
+     obtain explicit human authority before merge. This rendering does not
+     change the durable machine value from `none` to `ask`. Preserve `none` in
+     durable state outside the normal human prompt. Do not leave the human field
+     unresolved. Explain that `ask` automatically
      walks through the exact-diff PR one conceptual change at a time before its
      one final merge decision.
    - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list. Treat an unbound direct prompt as planning/reconciliation input only; do not turn it into an implementation lane unless the complete durable ad-hoc override record is already present in trusted input.

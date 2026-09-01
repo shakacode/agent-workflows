@@ -39,7 +39,7 @@ def extract_markdown_section(text, heading)
 
   body_start = heading_match.end(0)
   heading_level = heading[/\A#+/].length
-  next_heading = text.match(/^#{Regexp.escape("#" * heading_level)}\s+/, body_start)
+  next_heading = text.match(/^#{Regexp.escape('#' * heading_level)}\s+/, body_start)
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
 end
@@ -133,6 +133,25 @@ class ReadableGoalPromptContractTest < Minitest::Test
       assert_includes normalized, "same readable prompt vocabulary for every host"
       assert_includes normalized, "outside the human-authored prompt"
     end
+  end
+
+  def test_machine_none_renders_as_human_ask_without_changing_durable_authority
+    normalized = @plan_skill.gsub(/\s+/, " ")
+    assert_includes normalized,
+                    "An explicitly selected machine `merge_authority: none` renders as human " \
+                    "`Merge authority: ask` because the worker has no merge authority and must obtain " \
+                    "explicit human authority before merge."
+    assert_includes normalized,
+                    "This rendering does not change the durable machine value from `none` to `ask`."
+  end
+
+  def test_timestamped_batch_title_is_durable_metadata_not_a_human_prompt_field
+    normalized = @pr_batch_skill.gsub(/\s+/, " ")
+    assert_includes normalized,
+                    "Keep the timestamped `Batch title:` in durable Batch Plan and task metadata only."
+    assert_includes normalized,
+                    "The readable human prompt uses `Task name:` and must not regain `Batch title:`."
+    refute_includes normalized, "**Batch title**: for pasteable batch prompts"
   end
 
   def test_source_docs_preserve_complete_handoff_and_digest_integrity
