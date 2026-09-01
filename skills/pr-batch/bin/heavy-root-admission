@@ -353,7 +353,27 @@ module HeavyRootAdmission
     true
   end
 
-  def process_or_group_live?(pid, pgid)
+  def process_start_identity(pid)
+    stdout, _stderr, status = Open3.capture3("ps", "-o", "lstart=", "-p", pid.to_s)
+    return unless status.success?
+
+    identity = stdout.strip
+    identity unless identity.empty?
+  rescue Errno::ENOENT
+    nil
+  end
+
+  def reused_process_identity?(expected, current)
+    expected && current && current != expected
+  end
+
+  def process_or_group_live?(pid, pgid, expected_pid_start_identity = nil)
+    if expected_pid_start_identity
+      current_identity = process_start_identity(pid)
+      return false if reused_process_identity?(expected_pid_start_identity, current_identity)
+      return true if current_identity == expected_pid_start_identity
+    end
+
     process_target_live?(pid) || process_target_live?(-pgid)
   end
 
@@ -523,6 +543,12 @@ module HeavyRootAdmission
       unless actual_pgid == options.fetch(:pgid)
         raise Error, "PID #{options.fetch(:pid)} belongs to PGID #{actual_pgid}, not #{options.fetch(:pgid)}"
       end
+
+      pid_start_identity = process_start_identity(options.fetch(:pid))
+      unless pid_start_identity
+        raise Error, "could not capture a stable start identity for PID #{options.fetch(:pid)}"
+      end
+
       if reservation["intended_pid"] && reservation["intended_pid"] != options.fetch(:pid)
         raise Error, "reservation intended PID #{reservation['intended_pid']}, not #{options.fetch(:pid)}"
       end
@@ -533,6 +559,7 @@ module HeavyRootAdmission
       reservation["status"] = "bound"
       reservation["pid"] = options.fetch(:pid)
       reservation["pgid"] = options.fetch(:pgid)
+      reservation["pid_start_identity"] = pid_start_identity
       reservation["bound_at"] = iso8601(now)
       reservation["prelaunch_expires_at"] = reservation.delete("expires_at")
       {
@@ -568,7 +595,11 @@ module HeavyRootAdmission
         })
       end
 
-      if process_or_group_live?(reservation.fetch("pid"), reservation.fetch("pgid"))
+      if process_or_group_live?(
+        reservation.fetch("pid"),
+        reservation.fetch("pgid"),
+        reservation["pid_start_identity"]
+      )
         raise Error, "PID #{reservation['pid']} or PGID #{reservation['pgid']} is still live; preserve it to natural terminal"
       end
 

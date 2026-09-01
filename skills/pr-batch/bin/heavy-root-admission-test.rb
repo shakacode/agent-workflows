@@ -96,7 +96,9 @@ class HeavyRootAdmissionTest < Minitest::Test
           "--launch-token", token, "--pid", pid.to_s, "--pgid", pid.to_s, "--json"
         )
         assert_equal 0, bind.fetch(:status), bind.inspect
-        assert_equal "bound", JSON.parse(bind.fetch(:stdout)).dig("reservation", "status")
+        bound_reservation = JSON.parse(bind.fetch(:stdout)).fetch("reservation")
+        assert_equal "bound", bound_reservation.fetch("status")
+        refute_empty bound_reservation.fetch("pid_start_identity")
 
         reserve_replay = run_helper(
           "reserve", "--state-dir", state_dir, "--host", "M5",
@@ -147,6 +149,14 @@ class HeavyRootAdmissionTest < Minitest::Test
       )
       assert_equal 0, replacement.fetch(:status), replacement.inspect
     end
+  end
+
+  def test_pid_reuse_does_not_keep_an_old_bound_reservation_live
+    assert HeavyRootAdmission.reused_process_identity?("original process start", "new process start")
+  end
+
+  def test_matching_bound_process_identity_remains_live
+    refute HeavyRootAdmission.reused_process_identity?("original process start", "original process start")
   end
 
   def test_expired_prelaunch_token_is_recovered_but_cannot_be_reused
@@ -231,6 +241,8 @@ class HeavyRootAdmissionTest < Minitest::Test
     assert_includes capacity_workflow, "output-pipe drain"
     assert_includes capacity_workflow, "Launch tokens are single-use"
     assert_includes capacity_workflow, "newest 128 records per host"
+    assert_includes capacity_workflow, "replacement coordinator"
+    assert_includes capacity_workflow, "PID reuse"
 
     {
       "skills/pr-batch/SKILL.md" => "workflows/pr-batch-capacity-admission.md",
