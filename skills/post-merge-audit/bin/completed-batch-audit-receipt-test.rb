@@ -237,6 +237,37 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_reassessment_preserves_legacy_blockers_without_projection_verification
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    expected_blockers = [
+      "coordination lane ror-d-issue-4731 target is absent or ambiguous",
+      "shakacode/react_on_rails#issue:4731 is absent from resolved coordination scope",
+      "shakacode/react_on_rails#issue:4731 target state/head is not authenticated or fresh"
+    ]
+    assert_equal expected_blockers, preflight.fetch("blockers")
+
+    original_projection = CompletedBatchAuditReceipt.method(:authenticated_publication_target_projection)
+    CompletedBatchAuditReceipt.define_singleton_method(:authenticated_publication_target_projection) do |**_arguments|
+      raise "accepted-deferral reassessment must not invoke target projection verification"
+    end
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      assert CompletedBatchAuditReceipt.accepted_deferral_preflight_reassessed?(
+        preflight,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        coordination_backend: REAL_BACKEND
+      )
+    end
+    assert_equal expected_blockers, preflight.fetch("blockers")
+  ensure
+    CompletedBatchAuditReceipt.define_singleton_method(
+      :authenticated_publication_target_projection,
+      original_projection
+    ) if original_projection
+  end
+
   def test_accepted_deferral_replay_binds_the_exact_terminal_wrapper
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
@@ -1287,6 +1318,66 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       end
     end
     assert_equal [[REAL_BACKEND, "batch-184"]], coordination_calls
+  end
+
+  def test_complete_publication_reauthenticates_issue_to_result_pr_projection
+    preflight, target, proof, coordination_status = projected_publication_preflight
+    assert preflight.fetch("eligible"), preflight.fetch("blockers").join("\n")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(preflight)
+    projection_calls = []
+    original_projection = if CompletedBatchAuditReceipt.respond_to?(:authenticated_publication_target_projection)
+                            CompletedBatchAuditReceipt.method(:authenticated_publication_target_projection)
+                          end
+    CompletedBatchAuditReceipt.define_singleton_method(:authenticated_publication_target_projection) do |source:, target:|
+      projection_calls << [source, target]
+      proof
+    end
+    target_payload = publication_target_payload
+    authenticated_api = lambda do |_host, endpoint, **_options|
+      raise "unexpected endpoint: #{endpoint}" unless endpoint == "repos/acme/widgets/pulls/184"
+
+      target_payload
+    end
+    coordination = lambda do |backend:, batch_id:|
+      coordination_status if backend == REAL_BACKEND && batch_id == "batch-issue-173"
+    end
+
+    with_stubbed_gh_api(authenticated_api) do
+      with_stubbed_coordination_status(coordination) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "batch-issue-173",
+          targets: [target],
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+    assert_equal [[proof.fetch("source_target"), target]], projection_calls
+
+    CompletedBatchAuditReceipt.define_singleton_method(:authenticated_publication_target_projection) do |**_arguments|
+      nil
+    end
+    with_stubbed_gh_api(authenticated_api) do
+      with_stubbed_coordination_status(coordination) do
+        assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError) do
+          CompletedBatchAuditReceipt.validate_publication_preflight!(
+            preflight,
+            expected_batch_id: "batch-issue-173",
+            targets: [target],
+            coordination_backend: REAL_BACKEND
+          )
+        end
+      end
+    end
+  ensure
+    if original_projection
+      CompletedBatchAuditReceipt.define_singleton_method(
+        :authenticated_publication_target_projection,
+        original_projection
+      )
+    elsif CompletedBatchAuditReceipt.respond_to?(:authenticated_publication_target_projection)
+      CompletedBatchAuditReceipt.singleton_class.remove_method(:authenticated_publication_target_projection)
+    end
   end
 
   def test_complete_publication_blocks_public_claim_fallback_without_private_coordination
@@ -3567,6 +3658,89 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         coordination_status if backend == coordination_backend && batch_id == "batch-184"
       end
     )
+  end
+
+  def projected_publication_preflight
+    target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
+    source = target.merge("type" => "issue", "number" => 173)
+    head_sha = "a" * 40
+    coordination_status = {
+      "scope" => { "kind" => "batch", "batch_id" => "batch-issue-173" },
+      "batches" => [{
+        "batch_id" => "batch-issue-173",
+        "repo" => "acme/widgets",
+        "status" => "completed",
+        "updated_at" => "2026-07-18T18:00:01Z",
+        "completed_at" => "2026-07-18T18:00:01Z",
+        "lanes" => [{
+          "name" => "issue-173",
+          "targets" => ["issue:173"],
+          "status" => "done",
+          "terminal" => "done",
+          "closed_at" => "2026-07-18T18:00:01Z",
+          "pr_state" => "merged",
+          "pr_url" => "https://github.com/acme/widgets/pull/184",
+          "evidence_url" => "https://github.com/acme/widgets/pull/184"
+        }]
+      }]
+    }
+    evidence = <<~MARKER
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR/head #{head_sha}
+      scope: PR #184 exact head
+      automated_checks: focused tests
+      manual_checks: not applicable: no manual surface
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: script
+      -->
+    MARKER
+    input = {
+      "contract" => "completed-batch-publication-preflight-input",
+      "version" => 1,
+      "batch_id" => "batch-issue-173",
+      "expected_targets" => [target],
+      "coordination_status" => coordination_status,
+      "target_snapshots" => [{
+        "target" => target,
+        "state" => "merged",
+        "head_sha" => head_sha,
+        "source" => "https://github.com/acme/widgets/pull/184"
+      }],
+      "qa_evidence" => [{ "target" => target, "user_visible_ui_change" => "no", "evidence" => evidence }]
+    }
+    proof = {
+      "contract" => "github-issue-result-pr-projection",
+      "version" => 1,
+      "source_target" => source,
+      "result_target" => target,
+      "relationship" => "closes_issue",
+      "result_head_sha" => head_sha,
+      "result_merged_at" => "2026-07-18T17:59:59Z",
+      "source_closed_at" => "2026-07-18T18:00:00Z",
+      "verification_source" => "authenticated github graphql symmetric closing references"
+    }
+    receipt = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: REAL_BACKEND,
+      target_verifier: lambda do |target:|
+        {
+          "target" => target,
+          "state" => "merged",
+          "head_sha" => head_sha,
+          "completed_at" => "2026-07-18T17:59:59Z",
+          "verification_source" => "authenticated gh api"
+        }
+      end,
+      coordination_verifier: ->(backend:, batch_id:) do
+        coordination_status if backend == REAL_BACKEND && batch_id == "batch-issue-173"
+      end,
+      target_projection_verifier: ->(source:, target:) { proof if source == proof["source_target"] && target == proof["result_target"] }
+    )
+    [receipt, target, proof, coordination_status]
   end
 
   def publication_target_payload(head_sha: "a" * 40)

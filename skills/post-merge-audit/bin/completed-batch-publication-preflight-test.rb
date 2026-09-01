@@ -74,6 +74,98 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input
   end
 
+  def issue_to_result_pr_input(raw_target: "9521")
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    target = {
+      "host" => "github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_299
+    }
+    head_sha = "ef30745eccc6e1fdae34c1b770edbc9650800e51"
+    input["batch_id"] = "hc-a27-issue9521-20260822-2035"
+    input["expected_targets"] = [target]
+    batch = input.dig("coordination_status", "batches", 0)
+    input.dig("coordination_status", "scope")["batch_id"] = input.fetch("batch_id")
+    batch["batch_id"] = input.fetch("batch_id")
+    batch["repo"] = target.fetch("repo")
+    batch["lanes"] = [{
+      "name" => "issue-9521",
+      "owner" => "hc-a27-issue9521",
+      "targets" => [raw_target],
+      "status" => "done",
+      "terminal" => "done",
+      "closed_at" => "2026-08-24T00:43:00Z",
+      "pr_url" => "https://github.com/shakacode/hichee/pull/10299",
+      "pr_state" => "merged",
+      "evidence_url" => "https://github.com/shakacode/hichee/pull/10299"
+    }]
+    input["target_snapshots"] = [{
+      "target" => target,
+      "state" => "merged",
+      "head_sha" => head_sha,
+      "completed_at" => "2026-08-24T00:41:33Z",
+      "source" => "https://github.com/shakacode/hichee/pull/10299"
+    }]
+    input["qa_evidence"] = [{
+      "target" => target,
+      "user_visible_ui_change" => "no",
+      "evidence" => qa_v2_evidence(head_sha:, user_visible_ui_change: "no")
+    }]
+    input
+  end
+
+  def issue_projection_proof(source:, target:, head_sha: "ef30745eccc6e1fdae34c1b770edbc9650800e51")
+    {
+      "contract" => "github-issue-result-pr-projection",
+      "version" => 1,
+      "source_target" => source,
+      "result_target" => target,
+      "relationship" => "closes_issue",
+      "result_head_sha" => head_sha,
+      "result_merged_at" => "2026-08-24T00:41:33Z",
+      "source_closed_at" => "2026-08-24T00:41:34Z",
+      "verification_source" => "authenticated github graphql symmetric closing references"
+    }
+  end
+
+  def issue_projection_graphql_payload(source:, target:, include_forward: true, include_reverse: true)
+    head_sha = "ef30745eccc6e1fdae34c1b770edbc9650800e51"
+    issue_node = {
+      "number" => source.fetch("number"),
+      "url" => "https://github.com/#{source.fetch('repo')}/issues/#{source.fetch('number')}",
+      "state" => "CLOSED",
+      "closedAt" => "2026-08-24T00:41:34Z",
+      "repository" => { "nameWithOwner" => source.fetch("repo") }
+    }
+    pr_node = {
+      "number" => target.fetch("number"),
+      "url" => "https://github.com/#{target.fetch('repo')}/pull/#{target.fetch('number')}",
+      "state" => "MERGED",
+      "mergedAt" => "2026-08-24T00:41:33Z",
+      "headRefOid" => head_sha,
+      "repository" => { "nameWithOwner" => target.fetch("repo") }
+    }
+    {
+      "data" => {
+        "repository" => {
+          "result" => pr_node.except("repository").merge(
+            "closingIssuesReferences" => {
+              "nodes" => include_forward ? [issue_node] : [],
+              "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+            }
+          ),
+          "source" => issue_node.except("repository").merge(
+            "closedByPullRequestsReferences" => {
+              "nodes" => include_reverse ? [pr_node] : [],
+              "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+            }
+          )
+        }
+      }
+    }
+  end
+
   def qa_v2_evidence(head_sha:, user_visible_ui_change:)
     ui_change = user_visible_ui_change == "yes"
     destination = ui_change ? "github_pr" : "not_applicable"
@@ -114,14 +206,16 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     backend: BACKEND,
     waiver_verifier: valid_waiver_verifier(input),
     target_verifier: valid_target_verifier(input),
-    coordination_verifier: valid_coordination_verifier(input, backend)
+    coordination_verifier: valid_coordination_verifier(input, backend),
+    target_projection_verifier: nil
   )
     CompletedBatchPublicationPreflight.assess(
       input,
       coordination_backend: backend,
       waiver_verifier:,
       target_verifier:,
-      coordination_verifier:
+      coordination_verifier:,
+      target_projection_verifier:
     )
   end
 
@@ -743,6 +837,279 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
     assert_equal "sha256:a926d6266be958f222901d99cdcd78e3e3fd6148f575971922d66d491d16a5da",
                  result.fetch("snapshot_digest")
+  end
+
+  def test_numeric_issue_lane_projects_to_one_authenticated_result_pr_target_and_caches_proof
+    input = issue_to_result_pr_input
+    source = {
+      "host" => "github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "issue",
+      "number" => 9_521
+    }
+    target = input.fetch("expected_targets").first
+    calls = 0
+    verifier = lambda do |source:, target:|
+      calls += 1
+      issue_projection_proof(source:, target:)
+    end
+
+    result = assess_input(input, target_projection_verifier: verifier)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal 1, calls
+    assert_equal [target], result.fetch("targets")
+    lane = result.dig("snapshot", "coordination", "lanes", 0)
+    assert_equal target, lane.fetch("target")
+    assert_equal source, lane.dig("target_projection", "source_target")
+    assert_equal "closes_issue", lane.dig("target_projection", "relationship")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+  end
+
+  def test_typed_issue_target_projects_deterministically_to_expected_result_pr
+    input = issue_to_result_pr_input(raw_target: "issue:9521")
+    verifier = ->(source:, target:) { issue_projection_proof(source:, target:) }
+
+    result = assess_input(input, target_projection_verifier: verifier)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal "issue", result.dig(
+      "snapshot", "coordination", "lanes", 0, "target_projection", "source_target", "type"
+    )
+  end
+
+  def test_authenticated_projection_requires_symmetric_same_repo_closed_issue_and_merged_pr
+    input = issue_to_result_pr_input
+    target = input.fetch("expected_targets").first
+    source = target.merge("type" => "issue", "number" => 9_521)
+    payload = issue_projection_graphql_payload(source:, target:)
+    original = if CompletedBatchPublicationPreflight.respond_to?(:authenticated_gh_graphql)
+                 CompletedBatchPublicationPreflight.method(:authenticated_gh_graphql)
+               end
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **_arguments|
+      payload
+    end
+
+    proof = CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+
+    assert_equal issue_projection_proof(source:, target:), proof
+
+    asymmetric = issue_projection_graphql_payload(source:, target:, include_reverse: false)
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **_arguments|
+      asymmetric
+    end
+    assert_nil CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+
+    mistimed = issue_projection_graphql_payload(source:, target:)
+    mistimed.dig("data", "repository", "source")["closedAt"] = "2026-08-24T00:41:32Z"
+    mistimed.dig(
+      "data", "repository", "result", "closingIssuesReferences", "nodes", 0
+    )["closedAt"] = "2026-08-24T00:41:32Z"
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **_arguments|
+      mistimed
+    end
+    assert_nil CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+  ensure
+    if original
+      CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql, original)
+    elsif CompletedBatchPublicationPreflight.respond_to?(:authenticated_gh_graphql)
+      CompletedBatchPublicationPreflight.singleton_class.remove_method(:authenticated_gh_graphql)
+    end
+  end
+
+  def test_authenticated_projection_paginates_both_relationships_and_rejects_repeated_cursors
+    input = issue_to_result_pr_input
+    target = input.fetch("expected_targets").first
+    source = target.merge("type" => "issue", "number" => 9_521)
+    first_page = issue_projection_graphql_payload(source:, target:, include_forward: false, include_reverse: false)
+    first_page.dig("data", "repository", "result", "closingIssuesReferences", "pageInfo").merge!(
+      "hasNextPage" => true,
+      "endCursor" => "result-page-1"
+    )
+    first_page.dig("data", "repository", "source", "closedByPullRequestsReferences", "pageInfo").merge!(
+      "hasNextPage" => true,
+      "endCursor" => "source-page-1"
+    )
+    pages = [first_page, issue_projection_graphql_payload(source:, target:)]
+    variables = []
+    original = CompletedBatchPublicationPreflight.method(:authenticated_gh_graphql)
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **arguments|
+      variables << arguments.fetch(:variables)
+      pages.shift
+    end
+
+    proof = CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+
+    assert_equal issue_projection_proof(source:, target:), proof
+    assert_equal "result-page-1", variables.last.fetch("resultCursor")
+    assert_equal "source-page-1", variables.last.fetch("sourceCursor")
+
+    repeated = issue_projection_graphql_payload(source:, target:, include_forward: false, include_reverse: false)
+    repeated.dig("data", "repository", "result", "closingIssuesReferences", "pageInfo").merge!(
+      "hasNextPage" => true,
+      "endCursor" => "same-result-cursor"
+    )
+    repeated.dig("data", "repository", "source", "closedByPullRequestsReferences", "pageInfo").merge!(
+      "hasNextPage" => true,
+      "endCursor" => "same-source-cursor"
+    )
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql) do |_host, **_arguments|
+      repeated
+    end
+    assert_nil CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:authenticated_gh_graphql, original) if original
+  end
+
+  def test_authenticated_graphql_sends_integer_variables_typed_and_cursor_strings_raw
+    observed = nil
+    original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+    original_resolver = CompletedBatchPublicationPreflight.method(:trusted_system_tool)
+    CompletedBatchPublicationPreflight.define_singleton_method(:trusted_system_tool) do |_name, outside_root:|
+      "/usr/bin/true" if outside_root
+    end
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process) do |command, **_arguments|
+      observed = command
+      [JSON.generate("data" => {}), "", Struct.new(:success?).new(true)]
+    end
+
+    CompletedBatchPublicationPreflight.authenticated_gh_graphql(
+      "github.com",
+      query: "query($number: Int!, $cursor: String) { viewer { login } }",
+      variables: { "number" => 439, "cursor" => "page-2", "owner" => "shakacode" }
+    )
+
+    assert_includes observed.each_cons(2).to_a, ["-F", "number=439"]
+    assert_includes observed.each_cons(2).to_a, ["-f", "cursor=page-2"]
+    assert_includes observed.each_cons(2).to_a, ["-f", "owner=shakacode"]
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, original_capture)
+    CompletedBatchPublicationPreflight.define_singleton_method(:trusted_system_tool, original_resolver)
+  end
+
+  def test_issue_projection_disappearing_on_reassessment_fails_closed
+    input = issue_to_result_pr_input
+    receipt = assess_input(
+      input,
+      target_projection_verifier: ->(source:, target:) { issue_projection_proof(source:, target:) }
+    )
+    assert receipt.fetch("eligible")
+
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      receipt,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND),
+      target_projection_verifier: ->(source:, target:) { nil }
+    )
+  end
+
+  def test_projection_proof_fails_closed_when_missing_asymmetric_unrelated_cross_repo_stale_or_mistimed
+    input = issue_to_result_pr_input
+    target = input.fetch("expected_targets").first
+    source = target.merge("type" => "issue", "number" => 9_521)
+    valid = issue_projection_proof(source:, target:)
+    invalid_proofs = {
+      missing: nil,
+      asymmetric: valid.merge("relationship" => "mentioned_by"),
+      unrelated: valid.merge("source_target" => source.merge("number" => 9_522)),
+      cross_repo: valid.merge("source_target" => source.merge("repo" => "acme/other")),
+      stale_head: valid.merge("result_head_sha" => "f" * 40),
+      invalid_timestamp: valid.merge("source_closed_at" => "not-a-timestamp"),
+      reversed_order: valid.merge(
+        "result_merged_at" => "2026-08-24T00:41:35Z",
+        "source_closed_at" => "2026-08-24T00:41:34Z"
+      )
+    }
+
+    invalid_proofs.each do |label, proof|
+      result = assess_input(input, target_projection_verifier: ->(**_arguments) { proof })
+
+      refute result.fetch("eligible"), label
+    end
+  end
+
+  def test_repeated_identical_projection_is_cached_but_duplicate_lanes_still_fail_closed
+    input = issue_to_result_pr_input
+    duplicate = JSON.parse(JSON.generate(input.dig("coordination_status", "batches", 0, "lanes", 0)))
+    duplicate["name"] = "issue-9521-checker"
+    input.dig("coordination_status", "batches", 0, "lanes") << duplicate
+    calls = 0
+    verifier = lambda do |source:, target:|
+      calls += 1
+      issue_projection_proof(source:, target:)
+    end
+
+    result = assess_input(input, target_projection_verifier: verifier)
+
+    refute result.fetch("eligible")
+    assert_equal 1, calls
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10299 appears in multiple coordination lanes"
+  end
+
+  def test_typed_pr_spellings_resolve_direct_targets_and_malformed_spellings_fail_closed
+    %w[pr:10299 pull_request:10299].each do |raw_target|
+      input = issue_to_result_pr_input(raw_target:)
+
+      result = assess_input(input)
+
+      assert result.fetch("eligible"), "#{raw_target}: #{result.fetch('blockers').join(', ')}"
+      assert_nil result.dig("snapshot", "coordination", "lanes", 0, "target_projection"), raw_target
+    end
+
+    %w[pull:10299 issue:#9521 issue:0 issue:-1 issue:9521:extra UNKNOWN:9521].each do |raw_target|
+      input = issue_to_result_pr_input(raw_target:)
+      result = assess_input(
+        input,
+        target_projection_verifier: ->(source:, target:) { issue_projection_proof(source:, target:) }
+      )
+
+      refute result.fetch("eligible"), raw_target
+      assert_includes result.fetch("blockers"), "coordination lane issue-9521 target is absent or ambiguous", raw_target
+    end
+  end
+
+  def test_untyped_same_number_issue_and_pr_target_is_ambiguous_but_typed_target_is_not
+    input = issue_to_result_pr_input(raw_target: "10299")
+    lane = input.dig("coordination_status", "batches", 0, "lanes", 0)
+    lane.delete("pr_url")
+    input.fetch("expected_targets") << input.fetch("expected_targets").first.merge("type" => "issue")
+
+    ambiguous = assess_input(input)
+    refute ambiguous.fetch("eligible")
+    assert_includes ambiguous.fetch("blockers"), "coordination lane issue-9521 target is absent or ambiguous"
+
+    lane["targets"] = ["pr:10299"]
+    typed_targets = CompletedBatchPublicationPreflight.targets_for_lane(
+      lane,
+      "shakacode/hichee",
+      input.fetch("expected_targets")
+    )
+    assert_equal [input.fetch("expected_targets").first], typed_targets.map { |row| row.fetch("target") }
+  end
+
+  def test_typed_issue_target_preserves_truthful_no_pr_closeout
+    input = no_pr_input
+    input.dig("coordination_status", "batches", 0, "lanes")
+         .find { |lane| lane.fetch("targets") == ["10036"] }["targets"] = ["issue:10036"]
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_nil result.dig("snapshot", "targets")
+                     .find { |row| row.dig("target", "number") == 10_036 }
+                     .fetch("head_sha")
+  end
+
+  def test_integer_lane_target_preserves_numeric_current_main_compatibility
+    input = issue_to_result_pr_input(raw_target: 9_521)
+    verifier = ->(source:, target:) { issue_projection_proof(source:, target:) }
+
+    result = assess_input(input, target_projection_verifier: verifier)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
   end
 
   def test_9972_terminal_supersession_reports_replacement_protocol_violation
