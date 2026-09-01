@@ -44,6 +44,15 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     BODY
   end
 
+  def accepted_deferral_target
+    {
+      "host" => "github.com",
+      "repo" => "shakacode/react_on_rails",
+      "type" => "issue",
+      "number" => 4731
+    }
+  end
+
   def process_alive?(pid)
     Process.kill(0, pid)
     true
@@ -184,6 +193,829 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     refute result.fetch("ready")
     assert_equal ["completed-batch-audit publication snapshot refresh required"], result.fetch("blockers")
     assert_equal "clean", result.dig("fields", "verdict")
+  end
+
+  def test_ror_blocked_receipt_becomes_ready_only_through_authenticated_accepted_deferral
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"),
+      encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    targets = [accepted_deferral_target]
+    preflight = accepted_deferral_publication_preflight(targets.first)
+    assert_equal [
+      "coordination lane ror-d-issue-4731 target is absent or ambiguous",
+      "shakacode/react_on_rails#issue:4731 is absent from resolved coordination scope",
+      "shakacode/react_on_rails#issue:4731 target state/head is not authenticated or fresh"
+    ], preflight.fetch("blockers")
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets:,
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: targets,
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: preflight
+      )
+
+      assert replay.fetch("well_formed")
+      assert replay.fetch("ready")
+      assert_empty replay.fetch("blockers")
+      record = replay.fetch("records").fetch(0)
+      assert_equal "terminal", record.fetch("current_status")
+      assert_equal "accepted-deferral", record.fetch("disposition")
+    end
+  end
+
+  def test_accepted_deferral_replay_binds_the_exact_terminal_wrapper
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    terminal = nil
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+    end
+
+    unrelated =
+      "ref: unrelated-999; owner: @mallory; current status: terminal; disposition: resolved; " \
+      "evidence: https://example.com/evidence"
+    mutations = {
+      "scope" => terminal.sub(/^scope_evidence:.*$/, "scope_evidence: forged but evidenced scope"),
+      "checker" => terminal.sub(/^checker_evidence:.*$/, "checker_evidence: forged but evidenced checker"),
+      "missing record" => terminal.sub(/^followups_dispositions:.*$/, "followups_dispositions: none"),
+      "replacement record" => terminal.sub(/^followups_dispositions:.*$/, "followups_dispositions: #{unrelated}")
+    }
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      mutations.each do |label, marker|
+        replay = CompletedBatchAuditReceipt.replay_marker(
+          marker,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          expected_targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+
+        refute replay.fetch("ready"), label
+        assert_equal ["completed-batch-audit accepted deferral mismatch or stale"], replay.fetch("blockers"), label
+      end
+    end
+  end
+
+  def test_accepted_deferral_preserves_receipt_valid_owner_identifiers
+    original = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+
+    ["@alice", "org/team"].each do |owner|
+      blocked = original.sub("owner: agent-workflows maintainers", "owner: #{owner}")
+      api = accepted_deferral_api(
+        preflight,
+        unpublished_predecessor_marker: blocked,
+        mutate_decision: ->(body) { body.sub("owner: agent-workflows maintainers", "owner: #{owner}") }
+      )
+
+      with_accepted_deferral_api(preflight, api) do
+        terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+        replay = CompletedBatchAuditReceipt.replay_marker(
+          terminal,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          expected_targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+
+        assert replay.fetch("ready"), owner
+        assert_equal owner, replay.fetch("records").fetch(0).fetch("owner"), owner
+      end
+    end
+  end
+
+  def test_accepted_deferral_rejects_a_predecessor_with_a_helper_managed_snapshot
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    terminal = nil
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+    end
+    accepted_snapshot = terminal[/^accepted_deferral_snapshot: (.+)$/, 1]
+    publication_snapshot = CompletedBatchAuditReceipt.encoded_snapshot_value(preflight.fetch("snapshot"))
+    variants = {
+      "publication snapshot" => publication_snapshot,
+      "accepted-deferral snapshot" => accepted_snapshot
+    }
+
+    variants.each do |label, snapshot|
+      field = label.tr("-", "_").split.first(2).join("_")
+      predecessor = blocked.sub(/^scope_evidence:.*\n/, "\\0#{field}: #{snapshot}\n")
+      assert CompletedBatchAuditReceipt.marker_state(predecessor), label
+
+      api = accepted_deferral_api(preflight, unpublished_predecessor_marker: predecessor)
+      with_accepted_deferral_api(preflight, api) do
+        assert_raises(CompletedBatchAuditReceipt::AcceptedDeferralError, label) do
+          CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+            predecessor,
+            input:,
+            expected_batch_id: "ror-d-issue-4731-20260817",
+            targets: [target],
+            publication_preflight: preflight,
+            coordination_backend: REAL_BACKEND
+          )
+        end
+      end
+    end
+  end
+
+  def test_accepted_deferral_accepts_one_attributable_multi_blocker_mechanism_defect
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      assert CompletedBatchAuditReceipt.accepted_deferral_product_evidence?(
+        preflight,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        coordination_backend: REAL_BACKEND
+      )
+    end
+  end
+
+  def test_accepted_deferral_accepts_semantically_identical_mixed_case_repository_identities
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target.merge("repo" => "ShakaCode/React_On_Rails")
+    preflight = accepted_deferral_publication_preflight(target)
+    base_api = accepted_deferral_api(preflight, unpublished_predecessor_marker: blocked)
+    api = lambda do |host, endpoint, **options|
+      base_api.call(host, endpoint.downcase, **options)
+    end
+
+    with_accepted_deferral_api(preflight, api) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+
+      assert replay.fetch("ready")
+      assert_empty replay.fetch("blockers")
+    end
+  end
+
+  def test_accepted_deferral_binds_the_coordination_batch_repo_and_lane_identity_urls
+    target = accepted_deferral_target
+    rejected = {
+      "missing batch repo" => { coordination_repo: nil },
+      "unknown batch repo" => { coordination_repo: "UNKNOWN" },
+      "wrong batch repo" => { coordination_repo: "shakacode/another_repository" },
+      "conflicting issue URL" => {
+        lane_identity_fields: { "issue_url" => "https://github.com/shakacode/another_repository/issues/4731" }
+      },
+      "conflicting issue URL type" => {
+        lane_identity_fields: { "issue_url" => "https://github.com/shakacode/react_on_rails/pull/4731" }
+      },
+      "conflicting target URL" => {
+        lane_identity_fields: { "target_url" => "https://github.com/shakacode/react_on_rails/issues/4732" }
+      }
+    }
+
+    rejected.each do |label, options|
+      preflight = accepted_deferral_publication_preflight(target, **options)
+      with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+        refute CompletedBatchAuditReceipt.accepted_deferral_product_evidence?(
+          preflight,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          coordination_backend: REAL_BACKEND
+        ), label
+      end
+    end
+
+    accepted = [
+      { coordination_repo: "ShakaCode/React_On_Rails" },
+      { lane_identity_fields: { "issue_url" => "https://github.com/shakacode/react_on_rails/issues/4731" } },
+      { lane_identity_fields: { "target_url" => "https://github.com/shakacode/react_on_rails/issues/4731" } }
+    ]
+    accepted.each do |options|
+      preflight = accepted_deferral_publication_preflight(target, **options)
+      with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+        assert CompletedBatchAuditReceipt.accepted_deferral_product_evidence?(
+          preflight,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          coordination_backend: REAL_BACKEND
+        ), options.inspect
+      end
+    end
+  end
+
+  def test_accepted_deferral_binds_shorthand_blocker_to_its_exact_tracking_issue
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    allow_product_evidence = ->(*_args, **_kwargs) { true }
+
+    with_stubbed_accepted_deferral_product_evidence(allow_product_evidence) do
+      with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+        terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+
+        assert_includes terminal, "ref: agent-workflows-320"
+        assert_includes terminal, "https://github.com/shakacode/agent-workflows/issues/320"
+      end
+    end
+  end
+
+  def test_accepted_deferral_rejects_shorthand_tracker_binding_corruption
+    original = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    unchanged = ->(body) { body }
+    variants = {
+      "predecessor owner" => [
+        original.sub("owner: agent-workflows maintainers", "owner: other maintainers"), unchanged
+      ],
+      "predecessor ref" => [
+        original.gsub("agent-workflows-320", "agent-workflows-321"), unchanged
+      ],
+      "predecessor evidence owner" => [
+        original.sub("github.com/shakacode/agent-workflows", "github.com/other-owner/agent-workflows"), unchanged
+      ],
+      "predecessor evidence repo" => [
+        original.sub("shakacode/agent-workflows/issues/320", "shakacode/other-workflows/issues/320"), unchanged
+      ],
+      "predecessor evidence number" => [
+        original.sub("agent-workflows/issues/320", "agent-workflows/issues/321"), unchanged
+      ],
+      "decision tracking owner" => [
+        original,
+        ->(body) { body.sub("github.com/shakacode/agent-workflows", "github.com/other-owner/agent-workflows") }
+      ],
+      "decision tracking repo" => [
+        original,
+        ->(body) { body.sub("shakacode/agent-workflows/issues/320", "shakacode/other-workflows/issues/320") }
+      ],
+      "decision tracking number" => [
+        original,
+        ->(body) { body.sub("agent-workflows/issues/320", "agent-workflows/issues/321") }
+      ]
+    }
+
+    variants.each do |label, (marker, mutate_decision)|
+      api = accepted_deferral_api(
+        preflight,
+        unpublished_predecessor_marker: marker,
+        mutate_decision:
+      )
+      with_accepted_deferral_api(preflight, api) do
+        assert_raises(CompletedBatchAuditReceipt::Error, label) do
+          CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+            marker,
+            input:,
+            expected_batch_id: "ror-d-issue-4731-20260817",
+            targets: [target],
+            publication_preflight: preflight,
+            coordination_backend: REAL_BACKEND
+          )
+        end
+      end
+    end
+  end
+
+  def test_accepted_deferral_rejects_an_unrelated_ambiguous_lane
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(
+      target,
+      extra_unattributed_lane_names: ["ror-d-issue-4732"]
+    )
+
+    assert_equal 4, preflight.fetch("blockers").length
+    assert_includes preflight.fetch("blockers"),
+                    "coordination lane ror-d-issue-4732 target is absent or ambiguous"
+
+    api = accepted_deferral_api(preflight, unpublished_predecessor_marker: blocked)
+    with_accepted_deferral_api(preflight, api) do
+      assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
+  def test_accepted_deferral_derives_the_sole_blocker_from_a_nonready_disposition
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    ).sub(
+      "findings: OUTSTANDING agent-workflows-320",
+      "findings: none"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+
+    api = accepted_deferral_api(preflight, unpublished_predecessor_marker: blocked)
+    with_accepted_deferral_api(preflight, api) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+
+      assert CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: [target],
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: preflight
+      ).fetch("ready")
+    end
+  end
+
+  def test_post_publication_accepted_deferral_reauthenticates_the_append_only_predecessor
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"),
+      encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    targets = [accepted_deferral_target]
+    preflight = accepted_deferral_publication_preflight(targets.first)
+    predecessor = accepted_deferral_predecessor_receipt(blocked)
+    terminal = nil
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight, predecessor:)) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets:,
+        publication_preflight: preflight,
+        predecessor_receipt: predecessor,
+        coordination_backend: REAL_BACKEND
+      )
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: targets,
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: preflight
+      )
+      assert replay.fetch("ready")
+    end
+
+    corrupted_api = accepted_deferral_api(preflight, predecessor:, corrupt_predecessor: true)
+    with_accepted_deferral_api(preflight, corrupted_api) do
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: targets,
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: preflight
+      )
+      refute replay.fetch("ready")
+      assert_equal ["completed-batch-audit accepted deferral mismatch or stale"], replay.fetch("blockers")
+    end
+  end
+
+  def test_post_publication_accepted_deferral_rejects_a_foreign_predecessor_before_fetch
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    predecessor = accepted_deferral_predecessor_receipt(blocked).merge(
+      "url" => "https://github.com/foreign-org/foreign-repo/issues/999#issuecomment-5389270559"
+    )
+    base_api = accepted_deferral_api(preflight, predecessor:)
+    foreign_fetches = 0
+    api = lambda do |host, endpoint, **options|
+      if endpoint == "repos/foreign-org/foreign-repo/issues/comments/5389270559"
+        foreign_fetches += 1
+        {
+          "id" => 5_389_270_559,
+          "html_url" => predecessor.fetch("url"),
+          "issue_url" => "https://api.github.com/repos/foreign-org/foreign-repo/issues/999",
+          "body" => predecessor.fetch("body"),
+          "user" => { "login" => predecessor.fetch("author"), "type" => "User" },
+          "author_association" => "MEMBER",
+          "created_at" => predecessor.fetch("created_at"),
+          "updated_at" => predecessor.fetch("updated_at")
+        }
+      else
+        base_api.call(host, endpoint, **options)
+      end
+    end
+
+    with_accepted_deferral_api(preflight, api) do
+      assert_raises(CompletedBatchAuditReceipt::AcceptedDeferralError) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          predecessor_receipt: predecessor,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+    assert_equal 0, foreign_fetches
+  end
+
+  def test_post_publication_accepted_deferral_replay_allows_the_authenticated_tracking_issue_to_close
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    targets = [target]
+    preflight = accepted_deferral_publication_preflight(target)
+    predecessor = accepted_deferral_predecessor_receipt(blocked)
+    terminal = nil
+
+    closed_api = accepted_deferral_api(preflight, predecessor:, tracking_issue_state: "closed")
+    with_accepted_deferral_api(preflight, closed_api) do
+      assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets:,
+          publication_preflight: preflight,
+          predecessor_receipt: predecessor,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight, predecessor:)) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets:,
+        publication_preflight: preflight,
+        predecessor_receipt: predecessor,
+        coordination_backend: REAL_BACKEND
+      )
+    end
+
+    with_accepted_deferral_api(preflight, closed_api) do
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: targets,
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: preflight
+      )
+
+      assert replay.fetch("ready")
+      assert_empty replay.fetch("blockers")
+    end
+  end
+
+  def test_supersede_posts_one_successor_comment_and_reuses_the_supplied_tracking_issue
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    predecessor = accepted_deferral_predecessor_receipt(blocked)
+    reference = CompletedBatchAuditReceipt.compact_reference("follow-ups-remain", predecessor)
+    api, calls = accepted_deferral_supersede_api(preflight, predecessor:)
+
+    with_accepted_deferral_api(preflight, api) do
+      result = CompletedBatchAuditReceipt.supersede(
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        reference:,
+        accepted_deferral_input: input,
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+
+      assert result.fetch("ready")
+      assert_equal "Conversation status: Ready for archiving.", result.fetch("final_status")
+    end
+    assert_equal(1, calls.count { |call| call[2] == "POST" })
+    refute(calls.any? { |call| call[1].end_with?("/issues") && call[2] == "POST" })
+  end
+
+  def test_supersede_refuses_any_external_product_or_unknown_blocker_before_post
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    predecessor = accepted_deferral_predecessor_receipt(blocked)
+    reference = CompletedBatchAuditReceipt.compact_reference("follow-ups-remain", predecessor)
+
+    ["release gate failed", "review evidence: UNKNOWN"].each do |blocker|
+      api, calls = accepted_deferral_supersede_api(preflight, predecessor:)
+      with_accepted_deferral_api(preflight, api) do
+        assert_raises(CompletedBatchAuditReceipt::Error, blocker) do
+          CompletedBatchAuditReceipt.supersede(
+            expected_batch_id: "ror-d-issue-4731-20260817",
+            targets: [target],
+            reference:,
+            accepted_deferral_input: input,
+            publication_preflight: preflight,
+            coordination_backend: REAL_BACKEND,
+            other_blockers: [blocker]
+          )
+        end
+      end
+      refute(calls.any? { |call| call[2] == "POST" }, blocker)
+    end
+  end
+
+  def test_accepted_deferral_rejects_corrupted_decision_tracking_owner_binding_and_product_evidence
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"),
+      encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    variants = {
+      "decision" => ["decision: accepted-deferral", "decision: resolved"],
+      "removed decision" => ["decision: accepted-deferral\n", ""],
+      "tracking issue" => ["tracking_issue: https://github.com/shakacode/agent-workflows/issues/320",
+                           "tracking_issue: https://github.com/shakacode/agent-workflows/issues/321"],
+      "owner" => ["owner: agent-workflows maintainers", "owner: UNKNOWN"],
+      "batch" => ["batch_id: ror-d-issue-4731-20260817", "batch_id: other-batch"],
+      "predecessor" => ["original_receipt_sha256: sha256:", "original_receipt_sha256: sha256:0"],
+      "product evidence" => ["product_evidence_receipt: sha256:", "product_evidence_receipt: sha256:0"]
+    }
+
+    variants.each do |label, (needle, replacement)|
+      api = accepted_deferral_api(preflight, mutate_decision: ->(body) { body.sub(needle, replacement) })
+      with_accepted_deferral_api(preflight, api) do
+        assert_raises(CompletedBatchAuditReceipt::Error, label) do
+          CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+            blocked,
+            input:,
+            expected_batch_id: "ror-d-issue-4731-20260817",
+            targets: [target],
+            publication_preflight: preflight,
+            coordination_backend: REAL_BACKEND
+          )
+        end
+      end
+    end
+  end
+
+  def test_accepted_deferral_rejects_substantive_or_unknown_product_blockers
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+
+    ["release gate failed", "coordination lane UNKNOWN target is absent or ambiguous"].each do |blocker|
+      preflight = accepted_deferral_publication_preflight(target, blockers: [blocker])
+      with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+        assert_raises(CompletedBatchAuditReceipt::Error, blocker) do
+          CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+            blocked,
+            input:,
+            expected_batch_id: "ror-d-issue-4731-20260817",
+            targets: [target],
+            publication_preflight: preflight,
+            coordination_backend: REAL_BACKEND
+          )
+        end
+      end
+    end
+
+    preflight = accepted_deferral_publication_preflight(target)
+    preflight.fetch("snapshot").fetch("qa").first["status"] = "unknown"
+    preflight["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(preflight.fetch("snapshot"))
+    unsigned = preflight.reject { |key, _value| key == "receipt_digest" }
+    preflight["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      assert_raises(CompletedBatchAuditReceipt::Error, "unknown QA evidence") do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
+  def test_accepted_deferral_rejects_resealed_preflight_source_identity_corruption
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    preflight.fetch("source_input")["batch_id"] = "other-batch"
+    preflight["source_input_digest"] = CompletedBatchPublicationPreflight.digest(preflight.fetch("source_input"))
+    unsigned = preflight.reject { |key, _value| key == "receipt_digest" }
+    preflight["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
+  def test_accepted_deferral_rejects_resealed_source_snapshot_divergence
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+    preflight.fetch("source_input")["target_snapshots"] = [{
+      "target" => target,
+      "state" => "merged",
+      "head_sha" => "6" * 40,
+      "source" => "https://github.com/shakacode/react_on_rails/pull/4918"
+    }]
+    preflight["source_input_digest"] = CompletedBatchPublicationPreflight.digest(preflight.fetch("source_input"))
+    unsigned = preflight.reject { |key, _value| key == "receipt_digest" }
+    preflight["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
+  def test_accepted_deferral_rejects_backend_mismatch_and_stale_coordination
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target)
+
+    with_stubbed_gh_api(accepted_deferral_api(preflight)) do
+      assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: "n/a"
+        )
+      end
+
+      stale = ->(backend:, batch_id:) { { "backend" => backend, "batch_id" => batch_id, "status" => "stale" } }
+      with_stubbed_coordination_status(stale) do
+        assert_raises(CompletedBatchAuditReceipt::Error) do
+          CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+            blocked,
+            input:,
+            expected_batch_id: "ror-d-issue-4731-20260817",
+            targets: [target],
+            publication_preflight: preflight,
+            coordination_backend: REAL_BACKEND
+          )
+        end
+      end
+    end
   end
 
   def test_real_premature_hichee_marker_replays_invalid_and_nonready
@@ -870,6 +1702,12 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       reference_path = File.join(directory, "reference.txt")
       File.write(receipt_path, ready_marker)
       File.write(reference_path, "invalid reference")
+      accepted_deferral_paths = [
+        write_json(directory, "accepted-deferral.json", {}),
+        File.join(directory, "malformed-accepted-deferral.json"),
+        File.join(directory, "missing-accepted-deferral.json")
+      ]
+      File.write(accepted_deferral_paths.fetch(1), "{")
 
       _out, _err, publish_status = capture_receipt_cli(
         "ruby",
@@ -914,6 +1752,25 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert_equal 64, publish_status.exitstatus
       assert_equal 64, replay_status.exitstatus
       assert_equal 64, invalid_option_precedence_status.exitstatus
+
+      accepted_deferral_paths.each do |path|
+        _out, err, status = capture_receipt_cli(
+          "ruby",
+          SCRIPT,
+          "replay",
+          "--expected-batch-id",
+          "batch-184",
+          "--targets-json",
+          targets_path,
+          "--reference-file",
+          reference_path,
+          "--accepted-deferral",
+          path
+        )
+
+        assert_equal 64, status.exitstatus, path
+        assert_includes err, "--accepted-deferral is invalid with replay", path
+      end
     end
   end
 
@@ -2614,13 +3471,16 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     command = arguments.dup
     script_index = command.index(SCRIPT)
     if script_index &&
-       %w[publish replay].include?(command[script_index + 1]) &&
+       %w[publish replay supersede].include?(command[script_index + 1]) &&
        !command.include?("--workflow-config")
       environment = command.first.is_a?(Hash) ? command.first : {}
       workflow_config = environment.fetch("FAKE_WORKFLOW_CONFIG", WORKFLOW_CONFIG)
       command.concat(["--workflow-config", workflow_config])
     end
-    Open3.capture3(*command)
+    stdout, stderr, status = Open3.capture3(*command)
+    # The receipt CLI emits UTF-8 JSON, but Open3 labels captured output with
+    # Encoding.default_external, which can be US-ASCII under an unset locale.
+    [stdout.force_encoding(Encoding::UTF_8), stderr.force_encoding(Encoding::UTF_8), status]
   end
 
   def publication_preflight(head_sha: "a" * 40, waived: false, coordination_backend: "n/a")
@@ -2738,6 +3598,234 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     }
   end
 
+  def accepted_deferral_publication_preflight(
+    target,
+    blockers: nil,
+    extra_unattributed_lane_names: [],
+    coordination_repo: "shakacode/react_on_rails",
+    lane_identity_fields: {}
+  )
+    head_sha = "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e"
+    coordination_status = {
+      "scope" => { "kind" => "batch", "batch_id" => "ror-d-issue-4731-20260817" },
+      "batches" => [{
+        "batch_id" => "ror-d-issue-4731-20260817",
+        "repo" => coordination_repo,
+        "status" => "completed",
+        "updated_at" => "2026-08-17T20:00:00Z",
+        "completed_at" => "2026-08-17T20:00:00Z",
+        "lanes" => [
+          {
+            "name" => "ror-d-issue-4731",
+            "targets" => ["4731"],
+            "status" => "done",
+            "terminal" => "done",
+            "closed_at" => "2026-08-17T20:00:00Z",
+            "pr_state" => "closed",
+            "pr_url" => "https://github.com/shakacode/react_on_rails/pull/4918",
+            "evidence_url" => "https://github.com/shakacode/react_on_rails/pull/4918",
+            **lane_identity_fields
+          },
+          *extra_unattributed_lane_names.map do |lane_name|
+            {
+              "name" => lane_name,
+              "status" => "done",
+              "terminal" => "done",
+              "closed_at" => "2026-08-17T20:00:00Z"
+            }
+          end
+        ]
+      }]
+    }
+    qa_evidence = <<~MARKER
+      <!-- qa-evidence v1
+      required: yes
+      status: satisfied
+      head_sha: #{head_sha}
+      tested_at: PR/head #{head_sha}
+      scope: PR #4918 exact head
+      automated_checks: focused tests
+      manual_checks: not applicable: no manual surface
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: script
+      -->
+    MARKER
+    source_input = {
+      "contract" => "completed-batch-publication-preflight-input",
+      "version" => 1,
+      "batch_id" => "ror-d-issue-4731-20260817",
+      "expected_targets" => [target],
+      "coordination_status" => coordination_status,
+      "target_snapshots" => [{
+        "target" => target,
+        "state" => "closed",
+        "head_sha" => head_sha,
+        "source" => "https://github.com/shakacode/react_on_rails/pull/4918"
+      }],
+      "qa_evidence" => [{
+        "target" => target,
+        "user_visible_ui_change" => "no",
+        "evidence" => qa_evidence
+      }]
+    }
+    result = CompletedBatchPublicationPreflight.assess(
+      source_input,
+      coordination_backend: REAL_BACKEND,
+      target_verifier: lambda do |target:|
+        {
+          "target" => target,
+          "state" => "closed",
+          "head_sha" => nil,
+          "completed_at" => "2026-08-23T23:58:13Z",
+          "verification_source" => "authenticated gh api"
+        }
+      end,
+      coordination_verifier: lambda do |backend:, batch_id:|
+        coordination_status if backend == REAL_BACKEND && batch_id == "ror-d-issue-4731-20260817"
+      end
+    )
+    if blockers
+      result["blockers"] = blockers
+      result["eligible"] = false
+      result["verdict"] = "BLOCKED"
+      unsigned = result.reject { |key, _value| key == "receipt_digest" }
+      result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+    end
+    result
+  end
+
+  def accepted_deferral_predecessor_receipt(marker)
+    body = "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n#{marker}"
+    {
+      "url" => "https://github.com/shakacode/react_on_rails/issues/4731#issuecomment-5389270559",
+      "comment_id" => 5_389_270_559,
+      "sha256" => Digest::SHA256.hexdigest(body),
+      "author" => "justin808",
+      "created_at" => "2026-08-24T00:10:58Z",
+      "updated_at" => "2026-08-24T00:10:58Z",
+      "marker" => marker,
+      "body" => body
+    }
+  end
+
+  def accepted_deferral_api(
+    preflight,
+    predecessor: nil,
+    mutate_decision: nil,
+    corrupt_predecessor: false,
+    tracking_issue_state: "open",
+    unpublished_predecessor_marker: nil
+  )
+    lambda do |_host, endpoint, **_options|
+      case endpoint
+      when "repos/shakacode/react_on_rails/issues/comments/5400000000"
+        {
+          "id" => 5_400_000_000,
+          "html_url" => "https://github.com/shakacode/react_on_rails/issues/4731#issuecomment-5400000000",
+          "issue_url" => "https://api.github.com/repos/shakacode/react_on_rails/issues/4731",
+          "body" => begin
+            body = <<~BODY
+              <!-- completed-batch-accepted-deferral-decision v1
+              batch_id: ror-d-issue-4731-20260817
+              blocker_ref: agent-workflows-320
+              blocker_category: workflow-process-mechanism-defect
+              mechanism: publication-preflight-target-resolution
+              tracking_issue: https://github.com/shakacode/agent-workflows/issues/320
+              owner: agent-workflows maintainers
+              original_receipt_sha256: #{predecessor ? "sha256:#{predecessor.fetch('sha256')}" : "sha256:#{Digest::SHA256.hexdigest(unpublished_predecessor_marker || File.read(File.join(FIXTURES, 'completed-batch-accepted-deferral-ror-blocked.txt'), encoding: 'UTF-8'))}"}
+              original_receipt_url: #{predecessor&.fetch('url') || 'not-published'}
+              original_receipt_author: #{predecessor&.fetch('author') || 'not-applicable'}
+              original_receipt_created_at: #{predecessor&.fetch('created_at') || 'not-applicable'}
+              original_receipt_updated_at: #{predecessor&.fetch('updated_at') || 'not-applicable'}
+              product_evidence_receipt: #{preflight.fetch('receipt_digest')}
+              decision: accepted-deferral
+              -->
+            BODY
+            mutate_decision ? mutate_decision.call(body) : body
+          end,
+          "user" => { "login" => "justin808", "type" => "User" },
+          "author_association" => "MEMBER",
+          "created_at" => "2026-08-24T01:00:00Z",
+          "updated_at" => "2026-08-24T01:00:00Z"
+        }
+      when "repos/shakacode/react_on_rails/collaborators/justin808/permission"
+        { "permission" => "write", "user" => { "login" => "justin808", "type" => "User" } }
+      when "repos/shakacode/agent-workflows/issues/320"
+        {
+          "number" => 320,
+          "html_url" => "https://github.com/shakacode/agent-workflows/issues/320",
+          "state" => tracking_issue_state
+        }
+      when "repos/shakacode/react_on_rails/issues/4731"
+        {
+          "number" => 4731,
+          "html_url" => "https://github.com/shakacode/react_on_rails/issues/4731",
+          "state" => "closed",
+          "closed_at" => "2026-08-23T23:58:13Z"
+        }
+      when "repos/shakacode/react_on_rails/pulls/4918"
+        {
+          "number" => 4918,
+          "html_url" => "https://github.com/shakacode/react_on_rails/pull/4918",
+          "state" => "closed",
+          "merged_at" => "2026-08-17T20:00:00Z",
+          "head" => { "sha" => "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e" }
+        }
+      when "repos/shakacode/react_on_rails/issues/comments/5389270559"
+        body = predecessor.fetch("body")
+        body = body.sub("owner: agent-workflows maintainers", "owner: changed owner") if corrupt_predecessor
+        {
+          "id" => 5_389_270_559,
+          "html_url" => predecessor.fetch("url"),
+          "issue_url" => "https://api.github.com/repos/shakacode/react_on_rails/issues/4731",
+          "body" => body,
+          "user" => { "login" => predecessor.fetch("author"), "type" => "User" },
+          "author_association" => "MEMBER",
+          "created_at" => predecessor.fetch("created_at"),
+          "updated_at" => predecessor.fetch("updated_at")
+        }
+      else
+        raise "unexpected endpoint: #{endpoint}"
+      end
+    end
+  end
+
+  def accepted_deferral_supersede_api(preflight, predecessor:)
+    calls = []
+    posted_body = nil
+    base = accepted_deferral_api(preflight, predecessor:)
+    successor = method(:accepted_deferral_successor_comment)
+    api = lambda do |host, endpoint, method: "GET", input: nil|
+      calls << [host, endpoint, method]
+      case [method, endpoint]
+      when %w[GET user]
+        { "login" => "justin808", "type" => "User" }
+      when ["POST", "repos/shakacode/react_on_rails/issues/4731/comments"]
+        posted_body = JSON.parse(input).fetch("body")
+        successor.call(posted_body)
+      when ["GET", "repos/shakacode/react_on_rails/issues/comments/5400000001"]
+        successor.call(posted_body)
+      else
+        base.call(host, endpoint, method:, input:)
+      end
+    end
+    [api, calls]
+  end
+
+  def accepted_deferral_successor_comment(body)
+    {
+      "id" => 5_400_000_001,
+      "html_url" => "https://github.com/shakacode/react_on_rails/issues/4731#issuecomment-5400000001",
+      "issue_url" => "https://api.github.com/repos/shakacode/react_on_rails/issues/4731",
+      "body" => body,
+      "user" => { "login" => "justin808", "type" => "User" },
+      "author_association" => "MEMBER",
+      "created_at" => "2026-08-24T02:00:00Z",
+      "updated_at" => "2026-08-24T02:00:00Z"
+    }
+  end
+
   def with_stubbed_gh_api(callable)
     original = CompletedBatchAuditReceipt.method(:gh_api)
     CompletedBatchAuditReceipt.define_singleton_method(:gh_api, callable)
@@ -2746,12 +3834,31 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     CompletedBatchAuditReceipt.define_singleton_method(:gh_api, original)
   end
 
+  def with_accepted_deferral_api(preflight, callable, &block)
+    coordination = lambda do |backend:, batch_id:|
+      next unless backend == preflight.fetch("coordination_backend") && batch_id == preflight.fetch("batch_id")
+
+      preflight.dig("source_input", "coordination_status")
+    end
+    with_stubbed_gh_api(callable) do
+      with_stubbed_coordination_status(coordination, &block)
+    end
+  end
+
   def with_stubbed_coordination_status(callable)
     original = CompletedBatchAuditReceipt.method(:authenticated_publication_coordination_status)
     CompletedBatchAuditReceipt.define_singleton_method(:authenticated_publication_coordination_status, callable)
     yield
   ensure
     CompletedBatchAuditReceipt.define_singleton_method(:authenticated_publication_coordination_status, original)
+  end
+
+  def with_stubbed_accepted_deferral_product_evidence(callable)
+    original = CompletedBatchAuditReceipt.method(:accepted_deferral_product_evidence?)
+    CompletedBatchAuditReceipt.define_singleton_method(:accepted_deferral_product_evidence?, callable)
+    yield
+  ensure
+    CompletedBatchAuditReceipt.define_singleton_method(:accepted_deferral_product_evidence?, original)
   end
 
   def with_stubbed_preflight_capture_process(callable)
@@ -2859,7 +3966,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           exit 1 if ENV["FAKE_GH_MODE"] == "post-nonzero"
           if ENV["FAKE_GH_MODE"] == "post-timeout"
             File.write(ENV.fetch("FAKE_GH_PID"), Process.pid.to_s)
-            sleep 2
+            sleep 5
             File.write(ENV.fetch("FAKE_GH_LATE_SIDE_EFFECT"), "completed")
           end
           if ENV["FAKE_GH_MODE"] == "post-invalid-json"
@@ -2919,7 +4026,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "FAKE_COORDINATION_STATUS" => JSON.generate(preflight.dig("source_input", "coordination_status")),
         "FAKE_WORKFLOW_CONFIG" => workflow_config,
         "COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT" => File.join(directory, "publication-preflight.json"),
-        "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "1" : nil
+        "COMPLETED_BATCH_AUDIT_GH_TIMEOUT_SECONDS" => mode == "post-timeout" ? "3" : nil
       }
       File.write(env.fetch("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT"), JSON.generate(preflight))
       yield env, directory

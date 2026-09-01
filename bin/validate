@@ -4,6 +4,32 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 RUBOCOP_VERSION=$(tr -d '[:space:]' < .rubocop-version)
 
+tracked_dirty_skills="$(git status --porcelain --untracked-files=no -- skills)"
+untracked_dirty_skills="$(git status --porcelain --untracked-files=all -- skills \
+  ':(exclude,glob)skills/**/.DS_Store' \
+  ':(exclude,glob)skills/**/*.orig' \
+  ':(exclude,glob)skills/**/*.rej' \
+  ':(exclude,glob)skills/**/*~' \
+  ':(exclude,glob)skills/**/.*.sw?' | sed -n '/^?? /p')"
+dirty_skills="$(printf '%s\n%s\n' "$tracked_dirty_skills" "$untracked_dirty_skills" | sed '/^$/d')"
+skipped_cleanliness_dependent_suites=0
+
+if [[ -n "$dirty_skills" ]]; then
+  skipped_cleanliness_dependent_suites=1
+  {
+    echo "== working tree cleanliness (skills/) =="
+    echo "WARN: skills/ has uncommitted changes."
+    echo
+    echo "The installer and stack tests install from this checkout and stamp"
+    echo "source_revision from git HEAD. They are skipped to avoid reporting an"
+    echo "unrelated delivery-mode conflict on a skill path. All other validation"
+    echo "sections, including helper tests and RuboCop, will still run."
+    echo
+    echo "Skipped cleanliness-dependent suites because of these changes:"
+    echo "$dirty_skills"
+  } >&2
+fi
+
 echo "== license =="
 test -f LICENSE
 grep -q "MIT License" LICENSE
@@ -53,6 +79,7 @@ echo "== host adapter syntax =="
 bin/validate-host-adapter-syntax
 
 echo "== validator unit tests =="
+ruby bin/agent-workflow-writing-style-test.rb
 ruby bin/agent-workflow-seam-doctor-test.rb
 ruby bin/codex-plugin-manifest-check-test.rb
 ruby bin/validate-openai-agent-metadata-test.rb
@@ -84,9 +111,22 @@ echo "== review finding schema =="
 ruby bin/validate-review-findings-test.rb
 ruby bin/validate-review-findings
 
-echo "== installer/status/upgrade tests =="
-bash bin/install-agent-workflows-test.bash
-bash bin/agent-stack-test.bash
+echo "== execution provenance schema =="
+ruby bin/validate-execution-provenance-test.rb
+ruby bin/validate-execution-provenance
+
+echo "== installer and stack suites (contain source-revision tests) =="
+if ((skipped_cleanliness_dependent_suites)); then
+  echo "SKIP: installer and stack suites that contain source-revision tests (skills/ working tree is dirty)" >&2
+else
+  bash bin/install-agent-workflows-test.bash
+  bash bin/agent-stack-test.bash
+fi
+
+echo "== doctor tests =="
+if ((skipped_cleanliness_dependent_suites)); then
+  echo "RUN: doctor tests (not source-revision dependent)" >&2
+fi
 bash bin/agent-workflows-doctor-test.bash
 bash bin/agent-stack-doctor-test.bash
 
@@ -100,10 +140,12 @@ echo "== helper tests =="
 ruby bin/lint-test.rb
 ruby skills/autoreview/bin/autoreview-target-state-test.rb
 ruby skills/address-review/bin/fetch-pr-review-data-test.rb
+ruby skills/address-review/bin/address-review-summary-template-test.rb
 ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
 ruby skills/plan-pr-batch/bin/batch-plan-preflight-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
 ruby skills/pause/bin/pause-prompt-test.rb
+ruby skills/close-batch/bin/close-batch-contract-test.rb
 ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb
 ruby skills/post-merge-audit/bin/completed-batch-publication-preflight-test.rb
 ruby skills/post-merge-audit/bin/completed-batch-audit-receipt-test.rb
@@ -112,16 +154,30 @@ ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/batch-status/bin/batch-status-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
+ruby skills/pr-batch/bin/security-floor-contract-test.rb
+ruby skills/pr-batch/bin/writing-style-contract-test.rb
+ruby skills/pr-batch/bin/user-facing-coordination-contract-test.rb
+ruby skills/pr-batch/bin/production-release-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
+ruby skills/pr-batch/bin/file-expansion-contract-test.rb
+ruby skills/pr-batch/bin/worker-execution-contract-test.rb
+ruby skills/pr-batch/bin/integration-closeout-contract-test.rb
+ruby skills/pr-batch/bin/dependency-conflict-policy-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
+ruby skills/pr-batch/bin/autonomous-merge-closeout-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-eligibility-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-evidence-test.rb
+ruby skills/pr-batch/bin/current-integration-evidence-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-calibrate-test.rb
 ruby skills/pr-batch/bin/coordination-telemetry-contract-test.rb
+ruby skills/pr-batch/bin/workflow-telemetry-report-test.rb
 ruby skills/pr-batch/bin/review-wave-contract-test.rb
 ruby skills/pr-batch/bin/assignee-exclusion-contract-test.rb
 ruby skills/pr-batch/bin/agent-claimed-mirror-contract-test.rb
 ruby skills/pr-batch/bin/coordination-declaration-contract-test.rb
+echo "== json_schemer =="
+JSON_SCHEMER_VERSION=$(tr -d '[:space:]' < .json-schemer-version)
+JSON_SCHEMER_VERSION="${JSON_SCHEMER_VERSION}" ruby skills/pr-batch/bin/batch-usage-receipt-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/pr-batch/bin/model-routing-contract-test.rb
 ruby skills/pr-batch/bin/dispatcher-capability-preflight-test.rb
 ruby skills/pr-batch/bin/single_target_entrypoint_test.rb
@@ -137,7 +193,12 @@ ruby skills/pr-batch/bin/stale-assignment-sweep-test.rb
 ruby skills/pr-walkthrough/bin/pr-walkthrough-contract-test.rb
 ruby skills/task-observer/bin/task-observer-test.rb
 ruby skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-contract-test.rb
+ruby skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-preflight-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb
+
+echo "== hook adapter tests =="
+ruby plugins/claude-hooks/hooks/close-lane-on-session-end-test.rb
+ruby plugins/claude-hooks/hooks/hooks-install-contract-test.rb
 
 echo "== rubocop ${RUBOCOP_VERSION} =="
 RUBOCOP_VERSION="${RUBOCOP_VERSION}" ruby - <<'RUBY'
@@ -157,4 +218,13 @@ abort "Expected RuboCop #{version}, got #{actual}" unless actual == version
 RUBY
 rubocop "_${RUBOCOP_VERSION}_"
 
-echo "PASS agent-workflows validation"
+if ((skipped_cleanliness_dependent_suites)); then
+  echo "PARTIAL COVERAGE: installer and stack suites that contain source-revision tests were skipped because skills/ has uncommitted changes." >&2
+  echo "Commit or stash those changes and rerun bin/validate for full coverage." >&2
+  if [[ -n "${CI:-}" ]]; then
+    echo "ERROR: CI requires full validation coverage; refusing a partial-coverage success." >&2
+    exit 1
+  fi
+else
+  echo "PASS agent-workflows validation"
+fi
