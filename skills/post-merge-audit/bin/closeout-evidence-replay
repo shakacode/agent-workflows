@@ -43,6 +43,7 @@ module CloseoutEvidenceReplay
   UNRESOLVED_METRIC_TOKENS = %w[missing unavailable unmeasured unknown placeholder tbd todo].freeze
   PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
   PERFORMANCE_EVIDENCE_FIELD_PATTERN = PERFORMANCE_EVIDENCE_FIELD_NAMES.map { |name| Regexp.escape(name) }.join("|")
+  HTTPS_PROSE_LABEL_STATUSES = %w[available disabled enabled enforced failed ok only optional passed required supported].freeze
   HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*/i
   # Keep performance-only URL stripping aligned with semicolon-delimited evidence fields without
   # truncating field-like semicolon parameters in visual or interaction artifact URLs.
@@ -687,8 +688,15 @@ module CloseoutEvidenceReplay
   end
 
   def prose_https_label?(value, match)
+    return false unless match[0].casecmp?("https:")
+
     suffix = value[match.end(0)..]
-    match[0].casecmp?("https:") && suffix&.match?(/\A\s+[A-Za-z][A-Za-z0-9_-]*(?=[\s,.;]|\z)/)
+    return false unless suffix&.match?(/\A\s+/)
+
+    tokens = text_tokens(suffix)
+    return true if HTTPS_PROSE_LABEL_STATUSES.include?(tokens.first)
+
+    tokens.first&.match?(/\A[1-5]\d{2}\z/) && HTTPS_PROSE_LABEL_STATUSES.include?(tokens[1])
   end
 
   def unresolved_hosted_criterion_evidence?(evidence)

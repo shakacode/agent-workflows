@@ -212,6 +212,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "proof unavailable",
       "http://evidence.example.test/run/sign-in-abc123",
       "https:broken",
+      "https: broken",
       "https:",
       "https://bad host/run/sign-in-abc123"
     ]
@@ -226,13 +227,15 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_hosted_v1_accepts_https_as_a_prose_label
-    evidence = "HTTPS: enforced; screenshot stored in run 123"
-    body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+    ["HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced"].each do |label|
+      evidence = "#{label}; screenshot stored in run 123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
 
-    hosted = run_replay(body).fetch("hosted_qa_evidence")
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
 
-    assert_equal "SATISFIED", hosted.fetch("verdict")
-    assert_empty hosted.fetch("missing")
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
   end
 
   def test_generic_qa_evidence_alone_never_replays_as_hosted_qa
@@ -799,14 +802,17 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_rejects_malformed_https_reference_beside_a_valid_url
-    qa = run_replay(
-      v2_marker(
-        "visual_evidence" => "durable: before https:broken after https://github.com/example/repo/pull/123#after"
-      )
-    ).fetch("qa_evidence")
+    ["https:broken", "https: broken"].each do |malformed_url|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before #{malformed_url} after https://github.com/example/repo/pull/123#after"
+        )
+      ).fetch("qa_evidence")
 
-    assert_equal "UNKNOWN", qa.fetch("verdict")
-    assert_includes qa.fetch("missing"), "visual_evidence.url"
+      assert_equal "UNKNOWN", qa.fetch("verdict"), malformed_url
+      assert_includes qa.fetch("missing"), "visual_evidence.url", malformed_url
+    end
   end
 
   def test_v2_malformed_media_looking_https_reference_does_not_add_local_reference_diagnostic
@@ -847,18 +853,20 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_accepts_https_prose_labels_beside_durable_urls
-    qa = run_replay(
-      v2_marker(
-        "visual_evidence" =>
-          "durable: before HTTPS: enforced; after https://github.com/example/repo/pull/123#visual",
-        "interaction_change" => "yes",
-        "interaction_evidence" =>
-          "clip: HTTPS: enforced; https://github.com/example/repo/pull/123#clip"
-      )
-    ).fetch("qa_evidence")
+    ["HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced"].each do |label|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before #{label}; after https://github.com/example/repo/pull/123#visual",
+          "interaction_change" => "yes",
+          "interaction_evidence" =>
+            "clip: #{label}; https://github.com/example/repo/pull/123#clip"
+        )
+      ).fetch("qa_evidence")
 
-    assert_equal "SATISFIED", qa.fetch("verdict")
-    assert_empty qa.fetch("missing")
+      assert_equal "SATISFIED", qa.fetch("verdict"), label
+      assert_empty qa.fetch("missing"), label
+    end
   end
 
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
