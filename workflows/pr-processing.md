@@ -2115,8 +2115,18 @@ Pressure scenarios this prompt must satisfy:
 
 A coordinator or maintainer can stop an in-flight batch — for example to relaunch
 it with updated skills, workflow rules, or targets — without waiting out claim
-leases. Stopping is a **cooperative drain backed by a hard process-level escape
-hatch**, not a single kill switch:
+leases.
+
+For `coordination_not_applicable`, the one controller stops its own workers from
+controller-local state: signal each worker to drain at its next safe checkpoint,
+or terminate a wedged worker at the process level, then record the stopped lanes
+in the durable local batch record. Publish no cancellation state, poll no
+`agent-coord status`, release no claim, emit no typed event, and require no
+backend reconciliation before relaunch. The rest of this section is
+`coordination_required` only.
+
+For `coordination_required`, stopping is a **cooperative drain backed by a hard
+process-level escape hatch**, not a single kill switch:
 
 - **Drain signal (preferred).** Cancellation is coordinator-published batch state,
   exactly like `depends_on` / `blocked_on` and the release phase: only a

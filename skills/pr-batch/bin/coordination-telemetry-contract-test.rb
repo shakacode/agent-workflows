@@ -532,6 +532,24 @@ class CoordinationTelemetryContractTest < Minitest::Test
     end
   end
 
+  def test_cancellation_and_relaunch_have_a_not_applicable_path
+    local_stop_rule =
+      "For `coordination_not_applicable`, the one controller stops its own workers from controller-local state"
+    workflow = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
+    skill = read_repo_file(PR_BATCH_SKILL_PATH).gsub(/\s+/, " ")
+
+    assert_includes workflow, local_stop_rule, WORKFLOW_PATH
+    assert_includes workflow,
+                    "Publish no cancellation state, poll no `agent-coord status`, release no claim, emit no " \
+                    "typed event, and require no backend reconciliation before relaunch. The rest of this " \
+                    "section is `coordination_required` only.",
+                    WORKFLOW_PATH
+    assert_includes skill,
+                    "with no cancellation publish, `agent-coord status` poll, claim release, typed event, or " \
+                    "backend reconciliation before relaunch. For `coordination_required`:",
+                    PR_BATCH_SKILL_PATH
+  end
+
   def test_model_only_worker_replacement_is_scoped_to_required_coordination
     skill = read_repo_file(PR_BATCH_SKILL_PATH).gsub(/\s+/, " ")
 

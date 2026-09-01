@@ -1735,6 +1735,45 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  # Ground truth for the canonicalization itself. The expected value is pinned from an independent
+  # implementation, not from `canonicalize`/`digest`:
+  #   jq -S -c . fixture.json | tr -d '\n' | shasum -a 256
+  # Key order below is deliberately scrambled, and the target array order is deliberately not sorted,
+  # because canonicalization sorts object keys recursively and preserves array order.
+  CANONICAL_DIGEST_FIXTURE = {
+    "version" => 1,
+    "contract" => "completed-batch-coordination-applicability",
+    "rationale" => "trusted controller verified one accountable serialized execution",
+    "verified_at" => "2026-08-25T12:00:00Z",
+    "coordination_applicability" => "coordination_not_applicable",
+    "batch_id" => "aw-canonical-digest-fixture",
+    "expected_targets" => [
+      { "number" => 2, "type" => "pull_request", "repo" => "shakacode/agent-workflows", "host" => "github.com" },
+      { "type" => "issue", "number" => 1, "host" => "github.com", "repo" => "shakacode/agent-workflows" }
+    ],
+    "topology_source" => "https://github.com/shakacode/agent-workflows/blob/" \
+                         "fb33440cbad49808898c4a15f8c3e0c9276b7470/.agents/issue-401-topology.json",
+    "policy_source" => "https://github.com/shakacode/agent-workflows/blob/" \
+                       "fb33440cbad49808898c4a15f8c3e0c9276b7470/.agents/agent-workflow.yml"
+  }.freeze
+  CANONICAL_DIGEST_EXPECTED = "sha256:e63e081b4d0af0890d8f3566093f62398403020a17caf50beef7f5f36168da3c"
+
+  def test_canonical_digest_matches_an_independently_computed_reference
+    assert_equal CANONICAL_DIGEST_EXPECTED, applicability_proof_digest(CANONICAL_DIGEST_FIXTURE)
+
+    Tempfile.create(["applicability-proof", ".json"]) do |proof_file|
+      proof_file.write(JSON.pretty_generate(CANONICAL_DIGEST_FIXTURE))
+      proof_file.flush
+
+      stdout, stderr, status = Open3.capture3(
+        "ruby", SCRIPT, "digest-applicability-proof", "--applicability-proof", proof_file.path
+      )
+
+      assert_equal 0, status.exitstatus, stderr
+      assert_equal CANONICAL_DIGEST_EXPECTED, stdout.strip
+    end
+  end
+
   def test_digest_applicability_proof_rejects_a_malformed_artifact
     Tempfile.create(["applicability-proof", ".json"]) do |proof_file|
       proof_file.write("{not json")

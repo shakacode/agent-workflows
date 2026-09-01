@@ -734,7 +734,12 @@ unless the coordinator explicitly cancels it.
 To stop an in-flight batch — for example to relaunch it with updated skills,
 workflow rules, or targets — follow the canonical
 [Cancelling Or Stopping A Batch](../../workflows/pr-processing.md#cancelling-or-stopping-a-batch)
-protocol instead of waiting out claim leases. In short: a coordinator or maintainer
+protocol instead of waiting out claim leases. For `coordination_not_applicable`,
+the one controller stops its own workers from controller-local state and records
+the stopped lanes in the durable local batch record, with no cancellation
+publish, `agent-coord status` poll, claim release, typed event, or backend
+reconciliation before relaunch. For `coordination_required`: a coordinator or
+maintainer
 marks the batch or specific lanes cancelled in the selected private backend (see
 [coordination-backend.md](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md)
 → **Cancellation**); workers drain at their next safe checkpoint, finishing an
