@@ -21,11 +21,9 @@ failing dependency, review, validation, or security gate. Core work remains
 usable without this component's private backend or telemetry, subject to the
 explicit no-backend and fallback rules below.
 
-The shared [PR-Batch Security Floor](pr-batch-security-floor.md) still owns
-duplicate-writer safety and consequential-action authority. The public
-[coordination backend guide](../docs/coordination-backend.md) owns backend
-vocabulary and schemas. This component owns how PR-batch consumes those
-facilities without creating a second authority system.
+The [security floor](pr-batch-security-floor.md) owns duplicate-writer safety
+and consequential authority; the [backend guide](../docs/coordination-backend.md)
+owns vocabulary and schemas. This component only consumes both for PR-batch.
 
 ## Adapter Result
 
@@ -71,14 +69,13 @@ evidence:
   "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
   ```
 
-  When lane-metadata support has not already been verified, inspect bounded
-  `claim --help`. Pass extended claim metadata only when advertised:
+  Discover lane-metadata support with bounded `claim --help`. Pass only
+  advertised metadata:
   `--thread-handle`, `--chat-handle`, `--host`, `--operator`, `--phase`,
-  `--instance-id`, and `--status`. Otherwise issue the core claim with agent,
-  repository, target, and branch, then inspect bounded `heartbeat --help`.
-  Record extended metadata there only when advertised; otherwise send a core
-  heartbeat and preserve each unsupported value or literal `UNKNOWN` in durable
-  lane evidence. Never infer support from another backend implementation.
+  `--instance-id`, and `--status`. Otherwise claim with agent, repository,
+  target, and branch. Probe bounded `heartbeat --help` likewise; send only
+  advertised fields and preserve unsupported values as literal `UNKNOWN` in
+  lane evidence. Never infer support from another backend.
 - `public-fallback`: trusted configuration directly selects
   `public claim-comment fallback`, or a private claim cannot start after a
   definitive non-timeout setup/authentication failure and policy permits fallback.
