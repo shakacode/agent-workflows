@@ -280,13 +280,15 @@ class PrMergeSubmitTest < Minitest::Test
 
       pull_request["isMergeQueueEnabled"] = true
       pull_request["isInMergeQueue"] = false
-      runner.instance_variable_set(:@merge_submission, { "mode" => "merge_queue_only" })
-      %w[merge squash rebase].each do |method|
-        queue_error = assert_raises(PrMergeSubmit::Error) do
-          runner.send(:validate_receipt_live_bindings!, pull_request, options.merge(method:))
+      %w[merge_queue_only merge_queue_or_guarded_direct].each do |mode|
+        runner.instance_variable_set(:@merge_submission, { "mode" => mode })
+        %w[merge squash rebase].each do |method|
+          queue_error = assert_raises(PrMergeSubmit::Error) do
+            runner.send(:validate_receipt_live_bindings!, pull_request, options.merge(method:))
+          end
+          assert_includes queue_error.message, "merge queue"
+          assert_includes queue_error.message, "fresh-integration-required"
         end
-        assert_includes queue_error.message, "merge queue"
-        assert_includes queue_error.message, "fresh-integration-required"
       end
     end
   end
