@@ -305,10 +305,13 @@ precise blocker.
    issue or PR work-item URL, with a comment source anchored to its parent work
    item. If any lane has no public GitHub surface, use a durable plan/backend
    destination authorized for all lanes or split the trust boundaries into
-   separate runs. Keep these fields outside the human prompt and give them to
-   each worker. Bind each entry to the existing immutable replay identity
-   (`lane_id`, dispatcher, `instance_id`, and launch token) and give that
-   identity to the worker with the launch digest. For a GitHub lane, bind
+   separate runs. Keep these fields outside the human prompt. Use the existing
+   handoff envelope outside the frozen Batch Plan to give each worker the exact
+   `record_destination`, `run_id`, `batch_plan_binding`, launch digest, and
+   existing immutable replay identity (`lane_id`, dispatcher, `instance_id`,
+   and launch token). Bind that envelope to the same `run_id`,
+   `batch_plan_binding`, and replay identity; do not add the launch digest to
+   the frozen plan or change its binding. For a GitHub lane, bind
    selection to the successful security-preflight source URL, `body` field, and
    SHA-256 snapshot. The sole coordinator writer directly appends launch
    timestamp/digest at dispatch and serializes or compare-and-swaps bound worker

@@ -30,8 +30,8 @@ second canonical prompt. The launcher then:
    the supplied selection digest, and only then captures the record observation
    time and persists launch identity;
 8. immediately before dispatch, re-fetches those bytes, verifies a distinct
-   launch digest, and puts that digest in the complete Batch Plan or its exact
-   durable plan-state reference; and
+   launch digest, and puts that digest in the existing handoff envelope outside
+   the frozen Batch Plan without changing the plan or its binding; and
 9. lets the worker re-fetch and match the transported launch digest before it
    interprets the source or records worker start.
 
@@ -111,9 +111,12 @@ any lane has no public GitHub surface, use an existing durable plan/backend
 destination authorized for every lane or split the trust boundaries into
 separate runs. Never publish a private `plan-state://` or `batch://` identity in
 a public run record. The launcher delivers the destination, run ID, and binding
-to every worker with that lane's launch digest and existing replay tuple:
+in the existing handoff envelope outside the frozen Batch Plan, together with
+that lane's launch digest and existing replay tuple:
 `lane_id`, dispatcher, `instance_id`, and launch token. A deterministic launch
-token is not unique across reruns and never substitutes for `run_id`.
+token is not unique across reruns and never substitutes for `run_id`. Bind the
+envelope to the same `run_id`, `batch_plan_binding`, and replay identity. Do not
+add the launch digest to the frozen plan or change its binding.
 
 Each execution publishes exactly one `agent-launcher-run-record:v1` comment or
 durable record at that destination. It has one compact visible state, one
@@ -221,7 +224,7 @@ Blocker: none
     - Prompt digest at selection: `<64 lowercase hexadecimal characters>`
     - Prompt digest at launch: `<64 lowercase hexadecimal characters>`
     - Prompt digest observed by worker: `<64 lowercase hexadecimal characters>`
-    - Prompt transport: complete-batch-plan — `inline`
+    - Prompt transport: handoff-envelope
     - Selected at: 2026-08-30T02:00:55.829Z
     - Launched at: 2026-08-30T02:00:57.000Z
     - Worker prompt digest observed at: 2026-08-30T02:00:57.829Z
@@ -259,7 +262,7 @@ above; those outer fields do not expand the helper schema.
 | `launch_idempotency_key` | One helper-generated UUID v4 reused for retries of that same helper launch; reruns receive a new key. The outer launch retry key remains launcher-owned. |
 | `repository`, `work_item` | Repository-qualified issue or pull-request kind, identity, title, and exact URL fetched from GitHub. |
 | `prompt_source` | One exact `issue-body`, `pull-request-body`, or trusted `maintainer-comment` source URL plus distinct selection, launch, and worker-observed digests; comment sources also record author and association. |
-| `prompt_transport` | `null` before launch verification, then the launch digest bound to the complete Batch Plan or an exact durable `plan-state://<id>/<path>` reference. |
+| `prompt_transport` | `null` before launch verification, then the launch digest marked for the existing handoff envelope outside the frozen Batch Plan. The outer launcher binds that envelope to the same run, plan binding, and replay identity. |
 | `current_main` | Machine provenance for the configured base branch and observed `origin/<base>` commit, or field-granular `UNKNOWN`. |
 | `runner` | Runner name and machine plus separately observed model at prompt creation and worker start; each unavailable value is `UNKNOWN`. |
 | `workflow_versions.prompt_creation` | Timestamped loaded-pack `HEAD` plus PR-batch and workflow digests observed at prompt creation; each unavailable value is `UNKNOWN`. |
@@ -414,29 +417,29 @@ If preparation re-fetches different canonical bytes than the launcher fetched
 at `Selected at`, it exits nonzero without creating an identity and requires a
 deliberate new run, source reselection, and rerun security preflight.
 
-Immediately before dispatch, create the distinct launch digest and its required
-plan transport. Use exactly one transport form:
+Immediately before dispatch, create the distinct launch digest for the existing
+handoff envelope outside the frozen Batch Plan:
 
 ```bash
 skills/pr-batch/bin/agent-run-record verify-launch \
-  --complete-batch-plan < selected-run-record.json > launch-verified-record.json
-
-skills/pr-batch/bin/agent-run-record verify-launch \
-  --plan-state-ref plan-state://BATCH_ID/run-record \
+  --handoff-envelope \
   < selected-run-record.json > launch-verified-record.json
 ```
 
 A selection/launch mismatch makes no launch or worker-start mutation. It
 requires a deliberate new run, source reselection, and rerun security preflight.
-The verified record, including `Prompt digest at launch`, travels with the
-complete Batch Plan or through the exact resolvable plan-state reference. For
-copy-paste and host-native multi-target launches, send the readable human prompt
-and this complete plan or reference together; keep the plan bookkeeping outside
-the human prompt.
+The verified record supplies nested lane evidence for the envelope; it does not
+modify the Batch Plan. The outer launcher carries `record_destination`,
+`run_id`, `batch_plan_binding`, this lane's launch digest, and its replay identity
+in that envelope, bound to the same run, plan binding, and replay identity. For
+copy-paste and host-native multi-target launches, send the readable human prompt,
+frozen plan, and bound envelope together; keep all bookkeeping outside the human
+prompt.
 
-Before interpreting any source content, the worker consumes that transported
-record, re-fetches the exact source, and records the worker observation and
-start boundary (supplying an observed model only when exposed):
+Before interpreting any source content, the worker verifies the frozen plan
+binding and consumes the exactly matching bound envelope and nested record. It
+then re-fetches the exact source and records the worker observation and start
+boundary (supplying an observed model only when exposed):
 
 ```bash
 skills/pr-batch/bin/agent-run-record mark-worker-started \
@@ -446,8 +449,8 @@ skills/pr-batch/bin/agent-run-record mark-worker-started \
 ```
 
 `mark-worker-started` re-fetches only the selected issue-body, pull-request-body,
-or comment fields and compares `Prompt digest observed by worker` with the transported launch
-digest. A missing plan transport stops without mutation. A mismatch exits
+or comment fields and compares `Prompt digest observed by worker` with the
+transported launch digest. A missing bound envelope stops without mutation. A mismatch exits
 nonzero but emits an updated JSON record on standard output so the launcher can
 persist it and update the same run comment: the actual digest and observation
 time are recorded, state/outcome become `blocked` / `failed`, and one visible

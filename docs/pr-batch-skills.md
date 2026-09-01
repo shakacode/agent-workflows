@@ -368,10 +368,13 @@ omit the queue summary and note that queue state is unavailable.
    dispatch it re-fetches that lane's source and directly appends `Launched at`
    plus `Prompt digest at launch`. If the selection and launch digests differ,
    that dispatch stops until the changed source is deliberately reselected as a
-   new run and the security preflight is rerun. The Batch Plan or its exact
-   durable reference gives each worker that destination, `run_id`, lane launch
-   digest, and existing immutable replay identity (`lane_id`, dispatcher,
-   `instance_id`, and launch token). The worker opens the destination, resolves
+   new run and the security preflight is rerun. Use the existing handoff
+   envelope outside the frozen Batch Plan to give each worker that destination,
+   `run_id`, `batch_plan_binding`, lane launch digest, and existing immutable
+   replay identity (`lane_id`, dispatcher, `instance_id`, and launch token).
+   Bind that envelope to the same `run_id`, `batch_plan_binding`, and replay
+   identity; do not add the launch digest to the frozen plan or change its
+   binding. The worker opens the destination, resolves
    the exactly matching `run_id` and replay identity, reverifies the plan
    binding, re-fetches the source, and verifies identity and digest before it
    interprets the source or returns its start observations. The sole

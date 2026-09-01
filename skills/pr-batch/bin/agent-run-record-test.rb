@@ -41,8 +41,7 @@ class AgentRunRecordTest < Minitest::Test
         "digest_observed_by_worker" => "a" * 64
       },
       "prompt_transport" => {
-        "kind" => "complete-batch-plan",
-        "reference" => "inline",
+        "kind" => "handoff-envelope",
         "digest_at_launch" => "a" * 64
       },
       "current_main" => {
@@ -173,7 +172,7 @@ class AgentRunRecordTest < Minitest::Test
     assert_includes stdout, "Prompt digest at selection: `#{'a' * 64}`"
     assert_includes stdout, "Prompt digest at launch: `#{'a' * 64}`"
     assert_includes stdout, "Prompt digest observed by worker: `#{'a' * 64}`"
-    assert_includes stdout, "Prompt transport: complete-batch-plan — `inline`"
+    assert_includes stdout, "Prompt transport: handoff-envelope"
     assert_includes stdout, "Selected at: 2026-08-30T02:00:55.829Z"
     assert_includes stdout, "Prompt created at: 2026-08-30T02:00:56.829Z"
     assert_includes stdout, "Worker prompt digest observed at: 2026-08-30T02:00:57.829Z"
@@ -281,7 +280,7 @@ class AgentRunRecordTest < Minitest::Test
         RbConfig.ruby,
         HELPER,
         "verify-launch",
-        "--complete-batch-plan",
+        "--handoff-envelope",
         stdin_data: selected_json
       )
       assert launched_status.success?, launched_error
@@ -391,7 +390,7 @@ class AgentRunRecordTest < Minitest::Test
         RbConfig.ruby,
         HELPER,
         "verify-launch",
-        "--complete-batch-plan",
+        "--handoff-envelope",
         stdin_data: prepare_stdout
       )
       assert launch_status.success?, launch_stderr
@@ -963,7 +962,7 @@ class AgentRunRecordTest < Minitest::Test
         RbConfig.ruby,
         HELPER,
         "verify-launch",
-        "--complete-batch-plan",
+        "--handoff-envelope",
         stdin_data: JSON.generate(record)
       )
       assert launch_status.success?, launch_stderr
@@ -971,7 +970,7 @@ class AgentRunRecordTest < Minitest::Test
       assert_equal record.dig("prompt_source", "digest_at_selection"),
                    record.dig("prompt_source", "digest_at_launch")
       assert_equal "pending", record.dig("prompt_source", "digest_observed_by_worker")
-      assert_equal "complete-batch-plan", record.dig("prompt_transport", "kind")
+      assert_equal "handoff-envelope", record.dig("prompt_transport", "kind")
 
       started_stdout, started_stderr, started_status = Open3.capture3(
         environment,
@@ -1110,7 +1109,7 @@ class AgentRunRecordTest < Minitest::Test
         RbConfig.ruby,
         HELPER,
         "verify-launch",
-        "--complete-batch-plan",
+        "--handoff-envelope",
         stdin_data: stdout
       )
 
@@ -1139,8 +1138,7 @@ class AgentRunRecordTest < Minitest::Test
         "author_association" => "MEMBER"
       }
       record["prompt_transport"] = {
-        "kind" => "complete-batch-plan",
-        "reference" => "inline",
+        "kind" => "handoff-envelope",
         "digest_at_launch" => Digest::SHA256.hexdigest("Original comment bytes\n")
       }
       record.fetch("timestamps")["worker_digest_observed_at"] = "pending"
@@ -1250,7 +1248,7 @@ class AgentRunRecordTest < Minitest::Test
     end
   end
 
-  def test_launch_verification_requires_plan_transport_and_supports_exact_plan_state_reference
+  def test_launch_verification_requires_bound_handoff_envelope
     with_fake_launch_environment do |directory, repo, _gh_log, environment|
       prepare_stdout, prepare_stderr, prepare_status = Open3.capture3(
         environment,
@@ -1272,7 +1270,7 @@ class AgentRunRecordTest < Minitest::Test
         stdin_data: prepare_stdout
       )
       refute missing_status.success?
-      assert_includes missing_stderr, "complete Batch Plan or exact durable plan-state reference is required"
+      assert_includes missing_stderr, "bound handoff envelope is required"
 
       _worker_stdout, worker_stderr, worker_status = Open3.capture3(
         environment,
@@ -1290,13 +1288,13 @@ class AgentRunRecordTest < Minitest::Test
         RbConfig.ruby,
         HELPER,
         "verify-launch",
-        "--plan-state-ref", "plan-state://aw-560/run-record",
+        "--handoff-envelope",
         stdin_data: prepare_stdout
       )
       assert launch_status.success?, launch_stderr
       launched = JSON.parse(launch_stdout)
-      assert_equal "durable-plan-state", launched.dig("prompt_transport", "kind")
-      assert_equal "plan-state://aw-560/run-record", launched.dig("prompt_transport", "reference")
+      assert_equal "handoff-envelope", launched.dig("prompt_transport", "kind")
+      refute launched["prompt_transport"].key?("reference")
       assert_equal launched.dig("prompt_source", "digest_at_launch"),
                    launched.dig("prompt_transport", "digest_at_launch")
     end

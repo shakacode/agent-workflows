@@ -133,11 +133,13 @@ run. Immediately before each target dispatch, re-fetch that lane's source,
 compare its launch digest with its selection digest, and directly append the
 lane's `Launched at` timestamp and launch digest. A mismatch stops only that
 dispatch until the changed source is deliberately reselected as a new run and
-the security preflight is rerun. Give each worker the exact
-`record_destination`, `run_id`, `batch_plan_binding`, lane launch digest, and
-existing immutable replay identity (`lane_id`, dispatcher, `instance_id`, and
-launch token) through the Batch Plan or its exact immutable binding. Before a
-worker interprets the source, it reverifies the plan binding, resolves the
+the security preflight is rerun. Use the existing handoff envelope outside the
+frozen Batch Plan to give each worker the exact `record_destination`, `run_id`,
+`batch_plan_binding`, lane launch digest, and existing immutable replay identity
+(`lane_id`, dispatcher, `instance_id`, and launch token). Bind that envelope to
+the same `run_id`, `batch_plan_binding`, and replay identity; do not add the
+launch digest to the frozen plan or change its binding. Before a worker
+interprets the source, it reverifies the plan binding, resolves the
 exactly matching `run_id` and replay identity, and re-fetches
 the exact bytes, and verifies its observed digest against that lane's launch
 digest; a replay-identity or digest mismatch stops work and records the changed
@@ -244,10 +246,13 @@ canonical source bytes when selected and write `Selected at` plus `Prompt
 digest at selection`. Immediately before that target's dispatch, re-fetch those
 bytes and append `Launched at` plus `Prompt digest at launch`. If the selection
 and launch digests differ, stop that dispatch until the changed source is
-deliberately selected as a new run and security preflight is rerun. Give the
-exact `record_destination`, `run_id`, lane-keyed launch digest, and exact replay
-identity to its worker through the Batch Plan or its exact durable reference.
-The worker reverifies `batch_plan_binding`, resolves the exactly matching
+deliberately selected as a new run and security preflight is rerun. Use the
+existing handoff envelope outside the frozen Batch Plan to give the exact
+`record_destination`, `run_id`, `batch_plan_binding`, lane-keyed launch digest,
+and replay identity to its worker. Bind that envelope to the same `run_id`,
+`batch_plan_binding`, and replay identity; do not add the launch digest to the
+frozen plan or change its binding. The worker reverifies `batch_plan_binding`,
+resolves the exactly matching
 `run_id` and replay identity, re-fetches the exact source, and verifies both the
 replay identity and observed digest before it interprets the source or returns
 its `Worker started at` observation to the sole coordinator writer; a mismatch

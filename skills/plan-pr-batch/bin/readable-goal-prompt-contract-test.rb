@@ -276,4 +276,21 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes contract, "not applicable — trusted-ad-hoc-override"
     assert_includes contract, "No outer dynamic value may create a Markdown link, HTML element, or active URI"
   end
+
+  def test_post_freeze_launch_digest_uses_the_bound_handoff_envelope
+    {
+      "canonical intake" => @prompt_intake,
+      "planning guide" => @source_docs,
+      "triage skill" => @triage_skill
+    }.each do |label, text|
+      normalized = text.gsub(/\s+/, " ")
+
+      assert_includes normalized, "existing handoff envelope outside the frozen Batch Plan", label
+      assert_includes normalized,
+                      "do not add the launch digest to the frozen plan or change its binding",
+                      label
+    end
+
+    refute_match(/launch digest[^.]*through the Batch Plan/, @prompt_intake)
+  end
 end

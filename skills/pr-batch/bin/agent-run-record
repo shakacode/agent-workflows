@@ -30,7 +30,6 @@ module AgentRunRecord
   GIT_SHA = /\A[0-9a-f]{40}\z/
   UTC_MILLISECONDS = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\z/
   REPOSITORY = %r{\A[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\z}
-  PLAN_STATE_REF = %r{\Aplan-state://[A-Za-z0-9._-]+/[^\s?#]+\z}
   WORKER_DIGEST_MISMATCH_BLOCKER = "worker prompt digest mismatch; source interpretation refused"
 
   module_function
@@ -497,8 +496,7 @@ module AgentRunRecord
     launch_digest = record.dig("prompt_source", "digest_at_launch")
     if launch_digest == "pending" || record["prompt_transport"].nil?
       raise ContractError,
-            "transported Prompt digest at launch is required through the complete Batch Plan " \
-            "or exact durable plan-state reference"
+            "transported Prompt digest at launch is required through the bound handoff envelope"
     end
 
     observed_digest = refetch_prompt_digest(record)
@@ -1057,30 +1055,16 @@ module AgentRunRecord
 
   def validate_prompt_transport!(transport, launch_digest)
     object!(transport, "prompt_transport")
-    kind = member!(transport, "kind", %w[complete-batch-plan durable-plan-state])
-    reference = scalar!(transport, "reference")
+    member!(transport, "kind", %w[handoff-envelope])
     digest = scalar!(transport, "digest_at_launch")
     raise ContractError, "prompt_transport.digest_at_launch has invalid format" unless SHA256.match?(digest)
-    unless digest == launch_digest
-      raise ContractError, "prompt transport digest must equal Prompt digest at launch"
-    end
+    return if digest == launch_digest
 
-    if kind == "complete-batch-plan"
-      raise ContractError, "complete Batch Plan transport reference must be inline" unless reference == "inline"
-    elsif !PLAN_STATE_REF.match?(reference)
-      raise ContractError, "durable plan-state reference must use plan-state://<id>/<path>"
-    end
+    raise ContractError, "prompt transport digest must equal Prompt digest at launch"
   end
 
-  def prompt_transport(complete_batch_plan, plan_state_ref)
-    return { "kind" => "complete-batch-plan", "reference" => "inline" } if complete_batch_plan
-
-    scalar_value!(plan_state_ref, "--plan-state-ref")
-    unless PLAN_STATE_REF.match?(plan_state_ref)
-      raise ContractError, "--plan-state-ref must use plan-state://<id>/<path>"
-    end
-
-    { "kind" => "durable-plan-state", "reference" => plan_state_ref }
+  def prompt_transport
+    { "kind" => "handoff-envelope" }
   end
 
   def workflow_observation_values(observation)
@@ -1100,7 +1084,7 @@ module AgentRunRecord
   def render_prompt_transport(transport)
     return ["- Prompt transport: pending"] if transport.nil?
 
-    ["- Prompt transport: #{plain(transport.fetch('kind'))} — #{code(transport.fetch('reference'))}"]
+    ["- Prompt transport: #{plain(transport.fetch('kind'))}"]
   end
 
   def render_workflow_observation(label, observation)
@@ -1147,22 +1131,16 @@ if $PROGRAM_NAME == __FILE__
         $stdout.write(AgentRunRecord.render(record))
       end
     when "verify-launch"
-      complete_batch_plan = false
-      plan_state_ref = nil
+      handoff_envelope = false
       parser = OptionParser.new do |opts|
-        opts.banner = "usage: agent-run-record verify-launch " \
-                      "(--complete-batch-plan | --plan-state-ref REF) < record.json"
-        opts.on("--complete-batch-plan") { complete_batch_plan = true }
-        opts.on("--plan-state-ref REF") { |value| plan_state_ref = value }
+        opts.banner = "usage: agent-run-record verify-launch --handoff-envelope < record.json"
+        opts.on("--handoff-envelope") { handoff_envelope = true }
       end
       parser.parse!(ARGV)
       raise AgentRunRecord::ContractError, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
-      unless complete_batch_plan ^ !plan_state_ref.nil?
-        raise AgentRunRecord::ContractError,
-              "complete Batch Plan or exact durable plan-state reference is required (choose one)"
-      end
+      raise AgentRunRecord::ContractError, "bound handoff envelope is required" unless handoff_envelope
 
-      prompt_transport = AgentRunRecord.prompt_transport(complete_batch_plan, plan_state_ref)
+      prompt_transport = AgentRunRecord.prompt_transport
       record = JSON.parse($stdin.read)
       updated = AgentRunRecord.verify_launch(record, prompt_transport)
       $stdout.write("#{JSON.pretty_generate(updated)}\n")
