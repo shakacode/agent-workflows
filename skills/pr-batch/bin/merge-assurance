@@ -45,6 +45,7 @@ module MergeAssurance
   REQUESTED_HOSTED_COMPLETED_KEYS = %w[
     conclusion head_sha name run_id status url
   ].freeze
+  REQUESTED_HOSTED_COMPLETED_METADATA_KEYS = %w[name url].freeze
   CI_BUCKET_READY_VALUES = %w[pass skipping].freeze
   CI_BUCKET_NOT_READY_VALUES = %w[cancel fail pending].freeze
   CI_STATE_READY_VALUES = %w[neutral skipped success].freeze
@@ -278,6 +279,28 @@ module MergeAssurance
         value.any? do |scope_name, scope|
           contains_unknown?(scope_name) || ci_scope_contains_unknown?(scope)
         end
+      elsif key == "requested_hosted"
+        requested_hosted_contains_unknown?(value)
+      else
+        contains_unknown?(key) || contains_unknown?(value)
+      end
+    end
+  end
+
+  def requested_hosted_contains_unknown?(requested_hosted)
+    return contains_unknown?(requested_hosted) unless requested_hosted.is_a?(Hash)
+
+    requested_hosted.any? do |key, value|
+      if key == "completed" && value.is_a?(Array)
+        value.any? do |run|
+          next contains_unknown?(run) unless run.is_a?(Hash)
+
+          run.any? do |run_key, run_value|
+            next false if REQUESTED_HOSTED_COMPLETED_METADATA_KEYS.include?(run_key)
+
+            contains_unknown?(run_key) || contains_unknown?(run_value)
+          end
+        end
       else
         contains_unknown?(key) || contains_unknown?(value)
       end
@@ -362,6 +385,9 @@ module MergeAssurance
       failures << "ci_result scope #{name} is not ready" unless %w[READY NOT_APPLICABLE].include?(scope["state"])
       failures << "ci_result scope #{name} head mismatch" unless scope["head_sha"] == context["head_sha"]
       failures << "ci_result scope #{name} rows are invalid" unless scope["rows"].is_a?(Array)
+      if scope.key?("informational_rows") && !scope["informational_rows"].is_a?(Array)
+        failures << "ci_result scope #{name} informational_rows are invalid"
+      end
       recomputed_state = recompute_ci_scope_state(scope)
       unless scope["state"] == recomputed_state
         failures << "ci_result scope #{name} declared #{scope['state']} but recomputed #{recomputed_state}"
