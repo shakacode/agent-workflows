@@ -74,6 +74,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_ISSUE_RESULT_PR_PROJECTION = "The issue-to-result-PR projection requires an authenticated same-repository symmetric closing relationship, a closed source issue, a merged result PR, the exact result head, and ordered terminal timestamps; do not union the source issue and result PR as two publication targets, and re-authenticate the projection before ordinary receipt publish or replay."
   REQUIRED_TYPED_LANE_TARGETS = "Typed lane targets are exactly `issue:N`, `pr:N`, or `pull_request:N`; malformed, unknown, or type-ambiguous spellings fail closed."
   REQUIRED_NARROW_PROJECTION_SCOPE = "This projection is only for issue-to-result-PR publication; it does not authorize auxiliary ad-hoc target mappings or multiple coordination lanes for one publication target."
+  REQUIRED_MIXED_TARGET_RECONCILIATION = "An explicitly URL-less terminal `done` lane that already names mixed issue and pull-request targets reconciles the shared scalar `pr_state` per target only when durable terminal evidence exists, the scalar matches one resolved terminal state, every target state is freshly authenticated, the issue head remains absent, and exact-head QA stays bound to the pull request; this does not derive or union targets from a URL or admit auxiliary lanes."
   ISSUE_RESULT_PR_PROJECTION_FILES = [
     "skills/post-merge-audit/SKILL.md",
     "skills/pr-batch/SKILL.md",
@@ -474,6 +475,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       assert_includes normalized_text, REQUIRED_ISSUE_RESULT_PR_PROJECTION, relative_path
       assert_includes normalized_text, REQUIRED_TYPED_LANE_TARGETS, relative_path
       assert_includes normalized_text, REQUIRED_NARROW_PROJECTION_SCOPE, relative_path
+      assert_includes normalized_text, REQUIRED_MIXED_TARGET_RECONCILIATION, relative_path
     end
   end
 

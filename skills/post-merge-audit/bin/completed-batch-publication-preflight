@@ -819,8 +819,8 @@ module CompletedBatchPublicationPreflight
         blockers << "#{target_label(target)} projected result facts disagree with authenticated target"
       end
       authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
-      authenticated_per_target_reconciliation = verified_shape &&
-                                                  lane_entry&.fetch("per_target_terminal_candidate", false)
+      authenticated_per_target_reconciliation =
+        verified_shape && lane_entry&.fetch("per_target_terminal_candidate", false)
       if authenticated_per_target_reconciliation
         lane_entry["authenticated_per_target_terminal_reconciliation"] = true
       end

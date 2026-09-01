@@ -1188,10 +1188,13 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
 
     assert result.fetch("eligible"), result.fetch("blockers").join("\n")
     lanes = result.dig("snapshot", "coordination", "lanes")
-    assert_equal %w[merged closed], lanes.map { |lane| lane.fetch("target_state") }
+    target_states = lanes.map { |lane| lane.fetch("target_state") }
+    completion_modes = lanes.map { |lane| lane.fetch("completion_mode") }
+    coordination_target_states = lanes.map { |lane| lane.fetch("coordination_target_state") }
+    assert_equal %w[merged closed], target_states
     assert_equal ["authenticated_per_target_terminal_reconciliation"] * 2,
-                 lanes.map { |lane| lane.fetch("completion_mode") }
-    assert_equal %w[merged merged], lanes.map { |lane| lane.fetch("coordination_target_state") }
+                 completion_modes
+    assert_equal %w[merged merged], coordination_target_states
     issue_snapshot = result.dig("snapshot", "targets").find { |row| row.dig("target", "type") == "issue" }
     assert_nil issue_snapshot.fetch("head_sha")
     assert_nil issue_snapshot.fetch("no_pr_evidence")
@@ -1212,7 +1215,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     cases = {
       unauthenticated_issue: lambda do |input|
         verifier = valid_target_verifier(input)
-        [input, lambda { |target:| target["type"] == "issue" ? nil : verifier.call(target:) }]
+        [input, ->(target:) { target["type"] == "issue" ? nil : verifier.call(target:) }]
       end,
       url_bound_lane: lambda do |input|
         input.dig("coordination_status", "batches", 0, "lanes", 0)["pr_url"] =
