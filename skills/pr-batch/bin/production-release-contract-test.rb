@@ -10,6 +10,7 @@ class ProductionReleaseContractTest < Minitest::Test
 
   def setup
     @component = read(COMPONENT_PATH)
+    @integration_closeout = read("workflows/pr-batch-integration-closeout.md")
     @workflow = read("workflows/pr-processing.md")
     @skill = read("skills/pr-batch/SKILL.md")
     @handbook = read("docs/operator-handbook.md")
@@ -31,7 +32,8 @@ class ProductionReleaseContractTest < Minitest::Test
       "## Release Phase Gate",
       "## Tracker Update Safety",
       "## Promotion, Publishing, And Rollback Authority",
-      "## Accelerated RC Auto-Merge"
+      "## Accelerated RC Auto-Merge",
+      "## Release Audit Ledger Handoff"
     ]
 
     headings.each do |heading|
@@ -62,10 +64,10 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes workflow, "production deployment"
     assert_includes workflow, "### Ordinary Review Fallback"
     assert_includes workflow, "does not by itself authorize auto-merge or load the production/release component"
-    review_gate = @workflow.split("## Review Completion Gate", 2).last
-                           .split("### Adversarial Review Gate", 2).first
+    review_gate = @integration_closeout.split("## Review Completion Gate", 2).last
+                                       .split("### Adversarial Review Gate", 2).first
     refute_includes review_gate, "pr-production-release.md"
-    assert_includes review_gate, "unless `AGENTS.md` says they do."
+    assert_includes review_gate, "unless `AGENTS.md` selects the downstream"
 
     assert_includes skill, "load the resolved `pr-production-release.md`"
     assert_includes skill, "prefer the repo-local `.agents/workflows/pr-production-release.md` when present"
@@ -104,7 +106,7 @@ class ProductionReleaseContractTest < Minitest::Test
                                  .split("## Accelerated RC Auto-Merge", 2).first)
     assert_includes authority, "production deployment or promotion"
 
-    assert_includes squish(@workflow), "Do not bypass the queue with administrator privileges"
+    assert_includes squish(@integration_closeout), "Do not bypass the queue with administrator privileges"
     assert_includes normalized, "## Release Closeout Extension"
     assert_includes normalized, "accelerated-RC waiver-soak"
     assert_includes normalized, "authenticated finalizer record names the exact current head SHA and score"
@@ -112,25 +114,28 @@ class ProductionReleaseContractTest < Minitest::Test
     assert_includes normalized, "Any later head or PR-body edit invalidates the finalization"
     assert_includes normalized, "does not replace re-finalization"
     assert_includes normalized, "re-fetches the current PR body, its `lastEditedAt`, and the current head"
-    closeout = squish(@workflow.split("The closeout lane is:", 2).last
-                               .split("## Self-Review Gate", 2).first)
+    closeout = squish(@integration_closeout.split("The closeout lane is:", 2).last
+                                            .split("## Self-Review Gate", 2).first)
     assert_includes closeout, "repeat the bounded tracker-discovery check"
     assert_includes closeout, "If the refreshed tracker selects release handling"
     assert_includes closeout, "record `UNKNOWN` and block the action"
     assert_includes closeout, "**Release Closeout Extension** section from the resolved component"
-    assert_includes closeout, "its post-merge rule before ordinary closeout step 10"
+    assert_includes closeout, "its post-merge rule before ordinary closeout step 11"
     refute_includes closeout, "Agent Merge Confidence"
     refute_includes closeout, "Under the current release mode"
 
-    debounce = @workflow.split("## Merge Endgame Debounce", 2).last
-                        .split("### Review-Loop Convergence", 2).first
-    refute_includes debounce, "accelerated-RC"
-    refute_includes debounce, "waiver-soak"
+    debounce = squish(@integration_closeout.split("## Merge Endgame Debounce", 2).last
+                                            .split("### Review-Loop Convergence", 2).first)
+    assert_includes debounce, "release-specific waiver soak"
+    assert_includes debounce, "remains owned by"
+    refute_includes debounce, "default 10-minute waiver-soak window"
+    refute_includes debounce, "authenticated finalizer record"
 
     refute_includes @workflow, "steps 13-14"
     refute_includes @skill, "steps 13-14"
-    assert_equal 2, @workflow.scan("steps 12-13").length
-    assert_equal 1, @skill.scan("steps 12-13").length
+    refute_includes @integration_closeout, "steps 13-14"
+    assert_equal 1, @workflow.scan("steps 12-13").length
+    refute_includes @skill, "steps 12-13"
 
     fallback = squish(@workflow.split("### Ordinary Review Fallback", 2).last
                                 .split("### Adversarial Review Gate", 2).first)

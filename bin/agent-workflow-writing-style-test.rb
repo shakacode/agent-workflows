@@ -151,6 +151,47 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
     end
   end
 
+  def test_repository_guide_rejects_an_https_url_as_an_unsupported_uri_reference
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      Dir.mkdir(home)
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: https://www.asd-ste100.org/\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style"
+      assert_includes stderr, "remote URLs/URI references are unsupported"
+      assert_includes stderr, "trusted local relative Markdown-file path is required"
+    end
+  end
+
+  def test_repository_guide_rejects_a_file_uri_reference
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      Dir.mkdir(home)
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: file:docs/writing-style.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "remote URLs/URI references are unsupported"
+      assert_includes stderr, "trusted local relative Markdown-file path is required"
+    end
+  end
+
   def test_repository_guide_rejects_existing_and_missing_tilde_paths_identically
     Dir.mktmpdir do |directory|
       repo_root = File.join(directory, "repo")
@@ -428,6 +469,31 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       assert_equal File.read(DEFAULT_GUIDE, encoding: "UTF-8").strip, result.fetch("guide")
       assert_equal 1, result.fetch("warnings").length
       assert_includes stderr, "invalid user-global writing_style file"
+      assert_includes stderr, "using portable default"
+    end
+  end
+
+  def test_user_global_url_warns_and_uses_the_packaged_default
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      Dir.mkdir(repo_root)
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style: https://www.asd-ste100.org/\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "portable-default", result.fetch("provenance")
+      assert_equal File.read(DEFAULT_GUIDE, encoding: "UTF-8").strip, result.fetch("guide")
+      assert_equal 1, result.fetch("warnings").length
+      assert_includes stderr, "WARNING: invalid user-global writing_style"
+      assert_includes stderr, "remote URLs/URI references are unsupported"
+      assert_includes stderr, "trusted local relative Markdown-file path is required"
       assert_includes stderr, "using portable default"
     end
   end

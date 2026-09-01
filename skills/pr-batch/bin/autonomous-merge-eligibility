@@ -6,9 +6,11 @@ Encoding.default_external = Encoding::UTF_8
 require "json"
 require "open3"
 require "optparse"
+require "yaml"
 require_relative "../lib/autonomous_merge_decision"
 require_relative "../lib/autonomous_merge_evidence"
 require_relative "../lib/autonomous_merge_runtime_trust"
+require_relative "../lib/current_integration_evidence"
 
 default_calibration = File.expand_path("../fixtures/autonomous-merge-reviewed-heads-calibration.json", __dir__)
 options = { calibration_decision: default_calibration }
@@ -47,6 +49,7 @@ def emit_unknown(failure, head_sha: "UNKNOWN", policy_provenance: "UNKNOWN")
     "shadow_evidence_unknown" => [],
     "rollback_assessment" => "UNKNOWN",
     "human_decision_evidence" => { "status" => "none" },
+    "current_integration" => nil,
     "evidence_failures" => [failure]
   )
   exit
@@ -151,15 +154,21 @@ valid_head_sha = head_sha.is_a?(String) && head_sha.match?(/\A[0-9a-fA-F]{40}\z/
 reported_head_sha = valid_head_sha ? head_sha.downcase : "UNKNOWN"
 head_sha = reported_head_sha if valid_head_sha
 emit_unknown("semantic_assessment must be a mapping", head_sha: reported_head_sha) unless semantic.is_a?(Hash)
-unless objective["base_sha"] == base_sha.strip
+objective_errors = []
+identity_errors = []
+identity_errors << "head_sha must be a full hexadecimal SHA" unless valid_head_sha
+identity_errors << "base_sha must be a full hexadecimal SHA" unless
+  objective["base_sha"].is_a?(String) && objective["base_sha"].match?(/\A[0-9a-f]{40}\z/)
+identity_errors << "base_ref must be a nonempty string" unless
+  objective["base_ref"].is_a?(String) && !objective["base_ref"].strip.empty?
+objective_errors.concat(identity_errors)
+unless identity_errors.empty?
   emit_unknown(
-    "objective base SHA does not match trusted base",
+    identity_errors.join("; "),
     head_sha: reported_head_sha,
     policy_provenance: "git:#{base_sha.strip}"
   )
 end
-objective_errors = []
-objective_errors << "head_sha must be a full hexadecimal SHA" unless valid_head_sha
 objective_errors << "file pagination is incomplete" unless objective["files_complete"] == true
 objective_errors << "commit pagination is incomplete" unless objective["commits_complete"] == true
 objective_shape_errors = []
@@ -238,6 +247,7 @@ if policy_entry.lines.map(&:strip).include?(policy_path)
                  head_sha: reported_head_sha,
                  policy_provenance: "git:#{base_sha.strip}:#{policy_path}")
   end
+  trusted_policy_yaml = policy_yaml
   policy = AutonomousMergePolicy.parse(policy_yaml)
   policy_blob, blob_status = Open3.capture2(
     "git", "-C", repo_root, "rev-parse", "#{base_sha.strip}:#{policy_path}"
@@ -251,12 +261,71 @@ if policy_entry.lines.map(&:strip).include?(policy_path)
                         "UNKNOWN"
                       end
 else
+  trusted_policy_yaml = "{}"
   policy = AutonomousMergePolicy.parse("{}")
   policy_provenance = "git:#{base_sha.strip}:#{policy_path}(absent; portable-defaults)"
 end
 unless policy.errors.empty?
   emit_unknown(
     policy.errors.join("; "),
+    head_sha: reported_head_sha,
+    policy_provenance:
+  )
+end
+begin
+  trusted_config = YAML.safe_load(
+    trusted_policy_yaml, permitted_classes: [], permitted_symbols: [], aliases: false
+  ) || {}
+rescue Psych::Exception => e
+  emit_unknown(
+    "trusted-base policy cannot provide current-integration seams: #{e.message.lines.first.to_s.strip}",
+    head_sha: reported_head_sha,
+    policy_provenance:
+  )
+end
+unless trusted_config.is_a?(Hash)
+  emit_unknown(
+    "trusted-base policy cannot provide current-integration seams",
+    head_sha: reported_head_sha,
+    policy_provenance:
+  )
+end
+changelog_path = trusted_config["changelog"]
+changelog_path = nil unless changelog_path.is_a?(String) && !changelog_path.empty?
+current_integration_paths = objective.fetch("files").flat_map do |file|
+  previous_path = file["previous_path"] if file["status"] == "renamed"
+  [file.fetch("path"), previous_path]
+end.compact.uniq
+begin
+  integration_arguments = {
+    repo_root:,
+    repo: options.fetch(:repo),
+    pr_number: options.fetch(:pr),
+    recorded_base_sha: objective.fetch("base_sha"),
+    head_sha:,
+    trusted_base_sha: base_sha.strip,
+    pr_paths: current_integration_paths,
+    policy:,
+    base_ref: objective.fetch("base_ref")
+  }
+  current_integration = if objective.fetch("base_sha") == base_sha.strip
+                          CurrentIntegrationEvidence.base_unchanged(**integration_arguments)
+                        else
+                          CurrentIntegrationEvidence.collect(
+                            **integration_arguments,
+                            changelog_path:
+                          )
+                        end
+rescue CurrentIntegrationEvidence::Error, KeyError => e
+  emit_unknown(
+    "current integration evidence is unavailable: #{e.message}",
+    head_sha: reported_head_sha,
+    policy_provenance:
+  )
+end
+unless %w[base-unchanged reuse-exact-head].include?(current_integration.dig("reuse", "decision"))
+  emit_unknown(
+    "current integration requires fresh evidence: #{current_integration.dig('reuse', 'reasons').join(', ')}",
     head_sha: reported_head_sha,
     policy_provenance:
   )
@@ -459,5 +528,6 @@ puts JSON.generate(
   "shadow_evidence_unknown" => shadow_evidence_unknown,
   "rollback_assessment" => rollback_assessment,
   "human_decision_evidence" => human_decision_evidence,
+  "current_integration" => current_integration,
   "evidence_failures" => evidence_failures
 )

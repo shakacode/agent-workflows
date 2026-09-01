@@ -49,6 +49,70 @@ uses that packaged default. Resolution is
 repo → user-global → portable default, and one complete Markdown file wins
 without merging prose.
 
+### Adopt ASD-STE100 for Technical Documentation
+
+A project can adopt ASD-STE100 for technical-documentation prose through a
+project-authored local adapter at `docs/writing-style.md`. The resolver does not
+load the standard from a URL, fetch any remote content, or check conformance.
+It only loads a trusted local relative Markdown file. The adapter and AI tools
+are aids; they do not establish ASD approval, certification, or compliance.
+
+Use the official standard as the primary reference:
+
+- [ASD-STE100 official site](https://www.asd-ste100.org/)
+- [Official downloads](https://www.asd-ste100.org/STE_downloads.html)
+- [Official software information](https://www.asd-ste100.org/STEsoftware.html)
+- [Official training information](https://www.asd-ste100.org/STE_training.html)
+- [ASD-STE100 Issue 9 PDF](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf)
+  (Issue 9, 2025-01-15)
+
+Do not vendor or copy the copyrighted standard PDF or its dictionary into this
+repository or the adapter. Give authors and reviewers project-authorized access
+to the official standard instead. Qualified human review is required before a
+project claims ASD-STE100 compliance.
+
+The following is a copy-ready `docs/writing-style.md` adapter. It states project
+policy without reproducing the standard or dictionary:
+
+```markdown
+# Project Writing Style
+
+## Scope
+
+Apply the project-authorized ASD-STE100 standard to human-facing
+technical-documentation prose. Do not apply prose simplification to source
+code, machine-readable content, or exact interface and protocol text.
+
+## Source authority
+
+- Use the project-authorized official ASD-STE100 standard as the primary
+  reference.
+- If that standard is unavailable, mark the ASD-STE100 application as
+  unverified. Do not guess its rules or dictionary entries.
+- Treat AI and checking tools as aids only, not as authorities or conformance
+  checkers.
+
+## Preserve technical meaning
+
+- Preserve meaning while simplifying prose.
+- Preserve exact identifiers, API names, commands, flags, paths, templates,
+  evidence, protocol markers, and other required literals.
+- Use project terminology for technical nouns and verbs. Keep an exact project
+  term when replacing it would reduce precision or change meaning.
+
+## Verification
+
+Require verification by a qualified human who can consult the official
+standard before claiming ASD-STE100 compliance. Do not claim ASD approval or
+certification.
+```
+
+Enable it in `.agents/agent-workflow.yml`:
+
+```yaml
+writing_style: docs/writing-style.md
+```
+
 ## One-Time Adoption
 
 1. **Inventory the target repo.** Identify base branch, package managers,

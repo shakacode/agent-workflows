@@ -757,6 +757,21 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_writing_style_rejects_a_url_with_actionable_local_path_guidance
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("writing_style" => "https://www.asd-ste100.org/"))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid writing_style policy"
+      assert_includes out, "remote URLs/URI references are unsupported"
+      assert_includes out, "trusted local relative Markdown-file path is required"
+    end
+  end
+
   def test_writing_style_file_accepts_legacy_angle_bracket_phrases
     with_repo do |root|
       write_valid_binstub_contract(root)

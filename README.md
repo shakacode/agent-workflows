@@ -18,7 +18,8 @@ repositories without copying the workflow pack into every checkout or erasing
 the policy each repository owns. Copied skill trees drift; purely global
 instructions cannot express repo-specific commands, trust, CI, and release
 rules. This pack keeps reusable process in one source and one install per agent
-host, while each consumer repo exposes a small policy seam.
+host, while each consumer repo exposes a small
+[policy seam](docs/source-pack-glossary.md).
 
 See [Problems Agent Workflows Solves](docs/problems-solved.md) for the complete
 team-scale problem map, including distribution, repository adaptation, safety,
@@ -92,6 +93,10 @@ bin/install-agent-workflows --host codex
 Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
 explicit shared agent home.
 
+New to the pack? Follow [Getting Started](docs/getting-started.md) for
+prerequisites with versions, one host install, one repo adoption, and a first
+workflow run end to end.
+
 To configure writing guidance, follow the
 [project writing-style instructions](docs/adoption.md#configure-project-writing-style); the
 [packaged writing-style file](docs/writing-style.md) remains the default.
@@ -102,29 +107,11 @@ reasoning-effort values are advisory preferences; hosts may report observed
 host/model/effort fields when available and otherwise record field-granular
 `UNKNOWN` without blocking execution.
 
-For the full ShakaCode agent stack setup (`agent-workflows`,
-`agent-coordination`, and `agent-coordination-dashboard`), see
-[Full Stack Contributor Setup](docs/installation-and-upgrades.md#full-stack-contributor-setup).
-`agent-stack` is ShakaCode-specific stack tooling, not part of the generic
-workflow-pack install path for consumer repositories.
-
-After setup, use the master doctor to check all three parts of the local stack
-in one read-only report:
-
-```bash
-agent-stack doctor
-agent-stack doctor --deep
-```
-
-The master owns checkout and compatibility-link discovery, bounded component
-execution, contract validation, sanitization, aggregation, and rendering. Each
-component repository owns its operational checks behind the shared stack
-contract, so there is no fixed master list of internal check IDs. A stopped
-dashboard is reported as degraded, not failed, because the dashboard is an
-optional runtime. The doctor reports what to do next but never syncs, installs,
-starts, or repairs anything. See
-[Full Stack Doctor](docs/installation-and-upgrades.md#full-stack-doctor) for
-selectors, JSON output, status meanings, and exit codes.
+For ShakaCode-specific full-stack tooling (`agent-stack sync` and
+`agent-stack doctor`), see
+[Full Stack Contributor Setup](docs/installation-and-upgrades.md#full-stack-contributor-setup)
+and [Full Stack Doctor](docs/installation-and-upgrades.md#full-stack-doctor).
+The generic workflow-pack install does not require that stack.
 
 ### Host Installer Path
 

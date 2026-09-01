@@ -19,6 +19,7 @@ require "uri"
 require "yaml"
 
 load File.expand_path("merge-assurance", __dir__) unless defined?(MergeAssurance)
+require_relative "../lib/current_integration_evidence"
 
 module PrMergeSubmit
   class Error < StandardError; end
@@ -82,8 +83,9 @@ module PrMergeSubmit
 
   class Runner
     PR_QUERY = <<~GRAPHQL
-      query($owner: String!, $name: String!, $number: Int!) {
+      query($owner: String!, $name: String!, $number: Int!, $qualifiedBase: String!) {
         repository(owner: $owner, name: $name) {
+          currentBaseRef: ref(qualifiedName: $qualifiedBase) { target { oid } }
           pullRequest(number: $number) {
             id
             headRefOid
@@ -95,6 +97,11 @@ module PrMergeSubmit
             merged
             mergedAt
             mergeCommit { oid }
+            potentialMergeCommit {
+              oid
+              tree { oid }
+              parents(first: 3) { totalCount nodes { oid } }
+            }
             isInMergeQueue
             isMergeQueueEnabled
             mergeQueueEntry {
@@ -255,7 +262,7 @@ module PrMergeSubmit
                       "--merge-assurance-receipt FILE [options]"
         opts.separator "        --subject SUBJECT  Direct merge commit subject"
         opts.separator "        --body BODY        Direct merge commit body"
-        opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v1 receipt"
+        opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v2 receipt"
       end
     end
 
@@ -283,7 +290,7 @@ module PrMergeSubmit
       freshness issued_at verdict version
     ].freeze
     RECEIPT_BINDING_KEYS = %w[
-      authority base diff_identity head_sha host pr repo
+      authority base current_integration diff_identity head_sha host pr repo
     ].freeze
     RECEIPT_EVIDENCE_KEYS = %w[
       authenticated_tracker_reads autonomous_result ci_result context
@@ -302,10 +309,10 @@ module PrMergeSubmit
       receipt = PrMergeSubmit.parse_json!(raw, "merge-assurance receipt")
       unless receipt.keys.sort == RECEIPT_KEYS.sort &&
              receipt["contract"] == "merge-assurance-receipt" &&
-             receipt["version"] == 1 &&
+             receipt["version"] == 2 &&
              receipt["eligible"] == true &&
              receipt["verdict"] == "ELIGIBLE"
-        raise Error, "merge-assurance receipt is not an eligible v1 receipt"
+        raise Error, "merge-assurance receipt is not an eligible v2 receipt"
       end
       unless receipt["bindings"].is_a?(Hash) &&
              receipt["bindings"].keys.sort == RECEIPT_BINDING_KEYS.sort
@@ -692,11 +699,64 @@ module PrMergeSubmit
       unless pull_request["baseRefName"] == bindings.dig("base", "ref")
         raise Error, "PR base moved: receipt binds #{bindings.dig('base', 'ref')}, found #{pull_request['baseRefName']}"
       end
-      unless pull_request["baseRefOid"].to_s.casecmp?(bindings.dig("base", "sha").to_s)
-        raise Error, "merge-assurance receipt base SHA mismatch: expected " \
-                     "#{bindings.dig('base', 'sha')}, found #{pull_request['baseRefOid']}"
-      end
+
+      validate_receipt_base_sha!(pull_request)
+      validate_current_integration_live!(pull_request, bindings.fetch("current_integration"))
       validate_receipt_option_bindings!(@merge_assurance_receipt, options)
+    end
+
+    def validate_current_integration_live!(pull_request, integration)
+      decision = integration.dig("reuse", "decision")
+      return if decision == "base-unchanged"
+
+      unless decision == "reuse-exact-head"
+        raise Error, "merge-assurance receipt current integration is not reusable"
+      end
+
+      expected = integration.fetch("candidate")
+      actual = if expected["source"] == "github-potential-merge-commit"
+                 normalize_live_integration_candidate!(pull_request["potentialMergeCommit"])
+               else
+                 CurrentIntegrationEvidence.local_candidate(
+                   @repo_root,
+                   integration.dig("current_base", "sha"),
+                   integration.fetch("head_sha")
+                 )
+               end
+      return if same_current_integration_candidate?(actual, expected)
+
+      raise Error, "live current integration candidate no longer matches the merge-assurance receipt"
+    rescue CurrentIntegrationEvidence::Error, KeyError, TypeError => e
+      raise Error, "live current integration candidate is unavailable: #{e.message}"
+    end
+
+    def same_current_integration_candidate?(actual, expected)
+      # GitHub may regenerate the synthetic commit object while preserving the
+      # integration consequence. The tree and ordered parents are the replayed
+      # semantic identity; the receipt-retained provider OID is provenance.
+      actual["source"] == expected["source"] &&
+        actual["tree_oid"] == expected["tree_oid"] &&
+        actual["parents"] == expected["parents"]
+    end
+
+    def normalize_live_integration_candidate!(candidate)
+      unless candidate.is_a?(Hash) && candidate.dig("parents", "totalCount") == 2
+        raise Error, "GitHub current integration candidate is missing or malformed"
+      end
+
+      normalized = {
+        "source" => "github-potential-merge-commit",
+        "oid" => candidate["oid"],
+        "tree_oid" => candidate.dig("tree", "oid"),
+        "parents" => Array(candidate.dig("parents", "nodes")).map { |parent| parent["oid"] }
+      }
+      unless normalized["oid"].to_s.match?(GIT_BLOB_OID) &&
+             normalized["tree_oid"].to_s.match?(GIT_BLOB_OID) &&
+             normalized["parents"].all? { |parent| parent.to_s.match?(GIT_BLOB_OID) }
+        raise Error, "GitHub current integration candidate is missing or malformed"
+      end
+
+      normalized
     end
 
     # gh treats a field value beginning with "@" as a file path to read, so a
@@ -728,6 +788,7 @@ module PrMergeSubmit
         "-f", "owner=#{owner}",
         "-f", "name=#{name}",
         "-F", "number=#{options[:pr]}",
+        "-f", "qualifiedBase=refs/heads/#{options[:expected_base]}",
         host: options[:host]
       )
       raise Error, "could not fetch PR metadata: #{failure_output(stdout, stderr)}" unless status.success?
@@ -736,9 +797,11 @@ module PrMergeSubmit
       errors = payload["errors"]
       raise Error, "PR merge-queue query returned errors: #{JSON.generate(errors)}" unless Array(errors).empty?
 
-      pull_request = payload.dig("data", "repository", "pullRequest")
+      repository = payload.dig("data", "repository")
+      pull_request = repository["pullRequest"] if repository.is_a?(Hash)
       raise Error, "PR merge-queue query returned no pull request" unless pull_request.is_a?(Hash)
 
+      pull_request["currentBaseRefOid"] = repository.dig("currentBaseRef", "target", "oid")
       validate_url_host!(pull_request["url"], options[:host])
 
       pull_request
@@ -800,10 +863,11 @@ module PrMergeSubmit
     end
 
     def validate_receipt_base_sha!(pull_request)
-      expected = @merge_assurance_receipt.dig("bindings", "base", "sha")
-      return if pull_request["baseRefOid"].to_s.casecmp?(expected.to_s)
+      expected_current = @merge_assurance_receipt.dig("bindings", "base", "sha")
+      return if pull_request["currentBaseRefOid"].to_s.casecmp?(expected_current.to_s)
 
-      raise Error, "merge-assurance receipt base SHA mismatch: expected #{expected}, found #{pull_request['baseRefOid']}"
+      raise Error, "merge-assurance receipt base SHA mismatch: expected " \
+                   "#{expected_current}, found #{pull_request['currentBaseRefOid']}"
     end
 
     def direct_merge_result(options)
@@ -1414,8 +1478,12 @@ module PrMergeSubmit
     def exact_target?(pull_request, options)
       pull_request["baseRefName"] == options[:expected_base] &&
         pull_request["headRefOid"].to_s.casecmp?(options[:expected_head]) &&
-        (!@merge_assurance_receipt ||
-          pull_request["baseRefOid"].to_s.casecmp?(@merge_assurance_receipt.dig("bindings", "base", "sha").to_s))
+        (!@merge_assurance_receipt || receipt_live_base_matches?(pull_request))
+    end
+
+    def receipt_live_base_matches?(pull_request)
+      current = @merge_assurance_receipt.dig("bindings", "base", "sha")
+      pull_request["currentBaseRefOid"].to_s.casecmp?(current.to_s)
     end
 
     def reject_mismatched_queue!(pull_request, options)

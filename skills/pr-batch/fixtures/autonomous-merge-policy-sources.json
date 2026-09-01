@@ -10,6 +10,7 @@
     "skills/pr-batch/lib/autonomous_merge_calibration.rb",
     "skills/pr-batch/bin/goal-completion-contract-test.rb",
     "workflows/pr-batch-worker-execution.md",
+    "workflows/pr-batch-integration-closeout.md",
     "skills/plan-pr-batch/scripts/check_goal_prompt_size.rb",
     "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json",
     ".agents/skills/pr-batch/bin/autonomous-merge-eligibility",
@@ -20,6 +21,7 @@
     ".agents/skills/pr-batch/lib/autonomous_merge_evidence.rb",
     ".agents/skills/pr-batch/bin/goal-completion-contract-test.rb",
     ".agents/workflows/pr-batch-worker-execution.md",
+    ".agents/workflows/pr-batch-integration-closeout.md",
     ".agents/skills/plan-pr-batch/scripts/check_goal_prompt_size.rb",
     ".agents/skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
   ],

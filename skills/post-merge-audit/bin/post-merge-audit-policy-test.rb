@@ -31,8 +31,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   COMPLETED_BATCH_AUDIT_PLACEMENT_FILES = [
     "skills/post-merge-audit/SKILL.md",
     "workflows/post-merge-audit.md",
-    "workflows/pr-processing.md",
-    "skills/pr-batch/SKILL.md"
+    "workflows/pr-batch-integration-closeout.md"
   ].freeze
   REQUIRED_REPLACEMENT_PRECLOSE_GUARD = "Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation."
   REQUIRED_REPLACEMENT_CHANGELOG_RULE = "Ordinary authenticated later-target reconciliation applies to an immutable terminal `abandoned` lane; a terminal `superseded` lane may reconcile only for an issue with typed no-PR evidence, while code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation."
@@ -102,7 +101,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_FILES = [
     "skills/post-merge-audit/SKILL.md",
     "workflows/post-merge-audit.md",
-    "workflows/pr-processing.md"
+    "workflows/pr-batch-integration-closeout.md"
   ].freeze
 
   OBSOLETE_APPROVAL_GATES = [
@@ -157,7 +156,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   def test_release_gate_ledger_append_is_not_blocked_by_comment_ban
     [
       "skills/post-merge-audit/SKILL.md",
-      "workflows/pr-processing.md"
+      "workflows/pr-production-release.md"
     ].each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
@@ -198,7 +197,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   end
 
   def test_pr_processing_follow_up_policy_has_post_merge_exception
-    text = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    text = File.read(File.join(ROOT, "workflows/pr-batch-integration-closeout.md"), encoding: "UTF-8")
     normalized_text = text.gsub(/\s+/, " ")
 
     assert_includes normalized_text, REQUIRED_PR_PROCESSING_EXCEPTION
@@ -207,7 +206,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   def test_outputs_include_issue_creation_accounting
     [
       "skills/post-merge-audit/SKILL.md",
-      "workflows/pr-processing.md"
+      "workflows/pr-batch-integration-closeout.md"
     ].each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
@@ -227,10 +226,9 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_completed_batch_audit_closes_with_an_explicit_conversation_status
     [
-      "skills/pr-batch/SKILL.md",
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md",
-      "workflows/pr-processing.md"
+      "workflows/pr-batch-integration-closeout.md"
     ].each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")

@@ -6,6 +6,7 @@ require "json"
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
+INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
@@ -767,11 +768,17 @@ class CoordinationTelemetryContractTest < Minitest::Test
     {
       "### Question And Decision Handling" => %w[help_requested blocked-user-input question permission],
       "### Worker Model Replacement And Escalation" => %w[escalation_requested human_intervention supersede],
-      "### Cancelling Or Stopping A Batch" => %w[human_intervention drain],
-      "## Review Comment Handling" => %w[error P0 P1 regression revert],
-      "### Coordinator Closeout Lane" => %w[telemetry-completeness]
+      "### Cancelling Or Stopping A Batch" => %w[human_intervention drain]
     }.each do |heading, phrases|
       section = extract_section(workflow, heading)
+      phrases.each { |phrase| assert_includes section, phrase, "#{heading} is missing #{phrase}" }
+    end
+
+    closeout = read_repo_file(INTEGRATION_CLOSEOUT_PATH)
+    {
+      "## Review Comment Handling" => %w[error P0 P1 regression revert]
+    }.each do |heading, phrases|
+      section = extract_section(closeout, heading)
       phrases.each { |phrase| assert_includes section, phrase, "#{heading} is missing #{phrase}" }
     end
 
@@ -810,9 +817,8 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_fails_closed_only_for_an_advertised_capability
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
-      COORDINATION_DOC_PATH => ["## Operational Signal Events"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"],
+      COORDINATION_DOC_PATH => ["## Operational Signal Events"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -845,9 +851,8 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_argv_contract_rejects_each_authoritative_section_mutation
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
-      COORDINATION_DOC_PATH => ["## Operational Signal Events"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"],
+      COORDINATION_DOC_PATH => ["## Operational Signal Events"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -879,8 +884,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_execution_is_bounded_and_closeout_continues
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -892,8 +896,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_bounded_execution_rejects_each_authoritative_section_mutation
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -917,8 +920,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_review_remediation_authority_is_section_local_and_outcome_bound
     {
-      WORKFLOW_PATH => ["## Review Comment Handling"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      INTEGRATION_CLOSEOUT_PATH => ["## Review Comment Handling"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -930,8 +932,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_review_remediation_authority_rejects_each_authoritative_section_mutation
     {
-      WORKFLOW_PATH => ["## Review Comment Handling"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      INTEGRATION_CLOSEOUT_PATH => ["## Review Comment Handling"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|

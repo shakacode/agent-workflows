@@ -183,6 +183,16 @@ Use the `Agent Merge Confidence` template defined in `AGENTS.md` under
 **Release Mode And Auto-Merge Coordination**. Do not maintain a separate
 template copy here.
 
+## Release Audit Ledger Handoff
+
+For a release-gate audit, resolve the standing release audit ledger through the
+trusted Release Mode Preflight. Append the audit report there before follow-up
+issue creation, and return the authenticated ledger comment URL or the exact
+issue, permission, command/API, or retry blocker to ordinary closeout. Do not
+create unrelated comments; the release-gate ledger append is allowed when
+required before issue creation. A failed or `UNKNOWN` append blocks release-audit
+issue creation but does not erase the audit result or block unrelated PR work.
+
 ## Release Closeout Extension
 
 When this component is loaded, extend the ordinary coordinator closeout lane:

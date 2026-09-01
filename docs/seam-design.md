@@ -127,7 +127,9 @@ Repository omission falls through per key even when the repository seam file
 exists. Repository paths resolve beneath the repository root; user-global paths
 resolve beneath `~/.agents`. Absolute paths, parent traversal, paths that escape
 through symlinks, non-Markdown paths, and missing, unreadable, nonregular,
-empty, or invalid-UTF-8 files are invalid.
+empty, or invalid-UTF-8 files are invalid. URLs and URI references, including
+`https:` and `file:`, are invalid: the resolver accepts only trusted local
+relative Markdown-file paths and never performs a network lookup.
 
 An explicitly present malformed repository config, path, or file is a blocking
 seam error. The same user-global failure produces an actionable warning and
@@ -142,6 +144,14 @@ loads that file. A company-wide or common guide could be added later only as a
 future explicitly trusted distribution/source layer. The current resolver does
 not fetch a company repository and does not perform network or cross-repository
 lookup.
+
+A project may use a local adapter to apply an external writing standard such as
+ASD-STE100 to technical-documentation prose. The external standard remains the
+primary reference; the resolver neither distributes that standard or its
+dictionary nor checks conformance. Keep exact project terminology, identifiers,
+APIs, commands, paths, templates, evidence, and protocol markers separate from
+prose simplification. Qualified human review is required before claiming
+compliance.
 
 The resolved guide applies only to human-facing prose. Repository PR and issue
 templates, required evidence, machine-readable receipts, and exact protocol

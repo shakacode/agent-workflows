@@ -21,6 +21,7 @@ ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 PROMPT_INTAKE_PATH = File.join(ROOT, "workflows/pr-batch-intake.md")
 WORKER_EXECUTION_PATH = File.join(ROOT, "workflows/pr-batch-worker-execution.md")
+INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 SPEC_SKILL_PATH = File.join(ROOT, "skills/spec/SKILL.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
@@ -39,6 +40,7 @@ HUMAN_STATUS_REPLAY_PATH = File.join(ROOT, "skills/pr-batch/fixtures/human-statu
 TEXT_FENCE = "```text\n"
 CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
 CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-format"
+INTEGRATION_CLOSEOUT_READINESS_LINK = "../../workflows/pr-batch-integration-closeout.md#batch-handoff-format"
 # docs/ is one level below the repo root; skills/*/SKILL.md are two.
 DOCS_CANONICAL_READINESS_LINK = "../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
@@ -304,15 +306,15 @@ LAUNCH_MODE_WORKFLOW_CLAUSES = {
 # The skill carries only the concise worker/coordinator-facing requirement and
 # points at the canonical contract, so the two cannot drift into rival rules.
 PR_BATCH_HEARTBEAT_SUMMARY_CLAUSES = [
-  "schedule one same-thread heartbeat for that time before handing off",
+  "schedule the same-thread heartbeat for that time rather than relying on either monitoring cadence",
   "neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that " \
   "exact published time",
   "single scheduled mechanism for that blocker and gate",
   "do not start or retain either watcher mode for the same gate",
   "before stopping or replacing any existing watcher so no wake is lost",
-  "Update the existing heartbeat instead of duplicating it",
+  "updates the existing matching heartbeat instead of creating a duplicate",
   "never becomes an unbounded polling loop",
-  "The canonical rule is the Scheduled Retry Heartbeat paragraph in that contract"
+  "Skills that implement timed waiting or PR babysitting reuse this contract instead of inventing separate reminder behavior"
 ].freeze
 CANONICAL_READINESS_STATES = %w[
   merged
@@ -545,11 +547,14 @@ end
 
 class GoalCompletionContractTest < Minitest::Test
   def setup
-    @workflow = read_repo_file(WORKFLOW_PATH)
+    @workflow_source = read_repo_file(WORKFLOW_PATH)
     @prompt_intake = read_repo_file(PROMPT_INTAKE_PATH)
     @worker_execution = read_repo_file(WORKER_EXECUTION_PATH)
+    @integration_closeout = read_repo_file(INTEGRATION_CLOSEOUT_PATH)
+    @workflow = "#{@integration_closeout}\n#{@workflow_source}"
     @spec_skill = read_repo_file(SPEC_SKILL_PATH)
-    @pr_batch_skill = read_repo_file(PR_BATCH_SKILL_PATH)
+    @pr_batch_skill_source = read_repo_file(PR_BATCH_SKILL_PATH)
+    @pr_batch_skill = "#{@integration_closeout}\n#{@pr_batch_skill_source}"
     @plan_pr_batch_skill = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
     @triage_skill = read_repo_file(TRIAGE_SKILL_PATH)
     @adversarial_review_workflow = read_repo_file(ADVERSARIAL_REVIEW_WORKFLOW_PATH)
@@ -898,7 +903,7 @@ class GoalCompletionContractTest < Minitest::Test
     )
     assert_equal 1, continuation.lines.count { |line| line.strip == HUMAN_STATUS_VERSION_KEY },
                  "continuation monitor prompt must reference #{HUMAN_STATUS_VERSION_KEY} exactly once"
-    assert_text_includes @human_attention_section, "[`HST-v1`](#human-status-translation-contract)",
+    assert_text_includes @human_attention_section, "[`HST-v1`](pr-processing.md#human-status-translation-contract)",
                          "human-attention notification surface"
   end
 
@@ -960,9 +965,9 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces
     surfaces = {
-      "workflows/pr-processing.md" => @workflow,
+      "workflows/pr-batch-integration-closeout.md" => @integration_closeout,
       "skills/triage/SKILL.md" => @triage_skill,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill_source,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
     }
     actual_counts = surfaces.transform_values { |text| text.scan(GMCC_ALIGNMENT_SENTENCE).length }
@@ -1175,13 +1180,21 @@ class GoalCompletionContractTest < Minitest::Test
   def test_planning_skills_link_to_canonical_readiness_vocabulary
     {
       "skills/spec/SKILL.md" => extract_markdown_section(@spec_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
-      "skills/plan-pr-batch/SKILL.md" => extract_markdown_section(@plan_pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
-      "skills/pr-batch/SKILL.md" => extract_markdown_section(@pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/)
+      "skills/plan-pr-batch/SKILL.md" => extract_markdown_section(@plan_pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/)
     }.each do |label, text|
       assert_text_includes text, CANONICAL_READINESS_LINK, label
       assert_text_includes text, "UNKNOWN", label
       assert_text_includes text, "JSON is not mandatory", label
     end
+
+    pr_batch_readiness = extract_markdown_section(
+      @pr_batch_skill_source,
+      "## Canonical Readiness Vocabulary",
+      end_heading: /^##\s+/
+    )
+    assert_text_includes pr_batch_readiness, INTEGRATION_CLOSEOUT_READINESS_LINK, "skills/pr-batch/SKILL.md"
+    assert_text_includes pr_batch_readiness, "UNKNOWN", "skills/pr-batch/SKILL.md"
+    assert_text_includes pr_batch_readiness, "JSON is not mandatory", "skills/pr-batch/SKILL.md"
   end
 
   def test_structured_readiness_markers_use_canonical_values
@@ -1203,10 +1216,10 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_skill_prose_points_to_canonical_contract_instead_of_pasting_it
-    assert_text_includes @pr_batch_skill, CANONICAL_CONTRACT_LINK, "skills/pr-batch/SKILL.md"
-    assert_equal 0, @pr_batch_skill.scan(PENDING_CHECKS_PRESSURE).length,
+    assert_text_includes @pr_batch_skill_source, CANONICAL_CONTRACT_LINK, "skills/pr-batch/SKILL.md"
+    assert_equal 0, @pr_batch_skill_source.scan(PENDING_CHECKS_PRESSURE).length,
                  "skills/pr-batch/SKILL.md should leave the verbose pressure example in the canonical workflow"
-    assert_equal 1, @pr_batch_skill.scan(COMPACT_CONTRACT_LINE).length,
+    assert_equal 1, @pr_batch_skill_source.scan(COMPACT_CONTRACT_LINE).length,
                  "skills/pr-batch/SKILL.md should carry one self-contained compact prompt contract"
   end
 
@@ -1426,15 +1439,19 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_batch_handoff_format_requires_the_archive_readiness_status_line
     {
-      "workflows/pr-processing.md" => extract_markdown_section(@workflow, "### Batch Handoff Format"),
-      "skills/pr-batch/SKILL.md" => extract_markdown_section(
-        @pr_batch_skill,
-        "## Batch Handoff Format",
-        end_heading: /^##\s+/
-      )
+      "workflows/pr-batch-integration-closeout.md" =>
+        extract_markdown_section(@integration_closeout, "### Batch Handoff Format")
     }.each do |label, section|
       assert_squished_includes section, ARCHIVE_READINESS_HANDOFF_RULE, "#{label} Batch Handoff Format section"
     end
+
+    skill_route = extract_markdown_section(
+      @pr_batch_skill_source,
+      "## Batch Handoff Format",
+      end_heading: /^##\s+/
+    )
+    assert_text_includes skill_route, "pr-batch-integration-closeout.md#batch-handoff-format",
+                         "skills/pr-batch/SKILL.md Batch Handoff Format route"
   end
 
   # #243/1: this section is what workers and planning chats are pointed at for the
@@ -1489,10 +1506,11 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_pr_batch_skill_carries_the_concise_heartbeat_requirement
     PR_BATCH_HEARTBEAT_SUMMARY_CLAUSES.each do |clause|
-      assert_squished_includes @pr_batch_skill, clause, "skills/pr-batch/SKILL.md heartbeat summary"
+      assert_squished_includes @workflow_contract_section, clause,
+                               "workflows/pr-batch-integration-closeout.md heartbeat contract"
     end
 
-    assert_text_includes @pr_batch_skill, CANONICAL_CONTRACT_LINK,
+    assert_text_includes @pr_batch_skill_source, CANONICAL_CONTRACT_LINK,
                          "skills/pr-batch/SKILL.md must point at the canonical Goal Mode Completion Contract"
   end
 
@@ -2030,8 +2048,8 @@ class GoalCompletionContractTest < Minitest::Test
                     "independent of all target-level `n/a` decisions"
     assert_includes lifecycle,
                     "Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive."
-    assert_includes lifecycle, TERMINAL_FOLLOW_UP_EVIDENCE_RULE
-    assert_includes lifecycle, UNRESOLVED_HANDOFF_NON_CLEAN_RULE
+    assert_includes @integration_closeout, TERMINAL_FOLLOW_UP_EVIDENCE_RULE
+    assert_includes @integration_closeout, UNRESOLVED_HANDOFF_NON_CLEAN_RULE
     refute_includes lifecycle, "dispositioned/handed off"
     assert_includes lifecycle, "The parent only reconciles this handoff; it never reruns or owns the audit."
 
@@ -2270,8 +2288,7 @@ class GoalCompletionContractTest < Minitest::Test
     end
 
     {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "workflows/pr-batch-integration-closeout.md" => @integration_closeout,
       "skills/post-merge-audit/SKILL.md" => read_repo_file(File.join(ROOT, "skills/post-merge-audit/SKILL.md")),
       "workflows/post-merge-audit.md" => read_repo_file(File.join(ROOT, "workflows/post-merge-audit.md"))
     }.each do |label, text|
@@ -2326,8 +2343,7 @@ class GoalCompletionContractTest < Minitest::Test
     end
 
     {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "workflows/pr-batch-integration-closeout.md" => @integration_closeout,
       "skills/post-merge-audit/SKILL.md" => read_repo_file(File.join(ROOT, "skills/post-merge-audit/SKILL.md")),
       "workflows/post-merge-audit.md" => read_repo_file(File.join(ROOT, "workflows/post-merge-audit.md"))
     }.each do |label, text|
@@ -2900,8 +2916,7 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_completed_batch_audit_record_grammar_is_mirrored_across_closeout_surfaces
     {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "workflows/pr-batch-integration-closeout.md" => @integration_closeout,
       "skills/post-merge-audit/SKILL.md" => read_repo_file(File.join(ROOT, "skills/post-merge-audit/SKILL.md")),
       "workflows/post-merge-audit.md" => read_repo_file(File.join(ROOT, "workflows/post-merge-audit.md"))
     }.each do |label, text|
@@ -2945,12 +2960,15 @@ class GoalCompletionContractTest < Minitest::Test
               "batch coordinators execute and own live lanes and closeout"
 
     {
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, summary, label
     end
+
+    assert_text_includes @pr_batch_skill_source,
+                         "../../workflows/pr-processing.md#planning-chat-lifecycle",
+                         "skills/pr-batch/SKILL.md planning lifecycle route"
   end
 
   def test_changelog_announces_portable_planning_chat_lifecycle_contract
