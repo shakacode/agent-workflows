@@ -40,6 +40,7 @@ ACKNOWLEDGEABLE_RISKS = Set.new(
 ).freeze
 HIGH_RISK_ROOT_PATTERN = %r{\A(\.github/|\.agents/|\.claude/|bin/|script/|scripts/)}
 HIGH_RISK_NESTED_SCRIPT_DIR_PATTERN = %r{/(bin|script|scripts)/}
+BROAD_PROTECTED_PARENT_MATCHES = Set.new(%w[root-prefix nested-script-dir]).freeze
 HIGH_RISK_EXACT_FILENAMES = Set.new(
   %w[
     .npmrc
@@ -1080,6 +1081,26 @@ def changed_files(repo, pr_number)
   run_gh("pr", "diff", pr_number.to_s, "--repo", repo, "--name-only").lines.map(&:strip).reject(&:empty?)
 end
 
+def pull_request_identity(repo, pr_number)
+  payload = run_gh_json(
+    "pr", "view", pr_number.to_s, "--repo", repo, "--json", "baseRefOid,headRefOid"
+  )
+  identity = {
+    base_ref_oid: payload["baseRefOid"],
+    head_ref_oid: payload["headRefOid"]
+  }
+  return identity if identity.values.all? { |oid| oid.is_a?(String) && oid.match?(/\A[0-9a-f]{40}\z/) }
+
+  raise "PR ##{pr_number} base/head identity is missing or malformed: #{JSON.generate(payload)}"
+end
+
+def require_unchanged_pull_request_identity!(before, after, pr_number)
+  return if before == after
+
+  raise "PR ##{pr_number} base/head changed while preflight evidence was scanned: " \
+        "#{JSON.generate(before)} -> #{JSON.generate(after)}"
+end
+
 def preflight_helper_provenance
   path = File.realpath(__FILE__)
   contents = File.binread(path)
@@ -1095,8 +1116,10 @@ def high_risk_file_findings(files)
     matches << "root-prefix" if path.match?(HIGH_RISK_ROOT_PATTERN)
     matches << "nested-script-dir" if path.match?(HIGH_RISK_NESTED_SCRIPT_DIR_PATTERN)
     matches << "exact-filename" if HIGH_RISK_EXACT_FILENAMES.include?(path)
+    broad_parent_match = matches.any? { |match| BROAD_PROTECTED_PARENT_MATCHES.include?(match) }
+    broad_protected_parent_only = broad_parent_match && !matches.include?("exact-filename")
 
-    { path:, matches: } unless matches.empty?
+    { path:, matches:, broad_protected_parent_only: } unless matches.empty?
   end
 end
 
@@ -1469,6 +1492,11 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
   # Must run before visible_actor_logins: target aliases graph, so pagination
   # mutations must be in place before the visibility pass reads from graph.
   append_target_graph_pages!(owner:, name:, number:, graph_field:, target:)
+  diff_identity = target_is_pr ? pull_request_identity(repo, number) : nil
+  if target_is_pr && target.fetch("headRefOid") != diff_identity.fetch(:head_ref_oid)
+    raise "PR ##{number} head changed before preflight evidence scan: " \
+          "#{target.fetch('headRefOid')} -> #{diff_identity.fetch(:head_ref_oid)}"
+  end
   rest = rest_context(repo, number, include_pull_comments: target_is_pr, issue:, trust_config:, team_cache:)
   visible = visible_actor_logins(graph, graph_field)
   visible.merge(visible_rest_actor_logins(rest))
@@ -1501,8 +1529,10 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     trust_config:
   )
   risky_file_findings = high_risk_file_findings(files)
+  require_unchanged_pull_request_identity!(diff_identity, pull_request_identity(repo, number), number) if target_is_pr
 
   {
+    diff_identity:,
     files:,
     number:,
     graph_coverage_findings: graph_coverage_findings(target, include_target_author: target_is_pr),
@@ -1790,7 +1820,10 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
 
   puts "#{target_label} ##{result.fetch(:number)}"
   puts "  URL: #{target.fetch('url')}"
-  puts "  Head: #{target.fetch('headRefOid')}" if result.fetch(:target_is_pr)
+  if result.fetch(:target_is_pr)
+    puts "  Head: #{target.fetch('headRefOid')}"
+    puts "  Diff base/head identity: #{JSON.generate(result.fetch(:diff_identity))}"
+  end
   print_graph_coverage_findings(result.fetch(:graph_coverage_findings))
   print_participant_findings(result.fetch(:participant_findings))
   print_untrusted_interactions(result.fetch(:untrusted_interactions))

@@ -121,23 +121,23 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_floor,
                     "same base/head from complete policy, semantic, and file evidence"
     assert_includes normalized_floor,
-                    "preserve the helper's self-reported canonical path, `sha256:` digest of its exact bytes"
+                    "independently recompute `sha256:` over the helper's self-reported canonical path"
     assert_includes normalized_floor,
-                    "emitted predicate matches, and flat risky-path list"
+                    "require it match the emitted digest"
     assert_includes normalized_floor,
-                    "require the digest remain unchanged"
+                    "emitted exact diff base/head, predicate evidence, and flat risky-path list"
     assert_includes normalized_floor,
-                    "rerun at exact head"
+                    "require that pair match eligibility evidence"
     assert_includes normalized_floor,
-                    "use only emitted `root-prefix`, `nested-script-dir`, and `exact-filename` matches per path"
+                    "repeat the computation and scan; require the digest unchanged and the same exact pair"
     assert_includes normalized_floor,
-                    "Root-prefix or nested-script-dir may qualify"
+                    "require emitted `broad_protected_parent_only == true` for every current and previous path"
     assert_includes normalized_floor,
-                    "including a `nested-script-dir`-only match"
+                    "never infer it from raw matches"
     assert_includes normalized_floor,
-                    "exact-filename never qualifies as broad protected-parent-only"
+                    "sets true only for `root-prefix` or `nested-script-dir`, including nested-script-dir-only, and false for `exact-filename`"
     assert_includes normalized_floor,
-                    "Bind the full safe-class verdict to every current and previous path"
+                    "Bind the full safe-class verdict to every path"
     assert_includes normalized_floor,
                     "enforces `safe_path_groups.tests` inclusion/exclusion and unambiguous `test_change == \"strengthens-only\"`"
     assert_includes normalized_floor,
@@ -150,6 +150,8 @@ class SecurityFloorContractTest < Minitest::Test
                     "reported finding, bound helper path and `sha256:` digest"
     assert_includes normalized_floor,
                     "both the original broad protected-parent match and the safe-test-only resolution"
+    assert_includes normalized_floor,
+                    "predicate matches and broad-only verdict, helper digest, matching exact diff/eligibility base/head"
     assert_includes normalized_floor,
                     "final `safe_class`, complete semantic and path evidence"
     assert_includes normalized_floor,

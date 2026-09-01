@@ -1728,15 +1728,44 @@ class PrSecurityPreflightTest < Minitest::Test
       )
 
       expected_matches = [
-        { path: ".github/workflows/test.yml", matches: ["root-prefix"] },
-        { path: "skills/pr-batch/bin/security-floor-contract-test.rb", matches: ["nested-script-dir"] },
-        { path: "AGENTS.md", matches: ["exact-filename"] },
-        { path: ".agents/bin/test", matches: %w[root-prefix nested-script-dir] }
+        { path: ".github/workflows/test.yml", matches: ["root-prefix"], broad_protected_parent_only: true },
+        {
+          path: "skills/pr-batch/bin/security-floor-contract-test.rb",
+          matches: ["nested-script-dir"],
+          broad_protected_parent_only: true
+        },
+        { path: "AGENTS.md", matches: ["exact-filename"], broad_protected_parent_only: false },
+        {
+          path: ".agents/bin/test",
+          matches: %w[root-prefix nested-script-dir],
+          broad_protected_parent_only: true
+        }
       ]
+      diff_identity = {
+        base_ref_oid: "b" * 40,
+        head_ref_oid: "a" * 40
+      }
 
       assert status.success?, out
+      assert_includes out, "Diff base/head identity: #{JSON.generate(diff_identity)}"
       assert_includes out, "High-risk predicate matches: #{JSON.generate(expected_matches)}"
       assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_pr_scan_fails_closed_when_base_or_head_changes
+    with_fake_gh("moving-pr-base") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      refute status.success?, out
+      assert_includes out, "PR #123 base/head changed while preflight evidence was scanned"
     end
   end
 
@@ -3136,7 +3165,7 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
       JSON
@@ -3232,7 +3261,7 @@ class PrSecurityPreflightTest < Minitest::Test
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
       JSON
           fi
-        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
       JSON
@@ -3461,6 +3490,18 @@ class PrSecurityPreflightTest < Minitest::Test
 
       if [ "$1" = "api" ] && [ "$2" = "-H" ] && [ "$3" = "Accept: application/vnd.github+json" ] && [ "$4" = "repos/owner/repo/issues/123/reactions?per_page=100" ]; then
         printf '[[{"user":{"login":"justin808"}}]]'
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+        base_oid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        if [ "$mode" = "moving-pr-base" ]; then
+          identity_call_count="$(grep -c '^pr view 123 ' #{Shellwords.shellescape(log_path)})"
+          if [ "$identity_call_count" -gt 1 ]; then
+            base_oid="cccccccccccccccccccccccccccccccccccccccc"
+          fi
+        fi
+        printf '{"baseRefOid":"%s","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n' "$base_oid"
         exit 0
       fi
 

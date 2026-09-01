@@ -127,13 +127,12 @@ finding caused only by the broad protected-parent match:
   plus final `safe_class == "tests"` from `skills/pr-batch/bin/autonomous-merge-eligibility`
   after it parses the trusted-base `AutonomousMergePolicy` for the same base/head from complete policy, semantic, and file evidence. Otherwise remain blocked;
   never reconstruct policy or add another test-path list.
-- Evidence binding: preserve the helper's self-reported canonical path, `sha256:`
-  digest of its exact bytes, emitted predicate matches, and flat risky-path list.
-  At resolution, require the digest remain unchanged and rerun at exact head; never copy its predicates into another classifier.
-- Predicate decision: use only emitted `root-prefix`, `nested-script-dir`, and
-  `exact-filename` matches per path. Root-prefix or nested-script-dir may qualify,
-  including a `nested-script-dir`-only match; exact-filename never qualifies as
-  broad protected-parent-only. Bind the full safe-class verdict to every current and previous path. It enforces `safe_path_groups.tests`
+- Evidence binding: independently recompute `sha256:` over the helper's self-reported canonical path and require it match the emitted digest. Preserve both plus
+  its emitted exact diff base/head, predicate evidence, and flat risky-path list;
+  require that pair match eligibility evidence. At resolution, repeat the computation and scan; require the digest unchanged and the same exact pair.
+- Predicate decision: require emitted `broad_protected_parent_only == true` for every current and previous path; never infer it from raw matches. The helper sets true
+  only for `root-prefix` or `nested-script-dir`, including nested-script-dir-only,
+  and false for `exact-filename`. Bind the full safe-class verdict to every path. It enforces `safe_path_groups.tests`
   inclusion/exclusion and unambiguous `test_change == "strengthens-only"`; never
   substitute a path-only check.
 - Independent stops: production helpers, mixed diffs, excluded tests,
@@ -161,9 +160,10 @@ Return one `security-floor v1` result per lane with:
 - exact head/base evidence binding required at the current stage;
 - for a protected-parent safe-test decision, both the original broad
   protected-parent match and the safe-test-only resolution, with per-path
-  predicate matches and helper digest, exact base/head, trusted
-  `AutonomousMergePolicy` provenance, final `safe_class`, complete semantic and
-  path evidence, and any independent blocking path or evidence reason preserved;
+  predicate matches and broad-only verdict, helper digest, matching exact
+  diff/eligibility base/head, trusted `AutonomousMergePolicy` provenance, final
+  `safe_class`, complete semantic and path evidence, and any independent blocking
+  path or evidence reason preserved;
 - consequential-action authority; and
 - `PASS`, `BLOCKED`, or `UNKNOWN`, plus the precise affected-lane reason.
 
