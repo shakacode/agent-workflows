@@ -23,14 +23,15 @@ second canonical prompt. The launcher then:
    commit as the configured base at launch when available;
 5. derives a deterministic task title from the repository prefix, work-item
    number, and title;
-6. accepts the launcher's actual source-selection and human-prompt-rendering
-   timestamps plus its digest of the canonical bytes fetched at selection;
+6. binds the selected source to the successful `pr-security-preflight` snapshot's
+   exact source URL, `body` field, and SHA-256 digest, and accepts the launcher's
+   actual source-selection and human-prompt-rendering timestamps;
 7. re-fetches the same source during preparation, requires its digest to match
    the supplied selection digest, and only then captures the record observation
    time and persists launch identity;
 8. immediately before dispatch, re-fetches those bytes, verifies a distinct
-   launch digest, and puts that digest in the complete Batch Plan or its exact
-   durable plan-state reference; and
+   launch digest, and puts that digest in the existing handoff envelope outside
+   the frozen Batch Plan without changing the plan or its binding; and
 9. lets the worker re-fetch and match the transported launch digest before it
    interprets the source or records worker start.
 
@@ -78,6 +79,9 @@ Canonical source bytes are exactly the selected GitHub API `body` string after J
 Selection, launch, and worker checks fetch the
 same object and field and hash only those bytes, with no Unicode normalization,
 Markdown rendering, whitespace trimming, or newline insertion or removal.
+When GitHub returns `body: null` for a title-only issue or pull request, its
+canonical source bytes are the empty UTF-8 string. Retain that SHA-256 digest in
+the selection, launch, and worker fields instead of dropping the source.
 
 The record keeps three separate lowercase SHA-256 values for those canonical
 source bytes: `digest_at_selection`, `digest_at_launch`, and
@@ -93,22 +97,43 @@ not proof that the content is trusted.
 Before prompt creation, the trusted launcher generates and persists one
 globally unique per-execution `run_id`, one `launch_idempotency_key` reused by
 retries of that launch, and one exact canonical `record_destination` in the
-durable Batch Plan. A GitHub-backed or mixed run chooses one exact selected
-issue or pull-request work-item URL; a maintainer-comment source anchors to its
-parent work item. A wholly non-GitHub trusted-ad-hoc run reuses its existing
-durable plan/backend destination. The launcher delivers the destination and run
-ID to every worker with that lane's launch digest and existing replay tuple:
+durable Batch Plan. It freezes the exact delivered plan, then persists one
+immutable `batch_plan_binding` beside it in the run record and handoff envelope;
+the digest is not included in the bytes it hashes. The binding is the SHA-256 of
+the exact UTF-8 Batch Plan bytes delivered inline, or an immutable reference
+plus its exact revision/content digest. A mutable, missing, changed, or `UNKNOWN`
+binding stops at that boundary.
+
+Choose a destination authorized to contain every lane's recorded identity and
+source. An all-public GitHub run may use one exact selected issue or pull-request
+work-item URL; a maintainer-comment source anchors to its parent work item. If
+any lane has no public GitHub surface, use an existing durable plan/backend
+destination authorized for every lane or split the trust boundaries into
+separate runs. Never publish a private `plan-state://` or `batch://` identity in
+a public run record. The launcher delivers the destination, run ID, and binding
+in the existing handoff envelope outside the frozen Batch Plan, together with
+that lane's launch digest and existing replay tuple:
 `lane_id`, dispatcher, `instance_id`, and launch token. A deterministic launch
-token is not unique across reruns and never substitutes for `run_id`.
+token is not unique across reruns and never substitutes for `run_id`. Bind the
+envelope to the same `run_id`, `batch_plan_binding`, and replay identity. Do not
+add the launch digest to the frozen plan or change its binding.
 
 Each execution publishes exactly one `agent-launcher-run-record:v1` comment or
 durable record at that destination. It has one compact visible state, one
 collapsed details block, and one unique entry per planned lane. Selection
 evidence is written first, launch evidence is appended at dispatch, and worker
 evidence is appended only after the worker opens the destination, resolves the
-exact outer `run_id` and replay tuple, and verifies its observed digest.
+exact outer `run_id`, replay tuple, and `batch_plan_binding`, and verifies both
+the replay identity and its observed digest.
 Missing, extra, duplicated, hybrid, or ambiguous lane routing fails closed.
 Reruns append a new outer record instead of replacing history.
+
+The launcher/coordinator is the sole writer for the outer record. It serializes
+or compare-and-swaps every append to the exactly matching `run_id`, replay
+identity, and `batch_plan_binding`; workers return bound observation payloads
+and never race GitHub read-modify-write updates. It records each observed model
+and workflow value field by field. A missing observation remains `UNKNOWN` and
+does not block launch unless another gate independently requires it.
 
 The v1 helper remains a closed GitHub boundary for issue bodies, pull-request
 bodies, and trusted maintainer comments. Its `agent-run-record:v1` result
@@ -125,9 +150,16 @@ record destinations, durable references, task/branch/PR values, updates, and
 blockers. No outer dynamic value may create a Markdown link, HTML element, or
 active URI.
 
-A preflight-accepted `trusted-ad-hoc-override` bypasses the helper. Preserve its
-exact existing `plan-state://` or `batch://` durable reference as the prompt
-source and persist the record at its existing durable plan/backend destination.
+A preflight-accepted `trusted-ad-hoc-override` whose durable authorization
+reference is `issue://` or GitHub HTTPS follows the ordinary GitHub source path:
+resolve the referenced issue or pull-request body, preserve the same author and
+trust checks, and record actual selection, launch, and worker-observed body
+digests instead of `not applicable — trusted-ad-hoc-override`.
+
+Only the narrow non-GitHub override backed by an exact existing
+`plan-state://` or `batch://` durable reference bypasses the helper. Preserve
+that reference as the prompt source and persist the record at its existing
+durable plan/backend destination.
 Require the reference to resolve to the same immutable accepted
 provenance/authority record revision, or equivalent existing content binding,
 at selection, launch, and worker start. Record all three source-digest fields as
@@ -147,7 +179,8 @@ shows one rendered execution.
 
 ```markdown
 - Run ID: <immutable unique per-execution run_id>
-- Record destination: <exact selected issue or pull-request work-item URL, or existing durable plan/backend destination for a wholly non-GitHub trusted-ad-hoc run>
+- Record destination: <exact issue or pull-request work-item URL authorized for every lane, or existing durable plan/backend destination authorized for every lane>
+- Batch Plan binding: <SHA-256 of exact delivered UTF-8 plan bytes, or immutable reference plus exact revision/content digest>
 - Prompt created at: <timestamp>
 - Model at prompt creation: <observed value or UNKNOWN>
 - Workflow at prompt creation: <version or UNKNOWN>
@@ -181,6 +214,7 @@ Blocker: none
 - Run ID: `123e4567-e89b-42d3-a456-426614174000`
 - Launch retry key: `65d9f4e3-b51d-4a09-ae97-bd8704aa9aac`
 - Record destination: `https://github.com/shakacode/agent-workflows/issues/560`
+- Batch Plan binding: `sha256:<64 lowercase hexadecimal characters>`
 - Repository: `shakacode/agent-workflows`
 - Prompt created at: 2026-08-30T02:00:56.829Z
 - Runner: Codex
@@ -197,7 +231,7 @@ Blocker: none
     - Prompt digest at selection: `<64 lowercase hexadecimal characters>`
     - Prompt digest at launch: `<64 lowercase hexadecimal characters>`
     - Prompt digest observed by worker: `<64 lowercase hexadecimal characters>`
-    - Prompt transport: complete-batch-plan — `inline`
+    - Prompt transport: handoff-envelope
     - Selected at: 2026-08-30T02:00:55.829Z
     - Launched at: 2026-08-30T02:00:57.000Z
     - Worker prompt digest observed at: 2026-08-30T02:00:57.829Z
@@ -235,10 +269,10 @@ above; those outer fields do not expand the helper schema.
 | `launch_idempotency_key` | One helper-generated UUID v4 reused for retries of that same helper launch; reruns receive a new key. The outer launch retry key remains launcher-owned. |
 | `repository`, `work_item` | Repository-qualified issue or pull-request kind, identity, title, and exact URL fetched from GitHub. |
 | `prompt_source` | One exact `issue-body`, `pull-request-body`, or trusted `maintainer-comment` source URL plus distinct selection, launch, and worker-observed digests; comment sources also record author and association. |
-| `prompt_transport` | `null` before launch verification, then the launch digest bound to the complete Batch Plan or an exact durable `plan-state://<id>/<path>` reference. |
+| `prompt_transport` | `null` before launch verification, then the launch digest marked for the existing handoff envelope outside the frozen Batch Plan. The outer launcher binds that envelope to the same run, plan binding, and replay identity. |
 | `current_main` | Machine provenance for the configured base branch and observed `origin/<base>` commit, or field-granular `UNKNOWN`. |
 | `runner` | Runner name and machine plus separately observed model at prompt creation and worker start; each unavailable value is `UNKNOWN`. |
-| `workflow_versions.prompt_creation` | Timestamped loaded-pack `HEAD` plus PR-batch and workflow digests observed at prompt creation; each unavailable value is `UNKNOWN`. |
+| `workflow_versions.prompt_creation` | Loaded-pack `HEAD` plus PR-batch and workflow digests read immediately after prompt creation, with the helper's direct observation timestamp; each unavailable value is `UNKNOWN`. |
 | `workflow_versions.worker_start` | Immutable timestamped pack `HEAD` plus SHA-256 digests of the PR-batch skill and workflow observed at worker start; each unavailable value is `UNKNOWN`. |
 | `workflow_versions.later_observations` | Append-only timestamped observations added only when one of those workflow versions changes; an empty array is valid. |
 | `task` | Derived or explicit task title, task ID, and task URL; unavailable values are `UNKNOWN`. |
@@ -256,8 +290,9 @@ State and outcome are deliberately separate closed fields. `launch-pending`,
 live blocker or `failed` for the recorded unrecoverable worker-digest mismatch.
 Tools must not invent synonyms or compress the two into one value.
 
-Event times are nondecreasing: selection, prompt creation, worker digest
-observation and worker start when present, then the latest record observation.
+Event times are nondecreasing: selection, prompt creation, its workflow
+observation, worker digest observation and worker start when present, then the
+latest record observation.
 Later workflow observations occur nondecreasingly after worker start. A latest
 material update or later workflow observation cannot be newer than the record's
 observation time.
@@ -278,9 +313,19 @@ and persists it with that lane's `verify-launch` result and replay handoff. The
 helper supplies the verified launch digest; neither layer waits for telemetry
 or infers the timestamp later.
 
+Human `auto` maps to durable machine `auto_merge_when_gates_pass`; human `ask`
+maps to durable machine `ask`. An explicitly selected machine
+`merge_authority: none` renders as human `Merge authority: ask` because the
+worker has no merge authority and must obtain explicit human authority before
+merge. This rendering does not change the durable machine value from `none` to
+`ask`.
+
 ## Workflow version history
 
-`workflow_versions.prompt_creation` records the prompt-creation observation.
+`workflow_versions.prompt_creation` records the loaded workflow bytes observed
+by `prepare` immediately after the launcher-created prompt. Its `observed_at`
+is the actual helper read time, which can be later than the launcher-supplied
+`Prompt created at`; it must not be backdated to that earlier event.
 `workflow_versions.worker_start` begins as field-granular `UNKNOWN` with a
 `pending` timestamp. `mark-worker-started` replaces that pending placeholder
 once with the directly timestamped worker observation. That worker-start value
@@ -304,8 +349,9 @@ The helper's `observe-workflows` command performs this comparison and append.
 ## Retry and rerun history
 
 The outer launcher persists its execution `run_id`, launch retry key, and
-`record_destination` before prompt creation. A retry of that launch reuses all
-three values and updates the same `agent-launcher-run-record:v1` record. A
+`record_destination` plus the exact `batch_plan_binding` before prompt creation.
+A retry of that launch reuses those values and updates the same
+`agent-launcher-run-record:v1` record. A
 deliberate rerun generates a new outer run ID and retry key and appends one new
 outer record at the persisted destination. It never replaces or folds the
 earlier record.
@@ -313,8 +359,13 @@ earlier record.
 Separately, each GitHub lane helper writes an `agent-run-launch-identity` v1
 file with mode `0600`. The file binds its helper evidence run ID and
 `launch_idempotency_key` to repository, work item, prompt source and selection
-digest, runner, machine, prompt-creation model, configured base,
+digest, trusted comment author and association when applicable, runner, machine,
+prompt-creation model, configured base,
 prompt-creation workflow, and direct selection/prompt-creation timestamps.
+The helper validates the complete initial record before atomically publishing
+this identity. Every later mutating command requires the same
+`--identity-file` and rejects a record whose immutable fields no longer match
+it before any GitHub read or record mutation.
 
 - A retry of that helper launch reuses the same identity file and its helper
   evidence IDs, timestamps, configured-base binding, source, and selection
@@ -326,9 +377,16 @@ prompt-creation workflow, and direct selection/prompt-creation timestamps.
   embedded in the new outer record. No `agent-run-record:v1` helper marker or
   helper-only comment is independently published.
 
+The launcher is the sole durable writer and must read the current canonical
+outer record before every transition; it rejects stale local snapshots instead
+of replaying them. Once the current outer record persists a terminal failed
+lane, no earlier helper payload or local snapshot may reopen that run. The
+helper therefore does not create a second durable worker-state store: it emits
+the bound observation for the launcher to append to the one canonical record.
+
 Within one live outer record, only mutable state, task, branch, PR, latest
 update, blocker, and later observations may refresh. The outer run ID, retry
-key, destination, lane identities, source/selection evidence, prompt-creation
+key, destination, batch-plan binding, lane identities, source/selection evidence, prompt-creation
 time, launch base, and recorded worker-start observations remain immutable.
 
 ## Optional coordination
@@ -342,10 +400,13 @@ repository or active PR-batch plan.
 
 ## Helper
 
-Invoke the helper only for a GitHub-backed lane. A trusted-ad-hoc lane bypasses
-the CLI and follows the durable-reference route above; passing
-`trusted-ad-hoc-override` to `--prompt-source` is invalid and stops before a
-GitHub read or identity write.
+Invoke the helper only for a GitHub-backed lane, including a trusted ad-hoc lane
+whose durable authorization reference resolves to an `issue://` or GitHub HTTPS
+issue or pull request. Only the narrow non-GitHub trusted-ad-hoc lane bypasses
+the CLI and follows the durable-reference route above. Passing
+`trusted-ad-hoc-override` to `--prompt-source` remains invalid and stops before a
+GitHub read or identity write; resolve a GitHub-backed override to its ordinary
+issue-body or pull-request-body source first.
 
 Prepare an issue-body run after the normal PR-batch preflight and base fetch:
 
@@ -384,40 +445,42 @@ If preparation re-fetches different canonical bytes than the launcher fetched
 at `Selected at`, it exits nonzero without creating an identity and requires a
 deliberate new run, source reselection, and rerun security preflight.
 
-Immediately before dispatch, create the distinct launch digest and its required
-plan transport. Use exactly one transport form:
+Immediately before dispatch, create the distinct launch digest for the existing
+handoff envelope outside the frozen Batch Plan:
 
 ```bash
 skills/pr-batch/bin/agent-run-record verify-launch \
-  --complete-batch-plan < selected-run-record.json > launch-verified-record.json
-
-skills/pr-batch/bin/agent-run-record verify-launch \
-  --plan-state-ref plan-state://BATCH_ID/run-record \
+  --handoff-envelope \
+  --identity-file /durable/private/run-560-1.json \
   < selected-run-record.json > launch-verified-record.json
 ```
 
 A selection/launch mismatch makes no launch or worker-start mutation. It
 requires a deliberate new run, source reselection, and rerun security preflight.
-The verified record, including `Prompt digest at launch`, travels with the
-complete Batch Plan or through the exact resolvable plan-state reference. For
-copy-paste and host-native multi-target launches, send the readable human prompt
-and this complete plan or reference together; keep the plan bookkeeping outside
-the human prompt.
+The verified record supplies nested lane evidence for the envelope; it does not
+modify the Batch Plan. The outer launcher carries `record_destination`,
+`run_id`, `batch_plan_binding`, this lane's launch digest, and its replay identity
+in that envelope, bound to the same run, plan binding, and replay identity. For
+copy-paste and host-native multi-target launches, send the readable human prompt,
+frozen plan, and bound envelope together; keep all bookkeeping outside the human
+prompt.
 
-Before interpreting any source content, the worker consumes that transported
-record, re-fetches the exact source, and records the worker observation and
-start boundary (supplying an observed model only when exposed):
+Before interpreting any source content, the worker verifies the frozen plan
+binding and consumes the exactly matching bound envelope and nested record. It
+then re-fetches the exact source and records the worker observation and start
+boundary (supplying an observed model only when exposed):
 
 ```bash
 skills/pr-batch/bin/agent-run-record mark-worker-started \
   --repo-root /path/to/repository \
   --pack-root /path/to/loaded/agent-workflows \
+  --identity-file /durable/private/run-560-1.json \
   < launch-verified-record.json > started-run-record.json
 ```
 
 `mark-worker-started` re-fetches only the selected issue-body, pull-request-body,
-or comment fields and compares `Prompt digest observed by worker` with the transported launch
-digest. A missing plan transport stops without mutation. A mismatch exits
+or comment fields and compares `Prompt digest observed by worker` with the
+transported launch digest. A missing bound envelope stops without mutation. A mismatch exits
 nonzero but emits an updated JSON record on standard output so the launcher can
 persist it and update the same run comment: the actual digest and observation
 time are recorded, state/outcome become `blocked` / `failed`, and one visible
@@ -434,6 +497,7 @@ has changed:
 skills/pr-batch/bin/agent-run-record observe-workflows \
   --repo-root /path/to/repository \
   --pack-root /path/to/loaded/agent-workflows \
+  --identity-file /durable/private/run-560-1.json \
   < started-run-record.json > updated-run-record.json
 ```
 

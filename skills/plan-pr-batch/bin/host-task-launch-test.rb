@@ -222,6 +222,20 @@ class HostTaskLaunchTest < Minitest::Test
     end
   end
 
+  def test_refresh_rejects_rewritten_trusted_comment_attribution
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      original = maintainer_comment_helper_evidence
+      input = input_for(directory, helper_evidence: original)
+      invoke(input)
+      input["operation"] = "refresh-helper-evidence"
+      rewritten = Marshal.load(Marshal.dump(original))
+      rewritten["prompt_source"]["author"] = "different-maintainer"
+      input["helper_evidence"] = rewritten
+
+      assert_equal "invalid-input", invoke(input).fetch("status")
+    end
+  end
+
   def test_refresh_allows_one_pending_to_recorded_worker_start_transition
     Dir.mktmpdir("host-task-launch-test") do |directory|
       pending = pending_helper_evidence
@@ -276,9 +290,9 @@ class HostTaskLaunchTest < Minitest::Test
       assert_equal requested_title, result.dig("record", "lanes", 0, "task_title")
       assert_equal 1, rendered.scan("<!-- agent-launcher-run-record:v1 -->").length
       refute_includes rendered, "<!-- agent-run-record:v1 -->"
-      assert_includes rendered, "- Task title: `\u005bhostile\u005d(javascript:alert(1)) &lt;script&gt;`"
-      assert_includes rendered, "&lt;bad&gt;"
-      refute_includes rendered, "<script>"
+      assert_includes rendered, "- Task title: `\u005bhostile\u005d(javascript:alert(1)) <script>`"
+      assert_includes rendered, "`https://example.test/<bad>`"
+      refute_includes rendered, "\n<script>"
       assert_includes rendered, "Repository/issue:"
       assert_includes rendered, "Human input needed:"
     end
@@ -450,7 +464,7 @@ class HostTaskLaunchTest < Minitest::Test
       "repository" => "owner/repo",
       "work_item" => { "kind" => "issue", "number" => 561, "title" => "Title", "url" => "https://github.com/owner/repo/issues/561" },
       "prompt_source" => { "kind" => "issue-body", "url" => "https://github.com/owner/repo/issues/561", "digest_at_selection" => "a" * 64, "digest_at_launch" => "a" * 64, "digest_observed_by_worker" => "a" * 64 },
-      "prompt_transport" => { "kind" => "complete-batch-plan", "reference" => "inline", "digest_at_launch" => "a" * 64 },
+      "prompt_transport" => canonical_prompt_transport,
       "current_main" => { "branch" => "main", "sha" => "1" * 40 },
       "runner" => { "name" => "runner", "machine" => "machine", "model_at_prompt_creation" => "UNKNOWN", "model_at_worker_start" => "UNKNOWN" },
       "workflow_versions" => { "prompt_creation" => workflow("2026-08-30T02:00:56.829Z"), "worker_start" => workflow("2026-08-30T02:00:57.829Z"), "later_observations" => [] },
@@ -473,6 +487,20 @@ class HostTaskLaunchTest < Minitest::Test
     evidence
   end
 
+  def maintainer_comment_helper_evidence
+    evidence = Marshal.load(Marshal.dump(valid_helper_evidence))
+    evidence["prompt_source"] = {
+      "kind" => "maintainer-comment",
+      "url" => "https://github.com/owner/repo/issues/561#issuecomment-1",
+      "author" => "trusted-maintainer",
+      "author_association" => "OWNER",
+      "digest_at_selection" => "a" * 64,
+      "digest_at_launch" => "a" * 64,
+      "digest_observed_by_worker" => "a" * 64
+    }
+    evidence
+  end
+
   def verified_helper_evidence(pending)
     evidence = Marshal.load(Marshal.dump(pending))
     evidence["prompt_source"]["digest_at_launch"] = evidence.dig("prompt_source", "digest_at_selection")
@@ -481,7 +509,7 @@ class HostTaskLaunchTest < Minitest::Test
   end
 
   def canonical_prompt_transport
-    { "kind" => "complete-batch-plan", "reference" => "inline", "digest_at_launch" => "a" * 64 }
+    { "kind" => "handoff-envelope", "digest_at_launch" => "a" * 64 }
   end
 
   def helper_evidence_with_later_observation

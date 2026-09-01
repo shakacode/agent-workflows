@@ -350,24 +350,37 @@ omit the queue summary and note that queue state is unavailable.
 
    The launcher keeps one compact collapsed run record with one entry per target
    lane. Before prompt creation, it persists one immutable unique per-execution
-   `run_id` and one exact canonical `record_destination` in the Batch Plan. A
-   GitHub-backed or mixed run explicitly chooses one exact selected issue or PR
-   work-item URL; a maintainer-comment source anchors to its parent work item. A
-   wholly non-GitHub trusted-ad-hoc run uses its existing durable plan/backend
-   destination. Neither field belongs in the human prompt. The launcher fetches
-   each lane's canonical source bytes when selected and writes
-   its selection timestamp plus `Prompt digest at selection`, then records the
+   `run_id` and one exact canonical `record_destination` in the Batch Plan. It
+   freezes the exact delivered plan, then persists `batch_plan_binding` beside
+   it in the run record and handoff envelope, outside the bytes it hashes. Bind
+   exact inline UTF-8 plan bytes by SHA-256, or bind an existing immutable reference to its exact
+   revision/content digest; reverify before dispatch and worker start. Choose a
+   destination authorized to contain every lane's identity and source. An
+   all-public GitHub run may use one selected issue or PR work-item URL, with a
+   maintainer-comment source anchored to its parent work item. If any lane has
+   no public GitHub surface, use a durable plan/backend destination authorized
+   for all lanes or split the trust boundaries into separate runs. These fields
+   do not belong in the human prompt. The launcher binds each GitHub selection
+   to the successful security-preflight source URL, `body` field, and SHA-256
+   snapshot and writes its selection timestamp plus `Prompt digest at
+   selection`, then records the
    run-level prompt-creation timestamp after rendering. Immediately before each
    dispatch it re-fetches that lane's source and directly appends `Launched at`
    plus `Prompt digest at launch`. If the selection and launch digests differ,
    that dispatch stops until the changed source is deliberately reselected as a
-   new run and the security preflight is rerun. The Batch Plan or its exact
-   durable reference gives each worker that destination, `run_id`, lane launch
-   digest, and existing immutable replay identity (`lane_id`, dispatcher,
-   `instance_id`, and launch token). The worker opens the destination, resolves
-   the exactly matching `run_id` and replay identity, re-fetches the source, and
-   verifies both identity and digest before it interprets the source or appends its start and
-   observations; a mismatch stops work and is recorded.
+   new run and the security preflight is rerun. Use the existing handoff
+   envelope outside the frozen Batch Plan to give each worker that destination,
+   `run_id`, `batch_plan_binding`, lane launch digest, and existing immutable
+   replay identity (`lane_id`, dispatcher, `instance_id`, and launch token).
+   Bind that envelope to the same `run_id`, `batch_plan_binding`, and replay
+   identity; do not add the launch digest to the frozen plan or change its
+   binding. The worker opens the destination, resolves
+   the exactly matching `run_id` and replay identity, reverifies the plan
+   binding, re-fetches the source, and verifies identity and digest before it
+   interprets the source or returns its start observations. The sole
+   coordinator writer serializes or compare-and-swaps those observations into
+   the collapsed record; workers never race GitHub read-modify-write updates. A
+   mismatch stops work and is recorded.
    The launcher records directional model
    and Agent Workflows observations at prompt creation and worker start, using
    `UNKNOWN` field by field without inference, and appends later workflow
@@ -388,7 +401,9 @@ omit the queue summary and note that queue state is unavailable.
    Do not launch workers yet.
 9. When the user says to run it, use `$pr-batch` with the fenced goal prompt
    and the complete Batch Plan for that coordinator group or an exact durable
-   plan-state reference it can resolve before preflight or dispatch. A
+   plan-state reference it can resolve before preflight or dispatch, plus the
+   exact `batch_plan_binding` from the Launcher Run Record. Reverify that
+   immutable binding before preflight, every dispatch, and worker start. A
    multi-target group remains one coordinator launch with one target per worker
    lane; the plan or reference preserves its complete scope.
    If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`

@@ -407,6 +407,11 @@ module HostTaskLaunch
       %w[timestamps selected_at], %w[timestamps prompt_created_at]
     ]
     immutable_paths.each { |path| raise ContractError unless dig_path(existing, path) == dig_path(evidence, path) }
+    if existing.dig("prompt_source", "kind") == "maintainer-comment"
+      %w[author author_association].each do |key|
+        raise ContractError unless existing.dig("prompt_source", key) == evidence.dig("prompt_source", key)
+      end
+    end
     validate_launch_refresh!(existing, evidence)
     validate_worker_start_refresh!(existing, evidence)
     old_later = existing.dig("workflow_versions", "later_observations")

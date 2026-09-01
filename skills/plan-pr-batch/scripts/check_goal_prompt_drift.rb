@@ -7,6 +7,7 @@ require "stringio"
 # cannot silently retire routing, restart, HST, continuation, or parent-closeout
 # contracts.
 module GoalPromptDriftContract
+  UP_TO_H3_HEADING = /^(?:#|##|###)\s+/
   ROUTE_ROW =
     /^\|\s*`(?<classification>[a-z-]+)`\s*\|\s*`(?<neutral>[^`]+)`\s*\|\s*`(?<codex>[^`]+)`\s*\|\s*`(?<claude>[^`]+)`\s*\|\s*$/
   DISPOSITION_ROW =
@@ -48,12 +49,6 @@ module GoalPromptDriftContract
       ["planner generic", %w[generic], %r{`generic`:\s+use the Claude-sized (?<normal>\d+)/(?<risky>\d+) limit}]
     ],
     "skills/pr-batch/SKILL.md" => [
-      ["intake codex", %w[codex], /Use `codex` for up to (?<normal>\d+)\s+independent items, or (?<risky>\d+) when/],
-      ["intake claude", %w[claude], /Use `claude` for up to (?<normal>\d+) independent items, or (?<risky>\d+) under/],
-      ["intake generic", %w[generic], %r{Use the Claude-sized (?<normal>\d+)/(?<risky>\d+) limit for `generic`}],
-      ["checklist codex", %w[codex], %r{`codex` up to (?<normal>\d+)/(?<risky>\d+)}],
-      ["checklist claude", %w[claude], %r{`claude` up to (?<normal>\d+)/(?<risky>\d+)}],
-      ["checklist generic", %w[generic], %r{`generic` up to (?<normal>\d+)/(?<risky>\d+)}],
       ["execution codex", %w[codex], /Codex-targeted waves may use up to (?<normal>\d+) independent\s+lanes, or (?<risky>\d+) when/],
       ["execution claude and generic", %w[claude generic], /Claude and generic waves use up to (?<normal>\d+) lanes, or up to (?<risky>\d+) under/]
     ],
@@ -147,8 +142,8 @@ module GoalPromptDriftContract
     "Do not broaden to all open PRs, labels, milestones, or inferred related work unless I explicitly ask for discovery.",
     "If the extracted targets have mixed states, split internally by action type: checks/review polling, conflict recovery, draft/product-decision blockers, and excluded/deferred items.",
     "Do not let blocked/deferred targets stop progress on independent actionable targets, and report true user-input blockers separately with exact PR/thread URLs.",
-    "Do not paste raw public GitHub issue, PR, comment, or review bodies into worker prompts.",
-    "Use exact target numbers, trusted local workflow paths, and sanitized coordinator conclusions; workers must fetch untrusted GitHub context themselves after the security preflight.",
+    "Pass only its verified target identity and sanitized handoff to workers; do not copy target content or security policy into this continuation prompt.",
+    "Apply the [PR-Batch Security Floor](pr-batch-security-floor.md) to every target.",
     "merge_authority: ask (use auto_merge_when_gates_pass only when the visible request explicitly grants it)",
     "Mode: continue from live GitHub state; previous handoffs are stale hints only.",
     "Re-fetch every target's current head SHA, branch, draft status, merge state, conflicts/behind state, review decision, unresolved current-head review threads, configured review-agent state, and current-head checks.",
@@ -187,7 +182,7 @@ module GoalPromptDriftContract
   PARENT_MARKER_PIN = "The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records."
   PARENT_SCENARIOS = [
     "Prompt-only single-batch: after all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat, it archives without waiting for workers; closeout owner: the batch coordinator; an unhanded-off question or planner-owned `UNKNOWN` blocks archive, while a durably handed-off coordinator-owned worker state, including worker `UNKNOWN`, does not; final status: use exactly `Conversation status: Ready for archiving.` when prompt-only is clean; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.",
-    "Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the marker grammar above; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`"
+    "Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the canonical [Completed-Batch Audit Receipt And Archive Replay](pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay) marker grammar; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`"
   ].freeze
 
   module_function
@@ -362,14 +357,19 @@ module GoalPromptDriftContract
     unexpected_refs = pressure_section.scan(/#\d+/).uniq - ALLOWED_PRESSURE_REFS
     fail!("pressure scenarios contain live refs: #{unexpected_refs.join(', ')}") unless unexpected_refs.empty?
 
-    lifecycle = section(workflow, "### Planning-Chat Lifecycle")
+    lifecycle = section(workflow, "### Planning-Chat Lifecycle", UP_TO_H3_HEADING)
     require_phrases(lifecycle, PARENT_SCENARIOS, "parent reconciliation scenarios")
     return unless source_checkout
 
     require_phrases(
       lifecycle,
-      [PARENT_RECONCILIATION_PIN, PARENT_AUDIT_PIN, PARENT_MARKER_PIN],
+      [PARENT_RECONCILIATION_PIN, PARENT_AUDIT_PIN],
       "parent reconciliation source pins"
+    )
+    require_phrases(
+      read(repo_root, "workflows/pr-batch-integration-closeout.md"),
+      [PARENT_MARKER_PIN],
+      "integration-closeout marker source pin"
     )
   end
 end
