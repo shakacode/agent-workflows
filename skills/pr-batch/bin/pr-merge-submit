@@ -405,6 +405,7 @@ module PrMergeSubmit
       unless receipt["freshness"] == expected_freshness
         raise Error, "merge-assurance receipt freshness contract is malformed"
       end
+
       receipt
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "merge-assurance receipt is unavailable: #{e.message}"
