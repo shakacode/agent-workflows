@@ -1133,6 +1133,52 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "configured-review-cancelled", result.dig("blockers", 0, "code")
   end
 
+  def test_replay_rejects_a_tampered_fallback_override_projection
+    fallback_policy = policy
+    fallback_policy["fallback"] = {
+      "mode" => "named_attested_check",
+      "triggers" => ["rate_limited"],
+      "reviewer" => {
+        "id" => "codex-fallback",
+        "check_name" => "codex-review",
+        "producer" => trusted_producer.slice("app_slug", "workflow_path", "event"),
+        "artifact" => {
+          "actors" => ["codex-reviewer"],
+          "kinds" => ["pull_request_review"]
+        }
+      }
+    }
+    live = live_snapshot(
+      "checks" => [
+        check(conclusion: "failure", output: "HTTP 429 rate limit exceeded"),
+        check(name: "codex-review")
+      ],
+      "artifacts" => [artifact(actor: "codex-reviewer")]
+    )
+    receipt = ConfiguredReviewGate.evaluate(
+      policy: fallback_policy,
+      policy_source: JSON.generate(fallback_policy),
+      snapshot: live,
+      settled: true,
+      now: NOW,
+      trusted_live: true
+    ).fetch("receipt")
+    receipt.dig("policy", "override")["reviewer_id"] = "forged-reviewer"
+
+    result = ConfiguredReviewGate.replay(
+      receipt:,
+      policy: fallback_policy,
+      policy_source: JSON.generate(fallback_policy),
+      snapshot: live,
+      settled: true,
+      now: NOW,
+      trusted_live: true
+    )
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_equal "configured-review-receipt-projection-mismatch", result.dig("blockers", 0, "code")
+  end
+
   def test_replay_accepts_only_an_unchanged_live_exact_head_snapshot
     initial = live_snapshot("checks" => [check], "artifacts" => [artifact])
     receipt = ConfiguredReviewGate.evaluate(

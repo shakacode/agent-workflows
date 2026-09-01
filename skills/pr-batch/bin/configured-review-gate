@@ -701,6 +701,9 @@ module ConfiguredReviewGate
 
     current = evaluate(policy:, policy_source:, snapshot:, settled:, now:, trusted_live:)
     return current unless current["verdict"] == "READY"
+    unless receipt.dig("policy", "override") == current.dig("receipt", "policy", "override")
+      return replay_blocked("UNKNOWN", "configured-review-receipt-projection-mismatch")
+    end
     unless receipt.dig("artifact_settlement", "snapshot_digest") ==
            semantic_snapshot_digest(comparable_snapshot)
       return replay_blocked("NOT_READY", "configured-review-receipt-artifact-snapshot-moved")
