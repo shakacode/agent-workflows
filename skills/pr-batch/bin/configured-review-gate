@@ -325,7 +325,8 @@ module ConfiguredReviewGate
         complete = false if comments_connection.dig("pageInfo", "hasNextPage") == true
         comments = Array(comments_connection["nodes"]).map do |comment|
           marker = @policy.is_a?(Hash) ? @policy.dig("thread_disposition", "marker") : nil
-          marker_present = marker.is_a?(String) && ConfiguredReviewGate.disposition_body?(comment["body"], marker)
+          marker_value = marker.is_a?(String) ? ConfiguredReviewGate.disposition_value(comment["body"], marker) : nil
+          marker_present = !marker_value.nil?
           authorization = marker_present ? collaborator_authorization(comment.dig("author", "login")) : nil
           disposition = marker_present && authorization["trusted"] == true
           {
@@ -334,6 +335,7 @@ module ConfiguredReviewGate
             "association" => comment["authorAssociation"],
             "body_digest" => "sha256:#{Digest::SHA256.hexdigest(comment['body'].to_s)}",
             "disposition" => disposition,
+            "disposition_value" => disposition ? marker_value : nil,
             "authorization" => authorization,
             "created_at" => comment["createdAt"]
           }
@@ -1145,15 +1147,32 @@ module ConfiguredReviewGate
   end
 
   def explicitly_disposed_thread?(thread, marker)
-    Array(thread["comments"])[1..].to_a.any? do |comment|
-      comment.dig("authorization", "trusted") == true &&
-        (comment["disposition"] == true || disposition_body?(comment["body"], marker))
-    end
+    replies = Array(thread["comments"])[1..].to_a
+    return true if replies.any? { |comment| trusted_disposition_value(comment, marker) == "waived" }
+
+    %w[fixed not-actionable].include?(trusted_disposition_value(replies.last, marker))
+  end
+
+  def trusted_disposition_value(comment, marker)
+    return unless comment.is_a?(Hash) && comment.dig("authorization", "trusted") == true
+
+    recorded = comment["disposition_value"]
+    return recorded if comment["disposition"] == true && DISPOSITION_VALUES.include?(recorded)
+
+    disposition_value(comment["body"], marker)
   end
 
   def disposition_body?(body, marker)
-    pattern = /\A#{Regexp.escape(marker)}\s*(?:#{DISPOSITION_VALUES.map { |value| Regexp.escape(value) }.join('|')})\z/i
-    body.to_s.lines.any? { |line| line.strip.match?(pattern) }
+    !disposition_value(body, marker).nil?
+  end
+
+  def disposition_value(body, marker)
+    pattern = /\A#{Regexp.escape(marker)}\s*(#{DISPOSITION_VALUES.map { |value| Regexp.escape(value) }.join('|')})\z/i
+    values = body.to_s.lines.filter_map do |line|
+      match = line.strip.match(pattern)
+      match[1].downcase if match
+    end
+    values.one? ? values.first : nil
   end
 
   def timestamp_at_or_after?(candidate, floor)

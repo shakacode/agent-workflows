@@ -780,9 +780,11 @@ class ConfiguredReviewGateTest < Minitest::Test
     collected_comments = client.collect.dig("threads", 0, "comments")
 
     assert_equal true, collected_comments[1].fetch("disposition")
+    assert_equal "fixed", collected_comments[1].fetch("disposition_value")
     assert_equal true, collected_comments[1].dig("authorization", "trusted")
     assert_equal "maintain", collected_comments[1].dig("authorization", "role_name")
     assert_equal false, collected_comments[2].fetch("disposition")
+    assert_nil collected_comments[2].fetch("disposition_value")
     assert_equal false, collected_comments[2].dig("authorization", "trusted")
   end
 
@@ -1017,7 +1019,10 @@ class ConfiguredReviewGateTest < Minitest::Test
 
     assert_equal "READY", result.fetch("verdict")
 
-    normalized = disposition.reject { |key, _value| key == "body" }.merge("disposition" => true)
+    normalized = disposition.reject { |key, _value| key == "body" }.merge(
+      "disposition" => true,
+      "disposition_value" => "fixed"
+    )
     live_result = ConfiguredReviewGate.evaluate(
       policy: policy,
       policy_source: JSON.generate(policy),
@@ -1031,6 +1036,44 @@ class ConfiguredReviewGateTest < Minitest::Test
     )
 
     assert_equal "READY", live_result.fetch("verdict")
+  end
+
+  def test_later_thread_feedback_invalidates_non_waiver_dispositions
+    cases = {
+      "fixed" => "NOT_READY",
+      "not-actionable" => "NOT_READY",
+      "waived" => "READY"
+    }
+    cases.each do |value, expected_verdict|
+      disposition = {
+        "id" => "reply-1",
+        "actor" => "maintainer",
+        "association" => "MEMBER",
+        "authorization" => { "permission" => "write", "role_name" => "write", "trusted" => true },
+        "body" => "configured-review-disposition: #{value}",
+        "created_at" => "2026-08-25T11:59:20Z"
+      }
+      later_feedback = {
+        "id" => "reply-2",
+        "actor" => "claude",
+        "association" => "CONTRIBUTOR",
+        "body" => "The issue remains unresolved.",
+        "created_at" => "2026-08-25T11:59:30Z"
+      }
+      result = ConfiguredReviewGate.evaluate(
+        policy: policy,
+        policy_source: JSON.generate(policy),
+        snapshot: snapshot(
+          "checks" => [check],
+          "artifacts" => [artifact(kind: "review_thread")],
+          "threads" => [thread(id: "T-#{value}", comments: [disposition, later_feedback])]
+        ),
+        settled: true,
+        now: NOW
+      )
+
+      assert_equal expected_verdict, result.fetch("verdict"), value
+    end
   end
 
   def test_collaborator_association_without_write_permission_cannot_dispose_a_thread

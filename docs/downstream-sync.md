@@ -125,6 +125,9 @@ check summary to `configured-review-provider-failure: rate_limited`,
 `configured-review-provider-failure: quota_exhausted`, or
 `configured-review-provider-failure: capacity_unavailable`. Free-form check
 output never authorizes a fallback.
+For unresolved threads, `fixed` and `not-actionable` dispositions qualify only
+when the trusted marker is the latest reply; later feedback invalidates them.
+An explicit trusted `waived` disposition remains durable.
 
 Repo-local trust lives in `.agents/trusted-github-actors.yml` and follows the
 same resolution order as `pr-security-preflight`: `--trust-config`, repo-local
