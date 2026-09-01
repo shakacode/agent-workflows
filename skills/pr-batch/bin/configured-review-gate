@@ -599,7 +599,10 @@ module ConfiguredReviewGate
       fallback_blockers = check_blockers_for_reviewers([fallback_reviewer], snapshot)
       if fallback_blockers.empty?
         blockers = []
-        effective_reviewers = [fallback_reviewer]
+        failed_reviewer_ids = primary_blockers.filter_map { |item| item["reviewer"] }.uniq
+        effective_reviewers = policy.fetch("reviewers").reject do |reviewer|
+          failed_reviewer_ids.include?(reviewer.fetch("id"))
+        end + [fallback_reviewer]
         override = {
           "mode" => "named_attested_check",
           "reviewer_id" => fallback_reviewer.fetch("id"),

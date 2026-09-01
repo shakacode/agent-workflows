@@ -1064,6 +1064,48 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal ["configured-review-rate-limited"], override.fetch("primary_blocker_codes")
   end
 
+  def test_fallback_preserves_successful_primary_reviewer_artifact_blockers
+    fallback_policy = policy
+    secondary_reviewer = Marshal.load(Marshal.dump(fallback_policy.fetch("reviewers").first))
+    secondary_reviewer.merge!("id" => "secondary", "check_name" => "secondary-review")
+    secondary_reviewer.fetch("artifact")["actors"] = ["secondary-reviewer"]
+    fallback_policy.fetch("reviewers") << secondary_reviewer
+    fallback_policy["fallback"] = {
+      "mode" => "named_attested_check",
+      "triggers" => ["rate_limited"],
+      "reviewer" => {
+        "id" => "codex-fallback",
+        "check_name" => "codex-review",
+        "producer" => trusted_producer.slice("app_slug", "workflow_path", "event"),
+        "artifact" => {
+          "actors" => ["codex-reviewer"],
+          "kinds" => ["pull_request_review"]
+        }
+      }
+    }
+    result = ConfiguredReviewGate.evaluate(
+      policy: fallback_policy,
+      policy_source: JSON.generate(fallback_policy),
+      snapshot: snapshot(
+        "checks" => [
+          check,
+          check(name: "secondary-review", conclusion: "failure", output: "HTTP 429 rate limit exceeded"),
+          check(name: "codex-review")
+        ],
+        "artifacts" => [
+          artifact(actor: "claude", state: "CHANGES_REQUESTED"),
+          artifact(id: "2", actor: "codex-reviewer")
+        ]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code")
+    assert_equal "claude", result.dig("blockers", 0, "reviewer")
+  end
+
   def test_fallback_does_not_override_an_unconfigured_failure_trigger
     fallback_policy = policy
     fallback_policy["fallback"] = {
