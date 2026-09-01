@@ -5,6 +5,7 @@ require "json"
 require "date"
 require "digest"
 require "uri"
+require "yaml"
 
 module BatchPlanPreflight
   BACKENDS = %w[codex claude generic].freeze
@@ -149,6 +150,8 @@ module BatchPlanPreflight
     plan_violations = validate_plan(input["plan"])
     violations = plan_violations.dup
     advisories = []
+    companion_config_violations, companion_conventions = companion_path_conventions(Dir.pwd)
+    violations.concat(companion_config_violations)
     violations.concat(validate_unknown_decisions(input["plan"]))
     plan_violation_codes = plan_violations.map { |item| item["code"] }
     lane_ids_valid = !plan_violation_codes.include?("lane-id-invalid-or-duplicate")
@@ -205,7 +208,11 @@ module BatchPlanPreflight
           expansion_path_reservations
         )
       violations.concat(collision_violations)
-      advisories = collision_advisories
+      advisories = collision_advisories + companion_path_advisories(
+        input["file_touch_map"],
+        effective_maps,
+        companion_conventions
+      )
       if changed_surfaces_valid
         violations.concat(validate_caps(
                             input["plan"]["backend"],
@@ -682,6 +689,146 @@ module BatchPlanPreflight
       end
     end
     effective
+  end
+
+  def companion_path_advisories(declared_maps, effective_maps, conventions, repo_root: Dir.pwd)
+    return [] if conventions.empty?
+
+    declared_maps.flat_map do |lane_id, map|
+      effective_paths = effective_maps.fetch(lane_id).fetch("paths")
+      map.fetch("paths").filter_map do |source_path|
+        conventions.filter_map do |convention|
+          captures = match_companion_source(convention.fetch("source_glob"), source_path)
+          next unless captures
+
+          companion_path = render_companion_path(convention.fetch("companion_glob"), captures)
+          next unless companion_path && File.file?(File.join(repo_root, companion_path))
+          next if effective_paths.include?(companion_path)
+
+          violation(
+            "companion-path-omitted",
+            "$.file_touch_map.#{lane_id}",
+            "Declared path #{source_path} has existing configured companion #{companion_path}; " \
+            "list or reserve the companion before dispatch.",
+            lane_ids: [lane_id]
+          ).merge(
+            "source_path" => source_path,
+            "companion_path" => companion_path
+          )
+        end
+      end.flatten
+    end
+  end
+
+  def companion_path_conventions(repo_root)
+    config_path = File.join(repo_root, ".agents", "agent-workflow.yml")
+    return [[], []] unless File.file?(config_path)
+
+    config = YAML.safe_load(File.read(config_path, encoding: "UTF-8"), aliases: false)
+    return invalid_companion_path_conventions unless config.is_a?(Hash)
+    return [[], []] unless config.key?("companion_path_conventions")
+
+    conventions = config["companion_path_conventions"]
+    return invalid_companion_path_conventions unless conventions.is_a?(Array) &&
+                                                     conventions.all? do |convention|
+                                                       valid_companion_path_convention?(convention)
+                                                     end
+
+    [[], conventions]
+  rescue Psych::Exception
+    invalid_companion_path_conventions
+  end
+
+  def invalid_companion_path_conventions
+    [[violation(
+      "companion-path-conventions-invalid",
+      ".agents/agent-workflow.yml#companion_path_conventions",
+      "Companion path conventions must be a list of exact source_glob and companion_glob pairs " \
+      "with matching **, *, and named placeholder tokens."
+    )], []]
+  end
+
+  def valid_companion_path_convention?(convention)
+    return false unless convention.is_a?(Hash) && convention.keys.sort == %w[companion_glob source_glob]
+
+    source = companion_template_tokens(convention["source_glob"])
+    companion = companion_template_tokens(convention["companion_glob"])
+    source && companion && source == companion
+  end
+
+  def companion_template_tokens(template)
+    return nil unless canonical_repository_relative_path?(template)
+
+    tokens = { "globstars" => 0, "stars" => 0, "named" => [] }
+    template.split("/").each do |segment|
+      case segment
+      when "**"
+        tokens["globstars"] += 1
+      when "*"
+        tokens["stars"] += 1
+      else
+        names = segment.scan(/\{([a-z][a-z0-9_]*)\}/).flatten
+        remainder = segment.gsub(/\{[a-z][a-z0-9_]*\}/, "")
+        return nil if remainder.include?("*") || remainder.match?(/[{}]/)
+
+        tokens["named"].concat(names)
+      end
+    end
+    tokens["named"].sort!
+    tokens if tokens["named"].uniq.length == tokens["named"].length
+  end
+
+  def match_companion_source(source_glob, source_path)
+    companion_source_regexp(source_glob).match(source_path)&.named_captures
+  end
+
+  def companion_source_regexp(source_glob)
+    globstar_index = -1
+    star_index = -1
+    segments = source_glob.split("/").map do |segment|
+      case segment
+      when "**"
+        globstar_index += 1
+        "(?<globstar_#{globstar_index}>.+?)"
+      when "*"
+        star_index += 1
+        "(?<star_#{star_index}>[^/]+)"
+      else
+        companion_source_segment_regexp(segment)
+      end
+    end
+    Regexp.new("\\A#{segments.join('/')}\\z")
+  end
+
+  def companion_source_segment_regexp(segment)
+    cursor = 0
+    expression = segment.to_enum(:scan, /\{([a-z][a-z0-9_]*)\}/).each_with_object(String.new) do |_match, regex|
+      token = Regexp.last_match
+      regex << Regexp.escape(segment[cursor...token.begin(0)])
+      regex << "(?<named_#{token[1]}>[^/]+)"
+      cursor = token.end(0)
+    end
+    expression << Regexp.escape(segment[cursor..])
+  end
+
+  def render_companion_path(companion_glob, captures)
+    globstar_index = 0
+    star_index = 0
+    segments = companion_glob.split("/").flat_map do |segment|
+      if segment == "**"
+        captured = captures.fetch("globstar_#{globstar_index}").split("/")
+        globstar_index += 1
+        captured
+      elsif segment == "*"
+        captured = captures.fetch("star_#{star_index}")
+        star_index += 1
+        [captured]
+      else
+        [segment.gsub(/\{([a-z][a-z0-9_]*)\}/) { captures.fetch("named_#{Regexp.last_match(1)}") }]
+      end
+    end
+    path = segments.join("/")
+    path if canonical_repository_relative_path?(path)
   end
 
   def canonicalize(value)

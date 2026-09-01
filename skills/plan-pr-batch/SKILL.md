@@ -497,6 +497,12 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      requires the exact canonical authority/path shape, and fragments remain
      permitted;
      other source kinds prove durability only and do not invent target identity.
+     When repo policy defines `companion_path_conventions`, resolve each
+     deterministic `source_glob -> companion_glob` pair against declared paths.
+     If the companion exists but the lane neither lists nor actively reserves
+     it, record the nonfatal `companion-path-omitted` advisory in the Batch Plan
+     and compact goal `Scope`. Never add the path automatically. Invalid pairs
+     reject preflight; an absent key preserves existing behavior.
      After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
      A rejected result launches no
      worker; an accepted result permits only its eligible lanes and keeps its
@@ -690,6 +696,7 @@ backend must say so in the declaration.
   - Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch
 - Excluded or deferred:
 - File-touch map and path evidence:
+- Companion-path advisories: each `source -> companion` omission, or `none`.
 - Dependencies and sequencing:
 - Subagent split:
 - Planning-pass model/effort assessment: classification, recommended route,
@@ -831,7 +838,7 @@ Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;aut
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
 Batch QA Lane:<owner/scope+evidence|none+rationale>
-Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
+Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/changes/rename/companions/collisions/owner/serial/UNKNOWN
 Items:
 - Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
   Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>

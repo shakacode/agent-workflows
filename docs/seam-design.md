@@ -101,6 +101,29 @@ script means that capability is n/a in that repo.
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
 
+### Companion Path Conventions
+
+`companion_path_conventions` is an optional repository policy list. It maps a
+source template to a mechanically implied companion template:
+
+```yaml
+companion_path_conventions:
+  - source_glob: react_on_rails/lib/**/{name}.rb
+    companion_glob: react_on_rails/sig/**/{name}.rbs
+```
+
+Templates are canonical repository-relative paths. A complete segment `**`
+captures one or more path segments, `*` captures one segment, and a named
+placeholder such as `{name}` captures text within one segment. Each pair must
+use the same `**`, `*`, and named placeholder tokens so the companion path is
+deterministic.
+
+When a planned source path matches and the resolved companion exists,
+`batch-plan-preflight` emits `companion-path-omitted` unless that lane lists or
+actively reserves the companion. The advisory does not add the path or change
+collision, reservation, or eligibility results. An invalid configured pair
+rejects preflight instead of being ignored.
+
 ### Writing Style
 
 `writing_style` is an optional scalar in the repository policy. It accepts

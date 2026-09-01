@@ -647,6 +647,12 @@ repository and number through `issue://OWNER/REPO/N` or an exact lowercase-host
 query, HTTPS requires port 443, `issue://` requires the exact canonical
 authority/path shape, and fragments remain permitted; other source kinds prove
 durability only and do not invent target identity.
+When repo policy defines `companion_path_conventions`, the preflight resolves
+each deterministic `source_glob -> companion_glob` pair against declared paths.
+If the companion exists but the lane neither lists nor actively reserves it,
+record the nonfatal `companion-path-omitted` advisory in the Batch Plan
+file-touch evidence and compact goal `Scope`. Never add the path automatically.
+Invalid pairs reject preflight; an absent key preserves existing behavior.
 After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
 Supply separate ordinary durable
 `lane_lifecycle_states`; inline completion, duplicates, unknown identities, and
@@ -1099,7 +1105,7 @@ Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;aut
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
 Batch QA Lane:<owner/scope+evidence|none+rationale>
-Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
+Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/changes/rename/companions/collisions/owner/serial/UNKNOWN
 Items:
 - Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
   Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
