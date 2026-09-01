@@ -366,6 +366,7 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "verify-review", verification.fetch("id")
     assert_includes verification.fetch("run"), 'echo "completed=true" >> "$GITHUB_OUTPUT"'
     assert_equal "steps.verify-review.outputs.completed == 'true'", publisher.fetch("if")
+    assert_equal "${{ steps.claude-review.outputs.github_token }}", publisher.dig("env", "GH_TOKEN")
     assert_equal "${{ github.event.pull_request.head.sha }}", publisher.dig("env", "EXPECTED_HEAD_SHA")
     refute_includes publisher.fetch("run"), "${{"
     assert_includes publisher.fetch("run"), "repos/${REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}/reviews"
@@ -1409,6 +1410,39 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "READY", result.fetch("verdict")
     assert_equal [30], sleeps
     assert_equal true, result.dig("receipt", "mutation_eligible")
+  end
+
+  def test_live_evaluator_returns_unknown_for_malformed_policy_shape
+    cases = {
+      "missing fallback" => ->(candidate) { candidate.delete("fallback") },
+      "missing artifact settlement" => ->(candidate) { candidate.delete("artifact_settlement") }
+    }
+
+    cases.each do |label, mutate|
+      malformed_policy = policy
+      mutate.call(malformed_policy)
+      current = NOW
+      sleeps = []
+      live = live_snapshot("checks" => [check], "artifacts" => [artifact])
+      result = ConfiguredReviewGate::LiveEvaluator.new(
+        client: FakeClient.new([live, Marshal.load(Marshal.dump(live))]),
+        policy: malformed_policy,
+        policy_source: JSON.generate(malformed_policy),
+        expected_base_sha: BASE_SHA,
+        wait_seconds: 60,
+        poll_seconds: 30,
+        clock: -> { current },
+        sleeper: lambda { |seconds|
+          sleeps << seconds
+          current += seconds
+        }
+      ).run
+
+      assert_equal "UNKNOWN", result.fetch("verdict"), label
+      assert_equal "configured-review-policy-invalid", result.dig("blockers", 0, "code"), label
+      assert_includes result.fetch("diagnostic"), "review_gate policy is not executable", label
+      assert_empty sleeps, label
+    end
   end
 
   def test_live_evaluator_keeps_polling_stable_non_ready_evidence_until_ready

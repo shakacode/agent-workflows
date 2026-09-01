@@ -110,7 +110,7 @@ jobs:
       - name: Publish exact-head review artifact
         if: steps.verify-review.outputs.completed == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.claude-review.outputs.github_token }}
           REPOSITORY: ${{ github.repository }}
           PULL_REQUEST_NUMBER: ${{ github.event.pull_request.number }}
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}

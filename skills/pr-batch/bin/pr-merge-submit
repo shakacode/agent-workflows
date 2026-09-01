@@ -779,7 +779,7 @@ module PrMergeSubmit
         if mode == "direct"
           raise Error, direct_queue_configuration_error
         end
-        return existing_queue_result(pull_request, options) if exact_queue?(pull_request, options)
+        return verified_existing_queue_result(pull_request, options) if exact_queue?(pull_request, options)
 
         raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof"
       end
@@ -949,7 +949,7 @@ module PrMergeSubmit
       validate_receipt_live_bindings!(refreshed, options)
       validate_pr!(refreshed, options)
       if refreshed["isInMergeQueue"] == true
-        return existing_queue_result(refreshed, options) if exact_queue?(refreshed, options)
+        return verified_existing_queue_result(refreshed, options) if exact_queue?(refreshed, options)
 
         raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof before guarded-direct submission"
       end
@@ -1282,13 +1282,18 @@ module PrMergeSubmit
       queue_result(pull_request, entry, options, reconciled:)
     end
 
+    def verified_existing_queue_result(pull_request, options)
+      replay_configured_review_gate!(options)
+      existing_queue_result(pull_request, options)
+    end
+
     def enqueue_result(pull_request, options, live_rechecked: false)
       unless live_rechecked || @merge_submission.fetch("mode") != "merge_queue_or_guarded_direct"
         refreshed = fetch_pr(options)
         validate_receipt_live_bindings!(refreshed, options)
         validate_pr!(refreshed, options)
         if refreshed["isInMergeQueue"] == true
-          return existing_queue_result(refreshed, options) if exact_queue?(refreshed, options)
+          return verified_existing_queue_result(refreshed, options) if exact_queue?(refreshed, options)
 
           raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof before enqueue"
         end
@@ -1506,7 +1511,7 @@ module PrMergeSubmit
         client:, policy:, policy_source:,
         expected_base_sha: base_sha,
         expected_head_sha: options.fetch(:expected_head),
-        wait_seconds: 900,
+        wait_seconds: configured_review_replay_wait_seconds(receipt),
         poll_seconds: 10
       ).run
       return settled_result unless settled_result["verdict"] == "READY"
@@ -1516,6 +1521,19 @@ module PrMergeSubmit
         snapshot: settled_result.fetch("receipt").fetch("evidence"),
         settled: true, trusted_live: true
       )
+    end
+
+    def configured_review_replay_wait_seconds(configured_review_receipt, now = Time.now.utc)
+      configured_review_issued_at = Time.iso8601(configured_review_receipt.fetch("issued_at").to_s)
+      merge_assurance_issued_at = Time.iso8601(@merge_assurance_receipt.fetch("issued_at").to_s)
+      remaining = [
+        ConfiguredReviewGate::MAX_RECEIPT_AGE_SECONDS - (now - configured_review_issued_at),
+        MergeAssurance::MAX_EVIDENCE_AGE_SECONDS - (now - merge_assurance_issued_at),
+        120
+      ].min
+      [remaining.floor, 0].max
+    rescue ArgumentError, KeyError, TypeError
+      raise Error, "configured review replay freshness budget is unavailable"
     end
 
     def valid_merge_commit_oid?(oid)

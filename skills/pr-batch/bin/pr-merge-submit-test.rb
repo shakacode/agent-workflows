@@ -1000,8 +1000,26 @@ class PrMergeSubmitTest < Minitest::Test
     payload = JSON.parse(result.fetch(:stdout))
     assert_equal "merge_queue", payload.fetch("submission")
     assert_equal "MQE_1", payload.dig("merge_queue_entry", "id")
+    assert_equal 1, log.lines.count("configured-review-replay\n")
     refute_includes log, "enqueuePullRequest"
     refute_includes log, "mergePullRequest"
+  end
+
+  def test_exact_queue_races_replay_configured_review_before_returning_success
+    {
+      "guarded-direct refresh" => ["guard_becomes_queued", guarded_direct_policy],
+      "pre-enqueue refresh" => ["queue_guarded_becomes_queued", guarded_direct_policy]
+    }.each do |label, (mode, policy)|
+      result, log = run_cli(mode:, merge_submission: policy, review_gate: structured_review_gate)
+
+      assert result.fetch(:status).success?, "#{label}: #{result.fetch(:stderr)}"
+      payload = JSON.parse(result.fetch(:stdout))
+      assert_equal "merge_queue", payload.fetch("submission"), label
+      assert_equal "MQE_1", payload.dig("merge_queue_entry", "id"), label
+      assert_equal 1, log.lines.count("configured-review-replay\n"), label
+      refute_includes log, "enqueuePullRequest", label
+      refute_includes log, "mergePullRequest", label
+    end
   end
 
   def test_initial_queue_membership_with_a_merge_commit_is_not_exact_queue_proof
@@ -1501,6 +1519,41 @@ class PrMergeSubmitTest < Minitest::Test
     assert_raises(PrMergeSubmit::Error) do
       runner.send(:validate_receipt_freshness!, { "issued_at" => (now + 30.001).iso8601(3) }, now)
     end
+  end
+
+  def test_configured_review_replay_wait_is_bounded_by_both_receipt_freshness_budgets
+    runner = PrMergeSubmit::Runner.new
+    now = Time.iso8601("2026-07-30T12:00:00Z")
+    runner.instance_variable_set(
+      :@merge_assurance_receipt,
+      { "issued_at" => (now - 10).iso8601 }
+    )
+
+    assert_equal 120, runner.send(
+      :configured_review_replay_wait_seconds,
+      { "issued_at" => (now - 10).iso8601 },
+      now
+    )
+    assert_equal 5, runner.send(
+      :configured_review_replay_wait_seconds,
+      { "issued_at" => (now - 295).iso8601 },
+      now
+    )
+
+    runner.instance_variable_set(
+      :@merge_assurance_receipt,
+      { "issued_at" => (now - 298).iso8601 }
+    )
+    assert_equal 2, runner.send(
+      :configured_review_replay_wait_seconds,
+      { "issued_at" => (now - 20).iso8601 },
+      now
+    )
+    assert_equal 0, runner.send(
+      :configured_review_replay_wait_seconds,
+      { "issued_at" => (now - 301).iso8601 },
+      now
+    )
   end
 
   def test_live_base_sha_mismatch_stops_before_any_mutation
@@ -2467,7 +2520,8 @@ class PrMergeSubmitTest < Minitest::Test
         current_mode = #{mode.inspect}
         guard_called = File.exist?(ENV.fetch("PR_TEST_GUARD_MARKER"))
         queue_enabled = case current_mode
-                        when "queue", "queue_guarded", "queue_fast_merged", "queue_fast_merged_base_advanced",
+                        when "queue", "queue_guarded", "queue_guarded_becomes_queued",
+                             "queue_fast_merged", "queue_fast_merged_base_advanced",
                              "queue_missing_entry", "already_queued", "already_queued_base_advanced",
                              "already_queued_with_commit",
                              "enqueue_transport_queued", "enqueue_transport_merged",
@@ -2482,7 +2536,7 @@ class PrMergeSubmitTest < Minitest::Test
                              "queue_post_queued_with_commit",
                              "enqueue_non_object_response_queued", "queue_base_race",
                              "queue_entry_replaced", "queue_entry_replaced_same_target" then true
-                        when "direct_queue_race" then query_count.positive?
+                        when "direct_queue_race", "guard_becomes_queued" then query_count.positive?
                         when "queue_flip_disabled" then query_count.zero?
                         when "direct_graphql_error_queue_enabled" then query_count >= 2
                         else false
@@ -2500,6 +2554,8 @@ class PrMergeSubmitTest < Minitest::Test
                       "queue_post_queued_with_commit" then query_count.positive?
                  when "queue_guarded"
                    File.read(ENV.fetch("GH_LOG")).include?("enqueuePullRequest")
+                 when "guard_becomes_queued", "queue_guarded_becomes_queued"
+                   query_count.positive?
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
                  when "direct_graphql_error_in_queue" then query_count >= 2

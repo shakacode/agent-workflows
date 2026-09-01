@@ -431,6 +431,16 @@ module ConfiguredReviewGate
     end
 
     def run
+      unless @policy == "n/a"
+        begin
+          ConfiguredReviewGate.validate_policy!(@policy)
+        rescue ArgumentError => e
+          return ConfiguredReviewGate.replay_blocked(
+            "UNKNOWN", "configured-review-policy-invalid"
+          ).merge("diagnostic" => e.message)
+        end
+      end
+
       started_at = @clock.call
       baseline_digest = nil
       baseline_at = nil
@@ -814,10 +824,88 @@ module ConfiguredReviewGate
   end
 
   def validate_policy!(policy)
-    unless policy.is_a?(Hash) && policy["version"] == VERSION && policy["reviewers"].is_a?(Array) &&
-           !policy["reviewers"].empty?
-      raise ArgumentError, "review_gate policy is not executable"
-    end
+    valid = policy_mapping?(
+      policy,
+      %w[
+        version reviewers require_current_head artifact_settlement thread_disposition
+        failure_policy fallback
+      ]
+    )
+    valid &&= policy["version"] == VERSION
+    valid &&= policy["require_current_head"] == true
+    valid &&= policy["failure_policy"] == "block"
+    valid &&= policy["reviewers"].is_a?(Array)
+    valid &&= !policy["reviewers"].empty?
+    valid &&= policy["reviewers"].all? { |reviewer| valid_policy_reviewer?(reviewer) }
+    valid &&= policy["reviewers"].map { |reviewer| reviewer["id"] }.uniq.length == policy["reviewers"].length
+    valid &&= policy["reviewers"].map { |reviewer| reviewer["check_name"] }.uniq.length ==
+              policy["reviewers"].length
+    valid &&= valid_policy_settlement?(policy["artifact_settlement"])
+    valid &&= valid_policy_thread_disposition?(policy["thread_disposition"])
+    valid &&= valid_policy_fallback?(policy["fallback"])
+
+    raise ArgumentError, "review_gate policy is not executable" unless valid
+  end
+
+  def policy_mapping?(value, keys)
+    value.is_a?(Hash) && value.keys.all? { |key| key.is_a?(String) } && value.keys.sort == keys.sort
+  end
+
+  def valid_policy_single_line?(value)
+    value.is_a?(String) && !value.strip.empty? && !value.match?(/[\0\r\n]/)
+  end
+
+  def valid_policy_reviewer?(reviewer)
+    return false unless policy_mapping?(reviewer, %w[id check_name producer artifact])
+    return false unless reviewer["id"].is_a?(String) && reviewer["id"].match?(/\A[a-z][a-z0-9_-]{0,63}\z/)
+    return false unless valid_policy_single_line?(reviewer["check_name"])
+
+    producer = reviewer["producer"]
+    return false unless policy_mapping?(producer, %w[app_slug workflow_path event])
+    return false unless valid_policy_single_line?(producer["app_slug"]) &&
+                        valid_policy_single_line?(producer["event"])
+    return false unless producer["workflow_path"].is_a?(String) &&
+                        producer["workflow_path"].match?(%r{\A\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml\z})
+
+    artifact = reviewer["artifact"]
+    return false unless artifact.is_a?(Hash) && artifact.keys.all? { |key| key.is_a?(String) }
+    return false unless (artifact.keys - %w[actors kinds completion]).empty? &&
+                        (%w[actors kinds] - artifact.keys).empty?
+    return false unless artifact["actors"].is_a?(Array) && !artifact["actors"].empty? &&
+                        artifact["actors"].all? { |actor| valid_policy_actor?(actor) }
+    return false unless artifact["kinds"].is_a?(Array) && !artifact["kinds"].empty? &&
+                        artifact["kinds"].all? { |kind| %w[pull_request_review review_thread].include?(kind) }
+
+    completion = artifact["completion"]
+    !artifact.key?("completion") ||
+      (policy_mapping?(completion, ["mode"]) && completion["mode"] == "producer_check")
+  end
+
+  def valid_policy_actor?(actor)
+    actor.is_a?(String) && actor.match?(/\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?\z/)
+  end
+
+  def valid_policy_settlement?(settlement)
+    policy_mapping?(settlement, %w[required quiet_period_seconds]) && settlement["required"] == true &&
+      settlement["quiet_period_seconds"].is_a?(Integer) &&
+      settlement["quiet_period_seconds"].between?(1, MAX_RECEIPT_AGE_SECONDS)
+  end
+
+  def valid_policy_thread_disposition?(disposition)
+    policy_mapping?(disposition, %w[required marker]) && disposition["required"] == true &&
+      valid_policy_single_line?(disposition["marker"])
+  end
+
+  def valid_policy_fallback?(fallback)
+    return false unless fallback.is_a?(Hash)
+    return policy_mapping?(fallback, ["mode"]) if fallback["mode"] == "disabled"
+    return false unless policy_mapping?(fallback, %w[mode triggers reviewer]) &&
+                        fallback["mode"] == "named_attested_check"
+
+    triggers = fallback["triggers"]
+    triggers.is_a?(Array) && !triggers.empty? &&
+      triggers.all? { |trigger| BLOCKER_TRIGGER.value?(trigger) } &&
+      valid_policy_reviewer?(fallback["reviewer"])
   end
 
   def check_blockers(policy, snapshot)
