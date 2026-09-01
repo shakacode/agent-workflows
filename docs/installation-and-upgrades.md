@@ -34,24 +34,28 @@ Claude:
 | `claude` | `${CLAUDE_HOME:-$HOME/.claude}` |
 | `auto` | An existing Codex or Claude home, only when exactly one is detectable |
 
-The installer also supplies `agent-workflow-writing-style` and
-[the packaged default guide](writing-style.md). Shared authoring workflows run
-the resolver with the trusted repository root before composing human-facing
+The installer also supplies `agent-workflow-writing-style`,
+[the packaged default guide](writing-style.md), and the opt-in
+[`asd-ste100` adapter](writing-style-asd-ste100.md). Shared authoring workflows
+run the resolver with the trusted repository root before composing human-facing
 prose. Resolution is repo → user-global → portable default, with provenance
 reported as `repo`, `user-global`, or `portable-default`.
 
-`writing_style` is one nonblank relative Markdown path. The repository value in
-`.agents/agent-workflow.yml` resolves beneath the repository root and wins. An
-optional personal fallback in `~/.agents/agent-workflow.yml` resolves beneath
+`writing_style` is either one nonblank relative Markdown path or the exact
+closed-registry preset `asd-ste100`. The repository value in
+`.agents/agent-workflow.yml` resolves beneath the repository root or selects
+the packaged preset, and wins. An optional personal fallback in
+`~/.agents/agent-workflow.yml` resolves beneath
 `~/.agents` and applies only when the repository does not set the key; that
 user-global file contributes no other workflow policy. If neither layer defines
 a valid guide, the resolver uses the packaged default.
 
-Malformed repository config, unsafe or missing paths, and invalid guide files
-block. The same user-global failures are nonblocking: the resolver prints an
-actionable warning and uses the packaged default. Install and upgrade deliver
-the default in copy, symlink, and plugin-companion layouts, but never write the
-user-global config or enable a repository override. See the
+Malformed repository config, unknown presets, unsafe or missing paths, and
+invalid guide files block. The same user-global failures are nonblocking: the
+resolver prints an actionable warning and uses the packaged default. Install
+and upgrade deliver
+the default and preset adapter in copy, symlink, and plugin-companion layouts,
+but never write the user-global config or enable a repository override. See the
 [project writing-style setup](adoption.md#configure-project-writing-style) for
 the copy/paste instructions.
 
@@ -427,6 +431,7 @@ The installer writes:
 - `<target>/docs/agent-workflows-model-routing.md`
 - `<target>/docs/user-facing-coordination.md`
 - `<target>/docs/writing-style.md`
+- `<target>/docs/writing-style-asd-ste100.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflow-writing-style`
