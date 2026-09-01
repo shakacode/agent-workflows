@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "fileutils"
 require "json"
 require "minitest/autorun"
@@ -1608,6 +1609,243 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
       assert status.success?, "#{out}#{err}"
       assert_equal "present", JSON.parse(out).dig("flat", "state")
+    end
+  end
+
+  def write_managed_bin_copy(target, source, contents)
+    fingerprints = {}
+    contents.each do |relative, body|
+      [File.join(target, "bin", relative), File.join(source, "bin", relative)].each do |path|
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, body)
+      end
+      fingerprints[relative] = Digest::SHA256.hexdigest(body)
+    end
+    fingerprints
+  end
+
+  def managed_bin_metadata(target, source, fingerprints, overrides = {})
+    write_metadata(
+      target,
+      {
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => "unknown",
+        "managed_bin_copy_fingerprints" => fingerprints
+      }.merge(overrides)
+    )
+  end
+
+  def check_managed_bin(target, source)
+    out, err, status = run_state(
+      "check", "--host", "codex", "--target", target, "--source", source,
+      "--delivery-mode", "flat", "--json", codex_state: "disabled"
+    )
+    [JSON.parse(out), status, "#{out}#{err}"]
+  end
+
+  def managed_bin_fixture(tmp)
+    source = File.join(tmp, "source")
+    target = File.join(tmp, "codex")
+    FileUtils.mkdir_p(File.join(source, "skills"))
+    FileUtils.mkdir_p(target)
+    fingerprints = write_managed_bin_copy(
+      target,
+      source,
+      "agent-workflows-status" => "status helper\n",
+      "agent_doctor/autonomous_merge_policy.rb" => "policy library\n"
+    )
+    [source, target, fingerprints]
+  end
+
+  def test_unmodified_managed_bin_copies_stay_compatible
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "present", payload.dig("bin", "state")
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_modified_managed_bin_copy_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      tampered = File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb")
+      File.write(tampered, "policy library\n# tampered\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      refute payload.fetch("compatible")
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [tampered], payload.dig("bin", "blocking")
+      assert_includes payload.fetch("reason"), tampered
+      assert_path_exists tampered
+    end
+  end
+
+  def test_modified_managed_bin_helper_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      tampered = File.join(target, "bin/agent-workflows-status")
+      File.write(tampered, "status helper\n# local edit\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [tampered], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_managed_bin_copy_matching_the_current_source_stays_compatible
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      moved = "policy library v2\n"
+      File.write(File.join(source, "bin/agent_doctor/autonomous_merge_policy.rb"), moved)
+      File.write(File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb"), moved)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "present", payload.dig("bin", "state")
+    end
+  end
+
+  def test_missing_managed_bin_copy_does_not_block_reinstallation
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      FileUtils.rm_f(File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb"))
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal ["agent_doctor/autonomous_merge_policy.rb"], payload.dig("bin", "missing")
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_unrecorded_bin_paths_do_not_block
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      File.write(File.join(target, "bin/personal-helper"), "unrelated\n")
+      File.write(File.join(target, "bin/agent_doctor/.agent-workflows-managed"), "marker\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_symlinked_managed_bin_copy_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      replaced = File.join(target, "bin/agent-workflows-status")
+      FileUtils.rm_f(replaced)
+      File.symlink(File.join(source, "bin/agent-workflows-status"), replaced)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [replaced], payload.dig("bin", "blocking")
+      assert_equal File.join(source, "bin/agent-workflows-status"), File.readlink(replaced)
+    end
+  end
+
+  def test_symlinked_managed_bin_directory_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor = File.join(target, "bin/agent_doctor")
+      FileUtils.rm_rf(doctor)
+      File.symlink(File.join(source, "bin/agent_doctor"), doctor)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [doctor], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_non_file_managed_bin_path_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      collision = File.join(target, "bin/agent-workflows-status")
+      FileUtils.rm_f(collision)
+      FileUtils.mkdir_p(collision)
+      File.write(File.join(collision, "sentinel"), "personal\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [collision], payload.dig("bin", "blocking")
+      assert_path_exists File.join(collision, "sentinel")
+    end
+  end
+
+  def test_metadata_without_managed_bin_fingerprints_stays_compatible
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, _fingerprints = managed_bin_fixture(tmp)
+      write_metadata(
+        target,
+        "host" => "codex", "mode" => "copy", "delivery_mode" => "flat",
+        "source" => source, "source_revision" => "unknown"
+      )
+      File.write(File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb"), "edited\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "unrecorded", payload.dig("bin", "state")
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_symlink_mode_metadata_ignores_managed_bin_fingerprints
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints, "mode" => "symlink")
+      File.write(File.join(target, "bin/agent-workflows-status"), "edited\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "unrecorded", payload.dig("bin", "state")
+    end
+  end
+
+  def test_invalid_managed_bin_fingerprints_fail_closed
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      [
+        { "../escape" => "a" * 64 },
+        { "agent_doctor/" => "a" * 64 },
+        { "agent-workflows-status" => "not-a-digest" },
+        { "agent-workflows-status" => 7 },
+        { "/absolute" => "a" * 64 }
+      ].each do |fingerprints|
+        source, target, _recorded = managed_bin_fixture(tmp)
+        managed_bin_metadata(target, source, fingerprints)
+
+        payload, status, output = check_managed_bin(target, source)
+
+        refute status.success?, "#{fingerprints.inspect}: #{output}"
+        assert_equal "unknown", payload.dig("bin", "state"), output
+        assert_includes payload.fetch("reason"), "managed bin copy fingerprints"
+        FileUtils.rm_rf([source, target])
+      end
     end
   end
 

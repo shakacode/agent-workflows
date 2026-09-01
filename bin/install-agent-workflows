@@ -260,6 +260,7 @@ read_installed_metadata_value() {
         managed_skill_copy_fingerprints
         managed_pack_doc_copy_fingerprints
         managed_pack_root_copy_fingerprints
+        managed_bin_copy_fingerprints
       ].any? do |field|
         next false unless metadata.key?(field)
         fingerprints = metadata[field]
@@ -1873,7 +1874,10 @@ prepare_metadata() {
         end
       end
     end
-    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, *pack_docs = ARGV
+    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at,
+      bin_helper_count, *managed_names = ARGV
+    bin_helpers = managed_names.shift(Integer(bin_helper_count))
+    pack_docs = managed_names
     directory_fingerprint = lambda do |root|
       entries = []
       Find.find(root) do |entry|
@@ -1912,6 +1916,32 @@ prepare_metadata() {
                        else
                          {}
                        end
+    bin_fingerprints = if mode == "copy"
+                         entries = {}
+                         bin_helpers.each do |name|
+                           helper = File.join(source, "bin", name)
+                           unless File.file?(helper) && !File.symlink?(helper)
+                             abort "missing pack bin helper while preparing install metadata: #{helper}"
+                           end
+
+                           entries[name] = Digest::SHA256.file(helper).hexdigest
+                         end
+                         doctor_root = File.join(source, "bin", "agent_doctor")
+                         Find.find(doctor_root) do |entry|
+                           next if entry == doctor_root
+
+                           relative = entry.delete_prefix("#{doctor_root}/")
+                           next if File.directory?(entry) && !File.symlink?(entry)
+                           unless File.file?(entry) && !File.symlink?(entry)
+                             abort "unsupported pack doctor entry while preparing install metadata: #{entry}"
+                           end
+
+                           entries["agent_doctor/#{relative}"] = Digest::SHA256.file(entry).hexdigest
+                         end
+                         entries.sort.to_h
+                       else
+                         {}
+                       end
     root_fingerprints = if mode == "copy"
                           name = "THIRD_PARTY-NOTICES.md"
                           root_file = File.join(source, name)
@@ -1935,7 +1965,8 @@ prepare_metadata() {
       "installed_at" => installed_at,
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints,
-      "managed_pack_root_copy_fingerprints" => root_fingerprints
+      "managed_pack_root_copy_fingerprints" => root_fingerprints,
+      "managed_bin_copy_fingerprints" => bin_fingerprints
     }
     serialized_metadata = JSON.pretty_generate(metadata) + "\n"
     abort unless File.const_defined?(:NOFOLLOW)
@@ -1983,7 +2014,7 @@ prepare_metadata() {
         end
       end
     end
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}" 2>/dev/null)" || prepare_status=$?
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${#bin_helpers[@]}" "${bin_helpers[@]}" "${pack_docs[@]}" 2>/dev/null)" || prepare_status=$?
   if [[ "$prepare_status" -ne 0 ]]; then
     echo "METADATA_PREPARE_BLOCKED: could not safely create $metadata_tmp; preserved any path that exists there." >&2
     echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite an unverified path." >&2

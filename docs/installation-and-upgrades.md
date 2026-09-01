@@ -453,16 +453,28 @@ consumer-owned docs under `<target>/docs`.
 The metadata file records host, artifact mode, skill delivery mode, source
 clone, pack version, source revision, branch, remote, and install time. Copy
 installs also record `managed_skill_copy_fingerprints`,
-`managed_pack_doc_copy_fingerprints`, and `managed_pack_root_copy_fingerprints`,
-including every installed `<target>/docs/solutions/*` document and the
-third-party notice. On repeat installation, these fingerprints
+`managed_pack_doc_copy_fingerprints`, `managed_pack_root_copy_fingerprints`, and
+`managed_bin_copy_fingerprints`, including every installed
+`<target>/docs/solutions/*` document, the third-party notice, and every
+executable and runtime file the pack writes below `<target>/bin`, such as
+`<target>/bin/agent_doctor/*`. On repeat installation, these fingerprints
 prove that an installed managed copy has not been edited even when the recorded
 Git object is unavailable; an exact recorded-revision or current-source match is
 the backward-compatible fallback for older metadata. The installer refuses to
 replace a modified, symlinked-to-an-unowned-target, or otherwise ambiguous
 managed copy, including unexpected files nested inside a managed skill. Restore
 the original installed content or move personal content to a distinct path
-before retrying. The status and upgrade helpers use the metadata so they can run
+before retrying.
+
+`managed_bin_copy_fingerprints` keys are paths relative to `<target>/bin`, so
+`agent-workflows-status` reports a modified managed executable or runtime module
+as `CHECK_FAILED` with the offending paths under `bin.blocking` instead of
+`UP_TO_DATE`. A managed bin path that is missing stays non-blocking so the
+installer can restore it, and installs that predate the key keep their previous
+behavior until the next install refreshes the metadata. This delivery-state map
+is separate from the `verified-installed-pack` runtime digest an autonomous
+merge gate verifies; that digest is an expected-identity claim, not an
+install-integrity report. The status and upgrade helpers use the metadata so they can run
 from either the source clone or the installed host.
 
 ## Status Checks

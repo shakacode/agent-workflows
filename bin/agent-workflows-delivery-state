@@ -12,6 +12,7 @@ require_relative "agent_doctor/timeout_budget"
 
 module AgentWorkflowsDeliveryState
   SUPERPOWERS_MARKETPLACES = %w[openai-curated openai-curated-remote superpowers-dev].freeze
+  MANAGED_BIN_COPY_FINGERPRINTS = "managed_bin_copy_fingerprints"
 
   module_function
 
@@ -569,18 +570,120 @@ module AgentWorkflowsDeliveryState
     matches_directory_snapshot?(path, { type: :directory, root: source }, skill_name)
   end
 
-  def recorded_skill_copy_fingerprints(metadata)
+  def recorded_copy_fingerprints(metadata, field)
     return unless metadata&.fetch("mode", nil) == "copy"
 
-    fingerprints = metadata.fetch("managed_skill_copy_fingerprints", nil)
+    fingerprints = metadata.fetch(field, nil)
     return unless fingerprints.is_a?(Hash) && !fingerprints.empty?
+
+    fingerprints
+  end
+
+  def valid_copy_fingerprint_digest?(digest)
+    digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/i)
+  end
+
+  def valid_skill_copy_name?(name)
+    name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
+  end
+
+  # Managed bin entries are recorded as target-relative paths below <target>/bin,
+  # so they allow separators that a skill directory name never carries.
+  def valid_bin_copy_name?(name)
+    return false unless name.is_a?(String) && !name.empty? && !name.start_with?("/") && !name.include?("\0")
+
+    name.split("/", -1).none? { |segment| segment.empty? || segment == "." || segment == ".." }
+  end
+
+  def recorded_skill_copy_fingerprints(metadata)
+    fingerprints = recorded_copy_fingerprints(metadata, "managed_skill_copy_fingerprints")
+    return unless fingerprints
     return unless fingerprints.all? do |name, digest|
-      valid_name = name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
-      valid_digest = digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/i)
-      valid_name && valid_digest
+      valid_skill_copy_name?(name) && valid_copy_fingerprint_digest?(digest)
     end
 
     fingerprints
+  end
+
+  # Returns the recorded map, :unrecorded when this install predates the key or
+  # records no copies, or :invalid when the recorded map cannot be trusted.
+  def recorded_bin_copy_fingerprints(metadata)
+    return :unrecorded unless metadata&.fetch("mode", nil) == "copy"
+    return :unrecorded unless metadata.key?(MANAGED_BIN_COPY_FINGERPRINTS)
+
+    fingerprints = metadata.fetch(MANAGED_BIN_COPY_FINGERPRINTS)
+    return :invalid unless fingerprints.is_a?(Hash)
+    return :unrecorded if fingerprints.empty?
+    return :invalid unless fingerprints.all? do |name, digest|
+      valid_bin_copy_name?(name) && valid_copy_fingerprint_digest?(digest)
+    end
+
+    fingerprints
+  end
+
+  def managed_bin_ancestor_symlink(bin_root, name)
+    current = bin_root
+    name.split("/")[0..-2].each do |segment|
+      current = File.join(current, segment)
+      return current if File.symlink?(current)
+    end
+    nil
+  end
+
+  def managed_bin_copy_owned?(path:, source:, name:, digest:)
+    return false if File.symlink?(path) || !File.file?(path)
+
+    actual = Digest::SHA256.file(path).hexdigest
+    return true if actual == digest.downcase
+
+    # A copy that already matches the current source is what the installer would
+    # write anyway, so it stays owned across a source that moved forward.
+    source_path = File.join(source, "bin", name)
+    File.file?(source_path) && !File.symlink?(source_path) &&
+      Digest::SHA256.file(source_path).hexdigest == actual
+  end
+
+  # Copy installs own every file the pack writes below <target>/bin. Missing
+  # entries stay non-blocking so the installer can restore them; modified,
+  # relinked, and type-changed entries block so no owned byte is overwritten.
+  def managed_bin_copy_state(target:, source:, metadata:)
+    fingerprints = recorded_bin_copy_fingerprints(metadata)
+    if fingerprints == :invalid
+      return {
+        "state" => "unknown", "paths" => [], "missing" => [], "blocking" => [],
+        "reason" => "invalid managed bin copy fingerprints in install metadata"
+      }
+    end
+    return { "state" => "unrecorded", "paths" => [], "missing" => [], "blocking" => [] } if fingerprints == :unrecorded
+
+    bin_root = File.join(target, "bin")
+    present = []
+    missing = []
+    blocking = []
+    fingerprints.sort.each do |name, digest|
+      if (ancestor = managed_bin_ancestor_symlink(bin_root, name))
+        blocking << ancestor
+        next
+      end
+
+      path = File.join(bin_root, name)
+      unless File.symlink?(path) || File.exist?(path)
+        missing << name
+        next
+      end
+
+      present << path
+      blocking << path unless managed_bin_copy_owned?(path:, source:, name:, digest:)
+    end
+
+    state = if blocking.any?
+              "ambiguous"
+            elsif present.empty?
+              "absent"
+            else
+              "present"
+            end
+    { "state" => state, "paths" => present.sort, "missing" => missing.sort, "blocking" => blocking.uniq.sort }
   end
 
   def recorded_skill_copy_fingerprint_matches?(path, metadata, skill_name)
@@ -732,6 +835,15 @@ module AgentWorkflowsDeliveryState
     }
   end
 
+  def managed_bin_copy_inventory(target:, source:)
+    managed_bin_copy_state(target:, source:, metadata: read_metadata(target))
+  rescue JSON::ParserError => e
+    {
+      "state" => "unknown", "paths" => [], "missing" => [], "blocking" => [],
+      "reason" => "invalid install metadata: #{e.message}"
+    }
+  end
+
   def check(host:, target:, source:, delivery_mode:)
     host_queries = [Thread.new { ["native", native_state(host, target)] }]
     host_queries << Thread.new { ["superpowers", superpowers_state(host, target)] } if host == "codex"
@@ -744,8 +856,10 @@ module AgentWorkflowsDeliveryState
       delivery_mode: delivery_mode,
       collision_names: collision_names
     )
+    bin = managed_bin_copy_inventory(target: target, source: source)
     native_compatible = native["state"] == (delivery_mode == "plugin-companion" ? "active" : "inactive")
-    compatible = native_compatible && flat["state"] != "unknown" && flat["blocking"].empty?
+    compatible = native_compatible && flat["state"] != "unknown" && flat["blocking"].empty? &&
+                 bin["state"] != "unknown" && bin["blocking"].empty?
     reason =
       if compatible
         nil
@@ -753,6 +867,10 @@ module AgentWorkflowsDeliveryState
         flat["reason"]
       elsif flat["blocking"].any?
         "refusing to remove modified, ambiguous, or unowned skill paths: #{flat['blocking'].join(', ')}"
+      elsif bin["state"] == "unknown"
+        bin["reason"]
+      elsif bin["blocking"].any?
+        "refusing to replace modified, ambiguous, or unowned managed bin paths: #{bin['blocking'].join(', ')}"
       elsif native["state"] == "unknown"
         native["reason"]
       elsif delivery_mode == "flat"
@@ -761,8 +879,10 @@ module AgentWorkflowsDeliveryState
         "plugin-companion mode requires an enabled native scw plugin"
       end
     guidance =
-      if flat["blocking"].any?
+      if flat["blocking"].any? || bin["blocking"].any?
         "The listed paths were preserved. Restore them to their recorded pack revision or move/remove them manually, then rerun."
+      elsif bin["state"] == "unknown"
+        "Repair the recorded managed bin fingerprints in the install metadata, or reinstall the pack, then rerun."
       elsif native["legacy"]
         "Remove agent-workflows@agent-workflows, install and enable scw@agent-workflows, then rerun."
       elsif native["state"] == "unknown"
@@ -777,6 +897,7 @@ module AgentWorkflowsDeliveryState
       "delivery_mode" => delivery_mode,
       "native" => native,
       "flat" => flat,
+      "bin" => bin,
       "reason" => reason,
       "guidance" => compatible ? nil : guidance
     }
