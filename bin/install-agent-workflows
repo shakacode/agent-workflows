@@ -3703,15 +3703,19 @@ run_delivery_state() {
 report_delivery_state_conflict() {
   local prefix="${1:-}" parse_status=0
   set +e
+  # 65 is EX_DATAERR: the response itself was unusable, matching how this
+  # installer already reports data-integrity refusals. The caller only
+  # distinguishes zero from nonzero, so the exact code is for readers.
   printf '%s' "$delivery_state" | ruby -rjson -e '
     prefix = ARGV.fetch(0)
+    unusable_response = 65
     payload =
       begin
         JSON.parse(STDIN.read)
       rescue JSON::ParserError
-        exit 65
+        exit unusable_response
       end
-    exit 65 unless payload.is_a?(Hash) && payload.key?("reason") && payload.key?("guidance")
+    exit unusable_response unless payload.is_a?(Hash) && payload.key?("reason") && payload.key?("guidance")
     warn "DELIVERY_MODE_CONFLICT: #{prefix}#{payload.fetch("reason")}"
     warn payload.fetch("guidance")
   ' "$prefix"
