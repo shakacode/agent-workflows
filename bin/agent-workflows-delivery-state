@@ -619,6 +619,18 @@ module AgentWorkflowsDeliveryState
     }
   end
 
+  def installed_skill_paths(skills_path)
+    return {} unless File.directory?(skills_path) && !File.symlink?(skills_path)
+
+    Dir.children(skills_path).each_with_object({}) do |name, paths|
+      path = File.join(skills_path, name)
+      stat = File.lstat(path)
+      paths[[stat.dev, stat.ino]] = path
+    rescue SystemCallError
+      next
+    end
+  end
+
   def managed_flat_inventory(target:, source:, delivery_mode:, collision_names: [])
     if delivery_mode == "plugin-companion" && (component = symlinked_target_component(target))
       return {
@@ -696,9 +708,10 @@ module AgentWorkflowsDeliveryState
                                                [[], collision_names, nil]
                                              end
     if legacy_flat
-      # The flat installer copies `skills/*`, which the shell expands without dot
-      # entries. A recorded dot name therefore describes source content that was
-      # never installed, so it can never authorize removing a same-named target path.
+      # `copy_children_preserving_unrelated` never installs a hidden entry, so a
+      # recorded dot name — from the fingerprint map or from the recorded revision
+      # tree — describes source content that was never installed and can never
+      # authorize removing a same-named target path.
       snapshot_backed_names = snapshot_backed_names.grep_v(/\A\./)
       names = names.grep_v(/\A\./).sort
     end
@@ -714,7 +727,9 @@ module AgentWorkflowsDeliveryState
     # Two recorded names can resolve to one installed entry, for example a case-only
     # rename recorded on a case-insensitive volume. Classify each entry once so the
     # migration never stages the same directory twice, and let any recorded name that
-    # proves ownership own it.
+    # proves ownership own it. Report the entry under its real spelling on disk so a
+    # retained staging directory restores the exact path that was moved.
+    installed_paths = installed_skill_paths(skills_path)
     entries = {}
     names.each do |name|
       path = File.join(target, "skills", name)
@@ -725,7 +740,8 @@ module AgentWorkflowsDeliveryState
       rescue SystemCallError
         next
       end
-      entry = (entries[[stat.dev, stat.ino]] ||= { path: path, owned: false })
+      key = [stat.dev, stat.ino]
+      entry = (entries[key] ||= { path: installed_paths.fetch(key, path), owned: false })
 
       fingerprint_owned = legacy_flat && recorded_skill_copy_fingerprint_matches?(path, metadata, name)
       # Names carried only by a fingerprint have no entry in the recorded revision,

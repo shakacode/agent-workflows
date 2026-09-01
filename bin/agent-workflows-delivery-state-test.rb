@@ -1575,6 +1575,53 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_case_only_alias_is_reported_under_its_installed_spelling
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      skip "requires a case-insensitive filesystem" unless case_insensitive_filesystem?(tmp)
+
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      # The recorded revision carries "Alpha"; the dirty checkout renamed it to the
+      # lowercase spelling, which sorts after every recorded alias.
+      FileUtils.mkdir_p(File.join(source, "skills/Alpha"))
+      File.write(File.join(source, "skills/Alpha/SKILL.md"), "alpha — portable\n")
+      system("git", "-C", source, "init", "--quiet", "--initial-branch=main", exception: true)
+      system("git", "-C", source, "config", "user.email", "delivery-state@example.com", exception: true)
+      system("git", "-C", source, "config", "user.name", "Delivery State Test", exception: true)
+      system("git", "-C", source, "add", ".", exception: true)
+      system("git", "-C", source, "commit", "--quiet", "-m", "source", exception: true)
+      revision = Open3.capture2("git", "-C", source, "rev-parse", "HEAD").first.strip
+      File.rename(File.join(source, "skills/Alpha"), File.join(source, "skills/alpha"))
+      write_codex_native_state(target)
+      installed = File.join(target, "skills/alpha")
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      FileUtils.cp_r(File.join(source, "skills/alpha"), installed)
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => revision,
+        "managed_skill_copy_fingerprints" => {
+          "alpha" => AgentWorkflowsDeliveryState.directory_fingerprint(installed)
+        }
+      )
+
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      assert status.success?, "expected a compatible check: #{out}#{err}"
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal [], flat.fetch("blocking")
+      assert_equal [installed], flat.fetch("removable")
+      assert_equal %w[alpha], Dir.children(File.join(target, "skills"))
+    end
+  end
+
   def test_hidden_recorded_name_cannot_authorize_removing_an_uninstalled_target_path
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source = File.join(tmp, "source")

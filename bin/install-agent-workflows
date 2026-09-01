@@ -1894,9 +1894,8 @@ prepare_metadata() {
     end
     skill_fingerprints = if mode == "copy" && delivery_mode == "flat"
                            Dir.children(File.join(source, "skills")).sort.each_with_object({}) do |name, fingerprints|
-                             # The installer copies skills/* through a shell glob, which
-                             # excludes dot entries. Recording one would name content it
-                             # never installed.
+                             # copy_children_preserving_unrelated never installs a hidden
+                             # entry, so recording one would name content that is not there.
                              next if name.start_with?(".")
 
                              root = File.join(source, "skills", name)
@@ -3245,12 +3244,17 @@ validate_scanner_companion_ancestors() {
 copy_children_preserving_unrelated() {
   local source_dir="$1"
   local target_dir="$2"
-  local source_path destination
+  local source_path destination name
   ensure_real_directory "$target_dir"
 
   for source_path in "$source_dir"/*; do
     [[ -e "$source_path" ]] || continue
-    destination="$target_dir/$(basename "$source_path")"
+    name="$(basename "$source_path")"
+    # Skip hidden entries explicitly rather than relying on glob options an
+    # inherited BASHOPTS or GLOBIGNORE can change. The install receipt applies
+    # the same rule, so what is copied and what is fingerprinted always agree.
+    [[ "$name" != .* ]] || continue
+    destination="$target_dir/$name"
     rm -rf "$destination"
     rsync -a "$source_path" "$target_dir/"
   done
