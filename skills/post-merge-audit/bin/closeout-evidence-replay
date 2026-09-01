@@ -826,12 +826,7 @@ module CloseoutEvidenceReplay
     punctuation_bounded = label.match?(/[;,]|\.(?=\s|\z)/)
     prose_label = label.split(/[;,]|\.(?=\s|\z)/, 2).first.strip
     return if prose_label.include?("\\")
-    return if prose_label.split(/\s+/).any? do |token|
-      token = normalized_https_prose_token(token)
-      token.include?("/") &&
-      !token.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z}) &&
-      !token.match?(HTTPS_PROSE_VERSION_LIST)
-    end
+    return if path_shaped_https_label?(prose_label)
     return if authority_shaped_https_label?(prose_label)
     return if text_tokens(prose_label).length < 2 && !punctuation_bounded && !recognized_status
 
@@ -854,7 +849,11 @@ module CloseoutEvidenceReplay
 
     if (markdown_link = raw_label.match(/\A\[([^\[\]]*)\]\(\z/))
       link_text = markdown_link[1].strip
-      return link_text.empty? || !authority_shaped_https_label?(link_text)
+      return true if link_text.empty?
+
+      return !link_text.include?("\\") &&
+             !path_shaped_https_label?(link_text) &&
+             !authority_shaped_https_label?(link_text)
     end
 
     # Normalize after the Markdown branch, not before: stripping `[` off a link opener would
@@ -867,11 +866,26 @@ module CloseoutEvidenceReplay
     token.match?(/\A\p{Alnum}[\p{Alnum}_-]*:?\z/u)
   end
 
+  # A `/` marks a path unless the token is a bounded protocol or version shape. Shared so the
+  # Markdown-link branch applies the same rule as ordinary prose rather than drifting from it.
+  def path_shaped_https_label?(label)
+    label.split(/\s+/).any? do |token|
+      token = normalized_https_prose_token(token)
+      token.include?("/") &&
+        !token.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z}) &&
+        !token.match?(HTTPS_PROSE_VERSION_LIST)
+    end
+  end
+
   def authority_shaped_https_label?(label)
     tokens = label.split(/\s+/)
     tokens.each_with_index.any? do |token, index|
       square_bracketed = token.start_with?("[")
       token = normalized_https_prose_token(token)
+      # Checked before the exemptions below: the trailing-colon prose rule would otherwise read
+      # `view-source:` as a bounded label rather than as a scheme.
+      next true if token.match?(NON_DURABLE_OPAQUE_SCHEME)
+
       # A token that is nothing but a delimiter splits to an empty list, so coerce before the
       # shape tests. An empty authority carries no host evidence; a lone `[` still fails closed
       # through square_bracketed below.

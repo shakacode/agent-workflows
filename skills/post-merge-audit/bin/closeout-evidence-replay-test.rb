@@ -1527,6 +1527,45 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_https_labels_fail_closed_on_smuggled_references
+    # Swept systematically rather than case-by-case: each hostile payload is placed in every
+    # position that carries a prose exemption. Found three fail-opens the example-based tests and
+    # review rounds had both missed.
+    hosts = ["example.test", "evil.example.test", "10.0.0.1", "10.0.0.1:8080", "[::1]",
+             "user:pw@internal", "example.test:443", "//host/path", "\\\\unc\\share"]
+    schemes = %w[javascript: mailto: file: data: vbscript: view-source: intent: sms:]
+    url = "https://github.com/example/repo/pull/123#visual"
+
+    hosts.each do |host|
+      ["HTTPS: #{host}; #{url}", "HTTPS: seen #{host}; #{url}", "HTTPS: \"#{host}\"; #{url}",
+       "HTTPS: **#{host}**; #{url}", "HTTPS: tls #{host}; #{url}", "HTTPS: #{host} #{url}",
+       "HTTPS: [#{host}](#{url})", "HTTPS: enabled; #{host} #{url}"].each do |value|
+        assert CloseoutEvidenceReplay.malformed_https_reference?(value) ||
+               CloseoutEvidenceReplay.disallowed_durable_reference?(value),
+               "smuggled host accepted: #{value}"
+      end
+    end
+
+    schemes.each do |scheme|
+      ["HTTPS: #{scheme} #{url}", "HTTPS: #{scheme}payload; #{url}",
+       "HTTPS: \"#{scheme}payload\"; #{url}", "HTTPS: [#{scheme}payload](#{url})"].each do |value|
+        assert CloseoutEvidenceReplay.malformed_https_reference?(value),
+               "smuggled scheme accepted: #{value}"
+      end
+    end
+
+    ["./local/a.png", "../up/a.png", "shots/a.png", "/abs/a.png", "run/1.2.3/out.png"].each do |path|
+      ["durable: before HTTPS: evidence #{path}; after #{url}",
+       "durable: before #{path} after #{url}",
+       "durable: before HTTPS: tls #{path}; after #{url}",
+       "durable: before HTTPS: [#{path}](#{url}) after"].each do |value|
+        assert CloseoutEvidenceReplay.disallowed_durable_reference?(value) ||
+               CloseoutEvidenceReplay.malformed_https_reference?(value),
+               "smuggled path accepted: #{value}"
+      end
+    end
+  end
+
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
     # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
     # whole replay instead of returning a verdict.
