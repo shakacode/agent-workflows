@@ -1405,6 +1405,149 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def install_dirty_flat_copy(source:, target:, uncommitted: "gamma")
+    revision = create_source(source)
+    FileUtils.mkdir_p(File.join(source, "skills", uncommitted))
+    File.write(File.join(source, "skills", uncommitted, "SKILL.md"), "#{uncommitted} — uncommitted\n")
+    write_codex_native_state(target)
+    FileUtils.mkdir_p(File.join(target, "skills"))
+    fingerprints = Dir.children(File.join(source, "skills")).sort.to_h do |name|
+      installed = File.join(target, "skills", name)
+      FileUtils.cp_r(File.join(source, "skills", name), installed)
+      [name, AgentWorkflowsDeliveryState.directory_fingerprint(installed)]
+    end
+    write_metadata(
+      target,
+      "host" => "codex",
+      "mode" => "copy",
+      "delivery_mode" => "flat",
+      "source" => source,
+      "source_revision" => revision,
+      "managed_skill_copy_fingerprints" => fingerprints
+    )
+    revision
+  end
+
+  def test_fingerprinted_uncommitted_skill_migrates_while_recorded_revision_exists
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      install_dirty_flat_copy(source: source, target: target)
+
+      out, err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      assert status.success?, "expected migration to succeed: #{out}#{err}"
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal "managed", flat.fetch("state")
+      assert_equal [], flat.fetch("blocking")
+      assert_equal %w[alpha beta gamma].map { |name| File.join(target, "skills", name) }, flat.fetch("removed").sort
+      assert_empty Dir.children(File.join(target, "skills"))
+      assert_path_exists File.join(source, "skills/gamma/SKILL.md")
+    end
+  end
+
+  def test_modified_fingerprinted_uncommitted_skill_blocks_revision_backed_migration
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      install_dirty_flat_copy(source: source, target: target)
+      installed = File.join(target, "skills/gamma/SKILL.md")
+      File.open(installed, "a") { |file| file << "personal edit\n" }
+
+      out, _err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal "ambiguous", flat.fetch("state")
+      assert_equal [File.join(target, "skills/gamma")], flat.fetch("blocking")
+      assert_equal "gamma — uncommitted\npersonal edit\n", File.read(installed)
+      assert_path_exists File.join(target, "skills/alpha/SKILL.md")
+    end
+  end
+
+  def test_unrecorded_extra_skill_blocks_revision_backed_fingerprint_migration
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      install_dirty_flat_copy(source: source, target: target)
+      extra = File.join(target, "skills/delta")
+      FileUtils.mkdir_p(extra)
+      File.write(File.join(extra, "SKILL.md"), "personal delta\n")
+
+      out, _err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal "ambiguous", flat.fetch("state")
+      assert_equal [extra], flat.fetch("blocking")
+      assert_equal "personal delta\n", File.read(File.join(extra, "SKILL.md"))
+      assert_path_exists File.join(target, "skills/gamma/SKILL.md")
+    end
+  end
+
+  def test_unrecorded_symlinked_skill_blocks_revision_backed_fingerprint_migration
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      other = File.join(tmp, "other-gamma")
+      FileUtils.mkdir_p(source)
+      install_dirty_flat_copy(source: source, target: target)
+      installed = File.join(target, "skills/gamma")
+      FileUtils.mkdir_p(other)
+      FileUtils.remove_entry(installed)
+      File.symlink(other, installed)
+
+      out, _err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal "ambiguous", flat.fetch("state")
+      assert_equal [installed], flat.fetch("blocking")
+      assert File.symlink?(installed)
+      assert_path_exists File.join(target, "skills/alpha/SKILL.md")
+    end
+  end
+
+  def test_malformed_fingerprint_names_do_not_widen_revision_backed_inventory
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = install_dirty_flat_copy(source: source, target: target)
+      metadata = JSON.parse(File.read(File.join(target, ".agent-workflows-install.json")))
+      metadata["managed_skill_copy_fingerprints"]["../escape"] =
+        metadata["managed_skill_copy_fingerprints"].fetch("gamma")
+      write_metadata(target, metadata)
+
+      out, _err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?, "malformed fingerprint metadata must not authorize migration"
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal "ambiguous", flat.fetch("state")
+      assert_equal [File.join(target, "skills/gamma")], flat.fetch("blocking")
+      assert_path_exists File.join(target, "skills/gamma/SKILL.md")
+      assert_equal revision, metadata.fetch("source_revision")
+    end
+  end
+
   def test_symlinked_target_ancestor_blocks_migration
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source = File.join(tmp, "source")

@@ -682,13 +682,19 @@ module AgentWorkflowsDeliveryState
 
     removable = []
     legacy_flat = metadata && prior_delivery_mode == "flat"
-    names, snapshot = if legacy_flat && recorded_revision_unavailable
-                        [recorded_fingerprints ? recorded_fingerprints.keys.sort : [], nil]
-                      elsif legacy_flat
-                        skill_names(source, metadata)
-                      else
-                        [collision_names, nil]
-                      end
+    snapshot_names, names, snapshot = if legacy_flat && recorded_revision_unavailable
+                                        [[], recorded_fingerprints ? recorded_fingerprints.keys.sort : [], nil]
+                                      elsif legacy_flat
+                                        # A flat copy taken from a dirty checkout records the committed
+                                        # revision plus an exact fingerprint per installed skill, so the
+                                        # revision tree alone under-reports what the installer owns.
+                                        revision_names, revision_snapshot = skill_names(source, metadata)
+                                        recorded = recorded_fingerprints ? recorded_fingerprints.keys : []
+                                        [revision_names, (revision_names | recorded).sort, revision_snapshot]
+                                      else
+                                        [[], collision_names, nil]
+                                      end
+    snapshot_names = snapshot_names.to_h { |name| [name, true] }
     recorded_names = names.to_h { |name| [name, true] }
     blocking = if legacy_flat && File.directory?(skills_path) && !File.symlink?(skills_path)
                  Dir.children(skills_path).filter_map do |name|
@@ -702,7 +708,10 @@ module AgentWorkflowsDeliveryState
       next unless File.exist?(path) || File.symlink?(path)
 
       fingerprint_owned = legacy_flat && recorded_skill_copy_fingerprint_matches?(path, metadata, name)
-      unless legacy_flat && (snapshot || fingerprint_owned)
+      # Names carried only by a fingerprint have no entry in the recorded revision,
+      # so they must earn ownership from that fingerprint alone.
+      name_snapshot = snapshot if snapshot && snapshot_names.key?(name)
+      unless legacy_flat && (name_snapshot || fingerprint_owned)
         blocking << path
         next
       end
@@ -711,7 +720,7 @@ module AgentWorkflowsDeliveryState
         resolved = File.expand_path(File.readlink(path), File.dirname(path))
         allowed = [metadata["source"], source].compact.map { |root| File.expand_path(File.join(root, "skills", name)) }
         (allowed.include?(resolved) ? removable : blocking) << path
-      elsif fingerprint_owned || matches_directory_snapshot?(path, snapshot, name)
+      elsif fingerprint_owned || matches_directory_snapshot?(path, name_snapshot, name)
         removable << path
       else
         blocking << path

@@ -4554,6 +4554,66 @@ test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history() {
   ' "$modified_target/.agent-workflows-install.json"
 }
 
+test_flat_copy_migrates_uncommitted_skill_to_companion_with_recorded_revision() {
+  local tmp source target modified_target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/uncommitted-migration"
+  printf '%s\n' '---' 'name: uncommitted-migration' \
+    'description: Exercise migration of a fingerprinted uncommitted skill.' \
+    '---' '' '# Uncommitted Migration' > "$source/skills/uncommitted-migration/SKILL.md"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/flat.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints")
+    abort metadata.inspect unless metadata["source_revision"].match?(/\A[0-9a-f]{40}\z/)
+    abort metadata.inspect unless fingerprints.key?("uncommitted-migration")
+  ' "$target/.agent-workflows-install.json"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion >"$tmp/companion.out"
+
+  [[ ! -e "$target/skills/uncommitted-migration" ]] || \
+    fail "companion migration retained the fingerprinted uncommitted flat skill"
+  [[ ! -e "$target/skills/pr-batch" ]] || \
+    fail "companion migration retained a committed managed flat skill"
+  assert_file "$source/skills/uncommitted-migration/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+  ' "$target/.agent-workflows-install.json"
+
+  modified_target="$tmp/modified-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$modified_target" \
+    --mode copy --delivery-mode flat >"$tmp/modified-flat.out"
+  printf '\npersonal uncommitted migration edit\n' >> \
+    "$modified_target/skills/uncommitted-migration/SKILL.md"
+  write_native_scw_state codex "$modified_target"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$modified_target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "migration accepted a modified fingerprinted uncommitted skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal uncommitted migration edit' \
+    "$modified_target/skills/uncommitted-migration/SKILL.md" || \
+    fail "blocked migration changed the modified uncommitted skill"
+  assert_file "$modified_target/skills/pr-batch/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$modified_target/.agent-workflows-install.json"
+}
+
 test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
   local tmp source target recorded_fingerprint verified_fingerprint
   tmp="$(mktemp -d)"
@@ -8562,6 +8622,7 @@ main() {
     test_repeat_flat_copy_install_blocks_modified_recorded_targets
     test_repeat_flat_copy_install_uses_fingerprints_without_git_history
     test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history
+    test_flat_copy_migrates_uncommitted_skill_to_companion_with_recorded_revision
     test_copy_metadata_fingerprint_matches_delivery_state_verifier
     test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
     test_repeat_copy_install_blocks_modified_solution_document
