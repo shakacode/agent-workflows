@@ -120,6 +120,23 @@ class MergeAssuranceTest < Minitest::Test
     assert_includes result.fetch("failures"), "autonomous_result does not match trusted live replay"
   end
 
+  def test_regenerated_provider_candidate_oid_keeps_the_same_replay_identity
+    supplied = autonomous_result("autonomous-merge-eligible")
+    supplied["current_integration"] = reused_current_integration
+    recomputed = Marshal.load(Marshal.dump(supplied))
+    recomputed.dig("current_integration", "candidate")["oid"] = "3" * 40
+
+    result = assess_with_replay(
+      ci_result: ready_ci,
+      autonomous_result: supplied,
+      recomputed_autonomous_result: recomputed,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert result.fetch("eligible"), result.fetch("failures", []).join("; ")
+  end
+
   def test_replay_forwards_the_trusted_gh_to_current_integration_collection
     replayed = autonomous_result("autonomous-merge-eligible")
     merge_context = context("auto_merge_when_gates_pass")
@@ -266,7 +283,7 @@ class MergeAssuranceTest < Minitest::Test
     )
   end
 
-  def test_cli_executes_selected_hosted_ci_receipt_seam_from_trusted_base
+  def test_cli_executes_selected_hosted_ci_receipt_seam_from_explicit_repo_root
     account_home = File.realpath(Etc.getpwuid(Process.uid).dir)
     Dir.mktmpdir("merge-assurance-hosted-ci") do |repo_root|
       base_marker = File.join(repo_root, "base-seam-called")
@@ -353,7 +370,7 @@ class MergeAssuranceTest < Minitest::Test
         "--trusted-helper-provenance", autonomous.fetch("helper_provenance"),
         "--trusted-git-executable", SYSTEM_GIT,
         "--trusted-gh-executable", @fake_gh,
-        chdir: repo_root
+        chdir: @fake_gh_dir
       )
       result = JSON.parse(stdout)
 

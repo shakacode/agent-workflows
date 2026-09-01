@@ -177,7 +177,10 @@ module MergeAssurance
       failures << e.message
       nil
     end
-    unless exact_json_value?(autonomous_result, recomputed_autonomous_result)
+    unless exact_json_value?(
+      autonomous_replay_identity(autonomous_result),
+      autonomous_replay_identity(recomputed_autonomous_result)
+    )
       failures << "autonomous_result does not match trusted live replay"
     end
     selected_hosted_ci_receipts ||= empty_selected_hosted_ci_receipts
@@ -272,6 +275,21 @@ module MergeAssurance
       "verdict" => "BLOCKED",
       "failures" => failures.uniq
     }
+  end
+
+  def autonomous_replay_identity(result)
+    return result unless result.is_a?(Hash)
+
+    integration = result["current_integration"]
+    candidate = integration["candidate"] if integration.is_a?(Hash)
+    return result unless candidate.is_a?(Hash) &&
+                         candidate["source"] == "github-potential-merge-commit"
+
+    result.merge(
+      "current_integration" => integration.merge(
+        "candidate" => candidate.reject { |key, _value| key == "oid" }
+      )
+    )
   end
 
   def replay_autonomous_result(
@@ -1587,6 +1605,7 @@ module MergeAssurance
         return 1
       end
 
+      options[:repo_root] = trusted_repo_root!(options[:repo_root])
       recomputed_autonomous_result = MergeAssurance.replay_autonomous_result(
         repo_root: options[:repo_root],
         semantic_assessment: options[:semantic_assessment],
@@ -1595,7 +1614,10 @@ module MergeAssurance
         trusted_gh_executable: options[:trusted_gh_executable],
         context:
       )
-      selected_hosted_ci_receipts = load_selected_hosted_ci_receipts!(context)
+      selected_hosted_ci_receipts = load_selected_hosted_ci_receipts!(
+        context,
+        repo_root: options[:repo_root]
+      )
       assessment_now = Time.now.utc
       result = MergeAssurance.assess(
         ci_result:,
@@ -1615,7 +1637,7 @@ module MergeAssurance
 
     private
 
-    def load_selected_hosted_ci_receipts!(context)
+    def load_selected_hosted_ci_receipts!(context, repo_root:)
       context_failures = []
       MergeAssurance.validate_context(context, context_failures)
       context_failures << "context contains UNKNOWN" if MergeAssurance.contains_unknown?(context)
@@ -1629,7 +1651,6 @@ module MergeAssurance
       raise Error, "context base SHA is invalid for selected hosted CI" unless
         MergeAssurance.full_sha?(base_sha)
 
-      repo_root = trusted_repo_root!
       config = load_trusted_policy!(repo_root, base_sha)
       executable, credential_env = selected_hosted_ci_policy!(config)
       trusted_bytes = trusted_executable!(repo_root, base_sha, executable)
@@ -1647,8 +1668,11 @@ module MergeAssurance
       )
     end
 
-    def trusted_repo_root!
-      stdout, stderr, status = git_capture("rev-parse", "--show-toplevel", chdir: Dir.pwd)
+    def trusted_repo_root!(candidate)
+      requested = File.realpath(candidate)
+      raise Error, "consumer repository root is invalid" unless File.directory?(requested)
+
+      stdout, stderr, status = git_capture("rev-parse", "--show-toplevel", chdir: requested)
       raise Error, "could not resolve consumer repository root: #{failure_output(stdout, stderr)}" unless
         status.success?
 
@@ -1656,7 +1680,7 @@ module MergeAssurance
       raise Error, "consumer repository root is invalid" unless File.directory?(root)
 
       root
-    rescue Errno::ENOENT, Errno::EACCES => e
+    rescue Errno::ENOENT, Errno::ENOTDIR, Errno::EACCES => e
       raise Error, "could not resolve consumer repository root: #{e.message}"
     end
 
