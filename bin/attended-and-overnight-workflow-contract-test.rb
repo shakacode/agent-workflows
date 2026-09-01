@@ -47,6 +47,13 @@ def markdown_links(text)
   text.scan(/\[[^\]]*\]\(([^)\s]+)\)/).flatten
 end
 
+# Binds an assertion to the one sentence that makes the promise, rather than
+# to the whole document, so a common word (e.g. "review") appearing elsewhere
+# in the guide can't mask that same word being dropped from the promise.
+def extract_clause(prose, starts_with:)
+  prose[/#{Regexp.escape(starts_with)}[^.]*\./]
+end
+
 class AttendedAndOvernightWorkflowContractTest < Minitest::Test
   def setup
     @doc = read_repo_file(DOC_PATH)
@@ -95,11 +102,11 @@ class AttendedAndOvernightWorkflowContractTest < Minitest::Test
   # guarantee in different words must update the matching phrase here too.
 
   def test_the_guide_declares_it_does_not_replace_other_contracts_rules
-    prose = normalize_prose(@doc)
+    disclaimer = extract_clause(normalize_prose(@doc), starts_with: "does not replace their")
 
-    assert_includes prose, "does not replace"
+    refute_nil disclaimer, "the guide must state the composition disclaimer as one clause"
     %w[safety review dependency merge].each do |rule|
-      assert_includes prose, rule, "the composition disclaimer must still name the #{rule} rules"
+      assert_includes disclaimer, rule, "the composition disclaimer clause must still name the #{rule} rules"
     end
   end
 
@@ -120,11 +127,11 @@ class AttendedAndOvernightWorkflowContractTest < Minitest::Test
       "a failing correctness check",
       "a required human decision"
     ]
-    overrides_prose = normalize_prose(@doc)
+    boundary_clause = extract_clause(normalize_prose(@doc), starts_with: "Overrides do not bypass")
 
-    assert_includes overrides_prose, "Overrides do not bypass"
+    refute_nil boundary_clause, "the guide must state the override boundary as one clause"
     required_gates.each do |gate|
-      assert_includes overrides_prose, gate, "the override boundary must still name #{gate.inspect}"
+      assert_includes boundary_clause, gate, "the override boundary clause must still name #{gate.inspect}"
     end
   end
 
