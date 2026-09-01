@@ -2,10 +2,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SAFE_TMP_PARENT="$(cd "$ROOT/.." && pwd)"
+SAFE_TMP_ROOT="$(mktemp -d "$SAFE_TMP_PARENT/install-agent-workflows-test.XXXXXX")"
 FAKE_CODEX_DIR="$(mktemp -d)"
 TEST_SOURCE_ROOT=""
 cleanup() {
   rm -rf "$FAKE_CODEX_DIR"
+  rm -rf "$SAFE_TMP_ROOT"
   [[ -z "$TEST_SOURCE_ROOT" ]] || rm -rf "$TEST_SOURCE_ROOT"
 }
 trap cleanup EXIT
@@ -185,7 +188,7 @@ test_delivery_state_helper_unit_suite() {
 
 test_codex_host_install_writes_helpers_and_metadata() {
   local tmp target ruby_bin
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$SAFE_TMP_ROOT/codex-host.XXXXXX")"
   target="$tmp/codex-home"
   ruby_bin="$(ruby -rrbconfig -e 'print RbConfig.ruby')"
 
@@ -7011,7 +7014,7 @@ test_installed_doctor_initializes_consumer_repo() {
 
 test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   local tmp
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d "$SAFE_TMP_ROOT/claude-host.XXXXXX")"
 
   CLAUDE_HOME="$tmp/.claude" "$ROOT/bin/install-agent-workflows" --host claude >"$tmp/install-agent-workflows-test.out"
 
