@@ -846,6 +846,21 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_empty uppercase.fetch("missing")
   end
 
+  def test_v2_accepts_https_prose_labels_beside_durable_urls
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" =>
+          "durable: before HTTPS: enforced; after https://github.com/example/repo/pull/123#visual",
+        "interaction_change" => "yes",
+        "interaction_evidence" =>
+          "clip: HTTPS: enforced; https://github.com/example/repo/pull/123#clip"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+    assert_empty qa.fetch("missing")
+  end
+
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
     hosts = %w[
       github.com/example/repo/pull/123#visual
