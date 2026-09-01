@@ -48,8 +48,10 @@ evidence:
 
 - `private`: trusted configuration selects a private backend: the exact
   `agent-coord private backend` identifier with a closed
-  `coordination_backend_contract` that allowlists that identifier. Other private
-  identifiers remain valid repository seams, but this packaged adapter has no
+  `coordination_backend_contract` that allowlists it. Without that contract,
+  stop before invoking `agent-coord-bounded` with
+  `UNKNOWN (missing coordination backend contract)`. Other private identifiers
+  remain valid repository seams, but this adapter has no
   protocol mapping for them: record
   `UNKNOWN (unsupported private backend adapter)`, stop the affected lane
   before invoking `agent-coord-bounded`, and never guess compatibility. Set
@@ -80,8 +82,8 @@ evidence:
 - `public-fallback`: trusted configuration directly selects
   `public claim-comment fallback`, or a private claim cannot start after a
   definitive non-timeout setup/authentication failure and policy permits fallback.
-  Before switching from private mode, reconcile private ownership or use a
-  trusted cross-mode mirror. If reconciliation is unavailable, stop the affected lane.
+  Before switching from private mode, reconcile private ownership. If private
+  ownership cannot be reconciled, stop the affected lane.
   The comment never overrides a private refusal and is not machine-readable
   cancellation, terminal, or authority evidence. Only a marker backed by
   authenticated and authorized ownership evidence is conflicting. A marker

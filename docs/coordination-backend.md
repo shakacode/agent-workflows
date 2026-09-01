@@ -26,7 +26,9 @@ backend seam.
 
 The packaged PR-batch private adapter currently supports only the exact
 `agent-coord private backend` identifier when a closed contract allowlists that
-same value. A different private identifier remains valid repository policy, but
+same value. If that exact identifier lacks the contract, PR-batch records
+`UNKNOWN (missing coordination backend contract)` and stops the affected lane
+before invoking the backend. A different private identifier remains valid repository policy, but
 PR-batch records `UNKNOWN (unsupported private backend adapter)` and stops only
 that lane before invoking any backend until a bounded adapter protocol is added.
 
@@ -75,8 +77,8 @@ or after the private claim cannot start or definitively fails with a non-timeout
 setup or authentication error and repository policy permits fallback. A timeout
 or private claim refusal never permits fallback. Before posting, inspect recent
 comments for an unexpired marker on the same target. Before switching from
-private mode, reconcile private ownership or use a trusted cross-mode mirror.
-If reconciliation is unavailable, stop the affected lane. Only a marker backed
+private mode, reconcile private ownership. If private ownership cannot be
+reconciled, stop the affected lane. Only a marker backed
 by authenticated and authorized ownership evidence is conflicting. A marker
 proven malformed or unauthorized remains advisory; an unavailable or
 incomplete verification remains `UNKNOWN` and blocks the affected action. Report the

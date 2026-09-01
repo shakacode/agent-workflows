@@ -96,6 +96,7 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes result, "`private`: trusted configuration selects a private backend"
     assert_includes result, "exact `agent-coord private backend` identifier"
     assert_includes result, "closed `coordination_backend_contract`"
+    assert_includes result, "UNKNOWN (missing coordination backend contract)"
     assert_includes result, "UNKNOWN (unsupported private backend adapter)"
     assert_includes result, "before invoking `agent-coord-bounded`"
     assert_includes result, "`private_state: healthy | claim-only`"
@@ -211,8 +212,9 @@ class CoordinationObservabilityContractTest < Minitest::Test
     result = squish(section(@component, "## Adapter Result", /^##\s+/))
 
     [fallback, result].each do |consumer|
-      assert_includes consumer, "reconcile private ownership or use a trusted cross-mode mirror"
-      assert_includes consumer, "If reconciliation is unavailable, stop the affected lane"
+      assert_includes consumer, "reconcile private ownership"
+      assert_includes consumer, "If private ownership cannot be reconciled, stop the affected lane"
+      refute_includes consumer, "trusted cross-mode mirror"
     end
   end
 
