@@ -899,7 +899,10 @@ class AgentRunRecordTest < Minitest::Test
       assert_match(/\[`agent-run-record` CLI\]\([^)]*agent-run-record\)/, section, path)
       assert_match(/GitHub(?: source|\s+source)? and\s+digest evidence/m, section, path)
       assert_match(/never inject.*through the helper/m, section, path)
-      assert_match(/trusted-ad-hoc-override.*bypass|bypass.*trusted-ad-hoc-override/m, section, path)
+      assert_includes section, "non-GitHub", path
+      assert_includes section, "`plan-state://`", path
+      assert_includes section, "`batch://`", path
+      assert_match(/bypass/, section, path)
       assert_operator section.lines.length, :<=, 12, path
       sections << section
     end

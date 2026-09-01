@@ -1047,7 +1047,8 @@ Canonical prompt-intake rules: [Launcher Run Record](pr-batch-intake.md#launcher
 The versioned [agent-run-record v1 contract](../docs/github-task-prompts-and-run-records.md#launcher-composition-boundary)
 and [`agent-run-record` CLI](../skills/pr-batch/bin/agent-run-record) supply only
 GitHub source and digest evidence; never inject outer launcher values through the helper;
-a `trusted-ad-hoc-override` bypasses it. This heading remains a compatibility
+only a non-GitHub `trusted-ad-hoc-override` backed by `plan-state://` or
+`batch://` bypasses it. This heading remains a compatibility
 route and must not mirror either canonical source.
 
 ### Question And Decision Handling
