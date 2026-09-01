@@ -72,16 +72,12 @@ checkpoint. Record the accepted instruction, its authority, effective time, and
 the resulting task or queue change; no configuration redesign is required.
 
 These routine overrides may change capacity, timing, ordering, holds, or an
-optional presentation choice. A named, visible override may also keep
-reversible work that does not require ownership moving when bookkeeping,
-coordination, or telemetry is unavailable only when trusted repository policy
-or authenticated maintainer authorization names the sole coordinator and a
-bounded run interval. Missing, ambiguous, or expired authorization disables the
-override; preserve the failure as `UNKNOWN` and stop or reconcile at expiry.
-Before creating a host task under that override, persist the complete launch
-fence in restart-durable host storage: run ID, idempotency key, resolved launch
-intent, current transition, and the attached host task ID as soon as known.
-Advance that local record until durable-destination reconciliation succeeds.
+optional presentation choice. A [named non-safety coordination override](../workflows/pr-processing.md#dependency-and-conflict-throughput-policy)
+may also set aside a specifically evidenced stale or broken bookkeeping or
+coordination stop. Record the override name and durable reason or evidence in
+the affected task or run record; a missing or `UNKNOWN` reason or evidence is
+not an override. When telemetry is unavailable, preserve each unobservable
+value as `UNKNOWN`; unavailable telemetry alone does not block launch.
 After the [canonical launch target gate](../workflows/pr-processing.md#canonical-launch-target-gate)
 accepts an issue, PR, or complete trusted durable ad-hoc override, use the issue
 or PR URL when the target has a GitHub work-item surface; a wholly non-GitHub
