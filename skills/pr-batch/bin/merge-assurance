@@ -307,7 +307,8 @@ module MergeAssurance
     ]
     environment = trusted_gh_environment(context.fetch("host")).merge(
       "AUTONOMOUS_MERGE_GIT" => trusted_git,
-      "AUTONOMOUS_MERGE_GH" => trusted_gh
+      "AUTONOMOUS_MERGE_GH" => trusted_gh,
+      "CURRENT_INTEGRATION_GH" => trusted_gh
     )
     stdout, stderr, status, timed_out, cleanup_complete =
       run_autonomous_replay(helper, args, environment:, timeout_seconds:)

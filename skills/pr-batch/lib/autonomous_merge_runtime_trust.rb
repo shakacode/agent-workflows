@@ -239,7 +239,7 @@ module AutonomousMergeRuntimeTrust
     sources.each do |role, source|
       runtime_bytes = File.binread(source.fetch(:path))
       matches = source.fetch(:tree_paths).filter_map do |tree_path|
-        tree_bytes, status = Open3.capture2(
+        tree_bytes, _stderr, status = Open3.capture3(
           git_command, "-C", repo_root, "show", "#{base_sha}:#{tree_path}",
           binmode: true
         )

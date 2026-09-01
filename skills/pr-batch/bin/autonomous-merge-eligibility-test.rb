@@ -110,6 +110,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       File.chmod(0o700, writable_root) if writable_root && File.exist?(writable_root)
     end
   end
+
   def test_changed_files_value_immediately_below_portable_boundary_is_eligible
     result = evaluate { |base_sha| evidence(base_sha:, files: files(29)) }
 
@@ -1826,7 +1827,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       failed_status = Object.new
       failed_status.define_singleton_method(:success?) { false }
       Open3.define_singleton_method(:capture2) do |*command, **options|
-        if command.first == "git" && command.include?("rev-parse") &&
+        if File.basename(command.first) == "git" && command.include?("rev-parse") &&
            command.last.match?(%r{:\.agents/agent-workflow\.yml\z})
           ["", failed_status]
         else

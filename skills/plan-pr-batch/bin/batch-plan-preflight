@@ -180,16 +180,15 @@ module BatchPlanPreflight
       lane_ids
     )
     violations.concat(stage_dependency_violations)
-    return result("rejected", [], [], violations) unless stage_dependency_violations.empty?
-
-    replay_violations = validate_stage_dependency_replay(
-      stage_dependency_plan,
-      input["stage_dependency_replay"],
-      input["stage_dependency_gate"],
-      lane_ids
-    )
-    violations.concat(replay_violations)
-    return result("rejected", [], [], violations) unless replay_violations.empty?
+    if stage_dependency_violations.empty?
+      replay_violations = validate_stage_dependency_replay(
+        stage_dependency_plan,
+        input["stage_dependency_replay"],
+        input["stage_dependency_gate"],
+        lane_ids
+      )
+      violations.concat(replay_violations)
+    end
 
     completed_lane_ids = []
     active_lane_ids = []

@@ -120,6 +120,50 @@ class MergeAssuranceTest < Minitest::Test
     assert_includes result.fetch("failures"), "autonomous_result does not match trusted live replay"
   end
 
+  def test_replay_forwards_the_trusted_gh_to_current_integration_collection
+    replayed = autonomous_result("autonomous-merge-eligible")
+    merge_context = context("auto_merge_when_gates_pass")
+    repo_root = Dir.mktmpdir("merge-assurance-replay-repo", SAFE_TMP_PARENT)
+    semantic_path = File.join(@fake_gh_dir, "replay-environment-semantic.json")
+    File.write(semantic_path, JSON.generate(autonomous_semantic_assessment))
+    captured_environment = nil
+    original_helper = MergeAssurance.method(:authenticated_autonomous_replay_helper_path)
+    original_run = MergeAssurance.method(:run_autonomous_replay)
+    successful_status = Object.new
+    successful_status.define_singleton_method(:success?) { true }
+
+    MergeAssurance.define_singleton_method(:authenticated_autonomous_replay_helper_path) do |**_arguments|
+      SCRIPT
+    end
+    MergeAssurance.define_singleton_method(:run_autonomous_replay) do |_helper, _args, environment:, **_options|
+      captured_environment = environment
+      [JSON.generate(replayed), "", successful_status, false, true]
+    end
+
+    result = MergeAssurance.replay_autonomous_result(
+      repo_root:,
+      semantic_assessment: semantic_path,
+      trusted_helper_provenance: replayed.fetch("helper_provenance"),
+      trusted_git_executable: SYSTEM_GIT,
+      trusted_gh_executable: @fake_gh,
+      context: merge_context
+    )
+
+    assert_equal replayed, result
+    assert_equal @fake_gh, captured_environment.fetch("AUTONOMOUS_MERGE_GH")
+    assert_equal @fake_gh, captured_environment.fetch("CURRENT_INTEGRATION_GH")
+  ensure
+    FileUtils.remove_entry(repo_root) if repo_root && File.exist?(repo_root)
+    if original_helper
+      MergeAssurance.define_singleton_method(
+        :authenticated_autonomous_replay_helper_path, original_helper
+      )
+    end
+    if original_run
+      MergeAssurance.define_singleton_method(:run_autonomous_replay, original_run)
+    end
+  end
+
   def test_v2_receipt_binds_reused_current_integration_candidate
     autonomous = autonomous_result("autonomous-merge-eligible")
     autonomous["current_integration"] = reused_current_integration
@@ -288,6 +332,8 @@ class MergeAssuranceTest < Minitest::Test
         autonomous: File.join(repo_root, "autonomous.json"),
         context: File.join(repo_root, "context.json")
       }
+      semantic_path = File.join(@fake_gh_dir, "trusted-seam-semantic.json")
+      File.write(semantic_path, JSON.generate(autonomous_semantic_assessment))
       File.write(paths.fetch(:ci), JSON.generate(ci_result))
       File.write(paths.fetch(:autonomous), JSON.generate(autonomous))
       File.write(paths.fetch(:context), JSON.generate(merge_context))
@@ -298,11 +344,15 @@ class MergeAssuranceTest < Minitest::Test
           "CIRCLECI_TOKEN" => "allowlisted-secret",
           "UNRELATED_TOKEN" => "must-not-be-forwarded"
         },
-        RbConfig.ruby, SCRIPT,
+        *stubbed_replay_cli_command,
         "--ci-result", paths.fetch(:ci),
         "--autonomous-result", paths.fetch(:autonomous),
         "--context", paths.fetch(:context),
-        *replay_cli_arguments(repo_root, autonomous, merge_context, paths),
+        "--repo-root", repo_root,
+        "--semantic-assessment", semantic_path,
+        "--trusted-helper-provenance", autonomous.fetch("helper_provenance"),
+        "--trusted-git-executable", SYSTEM_GIT,
+        "--trusted-gh-executable", @fake_gh,
         chdir: repo_root
       )
       result = JSON.parse(stdout)
@@ -1363,9 +1413,11 @@ class MergeAssuranceTest < Minitest::Test
       ]
       arguments.concat(replay_cli_arguments(repo_root, autonomous, merge_context, paths))
 
-      stdout, stderr = capture_io do
-        Dir.chdir(repo_root) do
-          exit_code = MergeAssurance::Runner.new.run(arguments)
+      stdout, stderr = with_stubbed_autonomous_replay(autonomous) do
+        capture_io do
+          Dir.chdir(repo_root) do
+            exit_code = MergeAssurance::Runner.new.run(arguments)
+          end
         end
       end
       result = JSON.parse(stdout)
@@ -1447,7 +1499,7 @@ class MergeAssuranceTest < Minitest::Test
 
       stdout, stderr, status = Open3.capture3(
         { "PATH" => @original_path, "BASH_ENV" => bash_env },
-        RbConfig.ruby, SCRIPT,
+        *stubbed_replay_cli_command,
         "--ci-result", paths.fetch(:ci),
         "--autonomous-result", paths.fetch(:autonomous),
         "--context", paths.fetch(:context),
@@ -1536,7 +1588,7 @@ class MergeAssuranceTest < Minitest::Test
           "PATH" => @original_path,
           "MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS" => "0.2"
         },
-        RbConfig.ruby, SCRIPT,
+        *stubbed_replay_cli_command,
         "--ci-result", paths.fetch(:ci),
         "--autonomous-result", paths.fetch(:autonomous),
         "--context", paths.fetch(:context),
@@ -3804,7 +3856,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def write_autonomous_fake_gh(path, objective_path: nil)
-    source = (<<~'RUBY').dup
+    source = <<~'RUBY'.dup
       #!/usr/bin/env ruby
       require "json"
 
@@ -3858,6 +3910,7 @@ class MergeAssuranceTest < Minitest::Test
                  end
       puts JSON.generate(response)
     RUBY
+    source.sub!("#!/usr/bin/env ruby", "#!#{RbConfig.ruby}")
     if objective_path
       source.sub!(
         'ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")',
@@ -3962,7 +4015,7 @@ class MergeAssuranceTest < Minitest::Test
         context: merge_context
       }
 
-      yield fixture
+      with_stubbed_autonomous_replay(autonomous) { yield fixture }
     end
   end
 
@@ -4020,11 +4073,35 @@ class MergeAssuranceTest < Minitest::Test
     ]
   end
 
+  def stubbed_replay_cli_command
+    runner = <<~RUBY
+      load #{SCRIPT.inspect}
+      autonomous_index = ARGV.index("--autonomous-result")
+      autonomous_path = ARGV.fetch(autonomous_index + 1)
+      replayed = JSON.parse(File.read(autonomous_path))
+      MergeAssurance.define_singleton_method(:replay_autonomous_result) do |**_arguments|
+        replayed
+      end
+      exit MergeAssurance::Runner.new.run(ARGV)
+    RUBY
+    [RbConfig.ruby, "-e", runner, "--"]
+  end
+
+  def with_stubbed_autonomous_replay(replayed)
+    original = MergeAssurance.method(:replay_autonomous_result)
+    MergeAssurance.define_singleton_method(:replay_autonomous_result) do |**_arguments|
+      replayed
+    end
+    yield
+  ensure
+    MergeAssurance.define_singleton_method(:replay_autonomous_result, original) if original
+  end
+
   def run_selected_hosted_ci_cli_fixture(fixture, credential_value: "preflight-secret")
     arguments = write_selected_hosted_ci_cli_fixture(fixture)
     Open3.capture3(
       { "PATH" => @original_path, "HOSTED_CI_TOKEN" => credential_value },
-      RbConfig.ruby, SCRIPT, *arguments,
+      *stubbed_replay_cli_command, *arguments,
       chdir: fixture.fetch(:repo_root)
     )
   end

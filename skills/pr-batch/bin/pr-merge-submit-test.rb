@@ -1471,7 +1471,7 @@ class PrMergeSubmitTest < Minitest::Test
     result, log = run_cli(mode: "direct", receipt_mode: :autonomous_unavailable)
 
     refute result.fetch(:status).success?
-    assert_includes result.fetch(:stderr), "receipt evidence does not currently qualify"
+    assert_includes result.fetch(:stderr), "receipt bindings do not match its evidence context"
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
   end
@@ -1479,7 +1479,7 @@ class PrMergeSubmitTest < Minitest::Test
   def test_evidence_digest_and_envelope_binding_mismatches_stop_before_any_gh_call
     {
       digest_mismatch: "evidence digest mismatch",
-      binding_mismatch: "bindings or accounting do not match"
+      binding_mismatch: "receipt bindings do not match its evidence context"
     }.each do |receipt_mode, expected|
       result, log = run_cli(mode: "direct", receipt_mode:)
 
@@ -1753,7 +1753,7 @@ class PrMergeSubmitTest < Minitest::Test
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
         expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:,
-        repo_root:, semantic_assessment_path:, replayed_autonomous_path:,
+        repo_root:, semantic_assessment_path:,
         trusted_helper_provenance: "trusted-base:#{receipt_base_sha || base_sha}",
         include_replay_bindings:
       )
@@ -1844,7 +1844,7 @@ class PrMergeSubmitTest < Minitest::Test
         *cli_arguments(
           "owner/repo", HEAD_SHA, true, true,
           include_merge_assurance_receipt: true, receipt_path:, gh_path:,
-          repo_root:, semantic_assessment_path:, replayed_autonomous_path:,
+          repo_root:, semantic_assessment_path:,
           trusted_helper_provenance: "trusted-base:#{base_sha}"
         ),
         chdir: repo_root
@@ -1980,7 +1980,7 @@ class PrMergeSubmitTest < Minitest::Test
   def cli_arguments(
     repo, expected_head, include_expected_head, include_expected_base,
     gh_path:,
-    repo_root: nil, semantic_assessment_path: nil, replayed_autonomous_path: nil,
+    repo_root: nil, semantic_assessment_path: nil,
     trusted_helper_provenance: nil, include_replay_bindings: true,
     expected_base: "main",
     subject: "Fix the thing (#42)", body: nil,
@@ -2471,7 +2471,8 @@ class PrMergeSubmitTest < Minitest::Test
     <<~RUBY
       #!#{RbConfig.ruby}
       require "json"
-      File.open(ENV.fetch("GH_LOG"), "a") do |file|
+      log_path = ENV.fetch("GH_LOG", File.join(__dir__, "gh.log"))
+      File.open(log_path, "a") do |file|
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
       end
       if ARGV.include?("repos/owner/repo/issues/1")
