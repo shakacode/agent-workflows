@@ -359,7 +359,8 @@ earlier record.
 Separately, each GitHub lane helper writes an `agent-run-launch-identity` v1
 file with mode `0600`. The file binds its helper evidence run ID and
 `launch_idempotency_key` to repository, work item, prompt source and selection
-digest, runner, machine, prompt-creation model, configured base,
+digest, trusted comment author and association when applicable, runner, machine,
+prompt-creation model, configured base,
 prompt-creation workflow, and direct selection/prompt-creation timestamps.
 The helper validates the complete initial record before atomically publishing
 this identity. Every later mutating command requires the same
@@ -375,6 +376,13 @@ it before any GitHub read or record mutation.
 - A helper rerun uses a new identity file and evidence IDs, but its payload is
   embedded in the new outer record. No `agent-run-record:v1` helper marker or
   helper-only comment is independently published.
+
+The launcher is the sole durable writer and must read the current canonical
+outer record before every transition; it rejects stale local snapshots instead
+of replaying them. Once the current outer record persists a terminal failed
+lane, no earlier helper payload or local snapshot may reopen that run. The
+helper therefore does not create a second durable worker-state store: it emits
+the bound observation for the launcher to append to the one canonical record.
 
 Within one live outer record, only mutable state, task, branch, PR, latest
 update, blocker, and later observations may refresh. The outer run ID, retry

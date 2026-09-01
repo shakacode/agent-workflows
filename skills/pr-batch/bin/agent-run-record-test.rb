@@ -132,6 +132,11 @@ class AgentRunRecordTest < Minitest::Test
         "model_at_prompt_creation" => record.dig("runner", "model_at_prompt_creation")
       }
     }
+    if record.dig("prompt_source", "kind") == "maintainer-comment"
+      identity.fetch("binding")["prompt_source_author"] = record.dig("prompt_source", "author")
+      identity.fetch("binding")["prompt_source_author_association"] =
+        record.dig("prompt_source", "author_association")
+    end
     File.write(path, "#{JSON.pretty_generate(identity)}\n", mode: "w", perm: 0o600)
   end
 
@@ -222,6 +227,18 @@ class AgentRunRecordTest < Minitest::Test
     refute status.success?
     assert_empty stdout
     assert_equal "agent-run-record: digest_at_selection is required\n", stderr
+    refute_includes stderr, "KeyError"
+  end
+
+  def test_render_rejects_author_attribution_on_a_body_prompt_source
+    record = valid_record
+    record.fetch("prompt_source")["author"] = "forged-maintainer"
+
+    stdout, stderr, status = run_helper("render", stdin_data: JSON.generate(record))
+
+    refute status.success?
+    assert_empty stdout
+    assert_equal "agent-run-record: body prompt sources must not include author attribution\n", stderr
     refute_includes stderr, "KeyError"
   end
 
@@ -466,7 +483,7 @@ class AgentRunRecordTest < Minitest::Test
     end
   end
 
-  def test_prepare_binds_a_trusted_maintainer_comment_without_reading_the_issue_body
+  def test_prepare_binds_a_trusted_maintainer_comment_and_identity_preserves_attribution
     with_fake_launch_environment do |directory, repo, gh_log, environment|
       gh = File.join(directory, "bin/gh")
       File.write(gh, <<~SH)
@@ -522,6 +539,23 @@ class AgentRunRecordTest < Minitest::Test
         "api repos/shakacode/agent-workflows/issues/comments/1234 --jq " \
           "{body: .body, url: .html_url, author: .user.login, author_association: .author_association}"
       ], File.readlines(gh_log, chomp: true)
+
+      tampered = record
+      tampered.fetch("prompt_source")["author_association"] = "OWNER"
+      launch_stdout, launch_stderr, launch_status = Open3.capture3(
+        environment,
+        RbConfig.ruby,
+        HELPER,
+        "verify-launch",
+        "--handoff-envelope",
+        "--identity-file", identity_file,
+        stdin_data: JSON.generate(tampered)
+      )
+
+      refute launch_status.success?
+      assert_empty launch_stdout
+      assert_includes launch_stderr, "record does not match persisted launch identity"
+      assert_equal 3, File.readlines(gh_log).length, "identity mismatch must fail before source re-fetch"
     end
   end
 
@@ -830,6 +864,25 @@ class AgentRunRecordTest < Minitest::Test
       refute_includes retry_stderr, "Errno::EACCES"
     ensure
       FileUtils.chmod(0o600, identity_file) if identity_file && File.exist?(identity_file)
+    end
+  end
+
+  def test_prepare_reports_a_non_object_existing_identity_without_a_backtrace
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "non-object-identity.json")
+      File.write(identity_file, "null\n", mode: "w", perm: 0o600)
+      arguments = [
+        RbConfig.ruby, HELPER, "prepare", *launch_timestamp_arguments,
+        "--issue", "560", "--runner", "Codex", "--machine", "M5",
+        "--repo-root", repo, "--identity-file", identity_file, "--format", "json"
+      ]
+
+      stdout, stderr, status = Open3.capture3(environment, *arguments)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "agent-run-record: launch identity must be an object"
+      refute_includes stderr, "NoMethodError"
     end
   end
 

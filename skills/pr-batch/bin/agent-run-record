@@ -62,9 +62,11 @@ module AgentRunRecord
     selection_digest = prompt_source.fetch("digest_at_selection")
     launch_digest = digest_or_pending!(prompt_source, "digest_at_launch")
     worker_digest = digest_or_pending!(prompt_source, "digest_observed_by_worker")
-    if prompt_source.fetch("kind") == "maintainer-comment"
+    if source_kind == "maintainer-comment"
       scalar!(prompt_source, "author")
       member!(prompt_source, "author_association", %w[OWNER MEMBER COLLABORATOR])
+    elsif prompt_source.key?("author") || prompt_source.key?("author_association")
+      raise ContractError, "body prompt sources must not include author attribution"
     end
     prompt_transport = record.fetch("prompt_transport") do
       raise ContractError, "prompt_transport is required"
@@ -177,7 +179,7 @@ module AgentRunRecord
     timestamps = record.fetch("timestamps")
     pr = record.fetch("pr")
     coordination = record["coordination"] ? plain(record.fetch("coordination")) : "not recorded (optional)"
-    prompt_author = if prompt_source["author"]
+    prompt_author = if prompt_source.fetch("kind") == "maintainer-comment"
                       "; author #{plain(prompt_source.fetch('author'))} " \
                         "(#{plain(prompt_source.fetch('author_association'))})"
                     else
@@ -405,6 +407,10 @@ module AgentRunRecord
       "machine" => options.fetch("machine"),
       "model_at_prompt_creation" => options.fetch("model")
     }
+    if prompt_source.fetch("kind") == "maintainer-comment"
+      immutable["prompt_source_author"] = prompt_source.fetch("author")
+      immutable["prompt_source_author_association"] = prompt_source.fetch("author_association")
+    end
     identity = build_launch_identity(immutable, selected_at, prompt_created_at)
     record = {
       "contract" => "agent-run-record",
@@ -829,7 +835,9 @@ module AgentRunRecord
   end
 
   def read_launch_identity(path, error_prefix)
-    JSON.parse(File.read(path, encoding: "UTF-8"))
+    identity = JSON.parse(File.read(path, encoding: "UTF-8"))
+    object!(identity, "launch identity")
+    identity
   rescue JSON::ParserError, SystemCallError => e
     raise ContractError, "#{error_prefix}: #{e.message}"
   end
@@ -886,6 +894,10 @@ module AgentRunRecord
       "machine" => record.dig("runner", "machine"),
       "model_at_prompt_creation" => record.dig("runner", "model_at_prompt_creation")
     }
+    if record.dig("prompt_source", "kind") == "maintainer-comment"
+      expected_binding["prompt_source_author"] = record.dig("prompt_source", "author")
+      expected_binding["prompt_source_author_association"] = record.dig("prompt_source", "author_association")
+    end
     matches = identity.fetch("run_id") == record.fetch("run_id") &&
               identity.fetch("launch_idempotency_key") == record.fetch("launch_idempotency_key") &&
               identity.fetch("selected_at") == record.dig("timestamps", "selected_at") &&
