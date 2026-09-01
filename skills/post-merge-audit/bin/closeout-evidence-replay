@@ -608,7 +608,9 @@ module CloseoutEvidenceReplay
   end
 
   def without_schema_slash_labels(value)
-    value.gsub(%r{\b(?:before/after|baseline/candidate|pass/fail|on/off|yes/no)\b}i, "")
+    value
+      .gsub(%r{\b(?:before/after|baseline/candidate|pass/fail|on/off|yes/no)\b}i, "")
+      .gsub(%r{\b[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\b}, "")
   end
 
   def failed_visual_artifact_claim?(value)
@@ -726,7 +728,10 @@ module CloseoutEvidenceReplay
 
     punctuation_bounded = label.match?(/[;,]|\.(?=\s|\z)/)
     prose_label = label.split(/[;,]|\.(?=\s|\z)/, 2).first.strip
-    return false if prose_label.match?(%r{[/\\]})
+    return false if prose_label.include?("\\")
+    return false if prose_label.split(/\s+/).any? do |token|
+      token.include?("/") && !token.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z})
+    end
     return false if authority_shaped_https_label?(prose_label)
     return false if text_tokens(prose_label).length < 2 && !punctuation_bounded && !recognized_status
 
