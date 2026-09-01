@@ -268,7 +268,9 @@ class IntegrationCloseoutContractTest < Minitest::Test
     normalized_gate = ask_gate.gsub(/\s+/, " ")
     normalized_monitoring = @pr_monitoring.gsub(/\s+/, " ")
     normalized_walkthrough = @pr_walkthrough.gsub(/\s+/, " ")
-    prompt_gate = "head>=base+CI=READY"
+    prompt_gate = "- ask:I=head>=base+CI=READY;I?$pr-walkthrough(large|complex=full):wait;" \
+                  "refresh;chg=>redo/stop;ordinary|I fail=>stop;ask iff same clean"
+    ancestry_command = 'git merge-base --is-ancestor "${CURRENT_BASE_SHA}" "${EXACT_HEAD_SHA}"'
 
     positions = [
       "Before entering this gate",
@@ -285,6 +287,9 @@ class IntegrationCloseoutContractTest < Minitest::Test
     end
     positions.each_cons(2) { |before, after| assert_operator before, :<, after }
 
+    assert_includes ask_gate, ancestry_command
+    assert_operator ask_gate.index(ancestry_command), :<,
+                    ask_gate.index("automatically start the exact-diff PR walkthrough")
     assert_includes ask_gate, "[Merge Assurance Gate](#merge-assurance-gate)"
     refute_includes ask_gate, "provider-produced merge-result or merge-group result"
     assert_includes normalized_gate,
@@ -297,6 +302,8 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes normalized_monitoring,
                     "future, or `UNKNOWN` facts remain `waiting-on-checks-or-review` and do not start a walkthrough."
     assert_includes normalized_monitoring, "`DIRTY`, conflicted, or behind branches are not ready."
+    assert_includes normalized_monitoring,
+                    "Current-integration readiness is separate from refreshed ordinary readiness."
     assert_includes normalized_walkthrough,
                     "Do not infer success from a provider-specific status string or GitHub conflict/mergeability metadata"
 

@@ -1582,8 +1582,14 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 
 Before entering this gate, establish current-integration readiness from trusted
 live facts. Resolve the exact head and current base. Require that the exact head
-contains the current base and that the exact-head `pr-ci-readiness` v2 result has
-the normalized successful state `READY`.
+contains the current base by requiring this command to exit zero:
+
+```bash
+git merge-base --is-ancestor "${CURRENT_BASE_SHA}" "${EXACT_HEAD_SHA}"
+```
+
+Also require that exact-head `pr-ci-readiness` v2 has normalized successful
+state `READY`.
 
 This sequencing checklist neither defines an evidence schema nor replaces the
 later [Merge Assurance Gate](#merge-assurance-gate). Do not claim or consume its

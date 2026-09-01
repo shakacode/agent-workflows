@@ -174,8 +174,8 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
      final merge decision only when the refreshed diff identity matches the
      recorded identity, ordinary readiness remains clean, and merge is allowed;
      a completed walkthrough must have explained that same diff identity.
-     Current-integration readiness is part of that refreshed ordinary
-     readiness. Walkthrough participation is not merge approval. If approval
+     Current-integration readiness is separate from refreshed ordinary readiness.
+     Walkthrough participation is not merge approval. If approval
      is declined or not granted by handoff,
      record `ready-no-merge-authority` and do not ask again for the same decision.
    - `none`: hand off as `ready-no-merge-authority` when checks, review
