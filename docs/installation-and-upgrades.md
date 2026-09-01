@@ -490,9 +490,11 @@ string rather than the literal `null`. Reading the value straight out of
 `<target>/.agent-workflows-install.json` is equivalent; the status helper
 refuses to read that path through a symlink, as the installer does. Symlink installs and plugin-companion installs record no runtime
 manifest digests, because neither installs the complete flat runtime closure the
-digest describes; use a trusted-base materialization there. Installs made before
-this key existed omit it, and the gate keeps failing closed until the pack is
-reinstalled or upgraded. Passing a non-default `--calibration-decision` changes
+digest describes; use a trusted-base materialization there. An install whose
+source pack is missing part of that closure, or that runs under a Ruby too old
+to load the runtime library, records nothing rather than failing: such a host
+cannot run the gate either. Installs made before this key existed omit it, and
+the gate keeps failing closed until the pack is reinstalled or upgraded. Passing a non-default `--calibration-decision` changes
 the manifest, so the recorded digest no longer applies.
 
 ## Status Checks

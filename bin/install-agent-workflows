@@ -1934,7 +1934,9 @@ prepare_metadata() {
 
       load library
       AutonomousMergeRuntimeTrust.default_installed_pack_digest
-    rescue StandardError
+    rescue ScriptError, StandardError
+      # ScriptError too: a Ruby too old to parse the runtime library cannot run the gate
+      # either, so record nothing rather than failing the install.
       nil
     end
     runtime_manifest_digests = {}
