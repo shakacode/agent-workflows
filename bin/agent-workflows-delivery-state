@@ -641,6 +641,9 @@ module AgentWorkflowsDeliveryState
     source_path = File.join(source, "bin", name)
     File.file?(source_path) && !File.symlink?(source_path) &&
       Digest::SHA256.file(source_path).hexdigest == actual
+  rescue SystemCallError
+    # An unreadable managed copy cannot be proven owned, so it stays blocking.
+    false
   end
 
   # Copy installs own every file the pack writes below <target>/bin. Missing

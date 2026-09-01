@@ -1931,6 +1931,9 @@ prepare_metadata() {
                            next if entry == doctor_root
 
                            relative = entry.delete_prefix("#{doctor_root}/")
+                           # Ownership markers are written after the copy and are
+                           # excluded from it, so they are never managed content.
+                           next if %w[.agent-workflows-managed .agent-stack-managed].include?(relative)
                            next if File.directory?(entry) && !File.symlink?(entry)
                            unless File.file?(entry) && !File.symlink?(entry)
                              abort "unsupported pack doctor entry while preparing install metadata: #{entry}"

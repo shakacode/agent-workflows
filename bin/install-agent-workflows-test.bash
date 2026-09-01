@@ -340,6 +340,25 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
 }
 
 
+test_fresh_copy_install_refuses_a_non_file_managed_helper_path() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target/bin/agent-workflows-status"
+  printf 'personal helper collision\n' > "$target/bin/agent-workflows-status/sentinel"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "fresh copy install accepted a non-file managed helper path"
+  assert_contains "$output" "Refusing to replace non-file path"
+  assert_file "$target/bin/agent-workflows-status/sentinel"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || \
+    fail "refused fresh install committed metadata"
+}
+
 test_copy_metadata_records_managed_bin_copy_fingerprints() {
   local tmp target
   tmp="$(mktemp -d)"
@@ -4900,7 +4919,10 @@ test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill() {
   set -e
 
   [[ "$status" -ne 0 ]] || fail "flat upgrade accepted a late helper collision"
-  assert_contains "$output" "Refusing to replace non-file path"
+  # The recorded managed bin fingerprints refuse the collision at the delivery
+  # preflight, before the newly packaged skill is copied.
+  assert_contains "$output" "refusing to replace modified, ambiguous, or unowned managed bin paths"
+  assert_contains "$output" "$target/bin/agent-workflows-status"
   [[ ! -e "$target/skills/close-session" ]] || \
     fail "failed flat upgrade stranded a newly packaged skill"
   cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
@@ -8770,6 +8792,7 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_fresh_copy_install_refuses_a_non_file_managed_helper_path
     test_copy_metadata_records_managed_bin_copy_fingerprints
     test_symlink_metadata_records_no_managed_bin_copy_fingerprints
     test_copy_install_refuses_a_modified_managed_bin_helper
