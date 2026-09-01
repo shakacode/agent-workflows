@@ -984,6 +984,8 @@ module MergeAssurance
   end
 
   def semantic_tracker_workflow_path?(path)
+    # Tracker paths are untrusted, so reject URL/drive-like prefixes here while
+    # canonical Git paths may contain colon-bearing directory names.
     return false if path.is_a?(String) && path.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
 
     CurrentIntegrationEvidence.github_actions_path?(path)
