@@ -13,6 +13,7 @@ module AutonomousMergePolicy
   # a built-in entry.
   SOURCE_POLICY_PATTERNS = %w[
     workflows/pr-processing.md
+    workflows/pr-batch-intake.md
     workflows/pr-batch-security-floor.md
     workflows/pr-batch-worker-execution.md
     workflows/pr-batch-integration-closeout.md
