@@ -225,6 +225,16 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_hosted_v1_accepts_https_as_a_prose_label
+    evidence = "HTTPS: enforced; screenshot stored in run 123"
+    body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "SATISFIED", hosted.fetch("verdict")
+    assert_empty hosted.fetch("missing")
+  end
+
   def test_generic_qa_evidence_alone_never_replays_as_hosted_qa
     data = run_replay(v2_marker)
 

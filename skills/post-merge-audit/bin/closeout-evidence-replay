@@ -678,9 +678,20 @@ module CloseoutEvidenceReplay
     !parse_https_url(value).nil?
   end
 
+  def malformed_https_reference?(value)
+    value.to_enum(:scan, HTTPS_TOKEN).any? do
+      match = Regexp.last_match
+      next false if valid_https_url?(match[0])
+      next true unless match[0].casecmp?("https:")
+
+      suffix = value[match.end(0)..]
+      suffix.nil? || !suffix.match?(/\A\s+\S/)
+    end
+  end
+
   def unresolved_hosted_criterion_evidence?(evidence)
     return false if valid_https_url?(evidence)
-    return true if http_urls(evidence).any? { |url| !valid_https_url?(url) }
+    return true if malformed_https_reference?(evidence)
     return true if evidence.match?(URI_SCHEME)
 
     evidence.match?(HOSTED_CRITERION_UNRESOLVED_PLACEHOLDER)
