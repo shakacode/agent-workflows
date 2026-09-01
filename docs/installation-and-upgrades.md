@@ -476,19 +476,27 @@ runtime closure and the shipped calibration decision. Supply it as the
 running that gate from an installed pack:
 
 ```bash
-status="$(agent-workflows-status --host claude --json)" || true
+status="$(agent-workflows-status --host claude --json)"
+case "$?" in
+  0 | 1) ;;                  # UP_TO_DATE or UPGRADE_AVAILABLE; both carry a usable digest
+  *) echo "install state is unusable; do not source a digest from it" >&2; exit 1 ;;
+esac
 digest="$(printf '%s' "$status" |
   jq -r '.runtime_manifest_digests["autonomous-merge"] // empty')"
-[ -n "$digest" ] || echo "this install records no autonomous-merge digest" >&2
+[ -n "$digest" ] || { echo "no autonomous-merge digest recorded" >&2; exit 1; }
 ```
 
-Do not put `agent-workflows-status` directly in a pipeline under `set -o
-pipefail`: it exits non-zero for `UPGRADE_AVAILABLE` and `NOT_INSTALLED`, and an
+Read the digest only through `agent-workflows-status`. It opens
+`<target>/.agent-workflows-install.json` with `O_NOFOLLOW`, so a metadata path
+replaced by a symlink is refused rather than followed, and it withholds the
+digests entirely on `CHECK_FAILED`. Reading the file directly with `jq`, `cat`,
+or any ordinary tool follows a planted symlink and can hand the gate an expected
+digest chosen by whoever planted it, which is exactly the trust the claim is
+supposed to carry. Do not put the helper in a pipeline under `set -o pipefail`
+either: it exits non-zero for `UPGRADE_AVAILABLE` and `NOT_INSTALLED`, and an
 install with an upgrade available still carries a usable digest. Keep the `//
-empty` guard as well, so an install that records no digest yields an empty
-string rather than the literal `null`. Reading the value straight out of
-`<target>/.agent-workflows-install.json` is equivalent; the status helper
-refuses to read that path through a symlink, as the installer does. Symlink installs and plugin-companion installs record no runtime
+empty` guard so an install that records no digest yields an empty string rather
+than the literal `null`. Symlink installs and plugin-companion installs record no runtime
 manifest digests, because neither installs the complete flat runtime closure the
 digest describes; use a trusted-base materialization there. An install whose
 source pack is missing part of that closure, or that runs under a Ruby too old

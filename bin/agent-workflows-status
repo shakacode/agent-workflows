@@ -107,12 +107,14 @@ module AgentWorkflowsStatus
     end
   rescue Errno::ENOENT
     nil
-  rescue Errno::ELOOP, Errno::EMLINK
+  rescue Errno::ELOOP
     raise "invalid metadata #{path}: refusing to follow a symlink"
   end
 
   # Corruption here must not read as "this install predates the key". The installer treats the
   # same shape violations as fatal, so surface them instead of folding them into "not recorded".
+  # Keep these two patterns in step with invalid_runtime_digests in bin/install-agent-workflows,
+  # which validates the same map as it is written.
   def validate_runtime_manifest_digests!(path, metadata)
     return unless metadata.key?("managed_runtime_manifest_digests")
 
@@ -228,7 +230,9 @@ module AgentWorkflowsStatus
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
       "native" => delivery_state&.fetch("native", nil),
       "flat" => delivery_state&.fetch("flat", nil),
-      "runtime_manifest_digests" => runtime_manifest_digests(metadata)
+      # Withheld on CHECK_FAILED: an install this helper could not check is not installation
+      # state a coordinator should source a verified-installed-pack digest from.
+      "runtime_manifest_digests" => (status == "CHECK_FAILED" ? nil : runtime_manifest_digests(metadata))
     }
     payload["superpowers"] = delivery_state.fetch("superpowers") if delivery_state&.key?("superpowers")
     payload

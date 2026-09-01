@@ -313,6 +313,25 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_check_failed_withholds_recorded_runtime_manifest_digests
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      write_metadata(
+        target,
+        "version" => "9.9.9",
+        "source" => File.join(target, "missing-source"),
+        "source_revision" => "",
+        "managed_runtime_manifest_digests" => { "autonomous-merge" => "a" * 64 }
+      )
+
+      out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+      payload = JSON.parse(out)
+
+      assert_equal 3, status.exitstatus, out
+      assert_equal "CHECK_FAILED", payload.fetch("status")
+      assert_nil payload.fetch("runtime_manifest_digests"), out
+    end
+  end
+
   def test_companion_status_reports_delivery_and_native_state
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|

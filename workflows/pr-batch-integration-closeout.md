@@ -1662,9 +1662,9 @@ Then pass the corresponding provenance claim:
 For a verified installed pack, use
 `verified-installed-pack:<64-lowercase-sha256>` instead, after binding
 `TRUSTED_PR_BATCH_SKILL_DIR` to that pack. The digest is coordinator or
-installation state, not output from the evaluated helper: a flat copy install
-records it under `managed_runtime_manifest_digests` in its install metadata,
-and an install recording none stays `UNKNOWN`. The evaluator
+installation state, not output from the evaluated helper: read it only from
+`agent-workflows-status --json`, which refuses a redirected metadata path. An
+install publishing none stays `UNKNOWN`. The evaluator
 mechanically recomputes a length-framed manifest over the executing evaluator
 and closeout helpers, decision/evidence/policy/trust libraries (including
 `autonomous_merge_runtime_trust.rb`), and selected calibration decision.
