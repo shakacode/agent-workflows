@@ -159,6 +159,19 @@ class HeavyRootAdmissionTest < Minitest::Test
     refute HeavyRootAdmission.reused_process_identity?("original process start", "original process start")
   end
 
+  def test_reused_pid_still_preserves_a_live_original_process_group
+    mismatched_identity = "not #{HeavyRootAdmission.process_start_identity(Process.pid)}"
+
+    assert HeavyRootAdmission.process_or_group_live?(Process.pid, Process.getpgrp, mismatched_identity)
+  end
+
+  def test_reused_pid_without_a_live_original_process_group_can_release
+    mismatched_identity = "not #{HeavyRootAdmission.process_start_identity(Process.pid)}"
+    nonexistent_pgid = 2_000_000_000
+
+    refute HeavyRootAdmission.process_or_group_live?(Process.pid, nonexistent_pgid, mismatched_identity)
+  end
+
   def test_expired_prelaunch_token_is_recovered_but_cannot_be_reused
     Dir.mktmpdir("heavy-root-admission-expiry-test") do |state_dir|
       scan_command = scanner_command(state_dir)

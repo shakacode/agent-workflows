@@ -370,7 +370,9 @@ module HeavyRootAdmission
   def process_or_group_live?(pid, pgid, expected_pid_start_identity = nil)
     if expected_pid_start_identity
       current_identity = process_start_identity(pid)
-      return false if reused_process_identity?(expected_pid_start_identity, current_identity)
+      if reused_process_identity?(expected_pid_start_identity, current_identity)
+        return process_target_live?(-pgid)
+      end
       return true if current_identity == expected_pid_start_identity
     end
 

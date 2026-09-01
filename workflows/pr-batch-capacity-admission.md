@@ -46,6 +46,8 @@ the configured maximum.
    `--scan-command-json`. The helper holds a host-local file lock only while it
    runs the bounded scan, recovers expired pre-launch records, counts live roots
    plus active reservations, and persists its decision.
+   That lock includes the scan duration, so a concurrent bind or release may
+   wait up to `--scan-timeout`; keep the timeout at the smallest reliable value.
 2. Launch only when the decision is `reserved` (exit 0). A `capacity-full`
    decision (exit 3) names the owning tasks/lanes and says to retry after a live
    root or reservation reaches terminal/no-writer cleanup and releases. Do not
