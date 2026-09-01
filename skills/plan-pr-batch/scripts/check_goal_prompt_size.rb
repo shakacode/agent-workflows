@@ -86,6 +86,7 @@ BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wav
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
 OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
+MERGE_AUTHORITY_PROMPT_LINE = "merge_authority:<none|ask|auto_merge_when_gates_pass>"
 PLANNING_PASS_ASSESSMENT_FIELD = "Planning-pass model/effort assessment:"
 PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES = [
   PLANNING_PASS_ASSESSMENT_FIELD,
@@ -1046,6 +1047,12 @@ require_occurrence_count(
   MANIFEST_PROVENANCE_PROMPT_LINE,
   1,
   "triage generated-prompt manifest provenance contract"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
+  MERGE_AUTHORITY_PROMPT_LINE,
+  1,
+  "triage generated-prompt merge-authority contract"
 )
 require_occurrence_count(
   triage_prompt_contract_text,
