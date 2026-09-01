@@ -44,6 +44,7 @@ module CloseoutEvidenceReplay
   PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
   PERFORMANCE_EVIDENCE_FIELD_PATTERN = PERFORMANCE_EVIDENCE_FIELD_NAMES.map { |name| Regexp.escape(name) }.join("|")
   HTTPS_PROSE_LABEL_STATUSES = %w[available disabled enabled enforced failed ok only optional passed required supported].freeze
+  HTTPS_PROSE_LABEL_STATUS_PATTERN = HTTPS_PROSE_LABEL_STATUSES.map { |status| Regexp.escape(status) }.join("|")
   HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*/i
   # Keep performance-only URL stripping aligned with semicolon-delimited evidence fields without
   # truncating field-like semicolon parameters in visual or interaction artifact URLs.
@@ -672,11 +673,19 @@ module CloseoutEvidenceReplay
   end
 
   def http_urls(value)
-    value.to_enum(:scan, HTTPS_TOKEN).filter_map do
-      # Enumerable scan yields only the matched text; last_match retains its offsets for label detection.
-      match = Regexp.last_match
+    https_token_matches(value).filter_map do |match|
       match[0] unless prose_https_label?(value, match)
     end
+  end
+
+  def https_token_matches(value)
+    matches = []
+    offset = 0
+    while (match = HTTPS_TOKEN.match(value, offset))
+      matches << match
+      offset = match.end(0)
+    end
+    matches
   end
 
   def valid_https_url?(value)
@@ -693,10 +702,10 @@ module CloseoutEvidenceReplay
     suffix = value[match.end(0)..]
     return false unless suffix&.match?(/\A\s+/)
 
-    tokens = text_tokens(suffix)
-    return true if HTTPS_PROSE_LABEL_STATUSES.include?(tokens.first)
-
-    tokens.first&.match?(/\A[1-5]\d{2}\z/) && HTTPS_PROSE_LABEL_STATUSES.include?(tokens[1])
+    label = suffix.lstrip.sub(/\A[^\p{Alnum}]+/u, "")
+    label.match?(
+      /\A(?:[1-5]\d{2}\s+)?(?:#{HTTPS_PROSE_LABEL_STATUS_PATTERN})(?=\s|[,;]|\.(?:\s|\z)|\z)/i
+    )
   end
 
   def unresolved_hosted_criterion_evidence?(evidence)
@@ -769,6 +778,7 @@ module CloseoutEvidenceReplay
     return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) || metric_name.match?(/\A(?:metric|metrics|na|notapplicable)\z/i)
     return false if unresolved_metric_tokens?(metric_tokens)
 
+    return false if qualifier_only_terminal_count?(metric_tokens)
     return false if size_metric_shape?(metric_tokens)
     return false if structural_metric_count?(metric_tokens)
 
@@ -791,6 +801,11 @@ module CloseoutEvidenceReplay
 
   def structural_metric_count?(tokens)
     qualified_terminal_count?(tokens, STRUCTURAL_COUNT_TOKENS)
+  end
+
+  def qualifier_only_terminal_count?(tokens)
+    tokens.length >= 2 && %w[count counts].include?(tokens.last) &&
+      tokens[0...-1].all? { |token| COUNT_QUALIFIER_TOKENS.include?(token) }
   end
 
   def size_metric_shape?(tokens)

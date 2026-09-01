@@ -213,6 +213,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "http://evidence.example.test/run/sign-in-abc123",
       "https:broken",
       "https: broken",
+      "https: available.example.test",
       "https:",
       "https://bad host/run/sign-in-abc123"
     ]
@@ -802,7 +803,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_rejects_malformed_https_reference_beside_a_valid_url
-    ["https:broken", "https: broken"].each do |malformed_url|
+    ["https:broken", "https: broken", "https: available.example.test"].each do |malformed_url|
       qa = run_replay(
         v2_marker(
           "visual_evidence" =>
@@ -1327,6 +1328,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       file_total_count chunk_total_count module_total_count test_total_count
       files_overall_count modulesAggregateCount tests_unique_counts assets_total_count
       bundle_distinct_count bytesNumberCount file_total_overall_count assets_all_unique_count
+      total_count overall_counts totalOverallCount
     ].each do |metric_name|
       qa = run_replay(
         v2_marker(
