@@ -35,6 +35,11 @@ reproduction explains the failure.
    When a run was retried, also check earlier attempts with
    `gh run view <RUN_ID> --attempt <N>` so a retry that flipped pass/fail is
    not missed as same-commit hosted history.
+   A run's `conclusion` is also the aggregate result across every job in that
+   run, not the specific job named in the failure identity. Key candidate
+   runs off that job's own result instead—`gh run view <RUN_ID> --json jobs`
+   and match by job name—so an unrelated job's failure or pass is never
+   substituted for the failure identity's own history.
    An equivalent hosted invocation has matching controlled
    invocation parameters and selected or known pre-run hosted environment
    identity—event, inputs, matrix, runner image, toolchain, and configuration

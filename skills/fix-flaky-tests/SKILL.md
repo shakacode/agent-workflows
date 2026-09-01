@@ -131,6 +131,12 @@ gh run list --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json da
 gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
 ```
 
+A run's `conclusion` is the aggregate result across every job in that run,
+not the specific job identified by the failure. Key candidate runs off that
+job's own result instead — `gh run view <RUN_ID> --json jobs` and match by
+job name — so an unrelated job's failure or pass is never substituted for
+the failing job's own history.
+
 For any other provider, resolve the log-fetch and replay commands from the
 repository seam described above rather than assuming a provider CLI exists.
 Buildkite, CircleCI, and everything else stay seam-resolved by design: this
