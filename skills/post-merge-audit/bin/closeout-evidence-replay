@@ -740,8 +740,9 @@ module CloseoutEvidenceReplay
 
   def authority_shaped_https_label?(label)
     label.split(/\s+/).any? do |token|
-      next false if token.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
-      next false if token.match?(/\A\d{1,2}(?:\.\d{1,2}){1,2}\z/)
+      version_token = token.split(/[?#]/, 2).first
+      next false if version_token.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
+      next false if version_token.match?(/\A\d{1,2}(?:\.\d{1,2}){1,2}\z/)
 
       authority = token.split(/[?#]/, 2).first
       authority.include?(".") || authority.include?(":") || authority.start_with?("[")
@@ -897,6 +898,7 @@ module CloseoutEvidenceReplay
     return false if source.match?(/\A(?:command|report|ref|source)\z/i)
 
     return valid_https_url?(source) if source.match?(%r{\Ahttps?://}i)
+    return false if source.match?(/\Ahttps?:/i)
     return false if source.include?("://")
 
     source.match?(%r{\A[A-Za-z0-9][A-Za-z0-9._:#@/-]*\z})

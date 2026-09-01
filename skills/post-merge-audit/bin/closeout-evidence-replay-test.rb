@@ -241,7 +241,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_hosted_v1_accepts_https_as_a_prose_label
     [
       "HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced", "HTTPS: TLS 1.3",
-      "HTTPS: TLSv1.3", "HTTPS: v1.2.3 released", "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active"
+      "HTTPS: TLSv1.3", "HTTPS: v1.2.3 released", "HTTPS: v1.2.3?build=5",
+      "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active"
     ].each do |label|
       evidence = "#{label}; https://evidence.example.test/sign-in-abc123"
       body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
@@ -896,7 +897,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_v2_accepts_https_prose_labels_beside_durable_urls
     [
       "HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced", "HTTPS: TLS 1.3",
-      "HTTPS: TLSv1.3", "HTTPS: v1.2.3 released", "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active"
+      "HTTPS: TLSv1.3", "HTTPS: v1.2.3 released", "HTTPS: v1.2.3?build=5",
+      "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active"
     ].each do |label|
       qa = run_replay(
         v2_marker(
@@ -1553,6 +1555,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=report; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=UNKNOWN; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=https://; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
+      "repo_seam: source=https:broken; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=http://report.example.test/run; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: https://ci.example.test/run?a=1;source=fake/report; source missing; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s"
     ]
