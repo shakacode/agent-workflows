@@ -17,11 +17,20 @@ class GitHubApiCanaryTest < Minitest::Test
     [JSON.parse(stdout), stderr, status]
   end
 
-  def with_fake_gh(response_fixture:, stderr_fixture: nil, exit_status: 0, sleep_seconds: nil)
+  def with_fake_gh(response_fixture: nil, response_content: nil, stderr_fixture: nil, exit_status: 0, sleep_seconds: nil)
+    raise ArgumentError, "provide one response source" unless [response_fixture, response_content].compact.one?
+
     Dir.mktmpdir("github-api-canary-test") do |directory|
       executable = File.join(directory, "gh")
       call_log = File.join(directory, "calls.jsonl")
       pid_file = File.join(directory, "pid")
+      response_file = if response_content
+                        File.join(directory, "response.headers").tap do |path|
+                          File.binwrite(path, response_content)
+                        end
+                      else
+                        File.join(FIXTURES, response_fixture)
+                      end
       File.write(
         executable,
         <<~'RUBY'
@@ -44,7 +53,7 @@ class GitHubApiCanaryTest < Minitest::Test
         "GITHUB_API_CANARY_GH" => executable,
         "CANARY_CALL_LOG" => call_log,
         "CANARY_PID_FILE" => pid_file,
-        "CANARY_RESPONSE_FILE" => File.join(FIXTURES, response_fixture),
+        "CANARY_RESPONSE_FILE" => response_file,
         "CANARY_EXIT_STATUS" => exit_status.to_s
       }
       environment["CANARY_STDERR_FILE"] = File.join(FIXTURES, stderr_fixture) if stderr_fixture
@@ -186,6 +195,18 @@ class GitHubApiCanaryTest < Minitest::Test
     refute_equal "possible-secondary-rate-limited", result.fetch("status")
   end
 
+  def test_partial_success_with_sso_header_remains_healthy
+    result, stderr, status = run_canary(
+      "--headers-file",
+      File.join(FIXTURES, "healthy-sso-partial.headers")
+    )
+
+    assert status.success?, stderr
+    assert_empty stderr
+    assert_equal "healthy", result.fetch("status")
+    assert_equal 206, result.fetch("http_status")
+  end
+
   def test_429_with_exhausted_representative_bucket_is_primary_rate_limited
     result, stderr, status = run_canary(
       "--headers-file",
@@ -273,14 +294,30 @@ class GitHubApiCanaryTest < Minitest::Test
     end
   end
 
-  def test_rate_limit_endpoint_is_rejected_as_a_primary_canary_without_a_request
-    with_fake_gh(response_fixture: "healthy.headers") do |environment, call_log|
-      result, stderr, status = run_canary("--endpoint", "/rate_limit", environment: environment)
+  def test_rate_limit_endpoint_variants_are_rejected_without_a_request
+    ["/rate_limit", "/rate_limit/", "/Rate_Limit", "/RATE_LIMIT?resource=core"].each do |endpoint|
+      with_fake_gh(response_fixture: "healthy.headers") do |environment, call_log|
+        result, stderr, status = run_canary("--endpoint", endpoint, environment: environment)
+
+        assert_equal 2, status.exitstatus, endpoint
+        assert_empty stderr, endpoint
+        assert_equal "malformed-response", result.fetch("status"), endpoint
+        refute File.exist?(call_log), endpoint
+      end
+    end
+  end
+
+  def test_oversized_live_response_is_labeled_as_a_live_request_failure
+    oversized_headers = "HTTP/2 200\nX-Fill: #{'x' * 65_537}\n\n"
+
+    with_fake_gh(response_content: oversized_headers) do |environment, call_log|
+      result, stderr, status = run_canary(environment: environment)
 
       assert_equal 2, status.exitstatus
       assert_empty stderr
       assert_equal "malformed-response", result.fetch("status")
-      refute File.exist?(call_log)
+      assert_equal "live-request", result.fetch("source")
+      assert_equal 1, File.readlines(call_log).length
     end
   end
 

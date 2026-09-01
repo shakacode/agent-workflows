@@ -14,7 +14,8 @@ module GitHubApiCanary
   MAX_TIMEOUT_SECONDS = 300.0
   SAFE_REQUEST_ID = /\A[A-Za-z0-9:_-]{1,128}\z/
   SAFE_RESOURCE = /\A[A-Za-z0-9_.-]{1,64}\z/
-  SAFE_ENDPOINT = %r{\A/(?!rate_limit(?:\?|\z))[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{1,1024}\z}
+  SAFE_ENDPOINT = %r{\A/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{1,1024}\z}
+  RATE_LIMIT_ENDPOINT = %r{\A/rate_limit(?:/|\?|\z)}i
 
   class InputError < StandardError; end
   class TransportError < StandardError; end
@@ -49,7 +50,11 @@ module GitHubApiCanary
     if options[:headers_file] && options[:endpoint_explicit]
       raise InputError, "--endpoint and --headers-file are mutually exclusive"
     end
-    raise InputError, "endpoint is invalid" unless options.fetch(:endpoint).match?(SAFE_ENDPOINT)
+
+    endpoint = options.fetch(:endpoint)
+    if !endpoint.match?(SAFE_ENDPOINT) || endpoint.match?(RATE_LIMIT_ENDPOINT)
+      raise InputError, "endpoint is invalid"
+    end
     if options[:reported_rate_limit_remaining]&.negative?
       raise InputError, "reported rate-limit remaining is malformed"
     end
@@ -147,9 +152,10 @@ module GitHubApiCanary
   def record(http_status, headers, source:, reported_rate_limit_remaining: nil)
     remaining = optional_integer(headers, "x-ratelimit-remaining")
     reset = reset_at(headers)
-    primary_rate_limited = [403, 429].include?(http_status) && !remaining.nil? && remaining.zero?
+    sso_denial = http_status == 403 && headers.key?("x-github-sso")
+    primary_rate_limited = [403, 429].include?(http_status) && !sso_denial && !remaining.nil? && remaining.zero?
     possible_secondary_rate_limited = [403, 429].include?(http_status) && !primary_rate_limited
-    denied_or_authentication_unknown = [401, 404].include?(http_status) || headers.key?("x-github-sso")
+    denied_or_authentication_unknown = [401, 404].include?(http_status) || sso_denial
     retry_after = retry_after_at(headers)
     retry_at, retry_evidence = retry_decision(
       primary_rate_limited: primary_rate_limited,
@@ -284,12 +290,13 @@ module GitHubApiCanary
 
   def run(arguments)
     options = parse_options(arguments)
-    raw, source = if options[:headers_file]
-                    [read_headers(options.fetch(:headers_file)), "supplied-headers"]
-                  else
-                    response, = request(options.fetch(:endpoint), timeout: options.fetch(:timeout))
-                    [response, "live-request"]
-                  end
+    source = options[:headers_file] ? "supplied-headers" : "live-request"
+    raw = if options[:headers_file]
+            read_headers(options.fetch(:headers_file))
+          else
+            response, = request(options.fetch(:endpoint), timeout: options.fetch(:timeout))
+            response
+          end
     http_status, headers = parse_response(raw)
     puts JSON.generate(
       record(
