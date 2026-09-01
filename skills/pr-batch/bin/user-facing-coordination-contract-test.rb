@@ -28,8 +28,8 @@ class UserFacingCoordinationContractTest < Minitest::Test
             "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
             "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
             "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
-            "auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible OR " \
-            "human-approved-for-current-head+durable(proven-human+merge-authority);" \
+            "auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|" \
+            "human-approved-for-current-head+durable-decision(proven+merge-authority);" \
             "else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close " \
             "PR/target/issue."
   HST_ACTIONABLE_SUMMARY = "HST-v1 actionable material state change: a decision or action is required, " \

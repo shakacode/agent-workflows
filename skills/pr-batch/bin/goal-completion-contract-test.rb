@@ -51,8 +51,8 @@ COMPACT_CONTRACT_LINE = "GMCC-v5:CI@head/configured-reviewers " \
                         "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
                         "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
                         "auto=>exact verdict/head/sorted-gates/rollback;" \
-                        "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
-                        "durable(proven-human+merge-authority);else ready-human-review-required|" \
+                        "merge iff autonomous-merge-eligible|human-approved-for-current-head+" \
+                        "durable-decision(proven+merge-authority);else ready-human-review-required|" \
                         "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
 CANONICAL_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus " \
                                  "`autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact " \
@@ -93,8 +93,8 @@ COMPACT_CONTRACT_INVARIANTS = [
   "noauth=>ready-no-merge-authority",
   "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch",
   "auto=>exact verdict/head/sorted-gates/rollback",
-  "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
-  "durable(proven-human+merge-authority)",
+  "merge iff autonomous-merge-eligible|human-approved-for-current-head",
+  "durable-decision(proven+merge-authority)",
   "else ready-human-review-required|autonomous-merge-evidence-unknown",
   "merge+close PR/target/issue"
 ].freeze
@@ -1104,10 +1104,10 @@ class GoalCompletionContractTest < Minitest::Test
       line = compact_contract_line(prompt)
       assert_text_includes line,
                            "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
-                           "autonomous-merge-eligible OR human-approved-for-current-head",
+                           "autonomous-merge-eligible|human-approved-for-current-head",
                            "compact completion contract"
       assert_text_includes line,
-                           "durable(proven-human+merge-authority)",
+                           "durable-decision(proven+merge-authority)",
                            "compact completion contract"
       assert_text_includes line,
                            "ready-human-review-required|autonomous-merge-evidence-unknown",
@@ -1826,10 +1826,10 @@ class GoalCompletionContractTest < Minitest::Test
     }.each do |label, text|
       assert_text_includes text,
                            "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
-                           "autonomous-merge-eligible OR human-approved-for-current-head",
+                           "autonomous-merge-eligible|human-approved-for-current-head",
                            label
       assert_text_includes text,
-                           "durable(proven-human+merge-authority)",
+                           "durable-decision(proven+merge-authority)",
                            label
       assert_text_includes text,
                            "ready-human-review-required|autonomous-merge-evidence-unknown",

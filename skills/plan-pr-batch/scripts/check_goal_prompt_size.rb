@@ -139,8 +139,8 @@ GOAL_MODE_COMPACT_CONTRACT = "GMCC-v5:CI@head/configured-reviewers " \
                              "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
                              "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
                              "auto=>exact verdict/head/sorted-gates/rollback;" \
-                             "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
-                             "durable(proven-human+merge-authority);else ready-human-review-required|" \
+                             "merge iff autonomous-merge-eligible|human-approved-for-current-head+" \
+                             "durable-decision(proven+merge-authority);else ready-human-review-required|" \
                              "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
 GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
                                 "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
@@ -178,8 +178,8 @@ GOAL_MODE_REQUIRED_SEMANTICS = [
   "noauth=>ready-no-merge-authority",
   "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch",
   "auto=>exact verdict/head/sorted-gates/rollback",
-  "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
-  "durable(proven-human+merge-authority)",
+  "merge iff autonomous-merge-eligible|human-approved-for-current-head",
+  "durable-decision(proven+merge-authority)",
   "else ready-human-review-required|autonomous-merge-evidence-unknown",
   "merge+close PR/target/issue"
 ].freeze
