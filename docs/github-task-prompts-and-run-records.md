@@ -272,7 +272,7 @@ above; those outer fields do not expand the helper schema.
 | `prompt_transport` | `null` before launch verification, then the launch digest marked for the existing handoff envelope outside the frozen Batch Plan. The outer launcher binds that envelope to the same run, plan binding, and replay identity. |
 | `current_main` | Machine provenance for the configured base branch and observed `origin/<base>` commit, or field-granular `UNKNOWN`. |
 | `runner` | Runner name and machine plus separately observed model at prompt creation and worker start; each unavailable value is `UNKNOWN`. |
-| `workflow_versions.prompt_creation` | Timestamped loaded-pack `HEAD` plus PR-batch and workflow digests observed at prompt creation; each unavailable value is `UNKNOWN`. |
+| `workflow_versions.prompt_creation` | Loaded-pack `HEAD` plus PR-batch and workflow digests read immediately after prompt creation, with the helper's direct observation timestamp; each unavailable value is `UNKNOWN`. |
 | `workflow_versions.worker_start` | Immutable timestamped pack `HEAD` plus SHA-256 digests of the PR-batch skill and workflow observed at worker start; each unavailable value is `UNKNOWN`. |
 | `workflow_versions.later_observations` | Append-only timestamped observations added only when one of those workflow versions changes; an empty array is valid. |
 | `task` | Derived or explicit task title, task ID, and task URL; unavailable values are `UNKNOWN`. |
@@ -290,8 +290,9 @@ State and outcome are deliberately separate closed fields. `launch-pending`,
 live blocker or `failed` for the recorded unrecoverable worker-digest mismatch.
 Tools must not invent synonyms or compress the two into one value.
 
-Event times are nondecreasing: selection, prompt creation, worker digest
-observation and worker start when present, then the latest record observation.
+Event times are nondecreasing: selection, prompt creation, its workflow
+observation, worker digest observation and worker start when present, then the
+latest record observation.
 Later workflow observations occur nondecreasingly after worker start. A latest
 material update or later workflow observation cannot be newer than the record's
 observation time.
@@ -321,7 +322,10 @@ merge. This rendering does not change the durable machine value from `none` to
 
 ## Workflow version history
 
-`workflow_versions.prompt_creation` records the prompt-creation observation.
+`workflow_versions.prompt_creation` records the loaded workflow bytes observed
+by `prepare` immediately after the launcher-created prompt. Its `observed_at`
+is the actual helper read time, which can be later than the launcher-supplied
+`Prompt created at`; it must not be backdated to that earlier event.
 `workflow_versions.worker_start` begins as field-granular `UNKNOWN` with a
 `pending` timestamp. `mark-worker-started` replaces that pending placeholder
 once with the directly timestamped worker observation. That worker-start value
@@ -357,6 +361,10 @@ file with mode `0600`. The file binds its helper evidence run ID and
 `launch_idempotency_key` to repository, work item, prompt source and selection
 digest, runner, machine, prompt-creation model, configured base,
 prompt-creation workflow, and direct selection/prompt-creation timestamps.
+The helper validates the complete initial record before atomically publishing
+this identity. Every later mutating command requires the same
+`--identity-file` and rejects a record whose immutable fields no longer match
+it before any GitHub read or record mutation.
 
 - A retry of that helper launch reuses the same identity file and its helper
   evidence IDs, timestamps, configured-base binding, source, and selection
@@ -435,6 +443,7 @@ handoff envelope outside the frozen Batch Plan:
 ```bash
 skills/pr-batch/bin/agent-run-record verify-launch \
   --handoff-envelope \
+  --identity-file /durable/private/run-560-1.json \
   < selected-run-record.json > launch-verified-record.json
 ```
 
@@ -457,6 +466,7 @@ boundary (supplying an observed model only when exposed):
 skills/pr-batch/bin/agent-run-record mark-worker-started \
   --repo-root /path/to/repository \
   --pack-root /path/to/loaded/agent-workflows \
+  --identity-file /durable/private/run-560-1.json \
   < launch-verified-record.json > started-run-record.json
 ```
 
@@ -479,6 +489,7 @@ has changed:
 skills/pr-batch/bin/agent-run-record observe-workflows \
   --repo-root /path/to/repository \
   --pack-root /path/to/loaded/agent-workflows \
+  --identity-file /durable/private/run-560-1.json \
   < started-run-record.json > updated-run-record.json
 ```
 

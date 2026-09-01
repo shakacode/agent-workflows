@@ -62,6 +62,7 @@ pack_docs=(
   execution-provenance-schema.md
   review-finding-schema.md
   agent-workflows-model-routing.md
+  github-task-prompts-and-run-records.md
   user-facing-coordination.md
   writing-style.md
   writing-style-asd-ste100.md

@@ -9,6 +9,8 @@ require "digest"
 require "fileutils"
 require "tmpdir"
 
+load File.expand_path("agent-run-record", __dir__)
+
 HELPER = File.expand_path("agent-run-record", __dir__)
 UUID_V4 = /\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/
 ROOT = File.expand_path("../../..", __dir__)
@@ -108,6 +110,31 @@ class AgentRunRecordTest < Minitest::Test
     ]
   end
 
+  def write_launch_identity(path, record)
+    identity = {
+      "contract" => "agent-run-launch-identity",
+      "version" => 1,
+      "run_id" => record.fetch("run_id"),
+      "launch_idempotency_key" => record.fetch("launch_idempotency_key"),
+      "selected_at" => record.dig("timestamps", "selected_at"),
+      "prompt_created_at" => record.dig("timestamps", "prompt_created_at"),
+      "binding" => {
+        "repository" => record.fetch("repository"),
+        "work_item_kind" => record.dig("work_item", "kind"),
+        "work_item_number" => record.dig("work_item", "number"),
+        "prompt_source_kind" => record.dig("prompt_source", "kind"),
+        "prompt_source_url" => record.dig("prompt_source", "url"),
+        "prompt_digest_at_selection" => record.dig("prompt_source", "digest_at_selection"),
+        "current_main" => record.fetch("current_main"),
+        "prompt_creation_workflow" => record.dig("workflow_versions", "prompt_creation"),
+        "runner" => record.dig("runner", "name"),
+        "machine" => record.dig("runner", "machine"),
+        "model_at_prompt_creation" => record.dig("runner", "model_at_prompt_creation")
+      }
+    }
+    File.write(path, "#{JSON.pretty_generate(identity)}\n", mode: "w", perm: 0o600)
+  end
+
   def with_fake_launch_environment
     Dir.mktmpdir("agent-run-record-test") do |directory|
       repo = File.join(directory, "repo")
@@ -186,6 +213,18 @@ class AgentRunRecordTest < Minitest::Test
     assert_operator stdout.index("<details>"), :>, stdout.index("Latest:")
   end
 
+  def test_render_reports_a_missing_selection_digest_as_a_contract_error
+    record = valid_record
+    record.fetch("prompt_source").delete("digest_at_selection")
+
+    stdout, stderr, status = run_helper("render", stdin_data: JSON.generate(record))
+
+    refute status.success?
+    assert_empty stdout
+    assert_equal "agent-run-record: digest_at_selection is required\n", stderr
+    refute_includes stderr, "KeyError"
+  end
+
   def test_prepare_derives_issue_main_task_and_exact_body_digest_with_selected_queries
     with_fake_launch_environment do |directory, repo, gh_log, environment|
       identity_file = File.join(directory, "launch-identity.json")
@@ -226,7 +265,12 @@ class AgentRunRecordTest < Minitest::Test
       assert_equal "pending", record.dig("timestamps", "worker_started_at")
       assert_equal "UNKNOWN", record.dig("runner", "model_at_prompt_creation")
       assert_equal "UNKNOWN", record.dig("runner", "model_at_worker_start")
-      assert_equal record.dig("timestamps", "prompt_created_at"),
+      prompt_created_at = Time.iso8601(record.dig("timestamps", "prompt_created_at"))
+      workflow_observed_at = Time.iso8601(record.dig("workflow_versions", "prompt_creation", "observed_at"))
+      record_observed_at = Time.iso8601(record.dig("timestamps", "observed_at"))
+      assert_operator workflow_observed_at, :>=, prompt_created_at
+      assert_operator workflow_observed_at, :<=, record_observed_at
+      refute_equal record.dig("timestamps", "prompt_created_at"),
                    record.dig("workflow_versions", "prompt_creation", "observed_at")
       assert_equal "pending", record.dig("workflow_versions", "worker_start", "observed_at")
       assert File.file?(identity_file), "prepare must persist launch identity before worker launch"
@@ -281,6 +325,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "verify-launch",
         "--handoff-envelope",
+        "--identity-file", identity_file,
         stdin_data: selected_json
       )
       assert launched_status.success?, launched_error
@@ -292,6 +337,7 @@ class AgentRunRecordTest < Minitest::Test
         "mark-worker-started",
         "--repo-root", repo,
         "--pack-root", repo,
+        "--identity-file", identity_file,
         stdin_data: launched_json
       )
       assert started_status.success?, started_error
@@ -336,6 +382,7 @@ class AgentRunRecordTest < Minitest::Test
 
   def test_pull_request_body_uses_exact_canonical_bytes_at_all_three_boundaries
     with_fake_launch_environment do |directory, repo, gh_log, environment|
+      identity_file = File.join(directory, "pr-launch-identity.json")
       canonical_body = "Cafe\u0301  \n"
       expected_digest = Digest::SHA256.hexdigest(canonical_body.encode(Encoding::UTF_8))
       pull_request_url = "https://github.com/shakacode/agent-workflows/pull/575"
@@ -372,7 +419,7 @@ class AgentRunRecordTest < Minitest::Test
         "--runner", "Codex",
         "--machine", "M5",
         "--repo-root", repo,
-        "--identity-file", File.join(directory, "pr-launch-identity.json"),
+        "--identity-file", identity_file,
         "--format", "json"
       )
       assert prepare_status.success?, prepare_stderr
@@ -391,6 +438,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "verify-launch",
         "--handoff-envelope",
+        "--identity-file", identity_file,
         stdin_data: prepare_stdout
       )
       assert launch_status.success?, launch_stderr
@@ -403,6 +451,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "mark-worker-started",
         "--repo-root", repo,
+        "--identity-file", identity_file,
         stdin_data: launch_stdout
       )
       assert worker_status.success?, worker_stderr
@@ -699,6 +748,45 @@ class AgentRunRecordTest < Minitest::Test
     end
   end
 
+  def test_prepare_validates_the_complete_record_before_persisting_identity
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "invalid-github-record.json")
+      gh = File.join(directory, "bin/gh")
+      File.write(gh, <<~SH)
+        #!/bin/sh
+        case "$*" in
+          "repo view --json nameWithOwner")
+            printf '%s\n' '{"nameWithOwner":"shakacode/agent-workflows"}'
+            ;;
+          "issue view 560 --repo shakacode/agent-workflows --json number,title,body,url")
+            printf '%s\n' '{"number":560,"title":"bad\\ntitle","body":"Exact issue bytes\\nsecond line\\n","url":"https://github.com/shakacode/agent-workflows/issues/560"}'
+            ;;
+          *) exit 91 ;;
+        esac
+      SH
+      FileUtils.chmod(0o755, gh)
+
+      stdout, stderr, status = Open3.capture3(
+        environment,
+        RbConfig.ruby,
+        HELPER,
+        "prepare",
+        *launch_timestamp_arguments,
+        "--issue", "560",
+        "--runner", "Codex",
+        "--machine", "M5",
+        "--repo-root", repo,
+        "--identity-file", identity_file,
+        "--format", "json"
+      )
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "title must be one nonempty line"
+      refute File.exist?(identity_file), "invalid record must not persist launch identity"
+    end
+  end
+
   def test_identity_reuse_rejects_stored_selection_after_prompt_creation
     with_fake_launch_environment do |directory, repo, _gh_log, environment|
       identity_file = File.join(directory, "ordered-identity.json")
@@ -719,6 +807,29 @@ class AgentRunRecordTest < Minitest::Test
       refute retry_status.success?
       assert_empty retry_stdout
       assert_includes retry_stderr, "identity selected_at must not be after prompt_created_at"
+    end
+  end
+
+  def test_prepare_reports_an_unreadable_existing_identity_without_a_backtrace
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "corrupt-identity.json")
+      arguments = [
+        RbConfig.ruby, HELPER, "prepare", *launch_timestamp_arguments,
+        "--issue", "560", "--runner", "Codex", "--machine", "M5",
+        "--repo-root", repo, "--identity-file", identity_file, "--format", "json"
+      ]
+      _first_stdout, first_stderr, first_status = Open3.capture3(environment, *arguments)
+      assert first_status.success?, first_stderr
+      FileUtils.chmod(0o000, identity_file)
+
+      retry_stdout, retry_stderr, retry_status = Open3.capture3(environment, *arguments)
+
+      refute retry_status.success?
+      assert_empty retry_stdout
+      assert_includes retry_stderr, "agent-run-record: cannot persist launch identity:"
+      refute_includes retry_stderr, "Errno::EACCES"
+    ensure
+      FileUtils.chmod(0o600, identity_file) if identity_file && File.exist?(identity_file)
     end
   end
 
@@ -765,6 +876,13 @@ class AgentRunRecordTest < Minitest::Test
       assert_includes stderr, "configured repo_prefix must be 1-6 uppercase ASCII letters or digits"
       refute File.exist?(identity_file), "invalid task-title configuration must fail before launch identity is saved"
     end
+  end
+
+  def test_derived_task_prefix_uses_only_uppercase_ascii_letters_and_digits
+    prefix = AgentRunRecord.task_prefix({}, "owner/foo.bar")
+
+    assert_equal "FB", prefix
+    assert_match(/\A[A-Z0-9]{1,6}\z/, prefix)
   end
 
   def test_state_and_outcome_follow_the_closed_lifecycle_matrix
@@ -963,6 +1081,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "verify-launch",
         "--handoff-envelope",
+        "--identity-file", identity_file,
         stdin_data: JSON.generate(record)
       )
       assert launch_status.success?, launch_stderr
@@ -978,6 +1097,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "mark-worker-started",
         "--repo-root", repo,
+        "--identity-file", identity_file,
         stdin_data: JSON.generate(record)
       )
       assert started_status.success?, started_stderr
@@ -1000,6 +1120,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "observe-workflows",
         "--repo-root", repo,
+        "--identity-file", identity_file,
         stdin_data: JSON.generate(record)
       )
       assert later_status.success?, later_stderr
@@ -1016,6 +1137,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "observe-workflows",
         "--repo-root", repo,
+        "--identity-file", identity_file,
         stdin_data: JSON.generate(updated)
       )
       assert unchanged_status.success?, unchanged_stderr
@@ -1029,6 +1151,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "mark-worker-started",
         "--repo-root", repo,
+        "--identity-file", identity_file,
         stdin_data: JSON.generate(updated)
       )
       refute repeat_status.success?
@@ -1110,6 +1233,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "verify-launch",
         "--handoff-envelope",
+        "--identity-file", identity_file,
         stdin_data: stdout
       )
 
@@ -1127,6 +1251,7 @@ class AgentRunRecordTest < Minitest::Test
   def test_worker_digest_mismatch_exits_nonzero_with_durable_failed_record_before_start
     with_fake_launch_environment do |directory, repo, _gh_log, environment|
       record = valid_record
+      identity_file = File.join(directory, "worker-mismatch-identity.json")
       comment_url = "https://github.com/shakacode/agent-workflows/issues/560#issuecomment-1234"
       record["prompt_source"] = {
         "kind" => "maintainer-comment",
@@ -1149,6 +1274,7 @@ class AgentRunRecordTest < Minitest::Test
         "pr_batch_sha256" => "UNKNOWN",
         "pr_processing_sha256" => "UNKNOWN"
       }
+      write_launch_identity(identity_file, record)
       gh = File.join(directory, "bin/gh")
       File.write(gh, <<~SH)
         #!/bin/sh
@@ -1167,6 +1293,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "mark-worker-started",
         "--repo-root", repo,
+        "--identity-file", identity_file,
         stdin_data: JSON.generate(record)
       )
 
@@ -1208,6 +1335,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "mark-worker-started",
         "--repo-root", repo,
+        "--identity-file", identity_file,
         stdin_data: stdout
       )
       refute retry_status.success?
@@ -1217,8 +1345,9 @@ class AgentRunRecordTest < Minitest::Test
   end
 
   def test_worker_start_rejects_corrupted_selection_launch_transport_chain_before_refetch
-    with_fake_launch_environment do |_directory, repo, gh_log, environment|
+    with_fake_launch_environment do |directory, repo, gh_log, environment|
       record = valid_record
+      identity_file = File.join(directory, "corrupt-chain-identity.json")
       record["prompt_source"]["digest_at_selection"] = "a" * 64
       record["prompt_source"]["digest_at_launch"] = "b" * 64
       record["prompt_source"]["digest_observed_by_worker"] = "pending"
@@ -1231,6 +1360,7 @@ class AgentRunRecordTest < Minitest::Test
         "pr_batch_sha256" => "UNKNOWN",
         "pr_processing_sha256" => "UNKNOWN"
       }
+      write_launch_identity(identity_file, record)
 
       stdout, stderr, status = Open3.capture3(
         environment,
@@ -1238,6 +1368,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "mark-worker-started",
         "--repo-root", repo,
+        "--identity-file", identity_file,
         stdin_data: JSON.generate(record)
       )
 
@@ -1250,6 +1381,7 @@ class AgentRunRecordTest < Minitest::Test
 
   def test_launch_verification_requires_bound_handoff_envelope
     with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "transport.json")
       prepare_stdout, prepare_stderr, prepare_status = Open3.capture3(
         environment,
         RbConfig.ruby,
@@ -1258,7 +1390,7 @@ class AgentRunRecordTest < Minitest::Test
         *launch_timestamp_arguments,
         "--issue", "560", "--runner", "Codex", "--machine", "M5",
         "--repo-root", repo,
-        "--identity-file", File.join(directory, "transport.json"), "--format", "json"
+        "--identity-file", identity_file, "--format", "json"
       )
       assert prepare_status.success?, prepare_stderr
 
@@ -1278,6 +1410,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "mark-worker-started",
         "--repo-root", repo,
+        "--identity-file", identity_file,
         stdin_data: prepare_stdout
       )
       refute worker_status.success?
@@ -1289,6 +1422,7 @@ class AgentRunRecordTest < Minitest::Test
         HELPER,
         "verify-launch",
         "--handoff-envelope",
+        "--identity-file", identity_file,
         stdin_data: prepare_stdout
       )
       assert launch_status.success?, launch_stderr
@@ -1297,6 +1431,42 @@ class AgentRunRecordTest < Minitest::Test
       refute launched["prompt_transport"].key?("reference")
       assert_equal launched.dig("prompt_source", "digest_at_launch"),
                    launched.dig("prompt_transport", "digest_at_launch")
+    end
+  end
+
+  def test_launch_verification_rejects_a_record_that_no_longer_matches_its_identity
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "bound-launch-identity.json")
+      prepare_stdout, prepare_stderr, prepare_status = Open3.capture3(
+        environment,
+        RbConfig.ruby,
+        HELPER,
+        "prepare",
+        *launch_timestamp_arguments,
+        "--issue", "560",
+        "--runner", "Codex",
+        "--machine", "M5",
+        "--repo-root", repo,
+        "--identity-file", identity_file,
+        "--format", "json"
+      )
+      assert prepare_status.success?, prepare_stderr
+      tampered = JSON.parse(prepare_stdout)
+      tampered.fetch("runner")["machine"] = "M1"
+
+      launch_stdout, launch_stderr, launch_status = Open3.capture3(
+        environment,
+        RbConfig.ruby,
+        HELPER,
+        "verify-launch",
+        "--handoff-envelope",
+        "--identity-file", identity_file,
+        stdin_data: JSON.generate(tampered)
+      )
+
+      refute launch_status.success?
+      assert_empty launch_stdout
+      assert_includes launch_stderr, "record does not match persisted launch identity"
     end
   end
 
@@ -1322,6 +1492,21 @@ class AgentRunRecordTest < Minitest::Test
     refute_includes stdout, "user@evil.example"
     assert_includes stdout, "www&#46;phish.example"
     assert_includes stdout, "user&#8203;@evil.example"
+  end
+
+  def test_render_preserves_code_span_text_without_exposing_markdown
+    record = valid_record
+    record.fetch("task")["title"] = "A & B <urgent>"
+    record.fetch("task")["id"] = "tick`mark"
+
+    stdout, stderr, status = run_helper("render", stdin_data: JSON.generate(record))
+
+    assert status.success?, stderr
+    assert_includes stdout, "Task: `A & B <urgent>`"
+    assert_includes stdout, "- Task ID/link: ``tick`mark`` / `UNKNOWN`"
+    refute_includes stdout, "A &amp; B"
+    refute_includes stdout, "&lt;urgent&gt;"
+    refute_includes stdout, "tick&#96;mark"
   end
 
   def test_contract_requires_outer_dynamic_values_to_use_the_hostile_value_rendering_contract

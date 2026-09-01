@@ -58,8 +58,8 @@ module AgentRunRecord
       raise ContractError, "direct body prompt source URL must equal the selected work-item URL"
     end
 
-    selection_digest = prompt_source.fetch("digest_at_selection")
     match!(prompt_source, "digest_at_selection", SHA256)
+    selection_digest = prompt_source.fetch("digest_at_selection")
     launch_digest = digest_or_pending!(prompt_source, "digest_at_launch")
     worker_digest = digest_or_pending!(prompt_source, "digest_observed_by_worker")
     if prompt_source.fetch("kind") == "maintainer-comment"
@@ -93,6 +93,9 @@ module AgentRunRecord
     workflows = object_field!(record, "workflow_versions")
     prompt_creation = object_field!(workflows, "prompt_creation")
     validate_workflow_observation!(prompt_creation, "workflow_versions.prompt_creation")
+    prompt_workflow_time = timestamp_value!(
+      prompt_creation.fetch("observed_at"), "workflow_versions.prompt_creation.observed_at"
+    )
     worker_start = object_field!(workflows, "worker_start")
     validate_workflow_observation!(worker_start, "workflow_versions.worker_start", allow_pending: true)
     later = workflows.fetch("later_observations") do
@@ -141,15 +144,12 @@ module AgentRunRecord
                             timestamp_value!(worker_started_at, "worker_started_at")
                           end
     observed_time = timestamp!(timestamps, "observed_at")
-    unless prompt_creation.fetch("observed_at") == timestamps.fetch("prompt_created_at")
-      raise ContractError, "workflow prompt-creation observation must match prompt_created_at"
-    end
     unless worker_start.fetch("observed_at") == worker_started_at
       raise ContractError, "workflow worker-start observation must match worker_started_at"
     end
 
     validate_timeline!(
-      selected_time:, prompt_created_time:, worker_digest_time:, worker_started_time:,
+      selected_time:, prompt_created_time:, prompt_workflow_time:, worker_digest_time:, worker_started_time:,
       observed_time:, latest_time:, later_times:
     )
     validate_worker_digest_state!(
@@ -384,14 +384,14 @@ module AgentRunRecord
 
     work_item["kind"] = options.fetch("work_item_kind")
     prompt_source = resolve_prompt_source(options, repository, work_item)
-    observed_at = timestamp_now
     config = workflow_config(repo_root)
     prefix = task_prefix(config, repository)
     task_title = options["task_title"] || "#{prefix} ##{work_item.fetch('number')} — #{work_item.fetch('title')}"
     current_main = observe_current_main(repo_root, config)
     selected_at = options.fetch("selected_at")
     prompt_created_at = options.fetch("prompt_created_at")
-    prompt_creation_workflow = observe_workflow_versions(pack_root, prompt_created_at)
+    prompt_creation_workflow = observe_workflow_versions(pack_root, timestamp_now)
+    observed_at = timestamp_now
     immutable = {
       "repository" => repository,
       "work_item_kind" => work_item.fetch("kind"),
@@ -405,9 +405,7 @@ module AgentRunRecord
       "machine" => options.fetch("machine"),
       "model_at_prompt_creation" => options.fetch("model")
     }
-    identity = launch_identity(
-      options.fetch("identity_file"), immutable, selected_at, prompt_created_at
-    )
+    identity = build_launch_identity(immutable, selected_at, prompt_created_at)
     record = {
       "contract" => "agent-run-record",
       "version" => 1,
@@ -461,10 +459,23 @@ module AgentRunRecord
     }
     record["coordination"] = options.fetch("coordination") if options.key?("coordination")
     validate!(record)
+    persisted_identity = persist_launch_identity(options.fetch("identity_file"), identity, immutable)
+    unless persisted_identity == identity
+      record["run_id"] = persisted_identity.fetch("run_id")
+      record["launch_idempotency_key"] = persisted_identity.fetch("launch_idempotency_key")
+      record["current_main"] = persisted_identity.fetch("binding").fetch("current_main")
+      record.fetch("workflow_versions")["prompt_creation"] =
+        persisted_identity.fetch("binding").fetch("prompt_creation_workflow")
+      record.fetch("timestamps")["selected_at"] = persisted_identity.fetch("selected_at")
+      record.fetch("timestamps")["prompt_created_at"] = persisted_identity.fetch("prompt_created_at")
+      validate!(record)
+    end
+    record
   end
 
-  def append_workflow_observation(record, pack_root)
+  def append_workflow_observation(record, pack_root, identity_file)
     validate!(record)
+    validate_record_identity!(record, identity_file)
     workflows = record.fetch("workflow_versions")
     if record.dig("timestamps", "worker_started_at") == "pending"
       raise ContractError, "cannot append later workflow observations before worker start"
@@ -484,8 +495,9 @@ module AgentRunRecord
     validate!(record)
   end
 
-  def mark_worker_started(record, pack_root, model)
+  def mark_worker_started(record, pack_root, model, identity_file)
     validate!(record)
+    validate_record_identity!(record, identity_file)
     unless record.dig("timestamps", "worker_started_at") == "pending"
       raise ContractError, "worker-start observation is immutable once recorded"
     end
@@ -535,8 +547,9 @@ module AgentRunRecord
     validate!(record)
   end
 
-  def verify_launch(record, prompt_transport)
+  def verify_launch(record, prompt_transport, identity_file)
     validate!(record)
+    validate_record_identity!(record, identity_file)
     unless record.dig("prompt_source", "digest_at_launch") == "pending"
       raise ContractError, "Prompt digest at launch is immutable once verified"
     end
@@ -772,16 +785,16 @@ module AgentRunRecord
     end
 
     name = repository.split("/", 2).last
-    segments = name.split(/[-_ ]+/).reject(&:empty?)
+    segments = name.split(/[^A-Za-z0-9]+/).reject(&:empty?)
     if segments.length > 1
       segments.first(6).map { |segment| segment[0] }.join.upcase
     else
-      name[0, 4].upcase
+      segments.fetch(0)[0, 4].upcase
     end
   end
 
-  def launch_identity(path, binding, selected_at, prompt_created_at)
-    candidate = {
+  def build_launch_identity(binding, selected_at, prompt_created_at)
+    {
       "contract" => "agent-run-launch-identity",
       "version" => 1,
       "run_id" => SecureRandom.uuid,
@@ -790,20 +803,35 @@ module AgentRunRecord
       "prompt_created_at" => prompt_created_at,
       "binding" => binding
     }
+  end
+
+  def persist_launch_identity(path, candidate, binding)
+    temporary_path = "#{path}.tmp-#{SecureRandom.hex(12)}"
     begin
-      File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+      File.open(temporary_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
         file.write("#{JSON.pretty_generate(candidate)}\n")
         file.flush
         file.fsync
       end
-      candidate
-    rescue Errno::EEXIST
-      existing = JSON.parse(File.read(path, encoding: "UTF-8"))
-      validate_identity!(existing, binding)
-      existing
-    rescue JSON::ParserError, SystemCallError => e
+      begin
+        File.link(temporary_path, path)
+        candidate
+      rescue Errno::EEXIST
+        existing = read_launch_identity(path, "cannot persist launch identity")
+        validate_identity!(existing, binding)
+        existing
+      end
+    rescue SystemCallError => e
       raise ContractError, "cannot persist launch identity: #{e.message}"
+    ensure
+      File.unlink(temporary_path) if File.exist?(temporary_path)
     end
+  end
+
+  def read_launch_identity(path, error_prefix)
+    JSON.parse(File.read(path, encoding: "UTF-8"))
+  rescue JSON::ParserError, SystemCallError => e
+    raise ContractError, "#{error_prefix}: #{e.message}"
   end
 
   def validate_identity!(identity, binding)
@@ -837,6 +865,35 @@ module AgentRunRecord
     prompt_creation_workflow = existing_binding["prompt_creation_workflow"]
     object!(prompt_creation_workflow, "binding.prompt_creation_workflow")
     validate_workflow_observation!(prompt_creation_workflow, "binding.prompt_creation_workflow")
+  end
+
+  def validate_record_identity!(record, path)
+    identity = read_launch_identity(path, "cannot read launch identity")
+    stored_binding = identity.fetch("binding") do
+      raise ContractError, "launch identity binding is required"
+    end
+    validate_identity!(identity, stored_binding)
+    expected_binding = {
+      "repository" => record.fetch("repository"),
+      "work_item_kind" => record.dig("work_item", "kind"),
+      "work_item_number" => record.dig("work_item", "number"),
+      "prompt_source_kind" => record.dig("prompt_source", "kind"),
+      "prompt_source_url" => record.dig("prompt_source", "url"),
+      "prompt_digest_at_selection" => record.dig("prompt_source", "digest_at_selection"),
+      "current_main" => record.fetch("current_main"),
+      "prompt_creation_workflow" => record.dig("workflow_versions", "prompt_creation"),
+      "runner" => record.dig("runner", "name"),
+      "machine" => record.dig("runner", "machine"),
+      "model_at_prompt_creation" => record.dig("runner", "model_at_prompt_creation")
+    }
+    matches = identity.fetch("run_id") == record.fetch("run_id") &&
+              identity.fetch("launch_idempotency_key") == record.fetch("launch_idempotency_key") &&
+              identity.fetch("selected_at") == record.dig("timestamps", "selected_at") &&
+              identity.fetch("prompt_created_at") == record.dig("timestamps", "prompt_created_at") &&
+              stored_binding == expected_binding
+    return if matches
+
+    raise ContractError, "record does not match persisted launch identity"
   end
 
   def github_json(*arguments)
@@ -930,13 +987,17 @@ module AgentRunRecord
     raise ContractError, "invalid state/outcome lifecycle: #{state}/#{outcome}"
   end
 
-  def validate_timeline!(selected_time:, prompt_created_time:, worker_digest_time:, worker_started_time:,
+  def validate_timeline!(selected_time:, prompt_created_time:, prompt_workflow_time:, worker_digest_time:,
+                         worker_started_time:,
                          observed_time:, latest_time:, later_times:)
     if selected_time > prompt_created_time
       raise ContractError, "Selected at must not be after Prompt created at"
     end
     if prompt_created_time > observed_time
       raise ContractError, "Prompt created at must not be after record observation"
+    end
+    if prompt_created_time > prompt_workflow_time || prompt_workflow_time > observed_time
+      raise ContractError, "prompt workflow observation must follow prompt creation and precede record observation"
     end
     if worker_digest_time && prompt_created_time > worker_digest_time
       raise ContractError, "Prompt created at must not be after worker digest observation"
@@ -1104,7 +1165,10 @@ module AgentRunRecord
   end
 
   def code(value)
-    "`#{html_escape(value).gsub('`', '&#96;')}`"
+    text = value.to_s
+    delimiter = "`" * ((text.scan(/`+/).map(&:length).max || 0) + 1)
+    padding = text.match?(/\A[` ]|[` ]\z/) ? " " : ""
+    "#{delimiter}#{padding}#{text}#{padding}#{delimiter}"
   end
 
   def html_escape(value)
@@ -1132,60 +1196,70 @@ if $PROGRAM_NAME == __FILE__
       end
     when "verify-launch"
       handoff_envelope = false
+      identity_file = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "usage: agent-run-record verify-launch --handoff-envelope < record.json"
+        opts.banner = "usage: agent-run-record verify-launch --handoff-envelope --identity-file PATH < record.json"
         opts.on("--handoff-envelope") { handoff_envelope = true }
+        opts.on("--identity-file PATH") { |value| identity_file = File.expand_path(value) }
       end
       parser.parse!(ARGV)
       raise AgentRunRecord::ContractError, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
       raise AgentRunRecord::ContractError, "bound handoff envelope is required" unless handoff_envelope
+      raise AgentRunRecord::ContractError, "--identity-file is required" unless identity_file
 
       prompt_transport = AgentRunRecord.prompt_transport
       record = JSON.parse($stdin.read)
-      updated = AgentRunRecord.verify_launch(record, prompt_transport)
+      updated = AgentRunRecord.verify_launch(record, prompt_transport, identity_file)
       $stdout.write("#{JSON.pretty_generate(updated)}\n")
     when "observe-workflows"
       repo_root = nil
       pack_root = nil
+      identity_file = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "usage: agent-run-record observe-workflows [--repo-root PATH] [--pack-root PATH] < record.json"
+        opts.banner = "usage: agent-run-record observe-workflows --identity-file PATH " \
+                      "[--repo-root PATH] [--pack-root PATH] < record.json"
         opts.on("--repo-root PATH") { |value| repo_root = File.expand_path(value) }
         opts.on("--pack-root PATH") { |value| pack_root = File.expand_path(value) }
+        opts.on("--identity-file PATH") { |value| identity_file = File.expand_path(value) }
       end
       parser.parse!(ARGV)
       raise AgentRunRecord::ContractError, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+      raise AgentRunRecord::ContractError, "--identity-file is required" unless identity_file
 
       repo_root ||= AgentRunRecord.command!("git", "rev-parse", "--show-toplevel").strip
       pack_root = AgentRunRecord.resolve_pack_root(repo_root, pack_root)
       record = JSON.parse($stdin.read)
-      updated = AgentRunRecord.append_workflow_observation(record, pack_root)
+      updated = AgentRunRecord.append_workflow_observation(record, pack_root, identity_file)
       $stdout.write("#{JSON.pretty_generate(updated)}\n")
     when "mark-worker-started"
       repo_root = nil
       pack_root = nil
+      identity_file = nil
       model = AgentRunRecord::UNKNOWN
       parser = OptionParser.new do |opts|
-        opts.banner = "usage: agent-run-record mark-worker-started [--repo-root PATH] " \
-                      "[--pack-root PATH] [--model NAME] < record.json"
+        opts.banner = "usage: agent-run-record mark-worker-started --identity-file PATH " \
+                      "[--repo-root PATH] [--pack-root PATH] [--model NAME] < record.json"
         opts.on("--repo-root PATH") { |value| repo_root = File.expand_path(value) }
         opts.on("--pack-root PATH") { |value| pack_root = File.expand_path(value) }
+        opts.on("--identity-file PATH") { |value| identity_file = File.expand_path(value) }
         opts.on("--model NAME") { |value| model = value }
       end
       parser.parse!(ARGV)
       raise AgentRunRecord::ContractError, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+      raise AgentRunRecord::ContractError, "--identity-file is required" unless identity_file
 
       AgentRunRecord.scalar_value!(model, "--model")
       repo_root ||= AgentRunRecord.command!("git", "rev-parse", "--show-toplevel").strip
       pack_root = AgentRunRecord.resolve_pack_root(repo_root, pack_root)
       record = JSON.parse($stdin.read)
-      updated = AgentRunRecord.mark_worker_started(record, pack_root, model)
+      updated = AgentRunRecord.mark_worker_started(record, pack_root, model, identity_file)
       $stdout.write("#{JSON.pretty_generate(updated)}\n")
     else
       raise AgentRunRecord::ContractError,
             "usage: agent-run-record render < record.json | agent-run-record prepare [options] | " \
-            "agent-run-record verify-launch [transport] < record.json | " \
-            "agent-run-record mark-worker-started [options] < record.json | " \
-            "agent-run-record observe-workflows [options] < record.json"
+            "agent-run-record verify-launch --handoff-envelope --identity-file PATH < record.json | " \
+            "agent-run-record mark-worker-started --identity-file PATH [options] < record.json | " \
+            "agent-run-record observe-workflows --identity-file PATH [options] < record.json"
     end
   rescue AgentRunRecord::WorkerDigestMismatch => e
     $stdout.write("#{JSON.pretty_generate(e.record)}\n")
