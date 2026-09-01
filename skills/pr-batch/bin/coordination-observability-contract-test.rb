@@ -54,7 +54,7 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes @component, "PR_BATCH_SKILL_DIR"
     assert_includes @component, "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded"
     assert_includes @component, "${PR_BATCH_SKILL_DIR}/bin/workflow-telemetry-report"
-    assert_operator @component.bytesize, :<=, 19_000,
+    assert_operator @component.bytesize, :<=, 19_500,
                     "coordination/observability must stay within its extraction budget"
   end
 
@@ -94,6 +94,10 @@ class CoordinationObservabilityContractTest < Minitest::Test
     result = squish(section(@component, "## Adapter Result", /^##\s+/))
 
     assert_includes result, "`private`: trusted configuration selects a private backend"
+    assert_includes result, "exact `agent-coord private backend` identifier"
+    assert_includes result, "closed `coordination_backend_contract`"
+    assert_includes result, "UNKNOWN (unsupported private backend adapter)"
+    assert_includes result, "before invoking `agent-coord-bounded`"
     assert_includes result, "`private_state: healthy | claim-only`"
     assert_includes result, "trusted configuration directly selects `public claim-comment fallback`"
     assert_includes result,

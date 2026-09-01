@@ -24,6 +24,12 @@ YAML keys, and a selection outside the allowlist fail closed. Duplicate root
 Repositories that omit this optional mapping retain the portable free-form
 backend seam.
 
+The packaged PR-batch private adapter currently supports only the exact
+`agent-coord private backend` identifier when a closed contract allowlists that
+same value. A different private identifier remains valid repository policy, but
+PR-batch records `UNKNOWN (unsupported private backend adapter)` and stops only
+that lane before invoking any backend until a bounded adapter protocol is added.
+
 This source repository uses the exact `agent-coord private backend` identifier,
 which is the reviewed identifier used by its private-backend contracts. The
 identifier is portable policy vocabulary; backend URLs, credentials, claims,

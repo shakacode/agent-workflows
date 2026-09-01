@@ -46,10 +46,16 @@ record has these known or literal `UNKNOWN` fields:
 Resolve the mode only from trusted repository configuration and bounded live
 evidence:
 
-- `private`: trusted configuration selects a private backend. Set
-  `private_state: healthy | claim-only`: `healthy` for usable preflight
-  reads, or `claim-only` when the compare-and-swap claim succeeds after degraded
-  reads. Run doctor, target, and batch reads with a finite timeout. Resolve
+- `private`: trusted configuration selects a private backend: the exact
+  `agent-coord private backend` identifier with a closed
+  `coordination_backend_contract` that allowlists that identifier. Other private
+  identifiers remain valid repository seams, but this packaged adapter has no
+  protocol mapping for them: record
+  `UNKNOWN (unsupported private backend adapter)`, stop the affected lane
+  before invoking `agent-coord-bounded`, and never guess compatibility. Set
+  `private_state: healthy | claim-only`: `healthy` for usable preflight reads,
+  or `claim-only` when the compare-and-swap claim succeeds after degraded reads.
+  Run doctor, target, and batch reads with a finite timeout. Resolve
   `PR_BATCH_SKILL_DIR` in this order:
   an explicit environment value, the loaded skill's base directory, then the
   repo-local `.agents/skills/pr-batch` copy; stop with a precise blocker when
