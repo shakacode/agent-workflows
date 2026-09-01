@@ -214,8 +214,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "https:broken",
       "https: broken",
       "https: available.example.test",
+      "https: //available",
       "https:",
-      "HTTPS: enforced; screenshot stored in run 123",
       "https://bad host/run/sign-in-abc123"
     ]
 
@@ -237,6 +237,17 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "SATISFIED", hosted.fetch("verdict"), label
       assert_empty hosted.fetch("missing"), label
+    end
+  end
+
+  def test_hosted_v1_accepts_authenticated_scalar_criterion_evidence
+    ["run-report-8f3a21", "HTTPS: enforced; screenshot stored in run 123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), evidence
+      assert_empty hosted.fetch("missing"), evidence
     end
   end
 
@@ -804,7 +815,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_rejects_malformed_https_reference_beside_a_valid_url
-    ["https:broken", "https: broken", "https: available.example.test"].each do |malformed_url|
+    ["https:broken", "https: broken", "https: available.example.test", "https: //available"].each do |malformed_url|
       qa = run_replay(
         v2_marker(
           "visual_evidence" =>
