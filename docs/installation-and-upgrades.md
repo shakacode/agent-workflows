@@ -476,8 +476,8 @@ runtime closure and the shipped calibration decision. Supply it as the
 running that gate from an installed pack:
 
 ```bash
-status="$(agent-workflows-status --host claude --json)"
-case "$?" in
+status="$(agent-workflows-status --host claude --json)" && rc=0 || rc=$?
+case "$rc" in
   0 | 1) ;;                  # UP_TO_DATE or UPGRADE_AVAILABLE; both carry a usable digest
   *) echo "install state is unusable; do not source a digest from it" >&2; exit 1 ;;
 esac
