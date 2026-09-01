@@ -286,6 +286,14 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
   end
 
+  def test_coordination_backend_doc_is_an_unconditional_policy_surface
+    source_path = "docs/coordination-backend.md"
+
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
+  end
+
   def test_current_integration_policy_components_are_portably_self_protecting
     source_pattern = "skills/pr-batch/lib/current_integration_*.rb"
 

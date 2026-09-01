@@ -235,7 +235,7 @@ metadata into `workflow-telemetry-input` v1, then use
 `${PR_BATCH_SKILL_DIR}/bin/workflow-telemetry-report`. Record queue time,
 useful-worker time, human-decision frequency, memory/load, and retry/review
 churn, plus broad phase and integration windows. Preserve field-level
-`UNKNOWN`; Optional telemetry absence does not block correctness or invent a
+`UNKNOWN`; optional telemetry absence does not block correctness or invent a
 zero. Never collect raw prompts, responses, transcripts, tool results, secrets,
 environment/auth content, exact accounting, experiments, or a parallel
 collection system.

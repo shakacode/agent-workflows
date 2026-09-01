@@ -573,8 +573,7 @@ before mutating GitHub or the branch.
   `codex-claim` block on the same PR. Only a marker backed by authenticated and
   authorized ownership evidence is conflicting. A marker proven malformed or
   unauthorized remains advisory; an unavailable or incomplete verification
-  remains `UNKNOWN` and blocks the affected action. For a verified conflict,
-  stop
+  remains `UNKNOWN` and blocks the affected action. For a verified conflict, stop
   GitHub-mutating actions and report the comment URL; local-only action `a` may
   still proceed, but it must report that publishing/reply actions remain blocked
   by the verified active claim. Apply the concrete author-and-marker verification

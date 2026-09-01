@@ -757,6 +757,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     cases = {
       "workflows/pr-processing.md" => true,
       "skills/pr-batch/SKILL.md" => true,
+      "docs/coordination-backend.md" => true,
       "docs/adr/0003-smarter-autonomous-merge-gates.md" => true,
       "AGENTS.md" => true,
       "spec/AGENTS.md" => false,
