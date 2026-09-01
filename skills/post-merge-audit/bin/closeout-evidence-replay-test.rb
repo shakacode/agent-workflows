@@ -214,6 +214,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "https:broken",
       "https: broken",
       "https: available.example.test",
+      "https: example artifact",
       "https: example.test artifact",
       "https: example.test:443;",
       "https: example.test?run=1;",
@@ -247,7 +248,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced", "HTTPS: TLS 1.3",
       "HTTPS: TLSv1.3", "HTTPS: (TLS 1.3)", "HTTPS: (HTTP/2)", "HTTPS: v1.2.3 released",
       "HTTPS: v1.2.3?build=5",
-      "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active"
+      "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active", "HTTPS: enabled e.g. proxy"
     ].each do |label|
       evidence = "#{label}; https://evidence.example.test/sign-in-abc123"
       body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
@@ -933,7 +934,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced", "HTTPS: TLS 1.3",
       "HTTPS: TLSv1.3", "HTTPS: (TLS 1.3)", "HTTPS: (HTTP/2)", "HTTPS: v1.2.3 released",
       "HTTPS: v1.2.3?build=5",
-      "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active"
+      "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active", "HTTPS: enabled e.g. proxy"
     ].each do |label|
       qa = run_replay(
         v2_marker(
@@ -1254,6 +1255,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=bin/perf-report; metric_name=pending; baseline_value=1x; candidate_value=2x",
       "repo_seam: source=bin/perf-report; metric_name=null; baseline_value=1x; candidate_value=2x",
       "repo_seam: source=bin/perf-report; metric_name=nil; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=NaN; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=nan; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=NAN; baseline_value=1x; candidate_value=2x",
       "repo_seam: source=bin/perf-report; metric_name=undefined; baseline_value=1x; candidate_value=2x",
       "repo_seam: source=bin/perf-report; metric_name=count; baseline_value=1x; candidate_value=2x",
       "repo_seam: source=bin/perf-report; metric_name=counts; baseline_value=1x; candidate_value=2x",

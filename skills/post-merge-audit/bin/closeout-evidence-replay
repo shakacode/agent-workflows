@@ -52,6 +52,7 @@ module CloseoutEvidenceReplay
   # Status words are the unbounded single-token prose exception. Other prose labels must be
   # punctuation-bounded or multi-token and non-authority-shaped so malformed HTTPS fails closed.
   HTTPS_PROSE_LABEL_STATUSES = %w[available disabled enabled enforced failed ok only optional passed required supported].freeze
+  HTTPS_PROSE_ABBREVIATIONS = %w[e.g i.e].freeze
   HTTPS_PROSE_LABEL_STATUS_PATTERN = HTTPS_PROSE_LABEL_STATUSES.map { |status| Regexp.escape(status) }.join("|")
   HTTPS_PROSE_LABEL_RECOGNIZED_STATUS = /
     \A(?:[1-5]\d{2}\s+)?(?:#{HTTPS_PROSE_LABEL_STATUS_PATTERN})(?=\s|[,;]|\.(?:\s|\z)|\z)
@@ -731,7 +732,9 @@ module CloseoutEvidenceReplay
   end
 
   def https_prose_label(value, match)
-    return unless match[0].casecmp?("https:")
+    # Uppercase HTTPS: is the explicit prose-label form; lowercase https: remains a URL scheme
+    # and therefore fails closed when whitespace makes it malformed.
+    return unless match[0] == "HTTPS:"
 
     suffix = value[match.end(0)..]
     return unless suffix&.match?(/\A\s+/)
@@ -775,6 +778,7 @@ module CloseoutEvidenceReplay
       square_bracketed = token.start_with?("[")
       token = normalized_https_prose_token(token)
       authority = token.split(/[?#]/, 2).first
+      next false if authority.include?(".") && HTTPS_PROSE_ABBREVIATIONS.include?(authority.downcase)
       next false if authority.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
 
       if !token.match?(/[?#]/) && authority.match?(/\A\d{1,2}(?:\.\d{1,2}){1,2}\z/)
@@ -861,9 +865,12 @@ module CloseoutEvidenceReplay
 
     metric_tokens = text_tokens(metric_name)
     return false if metric_tokens.empty?
-    return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) || metric_name.match?(/\A(?:metric|metrics|na|notapplicable)\z/i)
+    return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) ||
+                    metric_name.match?(/\A(?:metric|metrics|na|nan|notapplicable)\z/i)
     return false if unresolved_metric_tokens?(metric_tokens)
 
+    # Consumer-defined names are accepted deliberately; the portable gate constrains evidence
+    # shape and known sentinels while repositories own the meaning of their domain vocabulary.
     return false if qualifier_only_terminal_count?(metric_tokens)
     return false if size_metric_shape?(metric_tokens)
     return false if structural_metric_count?(metric_tokens)
