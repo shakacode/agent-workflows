@@ -635,7 +635,10 @@ defaults false.
 The planner may keep more ready lanes than currently fit. Preflight visits hosts
 and their ready lanes in lexical id order, admits no more than each host's free
 worker slots, applies the external-quota budget only to opted-in lanes, and
-holds the rest. Replaying the same plan after a lane becomes terminal refills
+holds the rest. A `max_concurrency: 1` serialization group still admits at most
+one member, but preflight picks the first member that fits its host's budgets,
+so a member held for quota or worker pressure cannot starve a runnable sibling
+on every replay. Replaying the same plan after a lane becomes terminal refills
 the freed host slot; rebuilding or splitting the goal prompt is unnecessary.
 Semantic dependencies, lifecycle ownership, and unresolved `UNKNOWN` facts
 remain earlier fail-closed gates.

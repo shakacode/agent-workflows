@@ -2131,6 +2131,79 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_serialized_group_admits_a_runnable_sibling_when_the_first_member_exceeds_quota
+    lanes = [
+      lane("a-quota", uses_external_quota: true).merge("serialization_group" => "changelog-writers"),
+      lane("b-ordinary").merge("serialization_group" => "changelog-writers")
+    ]
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+    capacity = capacity_envelope(host_capacity(worker_limit: 2, external_quota_limit: 0))
+
+    result, stderr, status = evaluate(input_for(lanes: lanes, groups: groups, capacity: capacity))
+
+    assert status.success?, stderr
+    assert_equal ["b-ordinary"], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["a-quota"], result.dig("launch", "held_lane_ids")
+    assert_equal "external-quota-full", result.dig("launch", "held_reasons", "a-quota")
+    assert_equal 1, result.dig("capacity", "admitted_worker_slots")
+  end
+
+  def test_serialized_group_admits_the_member_whose_host_still_has_a_free_worker_slot
+    lanes = [
+      lane("a-busy-host", host_id: "m5").merge("serialization_group" => "changelog-writers"),
+      lane("b-free-host", host_id: "m1").merge("serialization_group" => "changelog-writers")
+    ]
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+    capacity = capacity_envelope(
+      host_capacity(id: "m5", worker_limit: 1, worker_occupied: 1),
+      host_capacity(id: "m1", worker_limit: 1)
+    )
+
+    result, stderr, status = evaluate(input_for(lanes: lanes, groups: groups, capacity: capacity))
+
+    assert status.success?, stderr
+    assert_equal ["b-free-host"], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["a-busy-host"], result.dig("launch", "held_lane_ids")
+    assert_equal "worker-budget-full", result.dig("launch", "held_reasons", "a-busy-host")
+  end
+
+  def test_serialized_group_still_admits_at_most_one_member_with_ample_capacity
+    lanes = [
+      lane("a-first").merge("serialization_group" => "changelog-writers"),
+      lane("b-second").merge("serialization_group" => "changelog-writers")
+    ]
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+    capacity = capacity_envelope(host_capacity(worker_limit: 5, external_quota_limit: 5))
+
+    result, stderr, status = evaluate(input_for(lanes: lanes, groups: groups, capacity: capacity))
+
+    assert status.success?, stderr
+    assert_equal ["a-first"], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["b-second"], result.dig("launch", "held_lane_ids")
+    assert_equal "dependency-or-protected-gate", result.dig("launch", "held_reasons", "b-second")
+    assert_equal 1, result.dig("capacity", "admitted_worker_slots")
+    assert_equal "dependency-or-protected-gate", result.dig("capacity", "hosts", 0, "next_lane_reason")
+  end
+
+  def test_occupied_serialized_group_holds_every_member_regardless_of_free_capacity
+    lanes = [
+      lane("a-ready").merge("serialization_group" => "changelog-writers"),
+      lane("b-active").merge("serialization_group" => "changelog-writers")
+    ]
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+    capacity = capacity_envelope(host_capacity(worker_limit: 5, external_quota_limit: 5))
+    lifecycle_states = [lane_lifecycle_state(lane_id: "b-active", state: "active")]
+
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, groups: groups, capacity: capacity, lifecycle_states: lifecycle_states)
+    )
+
+    assert status.success?, stderr
+    assert_empty result.dig("launch", "eligible_lane_ids")
+    assert_equal ["a-ready"], result.dig("launch", "held_lane_ids")
+    assert_equal "dependency-or-protected-gate", result.dig("launch", "held_reasons", "a-ready")
+  end
+
   def test_missing_capacity_derives_valid_fallback_host_for_invalid_backend
     { "uppercase" => "Generic", "spaced" => "generic backend", "empty" => "" }.each do |label, backend|
       lanes = [lane("lane-a", host_id: nil), lane("lane-b", host_id: nil)]

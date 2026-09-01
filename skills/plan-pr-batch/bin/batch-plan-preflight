@@ -260,7 +260,8 @@ module BatchPlanPreflight
           active_lane_ids,
           blocked_lane_ids,
           input["plan"]["active_wave"],
-          infer_missing_lane_host
+          infer_missing_lane_host,
+          input["plan"]["serialization_groups"]
         )
       else
         capacity_decision = if host_capacity
@@ -1247,79 +1248,108 @@ module BatchPlanPreflight
       end
     end
     lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
-    serialized_group_ids = Array(serialization_groups).filter_map do |group|
-      group["id"] if group.is_a?(Hash) && group["max_concurrency"] == 1
-    end
-    serialized_group_ids.uniq.sort.each do |group_id|
-      group_lane_ids = eligible.select do |lane_id|
-        lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
-      end.sort
+    serialized_group_ids(serialization_groups).sort_by(&:to_s).each do |group_id|
       group_occupied = (active_lane_ids + blocked_lane_ids).any? do |lane_id|
         lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
       end
-      held_group_lane_ids = group_occupied ? group_lane_ids : group_lane_ids.drop(1)
+      next unless group_occupied
+
+      held_group_lane_ids = eligible.select do |lane_id|
+        lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
+      end
       held.concat(held_group_lane_ids)
       eligible -= held_group_lane_ids
     end
     [eligible.sort, held.sort]
   end
 
+  # An unoccupied max-concurrency-one group keeps every ready member here so
+  # host admission can pick the first member that fits the host budgets. Holding
+  # the lexically first member before admission would let an unaffordable lane
+  # starve a runnable sibling on every replay.
+  def serialized_group_ids(serialization_groups)
+    Array(serialization_groups).filter_map do |group|
+      group["id"] if group.is_a?(Hash) && group["max_concurrency"] == 1
+    end.uniq
+  end
+
   def apply_host_capacity(lanes, capacity, ready_lane_ids, gate_held_lane_ids, active_lane_ids,
-                          blocked_lane_ids, active_wave, infer_missing_lane_host)
+                          blocked_lane_ids, active_wave, infer_missing_lane_host,
+                          serialization_groups)
     lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
     lifecycle_occupied_ids = active_lane_ids + blocked_lane_ids
-    admitted = []
-    capacity_held = []
-    held_reasons = {}
-    host_decisions = capacity.fetch("hosts").sort_by { |host| host.fetch("id") }.map do |host|
+    group_ids = serialized_group_ids(serialization_groups)
+    hosts = capacity.fetch("hosts").sort_by { |host| host.fetch("id") }
+    host_states = hosts.to_h do |host|
       host_id = host.fetch("id")
       lifecycle_host_lane_ids = lifecycle_occupied_ids.select do |lane_id|
         effective_lane_host_id(
           lanes_by_id.fetch(lane_id), capacity, infer_missing: infer_missing_lane_host
         ) == host_id
       end
-      available_worker_slots = host.dig("worker", "limit") - host.dig("worker", "occupied") -
-                               lifecycle_host_lane_ids.length
-      available_external_quota = host.dig("external_quota", "limit") -
-                                 host.dig("external_quota", "occupied") -
-                                 lifecycle_host_lane_ids.count do |lane_id|
-                                   lanes_by_id.fetch(lane_id)["uses_external_quota"] == true
-                                 end
-      admitted_for_host = []
-      admitted_quota_count = 0
-      ready_for_host = ready_lane_ids.select do |lane_id|
-        effective_lane_host_id(
-          lanes_by_id.fetch(lane_id), capacity, infer_missing: infer_missing_lane_host
-        ) == host_id
-      end.sort
-      ready_for_host.each do |lane_id|
-        lane = lanes_by_id.fetch(lane_id)
-        if admitted_for_host.length >= available_worker_slots
-          capacity_held << lane_id
-          held_reasons[lane_id] = "worker-budget-full"
-        elsif lane["uses_external_quota"] == true && admitted_quota_count >= available_external_quota
-          capacity_held << lane_id
-          held_reasons[lane_id] = "external-quota-full"
-        else
-          admitted_for_host << lane_id
-          admitted_quota_count += 1 if lane["uses_external_quota"] == true
-        end
+      quota_lifecycle_count = lifecycle_host_lane_ids.count do |lane_id|
+        lanes_by_id.fetch(lane_id)["uses_external_quota"] == true
       end
-      admitted.concat(admitted_for_host)
+      [host_id, {
+        lifecycle_occupied: lifecycle_host_lane_ids.length,
+        quota_lifecycle_occupied: quota_lifecycle_count,
+        available_workers: host.dig("worker", "limit") - host.dig("worker", "occupied") -
+          lifecycle_host_lane_ids.length,
+        available_quota: host.dig("external_quota", "limit") -
+          host.dig("external_quota", "occupied") - quota_lifecycle_count,
+        admitted: [],
+        admitted_quota: 0,
+        quota_held: [],
+        group_held: []
+      }]
+    end
 
+    admitted = []
+    capacity_held = []
+    held_reasons = {}
+    claimed_group_ids = []
+    ready_lane_ids.sort.each do |lane_id|
+      lane = lanes_by_id.fetch(lane_id)
+      state = host_states.fetch(
+        effective_lane_host_id(lane, capacity, infer_missing: infer_missing_lane_host)
+      )
+      group_id = lane["serialization_group"]
+      serialized = group_ids.include?(group_id)
+      if serialized && claimed_group_ids.include?(group_id)
+        capacity_held << lane_id
+        held_reasons[lane_id] = "dependency-or-protected-gate"
+        state[:group_held] << lane_id
+      elsif state[:admitted].length >= state[:available_workers]
+        capacity_held << lane_id
+        held_reasons[lane_id] = "worker-budget-full"
+      elsif lane["uses_external_quota"] == true && state[:admitted_quota] >= state[:available_quota]
+        capacity_held << lane_id
+        held_reasons[lane_id] = "external-quota-full"
+        state[:quota_held] << lane_id
+      else
+        state[:admitted] << lane_id
+        state[:admitted_quota] += 1 if lane["uses_external_quota"] == true
+        claimed_group_ids << group_id if serialized
+        admitted << lane_id
+      end
+    end
+
+    host_decisions = hosts.map do |host|
+      host_id = host.fetch("id")
+      state = host_states.fetch(host_id)
       gate_held_for_host = gate_held_lane_ids.select do |lane_id|
         lane = lanes_by_id[lane_id]
         lane && lane["wave"] == active_wave && effective_lane_host_id(
           lane, capacity, infer_missing: infer_missing_lane_host
         ) == host_id
       end
-      next_lane_reason = if admitted_for_host.length >= available_worker_slots
+      next_lane_reason = if state[:admitted].length >= state[:available_workers]
                            "worker-budget-full"
-                         elsif ready_for_host.any? { |lane_id| held_reasons[lane_id] == "external-quota-full" }
+                         elsif state[:quota_held].any?
                            "external-quota-full"
                          elsif gate_held_for_host.any? { |lane_id| blocked_lane_ids.include?(lane_id) }
                            "ownership-or-lifecycle-blocked"
-                         elsif gate_held_for_host.any?
+                         elsif gate_held_for_host.any? || state[:group_held].any?
                            "dependency-or-protected-gate"
                          else
                            "no-ready-work"
@@ -1328,17 +1358,15 @@ module BatchPlanPreflight
         "id" => host_id,
         "source" => host.fetch("source"),
         "worker" => host.fetch("worker").merge(
-          "lifecycle_occupied" => lifecycle_host_lane_ids.length,
-          "available" => available_worker_slots,
-          "admitted" => admitted_for_host.length
+          "lifecycle_occupied" => state[:lifecycle_occupied],
+          "available" => state[:available_workers],
+          "admitted" => state[:admitted].length
         ),
         "heavy_root" => host.fetch("heavy_root"),
         "external_quota" => host.fetch("external_quota").merge(
-          "lifecycle_occupied" => lifecycle_host_lane_ids.count do |lane_id|
-            lanes_by_id.fetch(lane_id)["uses_external_quota"] == true
-          end,
-          "available" => available_external_quota,
-          "admitted" => admitted_quota_count
+          "lifecycle_occupied" => state[:quota_lifecycle_occupied],
+          "available" => state[:available_quota],
+          "admitted" => state[:admitted_quota]
         ),
         "next_lane_reason" => next_lane_reason
       }

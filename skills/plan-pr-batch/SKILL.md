@@ -372,6 +372,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      Keep a ready queue larger than free worker capacity when useful. The
      preflight deterministically admits up to the sum of independently free
      per-host worker slots and holds overflow for replay after terminal lanes.
+     A `max_concurrency: 1` group still runs one member at a time, and preflight
+     admits the first member that fits its host's budgets.
      It validates but does not reserve heavy-root capacity; route every broad
      validator, test, review, or QA root through the host-local
      `heavy-root-admission/v1` contract. Items with `UNKNOWN` path evidence stay
