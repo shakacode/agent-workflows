@@ -225,6 +225,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "https: enabled example.test:443",
       "https: enabled [::1]",
       "https: enabled [prod-1]",
+      "https: 10.0.1",
       "https: 10.0.1?run=1",
       "https: !!!",
       "https: ---",
@@ -261,6 +262,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_hosted_v1_accepts_authenticated_scalar_criterion_evidence
     [
       "run-report-8f3a21",
+      "HTTPS: https://evidence.example.test/sign-in-abc123",
+      "HTTPS: see https://evidence.example.test/sign-in-abc123",
       "HTTPS: enforced; screenshot stored in run 123",
       "HTTPS: TLS 1.3",
       "HTTPS: TLS 1.3, screenshot stored in run 123",
@@ -965,6 +968,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "UNKNOWN", malformed_continuation.fetch("verdict")
     assert_includes malformed_continuation.fetch("missing"), "visual_evidence.url"
+
+    ["HTTPS: ", "HTTPS: see "].each do |prefix|
+      introduced_url = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before and after #{prefix}https://github.com/example/repo/pull/123#visual"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", introduced_url.fetch("verdict"), prefix
+      assert_empty introduced_url.fetch("missing"), prefix
+    end
   end
 
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts

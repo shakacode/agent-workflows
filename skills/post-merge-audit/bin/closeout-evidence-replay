@@ -738,7 +738,11 @@ module CloseoutEvidenceReplay
 
     raw_label = suffix.lstrip
     if (next_https = HTTPS_TOKEN.match(raw_label))
-      raw_label = raw_label[0...next_https.begin(0)].rstrip.sub(/\s+(?:after|at|from|see|via)\z/i, "")
+      raw_label = raw_label[0...next_https.begin(0)].rstrip
+      direct_url_boundary = raw_label.empty? || raw_label.match?(/\A(?:after|at|from|see|via)\z/i)
+      return "" if match[0] == "HTTPS:" && direct_url_boundary
+
+      raw_label = raw_label.sub(/\s+(?:after|at|from|see|via)\z/i, "")
     end
     leading_symbols = raw_label[/\A[^\p{Alnum}]*/u]
     return if leading_symbols.match?(%r{[/\\]})
@@ -766,12 +770,17 @@ module CloseoutEvidenceReplay
   end
 
   def authority_shaped_https_label?(label)
-    label.split(/\s+/).any? do |token|
+    tokens = label.split(/\s+/)
+    tokens.each_with_index.any? do |token, index|
       square_bracketed = token.start_with?("[")
       token = normalized_https_prose_token(token)
       authority = token.split(/[?#]/, 2).first
       next false if authority.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
-      next false if !token.match?(/[?#]/) && authority.match?(/\A\d{1,2}(?:\.\d{1,2}){1,2}\z/)
+
+      if !token.match?(/[?#]/) && authority.match?(/\A\d{1,2}(?:\.\d{1,2}){1,2}\z/)
+        previous_token = normalized_https_prose_token(tokens[index - 1]) if index.positive?
+        next false if previous_token&.match?(/\A(?:protocol|ssl|tls|version)\z/i)
+      end
       next false if authority.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z})
 
       authority.include?(".") || authority.include?(":") || square_bracketed
