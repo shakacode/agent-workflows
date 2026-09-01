@@ -8,6 +8,9 @@ require "yaml"
 
 module AgentWorkflowWritingStyle
   PORTABLE_DEFAULT_PATH = File.expand_path("../docs/writing-style.md", __dir__)
+  PACKAGED_PRESETS = {
+    "asd-ste100" => File.expand_path("../docs/writing-style-asd-ste100.md", __dir__).freeze
+  }.freeze
 
   Result = Struct.new(:guide, :provenance, :warnings, keyword_init: true) do
     def to_h
@@ -151,9 +154,22 @@ module AgentWorkflowWritingStyle
             "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
     end
     normalized_style = style.strip
+    if PACKAGED_PRESETS.key?(normalized_style)
+      return packaged_preset(normalized_style)
+    end
+    if normalized_style.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
+      raise ConfigurationError,
+            "invalid #{label} writing_style: remote URLs/URI references are unsupported; " \
+            "a trusted local relative Markdown-file path is required"
+    end
     if normalized_style.start_with?("~")
       raise ConfigurationError,
             "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
+    end
+    if normalized_style.match?(/\A[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\z/)
+      raise ConfigurationError,
+            "invalid #{label} writing_style preset: unknown preset #{normalized_style.inspect}; " \
+            "known presets: #{PACKAGED_PRESETS.keys.join(', ')}"
     end
     relative_path = Pathname.new(normalized_style)
     if relative_path.absolute?
@@ -191,6 +207,23 @@ module AgentWorkflowWritingStyle
   rescue ArgumentError, EncodingError, SystemCallError => e
     raise ConfigurationError,
           "invalid #{label} writing_style file: expected a readable regular Markdown file (#{e.class})"
+  end
+
+  def packaged_preset(name)
+    path = PACKAGED_PRESETS.fetch(name)
+    guide = File.binread(path).force_encoding(Encoding::UTF_8)
+    unless guide.valid_encoding?
+      raise ConfigurationError, "invalid packaged writing style preset #{name}: must contain valid UTF-8"
+    end
+
+    guide = guide.strip
+    if guide.empty?
+      raise ConfigurationError, "invalid packaged writing style preset #{name}: must not be empty"
+    end
+
+    guide
+  rescue EncodingError, SystemCallError => e
+    raise ConfigurationError, "invalid packaged writing style preset #{name}: #{e.class}"
   end
 
   def run(argv)

@@ -1408,15 +1408,19 @@ duplicate derived identities block before the guard. Never derive the manifest
 from a cross-task packet. Preserve the manifest as source evidence, but do not
 pass raw provenance lane target strings to the guard.
 
-Classify every cross-task packet as one of two operations:
+Classify every cross-task packet into one of two classes while preserving its
+exact requested operation value:
 
-- `evidence_delivery`: the receiver may incorporate a compact receipt, including
-  evidence about a foreign target, but cannot claim, supersede, replace, spawn or
-  dispatch a worker, mutate ownership/heartbeat/lease state, hand off a resource
-  lock, or mutate a repository or GitHub for that target.
-- `control_transfer`: allowed only through an
-  explicit human-authorized control transfer
-  to a receiving task whose durable manifest already contains the exact target.
+- Evidence delivery: the exact operation is `evidence_delivery`. The receiver
+  may incorporate a compact receipt, including evidence about a foreign target,
+  but cannot claim, supersede, replace, spawn or dispatch a worker, mutate
+  ownership/heartbeat/lease state, hand off a resource lock, or mutate a
+  repository or GitHub for that target.
+- Control or mutation: every other supported operation remains the exact
+  operation passed to the guard; `dispatch` remains `dispatch`; do not rewrite
+  it to `control_transfer`. The operation is allowed only through an
+  explicit human-authorized control transfer to a receiving task whose durable
+  manifest already contains the exact target.
   Human authority does not add a foreign target to the receiver manifest;
   change the trusted manifest through a separate coordinator re-plan first.
   Callers may set `human_authorized_control_transfer` only when derived from a
@@ -1431,14 +1435,14 @@ authorizes `claim`, `supersede`, `replacement`, `worker_spawn`, `dispatch`,
 `ownership`, heartbeat/lease mutation, resource-lock handoff, repository or
 GitHub mutation, or `control_transfer`.
 
-Immediately before a receiver converts a packet into `claim`, `supersede`,
-`replacement`, `worker_spawn`, `dispatch`, `ownership`, `heartbeat_mutation`,
-`lease_mutation`, `resource_lock_handoff`, `repository_mutation`,
-`github_mutation`, or `control_transfer`, establish the guard runtime from a
-trusted-base materialization outside the evaluated repository or a verified
-installed Agent Workflows pack whose expected digest was established
-independently of the PR. Apply the same outer-tool, empty-environment, path,
-and regular-file trust boundary as the canonical
+Immediately before a receiver incorporates evidence from a packet or converts
+the packet into `claim`, `supersede`, `replacement`, `worker_spawn`, `dispatch`,
+`ownership`, `heartbeat_mutation`, `lease_mutation`, `resource_lock_handoff`,
+`repository_mutation`, `github_mutation`, or `control_transfer`, establish the
+guard runtime from a trusted-base materialization outside the evaluated
+repository or a verified installed Agent Workflows pack whose expected digest
+was established independently of the PR. Apply the same outer-tool,
+empty-environment, path, and regular-file trust boundary as the canonical
 [Hosted Runtime QA Gate](pr-batch-integration-closeout.md#hosted-runtime-qa-gate),
 with a runtime closure containing only `target-membership-guard`. Never execute
 the guard from the candidate head, including an env-var, loaded-skill, or
@@ -1481,11 +1485,13 @@ is a mandatory workflow precondition, not a host-level sandbox or proof that an
 operation passed through the guard. A host adapter that exposes cross-task
 control must invoke it at that adapter's mutation boundary and fail closed on
 bypass or `UNKNOWN`; otherwise report enforcement as instruction-based.
-Proceed with a control or mutation only when the current decision reports both
-`target_membership: true` and `control_allowed: true`. Bind the decision to the
-exact manifest, target, operation, and human-authority input and replay after
-any of those values change. Identical input produces an identical decision, so
-a saved request is a deterministic replay fixture rather than durable authority.
+Proceed with evidence incorporation only when the current decision reports
+`evidence_delivery_allowed: true`. Proceed with a control or mutation only when
+the current decision reports both `target_membership: true` and
+`control_allowed: true`. Bind the decision to the exact manifest, target,
+operation, and human-authority input and replay after any of those values change.
+Identical input produces an identical decision, so a saved request is a
+deterministic replay fixture rather than durable authority.
 
 A foreign target stops at `foreign-target / evidence-only`. Missing, ambiguous,
 synthetic, malformed, or literal `UNKNOWN` identity returns structured `UNKNOWN`

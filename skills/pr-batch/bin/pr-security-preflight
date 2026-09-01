@@ -21,6 +21,7 @@ options = {
   repo: nil,
   fail_on_high_risk_files: false,
   include_reactions: false,
+  interaction_artifact_dir: nil,
   strict_trust: false,
   trust_config: nil
 }
@@ -83,7 +84,8 @@ WARNING_SUSPICIOUS_PATTERN = /
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: pr-security-preflight [--repo OWNER/REPO] [--trust-config PATH] " \
                 "[--acknowledge-risk NUMBER:RISK[,RISK]] [--include-reactions] " \
-                "[--strict-trust] [--fail-on-high-risk-files] NUMBER [...]"
+                "[--interaction-artifact-dir DIR] [--strict-trust] " \
+                "[--fail-on-high-risk-files] NUMBER [...]"
   opts.on("--repo OWNER/REPO", "GitHub repository, defaulting to gh repo view") { |repo| options[:repo] = repo }
   opts.on("--trust-config PATH", "Trusted GitHub actor allowlist") { |path| options[:trust_config] = path }
   acknowledge_help = "Maintainer-acknowledged exact-target risk. " \
@@ -99,6 +101,11 @@ parser = OptionParser.new do |opts|
   opts.on("--include-reactions", include_reactions_help) do
     options[:include_reactions] = true
   end
+  artifact_dir_help = "Existing caller-owned directory for unique mode-0600 interaction queue artifacts. " \
+                      "The invoking workflow retains each exact file through batch terminal and any retry/recovery."
+  opts.on("--interaction-artifact-dir DIR", artifact_dir_help) do |directory|
+    options[:interaction_artifact_dir] = directory
+  end
   opts.on("--strict-trust", "Exit non-zero on non-allowlisted or hidden actor findings") do
     options[:strict_trust] = true
   end
@@ -108,6 +115,22 @@ parser = OptionParser.new do |opts|
 end
 
 parser.parse!(ARGV)
+
+if options[:interaction_artifact_dir]
+  if options.fetch(:interaction_artifact_dir).empty?
+    abort "Invalid interaction artifact directory: value must not be empty"
+  end
+
+  requested_directory = File.expand_path(options.fetch(:interaction_artifact_dir))
+  begin
+    resolved_directory = File.realpath(requested_directory)
+  rescue SystemCallError => e
+    abort "Invalid interaction artifact directory #{requested_directory.inspect}: #{e.message}"
+  end
+  abort "Invalid interaction artifact directory #{requested_directory.inspect}: not a directory" unless File.directory?(resolved_directory)
+
+  options[:interaction_artifact_dir] = resolved_directory
+end
 
 if !options[:fail_on_high_risk_files] &&
    options.fetch(:acknowledged_risks).values.any? { |risks| risks.include?("high-risk-files") }
@@ -1575,6 +1598,10 @@ def interaction_queue_artifact_payload(repo, targets)
     "contract" => "pr-security-preflight-interaction-queues",
     "version" => 1,
     "repository" => repo,
+    "retention" => {
+      "owner" => "invoking-workflow",
+      "delete_after" => "batch-terminal-and-no-retry-or-recovery"
+    },
     "targets" => targets
   }
 end
@@ -1584,14 +1611,20 @@ def interaction_queue_overflow?(target)
     target.fetch("metadata_only").size > INTERACTION_QUEUE_DISPLAY_LIMIT
 end
 
-def write_interaction_queue_artifact(repo, targets)
+def write_interaction_queue_artifact(repo, targets, directory: nil)
   contents = "#{JSON.generate(interaction_queue_artifact_payload(repo, targets))}\n"
-  file = Tempfile.create(["pr-security-preflight-interaction-queues-", ".json"])
+  file = nil
+  path = nil
+  file = if directory
+           Tempfile.create(["pr-security-preflight-interaction-queues-", ".json"], directory)
+         else
+           Tempfile.create(["pr-security-preflight-interaction-queues-", ".json"])
+         end
+  path = file.path
   file.binmode
   file.write(contents)
   file.flush
   file.fsync
-  path = file.path
   file.close
 
   {
@@ -1602,16 +1635,36 @@ def write_interaction_queue_artifact(repo, targets)
     end
   }
 rescue SystemCallError => e
+  close_error = nil
+  begin
+    file.close if file && !file.closed?
+  rescue SystemCallError => error
+    close_error = error
+  end
+  close_detail = close_error ? "; close also failed: #{close_error.message}" : ""
+  if path
+    begin
+      File.unlink(path)
+    rescue Errno::ENOENT
+      nil
+    rescue SystemCallError => unlink_error
+      abort "Could not write interaction queue artifact: #{e.message}; " \
+            "incomplete artifact cleanup failed at #{path.inspect}: #{unlink_error.message}#{close_detail}"
+    end
+  end
+
   abort "Could not write interaction queue artifact: #{e.message}"
 end
 
-def print_interaction_queue_artifact(repo, targets)
+def print_interaction_queue_artifact(repo, targets, directory: nil)
   return unless targets.any? { |target| interaction_queue_overflow?(target) }
 
-  artifact = write_interaction_queue_artifact(repo, targets)
+  artifact = write_interaction_queue_artifact(repo, targets, directory:)
   puts "Interaction queue artifact: #{artifact.fetch(:path)}"
   puts "Interaction queue artifact digest: #{artifact.fetch(:content_digest)}"
   puts "Interaction queue artifact entries: #{artifact.fetch(:entry_count)}"
+  puts "Interaction queue artifact retention owner: invoking workflow"
+  puts "Interaction queue artifact delete after: batch terminal and no retry or recovery depends on it"
   puts
 end
 
@@ -1833,7 +1886,11 @@ target_number_list.each do |number|
       canonical_bot_cache:
     )
   rescue StandardError
-    print_interaction_queue_artifact(repo, interaction_queue_targets)
+    print_interaction_queue_artifact(
+      repo,
+      interaction_queue_targets,
+      directory: options[:interaction_artifact_dir]
+    )
     raise
   end
   interaction_queue_targets << interaction_queue_artifact_target(result)
@@ -1847,7 +1904,11 @@ target_number_list.each do |number|
   )
 end
 
-print_interaction_queue_artifact(repo, interaction_queue_targets)
+print_interaction_queue_artifact(
+  repo,
+  interaction_queue_targets,
+  directory: options[:interaction_artifact_dir]
+)
 
 if overall_blockers.any?
   if acknowledged_findings.any?

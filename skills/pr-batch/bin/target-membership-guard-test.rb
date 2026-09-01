@@ -582,6 +582,30 @@ class TargetMembershipGuardTest < Minitest::Test
                     "invoke it at that adapter's mutation boundary and fail closed on bypass or `UNKNOWN`"
   end
 
+  def test_canonical_workflow_guards_evidence_before_incorporation
+    workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    section = workflow[/### Cross-Task Target Membership Gate(.*?)### Coordination State/m, 1]
+
+    refute_nil section
+    normalized_section = section.gsub(/\s+/, " ")
+    assert_includes normalized_section,
+                    "Immediately before a receiver incorporates evidence from a packet"
+    assert_includes normalized_section,
+                    "Proceed with evidence incorporation only when the current decision reports `evidence_delivery_allowed: true`"
+  end
+
+  def test_canonical_workflow_preserves_detailed_operation_during_classification
+    workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    section = workflow[/### Cross-Task Target Membership Gate(.*?)### Coordination State/m, 1]
+
+    refute_nil section
+    normalized_section = section.gsub(/\s+/, " ")
+    assert_includes normalized_section,
+                    "Classify every cross-task packet into one of two classes while preserving its exact requested operation value"
+    assert_includes normalized_section,
+                    "`dispatch` remains `dispatch`; do not rewrite it to `control_transfer`"
+  end
+
   def test_canonical_workflow_requires_a_trusted_runtime_for_the_guard
     workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
     section = workflow[/### Cross-Task Target Membership Gate(.*?)### Coordination State/m, 1]
