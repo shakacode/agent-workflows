@@ -4616,8 +4616,8 @@ test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc()
   ruby -e '
     path = ARGV.fetch(0)
     text = File.read(path)
-    insertion = "  writing-style.md\n  uncommitted-pack-doc.md\n)"
-    abort "missing pack_docs insertion point" unless text.sub!("  writing-style.md\n)", insertion)
+    insertion = "pack_docs=(\n  uncommitted-pack-doc.md\n"
+    abort "missing pack_docs insertion point" unless text.sub!("pack_docs=(\n", insertion)
     File.write(path, text)
   ' "$source/bin/install-agent-workflows"
   printf 'managed-v1\n' > "$source/docs/$doc_name"
