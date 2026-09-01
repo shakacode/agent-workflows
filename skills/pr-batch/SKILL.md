@@ -573,6 +573,13 @@ Classify every unresolved question before continuing:
 
 For a private-backend blocking stop, emit `help_requested` alongside the prose
 handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
+For a permission request, persist its returned `event_id` as the stable request
+id and route lifecycle handling to
+[coordination-backend.md](../../docs/coordination-backend.md#operational-signal-events).
+Do not enter implementation or review while that request is open. Only the
+coordinator records `help_request.resolved` or `help_request.declined`; the
+answer does not itself grant scope. An overdue request closes as
+`blocked-user-input` while naming the original request id.
 When a worker verifies a P0/P1 finding, confirmed regression, or required
 revert, emit `error` with `severity`, `category`, and `message`. Backend `n/a`
 skips these signals. Typed-event transport is optional: when an active private

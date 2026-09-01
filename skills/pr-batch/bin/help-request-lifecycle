@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require "time"
+
+require_relative "../lib/help_request_lifecycle"
+
+options = { input: "-", max_open_seconds: 14_400, now: Time.now, require_phase: nil, lane: nil }
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: help-request-lifecycle [--input FILE|-] [--lane NAME] [--now ISO8601] [--max-open-seconds N] [--require-phase PHASE]"
+  opts.on("--input FILE", "Read coordination events from FILE or stdin") { |value| options[:input] = value }
+  opts.on("--lane NAME", "Evaluate only one batch lane") { |value| options[:lane] = value }
+  opts.on("--now ISO8601", "Evaluation time for deterministic replay") { |value| options[:now] = Time.iso8601(value) }
+  opts.on("--max-open-seconds N", Integer, "Age that requires blocked-user-input closeout") do |value|
+    options[:max_open_seconds] = value
+  end
+  opts.on("--require-phase PHASE", "Exit 2 when an open permission request blocks this phase") do |value|
+    options[:require_phase] = value
+  end
+  opts.on("-h", "--help", "Show this help") do
+    puts opts
+    exit 0
+  end
+end
+
+begin
+  parser.parse!(ARGV)
+  raise OptionParser::InvalidArgument, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+  source = options.fetch(:input) == "-" ? $stdin.read : File.read(options.fetch(:input))
+  payload = JSON.parse(source)
+  result = HelpRequestLifecycle.evaluate(
+    payload,
+    now: options.fetch(:now),
+    max_open_seconds: options.fetch(:max_open_seconds),
+    lane: options[:lane]
+  )
+  puts JSON.pretty_generate(result)
+  if options[:require_phase] &&
+     result.fetch("phase_gate").fetch("blocked_phases", []).include?(options.fetch(:require_phase))
+    exit 2
+  end
+rescue OptionParser::ParseError, JSON::ParserError, HelpRequestLifecycle::InputError, SystemCallError => e
+  puts JSON.generate(
+    "contract" => "help-request-lifecycle",
+    "version" => HelpRequestLifecycle::VERSION,
+    "status" => "UNKNOWN",
+    "error" => e.message
+  )
+  warn e.message
+  exit 1
+end

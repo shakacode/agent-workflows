@@ -130,6 +130,52 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_target_status_reports_open_permission_request_age_and_bounded_outcome
+    request_id = "20260823T054818.000000Z-help4846"
+    target_coordination = {
+      "claims" => [{
+        "agent_id" => "worker-462",
+        "status" => "active",
+        "batch_id" => "aw-help"
+      }],
+      "heartbeats" => []
+    }
+    batch_coordination = {
+      "events" => [{
+        "event_id" => request_id,
+        "batch_id" => "aw-help",
+        "lane" => "issue-462",
+        "agent_id" => "worker-462",
+        "type" => "help_requested",
+        "reason" => "permission",
+        "at" => "2026-08-23T05:48:18Z",
+        "message" => "Approve the exact merge head."
+      }]
+    }
+
+    with_fake_help_lifecycle_commands(target_coordination:, batch_coordination:) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "462",
+        "--now", "2026-08-23T10:00:00Z",
+        "--help-request-max-open-seconds", "14400",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      lifecycle = row.fetch("help_request_lifecycle")
+      assert_equal "aw-help", row.fetch("batch_id")
+      assert_equal "blocked-user-input", lifecycle.fetch("status")
+      assert_equal request_id, lifecycle.fetch("blocking_request_id")
+      assert_equal 15_102, lifecycle.fetch("blocking_request").fetch("age_seconds")
+      assert_equal request_id, lifecycle.fetch("terminal_action").fetch("request_id")
+    end
+  end
+
   def test_batch_mode_does_not_turn_a_released_claim_into_a_current_task_link
     batch_coordination = {
       "batches" => [{
@@ -590,6 +636,37 @@ class BatchStatusTest < Minitest::Test
         puts JSON.generate({
           "state" => "open",
           "html_url" => "https://github.com/shakacode/agent-workflows/issues/186"
+        })
+      RUBY
+
+      yield({
+        "PATH" => [dir, ENV.fetch("PATH")].join(File::PATH_SEPARATOR),
+        "PR_BATCH_SKILL_DIR" => File.expand_path("../../pr-batch", __dir__)
+      })
+    end
+  end
+
+  def with_fake_help_lifecycle_commands(target_coordination:, batch_coordination:)
+    Dir.mktmpdir("batch-status-help-lifecycle-test") do |dir|
+      write_executable(File.join(dir, "agent-coord"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        require "json"
+        case ARGV
+        when ["status", "--repo", "shakacode/agent-workflows", "--target", "462", "--json"]
+          puts #{JSON.generate(target_coordination).dump}
+        when ["status", "--batch-id", "aw-help", "--json"]
+          puts #{JSON.generate(batch_coordination).dump}
+        else
+          abort "unexpected argv: \#{ARGV.inspect}"
+        end
+      RUBY
+      write_executable(File.join(dir, "gh"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        require "json"
+        abort "unexpected argv: \#{ARGV.inspect}" unless ARGV == ["api", "repos/shakacode/agent-workflows/issues/462"]
+        puts JSON.generate({
+          "state" => "open",
+          "html_url" => "https://github.com/shakacode/agent-workflows/issues/462"
         })
       RUBY
 

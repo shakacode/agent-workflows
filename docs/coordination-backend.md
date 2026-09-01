@@ -196,6 +196,10 @@ workflow emits these signals at existing checkpoints, alongside its prose
 packets and handoffs:
 
 - `help_requested` requires `reason`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
+- `help_request.resolved` and `help_request.declined` require `evidence` equal
+  to the original `help_requested.event_id`. Only the coordinator records these
+  answers. They do not grant scope or merge authority; the coordinator must
+  replay those permissions separately.
 - `escalation_requested` requires nonempty `from_route`, `to_route`, and
   `evidence`.
 - `error` requires `severity` (`P0`, `P1`, `P2`, or `P3`), nonempty `category`,
@@ -221,6 +225,27 @@ A deadline expiry, forced termination, or any other advertised-support write
 failure records best-effort `UNKNOWN` event evidence; the primary operation
 continues immediately without waiting further on the event. Public claim
 comments are not a typed event transport.
+
+The backend-assigned `event_id` of `help_requested` is its stable request id.
+Persist that id in the worker-attention record and reuse it; do not emit a new
+request while the same request remains open. Its initial state is `open`. The
+coordinator changes it to `resolved` or `declined` only by recording the matching
+resolution event with the original id in `evidence`. A failed or unavailable
+resolution write leaves the request open. Legacy `help_requested` events need
+no migration because their existing `event_id` becomes the request id.
+
+Before any later `implementation` or `review` phase transition for that lane,
+replay the batch event history with
+`skills/pr-batch/bin/help-request-lifecycle --lane <lane> --require-phase <phase>`.
+Exit 2 is a hard stop naming the open permission request; do not write the phase
+transition. The default age ceiling is 14,400 seconds and can be configured with
+`--max-open-seconds`. At or beyond the ceiling, close the lane as
+`blocked-user-input` and put the original request id in the `lane_closed`
+event's `evidence`; do not substitute a later generic blocker such as
+`authorized-scope-exhausted`. This bounded closeout does not resolve or decline
+the request. `batch-status` reports each known request's state and age from the
+same replay. Missing or invalid event history is `UNKNOWN`, never permission to
+advance.
 
 Backends that auto-emit `claim.acquired`, `claim.released`, and `phase.changed`
 own those lifecycle events; workers do not duplicate them. After terminal

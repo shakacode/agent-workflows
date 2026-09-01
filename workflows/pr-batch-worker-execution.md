@@ -160,6 +160,16 @@ When an active private backend advertises typed events, emit the corresponding
 unadvertised transport does not invent an execution blocker. Do not ask merely
 because a dependency is still progressing or optional telemetry is unavailable.
 
+For `reason: permission`, persist the returned `event_id` as the stable request
+id in the attention record. Do not re-emit the same open request. Before a later
+`implementation` or `review` phase transition, replay the batch event history
+with `skills/pr-batch/bin/help-request-lifecycle --lane <lane> --require-phase
+<phase>` and stop when it exits 2. Only the coordinator may record
+`help_request.resolved` or `help_request.declined`, with the original request id
+in `evidence`; the answer does not itself grant scope. At the configured age
+ceiling, hand off `blocked-user-input` and name the original request id. This
+closeout remains available while implementation and review are gated.
+
 ## Worker-To-Coordinator Handoff
 
 Emit a Lane Card after accepted ownership, when blocked or cancelled, and as the
