@@ -127,9 +127,12 @@ commit, and check earlier attempts of a retried run — `gh run view`'s
 `conclusion` reflects only the latest attempt:
 
 ```bash
-gh run list --all --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,conclusion,headSha,event,workflowName,number,createdAt,url
+gh run list --all --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,attempt,conclusion,headSha,event,workflowName,number,createdAt,url
 gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
 ```
+
+`attempt` is the count of attempts, not a signal by itself; when a listed
+run's `attempt` is greater than 1, check its earlier attempts too.
 
 A run's `conclusion` is the aggregate result across every job in that run,
 not the specific job identified by the failure. Key candidate runs off that
