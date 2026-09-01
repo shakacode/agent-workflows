@@ -108,7 +108,9 @@ module CompletedBatchPublicationPreflight
       batch = nil
       lane_entries = []
       resolved_targets = no_backend_evidence ? expected_targets : []
-      coordination_authentic = true
+      # Without typed evidence there is nothing authenticated to report. The result is already
+      # blocked; keep the snapshot from labelling it as verified against a backend never contacted.
+      coordination_authentic = !no_backend_evidence.nil?
     else
       no_backend_evidence = nil
       authenticated_status = coordination_verifier&.call(backend:, batch_id:)

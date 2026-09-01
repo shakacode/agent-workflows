@@ -1766,6 +1766,26 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                     "trusted coordination applicability proof is missing, invalid, or tampered"
   end
 
+  def test_missing_typed_evidence_never_reports_an_authenticated_backend_source
+    input = no_backend_input
+    input.delete("coordination_status")
+    proof = applicability_proof(input)
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
+      waiver_verifier: ->(**) { nil },
+      target_verifier: ->(**) { nil },
+      coordination_verifier: ->(**) { flunk "the not-applicable path must invoke no coordination verifier" }
+    )
+
+    refute result.fetch("eligible")
+    assert_nil result.dig("snapshot", "coordination", "verification_source"),
+               "a blocked result without typed evidence must not claim an authenticated backend source"
+  end
+
   def test_blocked_results_never_repeat_a_blocker
     result = CompletedBatchPublicationPreflight.blocked_result(
       ["configured coordination backend is unavailable", "configured coordination backend is unavailable"]
