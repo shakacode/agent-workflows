@@ -6,6 +6,10 @@
 # documents are pure navigation, so a renamed heading in a linked file breaks
 # them silently. Repository-wide link hygiene is a separate concern.
 module ValidateDocLinks
+  # Widening this list is the intended way to grow scope, but check the new
+  # document first: only ATX (`#`) headings and inline `[text](target)` links
+  # are parsed. Setext headings and reference-style links would be skipped
+  # silently, and the checked documents use neither today.
   CHECKED_DOCUMENTS = ["docs/operator-handbook.md"].freeze
   FENCE_PATTERN = /\A\s{0,3}(`{3,}|~{3,})/
   HEADING_PATTERN = /\A\s{0,3}(\#{1,6})\s+(.*?)\s*\z/
