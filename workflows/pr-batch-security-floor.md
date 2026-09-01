@@ -121,6 +121,20 @@ target to scan; it still receives a `security-floor v1` result with preflight
 `n/a` and its complete trusted provenance embedded. Skipping preflight is never
 override authority.
 
+One narrow post-gate resolution applies to a `high-risk-files` finding caused
+only by the detector's broad protected-parent match. After exact-head validation
+and configured review are complete, reuse the already-parsed trusted-base policy
+and complete exact-head file inventory; do not reconstruct policy or introduce a
+second test-path list. Resolve that broad finding only when every changed path is
+included by `safe_path_groups.tests` and none is excluded, including every
+current and previous path supplied for a rename or copy. A production helper,
+mixed diff, excluded test, `human_review_paths` match, or policy-path match keeps
+its own applicable stop. Malformed, incomplete, stale, contradictory, or
+`UNKNOWN` policy, file, validation, or review evidence remains `UNKNOWN` and
+fails closed. This resolution clears only the `high-risk-files` protected-parent
+stop after the ordinary gates; it never clears another preflight finding,
+security-floor invariant, configured review gate, or autonomous-merge gate.
+
 ## Security-Floor Result
 
 Return one `security-floor v1` result per lane with:
@@ -138,6 +152,10 @@ Return one `security-floor v1` result per lane with:
   evidence from creation onward; before creation, record the planned identities
   and isolation mechanism with checkout-isolation evidence `n/a`;
 - exact head/base evidence binding required at the current stage;
+- for a protected-parent safe-test decision, both the original broad
+  protected-parent match and the safe-test-only resolution, with exact head,
+  trusted policy provenance, complete path inventory, and any independent
+  blocking path or evidence reason preserved;
 - consequential-action authority; and
 - `PASS`, `BLOCKED`, or `UNKNOWN`, plus the precise affected-lane reason.
 

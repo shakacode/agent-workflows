@@ -108,4 +108,23 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_intake, "complete durable override provenance embedded when applicable"
     refute_includes normalized_intake, "shared-security-floor result or accepted durable ad-hoc trust evidence"
   end
+
+  def test_pr_602_style_test_helper_can_resolve_only_the_broad_parent_risk_after_ordinary_gates
+    normalized_floor = @floor.gsub(/\s+/, " ")
+
+    assert_includes normalized_floor,
+                    "After exact-head validation and configured review are complete"
+    assert_includes normalized_floor,
+                    "reuse the already-parsed trusted-base policy and complete exact-head file inventory"
+    assert_includes normalized_floor,
+                    "every changed path is included by `safe_path_groups.tests` and none is excluded"
+    assert_includes normalized_floor,
+                    "production helper, mixed diff, excluded test, `human_review_paths` match, or policy-path match"
+    assert_includes normalized_floor,
+                    "Malformed, incomplete, stale, contradictory, or `UNKNOWN` policy, file, validation, or review evidence"
+    assert_includes normalized_floor,
+                    "both the original broad protected-parent match and the safe-test-only resolution"
+    assert_includes normalized_floor,
+                    "clears only the `high-risk-files` protected-parent stop"
+  end
 end
