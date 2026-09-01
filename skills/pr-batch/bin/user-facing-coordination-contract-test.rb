@@ -172,8 +172,13 @@ class UserFacingCoordinationContractTest < Minitest::Test
   end
 
   def test_coordination_changes_preserve_exact_gmcc_v4_merge_authority_clauses
-    workflow = File.read(File.join(ROOT, WORKFLOW), encoding: "UTF-8")
-    assert_includes workflow, GMCC_V4, WORKFLOW
+    integration_closeout = File.read(File.join(ROOT, INTEGRATION_CLOSEOUT), encoding: "UTF-8")
+    assert_includes integration_closeout, GMCC_V4, INTEGRATION_CLOSEOUT
+    assert_includes normalized(INTEGRATION_CLOSEOUT),
+                    "Keep this compact, self-contained `GMCC-v4` line verbatim in the Batch Plan or " \
+                    "delivered machine launch state, never in the human-authored prompt.",
+                    INTEGRATION_CLOSEOUT
+    refute_includes integration_closeout, "in PR-batch goal prompts", INTEGRATION_CLOSEOUT
 
     pr_batch = File.read(File.join(ROOT, PR_BATCH), encoding: "UTF-8")
     assert_includes pr_batch, GMCC_V4, PR_BATCH

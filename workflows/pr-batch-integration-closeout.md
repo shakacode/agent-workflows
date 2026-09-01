@@ -778,8 +778,8 @@ End the final user-visible message carrying the batch handoff with the exact arc
 
 ### Goal Mode Completion Contract
 
-Use this compact, self-contained `GMCC-v4` line verbatim in PR-batch goal
-prompts.
+Keep this compact, self-contained `GMCC-v4` line verbatim in the Batch Plan or
+delivered machine launch state, never in the human-authored prompt.
 `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
