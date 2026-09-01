@@ -170,6 +170,20 @@ reverified. A multi-target group
 depends on the plan or reference to preserve every target, lane, dependency,
 and ownership assignment while the prompt remains readable.
 
+For a multi-target launch, keep `Work item` singular and set it to the durable
+coordination anchor and record destination for this batch. The accompanying
+Batch Plan, whether delivered inline or by exact durable reference, is
+authoritative for scope and enumerates every target with its exact source and
+provenance. Before prompt creation, retain the exact accepted plan and its
+`batch_plan_binding` in machine launch state. Replace the normal `Instruction`
+line with this exact line:
+
+> Instruction: Use PR-batch to execute every target in the accompanying Batch Plan against the repository's configured base branch; Work item identifies this batch's durable coordination anchor, not its sole target.
+
+Do not enumerate every target URL in the human prompt or add another prompt
+field. Keep each target URL and its provenance in the Batch Plan. Single-target
+launches use the normal prompt unchanged.
+
 Use this normal human prompt shape. `Human available after` is optional; omit
 that line when the maintainer did not supply a time. For Codex, prepend only
 `/goal`; other hosts use the same readable prompt vocabulary unchanged. <!-- host-allow: codex-only -->

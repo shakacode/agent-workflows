@@ -14,6 +14,9 @@ EXPECTED_PROMPT = <<~TEXT
   Merge authority: <auto|ask>
   Human available after: <optional time; omit this line when not supplied>
 TEXT
+MULTI_TARGET_INSTRUCTION = <<~TEXT
+  Instruction: Use PR-batch to execute every target in the accompanying Batch Plan against the repository's configured base branch; Work item identifies this batch's durable coordination anchor, not its sole target.
+TEXT
 
 def read_repo_file(path)
   File.read(File.join(REPO_ROOT, path), encoding: "UTF-8")
@@ -143,6 +146,34 @@ class ReadableGoalPromptContractTest < Minitest::Test
                     "explicit human authority before merge."
     assert_includes normalized,
                     "This rendering does not change the durable machine value from `none` to `ask`."
+  end
+
+  def test_multi_target_inline_plan_binds_every_target_to_the_coordination_anchor
+    [@plan_skill, @pr_batch_skill, @prompt_intake].each do |text|
+      normalized = text.gsub(/\s+/, " ")
+      assert_includes normalized,
+                      "For a multi-target launch, keep `Work item` singular and set it to the " \
+                      "durable coordination anchor and record destination for this batch."
+      assert_includes normalized,
+                      "The accompanying Batch Plan, whether delivered inline or by exact durable reference, " \
+                      "is authoritative for scope and enumerates every target with its exact source and provenance."
+      assert_includes normalized,
+                      "Before prompt creation, retain the exact accepted plan and its `batch_plan_binding` " \
+                      "in machine launch state."
+      assert_includes normalized, MULTI_TARGET_INSTRUCTION.strip
+      assert_includes normalized,
+                      "Do not enumerate every target URL in the human prompt or add another prompt field."
+    end
+  end
+
+  def test_single_target_prompt_stays_direct_without_multi_target_duplication
+    @prompts.each do |label, prompt|
+      assert_equal EXPECTED_PROMPT, prompt, "#{label} changed the single-target prompt"
+      assert_equal 1, prompt.scan(/^Work item:/).length, "#{label} duplicated Work item"
+      assert_equal 1, prompt.scan(/^Instruction:/).length, "#{label} duplicated Instruction"
+      refute_includes prompt, "every target", "#{label} leaked multi-target scope into the single-target prompt"
+      refute_includes prompt, "coordination anchor", "#{label} leaked multi-target anchor prose"
+    end
   end
 
   def test_timestamped_batch_title_is_durable_metadata_not_a_human_prompt_field
