@@ -1,0 +1,470 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require_relative "../lib/autonomous_merge_decision"
+require_relative "../lib/autonomous_merge_runtime_trust"
+
+module AutonomousMergeCloseout
+  CONTRACT = "autonomous-merge-closeout"
+  VERSION = 1
+  SHA_PATTERN = /\A[0-9a-f]{40}\z/
+  POLICY_PATH = ".agents/agent-workflow.yml"
+  BASE_OID_PATTERN = "[0-9a-f]{40}"
+  POLICY_BLOB_OID_PATTERN = "(?:[0-9a-f]{40}|[0-9a-f]{64})"
+  POLICY_PROVENANCE_PATTERNS = {
+    configured: /\Agit:#{BASE_OID_PATTERN}:#{Regexp.escape(POLICY_PATH)}@#{POLICY_BLOB_OID_PATTERN}\z/,
+    portable_defaults: /\Agit:#{BASE_OID_PATTERN}:#{Regexp.escape(POLICY_PATH)}\(absent; portable-defaults\)\z/,
+    path_only: /\Agit:#{BASE_OID_PATTERN}:#{Regexp.escape(POLICY_PATH)}\z/,
+    base_only: /\Agit:#{BASE_OID_PATTERN}\z/
+  }.freeze
+  SUPPORTED_VERDICTS = %w[human-approval-required UNKNOWN].freeze
+  RESULT_KEYS = %w[
+    verdict head_sha policy_provenance helper_provenance helper_trust metrics
+    path_matches safe_class triggered_gates shadow_triggered_gates
+    shadow_evidence_unknown rollback_assessment human_decision_evidence
+    current_integration evidence_failures
+  ].freeze
+  RUNTIME_MANIFEST_KEYS = (
+    AutonomousMergeRuntimeTrust::RUNTIME_SOURCES.keys + ["calibration-decision"]
+  ).freeze
+  TRUSTED_BASE_PROVENANCE_PATTERN = /\Atrusted-base:([0-9a-f]{40})\z/
+  INSTALLED_PACK_PROVENANCE_PATTERN = /\Averified-installed-pack:[0-9a-f]{64}\z/
+  METRIC_KEYS = %w[changed_files changed_lines commits reviewed_heads].freeze
+  SAFE_CLASSES = %w[none documentation tests formatting-comments].freeze
+  SHADOW_GATE_SHAPES = [[], ["reviewed-heads-limit"]].freeze
+  SHADOW_EVIDENCE_SHAPES = [
+    [],
+    ["submitted-review-head-missing"],
+    ["review-pagination-incomplete"],
+    %w[submitted-review-head-missing review-pagination-incomplete]
+  ].freeze
+  ROLLBACK_ASSESSMENTS = %w[
+    code-only-rollback-established
+    forward-recovery-established
+    not-applicable
+  ].freeze
+  PATH_REASONS = %w[migration infrastructure release security hot-path policy other].freeze
+  SUMMARY_REASONS = {
+    "architectural-product-judgment" => "requires architectural or product judgment",
+    "autonomous-merge-policy-change" => "changes rules that govern autonomous merge",
+    "changed-files-limit" => "crosses the repository's changed-file limit for autonomous merge",
+    "changed-lines-limit" => "crosses the repository's changed-line limit for autonomous merge",
+    "commit-count-limit" => "crosses the repository's commit-count limit for autonomous merge",
+    "infrastructure-delivery" => "changes infrastructure or delivery behavior",
+    "irreversible-external-effect" => "can cause an irreversible external effect",
+    "persistent-data-storage" => "changes persistent data or storage behavior",
+    "public-compatibility" => "changes a public compatibility contract",
+    "reviewed-heads-limit" => "crosses the repository's reviewed-head limit for autonomous merge",
+    "security-auth-privacy" => "changes security, authentication, privacy, or a trust boundary"
+  }.freeze
+  GATE_EXPLANATIONS = {
+    "architectural-product-judgment" =>
+      "The trusted semantic assessment says this PR requires architectural or product judgment that automation cannot supply.",
+    "autonomous-merge-policy-change" =>
+      "This PR changes a protected autonomous-merge policy, instruction, workflow, or evaluator source.",
+    "changed-files-limit" =>
+      "The PR changes more files than the trusted-base autonomous-merge policy permits.",
+    "changed-lines-limit" =>
+      "The PR changes more lines than the trusted-base autonomous-merge policy permits.",
+    "commit-count-limit" =>
+      "The PR contains more commits than the trusted-base autonomous-merge policy permits.",
+    "infrastructure-delivery" =>
+      "The trusted semantic assessment says this PR changes infrastructure or delivery behavior.",
+    "irreversible-external-effect" =>
+      "The trusted semantic assessment says this PR can cause an irreversible external effect.",
+    "persistent-data-storage" =>
+      "The trusted semantic assessment says this PR changes persistent data or storage behavior.",
+    "public-compatibility" =>
+      "The trusted semantic assessment says this PR changes a public compatibility contract.",
+    "reviewed-heads-limit" =>
+      "The PR has crossed the trusted-base limit for distinct submitted-review head revisions.",
+    "security-auth-privacy" =>
+      "The trusted semantic assessment says this PR changes security, authentication, privacy, or a trust boundary."
+  }.freeze
+  PATH_REASON_EXPLANATIONS = {
+    "migration" => "migration-sensitive path",
+    "infrastructure" => "infrastructure-sensitive path",
+    "release" => "release-sensitive path",
+    "security" => "security or trust-boundary path",
+    "hot-path" => "high-impact runtime path",
+    "policy" => "policy source",
+    "other" => "repository-defined human-review path"
+  }.freeze
+
+  module_function
+
+  def build(result)
+    errors = validation_errors(result)
+    raise ArgumentError, errors.join("; ") unless errors.empty?
+
+    verdict = result.fetch("verdict")
+    verdict == "human-approval-required" ? human_approval_closeout(result) : evidence_unknown_closeout(result)
+  end
+
+  def validation_errors(result)
+    return ["evaluator result must be a JSON object"] unless result.is_a?(Hash)
+
+    errors = []
+    errors << "evaluator result has unknown or missing fields" unless exact_keys?(result, RESULT_KEYS)
+    verdict = result["verdict"]
+    errors << "verdict must be human-approval-required or UNKNOWN" unless SUPPORTED_VERDICTS.include?(verdict)
+    head_sha = result["head_sha"]
+    unless head_sha.is_a?(String) && (head_sha.match?(SHA_PATTERN) || (verdict == "UNKNOWN" && head_sha == "UNKNOWN"))
+      errors << "head_sha must be a full lowercase hexadecimal SHA, or exact UNKNOWN for an UNKNOWN verdict"
+    end
+    gates = result["triggered_gates"]
+    unless gates.is_a?(Array) && gates.all? { |gate| AutonomousMergeDecision.canonical_gate?(gate) } &&
+           gates == gates.uniq.sort
+      errors << "triggered_gates must be a sorted duplicate-free list of canonical gate IDs"
+    end
+    path_matches = result["path_matches"]
+    unless path_matches.is_a?(Array) && path_matches.all? { |match| valid_path_match?(match) }
+      errors << "path_matches must contain valid path evidence"
+    end
+    failures = result["evidence_failures"]
+    unless failures.is_a?(Array) && failures.all? { |failure| nonempty_string?(failure) }
+      errors << "evidence_failures must be a list of nonempty strings"
+    end
+    policy_provenance = result["policy_provenance"]
+    unless valid_policy_provenance?(policy_provenance, verdict:)
+      errors << "policy_provenance is not an evaluator-produced form for #{verdict}"
+    end
+    unless valid_helper_trust?(result, verdict:, policy_provenance:)
+      errors << "helper provenance and trust are invalid for #{verdict}"
+    end
+    metrics = result["metrics"]
+    errors << "metrics shape is invalid" unless valid_metrics?(metrics, verdict:)
+    if verdict == "UNKNOWN" && metrics == {} && !canonical_early_unknown_evidence_shape?(result)
+      errors << "empty metrics require the canonical early UNKNOWN evidence shape"
+    end
+    current_integration = result["current_integration"]
+    valid_current_integration = current_integration.nil? ||
+                                (current_integration.is_a?(Hash) &&
+                                 current_integration["contract"] == "current-integration-evidence" &&
+                                 current_integration["version"] == 1)
+    errors << "current_integration is invalid" unless valid_current_integration
+    if verdict == "human-approval-required" && current_integration.nil?
+      errors << "human-approval-required needs current integration evidence"
+    end
+    helper_trust = result["helper_trust"]
+    if helper_trust.is_a?(Hash) && helper_trust["status"] == "unverified" &&
+       !(verdict == "UNKNOWN" && metrics == {} && canonical_early_unknown_evidence_shape?(result))
+      errors << "unverified helper trust requires the canonical early UNKNOWN evidence shape"
+    end
+    safe_classes = verdict == "UNKNOWN" ? SAFE_CLASSES + ["UNKNOWN"] : SAFE_CLASSES
+    errors << "safe_class is invalid" unless safe_classes.include?(result["safe_class"])
+    unless SHADOW_GATE_SHAPES.include?(result["shadow_triggered_gates"])
+      errors << "shadow_triggered_gates shape is invalid"
+    end
+    unless SHADOW_EVIDENCE_SHAPES.include?(result["shadow_evidence_unknown"])
+      errors << "shadow_evidence_unknown shape is invalid"
+    end
+    unless valid_human_decision_evidence?(result["human_decision_evidence"], verdict:)
+      errors << "human_decision_evidence is invalid for #{verdict}"
+    end
+    rollback = result["rollback_assessment"]
+    unless ROLLBACK_ASSESSMENTS.include?(rollback) || (verdict == "UNKNOWN" && rollback == "UNKNOWN")
+      errors << "rollback_assessment is invalid for the evaluator verdict"
+    end
+    if verdict == "human-approval-required" && rollback == "not-applicable" && result["safe_class"] == "none"
+      errors << "rollback_assessment not-applicable requires a safe classification"
+    end
+
+    if gates.is_a?(Array) && path_matches.is_a?(Array)
+      matched_gates = path_matches.filter_map { |match| match["gate"] if match.is_a?(Hash) }
+      unexpected_path_gates = matched_gates - gates
+      unless unexpected_path_gates.empty?
+        errors << "path_matches contains gates absent from triggered_gates: #{unexpected_path_gates.uniq.sort.join(', ')}"
+      end
+      missing_repo_path_evidence = gates.grep(/\Arepo-path:/) - matched_gates
+      unless missing_repo_path_evidence.empty?
+        errors << "repo-path gates require matching path evidence: #{missing_repo_path_evidence.join(', ')}"
+      end
+      if gates.include?("autonomous-merge-policy-change") && !matched_gates.include?("autonomous-merge-policy-change")
+        errors << "autonomous-merge-policy-change requires matching path evidence"
+      end
+    end
+
+    if verdict == "human-approval-required"
+      errors << "human-approval-required needs at least one triggered gate" if gates.is_a?(Array) && gates.empty?
+      errors << "human-approval-required cannot carry evidence failures" if failures.is_a?(Array) && !failures.empty?
+    elsif verdict == "UNKNOWN"
+      errors << "UNKNOWN needs at least one evidence failure" if failures.is_a?(Array) && failures.empty?
+    end
+    errors
+  end
+
+  def valid_path_match?(match)
+    return false unless match.is_a?(Hash) && nonempty_string?(match["path"])
+
+    if match.key?("gate")
+      reason = match["reason"]
+      expected_keys = reason == "other" ? %w[detail gate path reason] : %w[gate path reason]
+      return false unless match.keys.sort == expected_keys
+
+      gate = match["gate"]
+      return false unless AutonomousMergeDecision.canonical_gate?(gate) && PATH_REASONS.include?(reason)
+      return false unless gate.start_with?("repo-path:") || gate == "autonomous-merge-policy-change"
+      return false if gate == "autonomous-merge-policy-change" && reason != "policy"
+
+      return reason != "other" || nonempty_string?(match["detail"])
+    end
+
+    return false unless match.keys.sort == %w[classification path]
+
+    match["classification"] == "generated"
+  end
+
+  def nonempty_string?(value)
+    value.is_a?(String) && !value.strip.empty?
+  end
+
+  def exact_keys?(value, expected_keys)
+    value.is_a?(Hash) && value.keys.length == expected_keys.length &&
+      (value.keys - expected_keys).empty?
+  end
+
+  def valid_policy_provenance?(value, verdict:)
+    return false unless value.is_a?(String)
+
+    configured = value.match?(POLICY_PROVENANCE_PATTERNS.fetch(:configured))
+    portable_defaults = value.match?(POLICY_PROVENANCE_PATTERNS.fetch(:portable_defaults))
+    return configured || portable_defaults if verdict == "human-approval-required"
+    return false unless verdict == "UNKNOWN"
+
+    value == "UNKNOWN" || configured || portable_defaults ||
+      value.match?(POLICY_PROVENANCE_PATTERNS.fetch(:path_only)) ||
+      value.match?(POLICY_PROVENANCE_PATTERNS.fetch(:base_only))
+  end
+
+  def valid_helper_trust?(result, verdict:, policy_provenance:)
+    provenance = result["helper_provenance"]
+    trust = result["helper_trust"]
+    return false unless exact_keys?(trust, %w[manifest status])
+
+    if trust["status"] == "mechanically-verified"
+      return false unless trusted_helper_provenance?(provenance, policy_provenance:)
+
+      manifest = trust["manifest"]
+      exact_keys?(manifest, RUNTIME_MANIFEST_KEYS) &&
+        manifest.values.all? { |path| nonempty_string?(path) }
+    else
+      verdict == "UNKNOWN" && provenance == "UNKNOWN" &&
+        trust == { "status" => "unverified", "manifest" => {} }
+    end
+  end
+
+  def valid_metrics?(metrics, verdict:)
+    return true if verdict == "UNKNOWN" && metrics == {}
+
+    exact_keys?(metrics, METRIC_KEYS) &&
+      metrics.values.all? { |value| value.is_a?(Integer) && value >= 0 }
+  end
+
+  def canonical_early_unknown_evidence_shape?(result)
+    result["path_matches"] == [] &&
+      result["safe_class"] == "UNKNOWN" &&
+      result["triggered_gates"] == [] &&
+      result["shadow_triggered_gates"] == [] &&
+      result["shadow_evidence_unknown"] == [] &&
+      result["rollback_assessment"] == "UNKNOWN" &&
+      result["human_decision_evidence"] == { "status" => "none" } &&
+      result["current_integration"].nil?
+  end
+
+  def valid_human_decision_evidence?(decision, verdict:)
+    return false unless decision.is_a?(Hash)
+    return true if decision == { "status" => "none" }
+    return false unless verdict == "UNKNOWN"
+    return false unless exact_keys?(decision, %w[approved_by comment_id reason source status url])
+    return false unless decision["status"] == "uncertain"
+    return false unless AutonomousMergeDecision::SOURCES.include?(decision["source"])
+
+    %w[approved_by comment_id reason url].all? { |key| nonempty_string?(decision[key]) }
+  end
+
+  def trusted_helper_provenance?(provenance, policy_provenance:)
+    return false unless provenance.is_a?(String)
+    return true if provenance.match?(INSTALLED_PACK_PROVENANCE_PATTERN)
+
+    match = provenance.match(TRUSTED_BASE_PROVENANCE_PATTERN)
+    return false unless match
+
+    policy_base = policy_provenance.to_s.match(/\Agit:([0-9a-f]{40})(?::|\z)/)&.captures&.first
+    policy_base.nil? || match.captures.first == policy_base
+  end
+
+  def human_approval_closeout(result)
+    gates = result.fetch("triggered_gates")
+    head_sha = result.fetch("head_sha").downcase
+    gate_explanations = gates.map { |gate| explain_gate(gate, result) }
+    summary_reasons = gates.map do |gate|
+      gate.start_with?("repo-path:") ? "touches a path the repository reserves for human review" : SUMMARY_REASONS.fetch(gate)
+    end.uniq
+    summary = "Auto-merge is paused because this PR #{sentence_list(summary_reasons)}. " \
+              "A verified human with merge authority must approve these risks for the current commit."
+    distinction = "This is a policy and authority gate. It does not report a code defect, failed CI, or a review finding; " \
+                  "ordinary readiness remains a separate requirement."
+    next_action = "The active-task user or a repository maintainer may act only after their human identity and merge " \
+                  "authority are verified. They must review every listed gate and the rollback or forward-recovery plan, " \
+                  "then post a complete autonomous-merge-risk-decision:v1 comment on this PR for head #{head_sha}, " \
+                  "the exact sorted gate set, and an explicit approve decision."
+    durable_definition = "Durable means the complete decision is recorded in a PR comment that remains available for review. " \
+                         "Current-head means the decision applies only to the exact commit named above."
+    invalidation = "Any new head invalidates this decision. Re-run ordinary readiness and the autonomous evaluator, then " \
+                   "obtain a new durable decision for the new exact head and gate set."
+
+    closeout(
+      summary:,
+      distinction:,
+      state: "ready-human-review-required",
+      result:,
+      gate_explanations:,
+      next_action:,
+      durable_definition:,
+      invalidation:
+    )
+  end
+
+  def evidence_unknown_closeout(result)
+    head_sha = result.fetch("head_sha").downcase
+    summary = "Auto-merge is blocked because required exact-head eligibility evidence is missing, invalid, or contradictory."
+    distinction = "This is an evidence and authority failure, not a human-approvable policy-risk verdict. It does not by " \
+                  "itself report a code defect, failed CI, or a review finding, and risk approval cannot clear it."
+    next_action = "The coordinator or evaluator operator must repair every listed evidence failure from trusted-base and " \
+                  "current-head sources, re-run autonomous-merge-eligibility, save the regenerated evaluator JSON in the " \
+                  "coordinator-owned AUTONOMOUS_RESULT_PATH artifact used by merge-assurance, and cite that result in the PR closeout."
+    durable_definition = "Do not request or accept autonomous-merge risk approval while the verdict is UNKNOWN. " \
+                         "Only a complete rerun can replace this fail-closed result."
+    invalidation = if head_sha == "unknown"
+                     "The exact head is unknown, so collect and bind the current full head SHA before reevaluation. Any later " \
+                     "head change invalidates the repaired evidence and requires another complete rerun."
+                   else
+                     "Any new head invalidates repaired evidence for #{head_sha}. Re-run ordinary readiness and the autonomous " \
+                     "evaluator for the new exact head."
+                   end
+
+    closeout(
+      summary:,
+      distinction:,
+      state: "autonomous-merge-evidence-unknown",
+      result:,
+      gate_explanations: result.fetch("triggered_gates").map { |gate| explain_gate(gate, result) },
+      next_action:,
+      durable_definition:,
+      invalidation:
+    )
+  end
+
+  def explain_gate(gate, result)
+    paths = result.fetch("path_matches").select { |match| match["gate"] == gate }
+    explanation = if gate.start_with?("repo-path:")
+                    reasons = paths.map do |match|
+                      reason = match.fetch("reason")
+                      reason == "other" ? markdown_code_literal(match.fetch("detail")) : PATH_REASON_EXPLANATIONS.fetch(reason)
+                    end.uniq
+                    "Trusted-base repository policy reserves this PR's matching #{sentence_list(reasons)} for human review."
+                  else
+                    GATE_EXPLANATIONS.fetch(gate)
+                  end
+    {
+      "gate" => gate,
+      "explanation" => explanation,
+      "path_evidence" => paths.map { |match| match.slice("path", "reason", "detail") }
+    }
+  end
+
+  def sentence_list(items)
+    return items.fetch(0) if items.length == 1
+    return "#{items.fetch(0)} and #{items.fetch(1)}" if items.length == 2
+
+    "#{items[0...-1].join(', ')}, and #{items.fetch(-1)}"
+  end
+
+  def markdown_code_literal(value)
+    literal = JSON.generate(value)
+    fence = "`" * ((literal.scan(/`+/).map(&:length).max || 0) + 1)
+    "#{fence} #{literal} #{fence}"
+  end
+
+  def closeout(summary:, distinction:, state:, result:, gate_explanations:, next_action:, durable_definition:, invalidation:)
+    durable_location = if state == "ready-human-review-required"
+                         "a complete autonomous-merge-risk-decision:v1 PR comment"
+                       else
+                         "the coordinator-owned AUTONOMOUS_RESULT_PATH artifact used by merge-assurance, cited in the PR closeout"
+                       end
+    {
+      "contract" => CONTRACT,
+      "version" => VERSION,
+      "summary" => summary,
+      "distinction" => distinction,
+      "state" => state,
+      "verdict" => result.fetch("verdict"),
+      "head_sha" => result.fetch("head_sha"),
+      "gate_explanations" => gate_explanations,
+      "triggered_gates" => result.fetch("triggered_gates"),
+      "rollback_assessment" => result["rollback_assessment"],
+      "policy_provenance" => result["policy_provenance"],
+      "evidence_failures" => result.fetch("evidence_failures"),
+      "next_action" => next_action,
+      "durable_location" => durable_location,
+      "definitions" => durable_definition,
+      "new_head_invalidation" => invalidation
+    }
+  end
+
+  def render_markdown(closeout)
+    lines = [closeout.fetch("summary"), "", closeout.fetch("distinction"), ""]
+    lines << "Closeout state: `#{closeout.fetch('state')}`"
+    lines << "Evaluator verdict: `#{closeout.fetch('verdict')}`"
+    lines << "Exact head: `#{closeout.fetch('head_sha')}`"
+    lines << "Rollback assessment: `#{closeout.fetch('rollback_assessment')}`" if closeout["rollback_assessment"]
+    lines << "Policy provenance: `#{closeout.fetch('policy_provenance')}`" if closeout["policy_provenance"]
+    unless closeout.fetch("gate_explanations").empty?
+      lines.concat(["", "Why this PR triggered each technical gate:"])
+      closeout.fetch("gate_explanations").each do |entry|
+        lines << "- `#{entry.fetch('gate')}` — #{entry.fetch('explanation')}"
+        entry.fetch("path_evidence").each do |path|
+          reason = path.fetch("reason")
+          reason = "#{reason}: #{markdown_code_literal(path.fetch('detail'))}" if path.key?("detail")
+          lines << "  Path evidence: #{markdown_code_literal(path.fetch('path'))} (#{reason})"
+        end
+      end
+    end
+    unless closeout.fetch("evidence_failures").empty?
+      lines.concat(["", "Evidence failures that must be repaired:"])
+      closeout.fetch("evidence_failures").each { |failure| lines << "- #{markdown_code_literal(failure)}" }
+    end
+    lines << ""
+    lines << "Next action: #{closeout.fetch('next_action')}"
+    lines << ""
+    lines << closeout.fetch("definitions")
+    lines << ""
+    lines << closeout.fetch("new_head_invalidation")
+    "#{lines.join("\n")}\n"
+  end
+
+  def run(arguments = ARGV, input: $stdin, output: $stdout, error: $stderr)
+    options = { input: "-", format: "markdown" }
+    OptionParser.new do |parser|
+      parser.banner = "Usage: autonomous-merge-closeout [--input PATH|-] [--format markdown|json]"
+      parser.on("--input PATH") { |value| options[:input] = value }
+      parser.on("--format FORMAT") { |value| options[:format] = value }
+    end.parse!(arguments)
+    raise ArgumentError, "positional arguments are not supported" unless arguments.empty?
+    raise ArgumentError, "format must be markdown or json" unless %w[markdown json].include?(options[:format])
+
+    source = options[:input] == "-" ? input.read : File.read(options[:input], encoding: "UTF-8")
+    result = JSON.parse(source)
+    rendered = build(result)
+    output.write(options[:format] == "json" ? "#{JSON.generate(rendered)}\n" : render_markdown(rendered))
+    0
+  rescue JSON::ParserError, SystemCallError, OptionParser::ParseError, ArgumentError => e
+    error.puts "autonomous-merge-closeout: #{e.message}"
+    64
+  end
+end
+
+exit AutonomousMergeCloseout.run if $PROGRAM_NAME == __FILE__

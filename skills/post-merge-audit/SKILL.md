@@ -10,6 +10,13 @@ Audit merged PRs as a batch after batch work or before the next release step.
 Use visible chat only to choose the obvious just-run batch default; use git,
 GitHub, and coordination ground truth for every audit fact.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the canonical rules in the loaded `workflows/pr-processing.md`. Apply the
+guide to audit issue bodies, GitHub comments, PR-description prose, and final
+handoffs. Do not alter required audit markers, receipt fields, exact protocol
+blocks, issue accounting, or evidence.
+
 Memorable invocation:
 
 ```text
@@ -25,24 +32,25 @@ the production receipt parser loaded by the sibling `pr-batch` contract test;
 an isolated pinned copy must include both companions or stop with a precise
 missing-companion blocker.
 
-For a verified Codex GPT-5.6 batch, preserve the originating route profile:
+For a verified Codex GPT-5.6 batch, record the originating preferences and use
+this recommended advisory route profile:
 
-- Multi-lane coordinator: Sol/xhigh
+- Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
-- High-risk or escalated work: Sol/xhigh
+- Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
-For a verified Claude batch, preserve the provisional originating route
-profile (`claude-profile v0`):
+For a verified Claude batch, record the originating preferences and use this
+provisional recommended advisory route profile (`claude-profile v1`):
 
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
 
 When emitting a structured `review-findings` block, set `review_receipt.source`
 to `post-merge-audit` and follow `docs/review-finding-schema.md`.
@@ -56,19 +64,20 @@ prompt, response, or transcript data in the receipt.
 Start by resolving the exact audit range and, when auditing a named agent
 batch/run, the exact worked-issue scope.
 
-For a completed-batch audit, also resolve launch assurance before deep audit:
-the checker must be a fresh instance independent from every maker, with exact
-model/effort and binding evidence satisfying the batch's operator policy. Under
-the conservative GPT-5.6 profile the qualifying audit is independent
-adversarial QA on Sol/xhigh; Sol/high is limited to routine deterministic QA.
-Terra may collect mechanical evidence but does not issue the qualifying verdict.
-Under the provisional Claude profile (`claude-profile v0`) the qualifying audit
-is independent adversarial QA on Opus 4.8/xhigh; Opus 4.8/high is limited to
-routine deterministic QA. Sonnet may collect mechanical evidence but does not
-issue the qualifying verdict. If
-checker route or independence is below policy or `UNKNOWN`, the audit cannot be
-clean; report `checker_route_compliance: UNKNOWN|failed` and the exact fresh
-qualifying-checker reservation needed.
+For a completed-batch audit, resolve checker independence before deep audit:
+the checker must be a fresh instance independent from every maker.
+Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+Under the conservative GPT-5.6 profile, prefer Sol/xhigh for independent
+adversarial QA and Sol/high for routine deterministic QA. Under the provisional Claude
+profile (`claude-profile v1`), prefer Opus 5/xhigh for independent adversarial
+QA and Opus 5/high for routine deterministic QA. Terra and Sonnet
+may collect mechanical evidence or serve as the qualifying checker when the
+role, independence, scope, current-head evidence, and evidence quality qualify.
+If checker independence is unavailable or `UNKNOWN`, the audit cannot be clean.
+Record unavailable host-observed model/effort as `UNKNOWN`; preference mismatch
+alone does not block an otherwise qualifying verdict.
 
 Default batch selection: when the current visible chat, active goal, restart
 handoff, or immediately preceding batch closeout names exactly one just-run
@@ -265,7 +274,7 @@ For each included PR:
   a process finding unless a maintainer explicitly waived replay for that
   scope.
 - Cross-PR interactions: compare changed files, shared behavior, assumptions, and release-sensitive areas across the batch.
-- Decision log: inspect any `Codex Decision Log` or equivalent section and verify the decisions still hold after the merge.
+- Decision log: inspect the canonical `### Decision log` subsection inside the PR description's `Agent details` disclosure first; also discover legacy `## Codex Decision Log` and consumer-equivalent sections, then verify their decisions still hold after the merge.
 
 For each worked issue, QA lane, or advisory `codex-claim` recovery row from
 coordination state, including no-PR, blocked, parked, done-unmerged, or
@@ -319,7 +328,7 @@ Classify each PR:
 - **Needs changelog update**: user-visible change is missing from the repo's changelog; recommend `/update-changelog`.
 - **Needs follow-up issue**: non-blocking work remains valuable and is actionable after release.
 - **Needs fix PR**: a real defect, missing test, missing compatibility note, or bad interaction should be fixed before release.
-- **Needs revert consideration**: the merge appears risky enough that reverting may be safer than patching.
+- **Needs revert consideration**: the merge appears risky enough that reverting may be safer than patching. The downstream procedure is [Unwinding A Bad Agent Merge](../../docs/revert-runbook.md), which covers revert scope, order, bookkeeping, and the operator-authority rule. Reference it in the child issue; it is a runbook for the operator, not a gate on this audit, and it never blocks or alters audit completion.
 
 Classify each worked issue separately so the audit can prove every coordinated
 lane was evaluated, even when the issue produced no merged PR:
@@ -403,6 +412,15 @@ Only the coordinator should create issues. Independent Codex and Claude audits s
 
 ## Output
 
+Every final user-visible workflow handoff must include one unambiguous `Next:` instruction.
+This applies to completed-batch, release/range, and coverage catch-up audits.
+When the applicable archive gate passes, use `Next: Archive this task.` When
+user input blocks progress, state the smallest action that clears the blocker
+and whether to reply here or start a new task. When the current task will
+continue without input, state its exact next action.
+Keep `Action needed:` separate: name the exact user action or `none`. A durable
+issue, report, receipt, or blocker list is evidence, not a next step.
+
 In completed-batch mode only:
 
 Once every batch target has a final state, the batch coordinator must run its
@@ -410,7 +428,11 @@ completed-batch audit before its final handoff. Each completed-batch audit is
 owned by its batch coordinator. A parent orchestration agent only reconciles
 the durable audit handoff.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, and final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`.
+
+Put `What changed:`, `Action needed:`, and `Next:` before the compact receipt so
+the receipt can still immediately precede the final `Conversation status:`
+line.
 Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
 
@@ -427,15 +449,13 @@ the configured coordination seam is unavailable. `unknown`, `in_progress`,
 missing, stale-head, and malformed QA evidence block completion.
 
 A normal terminal `done` lane still requires its coordination target state and
-terminal evidence. An immutable terminal `abandoned` or `superseded` lane may
-instead reconcile only when the helper independently authenticates that the
-same exact target reached `merged` or `closed` at an authenticated completion
-timestamp later than the lane closeout. The publication snapshot
-preserves the original coordination terminal and records the later-target
-completion mode. Active/nonterminal lanes, open targets, unauthenticated target
-facts, and malformed terminal timestamps remain blocked.
+terminal evidence. Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation.
+The publication snapshot preserves the original coordination terminal and records
+the later-target completion mode for accepted reconciliation. Active/nonterminal
+lanes, open targets, unauthenticated target facts, and malformed terminal
+timestamps remain blocked.
 
-Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
+Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 
 For `audit_status: complete`, that parse/bind step additionally requires the
 eligible publication preflight and exact manifest match. Pass the same refreshed
@@ -497,7 +517,12 @@ preflight digest is not authentication.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
-A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. New complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. New complete receipts also have exactly one helper-managed `publication_snapshot`; unrefreshed or snapshot-mismatched data fails closed. A legacy complete marker without `publication_snapshot` remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
+A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a fresh eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Ordinary new complete receipts also have exactly one helper-managed `publication_snapshot`; accepted-deferral receipts have exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
+
+Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it. This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed.
+
+The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number.
+Before publication, bind `original_receipt_sha256` to the exact local blocked marker and use `not-published` for its URL plus `not-applicable` for author and both timestamps. After publication, copy those five bindings from the verified compact predecessor reference; the decision timestamp must be later than the original receipt.
 
 A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`. Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid. `UNKNOWN` validation is fail-closed: only literal ASCII exact `UNKNOWN` may use an exact-sentinel path; NFKC-normalize a copy of every scalar and record value before case-insensitive nested-`UNKNOWN` rejection, so compatibility forms cannot count as evidence. Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported. Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records. Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens. Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union. After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union.
 
@@ -534,12 +559,13 @@ followups_dispositions: <none|one or more ` | `-separated records with ref, owne
 
 For a PR anchor, `publish` and `replay` emit this small managed section after
 comment readback; neither mutates the PR description. The coordinator applies it
-through a separate freshly-read update, preserves all surrounding text, never
-duplicates the markers, and never reruns `publish` to retry description sync:
+inside `### Audit receipts` in the canonical `Agent details` disclosure through
+a separate freshly-read update, preserves all surrounding text, never duplicates
+the markers, and never reruns `publish` to retry description sync:
 
 ```markdown
 <!-- completed-batch-audit-summary:start -->
-## Completed-batch audit
+#### Completed-batch audit
 
 **Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](<exact-comment-url>).
 <!-- completed-batch-audit-summary:end -->

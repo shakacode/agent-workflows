@@ -102,6 +102,17 @@ Handoff format:
 - Recommended `$plan-pr-batch` scope:
 ```
 
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. Keep `Action needed:` separate: name the exact user action or
+`none`. When the spec is ready for downstream planning, use `Action needed:
+Start a new planning task with $plan-pr-batch.` and `Next: Run $plan-pr-batch
+with the Spec Summary above in that task, then archive this specification
+task.` When a blocking answer is required, name the exact
+question and say `Next: Reply here with that answer so specification can
+continue.` If no downstream work or open decision remains, use `Next: Archive
+this task.` A Spec Summary or task list is evidence for the handoff, not a next
+step by itself.
+
 ## Self-Check
 
 - Each task traces to at least one requirement.
