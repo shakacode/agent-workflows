@@ -315,8 +315,8 @@ module HeavyRootAdmission
   def root_matches_bound_reservation?(root, reservation)
     return false unless reservation["status"] == "bound"
 
-    (root["pid"] && root["pid"] == reservation["pid"]) ||
-      (root["pgid"] && root["pgid"] == reservation["pgid"])
+    root["pid"] && root["pid"] == reservation["pid"] &&
+      root["pgid"] && root["pgid"] == reservation["pgid"]
   end
 
   def owner_row_from_reservation(reservation)

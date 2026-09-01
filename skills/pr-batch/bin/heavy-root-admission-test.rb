@@ -185,6 +185,27 @@ class HeavyRootAdmissionTest < Minitest::Test
     refute HeavyRootAdmission.process_or_group_live?(Process.pid, nonexistent_pgid, mismatched_identity)
   end
 
+  def test_bound_root_dedup_requires_exact_pid_and_process_group
+    reservation = { "status" => "bound", "pid" => 12_345, "pgid" => 12_345 }
+
+    refute HeavyRootAdmission.root_matches_bound_reservation?(
+      { "pid" => 12_345, "pgid" => 54_321 },
+      reservation
+    ), "a reused PID in a different group is a separate live root"
+    refute HeavyRootAdmission.root_matches_bound_reservation?(
+      { "pid" => 54_321, "pgid" => 12_345 },
+      reservation
+    ), "a matching group without the original PID is ambiguous"
+    refute HeavyRootAdmission.root_matches_bound_reservation?(
+      { "pid" => 12_345, "pgid" => nil },
+      reservation
+    ), "PID-only evidence cannot safely distinguish reuse"
+    assert HeavyRootAdmission.root_matches_bound_reservation?(
+      { "pid" => 12_345, "pgid" => 12_345 },
+      reservation
+    ), "the exact bound PID and PGID identify one scanned root"
+  end
+
   def test_expired_prelaunch_token_is_recovered_but_cannot_be_reused
     Dir.mktmpdir("heavy-root-admission-expiry-test") do |state_dir|
       scan_command = scanner_command(state_dir)
