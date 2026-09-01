@@ -28,8 +28,9 @@ reproduction explains the failure.
    parameters and selected or known pre-run hosted environment identity—event,
    inputs, matrix, runner image, toolchain, and configuration selection—not
    runtime behavior or outcomes. If the failure identity, hosted run history,
-   or invocation equivalence cannot be retrieved or verified, record each fact
-   as `UNKNOWN`, classify the result as `BLOCKED`, and stop before reproduction.
+   or invocation equivalence cannot be retrieved or verified, record the
+   unverifiable fact(s) as `UNKNOWN`, classify the result as `BLOCKED`, and
+   stop before reproduction.
    If equivalent hosted invocations for the same commit pass and fail, stop
    before parity reproduction and use
    `fix-flaky-tests`; that workflow owns intermittency regardless of local
