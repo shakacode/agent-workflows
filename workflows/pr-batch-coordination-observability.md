@@ -84,9 +84,10 @@ evidence:
   Among verified markers, only one owned by a different lane or instance
   conflicts. A marker is renewable only when batch, machine, a stable,
   non-`unavailable` thread, and branch all match; refresh the same comment.
-  A marker with `thread: unavailable` cannot be self-renewed. An ad-hoc lane
-  cannot use fallback because it has no issue or PR comment surface; require a
-  coordination target or explicit no-backend single-operator approval. Apply
+  A marker with `thread: unavailable` cannot be self-renewed. For an ad-hoc lane,
+  public claim fallback is unavailable because there is no issue or PR comment
+  surface. Require a coordination target or explicit no-backend single-operator
+  approval. Apply
   the concrete author-and-marker verification from the public
   [backend guide](../docs/coordination-backend.md#public-claim-comment-fallback);
   a marker body alone is never ownership proof.
