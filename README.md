@@ -293,6 +293,9 @@ The docs for this pack are the
 which workflow to use, how to install the pack, how to adopt it in a consumer
 repo, or how to validate the agent workflow contract.
 
+To report a suspected vulnerability, follow the
+[Security Policy](SECURITY.md).
+
 ## License
 
 This project is available under the MIT License.
