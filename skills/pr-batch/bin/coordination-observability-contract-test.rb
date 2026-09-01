@@ -7,6 +7,7 @@ ROOT = File.expand_path("../../..", __dir__)
 COMPONENT_PATH = File.join(ROOT, "workflows/pr-batch-coordination-observability.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
+PAUSE_SKILL_PATH = File.join(ROOT, "skills/pause/SKILL.md")
 BACKEND_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
 ADDRESS_REVIEW_SKILL_PATH = File.join(ROOT, "skills/address-review/SKILL.md")
 ADDRESS_REVIEW_WORKFLOW_PATH = File.join(ROOT, "workflows/address-review.md")
@@ -29,6 +30,7 @@ class CoordinationObservabilityContractTest < Minitest::Test
     @component = File.read(COMPONENT_PATH, encoding: "UTF-8")
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
     @skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    @pause_skill = File.read(PAUSE_SKILL_PATH, encoding: "UTF-8")
     @backend_doc = File.read(BACKEND_DOC_PATH, encoding: "UTF-8")
     @address_review_skill = File.read(ADDRESS_REVIEW_SKILL_PATH, encoding: "UTF-8")
     @address_review_workflow = File.read(ADDRESS_REVIEW_WORKFLOW_PATH, encoding: "UTF-8")
@@ -227,11 +229,14 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes recovery, "kind: drain"
     assert_includes recovery, "release"
     workflow_recovery = squish(@workflow)
-    assert_includes workflow_recovery, "matching stable, non-`unavailable` thread"
+    assert_includes workflow_recovery, "stable non-`unavailable` thread"
     assert_includes workflow_recovery, "explicit reassignment"
-    assert_includes pause_flow,
-                    "refresh the existing claim comment only when it has the matching stable, " \
-                    "non-`unavailable` thread and inspection finds neither conflicting nor `UNKNOWN` ownership evidence"
+    complete_refresh_contract = "complete verification shows an authorized author, exactly one well-formed " \
+                                "marker on the target's own issue or PR, matching batch, machine, stable " \
+                                "non-`unavailable` thread, and branch, `status: in_progress`, a future " \
+                                "`expires_at`, and neither conflicting nor `UNKNOWN` ownership evidence"
+    assert_equal 2, pause_flow.scan(complete_refresh_contract).length
+    assert_includes squish(@pause_skill), complete_refresh_contract
   end
 
   def test_private_registration_preserves_operational_recovery_context

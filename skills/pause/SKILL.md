@@ -114,14 +114,16 @@ minimal status checks and claim-preservation write needed for the handoff.
 If this lane already owns a private backend claim, send one heartbeat update,
 using a paused or operator-restart reason if the backend supports it; otherwise
 send a plain heartbeat preserving the current status. If it is using only the
-public `codex-claim` fallback, refresh the existing claim comment only when it
-has the matching stable, non-`unavailable` thread and inspection finds neither
-conflicting nor `UNKNOWN` ownership evidence. Otherwise require explicit
-reassignment and do not refresh. For an eligible refresh, extend `expires_at`
-by the same lease window already used for that fallback claim, capped at the
-repo's configured public fallback lease maximum or 4 hours from now when no
-repo-specific cap is configured, leaving `status: in_progress` so the fallback
-remains an active advisory lock.
+public `codex-claim` fallback, refresh the existing claim comment only when
+complete verification shows an authorized author, exactly one well-formed
+marker on the target's own issue or PR, matching batch, machine, stable
+non-`unavailable` thread, and branch, `status: in_progress`, a future
+`expires_at`, and neither conflicting nor `UNKNOWN` ownership evidence.
+Otherwise require explicit reassignment and do not refresh. For an eligible
+refresh, extend `expires_at` by the same lease window already used for that
+fallback claim, capped at the repo's configured public fallback lease maximum
+or 4 hours from now when no repo-specific cap is configured, leaving
+`status: in_progress` so the fallback remains an active advisory lock.
 If your repo configures a shorter public fallback lease maximum, use that cap
 instead of the 4-hour default.
 If the heartbeat or public fallback refresh fails with a transient error, treat
