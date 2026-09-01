@@ -242,7 +242,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_hosted_v1_accepts_https_as_a_prose_label
     [
       "HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced", "HTTPS: TLS 1.3",
-      "HTTPS: TLSv1.3", "HTTPS: (TLS 1.3)", "HTTPS: v1.2.3 released", "HTTPS: v1.2.3?build=5",
+      "HTTPS: TLSv1.3", "HTTPS: (TLS 1.3)", "HTTPS: (HTTP/2)", "HTTPS: v1.2.3 released",
+      "HTTPS: v1.2.3?build=5",
       "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active"
     ].each do |label|
       evidence = "#{label}; https://evidence.example.test/sign-in-abc123"
@@ -925,7 +926,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_v2_accepts_https_prose_labels_beside_durable_urls
     [
       "HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced", "HTTPS: TLS 1.3",
-      "HTTPS: TLSv1.3", "HTTPS: (TLS 1.3)", "HTTPS: v1.2.3 released", "HTTPS: v1.2.3?build=5",
+      "HTTPS: TLSv1.3", "HTTPS: (TLS 1.3)", "HTTPS: (HTTP/2)", "HTTPS: v1.2.3 released",
+      "HTTPS: v1.2.3?build=5",
       "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active"
     ].each do |label|
       qa = run_replay(

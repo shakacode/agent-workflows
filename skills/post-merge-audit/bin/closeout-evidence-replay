@@ -752,6 +752,7 @@ module CloseoutEvidenceReplay
     prose_label = label.split(/[;,]|\.(?=\s|\z)/, 2).first.strip
     return if prose_label.include?("\\")
     return if prose_label.split(/\s+/).any? do |token|
+      token = normalized_https_prose_token(token)
       token.include?("/") && !token.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z})
     end
     return if authority_shaped_https_label?(prose_label)
@@ -766,8 +767,7 @@ module CloseoutEvidenceReplay
 
   def authority_shaped_https_label?(label)
     label.split(/\s+/).any? do |token|
-      token = token[1..] if token.start_with?("(", "[", "{")
-      token = token[...-1] if token.end_with?(")", "]", "}")
+      token = normalized_https_prose_token(token)
       version_token = token.split(/[?#]/, 2).first
       next false if version_token.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
       next false if version_token.match?(/\A\d{1,2}(?:\.\d{1,2}){1,2}\z/)
@@ -775,6 +775,12 @@ module CloseoutEvidenceReplay
       authority = token.split(/[?#]/, 2).first
       authority.include?(".") || authority.include?(":") || authority.start_with?("[")
     end
+  end
+
+  def normalized_https_prose_token(token)
+    token = token[1..] if token.start_with?("(", "[", "{")
+    token = token[...-1] if token.end_with?(")", "]", "}")
+    token
   end
 
   def unresolved_hosted_criterion_evidence?(evidence)
