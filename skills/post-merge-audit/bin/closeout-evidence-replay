@@ -86,6 +86,10 @@ module CloseoutEvidenceReplay
     )
     (?![\w./-])
   }ix
+  # Percent-encoded authority markers denote the same authority once decoded. Only these three are
+  # decoded, so ordinary prose containing `%` (`99.9%`) is untouched.
+  HTTPS_ENCODED_AUTHORITY_MARKER = /%(?:2[eE]|3[aA]|40)/
+  HTTPS_ENCODED_AUTHORITY_MARKERS = { "%2e" => ".", "%3a" => ":", "%40" => "@" }.freeze
   # Prose delimiters that wrap a label token (`"TLS 1.3"`, `` `TLS 1.3` ``, `(HTTP/2)`,
   # `**TLS 1.3**`) and must be removed before authority classification. Runs are stripped so
   # Markdown emphasis of any width is handled; the delimiters carry no authority meaning, and a
@@ -881,7 +885,7 @@ module CloseoutEvidenceReplay
     tokens = label.split(/\s+/)
     tokens.each_with_index.any? do |token, index|
       square_bracketed = token.start_with?("[")
-      token = normalized_https_prose_token(token)
+      token = decoded_https_authority_markers(normalized_https_prose_token(token))
       # Checked before the exemptions below: the trailing-colon prose rule would otherwise read
       # `view-source:` as a bounded label rather than as a scheme.
       next true if token.match?(NON_DURABLE_OPAQUE_SCHEME)
@@ -900,8 +904,21 @@ module CloseoutEvidenceReplay
       end
       next false if authority.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z})
 
-      authority.include?(".") || authority_colon_shape?(authority) || square_bracketed
+      authority.include?(".") || authority_colon_shape?(authority) ||
+        userinfo_shaped_https_authority?(authority) || square_bracketed
     end
+  end
+
+  def decoded_https_authority_markers(token)
+    return token unless token.match?(HTTPS_ENCODED_AUTHORITY_MARKER)
+
+    token.gsub(HTTPS_ENCODED_AUTHORITY_MARKER) { |marker| HTTPS_ENCODED_AUTHORITY_MARKERS.fetch(marker.downcase) }
+  end
+
+  # `user@host` is authority-shaped with or without a password, and with or without a dot in the
+  # host. A leading `@` is a handle mention (`@octocat`) rather than userinfo, so it stays prose.
+  def userinfo_shaped_https_authority?(authority)
+    authority.include?("@") && !authority.start_with?("@")
   end
 
   # A colon marks an authority (`host:port`, IPv6, userinfo) or an opaque scheme (`mailto:someone`)
@@ -1030,6 +1047,8 @@ module CloseoutEvidenceReplay
       qualified_terminal_count?(tokens, STRUCTURAL_COUNT_TOKENS)
   end
 
+  # An empty prefix (the bare name `count`/`counts`) is vacuously "all qualifiers" here by design,
+  # so a name that names nothing but a count stays rejected. Do not "fix" the empty case.
   def qualifier_only_terminal_count?(tokens)
     !tokens.empty? && %w[count counts].include?(tokens.last) &&
       tokens[0...-1].all? { |token| COUNT_QUALIFIER_TOKENS.include?(token) }

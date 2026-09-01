@@ -1532,7 +1532,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     # position that carries a prose exemption. Found three fail-opens the example-based tests and
     # review rounds had both missed.
     hosts = ["example.test", "evil.example.test", "10.0.0.1", "10.0.0.1:8080", "[::1]",
-             "user:pw@internal", "example.test:443", "//host/path", "\\\\unc\\share"]
+             "user:pw@internal", "admin@internal", "admin@example.test", "example%2Etest",
+             "example.test:443", "//host/path", "\\\\unc\\share"]
     schemes = %w[javascript: mailto: file: data: vbscript: view-source: intent: sms:]
     url = "https://github.com/example/repo/pull/123#visual"
 
@@ -1564,6 +1565,19 @@ class CloseoutEvidenceReplayTest < Minitest::Test
                "smuggled path accepted: #{value}"
       end
     end
+  end
+
+  def test_https_labels_keep_handle_mentions_as_prose
+    # `@octocat` is a mention, not userinfo: the userinfo rule requires a non-empty left side.
+    body = hosted_v1_marker.sub(
+      "https://evidence.example.test/sign-in-abc123",
+      "HTTPS: reviewed by @octocat; https://evidence.example.test/sign-in-abc123"
+    )
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "SATISFIED", hosted.fetch("verdict")
+    assert_empty hosted.fetch("missing")
   end
 
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
