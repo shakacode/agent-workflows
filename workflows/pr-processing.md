@@ -801,10 +801,11 @@ Hard returns `budget-exhausted / NOT COMPLETE`, with no unchanged retry or
 automatic continuation until an explicit scoped increase or resume decision
 restores headroom. Approvals and overrides never grant or weaken security,
 review, QA, exact-head, ownership, or merge gates. Overshoot is allowed only
-when the persisted envelope is exactly one in-flight turn and the affected
-scope's verified receipt count is exactly one distinct contributing turn.
-Zero, `UNKNOWN`, multiple turns, a wider envelope, and the diagnostic
-token-sample count cannot authorize overshoot.
+when the affected scope's verified distinct contributing-turn counts are positive
+and no greater than the persisted deduplicated target-plus-retained-descendant
+envelope. Each admitted target or retained descendant contributes at most one
+already-running turn. Zero, `UNKNOWN`, over-envelope, repeated overshoot, and
+the diagnostic token-sample count cannot authorize overshoot.
 
 Before a hard-stop handoff, persist exact completed work, current branch and
 full head, all six gate states, authoritative receipt cutoff, resume conditions,

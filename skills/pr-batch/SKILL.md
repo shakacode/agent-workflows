@@ -522,10 +522,11 @@ approved admission resolves the decision. Hard returns `budget-exhausted / NOT C
 automatic continuations stay stopped until a scoped increase or resume decision
 restores headroom. No budget approval or override grants or weakens security,
 review, QA, exact-head, ownership, or merge gates. Overshoot is allowed only
-when the persisted envelope is exactly one in-flight turn and the affected
-scope's verified receipt count is exactly one distinct contributing turn;
-zero/`UNKNOWN`/multiple turns or a wider envelope block. Never substitute the
-receipt's diagnostic token-sample count.
+when the affected scope's verified distinct contributing-turn counts are positive
+and no greater than the persisted deduplicated target-plus-retained-descendant
+envelope. Each admitted target or retained descendant contributes at most one
+already-running turn; zero/`UNKNOWN`, over-envelope, or repeated overshoot
+evidence blocks. Never substitute the receipt's diagnostic token-sample count.
 
 Before a hard-stop handoff, persist exact completed work, branch, full head SHA,
 all remaining gates, receipt cutoff, resume conditions, and a copy-paste resume

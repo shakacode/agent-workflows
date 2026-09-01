@@ -246,9 +246,11 @@ module BatchUsageReceipt
           next if replay_prefix
 
           unless payload.is_a?(Hash)
+            turn_context_at = parsed_timestamp(record["timestamp"])
+            next if turn_context_at && turn_context_at >= @to_time
+
             @current_turn_segment = nil
             @current_turn_started_at = nil
-            turn_context_at = parsed_timestamp(record["timestamp"])
             unknown_turn("invalid_turn_context", line: line_number) unless turn_context_at && turn_context_at < @from_time
             next
           end

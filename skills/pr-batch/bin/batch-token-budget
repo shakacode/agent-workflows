@@ -65,6 +65,10 @@ module BatchTokenBudget
   ].freeze
   V2_UNKNOWN_REASON_ROUTE_FIELDS = %w[provider model effort].freeze
   CREDIT_EQUIVALENT_UNKNOWN_CODES = %w[rate_mapping_missing route_identity_unknown usage_unknown].freeze
+  BATCH_RECONCILIATION_EQUATION =
+    "batch descendant-inclusive = coordinator self-only + lane descendant-inclusive + unattributed"
+  LANE_RECONCILIATION_EQUATION =
+    "lane descendant-inclusive = named worker descendant-inclusive union + unattributed"
 
   class InvalidInput < StandardError; end
   class DuplicateJSONKey < StandardError; end
@@ -1498,12 +1502,13 @@ module BatchTokenBudget
       decision["resolved_at"] = evaluated_at
     end
     prior_hard_decisions = resolved_decisions.select { |decision| decision["status"] == "budget-exhausted" }
+    prior_hard_scope_ids = prior_hard_decisions.map { |decision| decision.fetch("scope_id") }.uniq
     resolved_checkpoint_ids = if prior_hard_decisions.empty?
                                 []
                               else
                                 state.fetch("checkpoints").filter_map do |checkpoint|
                                   next unless checkpoint["status"] == "budget-exhausted" &&
-                                              checkpoint["scope_id"] == reservation["scope_id"] &&
+                                              prior_hard_scope_ids.include?(checkpoint["scope_id"]) &&
                                               !state.fetch("checkpoint_resolutions").key?(checkpoint["id"])
 
                                   state["checkpoint_resolutions"][checkpoint.fetch("id")] = {
@@ -1754,8 +1759,8 @@ module BatchTokenBudget
       )
     end
 
-    if reservation["target_state"] == "active" || active_scope_reservation
-      same_target = active_scope_reservation&.dig("request", "target") == reservation["target"]
+    if active_scope_reservation
+      same_target = active_scope_reservation.dig("request", "target") == reservation["target"]
       resolved_state = resolve_admission_decisions(
         original_state,
         resolvable_prior_decisions,
@@ -1770,8 +1775,8 @@ module BatchTokenBudget
         resolved_state["approvals"][approval_id]["consumed_by"] = reservation_id
       end
       fields = {
-        "reason" => active_scope_reservation && !same_target ? "scope-already-active" : "target-already-active",
-        "coalesced_reservation_id" => active_scope_reservation&.dig("request", "id")
+        "reason" => same_target ? "target-already-active" : "scope-already-active",
+        "coalesced_reservation_id" => active_scope_reservation.dig("request", "id")
       }
       fields["approval_id"] = approval_id if approval_consumed
       return persist_reservation_decision(
@@ -2487,9 +2492,9 @@ module BatchTokenBudget
       value.values.all? { |turns| nonnegative_integer?(turns) || turns == "UNKNOWN" }
   end
 
-  def reconciliation_shape?(value)
+  def reconciliation_shape?(value, expected_equation)
     exact_object_keys?(value, %w[equation status]) &&
-      %w[balanced UNKNOWN].include?(value["status"]) && value["equation"].is_a?(String)
+      %w[balanced UNKNOWN].include?(value["status"]) && value["equation"] == expected_equation
   end
 
   def execution_scope_shape?(value, expected_scope)
@@ -2515,14 +2520,14 @@ module BatchTokenBudget
       turns_shape?(value["turns"], %w[descendant_inclusive self_only unattributed]) &&
       scope_evidence_shape?(value["evidence"]) && value["workers"].is_a?(Array) &&
       value["workers"].all? { |worker| execution_scope_shape?(worker, "worker") } &&
-      reconciliation_shape?(value["reconciliation"])
+      reconciliation_shape?(value["reconciliation"], LANE_RECONCILIATION_EQUATION)
   end
 
   def batch_scope_shape?(value)
     exact_object_keys?(value, %w[id reconciliation scope turns usage]) && value["scope"] == "batch" &&
       schema_nonempty_string?(value["id"]) && batch_usage_shape?(value["usage"]) &&
       turns_shape?(value["turns"], %w[descendant_inclusive unattributed]) &&
-      reconciliation_shape?(value["reconciliation"])
+      reconciliation_shape?(value["reconciliation"], BATCH_RECONCILIATION_EQUATION)
   end
 
   def credit_model_value_shape?(value)

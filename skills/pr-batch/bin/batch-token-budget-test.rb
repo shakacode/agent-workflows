@@ -3981,6 +3981,23 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_reconciliation_equation_rejects_arbitrary_text_without_persisting_the_command
+    with_state do |state_path|
+      initialize_budget(state_path)
+      receipt, = real_descendants_usage_receipt(state_path)
+      receipt.dig("lanes", 0, "reconciliation")["equation"] = "TOP-SECRET transcript and prompt"
+      state_before = File.binread(state_path)
+
+      blocked, stderr, status = reconcile_receipt(state_path, receipt, "arbitrary-reconciliation-equation")
+
+      assert status.success?, stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "usage-telemetry-malformed-or-unknown", blocked.fetch("reason")
+      assert_equal state_before, File.binread(state_path)
+      refute_includes File.binread(state_path), "TOP-SECRET"
+    end
+  end
+
   def test_positive_named_worker_self_tokens_require_positive_self_turns
     with_state do |state_path|
       initialize_budget(state_path)
@@ -5144,6 +5161,25 @@ class BatchTokenBudgetTest < Minitest::Test
     end
   end
 
+  def test_claimed_active_target_without_active_reservation_still_checks_projected_thresholds
+    with_state do |state_path|
+      initialize_budget(state_path)
+
+      stopped, stderr, status = reserve(
+        state_path,
+        id: "untracked-active-target",
+        tokens: 1_000,
+        overrides: { "target_state" => "active" }
+      )
+
+      assert status.success?, stderr
+      assert_equal "budget-exhausted", stopped.fetch("status")
+      assert_equal "projected-hard-threshold", stopped.fetch("reason")
+      refute stopped.key?("coalesced_reservation_id")
+      assert_equal 0, stopped.dig("totals", "aggregate", "reserved_tokens")
+    end
+  end
+
   def test_successful_retry_after_released_headroom_resolves_prior_hard_decision
     with_state do |state_path|
       retry_budget = budget(state_path: state_path)
@@ -5512,6 +5548,86 @@ class BatchTokenBudgetTest < Minitest::Test
         decision["status"] == "budget-exhausted" && decision["blocking_scope_ids"] == ["aggregate"]
       end
       assert_equal ["aggregate-hard-resume"], resolved.map { |decision| decision["resolved_by_reservation_id"] }.uniq
+    end
+  end
+
+  def test_cross_scope_aggregate_stop_resolution_also_resolves_the_stopped_scope_checkpoint
+    with_state do |state_path|
+      candidate = budget(state_path: state_path)
+      candidate.fetch("scopes").fetch("lanes").transform_values! { { "limit_tokens" => 1_000 } }
+      initialized, initialize_stderr, initialize_status = run_helper(
+        state_path,
+        command("initialize", "evaluated_at" => "2026-08-12T11:00:00Z", "budget" => candidate)
+      )
+      assert initialize_status.success?, initialize_stderr
+      assert_equal "initialized", initialized.fetch("status")
+      reserve(state_path, id: "occupying-lane-b", lane_id: "lane-b", tokens: 500)
+      stopped, = reserve(
+        state_path,
+        id: "stopped-lane-a",
+        lane_id: "lane-a",
+        tokens: 500,
+        target_id: "stopped-target"
+      )
+      assert_equal "budget-exhausted", stopped.fetch("status")
+
+      checkpoint = {
+        "type" => "batch-token-budget-checkpoint",
+        "version" => 1,
+        "id" => "checkpoint-stopped-lane-a",
+        "batch_id" => "batch-399",
+        "scope_id" => "lane-a",
+        "status" => "budget-exhausted",
+        "completion" => "NOT COMPLETE",
+        "exact_work" => ["Finished bounded work before the aggregate stop."],
+        "branch" => "jg-codex/399-hierarchical-token-budgets",
+        "head_sha" => "a" * 40,
+        "gates" => %w[security review qa exact-head ownership merge].to_h { |gate| [gate, "remaining"] },
+        "receipt_cutoff" => "2026-08-12T11:00:00Z",
+        "resume_conditions" => ["Restore aggregate headroom."],
+        "resume_action" => "Resume lane-a from its hard-stop checkpoint."
+      }
+      checkpointed, checkpoint_stderr, checkpoint_status = run_helper(
+        state_path,
+        command("checkpoint", "checkpoint" => checkpoint)
+      )
+      assert checkpoint_status.success?, checkpoint_stderr
+      assert_equal "checkpointed", checkpointed.fetch("status")
+
+      aggregate_override = budget_override(
+        state_path,
+        id: "cross-scope-aggregate-headroom",
+        scope_id: "aggregate",
+        old_limit_tokens: 1_000,
+        new_limit_tokens: 1_500,
+        expires_at: "2026-08-12T14:00:00Z"
+      )
+      run_helper(state_path, command("override", "override" => aggregate_override))
+      resumed, resumed_stderr, resumed_status = reserve(
+        state_path,
+        id: "resume-from-lane-b",
+        lane_id: "lane-b",
+        tokens: 1,
+        target_id: "other-target"
+      )
+      assert resumed_status.success?, resumed_stderr
+      assert_equal "coalesced", resumed.fetch("status")
+
+      saved = JSON.parse(File.binread(state_path))
+      decision = saved.fetch("admission_decisions").values.find do |candidate_decision|
+        candidate_decision["reservation_id"] == "stopped-lane-a"
+      end
+      assert_equal "resume-from-lane-b", decision.fetch("resolved_by_reservation_id")
+      assert_equal "resume-from-lane-b",
+                   saved.dig("checkpoint_resolutions", "checkpoint-stopped-lane-a", "reservation_id")
+      resolution_receipt = saved.fetch("receipts").reverse.find do |receipt|
+        receipt["type"] == "batch-token-budget-threshold-resolution-receipt"
+      end
+      assert_includes resolution_receipt.fetch("resolved_checkpoint_ids"), "checkpoint-stopped-lane-a"
+
+      closeout, closeout_stderr, closeout_status = run_helper(state_path, command("closeout"))
+      assert closeout_status.success?, closeout_stderr
+      refute_equal "corrupt-persisted-state", closeout["reason"]
     end
   end
 
@@ -7846,6 +7962,18 @@ class BatchTokenBudgetTest < Minitest::Test
       assert status.success?, stderr
       assert_equal "initialized", initialized.fetch("status")
       assert_equal "2026-08-12T17:30:00.123456+05:30", JSON.parse(File.read(valid_state_path)).fetch("last_evaluated_at")
+    end
+  end
+
+  def test_portable_budget_contract_describes_the_per_target_overshoot_envelope_consistently
+    root = File.expand_path("../../..", __dir__)
+    %w[skills/pr-batch/SKILL.md workflows/pr-processing.md].each do |relative_path|
+      contract = File.read(File.join(root, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes contract,
+                      "one verified already-running turn for each deduplicated admitted target and retained descendant"
+      refute_includes contract, "persisted envelope is exactly one in-flight turn"
+      assert_includes contract, "no greater than the persisted deduplicated target-plus-retained-descendant envelope"
     end
   end
 
