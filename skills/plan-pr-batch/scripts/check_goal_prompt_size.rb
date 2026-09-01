@@ -6,6 +6,10 @@ require "stringio"
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
 GOAL_PROMPT_MIN_HEADROOM = 300
+# The codex mixed-route fixture is intentionally close to CODEX_GOAL_PROMPT_CHAR_LIMIT
+# (that hard limit cannot be raised), but it must still carry a real, non-accidental
+# safety margin rather than trending toward zero one small line addition at a time.
+CODEX_MIXED_ROUTE_MIN_SAFETY_MARGIN = 15
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
@@ -1411,6 +1415,14 @@ budget_checks.each do |label, result|
         "#{target_label} mixed-route preemptive-split fixture must stay under #{limit} while " \
         "breaching the #{GOAL_PROMPT_MIN_HEADROOM}-character headroom floor; got " \
         "#{mixed_route_fallback_chars} chars and #{mixed_route_headroom} chars of headroom"
+      )
+    end
+    if mixed_route_headroom < CODEX_MIXED_ROUTE_MIN_SAFETY_MARGIN
+      abort_with_failure(
+        "#{target_label} mixed-route fallback prompt has only #{mixed_route_headroom} chars of " \
+        "headroom under Codex's fixed #{limit}-char limit, below the " \
+        "#{CODEX_MIXED_ROUTE_MIN_SAFETY_MARGIN}-char safety floor; trim a compact goal-prompt " \
+        "line rather than letting real batches trend toward the hard limit"
       )
     end
     realistic_checks[label].fetch(:split_route_groups)[target] = {}

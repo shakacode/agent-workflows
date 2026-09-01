@@ -173,8 +173,9 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
      Stop if the re-applied gate no longer passes for the current head/base,
      even without a base change. If an ordinary gate newly fails, stop. Ask one
      final merge decision only when the refreshed diff identity matches the
-     recorded identity, ordinary readiness remains clean, and merge is allowed;
-     a completed walkthrough must have explained that same diff identity.
+     recorded identity, ordinary readiness and current-integration readiness
+     remain clean, and merge is allowed; a completed walkthrough must have
+     explained that same diff identity.
      Current-integration readiness is separate from refreshed ordinary readiness.
      Walkthrough participation is not merge approval. If approval
      is declined or not granted by handoff,

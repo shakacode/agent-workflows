@@ -124,10 +124,14 @@ class IntegrationCloseoutContractTest < Minitest::Test
       assert_match(/^\#{2,3} #{Regexp.escape(heading)}$/, @component, heading)
     end
 
-    # Keep a real safety margin (several hundred bytes), not a razor-thin one —
-    # the ceiling was previously bumped to 167_000 with only ~600 bytes of
-    # headroom, which a routine wording change consumed almost entirely.
+    # Enforce a real minimum safety margin under the ceiling, not just the
+    # ceiling itself — a ceiling bumped to just barely fit current content
+    # (this file has twice needed a reactive bump: 165_000 -> 167_000 ->
+    # 167_500) leaves the next routine wording change to trip this guard.
+    # Trim the doc, not this floor, if that ever fires.
     assert_operator @component.bytesize, :<, 167_500
+    assert_operator 167_500 - @component.bytesize, :>=, 300,
+                    "workflows/pr-batch-integration-closeout.md headroom under its byte ceiling"
     assert_operator @workflow.bytesize, :<, 185_000
     assert_operator @skill.bytesize, :<, 60_000
     assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 395_000
@@ -361,11 +365,12 @@ class IntegrationCloseoutContractTest < Minitest::Test
                     "a scope can report `state: READY` while the top-level `verdict` is `NOT_READY` or `UNKNOWN`"
 
     assert_includes normalized_gate, "PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY."
+    assert_includes normalized_gate, "Trust ancestry's exit `1` only on a full, non-shallow checkout"
+    assert_includes normalized_gate, "a shallow graph or any other nonzero exit is `UNKNOWN`, not proven behind-base"
     assert_includes normalized_gate,
-                    "If the ancestry command exits `1` (proven non-ancestor, not a missing-SHA command"
-    assert_includes normalized_gate, "while CI `verdict` is `READY`, lead with **PR IS BEHIND THE CURRENT BASE"
-    assert_includes normalized_gate, "instead of blaming CI; any other nonzero exit is"
-    assert_includes normalized_gate, "`UNKNOWN` per the rule above. Otherwise lead with"
+                    "When ancestry is proven behind, lead with **PR IS BEHIND THE CURRENT BASE"
+    assert_includes normalized_gate, "adding **AND CI FAILED** if CI `verdict` also fails"
+    assert_includes normalized_gate, "Otherwise lead with **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED"
     assert_includes normalized_gate, "CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT MERGE-READY."
 
     behind_base_position = normalized_gate.index("PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY.")

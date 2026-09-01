@@ -1600,13 +1600,14 @@ This sequencing checklist neither defines an evidence schema nor replaces the
 later [Merge Assurance Gate](#merge-assurance-gate). Do not claim or consume its
 machine `current-integration-evidence` here. Missing, stale, mismatched,
 non-successful, unrecognized, future, or `UNKNOWN` facts keep the target in
-`waiting-on-checks-or-review` and do not start the walkthrough. If the
-ancestry command exits `1` (proven non-ancestor, not a missing-SHA command
-error) while CI `verdict` is `READY`, lead with **PR IS BEHIND THE CURRENT
-BASE — NOT MERGE-READY.** instead of blaming CI; any other nonzero exit is
-`UNKNOWN` per the rule above. Otherwise lead with **CURRENT-INTEGRATION CI
-IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT MERGE-READY.** GitHub's
-conflict or mergeability status is not CI evidence.
+`waiting-on-checks-or-review` and do not start the walkthrough. Trust
+ancestry's exit `1` only on a full, non-shallow checkout; a shallow graph or
+any other nonzero exit is `UNKNOWN`, not proven behind-base. When ancestry is
+proven behind, lead with **PR IS BEHIND THE CURRENT BASE — NOT
+MERGE-READY.**, adding **AND CI FAILED** if CI `verdict` also fails.
+Otherwise lead with **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED
+SUCCESSFUL STATE — NOT MERGE-READY.** GitHub's conflict or mergeability
+status is not CI evidence.
 
 Compact goals encode that checklist inline as `head>=base+CI=READY`; every
 other result waits without a walkthrough.
