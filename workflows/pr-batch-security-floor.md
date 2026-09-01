@@ -121,28 +121,26 @@ receives a `security-floor v1` result with preflight `n/a` and its complete
 trusted provenance embedded. Skipping preflight is never override authority.
 
 One narrow integration-closeout resolution applies to a `high-risk-files`
-finding caused only by the detector's broad protected-parent match. Apply it
-only after exact-head validation and configured review are complete and
-`skills/pr-batch/bin/autonomous-merge-eligibility` has parsed the trusted-base
-`AutonomousMergePolicy` for the same base and head, including complete
-`safe_path_groups.tests` and exact-head file evidence. Otherwise the finding
-remains blocked; do not reconstruct policy or introduce a second test-path list.
-At the initial scan, bind the canonical helper path and `sha256:` digest of the
-exact `pr-security-preflight` bytes that produced the flat risky-path list. At
-resolution, require that digest to be unchanged, then reapply all three
-`high_risk_files` predicates from those bound helper bytes and record
-`root-prefix`, `nested-script-dir`, and `exact-filename` matches per path. Do not
-copy or paraphrase those predicates into a second classifier. A `root-prefix`
-or `nested-script-dir` match may qualify, including a `nested-script-dir`-only
-match; an `exact-filename` match never qualifies as broad protected-parent-only.
-Resolve only when every current and previous path is included and not excluded
-by `safe_path_groups.tests`. A production helper, mixed diff, excluded test,
-`human_review_paths` match, or `policy_paths` match keeps its own stop. Malformed,
-incomplete, stale, changed-digest, contradictory, or `UNKNOWN` policy, helper,
-file, validation, or review evidence remains `UNKNOWN` and fails closed. This
-clears only the `high-risk-files` protected-parent stop after the ordinary gates;
-it never clears another preflight finding, security-floor invariant, configured
-review gate, or autonomous-merge gate.
+finding caused only by the broad protected-parent match. Require completed
+exact-head validation and configured review plus final `safe_class == "tests"`
+from `skills/pr-batch/bin/autonomous-merge-eligibility` after it parses the
+trusted-base `AutonomousMergePolicy` for the same base/head from complete policy,
+semantic, and file evidence. Otherwise remain blocked; never reconstruct policy
+or add another test-path list. At the initial scan, bind the canonical helper
+path and `sha256:` digest of the exact `pr-security-preflight` bytes that produced
+the flat risky-path list. At resolution, require that digest unchanged; reapply
+all three `high_risk_files` predicates from those bound bytes and record
+`root-prefix`, `nested-script-dir`, and `exact-filename` matches per path. Never
+copy them into a second classifier. Root-prefix or nested-script-dir may qualify,
+including a `nested-script-dir`-only match; exact-filename never qualifies as broad
+protected-parent-only. Bind the full safe-class verdict to every current and
+previous path. It already enforces `safe_path_groups.tests` inclusion/exclusion
+and unambiguous `test_change == "strengthens-only"`; never substitute a path-only
+check. Production helpers, mixed diffs, excluded tests, `human_review_paths`, and
+`policy_paths` keep their own stops. Malformed, incomplete, stale, changed-digest,
+contradictory, or `UNKNOWN` policy, helper, file, validation, or review evidence
+remains `UNKNOWN` and blocked. This clears only the `high-risk-files`
+protected-parent stop; it never clears another security-floor or review gate.
 
 ## Security-Floor Result
 
@@ -163,10 +161,10 @@ Return one `security-floor v1` result per lane with:
   and isolation mechanism with checkout-isolation evidence `n/a`;
 - exact head/base evidence binding required at the current stage;
 - for a protected-parent safe-test decision, both the original broad
-  protected-parent match and the safe-test-only resolution, with the per-path
-  trusted-helper predicate matches and digest, exact base/head, trusted
-  `AutonomousMergePolicy` provenance, complete path inventory, and any
-  independent blocking path or evidence reason preserved;
+  protected-parent match and the safe-test-only resolution, with per-path
+  predicate matches and helper digest, exact base/head, trusted
+  `AutonomousMergePolicy` provenance, final `safe_class`, complete semantic and
+  path evidence, and any independent blocking path or evidence reason preserved;
 - consequential-action authority; and
 - `PASS`, `BLOCKED`, or `UNKNOWN`, plus the precise affected-lane reason.
 
