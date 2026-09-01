@@ -28,13 +28,13 @@ reproduction explains the failure.
 
    ```bash
    gh run list --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,conclusion,headSha,event,workflowName,number,createdAt,url
-   gh run view <RUN_ID> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
+   gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
    ```
 
    `gh run list`'s `conclusion` reflects only the latest attempt of each run.
-   When a run was retried, also check earlier attempts with
-   `gh run view <RUN_ID> --attempt <N>` so a retry that flipped pass/fail is
-   not missed as same-commit hosted history.
+   When a run was retried, also check earlier attempts with `--attempt <N>`
+   so a retry that flipped pass/fail is not missed as same-commit hosted
+   history.
    A run's `conclusion` is also the aggregate result across every job in that
    run, not the specific job named in the failure identity. Key candidate
    runs off that job's own result instead—`gh run view <RUN_ID> --json jobs`
