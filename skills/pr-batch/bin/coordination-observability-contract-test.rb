@@ -131,6 +131,11 @@ class CoordinationObservabilityContractTest < Minitest::Test
     capacity = squish(section(@component, "## Capacity And Isolation", /^##\s+/))
 
     assert_includes capacity, "configurable per-host resource budget"
+    assert_includes capacity, "`pr_batch_host_capacity_budget`"
+    assert_includes capacity, "explicit current-session operator declaration"
+    assert_includes capacity, "repository `AGENTS.md` seam"
+    assert_includes capacity, "at most one heavyweight root per host"
+    assert_includes capacity, "may lower that to zero, never raise it"
     assert_includes capacity, "fresh normalized-load and healthy-memory evidence"
     assert_includes capacity, "Apply the security floor's branch/worktree isolation result"
     refute_includes capacity, "Keep one writer per branch/worktree"
@@ -154,7 +159,7 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes status, "memory/load"
     assert_includes status, "retry/review churn"
     assert_includes status, "raw prompts, responses, transcripts, tool results, secrets"
-    assert_includes status, "Optional telemetry"
+    assert_includes status, "optional telemetry"
   end
 
   def test_public_fallback_preserves_bounded_identity_and_expiry

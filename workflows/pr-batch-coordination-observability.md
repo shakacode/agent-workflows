@@ -168,20 +168,23 @@ fences the old assignment.
 
 ## Capacity And Isolation
 
-Ownership and host capacity are separate decisions. Admit heavyweight
-validation, review, or quality-assurance roots through a configurable per-host
-resource budget resolved from the repository or operator seam. Use a fresh scan
-of active roots plus fresh normalized-load and healthy-memory evidence; do not
-derive a global single-slot token from one lane's claim, unreachable owner, or
-`UNKNOWN` telemetry. A capacity snapshot expires when roots, load, memory, or
-the target head changes.
+Ownership and host capacity are separate.
+`pr_batch_host_capacity_budget` is the configurable per-host resource budget:
+resolve it first from an explicit current-session operator declaration, then
+the repository `AGENTS.md` seam. Map hosts to maximum heavy roots and optional
+memory/load thresholds. Absent it, allow at most one heavyweight root per host;
+fresh normalized-load and healthy-memory evidence may lower that to zero, never
+raise it. Admit validation, review, or QA roots only after a fresh root scan.
+Never derive a global single-slot token from one claim, unreachable owner, or
+`UNKNOWN` telemetry. A snapshot expires when roots, load, memory, or target head
+changes.
 
 Apply the security floor's branch/worktree isolation result to writers. The
 read-only validators and reviewers may run concurrently in isolated committed
 checkouts when the resource budget admits them. Preserve healthy foreign roots
-and their logs. Serialize consequential
-merge, release, deployment, and destructive actions at the relevant target or
-release boundary; do not serialize unrelated correctness work.
+and their logs. Serialize merge, release, deployment, and destructive actions
+at the relevant target/release boundary; do not serialize unrelated correctness
+work.
 
 Capacity admission is operational evidence only. It never grants scope,
 permissions, merge authority, release authority, or permission to execute
