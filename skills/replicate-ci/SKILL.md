@@ -29,8 +29,7 @@ reproduction explains the failure.
    invocations for the same commit (workflow event, inputs, and matrix
    configuration) pass and fail, stop before parity reproduction and use
    `fix-flaky-tests`; that workflow owns intermittency regardless of local
-   results. Do not produce an Outcomes
-   classification for that handoff.
+   results. Do not produce an Outcomes classification for that handoff.
 4. Confirm the local-green evidence: command or workflow path used, head SHA,
    environment, and timestamp. Use `.agents/bin/validate` instead of inventing a
    substitute command.

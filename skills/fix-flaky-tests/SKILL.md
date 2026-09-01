@@ -81,8 +81,9 @@ into this workflow:
 3. **Broken, not flaky, or deterministic parity gap.** Obtain exact hosted
    failure logs and history for the failure identity, then record the local
    result separately. If the same exact failure occurs on every equivalent
-   hosted invocation and reproduces locally, it is an ordinary bug. If the
-   same exact failure occurs on every equivalent hosted invocation and the
+   hosted invocation (workflow event, inputs, and matrix configuration) and
+   reproduces locally, it is an ordinary bug. If the same exact failure occurs
+   on every equivalent hosted invocation and the
    local reproduction is green, hand it to
    `replicate-ci` as a deterministic parity gap. Either Step 1 exit requires
    citations to the exact hosted determinism and the corresponding local
@@ -191,7 +192,8 @@ Close with exactly one of:
   owed. Exits 1 and 2 require a citation to existing external work — the commit
   that already fixed the same failure or the open PR that owns it — plus its
   exact ownership evidence. Exit 3 requires citations to exact hosted run
-  history showing deterministic failure and the corresponding local
+  history showing deterministic failure across equivalent hosted invocations
+  and the corresponding local
   reproduction evidence: local reproduction of the same failure identifies an
   ordinary bug, while a local-green result identifies a `replicate-ci` parity
   handoff. Name which exit fired and cite the evidence. Local runs cannot
@@ -225,11 +227,10 @@ gap:
 - **Deterministic hosted and local failure** — the same exact failure appears
   in both places. This is an ordinary bug, so take Step 1's broken-test exit.
 - **Intermittent hosted failure** — the same commit passes and fails across
-  equivalent hosted invocations (workflow event, inputs, and matrix
-  configuration). Use this skill regardless of whether a local attempt passes
-  or fails. A green parity run proves nothing about a test that fails one run
-  in twenty, and a locally failing attempt does not turn hosted intermittency
-  into a parity gap.
+  equivalent hosted invocations. Use this skill regardless of whether a local
+  attempt passes or fails. A green parity run proves nothing about a test that
+  fails one run in twenty, and a locally failing attempt does not turn hosted
+  intermittency into a parity gap.
 
 If the classification itself is unclear, establish determinism first by
 inspecting the run history for that commit. Do not run both workflows in
@@ -269,8 +270,9 @@ Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt t
 - The exact CI failure output was obtained, with its run id and head SHA, or
   the task stopped at the Hard Gate. The only exception is a valid Step 1 exit:
   exits 1-2 return `NOT_THIS_WORKFLOW` with a cited existing-work ownership
-  artifact, while exit 3 cites exact hosted determinism and the corresponding
-  local reproduction evidence; a local-green exit 3 also names the
+  artifact, while exit 3 cites exact hosted determinism across equivalent
+  hosted invocations and the corresponding local reproduction evidence; a
+  local-green exit 3 also names the
   `replicate-ci` handoff.
 - Local runs were used only for investigation; the pass claim cites CI.
 - No skip, sleep, retry wrapper, or unjustified timeout increase was proposed.
