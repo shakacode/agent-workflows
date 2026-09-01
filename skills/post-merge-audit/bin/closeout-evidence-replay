@@ -46,7 +46,7 @@ module CloseoutEvidenceReplay
   # structural or size count as a runtime measurement.
   COUNT_QUALIFIER_TOKENS = %w[total totals overall aggregate all unique distinct num number].freeze
   UNRESOLVED_METRIC_TOKENS = %w[missing unavailable unmeasured unknown placeholder tbd todo].freeze
-  UNRESOLVED_METRIC_EXACT_TOKENS = %w[nil none null pending undefined unset].freeze
+  UNRESOLVED_METRIC_EXACT_TOKENS = %w[na nan nil none null pending undefined unset].freeze
   PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
   PERFORMANCE_EVIDENCE_FIELD_PATTERN = PERFORMANCE_EVIDENCE_FIELD_NAMES.map { |name| Regexp.escape(name) }.join("|")
   # Status words are the unbounded single-token prose exception. Other prose labels must be
@@ -67,9 +67,15 @@ module CloseoutEvidenceReplay
   # group and no dot before the unit, so no hostname or dotted-quad address can match: a host needs
   # an alphabetic label after its final dot.
   HTTPS_PROSE_MEASUREMENT = /\A[-+]?\d+(?:\.\d+)?[A-Za-z%]{0,4}\z/
-  # A dotted numeric version, or a slash-separated list of them (`1.2/1.3`). No letters and no
-  # authority separators, so a URL-shaped path cannot match.
-  HTTPS_PROSE_VERSION_LIST = %r{\A\d{1,2}(?:\.\d{1,2}){1,2}(?:/\d{1,2}(?:\.\d{1,2}){1,2})*\z}
+  # A dotted numeric version, optionally a slash- or dash-separated list of them (`1.2/1.3`,
+  # `1.2-1.3`), optionally carrying constraint notation (`>=1.3`, `^1.2`, `1.3+`). No letters and no
+  # authority separators, and at most two dots per version, so no hostname or dotted-quad matches.
+  HTTPS_PROSE_VERSION_LIST = %r{
+    \A(?:[<>]=?|[\^~=])?
+    \d{1,2}(?:\.\d{1,2}){1,2}
+    (?:[/-]\d{1,2}(?:\.\d{1,2}){1,2})*
+    \+?\z
+  }x
   # Path-boundary lookarounds keep `screenshots/2.3/1.4` intact: a version list only qualifies when
   # no path separator abuts it on either side.
   HTTPS_PROTOCOL_LABEL_CLEANUP = %r{
@@ -665,11 +671,8 @@ module CloseoutEvidenceReplay
     cleaned = value.dup
 
     https_token_matches(value).reverse_each do |match|
-      label = https_prose_label(value, match)
+      label, label_start = https_prose_label(value, match)
       next unless label
-
-      label_start = value.index(label, match.end(0))
-      next unless label_start
 
       label_range = label_start...(label_start + label.length)
       cleaned[label_range] = cleaned[label_range].gsub(HTTPS_PROTOCOL_LABEL_CLEANUP, "")
@@ -791,13 +794,17 @@ module CloseoutEvidenceReplay
     return unless suffix&.match?(/\A\s+/)
 
     raw_label = suffix.lstrip
+    # Track the offset forward instead of re-searching for the label text later: `index` could
+    # otherwise land on an earlier occurrence if the stripped prefix ever gained an alphanumeric.
+    raw_label_start = match.end(0) + (suffix.length - raw_label.length)
     if (next_https = HTTPS_TOKEN.match(raw_label))
       raw_label = raw_label[0...next_https.begin(0)].rstrip
       direct_url_boundary = raw_label.empty? || prose_url_boundary_token?(raw_label)
-      # An empty string means "label present but with no text", which both callers rely on to
-      # exclude this `HTTPS:` from URL validation. Returning nil here would mark it "not a label"
-      # and the token would be validated as a URL, failing as malformed.
-      return "" if direct_url_boundary
+      # An empty label means "label present but with no text", which both callers rely on to
+      # exclude this `HTTPS:` from URL validation: the pair is truthy and spans an empty range.
+      # Returning nil here would mark it "not a label" and the token would be validated as a URL,
+      # failing as malformed.
+      return ["", match.end(0)] if direct_url_boundary
 
       raw_label = raw_label.sub(/\s+(?:after|at|from|see|via)\z/i, "")
     end
@@ -808,6 +815,8 @@ module CloseoutEvidenceReplay
 
     label = raw_label.sub(/\A[^\p{Alnum}]+/u, "")
     return if label.empty?
+
+    label_start = raw_label_start + (raw_label.length - label.length)
 
     recognized_status = label.match?(HTTPS_PROSE_LABEL_RECOGNIZED_STATUS)
 
@@ -827,7 +836,9 @@ module CloseoutEvidenceReplay
     return if continuation.match?(%r{[/\\]})
     return if !continuation.empty? && authority_shaped_https_label?(continuation)
 
-    prose_label
+    # `prose_label` splits `label` on the right only, and `label` already begins with an
+    # alphanumeric, so the two share a start offset.
+    [prose_label, label_start]
   end
 
   # Text between `HTTPS:` and the next URL that introduces that URL rather than naming a reference

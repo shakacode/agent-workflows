@@ -1338,6 +1338,61 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_rejects_metric_names_ending_in_nan_or_na
+    %w[checkout_latency_nan page_load_na render_time_nan].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_hosted_v1_accepts_bounded_version_constraints
+    ["HTTPS: TLS 1.3+;", "HTTPS: TLS >=1.3;", "HTTPS: TLS <=1.3;",
+     "HTTPS: TLS 1.2-1.3;", "HTTPS: TLS ^1.2;", "HTTPS: TLS ~1.2;"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+
+    # Constraint notation does not loosen the version shape: at most two dots per version, no
+    # letters, so hostnames and dotted-quad ranges stay authority-shaped.
+    ["HTTPS: TLS example.test;", "HTTPS: at 10.0.0.1-1.2;", "HTTPS: x a.co+;"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "UNKNOWN", run_replay(body).dig("hosted_qa_evidence", "verdict"), label
+    end
+  end
+
+  def test_https_prose_label_returns_an_offset_that_locates_the_label
+    # The cleanup caller slices by this offset. Asserting it against the source string keeps the
+    # contract checked rather than resting on "the stripped prefix has no alphanumerics".
+    [
+      "durable: enabled HTTPS: ** enabled HTTP/2; after https://github.com/e/r/pull/1#v",
+      "hosted: HTTPS: (TLS 1.3); https://evidence.example.test/x",
+      "hosted: HTTPS: ✅ enforced; https://evidence.example.test/x"
+    ].each do |value|
+      match = CloseoutEvidenceReplay.https_token_matches(value).first
+      label, offset = CloseoutEvidenceReplay.https_prose_label(value, match)
+
+      refute_nil label, value
+      assert_equal label, value[offset, label.length], value
+      assert_operator offset, :>=, match.end(0), value
+    end
+  end
+
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
     # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
     # whole replay instead of returning a verdict.
