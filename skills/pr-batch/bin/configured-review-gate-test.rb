@@ -164,7 +164,8 @@ class ConfiguredReviewGateTest < Minitest::Test
 
   def check(
     name: "claude-review", status: "completed", conclusion: "success",
-    head_sha: HEAD_SHA, output: "review complete", producer: trusted_producer
+    head_sha: HEAD_SHA, output: "review complete", producer_failure: nil,
+    producer: trusted_producer
   )
     {
       "name" => name,
@@ -175,10 +176,15 @@ class ConfiguredReviewGateTest < Minitest::Test
       "completed_at" => status == "completed" ? "2026-08-25T11:59:00Z" : nil,
       "details_url" => "https://github.com/example/widgets/actions/runs/1",
       "output" => output,
+      "provider_failure" => producer_failure,
       "producer" => producer,
       "app" => { "slug" => producer["app_slug"] },
       "check_suite" => { "id" => 7 }
     }
+  end
+
+  def provider_failure(trigger)
+    "configured-review-provider-failure: #{trigger}"
   end
 
   def trusted_producer
@@ -327,9 +333,9 @@ class ConfiguredReviewGateTest < Minitest::Test
       "cancelled" => [[check(conclusion: "cancelled")], "NOT_READY", "configured-review-cancelled"],
       "timed out" => [[check(conclusion: "timed_out")], "NOT_READY", "configured-review-timed-out"],
       "action required" => [[check(conclusion: "action_required")], "NOT_READY", "configured-review-action-required"],
-      "rate limited" => [[check(conclusion: "failure", output: "HTTP 429 rate limit exceeded")], "NOT_READY", "configured-review-rate-limited"],
-      "quota exhausted" => [[check(conclusion: "failure", output: "usage limit quota exhausted")], "NOT_READY", "configured-review-quota-exhausted"],
-      "capacity unavailable" => [[check(conclusion: "failure", output: "HTTP 503 provider capacity unavailable")], "NOT_READY", "configured-review-capacity-unavailable"],
+      "rate limited" => [[check(conclusion: "failure", producer_failure: provider_failure("rate_limited"))], "NOT_READY", "configured-review-rate-limited"],
+      "quota exhausted" => [[check(conclusion: "failure", producer_failure: provider_failure("quota_exhausted"))], "NOT_READY", "configured-review-quota-exhausted"],
+      "capacity unavailable" => [[check(conclusion: "failure", producer_failure: provider_failure("capacity_unavailable"))], "NOT_READY", "configured-review-capacity-unavailable"],
       "unknown status" => [[check(status: "mystery", conclusion: nil)], "UNKNOWN", "configured-review-unknown"]
     }
 
@@ -698,6 +704,29 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal producer.fetch("workflow_blob_sha"), producer.fetch("trusted_base_workflow_blob_sha")
   end
 
+  def test_live_collector_accepts_only_an_exact_provider_failure_summary_marker
+    marker = provider_failure("rate_limited")
+    cases = {
+      marker => marker,
+      "Provider failed: #{marker}" => nil,
+      "#{marker}\nAdditional detail" => nil,
+      "HTTP 429 rate limit exceeded" => nil
+    }
+
+    cases.each do |summary, expected|
+      raw_check = check(conclusion: "failure").merge(
+        "output" => { "title" => "review failed", "summary" => summary, "text" => nil }
+      )
+      collected = FakeGitHubApiClient.new(policy: policy, threads: [], checks: [raw_check]).collect
+
+      if expected
+        assert_equal expected, collected.dig("checks", 0, "provider_failure"), summary
+      else
+        assert_nil collected.dig("checks", 0, "provider_failure"), summary
+      end
+    end
+  end
+
   def test_live_collector_retains_the_reviewed_base_during_a_safe_base_advance
     current_base = "c" * 40
     raw_check = check.merge("output" => { "title" => "review complete", "summary" => nil, "text" => nil })
@@ -1048,7 +1077,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       policy_source: JSON.generate(fallback_policy),
       snapshot: snapshot(
         "checks" => [
-          check(conclusion: "failure", output: "HTTP 429 rate limit exceeded"),
+          check(conclusion: "failure", producer_failure: provider_failure("rate_limited")),
           check(name: "codex-review")
         ],
         "artifacts" => [artifact(actor: "codex-reviewer")]
@@ -1089,7 +1118,7 @@ class ConfiguredReviewGateTest < Minitest::Test
       snapshot: snapshot(
         "checks" => [
           check,
-          check(name: "secondary-review", conclusion: "failure", output: "HTTP 429 rate limit exceeded"),
+          check(name: "secondary-review", conclusion: "failure", producer_failure: provider_failure("rate_limited")),
           check(name: "codex-review")
         ],
         "artifacts" => [
@@ -1133,6 +1162,39 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "configured-review-cancelled", result.dig("blockers", 0, "code")
   end
 
+  def test_fallback_requires_a_structured_provider_failure_marker
+    fallback_policy = policy
+    fallback_policy["fallback"] = {
+      "mode" => "named_attested_check",
+      "triggers" => ["rate_limited"],
+      "reviewer" => {
+        "id" => "codex-fallback",
+        "check_name" => "codex-review",
+        "producer" => trusted_producer.slice("app_slug", "workflow_path", "event"),
+        "artifact" => {
+          "actors" => ["codex-reviewer"],
+          "kinds" => ["pull_request_review"]
+        }
+      }
+    }
+    result = ConfiguredReviewGate.evaluate(
+      policy: fallback_policy,
+      policy_source: JSON.generate(fallback_policy),
+      snapshot: snapshot(
+        "checks" => [
+          check(conclusion: "failure", output: "Review failed while discussing issue 429 and quota behavior."),
+          check(name: "codex-review")
+        ],
+        "artifacts" => [artifact(actor: "codex-reviewer")]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-failed", result.dig("blockers", 0, "code")
+  end
+
   def test_replay_rejects_a_tampered_fallback_override_projection
     fallback_policy = policy
     fallback_policy["fallback"] = {
@@ -1150,7 +1212,7 @@ class ConfiguredReviewGateTest < Minitest::Test
     }
     live = live_snapshot(
       "checks" => [
-        check(conclusion: "failure", output: "HTTP 429 rate limit exceeded"),
+        check(conclusion: "failure", producer_failure: provider_failure("rate_limited")),
         check(name: "codex-review")
       ],
       "artifacts" => [artifact(actor: "codex-reviewer")]
@@ -1678,7 +1740,7 @@ class ConfiguredReviewGateTest < Minitest::Test
     current = NOW
     sleeps = []
     failed = live_snapshot(
-      "checks" => [check(conclusion: "failure", output: "quota exhausted")]
+      "checks" => [check(conclusion: "failure", producer_failure: provider_failure("quota_exhausted"))]
     )
     result = ConfiguredReviewGate::LiveEvaluator.new(
       client: FakeClient.new([failed]),
@@ -1714,7 +1776,7 @@ class ConfiguredReviewGateTest < Minitest::Test
         }
       }
     }
-    primary_failure = check(conclusion: "failure", output: "quota exhausted")
+    primary_failure = check(conclusion: "failure", producer_failure: provider_failure("quota_exhausted"))
     missing_fallback = live_snapshot("checks" => [primary_failure])
     successful_fallback = live_snapshot(
       "checks" => [primary_failure, check(name: "codex-review")],
@@ -1757,7 +1819,7 @@ class ConfiguredReviewGateTest < Minitest::Test
         }
       }
     }
-    primary_failure = check(conclusion: "failure", output: "quota exhausted")
+    primary_failure = check(conclusion: "failure", producer_failure: provider_failure("quota_exhausted"))
     queued_fallback = live_snapshot(
       "checks" => [primary_failure, check(name: "codex-review", status: "queued", conclusion: nil)]
     )
@@ -1805,7 +1867,7 @@ class ConfiguredReviewGateTest < Minitest::Test
     sleeps = []
     unavailable = live_snapshot(
       "checks" => [
-        check(conclusion: "failure", output: "quota exhausted"),
+        check(conclusion: "failure", producer_failure: provider_failure("quota_exhausted")),
         check(name: "codex-review", status: "queued", conclusion: nil)
       ]
     )

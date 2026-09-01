@@ -46,6 +46,11 @@ module ConfiguredReviewGate
     "configured-review-quota-exhausted" => "quota_exhausted",
     "configured-review-capacity-unavailable" => "capacity_unavailable"
   }.freeze
+  PROVIDER_FAILURE_MARKERS = {
+    "configured-review-provider-failure: rate_limited" => "configured-review-rate-limited",
+    "configured-review-provider-failure: quota_exhausted" => "configured-review-quota-exhausted",
+    "configured-review-provider-failure: capacity_unavailable" => "configured-review-capacity-unavailable"
+  }.freeze
   POLICY_PATH = ".agents/agent-workflow.yml"
   SYSTEM_TOOL_DIRS = [
     "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"
@@ -223,6 +228,7 @@ module ConfiguredReviewGate
           "completed_at" => check["completed_at"],
           "details_url" => check["details_url"],
           "output" => [check.dig("output", "title"), check.dig("output", "summary"), check.dig("output", "text")].compact.join("\n"),
+          "provider_failure" => ConfiguredReviewGate.provider_failure_marker(check.dig("output", "summary")),
           "producer" => collect_check_producer(check, head_sha, base_sha, reviewed_base_sha)
         }
       end
@@ -1181,18 +1187,18 @@ module ConfiguredReviewGate
     conclusion = check["conclusion"]
     return nil if conclusion == "success"
 
-    capacity_code = provider_failure_code(check["output"])
+    capacity_code = provider_failure_code(check["provider_failure"])
     code = capacity_code || TERMINAL_FAILURE_CODES[conclusion] || "configured-review-unknown"
     blocker(code, reviewer, check, conclusion || "unknown")
   end
 
-  def provider_failure_code(output)
-    normalized = output.to_s.downcase
-    return "configured-review-rate-limited" if normalized.match?(/(?:http\s*)?429|rate[ -]?limit/)
-    return "configured-review-quota-exhausted" if normalized.match?(/quota|usage[ -]?limit/)
-    return "configured-review-capacity-unavailable" if normalized.match?(/(?:http\s*)?503|capacity|unavailable/)
+  def provider_failure_marker(summary)
+    marker = summary.to_s.strip
+    PROVIDER_FAILURE_MARKERS.key?(marker) ? marker : nil
+  end
 
-    nil
+  def provider_failure_code(marker)
+    PROVIDER_FAILURE_MARKERS[marker]
   end
 
   def blocker(code, reviewer, check, state)

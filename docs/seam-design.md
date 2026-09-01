@@ -125,6 +125,11 @@ pending, bounded evaluation continues; a provider terminal result still ends
 waiting when no configured fallback can apply. The configured-review helper
 reads this mapping from the trusted base and binds its receipt to host,
 repository, PR, base, head, and the settled artifact snapshot.
+Capacity fallback triggers require the verified producer to set the entire
+check summary to `configured-review-provider-failure: rate_limited`,
+`configured-review-provider-failure: quota_exhausted`, or
+`configured-review-provider-failure: capacity_unavailable`. Free-form check
+output never authorizes a fallback.
 
 ### Writing Style
 

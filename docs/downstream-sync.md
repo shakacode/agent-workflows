@@ -120,6 +120,11 @@ failed, unsettled, or unknown evidence and unresolved current-head review
 threads. A fallback must instead use
 `mode: named_attested_check` with explicit `triggers` and a complete `reviewer`
 mapping; provider failure alone never implies readiness.
+Capacity fallback triggers require the verified producer to set the entire
+check summary to `configured-review-provider-failure: rate_limited`,
+`configured-review-provider-failure: quota_exhausted`, or
+`configured-review-provider-failure: capacity_unavailable`. Free-form check
+output never authorizes a fallback.
 
 Repo-local trust lives in `.agents/trusted-github-actors.yml` and follows the
 same resolution order as `pr-security-preflight`: `--trust-config`, repo-local
