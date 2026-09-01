@@ -1470,6 +1470,63 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_hosted_v1_rejects_opaque_schemes_as_url_boundary_connectors
+    # A trailing colon makes `javascript:` indistinguishable from `link:` by shape, so the scheme
+    # vocabulary has to be consulted here too.
+    ["HTTPS: javascript: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: mailto: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: file: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: data: https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+
+    ["HTTPS: link: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: see: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: artifact: https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "SATISFIED", run_replay(body).dig("hosted_qa_evidence", "verdict"), evidence
+    end
+  end
+
+  def test_hosted_v1_rejects_additional_opaque_schemes_as_criterion_evidence
+    %w[sms:+15551234 geo:37.7,-122.4 intent:x matrix:r/x vbscript:msgbox market:details].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+  end
+
+  def test_metric_classification_never_raises_on_arbitrary_names
+    # Same invariant as the label fuzz test, for the metric vocabulary: a degenerate name must
+    # produce a verdict rather than an exception that aborts the whole replay.
+    random = Random.new(20_260_902)
+    pieces = %w[
+      file files count counts total byte bytes size heap memory rss latency time lcp cls
+      unknown missing tbd nan na nil pending 123 3.14 p95 2xx UPPER lowerUpper _ - . / : %
+    ]
+
+    2_000.times do
+      name = Array.new(random.rand(1..5)) { pieces.sample(random: random) }.join(
+        ["_", "", "-", "."].sample(random: random)
+      )
+      value = "repo_seam: source=bin/perf-report; metric_name=#{name}; " \
+              "baseline_value=2.4s; candidate_value=2.1s"
+
+      CloseoutEvidenceReplay.valid_measured_metric?(value)
+      CloseoutEvidenceReplay.valid_bundle_hygiene?(value)
+      CloseoutEvidenceReplay.valid_repo_seam_source?(value)
+    end
+  end
+
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
     # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
     # whole replay instead of returning a verdict.

@@ -113,9 +113,13 @@ module CloseoutEvidenceReplay
   # a Git `<rev>:<path>` reference such as `HEAD:reports/perf.json` or `main:path/to/report` is the
   # documented stable-ref form and is structurally identical to an opaque scheme, so no shape rule
   # separates them. http/https are excluded here because `HTTPS:` is also the prose-label form.
+  # Not exhaustive against the IANA registry, and cannot be: an opaque scheme is structurally
+  # identical to a Git `<rev>:<path>` ref, so shape inference is unavailable and this is
+  # necessarily "schemes seen in practice" rather than "all non-durable schemes". Treat a
+  # fall-through as a gap to close here, not as evidence a scheme is durable.
   NON_DURABLE_OPAQUE_SCHEMES = %w[
-    about blob chrome-extension data file filesystem ftp javascript mailto mediastream
-    moz-extension tel ws wss
+    about blob callto chrome-extension data facetime file filesystem ftp geo intent javascript
+    mailto market matrix mediastream moz-extension sms tel vbscript view-source ws wss
   ].freeze
   NON_DURABLE_OPAQUE_SCHEME = /
     \A(?:#{NON_DURABLE_OPAQUE_SCHEMES.map { |scheme| Regexp.escape(scheme) }.join('|')}):
@@ -855,7 +859,12 @@ module CloseoutEvidenceReplay
 
     # Normalize after the Markdown branch, not before: stripping `[` off a link opener would
     # leave `artifact](` and lose the branch that handles it.
-    normalized_https_prose_token(raw_label).match?(/\A\p{Alnum}[\p{Alnum}_-]*:?\z/u)
+    token = normalized_https_prose_token(raw_label)
+    # A trailing colon makes an opaque scheme look exactly like a connector, so an enumerated
+    # scheme is rejected here rather than hidden in front of an otherwise valid URL.
+    return false if token.match?(NON_DURABLE_OPAQUE_SCHEME)
+
+    token.match?(/\A\p{Alnum}[\p{Alnum}_-]*:?\z/u)
   end
 
   def authority_shaped_https_label?(label)
