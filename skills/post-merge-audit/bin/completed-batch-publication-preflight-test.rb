@@ -115,6 +115,75 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input
   end
 
+  def mixed_issue_and_pr_lane_input
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    head_sha = "ef30745eccc6e1fdae34c1b770edbc9650800e51"
+    issue = {
+      "host" => "github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "issue",
+      "number" => 130
+    }
+    pull_request = issue.merge("type" => "pull_request", "number" => 156)
+    input["batch_id"] = "hc-mixed-issue-130-pr-156"
+    input["expected_targets"] = [issue, pull_request]
+    input.dig("coordination_status", "scope")["batch_id"] = input.fetch("batch_id")
+    batch = input.dig("coordination_status", "batches", 0)
+    batch["batch_id"] = input.fetch("batch_id")
+    batch["repo"] = issue.fetch("repo")
+    batch["lanes"] = [{
+      "name" => "issue-130-and-pr-156",
+      "targets" => ["issue:130", "pr:156"],
+      "status" => "done",
+      "terminal" => "done",
+      "closed_at" => "2026-08-24T00:43:00Z",
+      "pr_state" => "merged",
+      "evidence_url" => "https://github.com/shakacode/hichee/pull/156"
+    }]
+    input["target_snapshots"] = [
+      {
+        "target" => issue,
+        "state" => "closed",
+        "head_sha" => nil,
+        "completed_at" => "2026-08-24T00:41:34Z",
+        "source" => "https://github.com/shakacode/hichee/issues/130"
+      },
+      {
+        "target" => pull_request,
+        "state" => "merged",
+        "head_sha" => head_sha,
+        "completed_at" => "2026-08-24T00:41:33Z",
+        "source" => "https://github.com/shakacode/hichee/pull/156"
+      }
+    ]
+    input["qa_evidence"] = [
+      {
+        "target" => issue,
+        "user_visible_ui_change" => "no",
+        "evidence" => <<~MARKER
+          <!-- qa-evidence v1
+          required: no
+          status: not_applicable
+          head_sha: not_applicable
+          tested_at: issue #130 closed by the separately targeted PR #156
+          scope: issue terminal state only; exact-head QA is bound to PR #156
+          automated_checks: not applicable
+          manual_checks: not applicable
+          findings: none
+          release_blocking: not_applicable
+          process_gap_disposition: not_applicable
+          -->
+        MARKER
+      },
+      {
+        "target" => pull_request,
+        "user_visible_ui_change" => "no",
+        "evidence" => qa_v2_evidence(head_sha:, user_visible_ui_change: "no")
+      }
+    ]
+    input
+  end
+
   def issue_projection_proof(source:, target:, head_sha: "ef30745eccc6e1fdae34c1b770edbc9650800e51")
     {
       "contract" => "github-issue-result-pr-projection",
@@ -1110,6 +1179,62 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     result = assess_input(input, target_projection_verifier: verifier)
 
     assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+  end
+
+  def test_url_less_done_lane_reconciles_authenticated_closed_issue_and_merged_pr_per_target
+    input = mixed_issue_and_pr_lane_input
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    lanes = result.dig("snapshot", "coordination", "lanes")
+    assert_equal %w[merged closed], lanes.map { |lane| lane.fetch("target_state") }
+    assert_equal ["authenticated_per_target_terminal_reconciliation"] * 2,
+                 lanes.map { |lane| lane.fetch("completion_mode") }
+    assert_equal %w[merged merged], lanes.map { |lane| lane.fetch("coordination_target_state") }
+    issue_snapshot = result.dig("snapshot", "targets").find { |row| row.dig("target", "type") == "issue" }
+    assert_nil issue_snapshot.fetch("head_sha")
+    assert_nil issue_snapshot.fetch("no_pr_evidence")
+    assert_equal "authenticated gh api", issue_snapshot.fetch("verification_source")
+    assert_equal "NOT_APPLICABLE",
+                 result.dig("snapshot", "qa").find { |row| row.dig("target", "type") == "issue" }.fetch("verdict")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+    assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
+  end
+
+  def test_mixed_target_reconciliation_requires_url_less_done_evidenced_and_authenticated_targets
+    cases = {
+      unauthenticated_issue: lambda do |input|
+        verifier = valid_target_verifier(input)
+        [input, lambda { |target:| target["type"] == "issue" ? nil : verifier.call(target:) }]
+      end,
+      url_bound_lane: lambda do |input|
+        input.dig("coordination_status", "batches", 0, "lanes", 0)["pr_url"] =
+          "https://github.com/shakacode/hichee/pull/156"
+        [input, valid_target_verifier(input)]
+      end,
+      invalid_scalar_state: lambda do |input|
+        input.dig("coordination_status", "batches", 0, "lanes", 0)["pr_state"] = "open"
+        [input, valid_target_verifier(input)]
+      end,
+      missing_evidence: lambda do |input|
+        input.dig("coordination_status", "batches", 0, "lanes", 0).delete("evidence_url")
+        [input, valid_target_verifier(input)]
+      end
+    }
+
+    cases.each do |label, mutate|
+      input, verifier = mutate.call(mixed_issue_and_pr_lane_input)
+      result = assess_input(input, target_verifier: verifier)
+
+      refute result.fetch("eligible"), label
+    end
   end
 
   def test_9972_terminal_supersession_reports_replacement_protocol_violation
