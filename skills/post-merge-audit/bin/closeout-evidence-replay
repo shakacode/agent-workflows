@@ -46,8 +46,8 @@ module CloseoutEvidenceReplay
   UNRESOLVED_METRIC_EXACT_TOKENS = %w[nil none null pending undefined unset].freeze
   PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
   PERFORMANCE_EVIDENCE_FIELD_PATTERN = PERFORMANCE_EVIDENCE_FIELD_NAMES.map { |name| Regexp.escape(name) }.join("|")
-  # This is intentionally closed: prose is the narrow exception to fail-closed malformed HTTPS
-  # detection. Extend it only with replay coverage for a concrete, legitimate status label.
+  # Status words are the delimiter-free prose exception. Other prose labels must be explicitly
+  # semicolon-bounded so malformed HTTPS references continue to fail closed.
   HTTPS_PROSE_LABEL_STATUSES = %w[available disabled enabled enforced failed ok only optional passed required supported].freeze
   HTTPS_PROSE_LABEL_STATUS_PATTERN = HTTPS_PROSE_LABEL_STATUSES.map { |status| Regexp.escape(status) }.join("|")
   HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*/i
@@ -712,9 +712,16 @@ module CloseoutEvidenceReplay
     return false if leading_symbols.match?(%r{[/\\]})
 
     label = raw_label.sub(/\A[^\p{Alnum}]+/u, "")
-    label.match?(
+    return true if label.match?(
       /\A(?:[1-5]\d{2}\s+)?(?:#{HTTPS_PROSE_LABEL_STATUS_PATTERN})(?=\s|[,;]|\.(?:\s|\z)|\z)/i
     )
+
+    bounded_label = label[/\A([^;]+);/, 1]&.strip
+    return false unless bounded_label&.match?(/\p{Alnum}/u)
+    return false if bounded_label.match?(%r{[/\\]})
+    return false if bounded_label.match?(/\A[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}\z/)
+
+    true
   end
 
   def unresolved_hosted_criterion_evidence?(evidence)
@@ -777,6 +784,8 @@ module CloseoutEvidenceReplay
   end
 
   def valid_measured_metric?(value)
+    # Fail closed in this order: unresolved/vacuous names, build-size shapes, structural counts,
+    # then byte-valued non-memory metrics. Each later carve-out assumes the earlier shape checks.
     non_url_text = without_performance_https_urls(value)
     metric_name = extract_single_metric_name(non_url_text)
     return false unless metric_name
