@@ -1679,15 +1679,43 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       write_policy(
         root,
-        POLICY.merge("merge_submission" => { "mode" => "merge_queue_only" })
+        POLICY.merge(
+          "review_gate" => "n/a",
+          "merge_submission" => { "mode" => "merge_queue_only" }
+        )
       )
       queue_out, queue_status = run_doctor(root)
       assert queue_status.success?, queue_out
 
       write_script(root, "merge-pr-after-checks", "exec true\n")
-      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_policy(
+        root,
+        POLICY.merge("review_gate" => "n/a", "merge_submission" => guarded_direct_policy)
+      )
       guarded_out, guarded_status = run_doctor(root)
       assert guarded_status.success?, guarded_out
+    end
+  end
+
+  def test_structured_review_gate_rejects_submission_modes_without_an_enforceable_route
+    {
+      "merge_queue_only" => { "mode" => "merge_queue_only" },
+      "merge_queue_or_guarded_direct" => guarded_direct_policy
+    }.each do |mode, merge_submission|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_script(root, "merge-pr-after-checks", "exec true\n") if mode == "merge_queue_or_guarded_direct"
+        write_policy(root, POLICY.merge("merge_submission" => merge_submission))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, mode
+        assert_includes out,
+                        "structured review_gate is incompatible with " \
+                        "merge_submission.mode: #{mode}",
+                        mode
+      end
     end
   end
 
@@ -1793,7 +1821,10 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   def test_guarded_direct_merge_submission_requires_tracked_executable_git_mode
     with_repo do |root|
       write_valid_binstub_contract(root)
-      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_policy(
+        root,
+        POLICY.merge("review_gate" => "n/a", "merge_submission" => guarded_direct_policy)
+      )
       write_skill(root, "No commands here.\n")
       guard = write_script(root, "merge-pr-after-checks", "exec true\n")
       relative_guard = ".agents/bin/merge-pr-after-checks"

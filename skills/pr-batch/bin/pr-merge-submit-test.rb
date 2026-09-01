@@ -1997,6 +1997,7 @@ class PrMergeSubmitTest < Minitest::Test
       repo_root, base_sha, = prepare_consumer_repo(
         dir,
         merge_submission: { "mode" => "merge_queue_only" },
+        review_gate: "n/a",
         policy_fixture: :present,
         guard_fixture: :executable
       )

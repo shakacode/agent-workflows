@@ -1796,11 +1796,16 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(coordination_backend_policy_issues(yaml))
-    issues.concat(review_gate_policy_issues(config, yaml))
+    review_gate_issues = review_gate_policy_issues(config, yaml)
+    issues.concat(review_gate_issues)
     issues.concat(writing_style_policy_issues(root, config, yaml))
     issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
-    issues.concat(merge_submission_policy_issues(root, config))
+    merge_submission_issues = merge_submission_policy_issues(root, config)
+    issues.concat(merge_submission_issues)
+    if review_gate_issues.empty? && merge_submission_issues.empty?
+      issues.concat(review_gate_merge_submission_policy_issues(config))
+    end
     issues.concat(selected_hosted_ci_receipts_policy_issues(root, config))
     issues.concat(hosted_qa_policy_issues(root, yaml))
     if config.key?("autonomous_merge")
@@ -1861,6 +1866,20 @@ module AgentWorkflowSeamDoctor
       end
     end
     errors.map { |error| "invalid review_gate policy: #{error}" }
+  end
+
+  def review_gate_merge_submission_policy_issues(config)
+    review_gate = config[REVIEW_GATE_POLICY_KEY]
+    merge_submission = config[MERGE_SUBMISSION_POLICY_KEY]
+    return [] unless review_gate.is_a?(Hash) && merge_submission.is_a?(Hash)
+
+    mode = merge_submission["mode"]
+    return [] unless %w[merge_queue_only merge_queue_or_guarded_direct].include?(mode)
+
+    [
+      "structured review_gate is incompatible with merge_submission.mode: #{mode}; " \
+      "pr-merge-submit cannot enforce it on any configured submission route"
+    ]
   end
 
   def review_gate_reviewer_errors(reviewer, path)
