@@ -127,6 +127,13 @@ class CoordinationObservabilityContractTest < Minitest::Test
     assert_includes ownership, "gh label create"
     assert_includes ownership, "durable takeover receipt"
     assert_includes ownership, "Preserve existing commits"
+    assert_includes ownership, "At safe terminal checkpoint"
+    assert_includes ownership, "`private` releases its claim"
+    assert_includes ownership, "then reconciles its same-holder/generation label"
+    assert_includes ownership, "same-holder/generation label"
+    assert_includes ownership, "`public-fallback` edits the same `codex-claim`"
+    assert_includes ownership, "terminal status with expired `expires_at`"
+    assert_includes ownership, "`none` has no release/mirror"
   end
 
   def test_capacity_is_separate_from_ownership_and_writer_safety

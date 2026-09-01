@@ -155,9 +155,10 @@ missing or `UNKNOWN` trusted local plan or live replay.
    generation, or instance mismatch stops the affected mutation. Required
    dependency state that is missing or `UNKNOWN` stays fail-closed through
    `stage-dependency-gate`.
-5. Release terminal ownership and reconcile the mirrored label only after the
-   lane has reached its safe terminal checkpoint. A stale label or expired
-   lease alone does not prove that another writer is absent.
+5. At safe terminal checkpoint: `private` releases its claim, then reconciles its
+   same-holder/generation label; `public-fallback` edits the same `codex-claim`
+   marker to terminal status with expired `expires_at`; `none` has no release/mirror.
+   Expiry never proves no writer.
 
 After claim expiry, a non-destructive takeover requires no live writer or
 process evidence plus a durable takeover receipt bound to the old and new
