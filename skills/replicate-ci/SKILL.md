@@ -24,6 +24,11 @@ reproduction explains the failure.
 3. Establish hosted run history for the exact failure identity on the exact
    commit. Use provider-native run history for that exact commit and failure
    identity, resolving a repo command or policy seam when defined.
+   For GitHub Actions with no provider seam, use the shipped default:
+   ```bash
+   gh run list --json id,conclusion,headSha,event,workflowName,runNumber,createdAt,url --limit 100 | jq -r '.[] | select(.headSha == "<HEAD_SHA>" and .workflowName == "<WORKFLOW_NAME>") | .id'
+   gh run view <RUN_ID> --json id,headSha,event,workflowName,conclusion,createdAt,startedAt,status
+   ```
    An equivalent hosted invocation has matching controlled
    invocation parameters and selected or known pre-run hosted environment
    identity—event, inputs, matrix, runner image, toolchain, and configuration
@@ -142,11 +147,13 @@ Then recommend the next smallest action:
 
 - The failing hosted check and head SHA are exact.
 - Hosted history supports the candidate deterministic/parity case, or records
-  unavailable failure identity, history, or invocation equivalence as `UNKNOWN`,
-  classifies the result as `BLOCKED`, and stops; equivalent same-commit hosted
-  intermittency uses `fix-flaky-tests` before parity reproduction when known,
-  or before finalizing any Outcomes classification when discovered during
-  reproduction.
+  candidate deterministic/parity case.
+- If failure identity, hosted run history, or invocation equivalence is
+  unavailable/unverifiable, record each unavailable fact as `UNKNOWN`,
+  classify the result as `BLOCKED`, and stop.
+- Equivalent same-commit hosted intermittency uses `fix-flaky-tests` before
+  parity reproduction when known, or before finalizing any Outcomes
+  classification when discovered during reproduction.
 - The parity command, runner mapping, or image comes from the CI parity
   environment policy or verified repo docs it names.
 - The parity tool's default images or environments are not treated as exact
