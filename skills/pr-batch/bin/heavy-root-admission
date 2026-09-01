@@ -146,25 +146,29 @@ module HeavyRootAdmission
 
   def terminal_timestamp(reservation)
     timestamp_key = reservation["status"] == "released" ? "released_at" : "expired_at"
-    timestamp = parse_time(reservation[timestamp_key])
-    raise Error, "terminal reservation has invalid `#{timestamp_key}`" unless timestamp
-
-    timestamp
+    parse_time(reservation[timestamp_key])
   end
 
   def prune_terminal_reservations!(state, now)
     reservations = state.fetch("reservations")
     cutoff = now - TERMINAL_RETENTION_SECONDS
+    malformed_terminal_indexes = {}
     recent_terminal = reservations.each_with_index.filter_map do |reservation, index|
       next unless terminal_reservation?(reservation)
 
       timestamp = terminal_timestamp(reservation)
+      unless timestamp
+        malformed_terminal_indexes[index] = true
+        next
+      end
+
       [index, timestamp] if timestamp >= cutoff
     end
     kept_terminal_indexes = recent_terminal
                             .sort_by { |index, timestamp| [-timestamp.to_f, index] }
                             .first(MAX_TERMINAL_RESERVATIONS)
                             .to_h { |index, _timestamp| [index, true] }
+    kept_terminal_indexes.merge!(malformed_terminal_indexes)
     retained = reservations.each_with_index.filter_map do |reservation, index|
       reservation unless terminal_reservation?(reservation) && !kept_terminal_indexes[index]
     end

@@ -469,6 +469,39 @@ class HeavyRootAdmissionTest < Minitest::Test
     end
   end
 
+  def test_malformed_terminal_timestamps_are_retained_without_blocking_admission
+    Dir.mktmpdir("heavy-root-admission-malformed-terminal-test") do |state_dir|
+      malformed_terminal = [
+        { "launch_token" => "missing-released-at", "status" => "released" },
+        { "launch_token" => "invalid-expired-at", "status" => "expired", "expired_at" => "not-a-time" }
+      ]
+      HeavyRootAdmission::Store.new(state_dir: state_dir, host: "M5").locked_update do |state, _now|
+        state.fetch("reservations").concat(malformed_terminal)
+        { write: true, report: nil }
+      end
+
+      attempt = run_helper(
+        "reserve", "--state-dir", state_dir, "--host", "M5",
+        "--owner", "maker", "--lane", "issue-604-maker",
+        "--worktree", "/tmp/maker", "--command-class", "validator",
+        "--launch-token", "fresh-token", "--ceiling", "1",
+        "--scan-command-json", scanner_command(state_dir), "--json"
+      )
+
+      assert_equal 0, attempt.fetch(:status), attempt.inspect
+      payload = JSON.parse(attempt.fetch(:stdout))
+      assert_equal "reserved", payload.fetch("decision")
+      assert_equal 1, payload.fetch("occupied_after_reservation")
+
+      state_path = Dir[File.join(state_dir, "host-*.json")].fetch(0)
+      persisted = JSON.parse(File.read(state_path, encoding: "UTF-8"))
+      retained_terminal = persisted.fetch("reservations").select do |reservation|
+        malformed_terminal.any? { |malformed| reservation["launch_token"] == malformed["launch_token"] }
+      end
+      assert_equal malformed_terminal, retained_terminal
+    end
+  end
+
   def test_a_launch_token_remains_single_use_after_its_terminal_record_is_pruned
     Dir.mktmpdir("heavy-root-admission-single-use-token-test") do |state_dir|
       scan_command = scanner_command(state_dir)
