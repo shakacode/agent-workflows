@@ -1353,11 +1353,15 @@ a nonzero value is exactly the drift signal this counter exists to expose.
 Every user-visible message counts in exactly one bucket. When a message would
 match more than one, take the first match in this order: `final-handoff`,
 `decision-required`, `merge-decision`, `pr-open`, `dispatch`, then
-`always_allowed`. A final handoff that also carries per-target merge verdicts is
-therefore one `final-handoff` message, not two. With that rule and every field
-known, `messages` equals the five checkpoint counts plus the four `always_allowed` counts plus
-`unclassified_messages`; report a reconciliation mismatch rather than silently
-adjusting a field.
+the first matching `always_allowed` subtype in this most-specific-first order:
+`safety-stop`, `required-turn`, `requested-status`, then `direct-answer`. This
+preserves the most specific reason the message was allowed instead of letting a
+broader direct answer absorb required or explicitly requested output. A final
+handoff that also carries per-target merge verdicts is therefore one
+`final-handoff` message, not two. With that rule and every field known,
+`messages` equals the five checkpoint counts plus the four `always_allowed`
+counts plus `unclassified_messages`; report a reconciliation mismatch rather
+than silently adjusting a field.
 
 A coordination-backed `batch_id` is opaque and may legitimately contain
 characters that collide with this marker's own syntax: `;` and `=` are its field

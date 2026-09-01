@@ -128,50 +128,12 @@ receipt immediately before the final `Conversation status:` line.
 
 ## Output Contract
 
-`OC-v1` bounds how much user-visible text a coordinator emits. It is
-presentation only: no evidence, verification, security, review, QA, CI, merge,
-or `UNKNOWN`-honesty rule is relaxed, and no rule that requires an exact
-user-visible string is dropped or shortened under it.
-
-Emit user-visible text only at one of five typed checkpoints:
-
-- `dispatch`: one message when a wave launches.
-- `pr-open`: one message per PR when it is opened.
-- `decision-required`: a blocker, a required approval, or a maintainer or
-  product question.
-- `merge-decision`: the merge, ready, or blocked verdict for a target.
-- `final-handoff`: the batch handoff.
-
-Everything between checkpoints is silent; a tool-call preamble is not a
-checkpoint. An HST-v1 actionable notification is not a separate category: it is
-emitted at the `decision-required`, `merge-decision`, or `final-handoff`
-checkpoint whose state it reports; closeout and archive completion is a
-`final-handoff`. A direct answer, an explicitly requested status report, a turn of a
-required interactive exchange such as the `ask` merge-authority walkthrough, and
-a required safety stop are always allowed without being checkpoints. Every
-user-visible message counts in exactly one bucket of the closeout marker.
-
-- **Delta recaps:** after the first recap, repeat only rows whose state
-  changed; unchanged targets collapse to one line naming their count and state.
-- **Single-surface findings:** each finding lives on one durable surface;
-  messages report counts by severity, name only decision-changing findings, and
-  link. This bounds chat narration only and never deletes a durable copy that
-  another contract requires in both the PR description and the final handoff.
-- **Proportional corrections:** state a decision-changing correction once; a
-  correction that changes nothing for the reader is recorded in exactly one
-  durable place — the PR description's `Agent details` decision log when the
-  target has a PR, otherwise the final handoff's FYI / decisions made section.
-- **Unchanged closing stack:** `OC-v1` collapses no closing structure; that
-  consolidation is tracked in
-  [issue 484](https://github.com/shakacode/agent-workflows/issues/484).
-
-At closeout, report a shadow-only `coordinator-narration-volume v1` marker of
-self-counted message and character volume. It gates nothing, blocks no handoff,
-and records exact `UNKNOWN` per unavailable count.
-
-The canonical normative text is the
+`OC-v1` is defined by the canonical
 [Coordinator Output Contract](../workflows/pr-processing.md#coordinator-output-contract)
-in `workflows/pr-processing.md`.
+in `workflows/pr-processing.md`. This user-facing contract intentionally does
+not duplicate its checkpoint definitions, delta-recap behavior, always-allowed
+classification, or narration-counter schema. Apply the linked contract
+directly so those rules cannot drift between two normative copies.
 
 ## Ambiguity Guard
 
