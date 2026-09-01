@@ -1591,8 +1591,7 @@ target, branch, and status context. Required typed payload fields are:
 Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. A `MODEL_ESCALATION_REQUEST` emits `escalation_requested` with
 the current and requested model/effort routes plus the evidence summary from
 the prose packet. Map intervention checkpoints deliberately:
-`takeover` -> `kind: takeover`; a
-same-lane replacement or explicit supersede
+`takeover` -> `kind: takeover`; a same-lane replacement or explicit supersede
 -> `kind: supersede`; a human-authored repair -> `kind: manual-fix`; and a
 coordinator cancellation drain -> `kind: drain`. A confirmed P0/P1 finding,
 regression, or revert requirement emits `error`; `severity` is one of `P0`,

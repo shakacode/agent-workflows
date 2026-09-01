@@ -1069,9 +1069,9 @@ agent-coord record-event --type help_requested --reason permission \
   --message "Revert of PR #${PR} needs an operator merge decision"
 ```
 
-Do not invent event kinds, reasons, or lane states for this incident sequence.
-The typed kinds are exactly `help_requested`, `escalation_requested`, `error`,
-and `human_intervention`; `human_intervention --kind` is exactly `takeover`,
+Do not invent event kinds, reasons, or lane states for this. The typed kinds
+are exactly `help_requested`, `escalation_requested`, `error`, and
+`human_intervention`; `human_intervention --kind` is exactly `takeover`,
 `supersede`, `manual-fix`, or `drain`. Lane lifecycle states are exactly
 `planned`, `claimed`, `active`, `blocked`, `completed`, and terminal closeout
 values are exactly `done`, `abandoned`, `superseded`. Keep the two apart: the
