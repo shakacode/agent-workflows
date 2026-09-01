@@ -125,11 +125,16 @@ One narrow post-gate resolution applies to a `high-risk-files` finding caused
 only by the detector's broad protected-parent match. After exact-head validation
 and configured review are complete, reuse the already-parsed trusted-base policy
 and complete exact-head file inventory; do not reconstruct policy or introduce a
-second test-path list. Resolve that broad finding only when every changed path is
-included by `safe_path_groups.tests` and none is excluded, including every
-current and previous path supplied for a rename or copy. A production helper,
-mixed diff, excluded test, `human_review_paths` match, or policy-path match keeps
-its own applicable stop. Malformed, incomplete, stale, contradictory, or
+second test-path list. Because the helper reports one flat risky-path list,
+reapply all three `high_risk_files` predicates from the same trusted helper
+bytes and record `root-prefix`, `nested-script-dir`, and `exact-filename`
+matches per path. Do not copy or paraphrase those predicates into a second
+classifier. An `exact-filename` match is never a broad protected-parent-only
+match. Resolve the broad finding only when every changed path is included by
+`safe_path_groups.tests` and none is excluded, including every current and
+previous path supplied for a rename or copy. A production helper, mixed diff,
+excluded test, `human_review_paths` match, or policy-path match keeps its own
+applicable stop. Malformed, incomplete, stale, contradictory, or
 `UNKNOWN` policy, file, validation, or review evidence remains `UNKNOWN` and
 fails closed. This resolution clears only the `high-risk-files` protected-parent
 stop after the ordinary gates; it never clears another preflight finding,
@@ -153,9 +158,10 @@ Return one `security-floor v1` result per lane with:
   and isolation mechanism with checkout-isolation evidence `n/a`;
 - exact head/base evidence binding required at the current stage;
 - for a protected-parent safe-test decision, both the original broad
-  protected-parent match and the safe-test-only resolution, with exact head,
-  trusted policy provenance, complete path inventory, and any independent
-  blocking path or evidence reason preserved;
+  protected-parent match and the safe-test-only resolution, with the per-path
+  trusted-helper predicate matches, exact head, trusted policy provenance,
+  complete path inventory, and any independent blocking path or evidence reason
+  preserved;
 - consequential-action authority; and
 - `PASS`, `BLOCKED`, or `UNKNOWN`, plus the precise affected-lane reason.
 

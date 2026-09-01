@@ -117,6 +117,12 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_floor,
                     "reuse the already-parsed trusted-base policy and complete exact-head file inventory"
     assert_includes normalized_floor,
+                    "reapply all three `high_risk_files` predicates from the same trusted helper bytes"
+    assert_includes normalized_floor,
+                    "record `root-prefix`, `nested-script-dir`, and `exact-filename` matches per path"
+    assert_includes normalized_floor,
+                    "`exact-filename` match is never a broad protected-parent-only match"
+    assert_includes normalized_floor,
                     "every changed path is included by `safe_path_groups.tests` and none is excluded"
     assert_includes normalized_floor,
                     "production helper, mixed diff, excluded test, `human_review_paths` match, or policy-path match"
