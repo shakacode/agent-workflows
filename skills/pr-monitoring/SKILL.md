@@ -141,7 +141,10 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
      review wave runs, but prefer one combined push after consolidated triage.
    - Do not preserve a failing head solely to finish its review wave. If a
      required validation fix is ready, push it and restart both cohorts.
-   - `DIRTY`, conflicted, or behind branches are not ready.
+   - `DIRTY` or conflicted branches are not ready. A behind branch remains not
+     ready unless the current-integration gate below passes through an explicit
+     provider merge-result or merge-group result bound to the exact head and
+     current base with normalized successful CI.
    - Rebase or merge base updates only when safe and consistent with repo
      policy.
    - Before an `ask` walkthrough, apply the canonical current-integration gate

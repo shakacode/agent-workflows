@@ -296,6 +296,8 @@ class IntegrationCloseoutContractTest < Minitest::Test
                     "every missing, stale, mismatched, non-successful, unrecognized, future, or `UNKNOWN` result stays waiting and no walkthrough starts"
     refute_match(/\bPASSED\b/, ask_gate)
     assert_includes normalized_monitoring, "Provider-specific status strings are inputs to normalization"
+    assert_includes normalized_monitoring,
+                    "A behind branch remains not ready unless the current-integration gate below passes through an explicit provider merge-result or merge-group result bound to the exact head and current base with normalized successful CI."
     assert_includes normalized_walkthrough,
                     "Do not infer success from a provider-specific status string or GitHub conflict/mergeability metadata"
 
