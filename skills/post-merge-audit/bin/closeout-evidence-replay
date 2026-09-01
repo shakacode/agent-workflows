@@ -58,6 +58,11 @@ module CloseoutEvidenceReplay
   # `ARTIFACTS/2.3` stays visible to it.
   HTTPS_PROTOCOL_LABEL_NAMES = %w[alpn grpc h2 h2c h3 http https quic spdy ssl tls ws wss].freeze
   HTTPS_PROTOCOL_LABEL_NAME_PATTERN = HTTPS_PROTOCOL_LABEL_NAMES.map { |name| Regexp.escape(name) }.join("|")
+  # Protocol names also qualify a following numeric version (`HTTP 2.0`), so the vocabulary is
+  # shared rather than duplicated as a second hand-tuned list.
+  HTTPS_VERSION_QUALIFIER = /
+    \A(?:#{(HTTPS_PROTOCOL_LABEL_NAMES + %w[protocol version]).map { |name| Regexp.escape(name) }.join('|')})\z
+  /ix
   # A dotted numeric version, or a slash-separated list of them (`1.2/1.3`). No letters and no
   # authority separators, so a URL-shaped path cannot match.
   HTTPS_PROSE_VERSION_LIST = %r{\A\d{1,2}(?:\.\d{1,2}){1,2}(?:/\d{1,2}(?:\.\d{1,2}){1,2})*\z}
@@ -71,10 +76,12 @@ module CloseoutEvidenceReplay
     )
     (?![\w./-])
   }ix
-  # Prose delimiters that wrap a label token (`"TLS 1.3"`, `` `TLS 1.3` ``, `(HTTP/2)`) and must be
-  # removed before authority classification.
-  HTTPS_PROSE_OPEN_DELIMITERS = ["(", "[", "{", '"', "'", "`"].freeze
-  HTTPS_PROSE_CLOSE_DELIMITERS = [")", "]", "}", '"', "'", "`"].freeze
+  # Prose delimiters that wrap a label token (`"TLS 1.3"`, `` `TLS 1.3` ``, `(HTTP/2)`,
+  # `**TLS 1.3**`) and must be removed before authority classification. Runs are stripped so
+  # Markdown emphasis of any width is handled; the delimiters carry no authority meaning, and a
+  # wrapped host such as `**available.example.test**` still fails closed on its own shape.
+  HTTPS_PROSE_LEADING_DELIMITERS = /\A[(\[{"'`*_]+/
+  HTTPS_PROSE_TRAILING_DELIMITERS = /[)\]}"'`*_]+\z/
   HTTPS_PROSE_LABEL_STATUS_PATTERN = HTTPS_PROSE_LABEL_STATUSES.map { |status| Regexp.escape(status) }.join("|")
   HTTPS_PROSE_LABEL_RECOGNIZED_STATUS = /
     \A(?:[1-5]\d{2}\s+)?(?:#{HTTPS_PROSE_LABEL_STATUS_PATTERN})(?=\s|[,;]|\.(?:\s|\z)|\z)
@@ -91,6 +98,10 @@ module CloseoutEvidenceReplay
     \b(?:missing|unavailable|unmeasured|unknown|tbd|not[ _](?:available|measured))\b|n/a
   }ix
   URI_SCHEME = %r{\A[A-Za-z][A-Za-z0-9+.-]*://}
+  # A repo-seam source is a stable command, report, or ref. Any other URI scheme (`mailto:`,
+  # `file:`, `blob:`) is a reference this gate cannot validate, so only a valid absolute HTTPS URL
+  # may carry one. The scheme shape excludes dots, so a ref such as `perf-report.rb:42` stays a ref.
+  NON_HTTPS_SOURCE_SCHEME = /\A[A-Za-z][A-Za-z0-9+-]*:/
 
   def run(argv)
     options, parser = parse_options(argv)
@@ -750,6 +761,10 @@ module CloseoutEvidenceReplay
     !https_prose_label(value, match).nil?
   end
 
+  # Delimiter stripping, status recognition, protocol/version detection, authority sniffing, and
+  # boundary handling all interact here through shared locals. As with the vocabulary constants at
+  # the top of this file, run the full replay matrix after changing any one branch rather than
+  # reasoning about it in isolation.
   def https_prose_label(value, match)
     # Uppercase HTTPS: is the explicit prose-label form; lowercase https: remains a URL scheme
     # and therefore fails closed when whitespace makes it malformed.
@@ -761,7 +776,10 @@ module CloseoutEvidenceReplay
     raw_label = suffix.lstrip
     if (next_https = HTTPS_TOKEN.match(raw_label))
       raw_label = raw_label[0...next_https.begin(0)].rstrip
-      direct_url_boundary = raw_label.empty? || raw_label.match?(/\A(?:after|at|from|see|via)\z/i)
+      direct_url_boundary = raw_label.empty? || prose_url_boundary_token?(raw_label)
+      # An empty string means "label present but with no text", which both callers rely on to
+      # exclude this `HTTPS:` from URL validation. Returning nil here would mark it "not a label"
+      # and the token would be validated as a URL, failing as malformed.
       return "" if direct_url_boundary
 
       raw_label = raw_label.sub(/\s+(?:after|at|from|see|via)\z/i, "")
@@ -795,6 +813,13 @@ module CloseoutEvidenceReplay
     prose_label
   end
 
+  # A single plain word between `HTTPS:` and the next URL is consumer connector prose (`link`,
+  # `artifact`, `see`) introducing that URL, not a reference of its own. The character class admits
+  # no `.`, `:`, `/`, or bracket, so a host-, path-, or authority-shaped prefix still fails closed.
+  def prose_url_boundary_token?(raw_label)
+    raw_label.match?(/\A\p{Alnum}[\p{Alnum}_-]*\z/u)
+  end
+
   def authority_shaped_https_label?(label)
     tokens = label.split(/\s+/)
     tokens.each_with_index.any? do |token, index|
@@ -809,7 +834,7 @@ module CloseoutEvidenceReplay
 
       if !token.match?(/[?#]/) && authority.match?(HTTPS_PROSE_VERSION_LIST)
         previous_token = normalized_https_prose_token(tokens[index - 1]) if index.positive?
-        next false if previous_token&.match?(/\A(?:protocol|ssl|tls|version)\z/i)
+        next false if previous_token&.match?(HTTPS_VERSION_QUALIFIER)
       end
       next false if authority.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z})
 
@@ -825,9 +850,7 @@ module CloseoutEvidenceReplay
   end
 
   def normalized_https_prose_token(token)
-    token = token[1..] if token.start_with?(*HTTPS_PROSE_OPEN_DELIMITERS)
-    token = token[...-1] if token.end_with?(*HTTPS_PROSE_CLOSE_DELIMITERS)
-    token
+    token.sub(HTTPS_PROSE_LEADING_DELIMITERS, "").sub(HTTPS_PROSE_TRAILING_DELIMITERS, "")
   end
 
   def unresolved_hosted_criterion_evidence?(evidence)
@@ -985,7 +1008,7 @@ module CloseoutEvidenceReplay
     return false if source.match?(/\A(?:command|report|ref|source)\z/i)
 
     return valid_https_url?(source) if source.match?(%r{\Ahttps?://}i)
-    return false if source.match?(/\Ahttps?:/i)
+    return false if source.match?(NON_HTTPS_SOURCE_SCHEME)
     return false if source.include?("://")
 
     source.match?(%r{\A[A-Za-z0-9][A-Za-z0-9._:#@/-]*\z})

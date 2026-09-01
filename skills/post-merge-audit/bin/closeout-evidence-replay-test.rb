@@ -1043,6 +1043,121 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_hosted_v1_accepts_any_non_authority_connector_before_the_url
+    # The label boundary is structural, not a closed connector vocabulary.
+    %w[link artifact see evidence report screenshot run1].each do |connector|
+      evidence = "HTTPS: #{connector} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), connector
+      assert_empty hosted.fetch("missing"), connector
+    end
+  end
+
+  def test_hosted_v1_rejects_reference_shaped_prefixes_before_the_url
+    # A prefix that could itself name a target must still fail closed.
+    [
+      "HTTPS: available.example.test https://evidence.example.test/sign-in-abc123",
+      "HTTPS: example.test:443 https://evidence.example.test/sign-in-abc123",
+      "HTTPS: //available https://evidence.example.test/sign-in-abc123",
+      "HTTPS: [::1] https://evidence.example.test/sign-in-abc123"
+    ].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+  end
+
+  def test_hosted_v1_accepts_markdown_emphasis_around_https_version_labels
+    [
+      "HTTPS: **TLS 1.3**;",
+      "HTTPS: *TLS 1.3*;",
+      "HTTPS: _TLS 1.3_;",
+      "HTTPS: __TLS 1.3__;",
+      "HTTPS: **HTTP/2**;"
+    ].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+
+    emphasized_authority = hosted_v1_marker.sub(
+      "https://evidence.example.test/sign-in-abc123",
+      "HTTPS: **available.example.test**; https://evidence.example.test/sign-in-abc123"
+    )
+
+    assert_equal "UNKNOWN", run_replay(emphasized_authority).dig("hosted_qa_evidence", "verdict")
+  end
+
+  def test_hosted_v1_qualifies_numeric_versions_after_every_known_protocol_name
+    ["HTTPS: HTTP 2.0;", "HTTPS: QUIC 1.0;", "HTTPS: h3 1.0;", "HTTPS: grpc 1.2;",
+     "HTTPS: alpn 1.3;", "HTTPS: protocol 2.0;", "HTTPS: version 1.2.3;"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+
+    unqualified = hosted_v1_marker.sub(
+      "https://evidence.example.test/sign-in-abc123",
+      "HTTPS: shipped 10.0.1; https://evidence.example.test/sign-in-abc123"
+    )
+
+    assert_equal "UNKNOWN", run_replay(unqualified).dig("hosted_qa_evidence", "verdict")
+  end
+
+  def test_v2_performance_evidence_rejects_non_https_scheme_repo_seam_sources
+    # `source=https:broken` is already rejected; every other URI scheme is the same shape of
+    # unvalidatable reference and must fail closed too.
+    %w[
+      mailto:someone@example.com
+      file:/etc/passwd
+      blob:abc
+      ftp:host
+      about:blank
+    ].each do |source|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=#{source}; metric_name=lcp; baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), source
+      assert_includes qa.fetch("missing"), "performance_evidence", source
+    end
+  end
+
+  def test_v2_performance_evidence_keeps_accepting_colon_bearing_refs
+    # Only a leading bare-word scheme is rejected; a ref whose colon follows a path or a dotted
+    # filename stays a valid stable ref.
+    ["bin/perf-report:latest", "reports/perf-report.rb:42", "perf-report.rb:42"].each do |source|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=#{source}; metric_name=lcp; baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), source
+      assert_empty qa.fetch("missing"), source
+    end
+  end
+
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
     # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
     # whole replay instead of returning a verdict.
