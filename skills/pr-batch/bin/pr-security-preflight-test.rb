@@ -1769,6 +1769,31 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_renamed_high_risk_file_emits_previous_path_predicate_evidence
+    with_fake_gh("renamed-high-risk-file") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      file_records = [{
+        path: "skills/pr-batch/bin/new-contract-test.rb",
+        previous_path: "skills/pr-batch/bin/old-contract-test.rb"
+      }]
+      expected_matches = file_records.first.values.map do |path|
+        { path:, matches: ["nested-script-dir"], broad_protected_parent_only: true }
+      end
+
+      assert status.success?, out
+      assert_includes out, "Changed file records: #{JSON.generate(file_records)}"
+      assert_includes out, "High-risk predicate matches: #{JSON.generate(expected_matches)}"
+    end
+  end
+
   def test_pr_scan_fails_closed_when_base_or_head_is_malformed
     with_fake_gh("malformed-pr-identity") do |env, trust_config_path, _log_path|
       out, status = run_script(
@@ -3181,7 +3206,7 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
       JSON
@@ -3277,7 +3302,7 @@ class PrSecurityPreflightTest < Minitest::Test
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
       JSON
           fi
-        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
       JSON
@@ -3509,6 +3534,23 @@ class PrSecurityPreflightTest < Minitest::Test
         exit 0
       fi
 
+      if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123/files?per_page=100" ]; then
+        if [ "$mode" = "high-risk-file-predicates" ]; then
+          cat <<'JSON'
+      [[{"filename":".github/workflows/test.yml"},{"filename":"skills/pr-batch/bin/security-floor-contract-test.rb"},{"filename":"AGENTS.md"},{"filename":".agents/bin/test"},{"filename":"docs/safe.md"}]]
+      JSON
+        elif [ "$mode" = "renamed-high-risk-file" ]; then
+          cat <<'JSON'
+      [[{"filename":"skills/pr-batch/bin/new-contract-test.rb","previous_filename":"skills/pr-batch/bin/old-contract-test.rb"}]]
+      JSON
+        elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+          printf '[[{"filename":"docs/safe.md"}]]'
+        else
+          printf '[[{"filename":".github/workflows/test.yml"}]]'
+        fi
+        exit 0
+      fi
+
       if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
         if [ "$mode" = "malformed-pr-identity" ]; then
           printf '{"baseRefOid":null,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n'
@@ -3539,7 +3581,7 @@ class PrSecurityPreflightTest < Minitest::Test
             exit 0
           fi
         done
-        if [ "$mode" = "high-risk-file-predicates" ]; then
+        if [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ]; then
           cat <<'DIFF'
       diff --git a/docs/safe.md b/docs/safe.md
       index 0000000..1111111 100644

@@ -125,7 +125,7 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_floor,
                     "require it match the emitted digest"
     assert_includes normalized_floor,
-                    "emitted exact diff base/head, predicate evidence, and flat risky-path list"
+                    "emitted exact diff base/head, current/previous file records, predicate evidence, and flat risky-path list"
     assert_includes normalized_floor,
                     "require that pair match eligibility evidence"
     assert_includes normalized_floor,

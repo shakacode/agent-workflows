@@ -128,7 +128,7 @@ finding caused only by the broad protected-parent match:
   after it parses the trusted-base `AutonomousMergePolicy` for the same base/head from complete policy, semantic, and file evidence. Otherwise remain blocked;
   never reconstruct policy or add another test-path list.
 - Evidence binding: independently recompute `sha256:` over the helper's self-reported canonical path and require it match the emitted digest. Preserve both plus
-  its emitted exact diff base/head, predicate evidence, and flat risky-path list;
+  its emitted exact diff base/head, current/previous file records, predicate evidence, and flat risky-path list;
   require that pair match eligibility evidence. At resolution, repeat the computation and scan; require the digest unchanged and the same exact pair.
 - Predicate decision: require emitted `broad_protected_parent_only == true` for every current and previous path; never infer it from raw matches. The helper sets true
   only for `root-prefix` or `nested-script-dir`, including nested-script-dir-only,

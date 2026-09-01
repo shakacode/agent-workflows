@@ -1077,8 +1077,25 @@ def metadata_only_interaction_findings(rest_context, include_pull_comments:, tru
     metadata_only_review_findings(rest_context, trust_config:)
 end
 
-def changed_files(repo, pr_number)
-  run_gh("pr", "diff", pr_number.to_s, "--repo", repo, "--name-only").lines.map(&:strip).reject(&:empty?)
+def changed_file_records(repo, pr_number)
+  payload = run_gh_paginated_json_array(
+    "api", "repos/#{repo}/pulls/#{pr_number}/files?per_page=100"
+  )
+
+  payload.map do |file|
+    path = file["filename"] if file.is_a?(Hash)
+    previous_path = file["previous_filename"] if file.is_a?(Hash)
+    unless path.is_a?(String) && !path.empty? &&
+           (previous_path.nil? || (previous_path.is_a?(String) && !previous_path.empty?))
+      raise "PR ##{pr_number} changed-file evidence is missing or malformed: #{JSON.generate(file)}"
+    end
+
+    { path:, previous_path: }
+  end
+end
+
+def all_changed_paths(file_records)
+  file_records.flat_map { |file| [file.fetch(:path), file.fetch(:previous_path)] }.compact.uniq
 end
 
 def pull_request_identity(repo, pr_number)
@@ -1508,7 +1525,8 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     # GitHub API calls unless the operator explicitly needs reaction attribution.
     visible.merge(reaction_users(repo, number, rest_context: rest, include_pull_comments: target_is_pr))
   end
-  files = target_is_pr ? changed_files(repo, number) : []
+  file_records = target_is_pr ? changed_file_records(repo, number) : []
+  files = file_records.map { |file| file.fetch(:path) }
   suspicious_findings = suspicious_findings_for_target(
     repo:,
     number:,
@@ -1530,11 +1548,12 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     include_pull_comments: target_is_pr,
     trust_config:
   )
-  risky_file_findings = high_risk_file_findings(files)
+  risky_file_findings = high_risk_file_findings(all_changed_paths(file_records))
   require_unchanged_pull_request_identity!(diff_identity, pull_request_identity(repo, number), number) if target_is_pr
 
   {
     diff_identity:,
+    file_records:,
     files:,
     number:,
     graph_coverage_findings: graph_coverage_findings(target, include_target_author: target_is_pr),
@@ -1805,6 +1824,8 @@ end
 def print_file_findings(result)
   files = result.fetch(:files)
   puts "  Changed files: #{files.empty? ? 'none' : files.join(', ')}"
+  file_records = result.fetch(:file_records)
+  puts "  Changed file records: #{file_records.empty? ? 'none' : JSON.generate(file_records)}"
 
   if result.fetch(:risky_files).empty?
     puts "  High-risk changed files: none"
