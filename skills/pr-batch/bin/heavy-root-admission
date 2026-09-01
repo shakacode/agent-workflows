@@ -1,0 +1,587 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "fileutils"
+require "json"
+require "open3"
+require "optparse"
+require "securerandom"
+require "time"
+
+module HeavyRootAdmission
+  VERSION = "heavy-root-admission/v1"
+  DEFAULT_TTL = 30
+  MAX_TTL = 300
+  DEFAULT_SCAN_TIMEOUT = 15
+  MAX_SCAN_TIMEOUT = 60
+
+  class Error < StandardError; end
+  class UsageError < Error; end
+  class ScanError < Error; end
+
+  module_function
+
+  def iso8601(time)
+    time.utc.iso8601(6)
+  end
+
+  def parse_time(value)
+    Time.iso8601(value)
+  rescue ArgumentError, TypeError
+    nil
+  end
+
+  def active_reservation?(reservation)
+    %w[reserved bound].include?(reservation["status"])
+  end
+
+  def canonical_host(value)
+    value.to_s.strip.downcase
+  end
+
+  class Store
+    def initialize(state_dir:, host:, clock: -> { Time.now.utc })
+      raise UsageError, "--state-dir must not be blank" if state_dir.to_s.strip.empty?
+      raise UsageError, "--host must not be blank" if host.to_s.strip.empty?
+
+      @state_dir = File.expand_path(state_dir)
+      @host = HeavyRootAdmission.canonical_host(host)
+      @clock = clock
+      host_key = Digest::SHA256.hexdigest(host)[0, 24]
+      @state_path = File.join(@state_dir, "host-#{host_key}.json")
+      @lock_path = File.join(@state_dir, "host-#{host_key}.lock")
+    end
+
+    def locked_update
+      FileUtils.mkdir_p(@state_dir, mode: 0o700)
+      File.chmod(0o700, @state_dir)
+      File.open(@lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        state = load_state
+        result = yield(state, @clock.call.utc)
+        write_state(state) if result.fetch(:write, false)
+        result.fetch(:report)
+      ensure
+        lock&.flock(File::LOCK_UN)
+      end
+    end
+
+    private
+
+    def load_state
+      return fresh_state unless File.exist?(@state_path)
+
+      parsed = JSON.parse(File.read(@state_path, encoding: "UTF-8"))
+      unless parsed["version"] == VERSION && parsed["host"] == @host && parsed["reservations"].is_a?(Array)
+        raise Error, "invalid host-local admission state at #{@state_path}"
+      end
+
+      parsed
+    rescue JSON::ParserError => e
+      raise Error, "invalid JSON in host-local admission state at #{@state_path}: #{e.message}"
+    end
+
+    def fresh_state
+      { "version" => VERSION, "host" => @host, "reservations" => [] }
+    end
+
+    def write_state(state)
+      temporary_path = "#{@state_path}.tmp-#{Process.pid}-#{SecureRandom.hex(6)}"
+      File.open(temporary_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+        file.write(JSON.pretty_generate(state))
+        file.write("\n")
+        file.flush
+        file.fsync
+      end
+      File.rename(temporary_path, @state_path)
+    ensure
+      FileUtils.rm_f(temporary_path) if defined?(temporary_path)
+    end
+  end
+
+  def scan_capacity(command_json, timeout_seconds)
+    command = JSON.parse(command_json)
+    unless command.is_a?(Array) && command.any? && command.all? { |part| part.is_a?(String) && !part.empty? }
+      raise UsageError, "--scan-command-json must be a nonempty JSON array of command arguments"
+    end
+
+    stdin, stdout, stderr, waiter = Open3.popen3(*command)
+    stdin.close
+    stdout_reader = Thread.new { stdout.read }
+    stderr_reader = Thread.new { stderr.read }
+
+    unless waiter.join(timeout_seconds)
+      Process.kill("TERM", waiter.pid)
+      waiter.join(1)
+      Process.kill("KILL", waiter.pid) if waiter.alive?
+      waiter.join
+      raise ScanError, "whole-host scan exceeded #{timeout_seconds}s; no reservation was created"
+    end
+
+    scan_stdout = stdout_reader.value
+    scan_stderr = stderr_reader.value
+    unless waiter.value.success?
+      detail = scan_stderr.strip
+      detail = "exit #{waiter.value.exitstatus}" if detail.empty?
+      raise ScanError, "whole-host scan failed (#{detail}); no reservation was created"
+    end
+
+    payload = JSON.parse(scan_stdout)
+    raise ScanError, "whole-host scan JSON must be an object" unless payload.is_a?(Hash)
+
+    roots = payload.fetch("roots")
+    raise ScanError, "whole-host scan JSON field `roots` must be an array" unless roots.is_a?(Array)
+
+    ceiling = nil
+    if payload.key?("ceiling")
+      raw_ceiling = payload["ceiling"]
+      ceiling = raw_ceiling.is_a?(Integer) ? raw_ceiling : Integer(raw_ceiling, 10)
+      raise ScanError, "whole-host scan `ceiling` must be zero or greater" if ceiling.negative?
+    end
+    retry_when = payload["retry_when"].to_s.strip
+    {
+      "roots" => roots.map { |root| normalize_live_root(root) },
+      "ceiling" => ceiling,
+      "retry_when" => retry_when.empty? ? nil : retry_when
+    }
+  rescue JSON::ParserError => e
+    raise ScanError, "whole-host scan did not return valid JSON: #{e.message}"
+  rescue ArgumentError, TypeError
+    raise ScanError, "whole-host scan `ceiling` must be a nonnegative integer"
+  rescue Errno::ENOENT => e
+    raise ScanError, "whole-host scan command could not start: #{e.message}"
+  ensure
+    stdout&.close unless stdout&.closed?
+    stderr&.close unless stderr&.closed?
+  end
+
+  def normalize_live_root(root)
+    raise ScanError, "each verified live root must be a JSON object" unless root.is_a?(Hash)
+    raise ScanError, "each live root must declare `verified`: true" unless root["verified"] == true
+
+    normalized = {
+      "kind" => "live-root",
+      "owner" => root["owner"].to_s.strip,
+      "lane" => root["lane"].to_s.strip,
+      "worktree" => root["worktree"].to_s.strip,
+      "command_class" => root["command_class"].to_s.strip,
+      "pid" => integer_or_nil(root["pid"]),
+      "pgid" => integer_or_nil(root["pgid"])
+    }
+    if normalized["owner"].empty? || normalized["lane"].empty? ||
+       (normalized["pid"].nil? && normalized["pgid"].nil?)
+      raise ScanError, "each verified live root needs owner, lane, and pid or pgid"
+    end
+
+    normalized
+  end
+
+  def integer_or_nil(value)
+    return if value.nil?
+
+    integer = value.is_a?(Integer) ? value : Integer(value, 10)
+    integer.positive? ? integer : nil
+  rescue ArgumentError, TypeError
+    nil
+  end
+
+  def expire_stale_prelaunch!(state, now)
+    state.fetch("reservations").filter_map do |reservation|
+      next unless reservation["status"] == "reserved"
+
+      expiry = parse_time(reservation["expires_at"])
+      next unless expiry && expiry <= now
+
+      reservation["status"] = "expired"
+      reservation["expired_at"] = iso8601(now)
+      reservation["recovery_reason"] = "pre-launch reservation exceeded bounded expiry"
+      reservation["launch_token"]
+    end
+  end
+
+  def root_matches_bound_reservation?(root, reservation)
+    return false unless reservation["status"] == "bound"
+
+    (root["pid"] && root["pid"] == reservation["pid"]) ||
+      (root["pgid"] && root["pgid"] == reservation["pgid"])
+  end
+
+  def owner_row_from_reservation(reservation)
+    {
+      "kind" => "reservation",
+      "owner" => reservation["owner"],
+      "lane" => reservation["lane"],
+      "worktree" => reservation["worktree"],
+      "command_class" => reservation["command_class"],
+      "launch_token" => reservation["launch_token"],
+      "status" => reservation["status"],
+      "pid" => reservation["pid"],
+      "pgid" => reservation["pgid"]
+    }.compact
+  end
+
+  def reservation_identity_matches?(reservation, options)
+    {
+      "owner" => :owner,
+      "lane" => :lane,
+      "worktree" => :worktree,
+      "command_class" => :command_class,
+      "intended_pid" => :intended_pid,
+      "intended_pgid" => :intended_pgid
+    }.all? { |field, option| reservation[field] == options[option] }
+  end
+
+  def process_target_live?(target)
+    Process.kill(0, target)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def process_or_group_live?(pid, pgid)
+    process_target_live?(pid) || process_target_live?(-pgid)
+  end
+
+  def reserve(options)
+    Store.new(state_dir: options.fetch(:state_dir), host: options.fetch(:host)).locked_update do |state, now|
+      recovered = expire_stale_prelaunch!(state, now)
+      active = state.fetch("reservations").select { |reservation| active_reservation?(reservation) }
+      existing = active.find { |reservation| reservation["launch_token"] == options.fetch(:launch_token) }
+      if existing
+        unless reservation_identity_matches?(existing, options)
+          raise Error, "launch token belongs to different owner, lane, worktree, command class, or intended PID/PGID metadata"
+        end
+
+        next({
+          write: recovered.any?,
+          report: {
+            "version" => VERSION,
+            "decision" => "reserved",
+            "replayed" => true,
+            "reservation" => existing,
+            "recovered_prelaunch_tokens" => recovered
+          }
+        })
+      end
+
+      expired_token = state.fetch("reservations").find do |reservation|
+        reservation["status"] == "expired" && reservation["launch_token"] == options.fetch(:launch_token)
+      end
+      if expired_token
+        next({
+          write: recovered.any?,
+          report: {
+            "version" => VERSION,
+            "decision" => "denied",
+            "reason" => "expired-launch-token",
+            "host" => options.fetch(:host),
+            "launch_token" => options.fetch(:launch_token),
+            "retry_when" => "run a fresh whole-host scan and reserve with a new launch token",
+            "recovered_prelaunch_tokens" => recovered
+          }
+        })
+      end
+
+      scan = scan_capacity(options.fetch(:scan_command_json), options.fetch(:scan_timeout))
+      roots = scan.fetch("roots")
+      scan_ceiling = scan["ceiling"]
+      effective_ceiling = scan_ceiling ? [options.fetch(:ceiling), scan_ceiling].min : options.fetch(:ceiling)
+      unmatched_roots = roots.reject do |root|
+        active.any? { |reservation| root_matches_bound_reservation?(root, reservation) }
+      end
+      owners = active.map { |reservation| owner_row_from_reservation(reservation) } + unmatched_roots
+      occupancy = owners.length
+
+      if occupancy >= effective_ceiling
+        next({
+          write: recovered.any?,
+          report: {
+            "version" => VERSION,
+            "decision" => "denied",
+            "reason" => "capacity-full",
+            "host" => options.fetch(:host),
+            "ceiling" => effective_ceiling,
+            "configured_ceiling" => options.fetch(:ceiling),
+            "occupied" => occupancy,
+            "current_owners" => owners,
+            "retry_when" => scan["retry_when"] ||
+              "a verified live root or active reservation reaches terminal/no-writer cleanup and its reservation is released",
+            "recovered_prelaunch_tokens" => recovered
+          }
+        })
+      end
+
+      reservation = {
+        "host" => options.fetch(:host),
+        "owner" => options.fetch(:owner),
+        "lane" => options.fetch(:lane),
+        "worktree" => options.fetch(:worktree),
+        "command_class" => options.fetch(:command_class),
+        "launch_token" => options.fetch(:launch_token),
+        "intended_pid" => options[:intended_pid],
+        "intended_pgid" => options[:intended_pgid],
+        "status" => "reserved",
+        "created_at" => iso8601(now),
+        "expires_at" => iso8601(now + options.fetch(:ttl))
+      }.compact
+      state.fetch("reservations") << reservation
+
+      {
+        write: true,
+        report: {
+          "version" => VERSION,
+          "decision" => "reserved",
+          "replayed" => false,
+          "reservation" => reservation,
+          "ceiling" => effective_ceiling,
+          "configured_ceiling" => options.fetch(:ceiling),
+          "occupied_after_reservation" => occupancy + 1,
+          "recovered_prelaunch_tokens" => recovered
+        }
+      }
+    end
+  end
+
+  def bind(options)
+    Store.new(state_dir: options.fetch(:state_dir), host: options.fetch(:host)).locked_update do |state, now|
+      recovered = expire_stale_prelaunch!(state, now)
+      reservation = state.fetch("reservations").find do |candidate|
+        active_reservation?(candidate) && candidate["launch_token"] == options.fetch(:launch_token)
+      end
+      unless reservation
+        next({
+          write: recovered.any?,
+          report: {
+            "version" => VERSION,
+            "decision" => "denied",
+            "reason" => "no-active-reservation",
+            "host" => options.fetch(:host),
+            "launch_token" => options.fetch(:launch_token),
+            "recovered_prelaunch_tokens" => recovered
+          }
+        })
+      end
+
+      if reservation["status"] == "bound"
+        unless reservation["pid"] == options.fetch(:pid) && reservation["pgid"] == options.fetch(:pgid)
+          raise Error, "launch token is already bound to PID #{reservation['pid']} / PGID #{reservation['pgid']}"
+        end
+
+        next({
+          write: recovered.any?,
+          report: { "version" => VERSION, "decision" => "bound", "replayed" => true,
+                    "reservation" => reservation, "recovered_prelaunch_tokens" => recovered }
+        })
+      end
+
+      unless process_target_live?(options.fetch(:pid))
+        raise Error, "PID #{options.fetch(:pid)} is not live; reservation remains pre-launch"
+      end
+
+      actual_pgid = Process.getpgid(options.fetch(:pid))
+      unless actual_pgid == options.fetch(:pgid)
+        raise Error, "PID #{options.fetch(:pid)} belongs to PGID #{actual_pgid}, not #{options.fetch(:pgid)}"
+      end
+      if reservation["intended_pid"] && reservation["intended_pid"] != options.fetch(:pid)
+        raise Error, "reservation intended PID #{reservation['intended_pid']}, not #{options.fetch(:pid)}"
+      end
+      if reservation["intended_pgid"] && reservation["intended_pgid"] != options.fetch(:pgid)
+        raise Error, "reservation intended PGID #{reservation['intended_pgid']}, not #{options.fetch(:pgid)}"
+      end
+
+      reservation["status"] = "bound"
+      reservation["pid"] = options.fetch(:pid)
+      reservation["pgid"] = options.fetch(:pgid)
+      reservation["bound_at"] = iso8601(now)
+      reservation["prelaunch_expires_at"] = reservation.delete("expires_at")
+      {
+        write: true,
+        report: {
+          "version" => VERSION,
+          "decision" => "bound",
+          "replayed" => false,
+          "reservation" => reservation,
+          "recovered_prelaunch_tokens" => recovered
+        }
+      }
+    end
+  rescue Errno::ESRCH
+    raise Error, "PID #{options.fetch(:pid)} terminated before its reservation could be bound"
+  end
+
+  def release(options)
+    Store.new(state_dir: options.fetch(:state_dir), host: options.fetch(:host)).locked_update do |state, now|
+      reservation = state.fetch("reservations").find do |candidate|
+        candidate["status"] == "bound" && candidate["launch_token"] == options.fetch(:launch_token)
+      end
+      unless reservation
+        next({
+          write: false,
+          report: {
+            "version" => VERSION,
+            "decision" => "denied",
+            "reason" => "no-bound-reservation",
+            "host" => options.fetch(:host),
+            "launch_token" => options.fetch(:launch_token)
+          }
+        })
+      end
+
+      if process_or_group_live?(reservation.fetch("pid"), reservation.fetch("pgid"))
+        raise Error, "PID #{reservation['pid']} or PGID #{reservation['pgid']} is still live; preserve it to natural terminal"
+      end
+
+      reservation["status"] = "released"
+      reservation["terminal_outcome"] = options.fetch(:terminal_outcome)
+      reservation["no_writer_cleanup"] = true
+      reservation["released_at"] = iso8601(now)
+      {
+        write: true,
+        report: { "version" => VERSION, "decision" => "released", "reservation" => reservation }
+      }
+    end
+  end
+
+  def positive_integer(value, option, maximum: nil)
+    integer = Integer(value, 10)
+    raise UsageError, "#{option} must be positive" unless integer.positive?
+    raise UsageError, "#{option} must be at most #{maximum}" if maximum && integer > maximum
+
+    integer
+  rescue ArgumentError, TypeError
+    raise UsageError, "#{option} must be a positive integer"
+  end
+
+  def parse_reserve(argv)
+    options = { ttl: DEFAULT_TTL, scan_timeout: DEFAULT_SCAN_TIMEOUT, json: false }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: heavy-root-admission reserve [options]"
+      opts.on("--state-dir PATH") { |value| options[:state_dir] = value }
+      opts.on("--host NAME") { |value| options[:host] = value }
+      opts.on("--owner OWNER") { |value| options[:owner] = value }
+      opts.on("--lane LANE") { |value| options[:lane] = value }
+      opts.on("--worktree PATH") { |value| options[:worktree] = value }
+      opts.on("--command-class CLASS") { |value| options[:command_class] = value }
+      opts.on("--launch-token TOKEN") { |value| options[:launch_token] = value }
+      opts.on("--intended-pid PID") { |value| options[:intended_pid] = positive_integer(value, "--intended-pid") }
+      opts.on("--intended-pgid PGID") { |value| options[:intended_pgid] = positive_integer(value, "--intended-pgid") }
+      opts.on("--ceiling COUNT") { |value| options[:ceiling] = positive_integer(value, "--ceiling") }
+      opts.on("--ttl SECONDS") { |value| options[:ttl] = positive_integer(value, "--ttl", maximum: MAX_TTL) }
+      opts.on("--scan-timeout SECONDS") do |value|
+        options[:scan_timeout] = positive_integer(value, "--scan-timeout", maximum: MAX_SCAN_TIMEOUT)
+      end
+      opts.on("--scan-command-json JSON") { |value| options[:scan_command_json] = value }
+      opts.on("--json") { options[:json] = true }
+      opts.on("-h", "--help") do
+        puts opts
+        exit 0
+      end
+    end
+    parser.parse!(argv)
+    raise UsageError, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+
+    required = %i[state_dir host owner lane worktree command_class launch_token ceiling scan_command_json]
+    required.each do |key|
+      raise UsageError, "--#{key.to_s.tr('_', '-')} is required" if options[key].to_s.strip.empty?
+    end
+    options[:host] = canonical_host(options.fetch(:host))
+    options
+  end
+
+  def parse_bind(argv)
+    options = { json: false }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: heavy-root-admission bind [options]"
+      opts.on("--state-dir PATH") { |value| options[:state_dir] = value }
+      opts.on("--host NAME") { |value| options[:host] = value }
+      opts.on("--launch-token TOKEN") { |value| options[:launch_token] = value }
+      opts.on("--pid PID") { |value| options[:pid] = positive_integer(value, "--pid") }
+      opts.on("--pgid PGID") { |value| options[:pgid] = positive_integer(value, "--pgid") }
+      opts.on("--json") { options[:json] = true }
+      opts.on("-h", "--help") do
+        puts opts
+        exit 0
+      end
+    end
+    parser.parse!(argv)
+    raise UsageError, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+
+    %i[state_dir host launch_token pid pgid].each do |key|
+      raise UsageError, "--#{key.to_s.tr('_', '-')} is required" if options[key].to_s.strip.empty?
+    end
+    options[:host] = canonical_host(options.fetch(:host))
+    options
+  end
+
+  def parse_release(argv)
+    options = { json: false, no_writer_cleanup: false }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: heavy-root-admission release [options]"
+      opts.on("--state-dir PATH") { |value| options[:state_dir] = value }
+      opts.on("--host NAME") { |value| options[:host] = value }
+      opts.on("--launch-token TOKEN") { |value| options[:launch_token] = value }
+      opts.on("--terminal-outcome OUTCOME") { |value| options[:terminal_outcome] = value }
+      opts.on("--no-writer-cleanup") { options[:no_writer_cleanup] = true }
+      opts.on("--json") { options[:json] = true }
+      opts.on("-h", "--help") do
+        puts opts
+        exit 0
+      end
+    end
+    parser.parse!(argv)
+    raise UsageError, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+
+    %i[state_dir host launch_token terminal_outcome].each do |key|
+      raise UsageError, "--#{key.to_s.tr('_', '-')} is required" if options[key].to_s.strip.empty?
+    end
+    raise UsageError, "--no-writer-cleanup is required before release" unless options[:no_writer_cleanup]
+
+    options[:host] = canonical_host(options.fetch(:host))
+    options
+  end
+
+  def emit(report, json:)
+    if json
+      puts JSON.generate(report)
+    elsif %w[reserved bound released].include?(report["decision"])
+      puts "#{report['decision'].upcase} #{report.dig('reservation', 'host')} " \
+           "#{report.dig('reservation', 'lane')} token=#{report.dig('reservation', 'launch_token')}"
+    else
+      puts "DENIED #{report['host']} reason=#{report['reason']}"
+      report.fetch("current_owners", []).each do |owner|
+        puts "- #{owner['lane']} (#{owner['owner']}; #{owner['command_class'] || 'heavy-root'})"
+      end
+      puts "Retry when: #{report['retry_when']}" if report["retry_when"]
+    end
+  end
+
+  def main(argv)
+    command = argv.shift
+    options, report = case command
+                      when "reserve"
+                        parsed = parse_reserve(argv)
+                        [parsed, reserve(parsed)]
+                      when "bind"
+                        parsed = parse_bind(argv)
+                        [parsed, bind(parsed)]
+                      when "release"
+                        parsed = parse_release(argv)
+                        [parsed, release(parsed)]
+                      else
+                        raise UsageError, "expected command: reserve, bind, or release"
+                      end
+    emit(report, json: options.fetch(:json))
+    %w[reserved bound released].include?(report["decision"]) ? 0 : 3
+  rescue OptionParser::ParseError, UsageError => e
+    warn "USAGE: #{e.message}"
+    64
+  rescue Error => e
+    warn "BLOCKED: #{e.message}"
+    1
+  end
+end
+
+exit HeavyRootAdmission.main(ARGV) if $PROGRAM_NAME == __FILE__
