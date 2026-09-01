@@ -190,13 +190,20 @@ module ConfiguredReviewGate
       unless reviewed_base_sha.to_s.casecmp?(bindings.fetch("base_sha").to_s)
         bindings["reviewed_base_sha"] = reviewed_base_sha
       end
-      checks = collect_checks(
-        bindings.fetch("head_sha"), bindings.fetch("base_sha"), reviewed_base_sha
-      )
-      artifacts = collect_artifacts
-      threads, threads_complete, thread_artifacts = collect_threads(bindings.fetch("head_sha"))
-      artifacts.concat(thread_artifacts)
-      artifacts.sort_by! { |artifact| [artifact["kind"], artifact["id"].to_s] }
+      if @policy == "n/a"
+        checks = []
+        artifacts = []
+        threads = []
+        threads_complete = true
+      else
+        checks = collect_checks(
+          bindings.fetch("head_sha"), bindings.fetch("base_sha"), reviewed_base_sha
+        )
+        artifacts = collect_artifacts
+        threads, threads_complete, thread_artifacts = collect_threads(bindings.fetch("head_sha"))
+        artifacts.concat(thread_artifacts)
+        artifacts.sort_by! { |artifact| [artifact["kind"], artifact["id"].to_s] }
+      end
       {
         "contract" => SNAPSHOT_CONTRACT,
         "version" => VERSION,
@@ -1165,7 +1172,6 @@ module ConfiguredReviewGate
   end
 
   def thread_blockers(policy, snapshot)
-    head_sha = snapshot.dig("bindings", "head_sha")
     marker = policy.dig("thread_disposition", "marker")
     snapshot.fetch("threads").filter_map do |thread|
       next if thread["resolved"] == true || thread["outdated"] == true
@@ -1176,7 +1182,6 @@ module ConfiguredReviewGate
           "thread_id" => thread["id"], "url" => thread["url"]
         )
       end
-      next unless root_head.to_s.casecmp?(head_sha.to_s)
       next if explicitly_disposed_thread?(thread, marker)
 
       blocker("configured-review-thread-untriaged", nil, nil, "unresolved").merge(

@@ -32,6 +32,8 @@ class ConfiguredReviewGateTest < Minitest::Test
   end
 
   class FakeGitHubApiClient < ConfiguredReviewGate::GitHubClient
+    attr_reader :api_arguments
+
     # This API fixture deliberately bypasses the production initializer's system-tool resolution.
     # rubocop:disable Lint/MissingSuper
     def initialize(
@@ -56,12 +58,14 @@ class ConfiguredReviewGateTest < Minitest::Test
         "head_sha" => HEAD_SHA,
         "pull_requests" => [{ "number" => PR, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }]
       }]
+      @api_arguments = []
     end
     # rubocop:enable Lint/MissingSuper
 
     private
 
     def api_json(*arguments)
+      @api_arguments << arguments
       endpoint = arguments.find { |argument| argument.start_with?("repos/") }
       return pull_response if endpoint == "repos/#{REPO}/pulls/#{PR}"
       return [{ "check_runs" => @checks }] if endpoint&.include?("/check-runs?")
@@ -291,6 +295,18 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal snapshot.fetch("bindings"), receipt.fetch("bindings")
     assert_equal true, receipt.dig("policy", "not_applicable")
     assert_equal false, receipt.fetch("mutation_eligible")
+  end
+
+  def test_live_collector_for_n_a_queries_only_pull_request_bindings
+    client = FakeGitHubApiClient.new(policy: "n/a", threads: [])
+
+    collected = client.collect
+
+    assert_equal [["repos/#{REPO}/pulls/#{PR}"]], client.api_arguments
+    assert_empty collected.fetch("checks")
+    assert_empty collected.fetch("artifacts")
+    assert_empty collected.fetch("threads")
+    assert_equal true, collected.fetch("complete")
   end
 
   def test_trusted_policy_loader_rejects_duplicate_top_level_review_gate
@@ -994,6 +1010,23 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal(5, blockers.count { |blocker| blocker.fetch("code") == "configured-review-thread-untriaged" })
     assert_equal(threads.map { |item| item.fetch("id") }, blockers.map { |blocker| blocker.fetch("thread_id") })
     refute result.key?("receipt")
+  end
+
+  def test_non_outdated_thread_from_a_prior_head_still_blocks
+    result = ConfiguredReviewGate.evaluate(
+      policy:,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot(
+        "checks" => [check],
+        "artifacts" => [artifact(kind: "review_thread")],
+        "threads" => [thread(id: "T-prior", head_sha: "c" * 40)]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-thread-untriaged", result.dig("blockers", 0, "code")
   end
 
   def test_explicit_trusted_thread_dispositions_satisfy_the_gate
