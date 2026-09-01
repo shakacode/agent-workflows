@@ -124,7 +124,7 @@ surface and therefore cannot use this fallback.
 
 ## Batch Coordination Declaration
 
-Every final batch handoff must carry exactly one
+Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
 with the coordination backend, and quote the exact backend batch id. Otherwise
