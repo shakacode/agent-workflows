@@ -26,15 +26,20 @@ def normalize_prose(text)
 end
 
 # Mirrors GitHub's heading-to-anchor slug: lowercase, drop anything that is
-# not a word character/space/hyphen, then collapse spaces to hyphens.
+# not a word character/space/hyphen, collapse spaces to hyphens, then
+# disambiguate repeated headings on the same page with a `-1`, `-2`, ...
+# suffix the same way GitHub does.
 def heading_slugs(text)
+  seen = Hash.new(0)
   text.each_line.filter_map do |line|
     match = line.match(/^#+[[:blank:]]+(.+?)[[:blank:]]*$/)
     next unless match
 
     heading = match[1].gsub(/`([^`]*)`/, '\1')
-    slug = heading.downcase.gsub(/[^\w\- ]/, "").strip.gsub(/\s+/, "-")
-    slug
+    base_slug = heading.downcase.gsub(/[^\w\- ]/, "").strip.gsub(/\s+/, "-")
+    count = seen[base_slug]
+    seen[base_slug] += 1
+    count.zero? ? base_slug : "#{base_slug}-#{count}"
   end
 end
 
@@ -83,6 +88,11 @@ class AttendedAndOvernightWorkflowContractTest < Minitest::Test
   end
 
   # --- Behavioral promises: composition, not a second rulebook --------------
+  #
+  # These assert on short key phrases rather than full sentences (see
+  # `test_overrides_stay_bounded_by_the_full_gate_list` for the template), but
+  # a phrase is still exact text: a copyedit of the doc that keeps the same
+  # guarantee in different words must update the matching phrase here too.
 
   def test_the_guide_declares_it_does_not_replace_other_contracts_rules
     prose = normalize_prose(@doc)
@@ -93,6 +103,10 @@ class AttendedAndOvernightWorkflowContractTest < Minitest::Test
     end
   end
 
+  # Mirrors the non-safety-override boundary in
+  # workflows/pr-processing.md#dependency-and-conflict-throughput-policy,
+  # which also forbids bypassing a correctness check, merge authority,
+  # security, production, release, or destructive-action gate.
   def test_overrides_stay_bounded_by_the_full_gate_list
     required_gates = [
       "repository policy",
@@ -101,6 +115,8 @@ class AttendedAndOvernightWorkflowContractTest < Minitest::Test
       "validation",
       "review",
       "merge authority",
+      "a production, release, or",
+      "destructive-action gate",
       "a failing correctness check",
       "a required human decision"
     ]

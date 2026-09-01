@@ -26,7 +26,7 @@ tune a threshold.
 | --- | --- | --- |
 | Set the window | Record the two operator inputs: concurrent task target and next availability. Derive `attended` mode from `available now`; otherwise use `overnight`. Record later plain-language overrides separately. Refresh the authorized task list and current dependencies before launch. | One current operator card with both inputs, the derived mode, and any overrides, plus a ready-task list. |
 | Classify the portfolio | Once per attended session and before every unattended launch wave, refresh current `main` or base, every open PR head, every active task handoff or workflow evidence, and dependency state. For each item, record its next authorized action in plain language from that live state, value, explicit dependencies, conflicts, remaining work, and expected integration cost. | One current combined portfolio view that identifies each item's next authorized action and informs the next launch wave and integration order. |
-| Fill ready slots | While the running-task count is below the target and a host or service slot is available, start the highest-priority authorized, dependency-ready task. Keep its exact issue or PR link and durable handoff or current workflow evidence available. When the selected workflow defines a run-record contract, use it; otherwise, do not invent a second format. | Running-task count reaches the target when capacity provides enough active slots, without losing task-to-PR traceability. |
+| Fill ready slots | While the running-task count is below the target and a host or service slot is available, start the highest-priority authorized, dependency-ready task. Keep its exact issue or PR link when the target has a GitHub work-item surface, or its existing durable plan or backend destination for a wholly non-GitHub trusted-ad-hoc run, plus durable handoff or current workflow evidence available. When the selected workflow defines a run-record contract, use it; otherwise, do not invent a second format. | Running-task count reaches the target when capacity provides enough active slots, without losing task-to-destination traceability. |
 | Attend | Keep ready slots filled while maintaining a queue of meaningful decisions. Present only the next-highest-priority question; routine status, mechanical retries, and safe local choices stay out of the queue. | One exact question for the operator and a durable queue behind it. |
 | Run overnight | Before the operator leaves, prefer work with deterministic done checks and no expected human decision. Record the next check or wake for each nonterminal run, and prepare every conceptual section of likely PR walkthroughs in advance. | Independent work can finish or reach an honest blocked state without waiting for routine input. |
 | Wait on a dependency | Complete independent preparation, then checkpoint the task and record the exact dependency or blocker. For an external blocker with an exact future retry time, use one same-thread heartbeat only when the blocker can clear without input, the checkpoint is durable, the host can inspect, update, and stop the schedule, and automatic follow-ups remain enabled. If any heartbeat condition fails, create no automation and preserve exact manual-resume instructions. For a separately eligible autonomously clearable state-change blocker, use a deterministic watcher or bounded-backoff fallback. A task waiting for human input gets no monitor. If the slot can be released, fill it with the next ready task; otherwise record that it remains occupied. | Waiting is visible, dependency-aware, bounded, and does not cause noisy polling or fictitious capacity. |
@@ -71,9 +71,10 @@ These routine overrides may change capacity, timing, ordering, holds, or an
 optional presentation choice. A [named non-safety coordination override](../workflows/pr-processing.md#dependency-and-conflict-throughput-policy)
 may also set aside a specifically evidenced stale or broken bookkeeping or
 coordination stop. Record the override name and durable reason or evidence in
-the affected task or run record; a missing or `UNKNOWN` reason or evidence is
-not an override. When telemetry is unavailable, preserve each unobservable
-value as `UNKNOWN`; unavailable telemetry alone does not block launch.
+every task, run record, or batch and lane record it affects; a missing or
+`UNKNOWN` reason or evidence is not an override. When telemetry is
+unavailable, preserve each unobservable value as `UNKNOWN`; unavailable
+telemetry alone does not block launch.
 After the [canonical launch target gate](../workflows/pr-batch-intake.md#canonical-launch-target-gate)
 accepts an issue, PR, or complete trusted durable ad-hoc override, use the issue
 or PR URL when the target has a GitHub work-item surface; a wholly non-GitHub
@@ -85,8 +86,9 @@ phase-transition heartbeats and preserved degraded-status evidence. An unbound
 direct prompt stops for planning or reconciliation. A refused claim stops the
 run; a timed-out or otherwise unknown claim outcome stops for reconciliation.
 Overrides do not bypass repository policy, trust or security checks, dependency
-gates, validation, review, merge authority, a failing correctness check, or a
-required human decision.
+gates, validation, review, merge authority, a production, release, or
+destructive-action gate, a failing correctness check, or a required human
+decision.
 
 ## Use The Canonical Details
 
