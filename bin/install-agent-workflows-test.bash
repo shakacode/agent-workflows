@@ -4629,6 +4629,27 @@ test_copy_metadata_records_autonomous_merge_runtime_manifest_digest() {
     fail "recorded installation digest did not satisfy installed-pack helper trust"
 }
 
+test_incomplete_runtime_closure_installs_without_a_runtime_manifest_digest() {
+  local tmp source target recorded
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  rm -f "$source/bin/agent_doctor/autonomous_merge_policy_yaml.rb"
+  git -C "$source" add -A
+  git -C "$source" commit --quiet -m "drop a runtime closure member"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+
+  [[ -f "$target/LICENSE" ]] || fail "incomplete runtime closure blocked the install"
+  recorded="$(jq -r '.managed_runtime_manifest_digests | length' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" = "0" ]] || \
+    fail "incomplete runtime closure recorded a runtime manifest digest: $recorded"
+}
+
 test_symlink_metadata_omits_runtime_manifest_digests() {
   local tmp source target recorded
   tmp="$(mktemp -d)"
@@ -8759,6 +8780,7 @@ main() {
     test_upgrade_validates_consumer_root_after_install
     test_copy_metadata_records_autonomous_merge_runtime_manifest_digest
     test_symlink_metadata_omits_runtime_manifest_digests
+    test_incomplete_runtime_closure_installs_without_a_runtime_manifest_digest
     test_invalid_runtime_manifest_digest_entry_fails_before_managed_mutation
   )
 

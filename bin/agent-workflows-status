@@ -78,6 +78,9 @@ module AgentWorkflowsStatus
 
   def read_metadata(target)
     path = metadata_path(target)
+    # Installation state is the trusted source for verified-installed-pack digests, so refuse
+    # a redirected metadata path the way the installer refuses to read or write through one.
+    raise "invalid metadata #{path}: refusing to follow a symlink" if File.symlink?(path)
     return nil unless File.file?(path)
 
     metadata = JSON.parse(File.binread(path).force_encoding("UTF-8").scrub)

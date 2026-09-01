@@ -476,12 +476,19 @@ runtime closure and the shipped calibration decision. Supply it as the
 running that gate from an installed pack:
 
 ```bash
-agent-workflows-status --host claude --json |
-  jq -r '.runtime_manifest_digests["autonomous-merge"]'
+status="$(agent-workflows-status --host claude --json)" || true
+digest="$(printf '%s' "$status" |
+  jq -r '.runtime_manifest_digests["autonomous-merge"] // empty')"
+[ -n "$digest" ] || echo "this install records no autonomous-merge digest" >&2
 ```
 
-Reading the value straight out of `<target>/.agent-workflows-install.json` is
-equivalent. Symlink installs and plugin-companion installs record no runtime
+Do not put `agent-workflows-status` directly in a pipeline under `set -o
+pipefail`: it exits non-zero for `UPGRADE_AVAILABLE` and `NOT_INSTALLED`, and an
+install with an upgrade available still carries a usable digest. Keep the `//
+empty` guard as well, so an install that records no digest yields an empty
+string rather than the literal `null`. Reading the value straight out of
+`<target>/.agent-workflows-install.json` is equivalent; the status helper
+refuses to read that path through a symlink, as the installer does. Symlink installs and plugin-companion installs record no runtime
 manifest digests, because neither installs the complete flat runtime closure the
 digest describes; use a trusted-base materialization there. Installs made before
 this key existed omit it, and the gate keeps failing closed until the pack is

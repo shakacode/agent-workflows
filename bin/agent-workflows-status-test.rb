@@ -284,6 +284,33 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_symlinked_install_metadata_is_check_failed
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        elsewhere = File.join(source, "elsewhere.json")
+        File.write(
+          elsewhere,
+          "#{JSON.pretty_generate(
+            'version' => '9.9.9',
+            'source' => source,
+            'source_revision' => '',
+            'managed_runtime_manifest_digests' => { 'autonomous-merge' => 'a' * 64 }
+          )}\n"
+        )
+        File.symlink(elsewhere, File.join(target, ".agent-workflows-install.json"))
+
+        out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 3, status.exitstatus, out
+        assert_equal "CHECK_FAILED", payload.fetch("status")
+        assert_includes payload.fetch("reason"), "refusing to follow a symlink"
+        assert_nil payload.fetch("runtime_manifest_digests")
+      end
+    end
+  end
+
   def test_companion_status_reports_delivery_and_native_state
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|

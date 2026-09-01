@@ -34,8 +34,9 @@ Installed paths:
   <target>/bin/upgrade-agent-workflows
   <target>/lib/agent-workflows/secure_github_actions_scanner.rb (plugin-companion mode only)
   <target>/.agent-workflows-install.json
-    Flat copy installs record managed_runtime_manifest_digests["autonomous-merge"],
-    the expected verified-installed-pack digest for the autonomous-merge runtime.
+    A flat copy install with a complete autonomous-merge runtime closure records
+    managed_runtime_manifest_digests["autonomous-merge"], the expected
+    verified-installed-pack digest for that runtime.
 USAGE
 }
 
@@ -1924,23 +1925,23 @@ prepare_metadata() {
                        else
                          {}
                        end
-    runtime_manifest_digests = if mode == "copy" && delivery_mode == "flat"
-                                 trust_library = File.join(
-                                   source, "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb"
-                                 )
-                                 unless File.file?(trust_library) && !File.symlink?(trust_library)
-                                   abort "missing autonomous-merge runtime trust library while preparing install metadata: #{trust_library}"
-                                 end
+    # An incomplete or unreadable runtime closure records nothing rather than blocking the
+    # install or publishing a digest for a partial pack. The gate then stays unsatisfiable,
+    # which is the same fail-closed outcome as an install predating this key.
+    autonomous_merge_digest = lambda do
+      library = File.join(source, "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb")
+      return nil unless File.file?(library) && !File.symlink?(library)
 
-                                 load trust_library
-                                 begin
-                                   { "autonomous-merge" => AutonomousMergeRuntimeTrust.default_installed_pack_digest }
-                                 rescue SystemCallError => e
-                                   abort "incomplete autonomous-merge runtime while preparing install metadata: #{e.message}"
-                                 end
-                               else
-                                 {}
-                               end
+      load library
+      AutonomousMergeRuntimeTrust.default_installed_pack_digest
+    rescue StandardError
+      nil
+    end
+    runtime_manifest_digests = {}
+    if mode == "copy" && delivery_mode == "flat"
+      recorded_digest = autonomous_merge_digest.call
+      runtime_manifest_digests["autonomous-merge"] = recorded_digest if recorded_digest
+    end
     root_fingerprints = if mode == "copy"
                           name = "THIRD_PARTY-NOTICES.md"
                           root_file = File.join(source, name)
