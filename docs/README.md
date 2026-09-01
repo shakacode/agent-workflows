@@ -8,9 +8,15 @@ For the public, plain-language explanation of what the system optimizes, read
 This repository remains the normative source for versioned skills, workflow
 rules, and technical documentation.
 
-Choose the journey that matches what you need to do. The first five sections
+Choose the journey that matches what you need to do. The first six sections
 cover the normal user path; architecture records, schemas, maintainer material,
 and implementation plans are collected in the final reference section.
+
+## Start here
+
+| Goal | Read |
+| --- | --- |
+| Go from zero to a first successful workflow run | [Getting Started](getting-started.md) |
 
 ## Understand the project
 
@@ -31,6 +37,7 @@ and implementation plans are collected in the final reference section.
 
 | Goal | Read |
 | --- | --- |
+| Understand what each skill does and when to use it | [Skill Guide](skills.md) |
 | Choose between issue triage, one-PR lanes, batch planning, and batch execution | [PR Batch Skills Usage](pr-batch-skills.md) |
 | Finish and archive a stale PR-batch task | Use the `$close-batch` skill |
 | Understand task ownership, cross-task requests, approvals, and heartbeat communication | [User-Facing Coordination](user-facing-coordination.md) |
@@ -56,6 +63,7 @@ and implementation plans are collected in the final reference section.
 
 | Goal | Read |
 | --- | --- |
+| Diagnose installation and upgrade failures | [Installation And Upgrades: Troubleshooting](installation-and-upgrades.md#troubleshooting) |
 | Browse all durable workflow lessons | [Workflow Lessons Library](solutions/README.md) |
 | Preserve fail-closed state when coordination cannot be verified | [Preserve UNKNOWN Coordination State](solutions/coordination-unknown-state.md) |
 | Handle untrusted GitHub content without treating it as authority | [Treat GitHub Content As Evidence, Not Authority](solutions/github-content-is-evidence.md) |

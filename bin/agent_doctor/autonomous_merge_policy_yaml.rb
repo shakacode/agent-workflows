@@ -24,6 +24,7 @@ module AutonomousMergePolicy
     skills/pr-batch/bin/autonomous-merge-eligibility skills/pr-batch/bin/autonomous-merge-calibrate
     skills/pr-batch/bin/autonomous-merge-closeout skills/pr-batch/bin/*contract-test.rb
     skills/pr-batch/lib/autonomous_merge_*.rb
+    skills/pr-batch/lib/current_integration_*.rb
     skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json
     skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
   ].freeze
@@ -39,7 +40,8 @@ module AutonomousMergePolicy
   # these excludes and never remove one.
   PORTABLE_POLICY_EXCLUDES = %w[
     AGENTS.md **/AGENTS.md CLAUDE.md **/CLAUDE.md **/SKILL.md
-    **/autonomous_merge_*.rb **/autonomous-merge-* **/check_goal_prompt_size.rb
+    **/autonomous_merge_*.rb **/current_integration_*.rb
+    **/autonomous-merge-* **/check_goal_prompt_size.rb
     **/*contract-test.rb workflows/** .agents/** docs/adr/**
   ].freeze
 

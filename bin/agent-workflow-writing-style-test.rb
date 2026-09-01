@@ -9,6 +9,7 @@ require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflow-writing-style", __dir__)
 DEFAULT_GUIDE = File.expand_path("../docs/writing-style.md", __dir__)
+ASD_STE100_GUIDE = File.expand_path("../docs/writing-style-asd-ste100.md", __dir__)
 
 class AgentWorkflowWritingStyleTest < Minitest::Test
   def run_resolver(repo_root:, home:, script: SCRIPT)
@@ -128,6 +129,105 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
     end
   end
 
+  def test_repository_asd_ste100_preset_resolves_the_packaged_guide
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      Dir.mkdir(home)
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: asd-ste100\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "repo", result.fetch("provenance")
+      assert_equal File.read(ASD_STE100_GUIDE, encoding: "UTF-8").strip, result.fetch("guide")
+      assert_equal [], result.fetch("warnings")
+      assert_empty stderr
+    end
+  end
+
+  def test_repository_guide_path_overrides_a_user_global_preset
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(repo_root, "docs"))
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.write(File.join(repo_root, "docs", "writing-style.md"), "Repository style wins.\n")
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/writing-style.md\n"
+      )
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style: asd-ste100\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "repo", result.fetch("provenance")
+      assert_equal "Repository style wins.", result.fetch("guide")
+      assert_equal [], result.fetch("warnings")
+      assert_empty stderr
+    end
+  end
+
+  def test_repository_preset_overrides_a_user_global_guide_path
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      FileUtils.mkdir_p(File.join(home, ".agents", "docs"))
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: asd-ste100\n"
+      )
+      File.write(File.join(home, ".agents", "docs", "personal.md"), "Personal style must not load.\n")
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style: docs/personal.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "repo", result.fetch("provenance")
+      assert_equal File.read(ASD_STE100_GUIDE, encoding: "UTF-8").strip, result.fetch("guide")
+      refute_includes result.fetch("guide"), "Personal style must not load"
+      assert_equal [], result.fetch("warnings")
+      assert_empty stderr
+    end
+  end
+
+  def test_repository_unknown_preset_fails_with_closed_registry_guidance
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      Dir.mkdir(home)
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: asd-ste101\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style preset"
+      assert_includes stderr, 'unknown preset "asd-ste101"'
+      assert_includes stderr, "known presets: asd-ste100"
+    end
+  end
+
   def test_repository_guide_rejects_an_absolute_path
     Dir.mktmpdir do |directory|
       repo_root = File.join(directory, "repo")
@@ -148,6 +248,47 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       assert_includes stderr, "invalid repository writing_style"
       assert_includes stderr, "expected a nonblank relative Markdown-file path"
       refute_includes stderr, "Outside style must not load"
+    end
+  end
+
+  def test_repository_guide_rejects_an_https_url_as_an_unsupported_uri_reference
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      Dir.mkdir(home)
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: https://www.asd-ste100.org/\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "invalid repository writing_style"
+      assert_includes stderr, "remote URLs/URI references are unsupported"
+      assert_includes stderr, "trusted local relative Markdown-file path is required"
+    end
+  end
+
+  def test_repository_guide_rejects_a_file_uri_reference
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      Dir.mkdir(home)
+      File.write(
+        File.join(repo_root, ".agents", "agent-workflow.yml"),
+        "writing_style: file:docs/writing-style.md\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "remote URLs/URI references are unsupported"
+      assert_includes stderr, "trusted local relative Markdown-file path is required"
     end
   end
 
@@ -428,6 +569,77 @@ class AgentWorkflowWritingStyleTest < Minitest::Test
       assert_equal File.read(DEFAULT_GUIDE, encoding: "UTF-8").strip, result.fetch("guide")
       assert_equal 1, result.fetch("warnings").length
       assert_includes stderr, "invalid user-global writing_style file"
+      assert_includes stderr, "using portable default"
+    end
+  end
+
+  def test_user_global_asd_ste100_preset_resolves_the_packaged_guide
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      Dir.mkdir(repo_root)
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style: asd-ste100\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "user-global", result.fetch("provenance")
+      assert_equal File.read(ASD_STE100_GUIDE, encoding: "UTF-8").strip, result.fetch("guide")
+      assert_equal [], result.fetch("warnings")
+      assert_empty stderr
+    end
+  end
+
+  def test_user_global_unknown_preset_warns_and_uses_the_packaged_default
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      Dir.mkdir(repo_root)
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style: asd-ste101\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "portable-default", result.fetch("provenance")
+      assert_equal File.read(DEFAULT_GUIDE, encoding: "UTF-8").strip, result.fetch("guide")
+      assert_equal 1, result.fetch("warnings").length
+      assert_includes stderr, "WARNING: invalid user-global writing_style preset"
+      assert_includes stderr, 'unknown preset "asd-ste101"'
+      assert_includes stderr, "using portable default"
+    end
+  end
+
+  def test_user_global_url_warns_and_uses_the_packaged_default
+    Dir.mktmpdir do |directory|
+      repo_root = File.join(directory, "repo")
+      home = File.join(directory, "home")
+      Dir.mkdir(repo_root)
+      FileUtils.mkdir_p(File.join(home, ".agents"))
+      File.write(
+        File.join(home, ".agents", "agent-workflow.yml"),
+        "writing_style: https://www.asd-ste100.org/\n"
+      )
+
+      stdout, stderr, status = run_resolver(repo_root:, home:)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "portable-default", result.fetch("provenance")
+      assert_equal File.read(DEFAULT_GUIDE, encoding: "UTF-8").strip, result.fetch("guide")
+      assert_equal 1, result.fetch("warnings").length
+      assert_includes stderr, "WARNING: invalid user-global writing_style"
+      assert_includes stderr, "remote URLs/URI references are unsupported"
+      assert_includes stderr, "trusted local relative Markdown-file path is required"
       assert_includes stderr, "using portable default"
     end
   end
