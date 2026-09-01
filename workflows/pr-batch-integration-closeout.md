@@ -1581,12 +1581,9 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 ### Ask Merge Authority Walkthrough Gate
 
 Before entering this gate, establish current-integration readiness from trusted
-live facts. Resolve the exact head and current base. Require either:
-
-- the exact head contains the current base and exact-head CI has a normalized
-  successful state; or
-- a provider-produced merge-result or merge-group result bound to that head and
-  base has normalized successful CI.
+live facts. Resolve the exact head and current base. Require that the exact head
+contains the current base and that the exact-head `pr-ci-readiness` v2 result has
+the normalized successful state `READY`.
 
 This sequencing checklist neither defines an evidence schema nor replaces the
 later [Merge Assurance Gate](#merge-assurance-gate). Do not claim or consume its
@@ -1597,10 +1594,9 @@ non-successful, unrecognized, future, or `UNKNOWN` facts keep the target in
 MERGE-READY.** and do not start the walkthrough. GitHub's conflict or
 mergeability status is not CI evidence.
 
-In compact goals, `NCI?` requires runtime evaluation of this normalized
-current-integration CI checklist; it never asserts success. The adjacent
-`gate fail=>stop` and `ask iff same clean` clauses make every non-passing or
-`UNKNOWN` result wait without a walkthrough.
+Compact goals encode that checklist inline: `head>=base+CI=READY` means both
+ancestry and the normalized `pr-ci-readiness` result must pass. Every other
+result waits without a walkthrough.
 
 When `merge_authority` is `ask` and every ordinary gate is clean,
 automatically start the exact-diff PR walkthrough before asking for merge

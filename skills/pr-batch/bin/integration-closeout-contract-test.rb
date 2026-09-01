@@ -268,7 +268,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     normalized_gate = ask_gate.gsub(/\s+/, " ")
     normalized_monitoring = @pr_monitoring.gsub(/\s+/, " ")
     normalized_walkthrough = @pr_walkthrough.gsub(/\s+/, " ")
-    prompt_gate = "NCI?"
+    prompt_gate = "head>=base+CI=READY"
 
     positions = [
       "Before entering this gate",
@@ -286,20 +286,17 @@ class IntegrationCloseoutContractTest < Minitest::Test
     positions.each_cons(2) { |before, after| assert_operator before, :<, after }
 
     assert_includes ask_gate, "[Merge Assurance Gate](#merge-assurance-gate)"
-    assert_includes ask_gate, "provider-produced merge-result or merge-group result"
+    refute_includes ask_gate, "provider-produced merge-result or merge-group result"
     assert_includes normalized_gate,
                     "Do not claim or consume its machine `current-integration-evidence` here."
     assert_includes normalized_gate,
-                    "`NCI?` requires runtime evaluation of this normalized current-integration CI checklist"
-    assert_includes normalized_gate, "it never asserts success."
-    assert_includes normalized_gate,
-                    "every non-passing or `UNKNOWN` result wait without a walkthrough"
+                    "`head>=base+CI=READY` means both ancestry and the normalized `pr-ci-readiness` result must pass."
+    assert_includes normalized_gate, "Every other result waits without a walkthrough."
     refute_match(/\bPASSED\b/, ask_gate)
-    assert_includes normalized_monitoring, "Provider-specific status strings are inputs to normalization"
+    assert_includes normalized_monitoring, "Raw provider status strings"
     assert_includes normalized_monitoring,
                     "future, or `UNKNOWN` facts remain `waiting-on-checks-or-review` and do not start a walkthrough."
-    assert_includes normalized_monitoring,
-                    "A behind branch remains not ready unless the current-integration gate below passes through an explicit provider merge-result or merge-group result bound to the exact head and current base with normalized successful CI."
+    assert_includes normalized_monitoring, "`DIRTY`, conflicted, or behind branches are not ready."
     assert_includes normalized_walkthrough,
                     "Do not infer success from a provider-specific status string or GitHub conflict/mergeability metadata"
 

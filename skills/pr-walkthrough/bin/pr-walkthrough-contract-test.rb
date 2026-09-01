@@ -94,14 +94,15 @@ class PrWalkthroughContractTest < Minitest::Test
     end
     positions.each_cons(2) { |before, after| assert_operator before, :<, after }
     assert_includes monitoring, "resolve the exact head and current base"
-    assert_includes monitoring, "provider merge-result or merge-group result"
-    assert_includes monitoring, "normalized successful CI"
+    assert_includes monitoring,
+                    "exact-head CI has normalized successful state `READY` under `pr-ci-readiness` v2"
+    assert_includes monitoring, "normalized successful state `READY`"
     assert_includes monitoring, "`waiting-on-checks-or-review`"
     assert_includes monitoring,
                     "does not claim or consume the later machine `current-integration-evidence` contract"
 
     assert_includes skill,
-                    "Start only when the recorded head contains the current base with normalized successful exact-head CI"
+                    "Start only when the recorded head contains the current base and exact-head `pr-ci-readiness` v2 reports `READY`"
     assert_includes skill,
                     "do not claim the later machine `current-integration-evidence` contract"
     assert_includes skill,

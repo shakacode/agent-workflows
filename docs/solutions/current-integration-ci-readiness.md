@@ -27,12 +27,10 @@ Instead, it uses a trusted live checklist before spending the maintainer's time
 on an interactive walkthrough. This early check sequences the workflow; it does
 not define another evidence schema or replace final replay.
 
-Resolve the exact head and current base. Require either that the head contains
-that base with exact-head CI in the readiness contract's normalized successful
-state (`READY` for `pr-ci-readiness` v2), or that an explicit provider-produced
-merge result binds the pair to normalized successful CI. Raw provider
-conclusions are inputs to normalization, not portable success values. Unknown
-or future values fail closed.
+Resolve the exact head and current base. Require that the head contains that
+base and that exact-head CI has the readiness contract's normalized successful
+state (`READY` for `pr-ci-readiness` v2). Raw provider conclusions are not
+portable success values. Unknown or future values fail closed.
 
 If either condition is missing, stale, non-reusable, mismatched, or not
 successful, keep the target in `waiting-on-checks-or-review` and do not start an

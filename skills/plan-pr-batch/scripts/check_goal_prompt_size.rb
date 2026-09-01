@@ -267,8 +267,8 @@ TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
 GOAL_PROMPT_FALLBACK_LINE =
   "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
   "persist output before resume/launch; preflight issue/PR only."
-ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
-                              "chg=>redo/stop;gate fail=>stop;ask iff same clean"
+ASK_WALKTHROUGH_PROMPT_LINE = "- ask iff head>=base+CI=READY;else wait;then $pr-walkthrough;" \
+                              "large|complex full;refresh;chg=>redo/stop"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
 READY_ITEM_DONE_WHEN_LINE =
   "Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale."

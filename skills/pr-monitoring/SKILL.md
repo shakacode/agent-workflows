@@ -141,22 +141,18 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
      review wave runs, but prefer one combined push after consolidated triage.
    - Do not preserve a failing head solely to finish its review wave. If a
      required validation fix is ready, push it and restart both cohorts.
-   - `DIRTY` or conflicted branches are not ready. A behind branch remains not
-     ready unless the current-integration gate below passes through an explicit
-     provider merge-result or merge-group result bound to the exact head and
-     current base with normalized successful CI.
+   - `DIRTY`, conflicted, or behind branches are not ready.
    - Rebase or merge base updates only when safe and consistent with repo
      policy.
    - Before an `ask` walkthrough, apply the canonical current-integration gate
      from `pr-batch-integration-closeout.md`: resolve the exact head and current
-     base, then require either that the head contains that base with normalized
-     successful exact-head CI (`READY` for `pr-ci-readiness` v2), or an explicit
-     provider merge-result or merge-group result bound to that head/base pair
-     with normalized successful CI. This checklist does not claim or consume
-     the later machine `current-integration-evidence` contract.
-     Provider-specific status strings are inputs to normalization, not portable
-     success values. Missing, stale, mismatched, non-successful, unrecognized,
-     future, or `UNKNOWN` facts remain
+     base, then require that the head contains that base and that exact-head CI
+     has normalized successful state `READY` under `pr-ci-readiness` v2. This
+     checklist does not claim or
+     consume the later machine `current-integration-evidence` contract. Raw
+     provider status strings and GitHub conflict or mergeability metadata are
+     not portable success values. Missing, stale, mismatched, non-successful,
+     unrecognized, future, or `UNKNOWN` facts remain
      `waiting-on-checks-or-review` and do not start a walkthrough.
 
 5. **Apply authority.**

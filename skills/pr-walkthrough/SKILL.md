@@ -31,11 +31,10 @@ responsibility to a worker, external task, or automation.
    freshness.
 4. When invoked by an `ask` merge-authority workflow, consume its current-
    integration checklist result before beginning. Start only when the recorded
-   head contains the current base with normalized successful exact-head CI, or
-   an explicit provider merge-result or merge-group result binds that exact
-   head/base pair to normalized successful CI. Do not infer success from a
-   provider-specific status string or GitHub conflict/mergeability metadata,
-   and do not claim the later machine `current-integration-evidence` contract.
+   head contains the current base and exact-head `pr-ci-readiness` v2 reports
+   `READY`. Do not infer success from a provider-specific status string or
+   GitHub conflict/mergeability metadata, and do not claim the later machine
+   `current-integration-evidence` contract.
    Missing, stale, mismatched, non-successful, unrecognized, future, or
    `UNKNOWN` facts return control to the caller as
    `waiting-on-checks-or-review` without starting the walkthrough.
