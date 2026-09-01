@@ -8,7 +8,8 @@ base_branch: main
 # repo_prefix: "APP"
 # Optional project writing guide. First create docs/writing-style.md in this
 # project, then uncomment the key. The path is relative to the project root and
-# overrides an optional ~/.agents/agent-workflow.yml personal fallback.
+# overrides an optional ~/.agents/agent-workflow.yml personal fallback. URLs
+# and URI references are unsupported; resolution never fetches remote content.
 # writing_style: docs/writing-style.md
 follow_up_prefix: "Follow-up:"
 review_gate: "n/a"
