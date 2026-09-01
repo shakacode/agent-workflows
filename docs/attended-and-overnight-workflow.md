@@ -78,15 +78,21 @@ coordination, or telemetry is unavailable only when trusted repository policy
 or authenticated maintainer authorization names the sole coordinator and a
 bounded run interval. Missing, ambiguous, or expired authorization disables the
 override; preserve the failure as `UNKNOWN` and stop or reconcile at expiry.
+Before creating a host task under that override, persist the complete launch
+fence in restart-durable host storage: run ID, idempotency key, resolved launch
+intent, current transition, and the attached host task ID as soon as known.
+Advance that local record until durable-destination reconciliation succeeds.
 After the [canonical launch target gate](../workflows/pr-processing.md#canonical-launch-target-gate)
 accepts an issue, PR, or complete trusted durable ad-hoc override, use the issue
 or PR URL when the target has a GitHub work-item surface; a wholly non-GitHub
 trusted-ad-hoc run reuses its existing durable plan or backend destination. An
 exact, independent ownership-requiring run with no dependency references may
-proceed with degraded coordination only after a direct claim succeeds. An
-unbound direct prompt stops for planning or reconciliation. A refused claim
-stops the run; a timed-out or otherwise unknown claim outcome stops for
-reconciliation.
+proceed with degraded coordination only after a direct claim succeeds. When
+bounded status was degraded, that success enters `private_state: claim-only`;
+keep it live with phase-transition heartbeats and preserve the degraded status
+evidence in the handoff. An unbound direct prompt stops for planning or
+reconciliation. A refused claim stops the run; a timed-out or otherwise unknown
+claim outcome stops for reconciliation.
 Overrides do not bypass repository policy, trust or security checks, dependency
 gates, validation, review, merge authority, a failing correctness check, or a
 required human decision.
