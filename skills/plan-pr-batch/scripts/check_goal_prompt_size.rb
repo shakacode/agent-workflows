@@ -136,8 +136,8 @@ GOAL_MODE_COMPACT_CONTRACT = "GMCC-v5:CI@head/configured-reviewers " \
                              "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                              "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
                              "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
-                             "ask-dep=>user(own:walk|ext:merge/add);" \
-                             "auto=>verdict/head/gates/rollback;" \
+                             "ask=>walk|ext:merge/add;" \
+                             "auto=>exact verdict/head/sorted-gates/rollback;" \
                              "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
                              "durable(proven-human+merge-authority);else ready-human-review-required|" \
                              "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
@@ -173,8 +173,8 @@ GOAL_MODE_REQUIRED_SEMANTICS = [
   "fallback:4x15m+exp/4h|manual",
   "stop clear/done/term/budget/user",
   "noauth=>ready-no-merge-authority",
-  "ask-dep=>user(own:walk|ext:merge/add)",
-  "auto=>verdict/head/gates/rollback",
+  "ask=>walk|ext:merge/add",
+  "auto=>exact verdict/head/sorted-gates/rollback",
   "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
   "durable(proven-human+merge-authority)",
   "else ready-human-review-required|autonomous-merge-evidence-unknown",

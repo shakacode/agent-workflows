@@ -23,7 +23,7 @@ HUMAN_STATE = "`ready-human-review-required` carries the exact current head SHA,
               "rollback status, and the exact durable human decision needed."
 UNKNOWN_STATE = "`autonomous-merge-evidence-unknown` carries the exact current head SHA, evidence failure, " \
                 "trusted-base policy provenance, and repair action."
-GMCC_HUMAN_DECISION_BINDING = "auto=>verdict/head/gates/rollback;merge iff " \
+GMCC_HUMAN_DECISION_BINDING = "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
                               "autonomous-merge-eligible OR human-approved-for-current-head+" \
                               "durable(proven-human+merge-authority)"
 THRESHOLD_DOCUMENTATION_PARITY = "ADR 0003 is the source of truth for these copied portable defaults. " \

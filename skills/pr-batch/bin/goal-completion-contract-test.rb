@@ -49,8 +49,8 @@ COMPACT_CONTRACT_LINE = "GMCC-v5:CI@head/configured-reviewers " \
                         "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                         "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
                         "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
-                        "ask-dep=>user(own:walk|ext:merge/add);" \
-                        "auto=>verdict/head/gates/rollback;" \
+                        "ask=>walk|ext:merge/add;" \
+                        "auto=>exact verdict/head/sorted-gates/rollback;" \
                         "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
                         "durable(proven-human+merge-authority);else ready-human-review-required|" \
                         "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
@@ -88,8 +88,8 @@ COMPACT_CONTRACT_INVARIANTS = [
   "fallback:4x15m+exp/4h|manual",
   "stop clear/done/term/budget/user",
   "noauth=>ready-no-merge-authority",
-  "ask-dep=>user(own:walk|ext:merge/add)",
-  "auto=>verdict/head/gates/rollback",
+  "ask=>walk|ext:merge/add",
+  "auto=>exact verdict/head/sorted-gates/rollback",
   "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
   "durable(proven-human+merge-authority)",
   "else ready-human-review-required|autonomous-merge-evidence-unknown",
@@ -123,10 +123,10 @@ HUMAN_STATUS_OWNED_PREREQUISITE_EVIDENCE_RULE = "For an owned target, `What chan
                                                  "before the final merge question."
 HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE = "At closeout/archive completion, place the three labeled parts before, not " \
                                       "instead of, the existing mandatory closeout handoff."
-READY_PREREQUISITE_ASK_GATE_RULE = "A prerequisite PR whose ordinary readiness gates are clean and whose only " \
-                                   "remaining progress gate under `merge_authority: ask` is the human review and " \
-                                   "merge decision is `blocked-user-input`, not `external-gate-failing` or an " \
-                                   "autonomously clearable blocker."
+READY_PREREQUISITE_ASK_GATE_RULE = "If a prerequisite PR is otherwise ready and only its human review and merge " \
+                                   "decision remains under `merge_authority: ask`, report `blocked-user-input` " \
+                                   "without consuming external-blocker retries or starting monitoring."
+OWNED_PREREQUISITE_STATE_RULE = "This remains the target state while the batch is `blocked-user-input`."
 HUMAN_STATUS_REQUIRED_PHRASES = [
   "internal telemetry",
   "routine successful, intermediate, repeated, or unchanged wake",
@@ -663,12 +663,13 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_contract, "manual resume instructions", "canonical completion contract"
     assert_text_includes normalized_contract, "`blocked-user-input` does not start a watcher",
                          "canonical completion contract"
-    assert_squished_includes normalized_contract, READY_PREREQUISITE_ASK_GATE_RULE,
+    normalized_canonical_contract = @workflow_resume_prompt.gsub(/\s+/, " ")
+    assert_squished_includes normalized_canonical_contract, READY_PREREQUISITE_ASK_GATE_RULE,
                              "canonical ready-prerequisite ask gate"
-    assert_text_includes normalized_contract, "Do not consume external-blocker retries",
+    assert_text_includes normalized_canonical_contract, "without consuming external-blocker retries",
                          "canonical ready-prerequisite ask gate"
     assert_text_includes COMPACT_CONTRACT_LINE,
-                         "ask-dep=>user(own:walk|ext:merge/add)",
+                         "ask=>walk|ext:merge/add",
                          "compact ready-prerequisite ask gate"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
@@ -750,21 +751,19 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_ready_prerequisite_ask_gate_rejects_external_failure_reclassification
-    deletion = delete_squished_phrase(@workflow_contract_section, READY_PREREQUISITE_ASK_GATE_RULE)
-    refute_equal @workflow_contract_section, deletion,
+    deletion = delete_squished_phrase(@workflow_resume_prompt, READY_PREREQUISITE_ASK_GATE_RULE)
+    refute_equal @workflow_resume_prompt, deletion,
                  "ready-prerequisite mutation must delete the production classification"
     refute_includes squish(deletion), squish(READY_PREREQUISITE_ASK_GATE_RULE)
-    assert_squished_includes @workflow_contract_section,
-                             "For an authorized batch target, start the exact-diff walkthrough",
+    assert_squished_includes @workflow_resume_prompt,
+                             "For an owned target, start the exact-diff walkthrough before asking the final merge question",
                              "canonical ready-prerequisite owned-target route"
-    assert_squished_includes @workflow_contract_section,
-                             "For an external prerequisite, provide its exact PR link and instruct the user either " \
-                             "to merge it and reply only after it is merged, or to explicitly authorize adding it " \
-                             "as a batch target",
+    assert_squished_includes @workflow_resume_prompt,
+                             "For an external dependency-only reference, instruct the user either to merge it and " \
+                             "reply only after it is merged, or to explicitly authorize adding it as a target",
                              "canonical ready-prerequisite external route"
-    assert_squished_includes @workflow_contract_section,
-                             "A reply or merge decision alone does not clear an external prerequisite or " \
-                             "authorize its merge.",
+    assert_squished_includes @workflow_resume_prompt,
+                             "a reply or merge decision alone does not clear the prerequisite or authorize its merge.",
                              "canonical ready-prerequisite external authority guard"
   end
 
@@ -885,7 +884,6 @@ class GoalCompletionContractTest < Minitest::Test
                     "explicitly authorize adding it as a batch target"
     refute_includes external_prerequisite.fetch("expected_user_output"),
                     "decide whether to merge it"
-
     diagnostic = cases.find { |replay_case| replay_case.fetch("id") == "explicit-diagnostics" }
     diagnostic_output = diagnostic.fetch("expected_user_output")
     ["functional B2", "B3", "B+C", "c6", "raw load", "PID", "holder", "lease"].each do |term|
@@ -1102,7 +1100,7 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "auto=>verdict/head/gates/rollback;merge iff " \
+                           "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
                            "autonomous-merge-eligible OR human-approved-for-current-head",
                            "compact completion contract"
       assert_text_includes line,
@@ -1808,6 +1806,12 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
+  def test_ready_owned_prerequisite_separates_target_state_from_batch_blocker
+    assert_squished_includes @integration_closeout,
+                             OWNED_PREREQUISITE_STATE_RULE,
+                             "canonical ready-prerequisite ask gate"
+  end
+
   def test_auto_merge_done_means_merged_or_blocked
     assert_empty canonical_auto_merge_parity_errors(@workflow_contract_section),
                  "canonical expansion and pressure check must preserve PR, target, and issue closeout parity"
@@ -1818,7 +1822,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text,
-                           "auto=>verdict/head/gates/rollback;merge iff " \
+                           "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
                            "autonomous-merge-eligible OR human-approved-for-current-head",
                            label
       assert_text_includes text,
