@@ -2150,13 +2150,13 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def test_serialized_group_admits_the_member_whose_host_still_has_a_free_worker_slot
     lanes = [
-      lane("a-busy-host", host_id: "m5").merge("serialization_group" => "changelog-writers"),
-      lane("b-free-host", host_id: "m1").merge("serialization_group" => "changelog-writers")
+      lane("a-busy-host", host_id: "m1").merge("serialization_group" => "changelog-writers"),
+      lane("b-free-host", host_id: "m5").merge("serialization_group" => "changelog-writers")
     ]
     groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
     capacity = capacity_envelope(
-      host_capacity(id: "m5", worker_limit: 1, worker_occupied: 1),
-      host_capacity(id: "m1", worker_limit: 1)
+      host_capacity(id: "m1", worker_limit: 1, worker_occupied: 1),
+      host_capacity(id: "m5", worker_limit: 1)
     )
 
     result, stderr, status = evaluate(input_for(lanes: lanes, groups: groups, capacity: capacity))
@@ -2165,6 +2165,46 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["b-free-host"], result.dig("launch", "eligible_lane_ids")
     assert_equal ["a-busy-host"], result.dig("launch", "held_lane_ids")
     assert_equal "worker-budget-full", result.dig("launch", "held_reasons", "a-busy-host")
+  end
+
+  def test_serialized_group_follows_host_then_lane_order_when_both_hosts_are_free
+    lanes = [
+      lane("m-on-host-b", host_id: "host-b").merge("serialization_group" => "changelog-writers"),
+      lane("z-on-host-a", host_id: "host-a").merge("serialization_group" => "changelog-writers")
+    ]
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+    capacity = capacity_envelope(
+      host_capacity(id: "host-a", worker_limit: 1),
+      host_capacity(id: "host-b", worker_limit: 1)
+    )
+
+    result, stderr, status = evaluate(input_for(lanes: lanes, groups: groups, capacity: capacity))
+
+    assert status.success?, stderr
+    assert_equal ["z-on-host-a"], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["m-on-host-b"], result.dig("launch", "held_lane_ids")
+    assert_equal "dependency-or-protected-gate", result.dig("launch", "held_reasons", "m-on-host-b")
+  end
+
+  def test_cross_host_serialized_group_still_fills_every_free_worker_slot
+    lanes = [
+      lane("z-group", host_id: "host-a").merge("serialization_group" => "changelog-writers"),
+      lane("a-group", host_id: "host-b").merge("serialization_group" => "changelog-writers"),
+      lane("c-ordinary", host_id: "host-b")
+    ]
+    groups = [{ "id" => "changelog-writers", "max_concurrency" => 1 }]
+    capacity = capacity_envelope(
+      host_capacity(id: "host-a", worker_limit: 1),
+      host_capacity(id: "host-b", worker_limit: 1)
+    )
+
+    result, stderr, status = evaluate(input_for(lanes: lanes, groups: groups, capacity: capacity))
+
+    assert status.success?, stderr
+    assert_equal %w[c-ordinary z-group], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["a-group"], result.dig("launch", "held_lane_ids")
+    assert_equal "dependency-or-protected-gate", result.dig("launch", "held_reasons", "a-group")
+    assert_equal 2, result.dig("capacity", "admitted_worker_slots")
   end
 
   def test_serialized_group_still_admits_at_most_one_member_with_ample_capacity

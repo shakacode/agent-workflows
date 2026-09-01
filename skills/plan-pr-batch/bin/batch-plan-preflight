@@ -1308,35 +1308,36 @@ module BatchPlanPreflight
     capacity_held = []
     held_reasons = {}
     claimed_group_ids = []
-    ready_lane_ids.sort.each do |lane_id|
-      lane = lanes_by_id.fetch(lane_id)
-      state = host_states.fetch(
-        effective_lane_host_id(lane, capacity, infer_missing: infer_missing_lane_host)
-      )
-      group_id = lane["serialization_group"]
-      serialized = group_ids.include?(group_id)
-      if serialized && claimed_group_ids.include?(group_id)
-        capacity_held << lane_id
-        held_reasons[lane_id] = "dependency-or-protected-gate"
-        state[:group_held] << lane_id
-      elsif state[:admitted].length >= state[:available_workers]
-        capacity_held << lane_id
-        held_reasons[lane_id] = "worker-budget-full"
-      elsif lane["uses_external_quota"] == true && state[:admitted_quota] >= state[:available_quota]
-        capacity_held << lane_id
-        held_reasons[lane_id] = "external-quota-full"
-        state[:quota_held] << lane_id
-      else
-        state[:admitted] << lane_id
-        state[:admitted_quota] += 1 if lane["uses_external_quota"] == true
-        claimed_group_ids << group_id if serialized
-        admitted << lane_id
-      end
-    end
-
     host_decisions = hosts.map do |host|
       host_id = host.fetch("id")
       state = host_states.fetch(host_id)
+      ready_for_host = ready_lane_ids.select do |lane_id|
+        effective_lane_host_id(
+          lanes_by_id.fetch(lane_id), capacity, infer_missing: infer_missing_lane_host
+        ) == host_id
+      end.sort
+      ready_for_host.each do |lane_id|
+        lane = lanes_by_id.fetch(lane_id)
+        group_id = lane["serialization_group"]
+        serialized = group_ids.include?(group_id)
+        if serialized && claimed_group_ids.include?(group_id)
+          capacity_held << lane_id
+          held_reasons[lane_id] = "dependency-or-protected-gate"
+          state[:group_held] << lane_id
+        elsif state[:admitted].length >= state[:available_workers]
+          capacity_held << lane_id
+          held_reasons[lane_id] = "worker-budget-full"
+        elsif lane["uses_external_quota"] == true && state[:admitted_quota] >= state[:available_quota]
+          capacity_held << lane_id
+          held_reasons[lane_id] = "external-quota-full"
+          state[:quota_held] << lane_id
+        else
+          state[:admitted] << lane_id
+          state[:admitted_quota] += 1 if lane["uses_external_quota"] == true
+          claimed_group_ids << group_id if serialized
+          admitted << lane_id
+        end
+      end
       gate_held_for_host = gate_held_lane_ids.select do |lane_id|
         lane = lanes_by_id[lane_id]
         lane && lane["wave"] == active_wave && effective_lane_host_id(
