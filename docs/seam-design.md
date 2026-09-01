@@ -124,6 +124,9 @@ actively reserves the companion. The advisory does not add the path or change
 collision, reservation, or eligibility results. An invalid configured pair
 rejects preflight instead of being ignored.
 
+Each `companion-path-omitted` advisory includes `source_path` and
+`companion_path` fields naming the mapped pair.
+
 ### Writing Style
 
 `writing_style` is an optional scalar in the repository policy. It accepts

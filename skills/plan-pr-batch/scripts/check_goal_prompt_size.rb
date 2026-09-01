@@ -130,7 +130,7 @@ STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
 TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
                                      "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                                      "live=<replay/ref>; " \
-                                     "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
+                                     "ft=refs/paths/changes/rename/companions/collisions/owner/serial/UNKNOWN."
 GOAL_MODE_COMPACT_CONTRACT = "GMCC-v4:CI@head/configured-reviewers " \
                              "pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>" \
                              "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \

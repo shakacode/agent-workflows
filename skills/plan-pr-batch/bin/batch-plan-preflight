@@ -696,7 +696,7 @@ module BatchPlanPreflight
 
     declared_maps.flat_map do |lane_id, map|
       effective_paths = effective_maps.fetch(lane_id).fetch("paths")
-      map.fetch("paths").filter_map do |source_path|
+      map.fetch("paths").flat_map do |source_path|
         conventions.filter_map do |convention|
           captures = match_companion_source(convention.fetch("source_glob"), source_path)
           next unless captures
@@ -716,7 +716,7 @@ module BatchPlanPreflight
             "companion_path" => companion_path
           )
         end
-      end.flatten
+      end
     end
   end
 
