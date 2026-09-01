@@ -111,6 +111,16 @@ issue/existing-PR launch identity remains required, and a foreign task remains
 evidence-only unless an explicit trusted control transfer and exact target
 membership are both verified.
 
+Enforcement boundary: this classification is prompt-driven and nothing verifies
+it at runtime. The only code-level check is the completed-batch publication
+preflight, which authenticates the applicability proof at the end of a batch.
+A misclassified `coordination_not_applicable` run therefore skips claims,
+heartbeats, and fencing for the whole session with nothing to catch it earlier,
+which is a weaker guarantee than the fail-closed behavior `coordination_required`
+gets once a backend is in play. Treat the decision as a trusted controller input,
+record it with its policy and topology sources, and reclassify through this gate
+rather than in passing.
+
 Supported adoption levels are: ordinary workflow use with no coordination setup;
 multiple sessions on one machine with an optional zero-config local store; and
 multiple machines/operators with an organization-operated shared backend URL and

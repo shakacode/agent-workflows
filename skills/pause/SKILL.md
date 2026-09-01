@@ -193,8 +193,12 @@ current AGENTS.md and the installed `pr-processing.md` workflow first. Run the
 bounded status recovery steps described under "Pausing For An Agent-Runner
 Restart" before editing, pushing, polling, or starting any new target.
 
-If this lane is `coordination_not_applicable`, recover from local and GitHub
-state only and make no coordination or public-fallback call.
+Re-run the applicability gate before acting. Resuming in a replacement chat
+from a durable handoff is a controller/session boundary, so treat this lane as
+`coordination_required` unless the gate re-verifies that one accountable
+controller again owns the exact target set serially. Only under a re-verified
+`coordination_not_applicable` may you recover from local and GitHub state alone
+and make no coordination or public-fallback call.
 
 Re-check the worktree, branch, HEAD SHA, uncommitted changes, and current
 PR/check state. The rest of this paragraph applies only to

@@ -513,6 +513,10 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_includes gate,
                     "do not probe, register, claim, heartbeat, mirror claim labels, use public claim-comment " \
                     "fallback, emit a typed operational event, or validate/emit a `coordination:` declaration"
+    assert_includes gate,
+                    "Enforcement boundary: this classification is prompt-driven and nothing verifies it at " \
+                    "runtime. The only code-level check is the completed-batch publication preflight, which " \
+                    "authenticates the applicability proof at the end of a batch."
 
     workflow = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
 
@@ -551,8 +555,9 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "uncommitted changes, and live GitHub PR/check state only; make no coordination or public-fallback call, " \
       "and read every claim, heartbeat, holder, and fallback clause below as `coordination_required` only."
     new_chat_rule =
-      "If this lane is `coordination_not_applicable`, recover from local and GitHub state only and make no " \
-      "coordination or public-fallback call."
+      "Re-run the applicability gate before acting. Resuming in a replacement chat from a durable handoff is a " \
+      "controller/session boundary, so treat this lane as `coordination_required` unless the gate re-verifies " \
+      "that one accountable controller again owns the exact target set serially."
 
     workflow = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
     pause_skill = read_repo_file(PAUSE_SKILL_PATH).gsub(/\s+/, " ")
