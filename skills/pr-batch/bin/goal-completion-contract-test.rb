@@ -49,7 +49,7 @@ COMPACT_CONTRACT_LINE = "GMCC-v5:CI@head/configured-reviewers " \
                         "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                         "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
                         "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
-                        "ask=>walk;ext:user-merge|user-auth:add;blocked-user-input=>0retry/watch;" \
+                        "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
                         "auto=>exact verdict/head/sorted-gates/rollback;" \
                         "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
                         "durable(proven-human+merge-authority);else ready-human-review-required|" \
@@ -91,7 +91,7 @@ COMPACT_CONTRACT_INVARIANTS = [
   "fallback:4x15m+exp/4h|manual",
   "stop clear/done/term/budget/user",
   "noauth=>ready-no-merge-authority",
-  "ask=>walk;ext:user-merge|user-auth:add;blocked-user-input=>0retry/watch",
+  "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch",
   "auto=>exact verdict/head/sorted-gates/rollback",
   "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
   "durable(proven-human+merge-authority)",
@@ -672,7 +672,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_canonical_contract, "without consuming external-blocker retries",
                          "canonical ready-prerequisite ask gate"
     assert_text_includes COMPACT_CONTRACT_LINE,
-                         "ask=>walk;ext:user-merge|user-auth:add;blocked-user-input=>0retry/watch",
+                         "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch",
                          "compact ready-prerequisite ask gate"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
