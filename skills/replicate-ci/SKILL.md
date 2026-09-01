@@ -27,8 +27,8 @@ reproduction explains the failure.
    For GitHub Actions with no provider seam, use the shipped default:
 
    ```bash
-   gh run list --json id,conclusion,headSha,event,workflowName,runNumber,createdAt,url --limit 100 | jq -r '.[] | select(.headSha == "<HEAD_SHA>" and .workflowName == "<WORKFLOW_NAME>") | .id'
-   gh run view <RUN_ID> --json id,headSha,event,workflowName,conclusion,createdAt,startedAt,status
+   gh run list --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --json databaseId,conclusion,headSha,event,workflowName,number,createdAt,url
+   gh run view <RUN_ID> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
    ```
 
    An equivalent hosted invocation has matching controlled
@@ -149,7 +149,7 @@ Then recommend the next smallest action:
 
 - The failing hosted check and head SHA are exact.
 - Hosted history supports the candidate deterministic/parity case, or records
-  candidate deterministic/parity case.
+  the equivalent-hosted-intermittency `fix-flaky-tests` handoff instead.
 - If failure identity, hosted run history, or invocation equivalence is
   unavailable/unverifiable, record each unavailable fact as `UNKNOWN`,
   classify the result as `BLOCKED`, and stop.
