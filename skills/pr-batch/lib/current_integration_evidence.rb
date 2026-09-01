@@ -322,7 +322,6 @@ module CurrentIntegrationEvidence
 
     components = path.split("/", -1)
     return false if components.empty? || path.start_with?("/") || path.include?("\\") || path.include?("\0")
-    return false if path.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
     return false if components.any? { |component| component.empty? || %w[. ..].include?(component) }
 
     components.each_cons(3).any? do |first, second, _file|

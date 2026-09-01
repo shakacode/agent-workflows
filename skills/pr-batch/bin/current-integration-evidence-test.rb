@@ -84,7 +84,9 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
       ".github/workflows/ci.yml",
       ".github/actions/setup/action.yml",
       "template/.github/workflows/ci.yml",
-      "template/.github/actions/setup/action.yml"
+      "template/.github/actions/setup/action.yml",
+      "template:v1/.github/workflows/ci.yml",
+      "template:v1/.github/actions/setup/action.yml"
     ]
 
     paths.each do |path|
