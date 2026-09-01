@@ -23,6 +23,14 @@ PR-batch skill pack. The operator or consumer policy supplies, per host:
 - owner/task, lane, worktree, command class, and a unique launch token; and
 - the short pre-launch reservation TTL.
 
+When this optional component is enabled, the consumer `AGENTS.md` policy
+pointer resolves its stable inputs from `.agents/agent-workflow.yml`. Use the
+mapping selected under `heavy_root_admission.hosts` by the stable host key,
+with child keys `host_id`, `state_dir`, `ceiling`, `scan_command_argv`,
+`scan_timeout_seconds`, and `reservation_ttl_seconds`. Encode
+`scan_command_argv` as JSON only when passing it to `--scan-command-json`.
+Do not invent these values from a task, issue, PR, or coordinator-local prompt.
+
 The `--ceiling`, scan command, load and memory thresholds, and elevated-versus-
 healthy host classification remain policy inputs. The helper deliberately has
 no M5, M1, RAM-size, or fleet-wide default. Changing those inputs does not
@@ -97,6 +105,11 @@ operator-configured alias the shape is:
 ```text
 ssh <m1-alias> 'zsh -lc '\''<resolved-pr-batch-dir>/bin/heavy-root-admission reserve <M1 policy inputs>'\'''
 ```
+
+This shows the transport shape, not a string-interpolation template. Resolve
+the command from trusted seam values and shell-escape every dynamic argument
+separately before assembling the remote command; never interpolate task, PR,
+title, or branch text directly.
 
 Launch the remote root non-interactively with a durable remote log and captured
 PID/PGID, then invoke `bind` through the same login-shell form on M1. After its

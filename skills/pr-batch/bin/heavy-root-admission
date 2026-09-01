@@ -246,7 +246,7 @@ module HeavyRootAdmission
     payload = JSON.parse(scan_stdout)
     raise ScanError, "whole-host scan JSON must be an object" unless payload.is_a?(Hash)
 
-    roots = payload.fetch("roots")
+    roots = payload["roots"]
     raise ScanError, "whole-host scan JSON field `roots` must be an array" unless roots.is_a?(Array)
 
     ceiling = nil
@@ -285,9 +285,9 @@ module HeavyRootAdmission
       "pid" => integer_or_nil(root["pid"]),
       "pgid" => integer_or_nil(root["pgid"])
     }
-    if normalized["owner"].empty? || normalized["lane"].empty? ||
+    if %w[owner lane worktree command_class].any? { |field| normalized[field].empty? } ||
        (normalized["pid"].nil? && normalized["pgid"].nil?)
-      raise ScanError, "each verified live root needs owner, lane, and pid or pgid"
+      raise ScanError, "each verified live root needs owner, lane, worktree, command_class, and pid or pgid"
     end
 
     normalized

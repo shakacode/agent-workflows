@@ -530,6 +530,46 @@ class HeavyRootAdmissionTest < Minitest::Test
     end
   end
 
+  def test_scan_requires_roots_field
+    Dir.mktmpdir("heavy-root-admission-scan-roots-test") do |state_dir|
+      scanner = File.join(state_dir, "scan-without-roots.rb")
+      File.write(scanner, "require 'json'; puts JSON.generate({})\n")
+      attempt = run_helper(
+        "reserve", "--state-dir", state_dir, "--host", "M5",
+        "--owner", "maker", "--lane", "issue-604-maker",
+        "--worktree", "/tmp/maker", "--command-class", "validator",
+        "--launch-token", "missing-roots", "--ceiling", "1",
+        "--scan-command-json", JSON.generate([RbConfig.ruby, scanner]), "--json"
+      )
+
+      assert_equal 1, attempt.fetch(:status), attempt.inspect
+      assert_match(/BLOCKED:.*scan JSON field `roots` must be an array/i, attempt.fetch(:stderr))
+      refute_match(/KeyError|from .*heavy-root-admission/, attempt.fetch(:stderr))
+      assert_empty Dir[File.join(state_dir, "host-*.json")]
+    end
+  end
+
+  def test_scan_requires_worktree_and_command_class_provenance
+    Dir.mktmpdir("heavy-root-admission-scan-provenance-test") do |state_dir|
+      scan_command = scanner_command(
+        state_dir,
+        roots: [{ verified: true, owner: "maker", lane: "issue-604-maker", pid: Process.pid }]
+      )
+      attempt = run_helper(
+        "reserve", "--state-dir", state_dir, "--host", "M5",
+        "--owner", "other-maker", "--lane", "issue-604-other-maker",
+        "--worktree", "/tmp/other-maker", "--command-class", "validator",
+        "--launch-token", "missing-provenance", "--ceiling", "2",
+        "--scan-command-json", scan_command, "--json"
+      )
+
+      assert_equal 1, attempt.fetch(:status), attempt.inspect
+      assert_match(/BLOCKED:.*needs owner, lane, worktree, command_class, and pid or pgid/i,
+                   attempt.fetch(:stderr))
+      assert_empty Dir[File.join(state_dir, "host-*.json")]
+    end
+  end
+
   def test_terminal_reservations_are_pruned_by_age_and_count
     Dir.mktmpdir("heavy-root-admission-retention-test") do |state_dir|
       now = Time.utc(2026, 9, 1, 6, 0, 0)
