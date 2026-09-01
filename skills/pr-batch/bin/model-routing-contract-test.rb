@@ -301,6 +301,16 @@ DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN =
   /(?:\b(?:but|and|yet|because|since)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks\s+execution\b/i
 DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN =
   /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\b/i
+PASSIVE_DIRECT_INDEPENDENT_BLOCKER_OWNER_SEPARATOR_SOURCE =
+  "(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+)"
+PASSIVE_DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN =
+  /
+    (?:\b(?:but|and|yet)\b|;)\s+
+    (?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\s+is\s+(?:blocked|stopped|prevented|halted)\s+by\s+
+    (?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})
+    (?:#{PASSIVE_DIRECT_INDEPENDENT_BLOCKER_OWNER_SEPARATOR_SOURCE}(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE}))*
+    \s*(?=[.!?]|\z)
+  /ix
 DIRECT_INDEPENDENT_BLOCKER_FIRST_CLAUSE_PATTERN =
   /\A\s*(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+(?:blocks?|halts?)\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\s*,\s*(?:while|and)\s+/i
 NEUTRAL_ROUTE_PREDICATE_WITH_INDEPENDENT_BLOCKER_PATTERN =
@@ -527,7 +537,8 @@ def strip_route_occurrence_with_independent_blocker_clause(sentence)
   return sentence unless subject
 
   occurrence = sentence[subject.end(0)..].match(/\A\s+occurs\b/i)
-  blocker = sentence.match(DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN)
+  blocker = sentence.match(DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN) ||
+            sentence.match(PASSIVE_DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN)
   return sentence unless occurrence && blocker
   return sentence unless subject.begin(0) < blocker.begin(0)
   return sentence unless subject.end(0) + occurrence.end(0) <= blocker.begin(0)
@@ -1380,13 +1391,13 @@ class ModelRoutingContractTest < Minitest::Test
     ].each { |phrase| assert_includes guide, phrase }
     assert_includes workflow, "MODEL_ESCALATION_REQUEST"
     assert_includes workflow, "old and replacement instances must not overlap"
-    assert_includes workflow, "stop and reconcile"
+    assert_includes workflow, "ownership is reconciled"
   end
 
   def test_lane_cards_separate_preference_from_optional_observation
     %w[
       workflows/pr-processing.md
-      skills/pr-batch/SKILL.md
+      workflows/pr-batch-worker-execution.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|
@@ -1532,6 +1543,18 @@ class ModelRoutingContractTest < Minitest::Test
       "outcome-first prevents both planning and fallback" => "Prevent both planning and fallback when a route mismatch occurs.",
       "outcome-first passive blocked launch" => "When a route mismatch occurs, launch is blocked.",
       "outcome-first passive blocked the launch" => "The launch is blocked when a route mismatch occurs.",
+      "passive route-only blocker after advisory predicate" => "A route mismatch occurs, but launch is blocked.",
+      "passive independent owners followed by a model mismatch" => "A route mismatch occurs, but launch is blocked by a credential check and an independent risk gate and a model mismatch.",
+      "passive independent owner followed by a semicolon route mismatch" => "A route mismatch occurs, but launch is blocked by a credential check; and a route mismatch.",
+      "passive model mismatch before an authorized owner" => "A route mismatch occurs, but launch is blocked by a model mismatch and a credential check.",
+      "passive route mismatch between authorized owners" => "A route mismatch occurs, but launch is blocked by a credential check and a route mismatch and an independent risk gate.",
+      "passive route mismatch after Oxford-comma owners" => "A route mismatch occurs, but launch is blocked by a credential check, an independent risk gate, and a route mismatch.",
+      "passive independent risk gate coordinated with route mismatch" => "A route mismatch occurs, but launch is blocked by an independent risk gate and a route mismatch.",
+      "passive independent scope gate alternative with model mismatch" => "A route mismatch occurs, but launch is blocked by an independent scope gate or a model mismatch.",
+      "passive independent blocker coordinated with route mismatch" => "A route mismatch occurs, but launch is blocked by a credential check and a route mismatch.",
+      "passive independent blocker coordinated with the route mismatch" => "A route mismatch occurs, but launch is blocked by a credential check and the route mismatch.",
+      "passive independent blocker coordinated after a comma" => "A route mismatch occurs, but launch is blocked by a credential check, and a route mismatch.",
+      "passive independent blocker alternative with model mismatch" => "A route mismatch occurs, but launch is blocked by a credential check or a model mismatch.",
       "outcome-first passive stopped launch" => "Launch is stopped when a route mismatch occurs.",
       "outcome-first passive halted launch" => "Launch is halted when a route mismatch occurs.",
       "outcome-first passive prevented review" => "Review is prevented when a route mismatch occurs.",
@@ -1771,6 +1794,10 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch occurs. An exact-head CI gate fails. This blocks launch.",
       "A route mismatch does not stop the lane; an exact-head CI gate blocks execution.",
       "A route mismatch occurs, but a credential check blocks launch.",
+      "A route mismatch occurs, but launch is blocked by a credential check.",
+      "A route mismatch occurs, but launch is blocked by a credential check and an independent risk gate.",
+      "A route mismatch occurs, but launch is blocked by a credential check, an independent risk gate.",
+      "A route mismatch occurs, but launch is blocked by a credential check, an independent risk gate, and an independent scope gate.",
       "A route mismatch occurs, but an exact-head CI gate blocks launch.",
       "A route mismatch occurs, but an independent risk gate blocks launch.",
       "A route mismatch occurs, but an independent scope gate blocks launch.",

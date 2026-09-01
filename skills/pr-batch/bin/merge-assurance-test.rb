@@ -80,7 +80,7 @@ class MergeAssuranceTest < Minitest::Test
 
     assert_equal true, result.fetch("eligible")
     assert_equal "merge-assurance-receipt", result.fetch("contract")
-    assert_equal 1, result.fetch("version")
+    assert_equal 2, result.fetch("version")
     assert_equal "2026-07-30T12:00:00Z", result.fetch("issued_at")
     assert_equal(
       {
@@ -90,12 +90,83 @@ class MergeAssuranceTest < Minitest::Test
         "base" => { "ref" => "main", "sha" => BASE_SHA },
         "head_sha" => HEAD_SHA,
         "authority" => "auto_merge_when_gates_pass",
-        "diff_identity" => DIFF_IDENTITY
+        "diff_identity" => DIFF_IDENTITY,
+        "current_integration" => base_unchanged_integration
       },
       result.fetch("bindings")
     )
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("evidence_digest"))
     assert MergeAssurance.valid_evidence_digest?(result)
+  end
+
+  def test_v2_receipt_binds_reused_current_integration_candidate
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    autonomous["current_integration"] = reused_current_integration
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible")
+    assert_equal 2, result.fetch("version")
+    assert_equal reused_current_integration, result.dig("bindings", "current_integration")
+
+    autonomous.dig("current_integration", "candidate", "parents")[0] = "e" * 40
+    blocked = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+    assert_equal false, blocked.fetch("eligible")
+    assert_includes blocked.fetch("failures"), "autonomous_result reused current integration evidence is invalid"
+  end
+
+  def test_reused_current_integration_accepts_empty_base_delta_when_the_pr_side_is_safe
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    integration = reused_current_integration
+    integration.fetch("base_delta")["paths"] = []
+    integration.fetch("reuse")["reasons"] = ["pr-delta-reuse-safe"]
+    autonomous["current_integration"] = integration
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible"), Array(result["failures"]).join("; ")
+    assert_equal integration, result.dig("bindings", "current_integration")
+  end
+
+  def test_malformed_current_integration_telemetry_blocks_without_raising
+    malformed_values = [
+      nil,
+      {
+        "validator_replays_avoided" => "1",
+        "review_replays_avoided" => 0,
+        "elapsed_seconds_saved" => nil
+      }
+    ]
+
+    malformed_values.each do |telemetry|
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous.fetch("current_integration")["telemetry"] = telemetry
+
+      result = MergeAssurance.assess(
+        ci_result: ready_ci,
+        autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"),
+        now: NOW
+      )
+
+      assert_equal false, result.fetch("eligible"), telemetry.inspect
+      assert_includes result.fetch("failures"), "autonomous_result current integration telemetry is invalid"
+    end
   end
 
   def test_selected_hosted_ci_hichee_10049_cancelled_replay_blocks
@@ -190,6 +261,7 @@ class MergeAssuranceTest < Minitest::Test
       autonomous = autonomous_result("autonomous-merge-eligible")
       autonomous["policy_provenance"] = "git:#{base_sha}"
       autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      bind_current_integration!(autonomous, merge_context)
       paths = {
         ci: File.join(repo_root, "ci.json"),
         autonomous: File.join(repo_root, "autonomous.json"),
@@ -1252,6 +1324,7 @@ class MergeAssuranceTest < Minitest::Test
       autonomous = autonomous_result("autonomous-merge-eligible")
       autonomous["policy_provenance"] = "git:#{base_sha}"
       autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      bind_current_integration!(autonomous, merge_context)
       paths = {
         ci: File.join(repo_root, "ci.json"),
         autonomous: File.join(repo_root, "autonomous.json"),
@@ -1339,6 +1412,7 @@ class MergeAssuranceTest < Minitest::Test
       autonomous = autonomous_result("autonomous-merge-eligible")
       autonomous["policy_provenance"] = "git:#{base_sha}"
       autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      bind_current_integration!(autonomous, merge_context)
       paths = {
         ci: File.join(repo_root, "ci.json"),
         autonomous: File.join(repo_root, "autonomous.json"),
@@ -1422,6 +1496,7 @@ class MergeAssuranceTest < Minitest::Test
       autonomous = autonomous_result("autonomous-merge-eligible")
       autonomous["policy_provenance"] = "git:#{base_sha}"
       autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      bind_current_integration!(autonomous, merge_context)
       paths = {
         ci: File.join(repo_root, "ci.json"),
         autonomous: File.join(repo_root, "autonomous.json"),
@@ -1984,7 +2059,10 @@ class MergeAssuranceTest < Minitest::Test
           head_sha: merge_context.fetch("head_sha")
         ),
         autonomous_result: autonomous_result(
-          "autonomous-merge-eligible", head_sha: merge_context.fetch("head_sha")
+          "autonomous-merge-eligible",
+          head_sha: merge_context.fetch("head_sha"),
+          repo: merge_context.fetch("repo"),
+          pull_request: merge_context.fetch("pr")
         ),
         context: merge_context,
         selected_hosted_ci_receipts: selected_hosted_ci_receipts(replay, merge_context),
@@ -2862,7 +2940,7 @@ class MergeAssuranceTest < Minitest::Test
       ci_result = ready_ci
       ci_result.fetch("context")["host"] = host
       ci_result["repo"] = repo
-      autonomous = autonomous_result("human-approved-for-current-head")
+      autonomous = autonomous_result("human-approved-for-current-head", repo:)
       autonomous.fetch("human_decision_evidence")["url"] = url
       result = MergeAssurance.assess(
         ci_result:,
@@ -3443,6 +3521,92 @@ class MergeAssuranceTest < Minitest::Test
     assert_equal [false, 0], [result.fetch("eligible"), fake_gh_call_count]
   end
 
+  def test_semantic_tracker_accepts_generated_template_workflow_paths
+    accepted = [
+      ".github/workflows/ci.yml",
+      ".github/actions/setup/action.yml",
+      "sim/template/.github/workflows/seam-guard.yml",
+      "sim/template/.github/actions/setup/action.yml",
+      "packages/app/.github/workflows/release.yml"
+    ]
+    accepted.each do |path|
+      assert MergeAssurance.semantic_tracker_workflow_path?(path), "expected #{path} to be accepted"
+    end
+
+    rejected = [
+      "lib/task_one.rb",
+      ".github/dependabot.yml",
+      ".github/workflows",
+      ".github/workflows/",
+      "docs/.github/workflows",
+      "sim/template/.github/CODEOWNERS",
+      "notes-about-.github/workflows/ci.yml".sub("/", "-"),
+      "/repo/.github/workflows/ci.yml",
+      "https://example.com/repo/.github/workflows/ci.yml",
+      "http:/evil.com/.github/workflows/ci.yml",
+      "git+ssh:host/repo/.github/actions/setup/action.yml",
+      "C:/repo/.github/actions/setup/action.yml",
+      "C:repo/.github/workflows/ci.yml",
+      "../.github/workflows/ci.yml",
+      "sim/../.github/workflows/ci.yml",
+      "./.github/workflows/ci.yml",
+      "sim/./.github/actions/setup/action.yml",
+      "sim//.github/workflows/ci.yml",
+      ".github/workflows//ci.yml",
+      ".github/workflows/./ci.yml",
+      ".github/workflows/../ci.yml",
+      ".github/workflows/ci.yml\0junk",
+      nil,
+      42
+    ]
+    rejected.each do |path|
+      refute MergeAssurance.semantic_tracker_workflow_path?(path), "expected #{path.inspect} to be rejected"
+    end
+  end
+
+  def test_semantic_tracker_accepts_a_generated_template_workflow_change_end_to_end
+    generated = semantic_tracker.merge(
+      "changed_files" => [
+        "sim/template/.github/workflows/seam-guard.yml",
+        "sim/template/.github/workflows/ci.yml"
+      ]
+    )
+    ENV["FAKE_GH_RESPONSE"] = JSON.generate(fake_issue(tracker: generated))
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [generated]
+      ),
+      now: NOW
+    )
+
+    refute_includes result.fetch("failures", []), "semantic GitHub Actions tracker changed_files are invalid"
+    assert_equal true, result.fetch("eligible"), result.fetch("failures", []).inspect
+    assert_equal(
+      generated,
+      result.dig("follow_up_accounting", "semantic_github_actions_tracker")
+    )
+  end
+
+  def test_semantic_tracker_still_rejects_non_workflow_changed_files
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context(
+        "auto_merge_when_gates_pass",
+        semantic_github_actions_change: true,
+        operations: [semantic_tracker.merge("changed_files" => ["sim/template/.github/CODEOWNERS"])]
+      ),
+      now: NOW
+    )
+
+    assert_includes result.fetch("failures"), "semantic GitHub Actions tracker changed_files are invalid"
+    assert_equal false, result.fetch("eligible")
+  end
+
   def test_post_merge_audit_defaults_to_accounted_and_report_only_is_a_typed_operation
     default_result = MergeAssurance.assess(
       ci_result: ready_ci,
@@ -3537,6 +3701,7 @@ class MergeAssuranceTest < Minitest::Test
     stdout, stderr, status = Open3.capture3(
       {
         "AUTONOMOUS_MERGE_GH" => gh_path,
+        "CURRENT_INTEGRATION_GH" => gh_path,
         "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path,
         "PATH" => @original_path
       },
@@ -3619,12 +3784,28 @@ class MergeAssuranceTest < Minitest::Test
       require "json"
 
       objective = JSON.parse(File.read(ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")))
+      if ARGV.include?("graphql")
+        puts JSON.generate(
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "headRefOid" => objective.fetch("head_sha"),
+                "baseRefName" => "main",
+                "potentialMergeCommit" => nil
+              },
+              "ref" => { "target" => { "oid" => objective.fetch("base_sha") } }
+            }
+          }
+        )
+        exit
+      end
+
       request = ARGV.fetch(-1)
       response = case request
                  when "repos/owner/repo/pulls/42"
                    {
                      "head" => { "sha" => objective.fetch("head_sha") },
-                     "base" => { "sha" => objective.fetch("base_sha") },
+                     "base" => { "sha" => objective.fetch("base_sha"), "ref" => "main" },
                      "updated_at" => "2026-07-30T11:59:00Z",
                      "changed_files" => objective.fetch("files").length,
                      "commits" => objective.fetch("commits").length
@@ -3710,6 +3891,7 @@ class MergeAssuranceTest < Minitest::Test
       autonomous = autonomous_result("autonomous-merge-eligible")
       autonomous["policy_provenance"] = "git:#{base_sha}"
       autonomous["helper_provenance"] = "trusted-base:#{base_sha}"
+      bind_current_integration!(autonomous, merge_context)
       fixture = {
         repo_root:,
         seam_marker:,
@@ -3743,6 +3925,7 @@ class MergeAssuranceTest < Minitest::Test
     fixture.fetch(:context).fetch("base")["sha"] = base_sha
     fixture.fetch(:autonomous_result)["policy_provenance"] = "git:#{base_sha}"
     fixture.fetch(:autonomous_result)["helper_provenance"] = "trusted-base:#{base_sha}"
+    bind_current_integration!(fixture.fetch(:autonomous_result), fixture.fetch(:context))
   end
 
   def run_selected_hosted_ci_runner_fixture(fixture, times:)
@@ -4068,7 +4251,7 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
-  def fake_issue
+  def fake_issue(tracker: semantic_tracker)
     {
       "id" => 101,
       "node_id" => "I_kwDOExample",
@@ -4083,7 +4266,7 @@ class MergeAssuranceTest < Minitest::Test
         "semantic-tracker-head-sha: #{HEAD_SHA}",
         "semantic-tracker-diff-identity: #{DIFF_IDENTITY}",
         "semantic-tracker-operation-digest: " \
-          "#{MergeAssurance.semantic_tracker_operation_digest(semantic_tracker)}"
+          "#{MergeAssurance.semantic_tracker_operation_digest(tracker)}"
       ].join("\n"),
       "updated_at" => "2026-07-30T11:59:30Z"
     }
@@ -4127,7 +4310,10 @@ class MergeAssuranceTest < Minitest::Test
     }
   end
 
-  def autonomous_result(verdict, head_sha: HEAD_SHA)
+  def autonomous_result(
+    verdict, head_sha: HEAD_SHA, repo: "owner/repo", pull_request: 42,
+    base_ref: "main", base_sha: BASE_SHA
+  )
     triggered_gates, human_decision_evidence =
       case verdict
       when "human-approval-required"
@@ -4149,8 +4335,8 @@ class MergeAssuranceTest < Minitest::Test
     {
       "verdict" => verdict,
       "head_sha" => head_sha,
-      "policy_provenance" => "git:#{BASE_SHA}",
-      "helper_provenance" => "trusted-base:#{BASE_SHA}",
+      "policy_provenance" => "git:#{base_sha}",
+      "helper_provenance" => "trusted-base:#{base_sha}",
       "helper_trust" => {
         "status" => "mechanically-verified",
         "manifest" => autonomous_runtime_manifest
@@ -4163,6 +4349,9 @@ class MergeAssuranceTest < Minitest::Test
       "shadow_evidence_unknown" => [],
       "rollback_assessment" => "code-only-rollback-established",
       "human_decision_evidence" => human_decision_evidence,
+      "current_integration" => base_unchanged_integration(
+        head_sha:, repo:, pull_request:, base_ref:, base_sha:
+      ),
       "evidence_failures" => []
     }
   end
@@ -4173,12 +4362,73 @@ class MergeAssuranceTest < Minitest::Test
       "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
       "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
       "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+      "integration-evidence-library" => "skills/pr-batch/lib/current_integration_evidence.rb",
       "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
       "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
       "policy-yaml-library" => "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
       "runtime-trust-library" => "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb",
       "calibration-decision" =>
         "skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json"
+    }
+  end
+
+  def base_unchanged_integration(
+    head_sha: HEAD_SHA, repo: "owner/repo", pull_request: 42,
+    base_ref: "main", base_sha: BASE_SHA
+  )
+    {
+      "contract" => "current-integration-evidence",
+      "version" => 1,
+      "repository" => repo,
+      "pr" => pull_request,
+      "recorded_base_sha" => base_sha,
+      "head_sha" => head_sha,
+      "current_base" => { "ref" => base_ref, "sha" => base_sha },
+      "patch_identity" => nil,
+      "candidate" => nil,
+      "base_delta" => { "paths" => [] },
+      "reuse" => { "decision" => "base-unchanged", "reasons" => ["base-unchanged"] },
+      "telemetry" => {
+        "validator_replays_avoided" => 0,
+        "review_replays_avoided" => 0,
+        "elapsed_seconds_saved" => nil
+      }
+    }
+  end
+
+  def bind_current_integration!(autonomous, merge_context)
+    integration = autonomous.fetch("current_integration")
+    base = merge_context.fetch("base")
+    integration["repository"] = merge_context.fetch("repo")
+    integration["pr"] = merge_context.fetch("pr")
+    integration["recorded_base_sha"] = base.fetch("sha")
+    integration["head_sha"] = merge_context.fetch("head_sha")
+    integration["current_base"] = base.dup
+  end
+
+  def reused_current_integration
+    {
+      "contract" => "current-integration-evidence",
+      "version" => 1,
+      "repository" => "owner/repo",
+      "pr" => 42,
+      "recorded_base_sha" => "e" * 40,
+      "head_sha" => HEAD_SHA,
+      "current_base" => { "ref" => "main", "sha" => BASE_SHA },
+      "patch_identity" => "f" * 64,
+      "candidate" => {
+        "source" => "github-potential-merge-commit",
+        "oid" => "1" * 40,
+        "tree_oid" => "2" * 40,
+        "parents" => [BASE_SHA, HEAD_SHA]
+      },
+      "base_delta" => { "paths" => ["docs/guide.md"] },
+      "reuse" => { "decision" => "reuse-exact-head", "reasons" => ["base-delta-reuse-safe"] },
+      "telemetry" => {
+        "validator_replays_avoided" => 1,
+        "review_replays_avoided" => 1,
+        "elapsed_seconds_saved" => nil
+      }
     }
   end
 

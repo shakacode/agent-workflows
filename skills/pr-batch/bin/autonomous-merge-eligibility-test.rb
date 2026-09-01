@@ -28,6 +28,51 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     )
   end
 
+  def test_disjoint_safe_current_base_delta_preserves_exact_head_eligibility
+    result = evaluate do |recorded_base, root|
+      stale_evaluation(
+        root:, recorded_base:,
+        head_path: "lib/feature.rb",
+        base_delta_path: "docs/guide.md"
+      )
+    end
+
+    assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+    assert_equal "reuse-exact-head", result.dig("current_integration", "reuse", "decision")
+    assert_equal ["base-delta-reuse-safe"], result.dig("current_integration", "reuse", "reasons")
+    assert_equal 1, result.dig("current_integration", "telemetry", "validator_replays_avoided")
+  end
+
+  def test_disjoint_code_on_both_sides_requires_fresh_integration
+    result = evaluate do |recorded_base, root|
+      stale_evaluation(
+        root:, recorded_base:,
+        head_path: "lib/feature.rb",
+        base_delta_path: "lib/unrelated.rb"
+      )
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_includes result.fetch("evidence_failures").first, "current integration requires fresh evidence"
+    assert_includes result.fetch("evidence_failures").first, "neither-delta-reuse-safe"
+  end
+
+  def test_copied_file_source_is_not_mistaken_for_a_changed_path
+    result = evaluate do |recorded_base, root|
+      copied_stale_evaluation(
+        root:,
+        recorded_base:,
+        source_path: "lib/source.rb",
+        destination_path: "lib/copied.rb",
+        base_delta_path: "docs/guide.md"
+      )
+    end
+
+    assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+    assert_equal "reuse-exact-head", result.dig("current_integration", "reuse", "decision")
+    assert_equal ["base-delta-reuse-safe"], result.dig("current_integration", "reuse", "reasons")
+  end
+
   def test_live_collection_returns_a_verdict_with_non_ascii_payload_in_a_c_locale
     result = evaluate(subprocess_env: { "LANG" => "C", "LC_ALL" => "C" }) do |base_sha|
       evidence(
@@ -686,6 +731,115 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal "UNKNOWN", weakened_tests.fetch("verdict")
   end
 
+  def test_portable_safe_path_groups_classify_docs_and_tests_without_repo_configuration
+    documentation = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("docs/usage.md"), file("guides/setup.txt"), file("notes.mdx")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    tests = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("spec/service_spec.rb"), file("test/support/helper.rb"), file("src/__tests__/api.test.ts")],
+        semantic: semantic_assessment.merge("safe_class" => "tests", "test_change" => "strengthens-only")
+      )
+    end
+
+    assert_equal "autonomous-merge-eligible", documentation.fetch("verdict")
+    assert_equal "documentation", documentation.fetch("safe_class")
+    assert_equal "autonomous-merge-eligible", tests.fetch("verdict")
+    assert_equal "tests", tests.fetch("safe_class")
+  end
+
+  def test_portable_safe_path_group_excludes_reject_policy_and_sensitive_documents_by_default
+    cases = {
+      "workflows/pr-processing.md" => true,
+      "skills/pr-batch/SKILL.md" => true,
+      "docs/adr/0003-smarter-autonomous-merge-gates.md" => true,
+      "AGENTS.md" => true,
+      "spec/AGENTS.md" => false,
+      "CHANGELOG.md" => false,
+      "README.md" => false,
+      "SECURITY.md" => false
+    }
+
+    cases.each do |path, policy_gated|
+      safe_class = path.end_with?(".md") && path.start_with?("spec/") ? "tests" : "documentation"
+      result = evaluate do |base_sha|
+        evidence(
+          base_sha:,
+          files: [file(path)],
+          semantic: semantic_assessment.merge("safe_class" => safe_class, "test_change" => "strengthens-only")
+        )
+      end
+
+      assert_equal "UNKNOWN", result.fetch("verdict"), path
+      assert_includes result.fetch("evidence_failures"),
+                      "safe classification #{safe_class} contradicts path evidence", path
+      next unless policy_gated
+
+      assert_includes result.fetch("triggered_gates"), "autonomous-merge-policy-change", path
+    end
+  end
+
+  def test_consumer_safe_path_groups_add_patterns_without_removing_a_portable_exclude
+    policy_yaml = <<~YAML
+      autonomous_merge:
+        safe_path_groups:
+          documentation:
+            include:
+              - handbook/**
+              - workflows/**
+            exclude:
+              - handbook/runbooks/**
+    YAML
+    added = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("handbook/onboarding.rst")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    portable_include_survives = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("docs/usage.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    consumer_exclude = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("handbook/runbooks/restore.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    portable_exclude_survives = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("workflows/pr-processing.md")],
+        semantic: semantic_assessment.merge("safe_class" => "documentation")
+      )
+    end
+    other_group_stays_portable = evaluate(policy_yaml:) do |base_sha|
+      evidence(
+        base_sha:,
+        files: [file("spec/service_spec.rb")],
+        semantic: semantic_assessment.merge("safe_class" => "tests", "test_change" => "strengthens-only")
+      )
+    end
+
+    assert_equal "documentation", added.fetch("safe_class")
+    assert_equal "documentation", portable_include_survives.fetch("safe_class")
+    assert_equal "UNKNOWN", consumer_exclude.fetch("verdict")
+    assert_equal "UNKNOWN", portable_exclude_survives.fetch("verdict")
+    assert_includes portable_exclude_survives.fetch("evidence_failures"),
+                    "safe classification documentation contradicts path evidence"
+    assert_equal "tests", other_group_stays_portable.fetch("safe_class")
+  end
+
   def test_missing_false_invalid_or_ambiguous_safe_classification_fails_closed
     policy_yaml = <<~YAML
       autonomous_merge:
@@ -1021,12 +1175,16 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_closeout_workflow_uses_the_authenticated_runtime_directory
-    workflow = File.read(File.expand_path("../../../workflows/pr-processing.md", __dir__), encoding: "UTF-8")
+    workflow = File.read(
+      File.expand_path("../../../workflows/pr-batch-integration-closeout.md", __dir__),
+      encoding: "UTF-8"
+    )
+    index = File.read(File.expand_path("../../../workflows/pr-processing.md", __dir__), encoding: "UTF-8")
     skill = File.read(File.expand_path("../SKILL.md", __dir__), encoding: "UTF-8")
 
-    [workflow, skill].each do |document|
-      assert_includes document, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout"'
-    end
+    assert_includes workflow, '"${TRUSTED_PR_BATCH_SKILL_DIR}/bin/autonomous-merge-closeout"'
+    assert_includes skill, "pr-batch-integration-closeout.md#autonomous-merge-eligibility-gate"
+    assert_includes index, "pr-batch-integration-closeout.md#autonomous-merge-eligibility"
     assert_includes workflow,
                     'git cat-file -e "${TRUSTED_BASE_SHA}:skills/pr-batch/bin/autonomous-merge-closeout"'
     assert_includes workflow,
@@ -1377,6 +1535,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
         stdout, stderr, status = Open3.capture3(
           {
             "AUTONOMOUS_MERGE_GH" => fake_gh,
+            "CURRENT_INTEGRATION_GH" => fake_gh,
             "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path,
             "AUTONOMOUS_MERGE_TEST_INVALID_UTF8_FIELD" => gh_invalid_utf8_field.to_s
           }.merge(subprocess_env),
@@ -1395,11 +1554,15 @@ class AutonomousMergeEligibilityTest < Minitest::Test
 
   def evaluate(reviewed_heads_mode: "shadow", policy_yaml: nil, subprocess_env: {},
                gh_invalid_utf8_field: nil, invalid_utf8_semantic_field: nil,
-               invalid_utf8_semantic_syntax: false)
+               invalid_utf8_semantic_syntax: false, &evaluation_builder)
     Dir.mktmpdir("autonomous-merge-eligibility-test") do |root|
       calibration_path = write_calibration(root, reviewed_heads_mode:)
       base_sha = initialize_trusted_base(root, policy_yaml:, include_runtime: true)
-      evaluation = yield(base_sha)
+      evaluation = if evaluation_builder.arity == 2
+                     evaluation_builder.call(base_sha, root)
+                   else
+                     evaluation_builder.call(base_sha)
+                   end
       invoke(root:, calibration_path:, evaluation:, subprocess_env:, gh_invalid_utf8_field:,
              invalid_utf8_semantic_field:, invalid_utf8_semantic_syntax:)
     end
@@ -1471,12 +1634,42 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       require "json"
 
       objective = JSON.parse(File.read(ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")))
+      if ARGV.include?("graphql")
+        response = {
+          "data" => {
+            "repository" => {
+              "pullRequest" => {
+                "headRefOid" => objective.fetch("head_sha").downcase,
+                "baseRefName" => objective.fetch("base_ref"),
+                "potentialMergeCommit" => {
+                  "oid" => objective.fetch("test_candidate_oid"),
+                  "tree" => { "oid" => objective.fetch("test_candidate_tree") },
+                  "parents" => {
+                    "totalCount" => 2,
+                    "nodes" => [
+                      { "oid" => objective.fetch("test_current_base_sha") },
+                      { "oid" => objective.fetch("head_sha").downcase }
+                    ]
+                  }
+                }
+              },
+              "ref" => { "target" => { "oid" => objective.fetch("test_current_base_sha") } }
+            }
+          }
+        }
+        puts JSON.generate(response)
+        exit
+      end
+
       request = ARGV.fetch(-1)
       response = case request
                  when "repos/example/repo/pulls/1"
                    {
                      "head" => { "sha" => objective.fetch("head_sha") },
-                     "base" => { "sha" => objective.fetch("base_sha") },
+                     "base" => {
+                       "sha" => objective.fetch("base_sha"),
+                       "ref" => objective.fetch("base_ref")
+                     },
                      "updated_at" => "2026-07-25T12:00:00Z",
                      "changed_files" => objective.fetch("github_changed_files", objective.fetch("files").length),
                      "commits" => objective.fetch("github_commits", objective.fetch("commits").length)
@@ -1552,6 +1745,76 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     { files:, commits: }
   end
 
+  def stale_evaluation(root:, recorded_base:, head_path:, base_delta_path:)
+    git!(root, "switch", "--quiet", "--detach", recorded_base)
+    git!(root, "switch", "--quiet", "-c", "feature")
+    FileUtils.mkdir_p(File.join(root, File.dirname(head_path)))
+    File.write(File.join(root, head_path), "feature\n")
+    git!(root, "add", head_path)
+    git!(root, "commit", "--quiet", "-m", "feature")
+    head_sha = git!(root, "rev-parse", "HEAD").strip
+
+    git!(root, "switch", "--quiet", "--detach", recorded_base)
+    FileUtils.mkdir_p(File.join(root, File.dirname(base_delta_path)))
+    File.write(File.join(root, base_delta_path), "base delta\n")
+    git!(root, "add", base_delta_path)
+    git!(root, "commit", "--quiet", "-m", "advance base")
+    current_base = git!(root, "rev-parse", "HEAD").strip
+    git!(root, "update-ref", "refs/heads/trusted-base", current_base)
+    candidate_tree = git!(root, "merge-tree", "--write-tree", current_base, head_sha).lines.first.strip
+
+    evidence(base_sha: recorded_base, files: [file(head_path)]).tap do |input|
+      objective = input.fetch("objective")
+      objective["head_sha"] = head_sha
+      objective["test_current_base_sha"] = current_base
+      objective["test_candidate_oid"] = "d" * 40
+      objective["test_candidate_tree"] = candidate_tree
+    end
+  end
+
+  def copied_stale_evaluation(root:, recorded_base:, source_path:, destination_path:, base_delta_path:)
+    git!(root, "switch", "--quiet", "--detach", recorded_base)
+    FileUtils.mkdir_p(File.join(root, File.dirname(source_path)))
+    File.write(File.join(root, source_path), "source\n")
+    git!(root, "add", source_path)
+    git!(root, "commit", "--quiet", "-m", "add copy source")
+    recorded_with_source = git!(root, "rev-parse", "HEAD").strip
+
+    git!(root, "switch", "--quiet", "-c", "feature-copy")
+    FileUtils.mkdir_p(File.join(root, File.dirname(destination_path)))
+    FileUtils.cp(File.join(root, source_path), File.join(root, destination_path))
+    git!(root, "add", destination_path)
+    git!(root, "commit", "--quiet", "-m", "copy source")
+    head_sha = git!(root, "rev-parse", "HEAD").strip
+
+    git!(root, "switch", "--quiet", "--detach", recorded_with_source)
+    FileUtils.mkdir_p(File.join(root, File.dirname(base_delta_path)))
+    File.write(File.join(root, base_delta_path), "base delta\n")
+    git!(root, "add", base_delta_path)
+    git!(root, "commit", "--quiet", "-m", "advance base")
+    current_base = git!(root, "rev-parse", "HEAD").strip
+    git!(root, "update-ref", "refs/heads/trusted-base", current_base)
+    candidate_tree = git!(root, "merge-tree", "--write-tree", current_base, head_sha).lines.first.strip
+
+    evidence(
+      base_sha: recorded_with_source,
+      files: [file(destination_path, status: "copied", previous_path: source_path)]
+    ).tap do |input|
+      objective = input.fetch("objective")
+      objective["head_sha"] = head_sha
+      objective["test_current_base_sha"] = current_base
+      objective["test_candidate_oid"] = "d" * 40
+      objective["test_candidate_tree"] = candidate_tree
+    end
+  end
+
+  def git!(root, *arguments)
+    stdout, stderr, status = Open3.capture3("git", "-C", root, *arguments)
+    raise stderr unless status.success?
+
+    stdout
+  end
+
   def evidence(base_sha:, files:, commits: [{ "sha" => "c" * 40 }], reviews: [],
                semantic: semantic_assessment, decision_comments: [])
     {
@@ -1560,6 +1823,10 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       "objective" => {
         "head_sha" => HEAD_SHA,
         "base_sha" => base_sha,
+        "base_ref" => "main",
+        "test_current_base_sha" => base_sha,
+        "test_candidate_oid" => "d" * 40,
+        "test_candidate_tree" => "e" * 40,
         "files_complete" => true,
         "files" => files,
         "commits_complete" => true,

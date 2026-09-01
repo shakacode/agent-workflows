@@ -41,13 +41,48 @@ That path is relative to `~/.agents`. The file
 installation and upgrades; do not edit it or use it for personal
 customization.
 
-An invalid repository configuration, path, or guide blocks resolution. An
-invalid user-global configuration, path, or guide emits a warning and falls
-back to [the packaged portable default](writing-style.md). When `writing_style`
-is absent from both repository and user-global configuration, the resolver also
-uses that packaged default. Resolution is
+An invalid repository configuration, preset, path, or guide blocks resolution.
+An invalid user-global configuration, preset, path, or guide emits a warning
+and falls back to [the packaged portable default](writing-style.md). When
+`writing_style` is absent from both repository and user-global configuration,
+the resolver also uses that packaged default. Resolution is
 repo → user-global → portable default, and one complete Markdown file wins
 without merging prose.
+
+### Adopt ASD-STE100 for Technical Documentation
+
+A project can opt in to the independently authored packaged adapter with the
+exact preset scalar:
+
+```yaml
+writing_style: asd-ste100
+```
+
+The same scalar can be set once in `~/.agents/agent-workflow.yml` as a personal
+fallback. Any repository `writing_style` value, whether the preset or a
+relative Markdown path, overrides that user-global selection. The portable
+default remains the generic [writing style](writing-style.md).
+
+The preset keeps the generic plain-language baseline and adds
+ASD-STE100-inspired constraints only for human-facing technical-documentation
+prose. It preserves exact identifiers, commands, templates, evidence, quoted
+text, and machine-readable protocol fields. It does not load the standard from
+a URL, fetch remote content, or check conformance, and it does not contain the
+ASD-STE100 specification or dictionary.
+
+Use the official standard as the primary reference:
+
+- [ASD-STE100 official site](https://www.asd-ste100.org/)
+- [Official downloads](https://www.asd-ste100.org/STE_downloads.html)
+- [Official software information](https://www.asd-ste100.org/STEsoftware.html)
+- [Official training information](https://www.asd-ste100.org/STE_training.html)
+- [ASD-STE100 Issue 9 PDF](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf)
+  (Issue 9, 2025-01-15)
+
+Do not vendor or copy the copyrighted standard PDF or its dictionary into this
+repository or a project guide. Formal ASD-STE100 work requires access to an
+authorized specification and review by a qualified human. The packaged adapter
+and AI tools do not establish ASD approval, certification, or conformance.
 
 ## One-Time Adoption
 

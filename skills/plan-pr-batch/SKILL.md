@@ -129,36 +129,14 @@ Plan a PR batch
 
 ## Workflow
 
-### Canonical Launch Target Gate
+### Prompt Intake
 
-Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target.
-Pass the repository-qualified canonical issue/PR identity unchanged through planning, plan preflight, dispatch, coordination claims, the Lane Card, and final handoff.
-A direct prompt without either target must stop before branch creation, editing, implementation or coordination mutation, or worker dispatch and route to planning/reconciliation.
-Planning/reconciliation searches the repository for the exact existing issue or PR and reuses that identity, so equivalent prompt wording cannot create independently claimable synthetic lanes.
-When search finds no canonical issue or existing PR, create the canonical issue with explicit planning-time issue-creation authority, or ask for that authority; do not create a branch, edit, or dispatch until the persisted issue identity is rebound into the plan and preflight passes.
-
-The only exception is a named, trusted, task-specific durable ad-hoc override.
-Generic instructions, `$pr-batch` invocation, fix-it intent, or PR-publication authority do not create this override.
-Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff.
-All override fields must be explicit, trusted, task-matched, durable, and non-`UNKNOWN`. Use `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` as the stable coordination identity and preserve it unchanged in durable evidence; coordination derives the backend-safe raw pair of lowercase repository plus exact `adhoc:<yyyymmdd>-<short-slug>` target token. Fail closed to planning/reconciliation when any override evidence is missing or inferred. An existing PR is sufficient and never requires a retroactive issue.
-A labeled authorizer or task identity whose complete value component is `UNKNOWN` is incomplete and also fails closed.
-Complete labeled component values `fix-it`, `pr-batch`, and `publish-pr` are generic intent and fail closed in either provenance field, even when the override name is task-specific.
-The exact override names `fix-it`, `pr-batch`, and `publish-pr` are likewise generic and invalid.
-For this override field only, `durable_authorization_ref` must use `issue://OWNER/REPO/N`, `plan-state://<id>/<path>`, `batch://<id>`, or `https://github.com/OWNER/REPO/{issues|pull}/N`; any other scheme or chat-local reference fails closed.
-Parseable `issue://` and GitHub HTTPS authorization references must match `target.repository` case-insensitively; opaque `plan-state://` and `batch://` references remain trusted without invented repository parsing.
-Parseable authorization refs reject userinfo and query; GitHub HTTPS requires port 443, `issue://` requires the exact canonical authority/path shape, and fragments remain permitted.
-Every typed target repository has exactly two ASCII components separated by `/`: the owner matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from `[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
-
-Every preflight lane carries one exact `target` v1 record. GitHub targets use
-`type`, `version`, `repository`, positive `number`, and a matching
-`stable_coordination_identity`; their types are `github-issue` and
-`github-pull-request`, with identities `OWNER/REPO:issue:N` and
-`OWNER/REPO:pull-request:N`. The sole ad-hoc form uses type
-`trusted-ad-hoc-override`, `repository`, `target: adhoc:<yyyymmdd>-<short-slug>`, matching stable
-identity, a lowercase slug `override_name`, labeled `kind:value` authorizer and
-task identities, and the durable reference. Missing,
-malformed, unknown, or duplicate identities make `batch-plan-preflight` reject
-the whole launch before dispatch.
+Load the canonical
+[PR-Batch Prompt Intake](../../workflows/pr-batch-intake.md) component before
+interpreting targets or shaping lanes. It alone defines canonical target v1,
+durable override provenance, trust handoff, short-invocation expansion,
+duplicate handling, and the verified facts this planner consumes. Planning may
+add scope, dependency, route, and capacity facts, but must not redefine intake.
 
 1. Intake
    - Before reading GitHub targets or shaping the batch, record future
@@ -311,9 +289,9 @@ the whole launch before dispatch.
      local artifacts, but must plan an explicit blocked human-attachment
      handoff until durable GitHub URLs exist.
    - Decide whether the batch will schedule any parallel wave before doing path
-     discovery. The File-touch map exists only to keep same-path items out of the
-     same parallel worktree wave; a serial schedule cannot collide, so the map
-     cannot change it. If the batch runs serially — a single item, the user asked
+     discovery. The File-touch map records integration intersections; it does not
+     create dependencies or keep same-path items out of a wave. Issue-authored
+     semantic dependencies alone become typed stage-dependency edges. If the batch runs serially — a single item, the user asked
      for serial execution, or the resolved host cap is 1 — skip path discovery and
      default every lane to serial. Otherwise build the map only for items that are
      candidates for the same parallel wave. PR path discovery is a cheap
@@ -359,11 +337,15 @@ the whole launch before dispatch.
      proposed new paths from issue/design notes and grep the repo to confirm
      existing paths. If paths still cannot be determined, record `UNKNOWN` and
      treat the item as serial.
-   - File-touch map, collision and wave scheduling: items that affect the same
-     path cannot run as parallel worktrees; keep only file-disjoint items in the
-     parallel first batch and sequence or defer collisions. A directory rename
-     reserves descendants under both the old and new directory names, so any
-     create/delete/edit under either tree collides with that rename. An `UNKNOWN`
+   - File-touch map, overlap and wave scheduling: record same-path intersections
+     as integration advisories and keep the lanes moving; do not infer or alter a
+     semantic dependency from an overlap. Repeated overlap is a modularization
+     signal. At integration, apply consequence-aware care to executable, schema,
+     security, merge-policy, and canonical-contract intersections. Resolve
+     changelog and generated-artifact ownership from the consumer repository's
+     `AGENTS.md` artifact-ownership seam (`defer`, `waive`, `dedicated-owner`, or
+     required); ordinary documentation is advisory. A directory rename reserves
+     descendants under both the old and new directory names, so any create/delete/edit under either tree is reported together. An `UNKNOWN`
      item runs as a serial "discovery lane" — a lane that first determines its
      real paths instead of editing in parallel. Never run discovery lanes
      concurrently with active editor lanes. For items already in the scheduling
@@ -378,7 +360,7 @@ the whole launch before dispatch.
      detection; otherwise use the detectable current host, or `generic` when
      detection is ambiguous. Installed Codex/Claude homes prove install state,
      not the active runtime.
-     After collision filtering, default to these maximum file-disjoint lanes per
+     After semantic dependency planning, default to these maximum independent lanes per
      prompt or wave. Items with `UNKNOWN` path evidence remain serial discovery
      lanes and are not counted in parallel wave limits.
      - `codex`: up to 10 independent items, or 8 when any lane touches shared/risky
@@ -390,7 +372,7 @@ the whole launch before dispatch.
      - `generic`: use the Claude-sized 5/3 limit unless the user explicitly
        names a host with larger verified capacity.
      Prefer a smaller first batch when live coordination, CI, approval, or quota
-     health is uncertain; put remaining file-disjoint work in later wave
+     health is uncertain; put remaining independent work in later wave
      prompts.
    - Model/effort routing: keep the coordinator model/effort preference
      and independent-checker preference separate from every worker
@@ -417,8 +399,9 @@ the whole launch before dispatch.
      that route `UNKNOWN`; it remains an advisory preference rather than a launch
      blocker. Group lanes by model/effort preference,
      or dispatch-resolved class/effort route, for review and dispatch,
-     but preserve lane ownership, dependencies, serial discovery, collision
-     rules, and wave caps; grouping never combines targets into one worker.
+     but preserve lane ownership, dependencies, serial discovery,
+     active-reservation coordination, and wave caps; grouping never combines
+     targets into one worker.
      Keep coordinator and worker requested preferences independent. If the
      dispatcher or runtime inherits or defaults to the coordinator route, record
      it honestly and continue unless an independent gate blocks. Prefer a fresh strongest-capability checker
@@ -483,7 +466,7 @@ the whole launch before dispatch.
      explicit env-var / loaded-skill / repo-local pinned-copy chain and pass a
      `batch-plan-preflight` v1 envelope on stdin to
      `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
-     owns schema, collision, backend-cap, QA, external-premise, active-wave, and
+     owns schema, advisory-overlap reporting, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
      `lane_lifecycle_states` array. Advance max-one groups only from a separate
@@ -860,7 +843,7 @@ Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOW
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
+Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
@@ -883,7 +866,7 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
   an issue with no explicit paths all go straight to a serial lane as `UNKNOWN`.
 - Do not omit links; use GitHub URLs for every item.
 - Do not put full audit evidence in the goal prompt; put bulky details in the Batch Plan outside the goal.
-- Do not fan out items that change the same path as parallel worktrees; they will conflict — sequence them or split into a later batch.
+- Do not turn file overlap into an inferred dependency; record it as an integration advisory and preserve issue-authored semantic ordering.
 - Do not use installed Codex/Claude homes as proof of the current runtime host;
   use an explicit target or fall back to `generic` sizing when detection is
   ambiguous.
@@ -891,7 +874,8 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
   radius, reversibility, and validation difficulty can force a stronger model
   and more effort.
 - Do not treat model grouping as lane grouping; collate the plan by exact pair
-  without combining ownership or weakening dependency and collision ordering.
+  without combining ownership or weakening dependencies and active-reservation
+  coordination.
 - Do not eyeball the goal-prompt length; apply the Output-section size gate and split Codex prompts into smaller goals if they are over budget.
 
 ## Self-Check
