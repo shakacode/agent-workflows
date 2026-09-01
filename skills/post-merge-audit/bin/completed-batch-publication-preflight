@@ -573,7 +573,10 @@ module CompletedBatchPublicationPreflight
       expected_targets,
       verifier: target_projection_verifier
     )
-    projection ? [{ "target" => target, "target_projection" => projection }] : []
+    return [] unless projection
+
+    canonical_target = expected_targets.find { |candidate| target_key(candidate) == target_key(target) }
+    [{ "target" => canonical_target, "target_projection" => projection }]
   end
 
   def parsed_lane_target(value)
