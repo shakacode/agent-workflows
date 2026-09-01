@@ -883,6 +883,14 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes followups_output, "Action needed: Start a new task for issue #445."
     assert_includes followups_output,
                     "Next: Start a new task from issue #445; keep this task open until the handoff is created."
+    assert_includes followups_output,
+                    "Unblock:\n1. [you] Start a new task for issue #445 — https://github.com/acme/widgets/issues/445"
+    assert_includes followups_output,
+                    "Help: assign issue #445 to an existing active task and paste that task URL here."
+    assert_match(
+      /Completed-batch audit:.*\nUnblock:\n.*\n   Help:.*\nConversation status: Follow-ups remain — issue #445 \(open\): track\.\z/m,
+      followups_output
+    )
     assert_includes followups_output, "Conversation status: Follow-ups remain — issue #445 (open): track."
 
     unknown_diagnostic = cases.find do |replay_case|
@@ -1626,7 +1634,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md" => @post_merge_audit_skill
     }.each do |label, text|
       assert_squished_includes text,
-                               "the receipt can open the closing lines before the optional Unblock Block and the final `Conversation status:` line",
+                               "the receipt can open the closing lines before the Unblock Block when status is not clean, and before the final `Conversation status:` line",
                                label
       refute_includes text, "receipt can still immediately precede the final `Conversation status:` line",
                       "#{label} must not exclude the Unblock Block from the closing lines"

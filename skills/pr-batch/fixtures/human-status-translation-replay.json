@@ -164,9 +164,9 @@
         "what_changed": "The pull request merged, but one tracked follow-up still blocks this task's archive gate.",
         "action_needed": "Start a new task for issue #445.",
         "next": "Start a new task from issue #445; keep this task open until the handoff is created.",
-        "existing_closeout_handoff": "Completed-batch audit: follow-ups-remain — durable receipt recorded.\nConversation status: Follow-ups remain — issue #445 (open): track."
+        "existing_closeout_handoff": "Completed-batch audit: follow-ups-remain — durable receipt recorded.\nUnblock:\n1. [you] Start a new task for issue #445 — https://github.com/acme/widgets/issues/445\n   Help: assign issue #445 to an existing active task and paste that task URL here.\nConversation status: Follow-ups remain — issue #445 (open): track."
       },
-      "expected_user_output": "What changed: The pull request merged, but one tracked follow-up still blocks this task's archive gate. Action needed: Start a new task for issue #445. Next: Start a new task from issue #445; keep this task open until the handoff is created.\n\nCompleted-batch audit: follow-ups-remain — durable receipt recorded.\nConversation status: Follow-ups remain — issue #445 (open): track."
+      "expected_user_output": "What changed: The pull request merged, but one tracked follow-up still blocks this task's archive gate. Action needed: Start a new task for issue #445. Next: Start a new task from issue #445; keep this task open until the handoff is created.\n\nCompleted-batch audit: follow-ups-remain — durable receipt recorded.\nUnblock:\n1. [you] Start a new task for issue #445 — https://github.com/acme/widgets/issues/445\n   Help: assign issue #445 to an existing active task and paste that task URL here.\nConversation status: Follow-ups remain — issue #445 (open): track."
     }
   ]
 }
