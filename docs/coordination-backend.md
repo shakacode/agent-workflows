@@ -91,6 +91,14 @@ well-formed marker on the target's own issue or PR surface; and every identity
 field must be nonempty, `status` must be `in_progress`, and `expires_at` must be
 in the future. A comment body alone never qualifies.
 
+The packaged fallback intentionally trusts no users, actionable bots, or teams.
+A repository that selects public fallback for mutating work must configure each
+claim-authoring human or automation identity under `trusted_users`,
+`trusted_bots`, or `trusted_teams` in its repo-local or user-global trust config.
+Without that entry, verification is `UNKNOWN`: the lane cannot post or renew an
+actionable claim and must not mutate through this mode. Matching marker fields
+never bypass author trust.
+
 ```markdown
 <!-- codex-claim v1
 batch: <BATCH_ID>
