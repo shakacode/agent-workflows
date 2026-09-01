@@ -80,10 +80,12 @@ into this workflow:
    open a second fix for the same flake.
 3. **Broken, not flaky, or deterministic parity gap.** Obtain exact hosted
    failure logs and history for the failure identity, then record the local
-   result separately. If the same exact failure occurs on every equivalent
-   hosted invocation (workflow event, inputs, matrix configuration, realized
-   runner image, and toolchain) and reproduces locally, it is an ordinary bug.
-   If the same exact failure occurs on every equivalent hosted invocation and the
+   result separately. An equivalent hosted invocation has matching invocation
+   parameters and all known realized hosted environment/parity state. If
+   equivalence is unverifiable, record `UNKNOWN` and do not take either exit.
+   If the same exact failure occurs on every equivalent hosted invocation and
+   reproduces locally, it is an ordinary bug. If the same exact failure occurs
+   on every equivalent hosted invocation and the
    local reproduction is green, hand it to
    `replicate-ci` as a deterministic parity gap. Either Step 1 exit requires
    citations to the exact hosted determinism and the corresponding local
