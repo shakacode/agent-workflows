@@ -146,6 +146,7 @@ def help_request_lifecycle(batch_payload, now:, max_open_seconds:, lane: nil)
   unless batch_payload.is_a?(Hash) && batch_payload["events"].is_a?(Array)
     return { "status" => UNKNOWN, "error" => "batch event history unavailable" }
   end
+
   event_note = batch_payload["section_notes"].is_a?(Hash) && present_string(batch_payload["section_notes"]["events"])
   return { "status" => UNKNOWN, "error" => event_note } if event_note
 

@@ -121,27 +121,27 @@ class HelpRequestLifecycleTest < Minitest::Test
   def test_coordinator_can_resolve_an_unlaned_worker_request_for_the_same_target
     input = Tempfile.new(["help-request-lifecycle-unlaned", ".json"])
     input.write(JSON.generate(
-      "events" => [
-        {
-          "event_id" => "request-1",
-          "batch_id" => "batch-1",
-          "target" => "462",
-          "agent_id" => "worker-1",
-          "type" => "help_requested",
-          "reason" => "permission",
-          "at" => "2026-08-23T05:48:18Z"
-        },
-        {
-          "event_id" => "resolution-1",
-          "batch_id" => "batch-1",
-          "target" => "issue:462",
-          "agent_id" => "coordinator-1",
-          "type" => "help_request.resolved",
-          "evidence" => "request-1",
-          "at" => "2026-08-23T05:50:00Z"
-        }
-      ]
-    ))
+                  "events" => [
+                    {
+                      "event_id" => "request-1",
+                      "batch_id" => "batch-1",
+                      "target" => "462",
+                      "agent_id" => "worker-1",
+                      "type" => "help_requested",
+                      "reason" => "permission",
+                      "at" => "2026-08-23T05:48:18Z"
+                    },
+                    {
+                      "event_id" => "resolution-1",
+                      "batch_id" => "batch-1",
+                      "target" => "issue:462",
+                      "agent_id" => "coordinator-1",
+                      "type" => "help_request.resolved",
+                      "evidence" => "request-1",
+                      "at" => "2026-08-23T05:50:00Z"
+                    }
+                  ]
+                ))
     input.flush
 
     result, stderr, status = run_lifecycle(input: input.path, now: "2026-08-23T05:51:00Z")

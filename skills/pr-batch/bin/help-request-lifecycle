@@ -28,6 +28,7 @@ end
 begin
   parser.parse!(ARGV)
   raise OptionParser::InvalidArgument, "unexpected arguments: #{ARGV.join(' ')}" unless ARGV.empty?
+
   source = options.fetch(:input) == "-" ? $stdin.read : File.read(options.fetch(:input))
   payload = JSON.parse(source)
   result = HelpRequestLifecycle.evaluate(

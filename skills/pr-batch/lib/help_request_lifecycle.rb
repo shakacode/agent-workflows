@@ -72,14 +72,14 @@ module HelpRequestLifecycle
     end
     raise InputError, "events must be an array" unless payload["events"].is_a?(Array)
     raise InputError, "now must be a Time" unless now.is_a?(Time)
-    unless max_open_seconds.is_a?(Integer) && max_open_seconds.positive?
-      raise InputError, "max_open_seconds must be a positive integer"
-    end
+    return if max_open_seconds.is_a?(Integer) && max_open_seconds.positive?
+
+    raise InputError, "max_open_seconds must be a positive integer"
   end
 
   def ordered_events(events)
     ids = {}
-    events.each_with_index.map do |event, index|
+    ordered = events.each_with_index.map do |event, index|
       raise InputError, "event #{index} must be an object" unless event.is_a?(Hash)
 
       event_id = required_string(event, "event_id")
@@ -87,7 +87,8 @@ module HelpRequestLifecycle
 
       ids[event_id] = true
       [event_time(event), index, event]
-    end.sort_by { |at, index, _event| [at, index] }.map(&:last)
+    end
+    ordered.sort_by { |at, index, _event| [at, index] }.map(&:last)
   end
 
   def open_request(event, event_id)
