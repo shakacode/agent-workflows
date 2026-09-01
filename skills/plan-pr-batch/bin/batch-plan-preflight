@@ -1299,6 +1299,7 @@ module BatchPlanPreflight
           host.dig("external_quota", "occupied") - quota_lifecycle_count,
         admitted: [],
         admitted_quota: 0,
+        worker_held: [],
         quota_held: [],
         group_held: []
       }]
@@ -1327,6 +1328,7 @@ module BatchPlanPreflight
         elsif state[:admitted].length >= state[:available_workers]
           capacity_held << lane_id
           held_reasons[lane_id] = "worker-budget-full"
+          state[:worker_held] << lane_id
         elsif lane["uses_external_quota"] == true && state[:admitted_quota] >= state[:available_quota]
           capacity_held << lane_id
           held_reasons[lane_id] = "external-quota-full"
@@ -1344,7 +1346,7 @@ module BatchPlanPreflight
           lane, capacity, infer_missing: infer_missing_lane_host
         ) == host_id
       end
-      next_lane_reason = if state[:admitted].length >= state[:available_workers]
+      next_lane_reason = if state[:worker_held].any?
                            "worker-budget-full"
                          elsif state[:quota_held].any?
                            "external-quota-full"

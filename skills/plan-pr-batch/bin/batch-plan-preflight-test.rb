@@ -2131,6 +2131,30 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_next_lane_reason_separates_a_saturated_host_from_one_without_ready_work
+    lanes = [
+      lane("idle-host-lane", host_id: "m1"),
+      lane("queued-host-lane", host_id: "m5")
+    ]
+    capacity = capacity_envelope(
+      host_capacity(id: "m1", worker_limit: 1),
+      host_capacity(id: "m5", worker_limit: 1, worker_occupied: 1)
+    )
+    lifecycle_states = [lane_lifecycle_state(lane_id: "idle-host-lane", state: "active")]
+
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, capacity: capacity, lifecycle_states: lifecycle_states)
+    )
+
+    assert status.success?, stderr
+    reasons = result.dig("capacity", "hosts").to_h do |host|
+      [host.fetch("id"), host.fetch("next_lane_reason")]
+    end
+    assert_equal({ "m1" => "no-ready-work", "m5" => "worker-budget-full" }, reasons)
+    assert_equal 0, result.dig("capacity", "hosts", 0, "worker", "available")
+    assert_equal "worker-budget-full", result.dig("launch", "held_reasons", "queued-host-lane")
+  end
+
   def test_serialized_group_admits_a_runnable_sibling_when_the_first_member_exceeds_quota
     lanes = [
       lane("a-quota", uses_external_quota: true).merge("serialization_group" => "changelog-writers"),
