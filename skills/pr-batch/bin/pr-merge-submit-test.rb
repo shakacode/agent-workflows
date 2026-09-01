@@ -474,7 +474,7 @@ class PrMergeSubmitTest < Minitest::Test
       timeout_result.fetch(:stderr)
     )
     assert_includes timeout_result.fetch(:stderr), "do not retry blindly"
-    assert_equal(3, timeout_log.lines.count { |line| line.include?("number=42") })
+    assert_equal(4, timeout_log.lines.count { |line| line.include?("number=42") })
 
     interrupt_result, interrupt_log, interrupt_guard_log = run_cli(
       mode: "guard_interrupt",
@@ -488,7 +488,7 @@ class PrMergeSubmitTest < Minitest::Test
       interrupt_result.fetch(:stderr)
     )
     assert_includes interrupt_result.fetch(:stderr), "do not retry blindly"
-    assert_equal(3, interrupt_log.lines.count { |line| line.include?("number=42") })
+    assert_equal(4, interrupt_log.lines.count { |line| line.include?("number=42") })
     refute_empty interrupt_guard_log
   end
 
@@ -699,6 +699,9 @@ class PrMergeSubmitTest < Minitest::Test
       [[executable], nil]
     end
     runner.define_singleton_method(:guard_timeout_seconds) { 0.1 }
+    runner.define_singleton_method(:revalidate_mutation_assurance!) do |_options|
+      { "isInMergeQueue" => false, "mergeQueueEntry" => nil, "isMergeQueueEnabled" => false }
+    end
     runner.define_singleton_method(:run_process) do |*_args, **_kwargs|
       raise PrMergeSubmit::UnknownOutcome,
             "guarded-direct executable process group did not exit after forced termination; " \
@@ -1578,6 +1581,41 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty failures
   end
 
+  def test_guarded_direct_revalidates_merge_assurance_and_live_bindings_after_review_replay
+    cases = {
+      "configured_review_guard_expires_merge_receipt" => {
+        receipt_mode: :valid,
+        error: "merge-assurance receipt is stale"
+      },
+      "configured_review_guard_moves_head" => {
+        receipt_mode: :valid,
+        error: "PR head moved"
+      },
+      "configured_review_guard_changes_tracker" => {
+        receipt_mode: :semantic,
+        error: "semantic GitHub Actions tracker issue body binding mismatch"
+      }
+    }
+
+    failures = cases.filter_map do |mode, expectation|
+      result, _log, guard_log = run_cli(
+        mode:,
+        merge_submission: guarded_direct_policy,
+        review_gate: "n/a",
+        receipt_mode: expectation.fetch(:receipt_mode)
+      )
+
+      next if !result.fetch(:status).success? &&
+              result.fetch(:stderr).include?(expectation.fetch(:error)) &&
+              guard_log.to_s.empty?
+
+      "#{mode}: status=#{result.fetch(:status).exitstatus} stderr=#{result.fetch(:stderr).inspect} " \
+        "guard_log=#{guard_log.inspect}"
+    end
+
+    assert_empty failures
+  end
+
   def test_configured_review_replay_receives_validated_current_integration_evidence
     integration = {
       "recorded_base_sha" => "9" * 40,
@@ -2248,6 +2286,7 @@ class PrMergeSubmitTest < Minitest::Test
         if %w[
           configured_review_expires_merge_receipt
           configured_review_queue_expires_merge_receipt
+          configured_review_guard_expires_merge_receipt
         ].include?(mode)
           advanced_now = Time.now + 301
           Time.singleton_class.define_method(:now) { advanced_now }
@@ -2747,6 +2786,7 @@ class PrMergeSubmitTest < Minitest::Test
         issue = JSON.parse(#{JSON.generate(semantic_issue).inspect})
         if %w[
           configured_review_changes_tracker configured_review_queue_changes_tracker
+          configured_review_guard_changes_tracker
         ].include?(#{mode.inspect}) &&
            File.exist?(ENV.fetch("GH_LOG") + ".configured-review-complete")
           issue["body"] = "changed after configured-review settlement"
@@ -2889,6 +2929,7 @@ class PrMergeSubmitTest < Minitest::Test
                 "headRefOid" => if (current_mode == "guard_head_moved" && guard_called) ||
                                    (%w[
                                      configured_review_moves_head configured_review_queue_moves_head
+                                     configured_review_guard_moves_head
                                    ].include?(current_mode) &&
                                     File.exist?(ENV.fetch("GH_LOG") + ".configured-review-complete"))
                                   #{MOVED_SHA.inspect}

@@ -38,7 +38,7 @@ class ConfiguredReviewGateTest < Minitest::Test
     # rubocop:disable Lint/MissingSuper
     def initialize(
       policy:, threads:, reviews: [], checks: [], permissions: {}, workflow_runs: nil,
-      reviewed_base_sha: nil, live_base_sha: BASE_SHA
+      reviewed_base_sha: nil, live_base_sha: BASE_SHA, thread_comment_pages: {}
     )
       @host = HOST
       @repo = REPO
@@ -58,6 +58,7 @@ class ConfiguredReviewGateTest < Minitest::Test
         "head_sha" => HEAD_SHA,
         "pull_requests" => [{ "number" => PR, "base" => { "sha" => BASE_SHA }, "head" => { "sha" => HEAD_SHA } }]
       }]
+      @thread_comment_pages = thread_comment_pages
       @api_arguments = []
     end
     # rubocop:enable Lint/MissingSuper
@@ -78,7 +79,13 @@ class ConfiguredReviewGateTest < Minitest::Test
       end
       return [[]] if endpoint&.include?("/issues/#{PR}/comments?")
       return [@reviews] if endpoint&.include?("/pulls/#{PR}/reviews?")
-      return graphql_response if arguments.include?("graphql")
+
+      if arguments.include?("graphql")
+        cursor = arguments.find { |argument| argument.start_with?("endCursor=") }
+        return graphql_response unless cursor
+
+        return @thread_comment_pages.fetch(cursor.delete_prefix("endCursor="), "unavailable")
+      end
 
       raise "unexpected fake GitHub API request: #{arguments.inspect}"
     end
@@ -657,6 +664,90 @@ class ConfiguredReviewGateTest < Minitest::Test
     }], collected.fetch("artifacts")
   end
 
+  def paged_thread(cursor:)
+    {
+      "id" => "thread-paged",
+      "isResolved" => false,
+      "isOutdated" => false,
+      "comments" => {
+        "nodes" => [{
+          "id" => "comment-1",
+          "url" => "https://github.com/example/widgets/pull/42#discussion_r1",
+          "body" => "first page",
+          "createdAt" => "2026-08-25T11:59:10Z",
+          "author" => { "login" => "claude" },
+          "authorAssociation" => "COLLABORATOR",
+          "commit" => { "oid" => HEAD_SHA },
+          "originalCommit" => { "oid" => HEAD_SHA },
+          "replyTo" => nil
+        }],
+        "pageInfo" => { "hasNextPage" => true, "endCursor" => cursor }
+      }
+    }
+  end
+
+  def second_comment_page
+    {
+      "data" => {
+        "node" => {
+          "comments" => {
+            "nodes" => [{
+              "id" => "comment-2",
+              "url" => "https://github.com/example/widgets/pull/42#discussion_r2",
+              "body" => "second page",
+              "createdAt" => "2026-08-25T11:59:20Z",
+              "author" => { "login" => "claude" },
+              "authorAssociation" => "COLLABORATOR",
+              "commit" => { "oid" => HEAD_SHA },
+              "originalCommit" => { "oid" => HEAD_SHA },
+              "replyTo" => nil
+            }],
+            "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+          }
+        }
+      }
+    }
+  end
+
+  def test_live_collector_follows_nested_review_thread_comment_pages
+    client = FakeGitHubApiClient.new(
+      policy: policy,
+      threads: [paged_thread(cursor: "cursor-1")],
+      thread_comment_pages: { "cursor-1" => second_comment_page }
+    )
+
+    collected = client.collect
+
+    assert_equal true, collected.fetch("complete")
+    thread = collected.fetch("threads").fetch(0)
+    comment_ids = thread.fetch("comments").map { |comment| comment.fetch("id") }
+    assert_equal %w[comment-1 comment-2], comment_ids
+  end
+
+  def test_live_collector_stays_incomplete_when_a_nested_comment_page_is_unavailable
+    client = FakeGitHubApiClient.new(
+      policy: policy,
+      threads: [paged_thread(cursor: "cursor-1")],
+      thread_comment_pages: {}
+    )
+
+    collected = client.collect
+
+    assert_equal false, collected.fetch("complete")
+  end
+
+  def test_live_collector_stays_incomplete_when_a_nested_comment_cursor_is_missing
+    client = FakeGitHubApiClient.new(
+      policy: policy,
+      threads: [paged_thread(cursor: nil)],
+      thread_comment_pages: {}
+    )
+
+    collected = client.collect
+
+    assert_equal false, collected.fetch("complete")
+  end
+
   def test_live_collector_never_queries_issue_comments_as_review_artifacts
     client_class = Class.new(FakeGitHubApiClient) do
       private
@@ -866,7 +957,7 @@ class ConfiguredReviewGateTest < Minitest::Test
   end
 
   def test_newest_acceptable_current_head_review_qualifies_regardless_of_api_order
-    newer_comment = artifact(id: "2", created_at: "2026-08-25T11:59:00Z", state: "COMMENTED")
+    newer_approval = artifact(id: "2", created_at: "2026-08-25T11:59:00Z", state: "APPROVED")
     older_change_request = artifact(
       id: "1", created_at: "2026-08-25T11:57:00Z", state: "CHANGES_REQUESTED"
     )
@@ -874,12 +965,77 @@ class ConfiguredReviewGateTest < Minitest::Test
     result = ConfiguredReviewGate.evaluate(
       policy: policy,
       policy_source: JSON.generate(policy),
-      snapshot: snapshot("checks" => [check], "artifacts" => [newer_comment, older_change_request]),
+      snapshot: snapshot("checks" => [check], "artifacts" => [newer_approval, older_change_request]),
       settled: true,
       now: NOW
     )
 
     assert_equal "READY", result.fetch("verdict")
+  end
+
+  def test_later_comment_review_does_not_clear_current_head_changes_requested
+    change_request = artifact(id: "1", created_at: "2026-08-25T11:57:00Z", state: "CHANGES_REQUESTED")
+    completion_marker = artifact(id: "2", created_at: "2026-08-25T11:59:00Z", state: "COMMENTED")
+
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [change_request, completion_marker]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code")
+  end
+
+  def test_producer_completion_marker_cannot_supersede_changes_requested
+    change_request = artifact(id: "1", created_at: "2026-08-25T11:57:00Z", state: "CHANGES_REQUESTED")
+    completion_marker = artifact(id: "2", created_at: "2026-08-25T11:59:00Z", state: "COMMENTED")
+
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy_with_producer_completion,
+      policy_source: JSON.generate(policy_with_producer_completion),
+      snapshot: snapshot("checks" => [check], "artifacts" => [change_request, completion_marker]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code")
+  end
+
+  def test_dismissed_change_request_no_longer_blocks_a_later_comment_review
+    dismissed = artifact(id: "1", created_at: "2026-08-25T11:57:00Z", state: "DISMISSED")
+    later_comment = artifact(id: "2", created_at: "2026-08-25T11:59:00Z", state: "COMMENTED")
+
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [dismissed, later_comment]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "READY", result.fetch("verdict")
+  end
+
+  def test_changes_requested_by_another_configured_actor_still_blocks
+    other_change_request = artifact(
+      id: "1", actor: "claude[bot]", created_at: "2026-08-25T11:57:00Z", state: "CHANGES_REQUESTED"
+    )
+    comment = artifact(id: "2", created_at: "2026-08-25T11:59:00Z", state: "COMMENTED")
+
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot("checks" => [check], "artifacts" => [other_change_request, comment]),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code")
   end
 
   def test_equal_time_pull_request_reviews_use_numeric_rest_id_order
@@ -954,7 +1110,26 @@ class ConfiguredReviewGateTest < Minitest::Test
     end
   end
 
-  def test_later_acceptable_formal_review_supersedes_a_blocked_review_with_a_resolved_thread
+  def test_later_approval_supersedes_a_blocked_review_with_a_resolved_thread
+    result = ConfiguredReviewGate.evaluate(
+      policy: policy,
+      policy_source: JSON.generate(policy),
+      snapshot: snapshot(
+        "checks" => [check],
+        "artifacts" => [
+          artifact(id: "thread-1", kind: "review_thread"),
+          artifact(id: "9", state: "CHANGES_REQUESTED"),
+          artifact(id: "10", state: "APPROVED")
+        ]
+      ),
+      settled: true,
+      now: NOW
+    )
+
+    assert_equal "READY", result.fetch("verdict")
+  end
+
+  def test_later_comment_does_not_supersede_a_blocked_review_with_a_resolved_thread
     result = ConfiguredReviewGate.evaluate(
       policy: policy,
       policy_source: JSON.generate(policy),
@@ -970,7 +1145,8 @@ class ConfiguredReviewGateTest < Minitest::Test
       now: NOW
     )
 
-    assert_equal "READY", result.fetch("verdict")
+    assert_equal "NOT_READY", result.fetch("verdict")
+    assert_equal "configured-review-artifact-missing", result.dig("blockers", 0, "code")
   end
 
   def test_settled_success_with_no_untriaged_current_head_threads_is_ready

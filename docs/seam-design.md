@@ -117,8 +117,11 @@ workflow-bot reviews. Only
 configured because issue comments have no exact-head attribution. For each
 actor, only its latest current-head pull-request review qualifies, and only in
 `APPROVED` or `COMMENTED` state. `CHANGES_REQUESTED`, `DISMISSED`, pending, and
-unknown states hard-block alternate artifact kinds until superseded by a later
-acceptable formal review. `named_attested_check` fallbacks must name their
+unknown states hard-block alternate artifact kinds. A current-head
+`CHANGES_REQUESTED` is cleared only by a later `APPROVED` review from the same
+actor or by dismissing it; a later `COMMENTED` review never clears it, so a
+producer's own completion marker cannot supersede its blocking review.
+`named_attested_check` fallbacks must name their
 allowed failure triggers and a complete fallback reviewer; disabled fallback
 is the portable default. While an authorized named fallback is missing or
 pending, bounded evaluation continues; a provider terminal result still ends

@@ -1124,6 +1124,15 @@ module PrMergeSubmit
         policy.fetch("identity")["interpreter"] = interpreter_identity if interpreter_identity
         begin
           replay_configured_review_gate!(options)
+          # The direct and enqueue routes revalidate after replay; this route
+          # launches a mutation-capable consumer guard, so it must too. Replay
+          # itself makes live requests and can outlast the receipt's freshness.
+          post_replay = revalidate_mutation_assurance!(options)
+          unless post_replay["isInMergeQueue"] == false && post_replay["mergeQueueEntry"].nil? &&
+                 post_replay["isMergeQueueEnabled"] == false
+            raise UnknownOutcome, "PR merge-queue state became missing, inconsistent, or UNKNOWN " \
+                                  "after configured-review replay"
+          end
           guard_result = run_process(
             guarded_direct_environment(options),
             *launch_command, *args,

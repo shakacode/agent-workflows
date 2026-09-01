@@ -27,6 +27,7 @@ module ConfiguredReviewGate
   MAX_FUTURE_SKEW_SECONDS = 30
   PENDING_CHECK_STATES = %w[queued in_progress pending waiting requested].freeze
   ACCEPTABLE_PULL_REQUEST_REVIEW_STATES = %w[APPROVED COMMENTED].freeze
+  DECISIVE_PULL_REQUEST_REVIEW_STATES = %w[APPROVED CHANGES_REQUESTED].freeze
   TERMINAL_FAILURE_CODES = {
     "failure" => "configured-review-failed",
     "cancelled" => "configured-review-cancelled",
@@ -141,6 +142,8 @@ module ConfiguredReviewGate
   end
 
   class GitHubClient
+    MAX_THREAD_COMMENT_PAGES = 50
+
     REVIEW_THREADS_QUERY = <<~GRAPHQL
       query($owner:String!,$name:String!,$number:Int!,$endCursor:String) {
         repository(owner:$owner,name:$name) {
@@ -155,6 +158,22 @@ module ConfiguredReviewGate
                   }
                   pageInfo { hasNextPage endCursor }
                 }
+              }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }
+    GRAPHQL
+
+    THREAD_COMMENTS_QUERY = <<~GRAPHQL
+      query($threadId:ID!,$endCursor:String) {
+        node(id:$threadId) {
+          ... on PullRequestReviewThread {
+            comments(first:100,after:$endCursor) {
+              nodes {
+                id url body createdAt author { login } authorAssociation
+                commit { oid } originalCommit { oid } replyTo { id }
               }
               pageInfo { hasNextPage endCursor }
             }
@@ -328,9 +347,9 @@ module ConfiguredReviewGate
         Array(connection["nodes"])
       end
       threads = thread_nodes.map do |thread|
-        comments_connection = thread["comments"]
-        complete = false if comments_connection.dig("pageInfo", "hasNextPage") == true
-        comments = Array(comments_connection["nodes"]).map do |comment|
+        comment_nodes, comments_complete = thread_comment_nodes(thread)
+        complete = false unless comments_complete
+        comments = comment_nodes.map do |comment|
           marker = @policy.is_a?(Hash) ? @policy.dig("thread_disposition", "marker") : nil
           marker_value = marker.is_a?(String) ? ConfiguredReviewGate.disposition_value(comment["body"], marker) : nil
           marker_present = !marker_value.nil?
@@ -347,7 +366,7 @@ module ConfiguredReviewGate
             "created_at" => comment["createdAt"]
           }
         end
-        root = Array(comments_connection["nodes"]).first || {}
+        root = comment_nodes.first || {}
         root_head_sha = root.dig("commit", "oid") || root.dig("originalCommit", "oid")
         root_actor = root.dig("author", "login")
         if artifact_configured?(root_actor, "review_thread") &&
@@ -369,6 +388,37 @@ module ConfiguredReviewGate
       normalized_artifacts = artifacts.uniq { |artifact| artifact["id"] }
                                       .sort_by { |artifact| artifact["id"].to_s }
       [normalized_threads, complete, normalized_artifacts]
+    end
+
+    # The outer reviewThreads connection is paginated by `gh api --paginate`, but
+    # each thread's nested comments connection carries its own cursor. Without
+    # following it, any thread past the first comment page would leave the whole
+    # snapshot permanently incomplete and the PR could never obtain a receipt.
+    def thread_comment_nodes(thread)
+      connection = thread["comments"]
+      nodes = Array(connection["nodes"])
+      page_info = connection["pageInfo"] || {}
+      pages = 0
+      while page_info["hasNextPage"] == true
+        cursor = page_info["endCursor"]
+        return [nodes, false] if cursor.to_s.empty?
+
+        pages += 1
+        return [nodes, false] if pages > MAX_THREAD_COMMENT_PAGES
+
+        payload = api_json(
+          "graphql",
+          "-f", "query=#{THREAD_COMMENTS_QUERY}",
+          "-f", "threadId=#{thread['id']}",
+          "-f", "endCursor=#{cursor}"
+        )
+        connection = payload.is_a?(Hash) ? payload.dig("data", "node", "comments") : nil
+        return [nodes, false] unless connection.is_a?(Hash)
+
+        nodes.concat(Array(connection["nodes"]))
+        page_info = connection["pageInfo"] || {}
+      end
+      [nodes, true]
     end
 
     def collaborator_authorization(actor)
@@ -1116,7 +1166,8 @@ module ConfiguredReviewGate
       configured_actors = configured_reviews.group_by { |artifact| artifact["actor"] }.keys
       formal_review_blocked = configured_actors.any? do |actor|
         latest = latest_reviews[actor]
-        latest.nil? || !ACCEPTABLE_PULL_REQUEST_REVIEW_STATES.include?(latest["state"])
+        latest.nil? || !ACCEPTABLE_PULL_REQUEST_REVIEW_STATES.include?(latest["state"]) ||
+          outstanding_changes_requested?(configured_reviews, actor)
       end
       next blocker("configured-review-artifact-missing", reviewer, check, "missing") if formal_review_blocked
 
@@ -1130,6 +1181,21 @@ module ConfiguredReviewGate
       present ||= producer_check_completion?(artifact_policy, reviewer, check, head_sha)
       blocker("configured-review-artifact-missing", reviewer, check, "missing") unless present
     end
+  end
+
+  # A current-head CHANGES_REQUESTED review keeps blocking until the same actor
+  # approves or the review is dismissed, matching GitHub's own review decision.
+  # A later COMMENTED review must not clear it -- including a producer workflow's
+  # completion marker posted with that reviewer's own token.
+  def outstanding_changes_requested?(reviews, actor)
+    decisive = reviews.select do |review|
+      review["actor"] == actor && DECISIVE_PULL_REQUEST_REVIEW_STATES.include?(review["state"])
+    end
+    ordered = decisive.map { |review| [review, pull_request_review_order_key(review)] }
+    return true if ordered.any? { |_review, key| key.nil? }
+
+    newest = ordered.max_by { |_review, key| key }&.first
+    !newest.nil? && newest["state"] == "CHANGES_REQUESTED"
   end
 
   def producer_check_completion?(artifact_policy, reviewer, check, head_sha)
