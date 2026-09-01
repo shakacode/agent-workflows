@@ -1608,10 +1608,9 @@ passes. This gate applies only when `merge_authority` is
 eligibility and neither value grants the missing human judgment.
 
 Resolve the trusted current base SHA and fetch it. Execute the read-only
-evaluator from a trusted-base materialization or verified installed Agent Workflows pack.
-Its expected digest must be established independently of the PR. A repo-local
-fallback is usable only after materializing every runtime source from the
-trusted base; never execute evaluator, calibration decision, or library code
+evaluator from a trusted-base materialization or verified installed Agent
+Workflows pack. A repo-local fallback is usable only after materializing every
+runtime source from the trusted base; never execute evaluator, calibration decision, or library code
 modified by the PR head. Resolve the source-pack or installed `.agents` layout
 at that commit, fail closed if either complete runtime set is absent, and
 materialize it outside the evaluated checkout:
@@ -1660,33 +1659,12 @@ Then pass the corresponding provenance claim:
   --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}"
 ```
 
-For an independently verified installed pack, use
+For a verified installed pack, use
 `verified-installed-pack:<64-lowercase-sha256>` instead, after binding
-`TRUSTED_PR_BATCH_SKILL_DIR` to the independently verified pack directory.
-The expected digest is trusted coordinator or installation
-state, not output learned from the helper being evaluated. A flat copy install
-records that expected digest while installing, so read it from installation
-state:
-
-```bash
-INSTALLED_RUNTIME_DIGEST="$(
-  jq -r '.managed_runtime_manifest_digests["autonomous-merge"] // empty' \
-    "${TRUSTED_AGENT_HOME}/.agent-workflows-install.json"
-)"
-[ -n "${INSTALLED_RUNTIME_DIGEST}" ] || {
-  echo "UNKNOWN: this install records no autonomous-merge runtime digest" >&2
-  exit 1
-}
-```
-
-Bind `TRUSTED_AGENT_HOME` to the agent home outside the evaluated repository,
-and `TRUSTED_PR_BATCH_SKILL_DIR` to that same home's `skills/pr-batch`. Never
-read the digest from the evaluated repository, and never derive it by running
-the helper being authenticated. Symlink and plugin-companion installs record no
-digest, and installs predating the key omit it; both cases stay `UNKNOWN` and
-must use a trusted-base materialization or reach the human-approval path
-deliberately. Keep the shipped calibration decision, because a non-default
-`--calibration-decision` changes the manifest the recorded digest describes. The evaluator
+`TRUSTED_PR_BATCH_SKILL_DIR` to that pack. The digest is coordinator or
+installation state, not output from the evaluated helper: a flat copy install
+records it under `managed_runtime_manifest_digests` in its install metadata,
+and an install recording none stays `UNKNOWN`. The evaluator
 mechanically recomputes a length-framed manifest over the executing evaluator
 and closeout helpers, decision/evidence/policy/trust libraries (including
 `autonomous_merge_runtime_trust.rb`), and selected calibration decision.
