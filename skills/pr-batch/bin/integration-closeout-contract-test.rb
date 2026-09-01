@@ -300,9 +300,8 @@ class IntegrationCloseoutContractTest < Minitest::Test
     refute_includes ask_gate, "provider-produced merge-result or merge-group result"
     assert_includes normalized_gate,
                     "Do not claim or consume its machine `current-integration-evidence` here."
-    assert_includes normalized_gate,
-                    "`head>=base+CI=READY` means both ancestry and the normalized `pr-ci-readiness` result must pass."
-    assert_includes normalized_gate, "Every other result waits without a walkthrough."
+    assert_includes normalized_gate, "Compact goals encode that checklist inline as `head>=base+CI=READY`"
+    assert_includes normalized_gate, "every other result waits without a walkthrough."
     assert_includes normalized_gate,
                     "Stop if the checklist above no longer passes for the current head/base, even without a base change."
     refute_match(/\bPASSED\b/, ask_gate)
@@ -328,7 +327,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_equal 1, @triage.scan(prompt_gate).length, "triage target prompt"
 
     assert_includes continuation_prompt, ancestry_command
-    assert_includes continuation_prompt, "exact-head `pr-ci-readiness` v2 state `READY`"
+    assert_includes continuation_prompt, "exact-head `pr-ci-readiness` v2 aggregate `verdict` `READY`"
     assert_includes continuation_prompt,
                     "If current-integration readiness fails on refresh, stop even when the base and diff are unchanged."
   end

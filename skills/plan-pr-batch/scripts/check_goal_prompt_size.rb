@@ -265,7 +265,7 @@ TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
   "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
 GOAL_PROMPT_FALLBACK_LINE =
-  "- Resolve `$pr-batch`; self-contained: load state before preflight; " \
+  "- Resolve `$pr-batch`; load state before preflight; " \
   "persist pre-resume/launch; preflight issue/PR only"
 ASK_WALKTHROUGH_PROMPT_LINE = "- ask:I=head>=base+CI=READY;I?$pr-walkthrough(large|complex=full):wait;" \
                               "refresh;chg=>redo/stop;ordinary|I fail=>stop;ask iff same clean"
@@ -327,7 +327,7 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.",
   "With `ask`, after ordinary gates are clean, establish current-integration readiness before approval:",
   'git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"',
-  "exact-head `pr-ci-readiness` v2 state `READY`",
+  "exact-head `pr-ci-readiness` v2 aggregate `verdict` `READY`",
   "After it completes or is skipped, refresh the diff identity, ordinary readiness, and current-integration readiness.",
   "If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop.",
   "If current-integration readiness fails on refresh, stop even when the base and diff are unchanged.",

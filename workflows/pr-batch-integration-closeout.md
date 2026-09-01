@@ -1588,14 +1588,13 @@ contains the current base by requiring this command to exit zero:
 git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"
 ```
 
-Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh here — the base may
-have advanced since the earlier QA gate fetch — and do not introduce a
-second, differently-named pair for the identical base/head facts.
+Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh here; do not
+introduce a second, differently-named pair for the identical base/head facts.
 
-Also require the exact-head `pr-ci-readiness` v2 contract's normalized
-successful state: its aggregate `verdict` equal to `READY`, not an individual
-scope's `state` — a scope can report `state: READY` while the top-level
-`verdict` is `NOT_READY` or `UNKNOWN`.
+Also require the exact-head `pr-ci-readiness` v2 normalized successful state:
+its aggregate `verdict` equal to `READY`, not an individual scope's `state` —
+a scope can report `state: READY` while the top-level `verdict` is
+`NOT_READY` or `UNKNOWN`.
 
 This sequencing checklist neither defines an evidence schema nor replaces the
 later [Merge Assurance Gate](#merge-assurance-gate). Do not claim or consume its
@@ -1607,9 +1606,8 @@ BASE — NOT MERGE-READY.** instead of blaming CI; otherwise lead with
 **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT
 MERGE-READY.** GitHub's conflict or mergeability status is not CI evidence.
 
-Compact goals encode that checklist inline: `head>=base+CI=READY` means both
-ancestry and the normalized `pr-ci-readiness` result must pass. Every other
-result waits without a walkthrough.
+Compact goals encode that checklist inline as `head>=base+CI=READY`; every
+other result waits without a walkthrough.
 
 When `merge_authority` is `ask` and every ordinary gate is clean,
 automatically start the exact-diff PR walkthrough before asking for merge
@@ -1628,9 +1626,9 @@ honor an explicit request to skip or stop it.
 
 After it completes or is skipped, refresh the diff identity, ordinary
 readiness, current base, and checklist above. A changed base is a changed
-diff identity: if the diff changes, invalidate the walkthrough and readiness
-evidence and restart or stop, even when the checklist above still passes for
-the same head — do not reuse a walkthrough whose comparison base moved. Stop
+diff identity: invalidate the walkthrough and readiness evidence and restart
+or stop even when the checklist above still passes for the same head — do
+not reuse a walkthrough whose comparison base moved. Stop
 if the checklist above no longer passes for the current head/base, even
 without a base change. Stop if any ordinary gate newly fails. Ask one final
 merge decision only when the refreshed diff matches the recorded identity,
