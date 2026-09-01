@@ -131,13 +131,17 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_floor,
                     "repeat the computation and scan; require the digest unchanged and the same exact pair"
     assert_includes normalized_floor,
-                    "require emitted `broad_protected_parent_only == true` for every current and previous path"
+                    "require predicate paths to equal the flat risky-path list"
+    assert_includes normalized_floor,
+                    "require emitted `broad_protected_parent_only == true` for every high-risk predicate record"
     assert_includes normalized_floor,
                     "never infer it from raw matches"
     assert_includes normalized_floor,
+                    "never infer it from raw matches or require predicate records for ordinary non-risky diff paths"
+    assert_includes normalized_floor,
                     "sets true only for `root-prefix` or `nested-script-dir`, including nested-script-dir-only, and false for `exact-filename`"
     assert_includes normalized_floor,
-                    "Bind the full safe-class verdict to every path"
+                    "Require each predicate path to be a current or previous path, then bind the full safe-class verdict to every diff path"
     assert_includes normalized_floor,
                     "enforces `safe_path_groups.tests` inclusion/exclusion and unambiguous `test_change == \"strengthens-only\"`"
     assert_includes normalized_floor,

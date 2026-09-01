@@ -130,9 +130,9 @@ finding caused only by the broad protected-parent match:
 - Evidence binding: independently recompute `sha256:` over the helper's self-reported canonical path and require it match the emitted digest. Preserve both plus
   its emitted exact diff base/head, current/previous file records, predicate evidence, and flat risky-path list;
   require that pair match eligibility evidence. At resolution, repeat the computation and scan; require the digest unchanged and the same exact pair.
-- Predicate decision: require emitted `broad_protected_parent_only == true` for every current and previous path; never infer it from raw matches. The helper sets true
+- Predicate decision: require predicate paths to equal the flat risky-path list and require emitted `broad_protected_parent_only == true` for every high-risk predicate record; never infer it from raw matches or require predicate records for ordinary non-risky diff paths. The helper sets true
   only for `root-prefix` or `nested-script-dir`, including nested-script-dir-only,
-  and false for `exact-filename`. Bind the full safe-class verdict to every path. It enforces `safe_path_groups.tests`
+  and false for `exact-filename`. Require each predicate path to be a current or previous path, then bind the full safe-class verdict to every diff path. It enforces `safe_path_groups.tests`
   inclusion/exclusion and unambiguous `test_change == "strengthens-only"`; never
   substitute a path-only check.
 - Independent stops: production helpers, mixed diffs, excluded tests,

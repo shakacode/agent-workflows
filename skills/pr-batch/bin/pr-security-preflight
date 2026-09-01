@@ -29,6 +29,7 @@ options = {
 GH_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GH_TIMEOUT_SECONDS", "60"))
 GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS", "10"))
 INTERACTION_QUEUE_DISPLAY_LIMIT = 10
+PULL_REQUEST_FILES_API_CAP = 3_000
 ACKNOWLEDGEABLE_RISKS = Set.new(
   %w[
     github-api-coverage
@@ -1077,10 +1078,14 @@ def metadata_only_interaction_findings(rest_context, include_pull_comments:, tru
     metadata_only_review_findings(rest_context, trust_config:)
 end
 
-def changed_file_records(repo, pr_number)
+def changed_file_records(repo, pr_number, expected_count:)
   payload = run_gh_paginated_json_array(
     "api", "repos/#{repo}/pulls/#{pr_number}/files?per_page=100"
   )
+  unless payload.size == expected_count
+    raise "PR ##{pr_number} changed-file evidence is incomplete: " \
+          "expected #{expected_count}, fetched #{payload.size}"
+  end
 
   payload.map do |file|
     path = file["filename"] if file.is_a?(Hash)
@@ -1098,23 +1103,34 @@ def all_changed_paths(file_records)
   file_records.flat_map { |file| [file.fetch(:path), file.fetch(:previous_path)] }.compact.uniq
 end
 
-def pull_request_identity(repo, pr_number)
+def pull_request_snapshot(repo, pr_number)
   payload = run_gh_json(
-    "pr", "view", pr_number.to_s, "--repo", repo, "--json", "baseRefOid,headRefOid"
+    "pr", "view", pr_number.to_s, "--repo", repo, "--json", "baseRefOid,headRefOid,changedFiles"
   )
   identity = {
     base_ref_oid: payload["baseRefOid"],
     head_ref_oid: payload["headRefOid"]
   }
-  return identity if identity.values.all? { |oid| oid.is_a?(String) && oid.match?(/\A[0-9a-f]{40}\z/) }
+  unless identity.values.all? { |oid| oid.is_a?(String) && oid.match?(/\A[0-9a-f]{40}\z/) }
+    raise "PR ##{pr_number} base/head identity is missing or malformed: #{JSON.generate(payload)}"
+  end
 
-  raise "PR ##{pr_number} base/head identity is missing or malformed: #{JSON.generate(payload)}"
+  changed_file_count = payload["changedFiles"]
+  unless changed_file_count.is_a?(Integer) && changed_file_count >= 0
+    raise "PR ##{pr_number} changed-file count is missing or malformed: #{JSON.generate(payload)}"
+  end
+  if changed_file_count >= PULL_REQUEST_FILES_API_CAP
+    raise "PR ##{pr_number} changed-file count is at or above the GitHub Files API cap " \
+          "(#{PULL_REQUEST_FILES_API_CAP}): #{changed_file_count}"
+  end
+
+  { identity:, changed_file_count: }
 end
 
-def require_unchanged_pull_request_identity!(before, after, pr_number)
+def require_unchanged_pull_request_snapshot!(before, after, pr_number)
   return if before == after
 
-  raise "PR ##{pr_number} base/head changed while preflight evidence was scanned: " \
+  raise "PR ##{pr_number} base/head or changed-file count changed while preflight evidence was scanned: " \
         "#{JSON.generate(before)} -> #{JSON.generate(after)}"
 end
 
@@ -1134,6 +1150,10 @@ def high_risk_file_findings(files)
     matches << "nested-script-dir" if path.match?(HIGH_RISK_NESTED_SCRIPT_DIR_PATTERN)
     matches << "exact-filename" if HIGH_RISK_EXACT_FILENAMES.include?(path)
     broad_parent_match = matches.any? { |match| BROAD_PROTECTED_PARENT_MATCHES.include?(match) }
+    # This verdict is bound evidence for the separate security-floor resolution
+    # contract. It never weakens record_blockers, which remains fail-closed on
+    # every high-risk path until that workflow independently binds safe-class,
+    # exact-head validation, review, and acknowledgement evidence.
     # Exact filenames are root-only today. Keep the explicit exclusion so a
     # future overlapping pattern cannot silently widen this exception.
     broad_protected_parent_only = broad_parent_match && !matches.include?("exact-filename")
@@ -1511,7 +1531,8 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
   # Must run before visible_actor_logins: target aliases graph, so pagination
   # mutations must be in place before the visibility pass reads from graph.
   append_target_graph_pages!(owner:, name:, number:, graph_field:, target:)
-  diff_identity = target_is_pr ? pull_request_identity(repo, number) : nil
+  diff_snapshot = target_is_pr ? pull_request_snapshot(repo, number) : nil
+  diff_identity = diff_snapshot&.fetch(:identity)
   if target_is_pr && target.fetch("headRefOid") != diff_identity.fetch(:head_ref_oid)
     raise "PR ##{number} head changed before preflight evidence scan: " \
           "#{target.fetch('headRefOid')} -> #{diff_identity.fetch(:head_ref_oid)}"
@@ -1525,7 +1546,11 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     # GitHub API calls unless the operator explicitly needs reaction attribution.
     visible.merge(reaction_users(repo, number, rest_context: rest, include_pull_comments: target_is_pr))
   end
-  file_records = target_is_pr ? changed_file_records(repo, number) : []
+  file_records = if target_is_pr
+                   changed_file_records(repo, number, expected_count: diff_snapshot.fetch(:changed_file_count))
+                 else
+                   []
+                 end
   files = file_records.map { |file| file.fetch(:path) }
   suspicious_findings = suspicious_findings_for_target(
     repo:,
@@ -1549,9 +1574,12 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     trust_config:
   )
   risky_file_findings = high_risk_file_findings(all_changed_paths(file_records))
-  require_unchanged_pull_request_identity!(diff_identity, pull_request_identity(repo, number), number) if target_is_pr
+  if target_is_pr
+    require_unchanged_pull_request_snapshot!(diff_snapshot, pull_request_snapshot(repo, number), number)
+  end
 
   {
+    changed_file_count: diff_snapshot&.fetch(:changed_file_count),
     diff_identity:,
     file_records:,
     files:,
@@ -1846,6 +1874,7 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
   if result.fetch(:target_is_pr)
     puts "  Head: #{target.fetch('headRefOid')}"
     puts "  Diff base/head identity: #{JSON.generate(result.fetch(:diff_identity))}"
+    puts "  Authoritative changed-file count: #{result.fetch(:changed_file_count)}"
   end
   print_graph_coverage_findings(result.fetch(:graph_coverage_findings))
   print_participant_findings(result.fetch(:participant_findings))
