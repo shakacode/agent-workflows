@@ -76,15 +76,26 @@
       "expected_user_output": "What changed: A current-scope decision requires your answer before work can continue. Action needed: Do you approve the compatibility change for this exact diff? Next: Reply here with the decision and this task will resume from the preserved gate."
     },
     {
-      "id": "ready-prerequisite-ask",
+      "id": "ready-owned-target-ask",
       "input": {
         "kind": "blocked_user_input",
         "automation_action": "none",
-        "what_changed": "PR #41 is ready; no code or continuous integration failure remains, and its merge decision is the only prerequisite gate.",
-        "exact_question": "Review PR #41 and decide whether to merge it.",
-        "manual_resume": "Open https://github.com/acme/widgets/pull/41; after the decision, reply here and the coordinator will refresh the prerequisite before resuming."
+        "what_changed": "PR #41 is an owned target and is ready at head 0123456789abcdef0123456789abcdef01234567; no code or continuous integration failure remains, its exact-diff walkthrough is complete, the sorted gate set is [continuous-integration, review, security], and rollback status is revert-ready.",
+        "exact_question": "Do you want me to merge PR #41?",
+        "manual_resume": "Reply here with the merge decision for https://github.com/acme/widgets/pull/41; the coordinator will refresh its head and readiness before acting."
       },
-      "expected_user_output": "What changed: PR #41 is ready; no code or continuous integration failure remains, and its merge decision is the only prerequisite gate. Action needed: Review PR #41 and decide whether to merge it. Next: Open https://github.com/acme/widgets/pull/41; after the decision, reply here and the coordinator will refresh the prerequisite before resuming."
+      "expected_user_output": "What changed: PR #41 is an owned target and is ready at head 0123456789abcdef0123456789abcdef01234567; no code or continuous integration failure remains, its exact-diff walkthrough is complete, the sorted gate set is [continuous-integration, review, security], and rollback status is revert-ready. Action needed: Do you want me to merge PR #41? Next: Reply here with the merge decision for https://github.com/acme/widgets/pull/41; the coordinator will refresh its head and readiness before acting."
+    },
+    {
+      "id": "ready-external-prerequisite-ask",
+      "input": {
+        "kind": "blocked_user_input",
+        "automation_action": "none",
+        "what_changed": "External prerequisite PR #41 is ready; no code or continuous integration failure remains, but it is not a batch target and its merge is the only prerequisite gate.",
+        "exact_question": "Will you either merge PR #41 and reply after it is merged, or explicitly authorize adding it as a batch target?",
+        "manual_resume": "Open https://github.com/acme/widgets/pull/41; reply only after it is merged or with explicit authorization to add it as a target, then the coordinator will refresh scope and readiness."
+      },
+      "expected_user_output": "What changed: External prerequisite PR #41 is ready; no code or continuous integration failure remains, but it is not a batch target and its merge is the only prerequisite gate. Action needed: Will you either merge PR #41 and reply after it is merged, or explicitly authorize adding it as a batch target? Next: Open https://github.com/acme/widgets/pull/41; reply only after it is merged or with explicit authorization to add it as a target, then the coordinator will refresh scope and readiness."
     },
     {
       "id": "actionable-decision",

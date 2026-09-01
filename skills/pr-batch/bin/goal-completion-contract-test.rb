@@ -44,14 +44,15 @@ INTEGRATION_CLOSEOUT_READINESS_LINK = "../../workflows/pr-batch-integration-clos
 # docs/ is one level below the repo root; skills/*/SKILL.md are two.
 DOCS_CANONICAL_READINESS_LINK = "../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
-COMPACT_CONTRACT_LINE = "GMCC-v4:CI@head/configured-reviewers " \
-                        "pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>" \
+COMPACT_CONTRACT_LINE = "GMCC-v5:CI@head/configured-reviewers " \
+                        "pending|missing|untriaged|failed|threads open|UNKNOWN=>" \
                         "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                         "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
-                        "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;" \
-                        "auto=>exact verdict/head/sorted-gates/rollback; " \
+                        "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
+                        "ask-dep=>user(own:walk|ext:merge/add);" \
+                        "auto=>verdict/head/gates/rollback;" \
                         "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
-                        "durable-decision(proven-human+merge-authority);else ready-human-review-required|" \
+                        "durable(proven-human+merge-authority);else ready-human-review-required|" \
                         "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
 CANONICAL_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus " \
                                  "`autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact " \
@@ -80,20 +81,21 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "`merge_authority` does not allow merging. #{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
 COMPACT_CONTRACT_INVARIANTS = [
   "CI@head/configured-reviewers pending|missing|untriaged|failed",
-  "threads unresolved",
+  "threads open",
   "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE",
   "poll/fix",
   "auto-clear=>watch(same:0wake,delta:gates)",
   "fallback:4x15m+exp/4h|manual",
   "stop clear/done/term/budget/user",
-  "no auth=>ready-no-merge-authority",
-  "auto=>exact verdict/head/sorted-gates/rollback",
+  "noauth=>ready-no-merge-authority",
+  "ask-dep=>user(own:walk|ext:merge/add)",
+  "auto=>verdict/head/gates/rollback",
   "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
-  "durable-decision(proven-human+merge-authority)",
+  "durable(proven-human+merge-authority)",
   "else ready-human-review-required|autonomous-merge-evidence-unknown",
   "merge+close PR/target/issue"
 ].freeze
-GMCC_ALIGNMENT_SENTENCE = "`GMCC-v4` is a version key that pins drift, not an external-only pointer; " \
+GMCC_ALIGNMENT_SENTENCE = "`GMCC-v5` is a version key that pins drift, not an external-only pointer; " \
                           "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
 HUMAN_STATUS_VERSION_KEY = "HST-v1"
 HUMAN_STATUS_HEADING = "### Human-Status Translation Contract"
@@ -114,6 +116,11 @@ HUMAN_STATUS_BLOCKED_USER_INPUT_RULE = "For `blocked-user-input`, do not create 
                                        "preserve one exact question and manual resume instructions."
 HUMAN_STATUS_READY_PREREQUISITE_RULE = "For a ready prerequisite whose only remaining gate under " \
                                        "`merge_authority: ask` is the human review and merge decision"
+HUMAN_STATUS_EXTERNAL_PREREQUISITE_RULE = "A reply or merge decision alone does not clear the external " \
+                                          "prerequisite or authorize its merge."
+HUMAN_STATUS_OWNED_PREREQUISITE_EVIDENCE_RULE = "For an owned target, `What changed:` also gives the full " \
+                                                 "current head SHA, exact sorted gate set, and rollback status " \
+                                                 "before the final merge question."
 HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE = "At closeout/archive completion, place the three labeled parts before, not " \
                                       "instead of, the existing mandatory closeout handoff."
 READY_PREREQUISITE_ASK_GATE_RULE = "A prerequisite PR whose ordinary readiness gates are clean and whose only " \
@@ -133,6 +140,8 @@ HUMAN_STATUS_REQUIRED_PHRASES = [
   HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE,
   HUMAN_STATUS_BLOCKED_USER_INPUT_RULE,
   HUMAN_STATUS_READY_PREREQUISITE_RULE,
+  HUMAN_STATUS_EXTERNAL_PREREQUISITE_RULE,
+  HUMAN_STATUS_OWNED_PREREQUISITE_EVIDENCE_RULE,
   HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE,
   "required handoff evidence and exact `Conversation status:` line",
   "security, ownership, retry, scope, continuous integration (CI), review, or merge gates"
@@ -386,7 +395,7 @@ def contract_line(text)
 end
 
 def compact_contract_line(text)
-  text.lines.grep(/^\s*GMCC-v4:/).first&.strip
+  text.lines.grep(/^\s*GMCC-v5:/).first&.strip
 end
 
 def render_human_status(replay_case, stable_payload:)
@@ -658,6 +667,9 @@ class GoalCompletionContractTest < Minitest::Test
                              "canonical ready-prerequisite ask gate"
     assert_text_includes normalized_contract, "Do not consume external-blocker retries",
                          "canonical ready-prerequisite ask gate"
+    assert_text_includes COMPACT_CONTRACT_LINE,
+                         "ask-dep=>user(own:walk|ext:merge/add)",
+                         "compact ready-prerequisite ask gate"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
       line = compact_contract_line(text)
@@ -746,8 +758,14 @@ class GoalCompletionContractTest < Minitest::Test
                              "For an authorized batch target, start the exact-diff walkthrough",
                              "canonical ready-prerequisite owned-target route"
     assert_squished_includes @workflow_contract_section,
-                             "For an external prerequisite, provide its exact PR link and one manual resume instruction.",
+                             "For an external prerequisite, provide its exact PR link and instruct the user either " \
+                             "to merge it and reply only after it is merged, or to explicitly authorize adding it " \
+                             "as a batch target",
                              "canonical ready-prerequisite external route"
+    assert_squished_includes @workflow_contract_section,
+                             "A reply or merge decision alone does not clear an external prerequisite or " \
+                             "authorize its merge.",
+                             "canonical ready-prerequisite external authority guard"
   end
 
   def test_state_change_monitor_regressions_are_part_of_the_canonical_goal_contract_gate
@@ -841,14 +859,32 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "manual_resume")
     assert_includes blocked_input.dig("input", "manual_resume"), "Reply here"
 
-    ready_prerequisite = cases.find { |replay_case| replay_case.fetch("id") == "ready-prerequisite-ask" }
-    assert_equal "none", ready_prerequisite.dig("input", "automation_action")
-    assert_includes ready_prerequisite.fetch("expected_user_output"),
+    owned_prerequisite = cases.find { |replay_case| replay_case.fetch("id") == "ready-owned-target-ask" }
+    assert_equal "none", owned_prerequisite.dig("input", "automation_action")
+    assert_includes owned_prerequisite.fetch("expected_user_output"),
                     "no code or continuous integration failure remains"
-    assert_includes ready_prerequisite.fetch("expected_user_output"),
-                    "Review PR #41 and decide whether to merge it."
-    assert_includes ready_prerequisite.dig("input", "manual_resume"),
+    assert_includes owned_prerequisite.fetch("expected_user_output"),
+                    "exact-diff walkthrough is complete"
+    assert_match(/\b[0-9a-f]{40}\b/, owned_prerequisite.fetch("expected_user_output"))
+    assert_includes owned_prerequisite.fetch("expected_user_output"),
+                    "sorted gate set is [continuous-integration, review, security]"
+    assert_includes owned_prerequisite.fetch("expected_user_output"),
+                    "rollback status is revert-ready"
+    assert_includes owned_prerequisite.dig("input", "manual_resume"),
                     "https://github.com/acme/widgets/pull/41"
+
+    external_prerequisite = cases.find do |replay_case|
+      replay_case.fetch("id") == "ready-external-prerequisite-ask"
+    end
+    assert_equal "none", external_prerequisite.dig("input", "automation_action")
+    assert_includes external_prerequisite.fetch("expected_user_output"),
+                    "not a batch target"
+    assert_includes external_prerequisite.fetch("expected_user_output"),
+                    "reply after it is merged"
+    assert_includes external_prerequisite.fetch("expected_user_output"),
+                    "explicitly authorize adding it as a batch target"
+    refute_includes external_prerequisite.fetch("expected_user_output"),
+                    "decide whether to merge it"
 
     diagnostic = cases.find { |replay_case| replay_case.fetch("id") == "explicit-diagnostics" }
     diagnostic_output = diagnostic.fetch("expected_user_output")
@@ -1015,7 +1051,7 @@ class GoalCompletionContractTest < Minitest::Test
     actual_counts = surfaces.transform_values { |text| text.scan(GMCC_ALIGNMENT_SENTENCE).length }
     expected_counts = surfaces.transform_values { 1 }
     assert_equal expected_counts, actual_counts,
-                 "all generation surfaces must carry the exact GMCC-v4 alignment sentence once"
+                 "all generation surfaces must carry the exact GMCC-v5 alignment sentence once"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       refute_includes prompt, GMCC_ALIGNMENT_SENTENCE,
@@ -1026,8 +1062,8 @@ class GoalCompletionContractTest < Minitest::Test
   def test_triaged_but_unresolved_current_head_review_thread_is_not_complete
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
-      assert_text_includes line, "threads unresolved", "compact completion contract"
-      assert_operator line.index("threads unresolved"), :<,
+      assert_text_includes line, "threads open", "compact completion contract"
+      assert_operator line.index("threads open"), :<,
                       line.index("=>waiting-on-checks-or-review/NOT COMPLETE")
     end
   end
@@ -1040,8 +1076,8 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "CI@head/configured-reviewers pending|missing|untriaged|failed or " \
-                           "threads unresolved",
+                           "CI@head/configured-reviewers pending|missing|untriaged|failed|" \
+                           "threads open",
                            "compact completion contract"
       refute_includes line, "CI/reviews/review agents",
                       "compact completion contract must not duplicate the review category"
@@ -1066,11 +1102,11 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "auto=>exact verdict/head/sorted-gates/rollback; merge iff " \
+                           "auto=>verdict/head/gates/rollback;merge iff " \
                            "autonomous-merge-eligible OR human-approved-for-current-head",
                            "compact completion contract"
       assert_text_includes line,
-                           "durable-decision(proven-human+merge-authority)",
+                           "durable(proven-human+merge-authority)",
                            "compact completion contract"
       assert_text_includes line,
                            "ready-human-review-required|autonomous-merge-evidence-unknown",
@@ -1275,7 +1311,7 @@ class GoalCompletionContractTest < Minitest::Test
     }
 
     contracts.each do |label, line|
-      refute_nil line, "#{label} is missing the GMCC-v4 line"
+      refute_nil line, "#{label} is missing the GMCC-v5 line"
       assert_equal COMPACT_CONTRACT_LINE, line, "#{label} drifted"
     end
   end
@@ -1768,7 +1804,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert_text_includes text, "no auth=>ready-no-merge-authority", label
+      assert_text_includes text, "noauth=>ready-no-merge-authority", label
     end
   end
 
@@ -1782,11 +1818,11 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text,
-                           "auto=>exact verdict/head/sorted-gates/rollback; merge iff " \
+                           "auto=>verdict/head/gates/rollback;merge iff " \
                            "autonomous-merge-eligible OR human-approved-for-current-head",
                            label
       assert_text_includes text,
-                           "durable-decision(proven-human+merge-authority)",
+                           "durable(proven-human+merge-authority)",
                            label
       assert_text_includes text,
                            "ready-human-review-required|autonomous-merge-evidence-unknown",

@@ -131,14 +131,15 @@ TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
                                      "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                                      "live=<replay/ref>; " \
                                      "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
-GOAL_MODE_COMPACT_CONTRACT = "GMCC-v4:CI@head/configured-reviewers " \
-                             "pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>" \
+GOAL_MODE_COMPACT_CONTRACT = "GMCC-v5:CI@head/configured-reviewers " \
+                             "pending|missing|untriaged|failed|threads open|UNKNOWN=>" \
                              "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                              "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
-                             "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;" \
-                             "auto=>exact verdict/head/sorted-gates/rollback; " \
+                             "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
+                             "ask-dep=>user(own:walk|ext:merge/add);" \
+                             "auto=>verdict/head/gates/rollback;" \
                              "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
-                             "durable-decision(proven-human+merge-authority);else ready-human-review-required|" \
+                             "durable(proven-human+merge-authority);else ready-human-review-required|" \
                              "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
 GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
                                 "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
@@ -165,16 +166,17 @@ GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-chec
                                 "the PR, target, and issue."
 GOAL_MODE_REQUIRED_SEMANTICS = [
   "CI@head/configured-reviewers pending|missing|untriaged",
-  "threads unresolved",
+  "threads open",
   "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE",
   "poll/fix",
   "auto-clear=>watch(same:0wake,delta:gates)",
   "fallback:4x15m+exp/4h|manual",
   "stop clear/done/term/budget/user",
-  "no auth=>ready-no-merge-authority",
-  "auto=>exact verdict/head/sorted-gates/rollback",
+  "noauth=>ready-no-merge-authority",
+  "ask-dep=>user(own:walk|ext:merge/add)",
+  "auto=>verdict/head/gates/rollback",
   "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
-  "durable-decision(proven-human+merge-authority)",
+  "durable(proven-human+merge-authority)",
   "else ready-human-review-required|autonomous-merge-evidence-unknown",
   "merge+close PR/target/issue"
 ].freeze
@@ -316,7 +318,11 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.",
   "If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll.",
   "Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage.",
-  "GMCC-v4 compatibility fallback:",
+  "report `blocked-user-input` without consuming external-blocker retries or starting monitoring",
+  "For an owned target, start the exact-diff walkthrough before asking the final merge question.",
+  "For an external dependency-only reference, instruct the user either to merge it and reply only after it is merged, or to explicitly authorize adding it as a target",
+  "a reply or merge decision alone does not clear the prerequisite or authorize its merge.",
+  "GMCC-v5 compatibility fallback:",
   "reuse or create one bounded current-thread monitor before handoff and do not create a duplicate",
   "Use at most four 15-minute fast-window polls followed by exponential backoff capped at four hours",
   "On each wake, refresh live blocker evidence and resume if a blocker clears.",

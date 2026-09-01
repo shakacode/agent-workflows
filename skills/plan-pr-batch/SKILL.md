@@ -799,7 +799,7 @@ is the shared prompt body. For the `codex` target, prepend only the `/goal` line
 before this body. For the `claude` or `generic` target, use the body as-is so the
 prompt starts with `Use $pr-batch to complete this batch with subagents.`
 Keep bulky evidence and long validation notes outside the prompt.
-`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
 Before generating the prompt, preserve this merge-planning contract:
@@ -828,7 +828,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask-dep=>user(own:walk|ext:merge/add);auto=>verdict/head/gates/rollback;merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
 Batch QA Lane:<owner/scope+evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN

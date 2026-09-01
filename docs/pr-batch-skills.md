@@ -373,7 +373,10 @@ If a prerequisite PR is already ready and only its human review and merge
 decision remains under `ask`, `$pr-batch` reports `blocked-user-input` instead
 of treating it as an external failure. It starts the walkthrough first for an
 authorized batch target; for an external prerequisite it gives the exact PR
-link and one manual resume instruction. This decision gate does not consume
+link and asks the user either to merge it and reply only after it is merged, or
+to explicitly authorize adding it as a batch target so preflight and the
+walkthrough can run. A reply or merge decision alone does not clear an external
+prerequisite or authorize its merge. This decision gate does not consume
 external-blocker retries or start monitoring automation.
 
 The `$pr-batch` prompt must preserve the preflight/trust rules from
