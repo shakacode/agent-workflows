@@ -121,6 +121,16 @@ gh run view <run-id> --log-failed
 gh run view <run-id> --json headSha,conclusion,createdAt,workflowName
 ```
 
+To establish same-commit hosted history for Step 1 exit 3 and the Boundary
+section below, also list every run of the failing workflow on the exact
+commit, and check earlier attempts of a retried run — `gh run view`'s
+`conclusion` reflects only the latest attempt:
+
+```bash
+gh run list --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,conclusion,headSha,event,workflowName,number,createdAt,url
+gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
+```
+
 For any other provider, resolve the log-fetch and replay commands from the
 repository seam described above rather than assuming a provider CLI exists.
 Buildkite, CircleCI, and everything else stay seam-resolved by design: this
