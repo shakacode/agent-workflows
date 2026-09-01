@@ -1499,6 +1499,21 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  def test_receipt_that_expires_during_autonomous_replay_stops_before_any_gh_call
+    result, log = run_cli(mode: "direct", replay_crosses_freshness_boundary: true)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "stale"
+    assert_empty log
+  end
+
+  def test_explicit_repo_root_is_honored_when_invoked_outside_the_checkout
+    result, log = run_cli(mode: "direct", invoke_outside_repo: true)
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "mergePullRequest"
+  end
+
   def test_receipt_age_and_future_skew_boundaries_are_exactly_300_and_30_seconds
     runner = PrMergeSubmit::Runner.new
     now = Time.iso8601("2026-07-30T12:00:00Z")
@@ -1670,7 +1685,9 @@ class PrMergeSubmitTest < Minitest::Test
     bash_env_attack: false,
     guard_timeout_seconds: nil,
     interrupt_guard: false,
-    include_replay_bindings: true
+    include_replay_bindings: true,
+    replay_crosses_freshness_boundary: false,
+    invoke_outside_repo: false
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
@@ -1750,6 +1767,10 @@ class PrMergeSubmitTest < Minitest::Test
         guard_timeout_seconds:, descendant_pid_path:
       )
       environment["PR_TEST_AUTONOMOUS_REPLAY"] = replayed_autonomous_path
+      if replay_crosses_freshness_boundary
+        environment["PR_TEST_REPLAY_CROSSES_FRESHNESS_BOUNDARY"] = "1"
+        environment["PR_TEST_RECEIPT_PATH"] = receipt_path
+      end
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
         expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:,
@@ -1762,7 +1783,8 @@ class PrMergeSubmitTest < Minitest::Test
                    environment, arguments, chdir: repo_root, wait_path: guard_marker_path
                  )
                else
-                 stdout, stderr, status = Open3.capture3(environment, *arguments, chdir: repo_root)
+                 command_directory = invoke_outside_repo ? dir : repo_root
+                 stdout, stderr, status = Open3.capture3(environment, *arguments, chdir: command_directory)
                  { stdout:, stderr:, status: }
                end
       log = File.exist?(log_path) ? File.read(log_path) : ""
@@ -1990,6 +2012,15 @@ class PrMergeSubmitTest < Minitest::Test
       load #{SCRIPT.inspect}
       MergeAssurance.define_singleton_method(:replay_autonomous_result) do |**_arguments|
         JSON.parse(File.read(ENV.fetch("PR_TEST_AUTONOMOUS_REPLAY")))
+      end
+      if ENV["PR_TEST_REPLAY_CROSSES_FRESHNESS_BOUNDARY"] == "1"
+        receipt = JSON.parse(File.read(ENV.fetch("PR_TEST_RECEIPT_PATH")))
+        issued_at = Time.iso8601(receipt.fetch("issued_at"))
+        now_calls = 0
+        Time.define_singleton_method(:now) do
+          now_calls += 1
+          issued_at + (now_calls == 1 ? 299 : 301)
+        end
       end
       test_environment = %w[GH_LOG PR_TEST_GUARD_MARKER PR_TEST_DESCENDANT_PID_FILE].to_h { |name| [name, ENV.fetch(name)] }
       runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => #{gh_path.inspect} })

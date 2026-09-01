@@ -85,13 +85,20 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       unsafe_git = File.join(writable_root, "git")
       File.write(unsafe_git, "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'yes')\n")
       File.chmod(0o755, unsafe_git)
+      group_writable_root = File.join(root, "group-writable-tools")
+      FileUtils.mkdir_p(group_writable_root)
+      File.chmod(0o770, group_writable_root)
+      group_writable_git = File.join(group_writable_root, "git")
+      File.write(group_writable_git, "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'yes')\n")
+      File.chmod(0o755, group_writable_git)
 
       cases = {
         "relative" => {
           "AUTONOMOUS_MERGE_GIT" => "git",
           "PATH" => "#{writable_root}:#{ENV.fetch('PATH')}"
         },
-        "writable ancestor" => { "AUTONOMOUS_MERGE_GIT" => unsafe_git }
+        "world-writable ancestor" => { "AUTONOMOUS_MERGE_GIT" => unsafe_git },
+        "same-owner group-writable ancestor" => { "AUTONOMOUS_MERGE_GIT" => group_writable_git }
       }
       cases.each do |label, environment|
         result = invoke(
@@ -108,6 +115,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       end
     ensure
       File.chmod(0o700, writable_root) if writable_root && File.exist?(writable_root)
+      File.chmod(0o700, group_writable_root) if group_writable_root && File.exist?(group_writable_root)
     end
   end
 
