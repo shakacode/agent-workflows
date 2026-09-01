@@ -1117,6 +1117,8 @@ def high_risk_file_findings(files)
     matches << "nested-script-dir" if path.match?(HIGH_RISK_NESTED_SCRIPT_DIR_PATTERN)
     matches << "exact-filename" if HIGH_RISK_EXACT_FILENAMES.include?(path)
     broad_parent_match = matches.any? { |match| BROAD_PROTECTED_PARENT_MATCHES.include?(match) }
+    # Exact filenames are root-only today. Keep the explicit exclusion so a
+    # future overlapping pattern cannot silently widen this exception.
     broad_protected_parent_only = broad_parent_match && !matches.include?("exact-filename")
 
     { path:, matches:, broad_protected_parent_only: } unless matches.empty?
