@@ -121,11 +121,15 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_floor,
                     "record `root-prefix`, `nested-script-dir`, and `exact-filename` matches per path"
     assert_includes normalized_floor,
-                    "`exact-filename` match is never a broad protected-parent-only match"
+                    "`root-prefix` or `nested-script-dir` match may qualify for this resolution"
+    assert_includes normalized_floor,
+                    "including a `nested-script-dir`-only match"
+    assert_includes normalized_floor,
+                    "`exact-filename` match never qualifies as a broad protected-parent-only match"
     assert_includes normalized_floor,
                     "every changed path is included by `safe_path_groups.tests` and none is excluded"
     assert_includes normalized_floor,
-                    "production helper, mixed diff, excluded test, `human_review_paths` match, or policy-path match"
+                    "production helper, mixed diff, excluded test, `human_review_paths` match, or `policy_paths` match"
     assert_includes normalized_floor,
                     "Malformed, incomplete, stale, contradictory, or `UNKNOWN` policy, file, validation, or review evidence"
     assert_includes normalized_floor,

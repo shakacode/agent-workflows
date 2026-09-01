@@ -129,12 +129,14 @@ second test-path list. Because the helper reports one flat risky-path list,
 reapply all three `high_risk_files` predicates from the same trusted helper
 bytes and record `root-prefix`, `nested-script-dir`, and `exact-filename`
 matches per path. Do not copy or paraphrase those predicates into a second
-classifier. An `exact-filename` match is never a broad protected-parent-only
-match. Resolve the broad finding only when every changed path is included by
-`safe_path_groups.tests` and none is excluded, including every current and
-previous path supplied for a rename or copy. A production helper, mixed diff,
-excluded test, `human_review_paths` match, or policy-path match keeps its own
-applicable stop. Malformed, incomplete, stale, contradictory, or
+classifier. A `root-prefix` or `nested-script-dir` match may qualify for this
+resolution, including a `nested-script-dir`-only match. An `exact-filename`
+match never qualifies as a broad protected-parent-only match. Resolve the broad
+finding only when every changed path is included by `safe_path_groups.tests`
+and none is excluded, including every current and previous path supplied for a
+rename or copy. A production helper, mixed diff, excluded test,
+`human_review_paths` match, or `policy_paths` match keeps its own applicable
+stop. Malformed, incomplete, stale, contradictory, or
 `UNKNOWN` policy, file, validation, or review evidence remains `UNKNOWN` and
 fails closed. This resolution clears only the `high-risk-files` protected-parent
 stop after the ordinary gates; it never clears another preflight finding,
