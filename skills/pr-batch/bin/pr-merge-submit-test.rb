@@ -23,6 +23,10 @@ class PrMergeSubmitTest < Minitest::Test
   ADVANCED_BASE_SHA = "d" * 40
   MERGE_COMMIT_SHA = "c" * 40
   SOURCE_REPO_POLICY = Object.new.freeze
+  SAFE_TMP_PARENT = ENV.fetch(
+    "PR_MERGE_SUBMIT_TEST_TMP_PARENT",
+    File.expand_path("../../../..", __dir__)
+  )
   SYSTEM_GIT = AutonomousMergeRuntimeTrust.trusted_git_executable
 
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
@@ -149,7 +153,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_replays_a_trusted_local_merge_tree_candidate
-    Dir.mktmpdir("pr-merge-submit-local-integration") do |root|
+    Dir.mktmpdir("pr-merge-submit-local-integration", SAFE_TMP_PARENT) do |root|
       run_git!(root, "init", "-q", "-b", "main")
       File.write(File.join(root, "README.md"), "base\n")
       run_git!(root, "add", ".")
@@ -712,7 +716,7 @@ class PrMergeSubmitTest < Minitest::Test
     runner = PrMergeSubmit::Runner.new
     runner.instance_variable_set(:@repo_root, File.expand_path("../../..", __dir__))
 
-    Dir.mktmpdir("pr-merge-submit-gh-shim") do |dir|
+    Dir.mktmpdir("pr-merge-submit-gh-shim", SAFE_TMP_PARENT) do |dir|
       marker = File.join(dir, "gh-shim-ran")
       File.write(
         File.join(dir, "gh"),
@@ -743,7 +747,7 @@ class PrMergeSubmitTest < Minitest::Test
       "GH_TOKEN" => ENV["GH_TOKEN"],
       "GITHUB_TOKEN" => ENV["GITHUB_TOKEN"]
     }
-    Dir.mktmpdir("pr-merge-submit-gh-environment") do |dir|
+    Dir.mktmpdir("pr-merge-submit-gh-environment", SAFE_TMP_PARENT) do |dir|
       capture = File.join(dir, "environment.json")
       gh = File.join(dir, "trusted-gh")
       File.write(
@@ -781,7 +785,7 @@ class PrMergeSubmitTest < Minitest::Test
   def test_git_capture_ignores_checkout_controlled_path_shim
     runner = PrMergeSubmit::Runner.new
 
-    Dir.mktmpdir("pr-merge-submit-git-shim") do |dir|
+    Dir.mktmpdir("pr-merge-submit-git-shim", SAFE_TMP_PARENT) do |dir|
       marker = File.join(dir, "git-shim-ran")
       File.write(
         File.join(dir, "git"),
@@ -800,7 +804,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_first_git_capture_rejects_a_resolved_tool_inside_the_candidate_repository
-    Dir.mktmpdir("pr-merge-submit-repository-git") do |repo_root|
+    Dir.mktmpdir("pr-merge-submit-repository-git", SAFE_TMP_PARENT) do |repo_root|
       marker = File.join(repo_root, "git-ran")
       git = File.join(repo_root, "git")
       File.write(git, "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'ran')\n")
@@ -1692,7 +1696,7 @@ class PrMergeSubmitTest < Minitest::Test
     replay_crosses_freshness_boundary: false,
     invoke_outside_repo: false
   )
-    Dir.mktmpdir("pr-merge-submit-test") do |dir|
+    Dir.mktmpdir("pr-merge-submit-test", SAFE_TMP_PARENT) do |dir|
       source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
       if source_repo_policy
         merge_submission = {
@@ -1826,7 +1830,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def run_cli_with_interrupt(mode:, wait_for: "enqueuePullRequest", after_stub_warmup: nil)
-    Dir.mktmpdir("pr-merge-submit-interrupt-test") do |dir|
+    Dir.mktmpdir("pr-merge-submit-interrupt-test", SAFE_TMP_PARENT) do |dir|
       repo_root, base_sha, = prepare_consumer_repo(
         dir,
         merge_submission: { "mode" => "merge_queue_only" },
