@@ -1769,6 +1769,22 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_pr_scan_fails_closed_when_base_or_head_is_malformed
+    with_fake_gh("malformed-pr-identity") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      refute status.success?, out
+      assert_includes out, "PR #123 base/head identity is missing or malformed"
+    end
+  end
+
   def test_acknowledgement_for_target_outside_scan_list_warns
     with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
       out, status = run_script(
@@ -3165,7 +3181,7 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
       JSON
@@ -3261,7 +3277,7 @@ class PrSecurityPreflightTest < Minitest::Test
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
       JSON
           fi
-        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
       JSON
@@ -3494,6 +3510,10 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+        if [ "$mode" = "malformed-pr-identity" ]; then
+          printf '{"baseRefOid":null,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n'
+          exit 0
+        fi
         base_oid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         if [ "$mode" = "moving-pr-base" ]; then
           identity_call_count="$(grep -c '^pr view 123 ' #{Shellwords.shellescape(log_path)})"
