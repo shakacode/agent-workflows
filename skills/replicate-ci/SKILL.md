@@ -24,10 +24,11 @@ reproduction explains the failure.
 3. Establish hosted run history for the exact failure identity on the exact
    commit. A single verified hosted failure with no conflicting equivalent
    same-commit run is sufficient to proceed as a candidate deterministic/parity
-   case. If the failure identity or hosted run history cannot be retrieved or
-   verified, write `UNKNOWN` and stop before reproduction. If equivalent hosted
-   invocations for the same commit (workflow event, inputs, and matrix
-   configuration) pass and fail, stop before parity reproduction and use
+   case. If the failure identity, hosted run history, or invocation equivalence
+   cannot be retrieved or verified, write `UNKNOWN` and stop before
+   reproduction. If equivalent hosted invocations for the same commit (workflow
+   event, inputs, matrix configuration, realized runner image, and toolchain)
+   pass and fail, stop before parity reproduction and use
    `fix-flaky-tests`; that workflow owns intermittency regardless of local
    results. Do not produce an Outcomes classification for that handoff.
 4. Confirm the local-green evidence: command or workflow path used, head SHA,
@@ -130,9 +131,10 @@ Then recommend the next smallest action:
 
 - The failing hosted check and head SHA are exact.
 - Hosted history supports the candidate deterministic/parity case, or records
-  `UNKNOWN` and stops when the failure identity or history cannot be retrieved
-  or verified; equivalent same-commit hosted intermittency stops before parity
-  reproduction and uses `fix-flaky-tests`, not an Outcomes classification.
+  `UNKNOWN` and stops when the failure identity, history, or invocation
+  equivalence cannot be retrieved or verified; equivalent same-commit hosted
+  intermittency stops before parity reproduction and uses `fix-flaky-tests`,
+  not an Outcomes classification.
 - The parity command, runner mapping, or image comes from the CI parity
   environment policy or verified repo docs it names.
 - The parity tool's default images or environments are not treated as exact
