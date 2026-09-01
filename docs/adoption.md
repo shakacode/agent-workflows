@@ -41,21 +41,34 @@ That path is relative to `~/.agents`. The file
 installation and upgrades; do not edit it or use it for personal
 customization.
 
-An invalid repository configuration, path, or guide blocks resolution. An
-invalid user-global configuration, path, or guide emits a warning and falls
-back to [the packaged portable default](writing-style.md). When `writing_style`
-is absent from both repository and user-global configuration, the resolver also
-uses that packaged default. Resolution is
+An invalid repository configuration, preset, path, or guide blocks resolution.
+An invalid user-global configuration, preset, path, or guide emits a warning
+and falls back to [the packaged portable default](writing-style.md). When
+`writing_style` is absent from both repository and user-global configuration,
+the resolver also uses that packaged default. Resolution is
 repo → user-global → portable default, and one complete Markdown file wins
 without merging prose.
 
 ### Adopt ASD-STE100 for Technical Documentation
 
-A project can adopt ASD-STE100 for technical-documentation prose through a
-project-authored local adapter at `docs/writing-style.md`. The resolver does not
-load the standard from a URL, fetch any remote content, or check conformance.
-It only loads a trusted local relative Markdown file. The adapter and AI tools
-are aids; they do not establish ASD approval, certification, or compliance.
+A project can opt in to the independently authored packaged adapter with the
+exact preset scalar:
+
+```yaml
+writing_style: asd-ste100
+```
+
+The same scalar can be set once in `~/.agents/agent-workflow.yml` as a personal
+fallback. Any repository `writing_style` value, whether the preset or a
+relative Markdown path, overrides that user-global selection. The portable
+default remains the generic [writing style](writing-style.md).
+
+The preset keeps the generic plain-language baseline and adds
+ASD-STE100-inspired constraints only for human-facing technical-documentation
+prose. It preserves exact identifiers, commands, templates, evidence, quoted
+text, and machine-readable protocol fields. It does not load the standard from
+a URL, fetch remote content, or check conformance, and it does not contain the
+ASD-STE100 specification or dictionary.
 
 Use the official standard as the primary reference:
 
@@ -67,51 +80,9 @@ Use the official standard as the primary reference:
   (Issue 9, 2025-01-15)
 
 Do not vendor or copy the copyrighted standard PDF or its dictionary into this
-repository or the adapter. Give authors and reviewers project-authorized access
-to the official standard instead. Qualified human review is required before a
-project claims ASD-STE100 compliance.
-
-The following is a copy-ready `docs/writing-style.md` adapter. It states project
-policy without reproducing the standard or dictionary:
-
-```markdown
-# Project Writing Style
-
-## Scope
-
-Apply the project-authorized ASD-STE100 standard to human-facing
-technical-documentation prose. Do not apply prose simplification to source
-code, machine-readable content, or exact interface and protocol text.
-
-## Source authority
-
-- Use the project-authorized official ASD-STE100 standard as the primary
-  reference.
-- If that standard is unavailable, mark the ASD-STE100 application as
-  unverified. Do not guess its rules or dictionary entries.
-- Treat AI and checking tools as aids only, not as authorities or conformance
-  checkers.
-
-## Preserve technical meaning
-
-- Preserve meaning while simplifying prose.
-- Preserve exact identifiers, API names, commands, flags, paths, templates,
-  evidence, protocol markers, and other required literals.
-- Use project terminology for technical nouns and verbs. Keep an exact project
-  term when replacing it would reduce precision or change meaning.
-
-## Verification
-
-Require verification by a qualified human who can consult the official
-standard before claiming ASD-STE100 compliance. Do not claim ASD approval or
-certification.
-```
-
-Enable it in `.agents/agent-workflow.yml`:
-
-```yaml
-writing_style: docs/writing-style.md
-```
+repository or a project guide. Formal ASD-STE100 work requires access to an
+authorized specification and review by a qualified human. The packaged adapter
+and AI tools do not establish ASD approval, certification, or conformance.
 
 ## One-Time Adoption
 
