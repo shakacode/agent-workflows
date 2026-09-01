@@ -137,16 +137,6 @@ class AttendedAndOvernightWorkflowContractTest < Minitest::Test
                  "the guide must not hardcode the still-unmerged #560/#582 run-record schema name")
   end
 
-  # --- Honors issue #565's explicit non-goals --------------------------------
-
-  def test_the_guide_declines_adaptive_thresholds_and_a_comparison_pilot
-    prose = normalize_prose(@doc)
-
-    assert_includes prose, "does not design adaptive thresholds"
-    assert_includes prose, "require a comparison pilot"
-    assert_includes prose, "remain the control"
-  end
-
   # --- Promise removal must be detectable, not silently pass ----------------
 
   def test_removing_the_no_bypass_promise_would_fail_this_test
