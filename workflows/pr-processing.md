@@ -641,7 +641,7 @@ Semantic dependencies, lifecycle ownership, and unresolved `UNKNOWN` facts
 remain earlier fail-closed gates.
 
 `heavy_root.limit` is separate policy input for the host-local
-`heavy-root-admission/v1` contract from issue #604. Batch-plan preflight validates
+`heavy-root-admission/v1` contract. Batch-plan preflight validates
 and reports it but never performs or duplicates heavy-root reservation.
 
 When no envelope is supplied, preflight uses one documented fallback host with

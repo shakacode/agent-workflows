@@ -200,7 +200,7 @@ ownership, dependency, or host assignment still stops phase 2 precisely.
      lane; active expansion reservations retain their separate max-one gate.
    - `uses_external_quota: true` lanes also consume their selected host's
      external-quota budget. Heavy validators, tests, reviews, and QA roots use
-     only issue #604's `heavy-root-admission/v1` contract; triage does not reserve
+     only the `heavy-root-admission/v1` contract; triage does not reserve
      those slots.
    Use the prompt target selected for rendering each generated `$pr-batch` prompt; an
    explicit user-requested host or paste destination wins, otherwise use the

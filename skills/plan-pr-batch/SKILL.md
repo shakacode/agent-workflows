@@ -373,7 +373,7 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      preflight deterministically admits up to the sum of independently free
      per-host worker slots and holds overflow for replay after terminal lanes.
      It validates but does not reserve heavy-root capacity; route every broad
-     validator, test, review, or QA root through issue #604's host-local
+     validator, test, review, or QA root through the host-local
      `heavy-root-admission/v1` contract. Items with `UNKNOWN` path evidence stay
      serial discovery lanes regardless of capacity.
    - Model/effort routing: keep the coordinator model/effort preference

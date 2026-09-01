@@ -806,7 +806,8 @@ required_all_prompt_phrases = [
 host_aware_batch_sizing_phrase_checks = {
   "workflows/pr-processing.md" => [
     ["`per-host-capacity-envelope` v1", 1],
-    ["`heavy-root-admission/v1` contract from issue #604", 1],
+    ["`heavy-root-admission/v1` contract", 1],
+    ["issue #604", 0],
     ["one documented fallback host", 1],
     ["Default single-target future coordinator: Sol/high", 1],
     ["Affirmatively simple single-target future coordinator: Terra/high", 1],
@@ -819,6 +820,7 @@ host_aware_batch_sizing_phrase_checks = {
   "skills/plan-pr-batch/SKILL.md" => [
     ["preflight deterministically admits up to the sum", 1],
     ["`heavy-root-admission/v1` contract", 1],
+    ["issue #604", 0],
     ["`source: fallback`", 1],
     ["Default single-target future coordinator: Sol/high", 1],
     ["Affirmatively simple single-target future coordinator: Terra/high", 1],
@@ -847,7 +849,8 @@ host_aware_batch_sizing_phrase_checks = {
     ["known host with an unavailable roster may use a dispatch-resolved model class", 1],
     ["Lane Card:", 1],
     ["300 characters of headroom", 2],
-    ["Do not combine host-local worker, heavy-root, or external-quota budgets", 1]
+    ["Do not combine host-local worker, heavy-root, or external-quota budgets", 1],
+    ["issue #604", 0]
   ],
   "workflows/pr-batch-intake.md" => [
     ["- **Prompt target:** `codex`, `claude`, or `generic`", 1],
