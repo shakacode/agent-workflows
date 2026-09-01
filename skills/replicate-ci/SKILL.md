@@ -23,14 +23,15 @@ reproduction explains the failure.
    verified, write `UNKNOWN`.
 3. Establish hosted run history for the exact failure identity on the exact
    commit. Use provider-native run history for that exact commit and failure
-   identity, resolving a repo command or policy seam when defined. An
-   equivalent hosted invocation has matching controlled
+   identity, resolving a repo command or policy seam when defined.
+   An equivalent hosted invocation has matching controlled
    invocation parameters and selected or known pre-run hosted environment
    identity—event, inputs, matrix, runner image, toolchain, and configuration
-   selection—not runtime behavior or outcomes. A single verified hosted failure
-   with no conflicting equivalent same-commit run is sufficient to proceed as a
-   candidate deterministic/parity case. If the failure identity, hosted run history,
-   or invocation equivalence cannot be retrieved or verified, record the
+   selection—not runtime behavior or outcomes.
+   A single verified hosted failure with no conflicting equivalent same-commit
+   run is sufficient to proceed as a candidate deterministic/parity case. If
+   the failure identity, hosted run history, or invocation equivalence cannot
+   be retrieved or verified, record the
    unverifiable fact(s) as `UNKNOWN`, classify the result as `BLOCKED`, and
    stop before reproduction.
    If equivalent hosted invocations for the same commit pass and fail, stop
