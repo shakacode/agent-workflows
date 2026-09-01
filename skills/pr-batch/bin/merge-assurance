@@ -355,6 +355,9 @@ module MergeAssurance
       if gates_verdict == false && name == "required_status_check_rollup"
         failures << "ci_result scope #{name} cannot be non-gating"
       end
+      if gates_verdict == false && scope["rows"] != []
+        failures << "ci_result scope #{name} non-gating rows must be empty"
+      end
       failures << "ci_result scope #{name} is not complete" if gates_verdict != false && scope["complete"] != true
       failures << "ci_result scope #{name} is not ready" unless %w[READY NOT_APPLICABLE].include?(scope["state"])
       failures << "ci_result scope #{name} head mismatch" unless scope["head_sha"] == context["head_sha"]
