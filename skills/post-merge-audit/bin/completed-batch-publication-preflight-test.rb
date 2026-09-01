@@ -1384,6 +1384,24 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_empty targets
   end
 
+  def test_url_target_cannot_identify_only_a_subset_of_same_type_lane_targets
+    first_pr = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 155
+    }
+    second_pr = first_pr.merge("number" => 156)
+
+    targets = CompletedBatchPublicationPreflight.targets_for_lane(
+      {
+        "targets" => ["pr:155", "pr:156"],
+        "pr_url" => "https://github.com/shakacode/hichee/pull/155"
+      },
+      "shakacode/hichee",
+      [first_pr, second_pr]
+    )
+
+    assert_empty targets
+  end
+
   def test_issue_targeted_lane_fails_closed_without_strict_issue_authentication
     input = issue_with_pr_input
     issue_snapshot = input.fetch("target_snapshots").find do |row|
