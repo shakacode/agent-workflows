@@ -150,9 +150,16 @@ record destinations, durable references, task/branch/PR values, updates, and
 blockers. No outer dynamic value may create a Markdown link, HTML element, or
 active URI.
 
-A preflight-accepted `trusted-ad-hoc-override` bypasses the helper. Preserve its
-exact existing `plan-state://` or `batch://` durable reference as the prompt
-source and persist the record at its existing durable plan/backend destination.
+A preflight-accepted `trusted-ad-hoc-override` whose durable authorization
+reference is `issue://` or GitHub HTTPS follows the ordinary GitHub source path:
+resolve the referenced issue or pull-request body, preserve the same author and
+trust checks, and record actual selection, launch, and worker-observed body
+digests instead of `not applicable — trusted-ad-hoc-override`.
+
+Only the narrow non-GitHub override backed by an exact existing
+`plan-state://` or `batch://` durable reference bypasses the helper. Preserve
+that reference as the prompt source and persist the record at its existing
+durable plan/backend destination.
 Require the reference to resolve to the same immutable accepted
 provenance/authority record revision, or equivalent existing content binding,
 at selection, launch, and worker start. Record all three source-digest fields as
@@ -306,9 +313,11 @@ helper supplies the verified launch digest; neither layer waits for telemetry
 or infers the timestamp later.
 
 Human `auto` maps to durable machine `auto_merge_when_gates_pass`; human `ask`
-maps to durable machine `ask`. A durable machine `none` value renders as human
-`ask` because the worker has no merge authority, but the durable value remains
-`none` until a human grants current-head merge authority.
+maps to durable machine `ask`. An explicitly selected machine
+`merge_authority: none` renders as human `Merge authority: ask` because the
+worker has no merge authority and must obtain explicit human authority before
+merge. This rendering does not change the durable machine value from `none` to
+`ask`.
 
 ## Workflow version history
 
@@ -375,10 +384,13 @@ repository or active PR-batch plan.
 
 ## Helper
 
-Invoke the helper only for a GitHub-backed lane. A trusted-ad-hoc lane bypasses
-the CLI and follows the durable-reference route above; passing
-`trusted-ad-hoc-override` to `--prompt-source` is invalid and stops before a
-GitHub read or identity write.
+Invoke the helper only for a GitHub-backed lane, including a trusted ad-hoc lane
+whose durable authorization reference resolves to an `issue://` or GitHub HTTPS
+issue or pull request. Only the narrow non-GitHub trusted-ad-hoc lane bypasses
+the CLI and follows the durable-reference route above. Passing
+`trusted-ad-hoc-override` to `--prompt-source` remains invalid and stops before a
+GitHub read or identity write; resolve a GitHub-backed override to its ordinary
+issue-body or pull-request-body source first.
 
 Prepare an issue-body run after the normal PR-batch preflight and base fetch:
 

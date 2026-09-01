@@ -415,9 +415,9 @@ Before implementation or worker launch, produce:
 <!-- host-branch: codex-only end -->
 
 Every pasteable batch prompt uses the exact `Task name:` field from the minimal
-prompt shape. Keep `Thread handle:` and its stable batch/lane derivation in
-machine-readable launch state outside that prompt. Record the handle before
-dispatch so workers copy it unchanged.
+prompt shape. Keep the resolved `Thread handle:` in machine-readable launch
+state outside that prompt. Record the handle before dispatch so workers copy it
+unchanged.
 
 If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the Codex goal prompt. Do not begin implementation from plan approval unless the user explicitly says to launch now.
 
@@ -585,7 +585,9 @@ Route each GitHub-backed lane through the versioned
 [agent-run-record v1 contract](../../docs/github-task-prompts-and-run-records.md)
 and [`agent-run-record` CLI](bin/agent-run-record), which supplies only GitHub
 source and digest evidence. The launcher owns outer composition and replay;
-never inject those values through the helper. A `trusted-ad-hoc-override` lane
+never inject those values through the helper. A GitHub-backed
+`trusted-ad-hoc-override` resolves to its ordinary issue-body or pull-request-body
+source; only a non-GitHub override backed by `plan-state://` or `batch://`
 bypasses the CLI. Persist helper failure output before stopping.
 
 ## Question And Decision Handling
