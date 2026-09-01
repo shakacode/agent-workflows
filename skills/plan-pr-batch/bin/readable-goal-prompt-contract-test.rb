@@ -139,13 +139,43 @@ class ReadableGoalPromptContractTest < Minitest::Test
   end
 
   def test_machine_none_renders_as_human_ask_without_changing_durable_authority
-    normalized = @plan_skill.gsub(/\s+/, " ")
+    [@plan_skill, @prompt_intake].each do |text|
+      normalized = text.gsub(/\s+/, " ")
+      assert_includes normalized,
+                      "An explicitly selected machine `merge_authority: none` renders as human " \
+                      "`Merge authority: ask` because the worker has no merge authority and must obtain " \
+                      "explicit human authority before merge."
+      assert_includes normalized,
+                      "This rendering does not change the durable machine value from `none` to `ask`."
+    end
+  end
+
+  def test_thread_handle_is_resolved_machine_state_without_a_dangling_derivation_reference
+    normalized = @pr_batch_skill.gsub(/\s+/, " ")
+
     assert_includes normalized,
-                    "An explicitly selected machine `merge_authority: none` renders as human " \
-                    "`Merge authority: ask` because the worker has no merge authority and must obtain " \
-                    "explicit human authority before merge."
-    assert_includes normalized,
-                    "This rendering does not change the durable machine value from `none` to `ask`."
+                    "Keep the resolved `Thread handle:` in machine-readable launch state outside that prompt."
+    refute_includes normalized, "its stable batch/lane derivation"
+  end
+
+  def test_lifecycle_drift_scope_stops_at_the_next_equal_or_higher_heading
+    fixture = <<~MARKDOWN
+      ### Planning-Chat Lifecycle
+      required lifecycle text
+      ## Integration And PR Publication
+      adjacent section text
+      ### Coordinator Closeout Lane
+      later section text
+    MARKDOWN
+
+    lifecycle = GoalPromptDriftContract.section(
+      fixture,
+      "### Planning-Chat Lifecycle",
+      GoalPromptDriftContract::UP_TO_H3_HEADING
+    )
+
+    assert_includes lifecycle, "required lifecycle text"
+    refute_includes lifecycle, "adjacent section text"
   end
 
   def test_multi_target_inline_plan_binds_every_target_to_the_coordination_anchor
@@ -250,6 +280,12 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes normalized, "Never put a private `plan-state://` or `batch://` identity in a public run record"
     assert_includes normalized, "do not invent another snapshot, byte encoding, or record schema"
     assert_includes normalized, "not applicable — trusted-ad-hoc-override"
+    assert_includes normalized,
+                    "A trusted ad-hoc override whose durable authorization reference is `issue://` or " \
+                    "GitHub HTTPS follows the ordinary GitHub source path"
+    assert_includes normalized,
+                    "record actual selection, launch, and worker-observed body digests instead of " \
+                    "`not applicable — trusted-ad-hoc-override`"
     assert_includes normalized, "exact GitHub API `body` string"
     assert_includes normalized, "without Unicode normalization, Markdown rendering, whitespace trimming, or newline insertion or removal"
     assert_includes normalized, "When GitHub returns `body: null` for a title-only issue or pull request"

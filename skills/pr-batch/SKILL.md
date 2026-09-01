@@ -415,9 +415,9 @@ Before implementation or worker launch, produce:
 <!-- host-branch: codex-only end -->
 
 Every pasteable batch prompt uses the exact `Task name:` field from the minimal
-prompt shape. Keep `Thread handle:` and its stable batch/lane derivation in
-machine-readable launch state outside that prompt. Record the handle before
-dispatch so workers copy it unchanged.
+prompt shape. Keep the resolved `Thread handle:` in machine-readable launch
+state outside that prompt. Record the handle before dispatch so workers copy it
+unchanged.
 
 If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the Codex goal prompt. Do not begin implementation from plan approval unless the user explicitly says to launch now.
 

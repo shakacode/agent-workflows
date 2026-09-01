@@ -7,6 +7,7 @@ require "stringio"
 # cannot silently retire routing, restart, HST, continuation, or parent-closeout
 # contracts.
 module GoalPromptDriftContract
+  UP_TO_H3_HEADING = /^(?:#|##|###)\s+/
   ROUTE_ROW =
     /^\|\s*`(?<classification>[a-z-]+)`\s*\|\s*`(?<neutral>[^`]+)`\s*\|\s*`(?<codex>[^`]+)`\s*\|\s*`(?<claude>[^`]+)`\s*\|\s*$/
   DISPOSITION_ROW =
@@ -356,7 +357,7 @@ module GoalPromptDriftContract
     unexpected_refs = pressure_section.scan(/#\d+/).uniq - ALLOWED_PRESSURE_REFS
     fail!("pressure scenarios contain live refs: #{unexpected_refs.join(', ')}") unless unexpected_refs.empty?
 
-    lifecycle = section(workflow, "### Planning-Chat Lifecycle")
+    lifecycle = section(workflow, "### Planning-Chat Lifecycle", UP_TO_H3_HEADING)
     require_phrases(lifecycle, PARENT_SCENARIOS, "parent reconciliation scenarios")
     return unless source_checkout
 

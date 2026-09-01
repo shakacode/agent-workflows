@@ -271,6 +271,12 @@ its canonical source bytes as the empty UTF-8 string. Retain that SHA-256 digest
 in the selection, launch, and worker fields just like a nonempty body; do not
 drop the source because its body is null.
 
+A trusted ad-hoc override whose durable authorization reference is `issue://`
+or GitHub HTTPS follows the ordinary GitHub source path: resolve the referenced
+issue or pull-request body as the prompt source, preserve the same author and
+trust checks, and record actual selection, launch, and worker-observed body
+digests instead of `not applicable — trusted-ad-hoc-override`.
+
 The narrow non-GitHub exception is a preflight-accepted
 `trusted-ad-hoc-override` backed by an existing `plan-state://` or `batch://`
 durable authorization reference. Record that exact reference as `Prompt
@@ -324,8 +330,12 @@ occurs, its template value remains `pending`; never infer it from telemetry.
 Do not wait for a telemetry aggregator.
 
 Human `auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine
-`ask`. Preserve machine-only `merge_authority: none` outside the normal human
-prompt for workflows that intentionally grant no merge authority.
+`ask`. An explicitly selected machine `merge_authority: none` renders as human
+`Merge authority: ask` because the worker has no merge authority and must obtain
+explicit human authority before merge. This rendering does not change the
+durable machine value from `none` to `ask`. Preserve machine-only
+`merge_authority: none` outside the normal human prompt for workflows that
+intentionally grant no merge authority.
 
 Use `HST-v1` from the canonical [Human-Status Translation Contract](pr-processing.md#human-status-translation-contract)
 for every recurring wake or workflow-owned heartbeat.
