@@ -675,6 +675,7 @@ module ConfiguredReviewGate
     validate_policy!(policy)
     primary_blockers = check_blockers(policy, snapshot)
     effective_reviewers = policy.fetch("reviewers")
+    displaced_reviewers = []
     override = nil
     blockers = primary_blockers
     if !primary_blockers.empty? && fallback_applicable?(policy.fetch("fallback"), primary_blockers)
@@ -683,6 +684,12 @@ module ConfiguredReviewGate
       if fallback_blockers.empty?
         blockers = []
         failed_reviewer_ids = primary_blockers.filter_map { |item| item["reviewer"] }.uniq
+        # A fallback substitutes for the failed reviewer's check completion only.
+        # Its outstanding formal change request still blocks; dropping the reviewer
+        # outright would hide that from artifact_blockers.
+        displaced_reviewers = policy.fetch("reviewers").select do |reviewer|
+          failed_reviewer_ids.include?(reviewer.fetch("id"))
+        end
         effective_reviewers = policy.fetch("reviewers").reject do |reviewer|
           failed_reviewer_ids.include?(reviewer.fetch("id"))
         end + [fallback_reviewer]
@@ -709,6 +716,7 @@ module ConfiguredReviewGate
     end
 
     blockers = artifact_blockers(effective_reviewers, snapshot)
+    blockers.concat(displaced_change_request_blockers(displaced_reviewers, snapshot))
     blockers << blocker("configured-review-artifact-unsettled", nil, nil, "unsettled") unless settled
     blockers.concat(thread_blockers(policy, snapshot))
     unless blockers.empty?
@@ -1180,6 +1188,29 @@ module ConfiguredReviewGate
       end
       present ||= producer_check_completion?(artifact_policy, reviewer, check, head_sha)
       blocker("configured-review-artifact-missing", reviewer, check, "missing") unless present
+    end
+  end
+
+  # Reviewers a fallback displaced still block while they hold an unresolved
+  # current-head change request, so an authorized fallback cannot merge past
+  # requested changes that were never approved or dismissed.
+  def displaced_change_request_blockers(reviewers, snapshot)
+    head_sha = snapshot.dig("bindings", "head_sha")
+    reviewers.filter_map do |reviewer|
+      artifact_policy = reviewer.fetch("artifact")
+      configured_reviews = snapshot.fetch("artifacts").select do |artifact|
+        artifact["kind"] == "pull_request_review" &&
+          artifact_policy.fetch("actors").include?(artifact["actor"]) &&
+          artifact["head_sha"].to_s.casecmp?(head_sha.to_s)
+      end
+      actors = configured_reviews.group_by { |artifact| artifact["actor"] }.keys
+      next unless actors.any? { |actor| outstanding_changes_requested?(configured_reviews, actor) }
+
+      check = governing_check(
+        snapshot.fetch("checks").select { |item| item["name"] == reviewer["check_name"] },
+        head_sha
+      )
+      blocker("configured-review-artifact-missing", reviewer, check, "missing")
     end
   end
 
