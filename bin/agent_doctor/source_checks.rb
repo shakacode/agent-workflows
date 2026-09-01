@@ -4,9 +4,12 @@ require_relative "contract"
 
 module AgentDoctor
   class SourceChecks
-    def initialize(runner:, environment: ENV)
+    GIT_TIMEOUT_SECONDS = 3.0
+
+    def initialize(runner:, environment: ENV, git_timeout: GIT_TIMEOUT_SECONDS)
       @runner = runner
       @environment = environment
+      @git_timeout = git_timeout
     end
 
     def checkout(name, path)
@@ -84,9 +87,9 @@ module AgentDoctor
     private
 
     def git_config_names(path, pattern)
-      result = @runner.capture(
+      result = capture_git(
         ["git", "--no-optional-locks", "-C", path, "config", "--local", "--includes", "--null", "--name-only",
-         "--get-regexp", pattern], timeout: 3
+         "--get-regexp", pattern]
       )
       return [nil, result[:failure]] if result[:failure]
       return [[], nil] if result[:exit].to_i == 1
@@ -121,17 +124,17 @@ module AgentDoctor
     end
 
     def safe_git(path, *arguments)
-      @runner.capture(
+      capture_git(
         ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-         "-C", path, *arguments], timeout: 3,
-                                  environment: { "GIT_CONFIG_GLOBAL" => File::NULL, "GIT_CONFIG_SYSTEM" => File::NULL,
-                                                 "GIT_CONFIG_NOSYSTEM" => "1" }
+         "-C", path, *arguments],
+        environment: { "GIT_CONFIG_GLOBAL" => File::NULL, "GIT_CONFIG_SYSTEM" => File::NULL,
+                       "GIT_CONFIG_NOSYSTEM" => "1" }
       )
     end
 
     def git_config_values(path, key)
-      result = @runner.capture(
-        ["git", "--no-optional-locks", "-C", path, "config", "--local", "--null", "--get-all", key], timeout: 3
+      result = capture_git(
+        ["git", "--no-optional-locks", "-C", path, "config", "--local", "--null", "--get-all", key]
       )
       return [nil, result[:failure]] if result[:failure]
       return [[], nil] if result[:exit].to_i == 1
@@ -143,11 +146,18 @@ module AgentDoctor
     end
 
     def git_value(path, *arguments)
-      result = @runner.capture(["git", "--no-optional-locks", "-C", path, *arguments], timeout: 3)
+      result = capture_git(["git", "--no-optional-locks", "-C", path, *arguments])
       return [nil, result[:failure]] if result[:failure]
       return [nil, "git exited #{result[:exit]}"] unless result[:exit].to_i.zero?
 
       [result[:stdout].strip, nil]
+    end
+
+    def capture_git(command, environment: nil)
+      options = {}
+      options[:timeout] = @git_timeout unless @git_timeout.nil?
+      options[:environment] = environment if environment
+      @runner.capture(command, **options)
     end
 
     def origin_allowed?(name, origin)

@@ -162,6 +162,28 @@ acknowledged findings in the handoff.
 flag is ignored and the helper warns, because there is no blocking risk to
 waive.
 
+## Interaction Queue Artifact Retention
+
+When an untrusted or metadata-only interaction queue exceeds the bounded
+console display, `pr-security-preflight` writes the complete minimal
+actor/kind/URL evidence to one unique mode-`0600` JSON artifact. For unattended
+or recoverable work, give the invocation a protected batch-specific directory:
+
+```bash
+pr-security-preflight \
+  --repo OWNER/REPO \
+  --interaction-artifact-dir /protected/path/to/this-batch \
+  123
+```
+
+The invoking workflow owns retention, whether it selects a directory or uses
+the system temporary directory default. Retain the exact printed path and
+digest until the owning batch is terminal and no retry or recovery depends on
+the artifact. The caller may then delete that exact path after rechecking its
+identity. The helper never sweeps the directory, deletes sibling artifacts, or
+removes an artifact on process exit, so concurrent and recoverable invocations
+remain independent.
+
 ## Security Tradeoffs
 
 Trusting an actor means future comments, review comments, and reviews from that

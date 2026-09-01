@@ -407,6 +407,11 @@ reconciled replacement. If none is authorized, it returns `blocked-user-input`
 with one stable `dispatch-decision-request v1`, including canonical viable
 fallback choices; replay does not create blocker churn. A selected result permits
 Goal-mode automatic resume only after the required persistence record is durable.
+Complete terminal lane facts block every dispatch before selection or replacement
+proof consumption with `blocked-replacement-terminal-state`; reconcile or replan
+instead of relaunching that lane. In replacement contexts, missing or `UNKNOWN`
+terminal facts return the same status and require callers to refresh targeted lane state
+before retrying. Legacy missing or partial lane state remains valid for an initial launch.
 
 ## Requested Versus Observed Route Provenance
 
@@ -467,7 +472,7 @@ execution receipts, and the execution-provenance validator checks their
 receipt classifications. They are not statuses returned by
 `dispatcher-capability-preflight`, which emits `selected`, `launch-pending`,
 `replay-already-active`, `blocked-user-input`, `blocked-replacement-fencing`,
-and `invalid-input`; that helper still does not observe the actual route at
+`blocked-replacement-terminal-state`, and `invalid-input`; that helper still does not observe the actual route at
 dispatch time. A route mismatch remains a disposition-table outcome, not a
 helper return value.
 

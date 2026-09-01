@@ -16,6 +16,13 @@ backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 
 # Instructions
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the canonical resolution and evidence-preservation rules in the loaded
+`workflows/pr-processing.md`. Apply the guide to review replies, checkpoint
+comments, and deferred issue bodies, while preserving every required marker,
+state row, section, and audit detail in `references/templates.md`.
+
 ## Maintainer Attention Contract
 
 Apply the Maintainer Attention Contract from `AGENTS.md` for all broad

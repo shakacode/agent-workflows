@@ -1,0 +1,62 @@
+name: Follow-up
+description: File self-contained follow-up work found during a PR, review, batch, or audit.
+title: "Follow-up: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Follow-up issues are the scheduling unit for work found in passing, so the body must be
+        **self-contained**: whoever picks this up later, human or agent, must be able to act on it
+        without the originating conversation, PR thread, or chat session.
+
+        For a recurring *process* miss, use the "Process gap" form instead - it collects the
+        `workflows/pr-processing.md` disposition fields that process issues require.
+  - type: textarea
+    id: what-needs-to-happen
+    attributes:
+      label: What needs to happen
+      description: >-
+        The work itself, stated so it can be acted on cold. Describe the current behavior and the
+        wanted behavior rather than referring to "the change discussed above".
+    validations:
+      required: true
+  - type: textarea
+    id: motivating-evidence
+    attributes:
+      label: Motivating evidence
+      description: >-
+        Link the PR, issue, review comment, audit receipt, CI run, or failing command that made
+        this worth filing, and say what it shows.
+      placeholder: |
+        https://github.com/shakacode/agent-workflows/pull/000 - review thread noted the helper
+        silently skips the case when the seam is absent.
+    validations:
+      required: true
+  - type: textarea
+    id: affected-paths
+    attributes:
+      label: Affected paths
+      description: Repository-relative paths this work is expected to touch, one per line.
+      placeholder: |
+        skills/pr-batch/bin/example-helper
+        workflows/pr-processing.md
+    validations:
+      required: true
+  - type: textarea
+    id: decided-direction
+    attributes:
+      label: Decided direction
+      description: >-
+        The approach already agreed on, and by whom. If nothing is settled, write exactly
+        "Not decided yet." and list the options and the tradeoff that has to be resolved first.
+    validations:
+      required: true
+  - type: textarea
+    id: done-when
+    attributes:
+      label: Done when
+      description: >-
+        Acceptance criteria plus the command, test, or observation that proves them. This is what
+        the closing PR has to show, so keep it checkable rather than aspirational.
+    validations:
+      required: true

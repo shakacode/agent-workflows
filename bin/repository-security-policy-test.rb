@@ -43,6 +43,55 @@ class RepositorySecurityPolicyTest < Minitest::Test
     assert_empty mutable_uses, "mutable GitHub Actions references:\n#{mutable_uses.join("\n")}"
   end
 
+  def test_all_checkout_steps_disable_checkout_credentials
+    workflow_paths = Dir.glob(File.join(ROOT, ".github/workflows/*.{yml,yaml}")).sort
+    credentialed_checkouts = credentialed_checkout_locations(workflow_paths)
+
+    assert_empty credentialed_checkouts,
+                 "checkout credentials persisted:\n#{credentialed_checkouts.join("\n")}"
+  end
+
+  def test_multiline_data_containing_git_push_does_not_exempt_checkout_credentials
+    Dir.mktmpdir("repository-security-policy") do |root|
+      path = File.join(root, "heredoc.yml")
+      File.write(path, <<~YAML)
+        jobs:
+          validate:
+            steps:
+              - name: Render harmless example
+                run: |
+                  cat <<'EXAMPLE'
+                  git push origin example
+                  EXAMPLE
+              - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567
+      YAML
+
+      assert_equal ["heredoc.yml:jobs.validate.steps.1"], credentialed_checkout_locations([path], root: root)
+    end
+  end
+
+  def test_checkout_identity_case_aliases_disable_checkout_credentials
+    Dir.mktmpdir("repository-security-policy") do |root|
+      path = File.join(root, "case-aliases.yml")
+      File.write(path, <<~YAML)
+        jobs:
+          validate:
+            steps:
+              - uses: Actions/checkout@0123456789abcdef0123456789abcdef01234567
+              - uses: actions/Checkout@0123456789abcdef0123456789abcdef01234567
+              - uses: ACTIONS/CHECKOUT@0123456789abcdef0123456789abcdef01234567
+              - uses: actions/checkout-helper@0123456789abcdef0123456789abcdef01234567
+              - uses: actions/checkout/subpath@0123456789abcdef0123456789abcdef01234567
+      YAML
+
+      assert_equal [
+        "case-aliases.yml:jobs.validate.steps.0",
+        "case-aliases.yml:jobs.validate.steps.1",
+        "case-aliases.yml:jobs.validate.steps.2"
+      ], credentialed_checkout_locations([path], root: root)
+    end
+  end
+
   def test_action_reference_scanner_reads_yaml_structure
     workflow = YAML.safe_load(<<~YAML, aliases: true)
       jobs:
@@ -203,6 +252,35 @@ class RepositorySecurityPolicyTest < Minitest::Test
 
   def load_yaml_file(path)
     YAML.safe_load_file(path, permitted_classes: YAML_TIMESTAMP_CLASSES, aliases: true)
+  end
+
+  def credentialed_checkout_locations(workflow_paths, root: ROOT)
+    workflow_paths.flat_map do |path|
+      workflow = load_yaml_file(path)
+      jobs = workflow.is_a?(Hash) ? workflow["jobs"] : nil
+      next [] unless jobs.is_a?(Hash)
+
+      jobs.flat_map do |job_name, job|
+        next [] unless job.is_a?(Hash)
+
+        steps = job["steps"]
+        next [] unless steps.is_a?(Array)
+
+        steps.each_with_index.filter_map do |step, index|
+          next unless step.is_a?(Hash) && checkout_action_reference?(step["uses"])
+          next if step.dig("with", "persist-credentials") == false
+
+          "#{path.delete_prefix("#{root}/")}:jobs.#{job_name}.steps.#{index}"
+        end
+      end
+    end
+  end
+
+  def checkout_action_reference?(reference)
+    return false unless reference.is_a?(String)
+
+    identity, separator, action_ref = reference.partition("@")
+    separator == "@" && !action_ref.empty? && identity.casecmp?("actions/checkout")
   end
 
   def action_paths(root = ROOT)

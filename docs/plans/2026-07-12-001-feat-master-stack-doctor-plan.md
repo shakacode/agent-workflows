@@ -10,6 +10,8 @@ execution: code
 
 # Component-Owned Agent Stack Doctor - Plan
 
+> **Status:** Implemented by [PR #152](https://github.com/shakacode/agent-workflows/pull/152) (merged). This document is a point-in-time implementation-plan record, kept for engineering history and contributor context; it is not read by any executable test and must not be treated as a live source of truth for current behavior. See the current code and `docs/installation-and-upgrades.md` for authoritative behavior. (#194)
+
 ## Goal Capsule
 
 - **Objective:** Provide one read-only `agent-stack doctor` report while keeping operational diagnostics in the component repositories that own them.

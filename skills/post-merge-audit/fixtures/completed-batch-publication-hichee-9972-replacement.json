@@ -1,0 +1,68 @@
+{
+  "contract": "completed-batch-publication-preflight-input",
+  "version": 1,
+  "batch_id": "hc-20260724-9972-replacement",
+  "expected_targets": [
+    {
+      "host": "github.com",
+      "repo": "shakacode/hichee",
+      "type": "pull_request",
+      "number": 9972
+    }
+  ],
+  "coordination_status": {
+    "scope": {
+      "kind": "batch",
+      "batch_id": "hc-20260724-9972-replacement"
+    },
+    "batches": [
+      {
+        "batch_id": "hc-20260724-9972-replacement",
+        "repo": "shakacode/hichee",
+        "status": "completed",
+        "updated_at": "2026-07-24T14:10:00Z",
+        "completed_at": "2026-07-24T14:10:00Z",
+        "lanes": [
+          {
+            "name": "hc-9972",
+            "targets": [
+              "9972"
+            ],
+            "status": "superseded",
+            "terminal": "superseded",
+            "closed_at": "2026-07-24T13:20:04Z",
+            "pr_state": "open",
+            "pr_url": "https://github.com/shakacode/hichee/pull/9972",
+            "evidence_url": "https://github.com/shakacode/hichee/pull/9972"
+          }
+        ]
+      }
+    ]
+  },
+  "target_snapshots": [
+    {
+      "target": {
+        "host": "github.com",
+        "repo": "shakacode/hichee",
+        "type": "pull_request",
+        "number": 9972
+      },
+      "state": "merged",
+      "head_sha": "106f9ccc536175705b3c0bc8f876bf6ece7b8bd3",
+      "completed_at": "2026-07-24T14:00:00Z",
+      "source": "https://github.com/shakacode/hichee/pull/9972"
+    }
+  ],
+  "qa_evidence": [
+    {
+      "target": {
+        "host": "github.com",
+        "repo": "shakacode/hichee",
+        "type": "pull_request",
+        "number": 9972
+      },
+      "user_visible_ui_change": "no",
+      "evidence": "<!-- qa-evidence v1\nrequired: yes\nstatus: satisfied\nhead_sha: 106f9ccc536175705b3c0bc8f876bf6ece7b8bd3\ntested_at: PR/head 106f9ccc536175705b3c0bc8f876bf6ece7b8bd3\nscope: PR #9972 exact-head replacement replay\nautomated_checks: focused behavioral specs\nmanual_checks: not applicable: no manual surface\nfindings: none\nrelease_blocking: clear\nprocess_gap_disposition: script\n-->"
+    }
+  ]
+}

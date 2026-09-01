@@ -129,6 +129,15 @@ Plan a PR batch
 
 ## Workflow
 
+### Prompt Intake
+
+Load the canonical
+[PR-Batch Prompt Intake](../../workflows/pr-batch-intake.md) component before
+interpreting targets or shaping lanes. It alone defines canonical target v1,
+durable override provenance, trust handoff, short-invocation expansion,
+duplicate handling, and the verified facts this planner consumes. Planning may
+add scope, dependency, route, and capacity facts, but must not redefine intake.
+
 1. Intake
    - Before reading GitHub targets or shaping the batch, record future
      coordinator, worker, and checker model/effort preferences separately from
@@ -166,7 +175,7 @@ Plan a PR batch
      placeholder in the generated prompt. Explain that `ask` automatically
      walks through the exact-diff PR one conceptual change at a time before its
      one final merge decision.
-   - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list.
+   - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list. Treat an unbound direct prompt as planning/reconciliation input only; do not turn it into an implementation lane unless the complete durable ad-hoc override record is already present in trusted input.
 
 2. Verify
    - Determine repo with `gh repo view --json nameWithOwner -q .nameWithOwner` unless refs include repo URLs.
@@ -280,9 +289,9 @@ Plan a PR batch
      local artifacts, but must plan an explicit blocked human-attachment
      handoff until durable GitHub URLs exist.
    - Decide whether the batch will schedule any parallel wave before doing path
-     discovery. The File-touch map exists only to keep same-path items out of the
-     same parallel worktree wave; a serial schedule cannot collide, so the map
-     cannot change it. If the batch runs serially — a single item, the user asked
+     discovery. The File-touch map records integration intersections; it does not
+     create dependencies or keep same-path items out of a wave. Issue-authored
+     semantic dependencies alone become typed stage-dependency edges. If the batch runs serially — a single item, the user asked
      for serial execution, or the resolved host cap is 1 — skip path discovery and
      default every lane to serial. Otherwise build the map only for items that are
      candidates for the same parallel wave. PR path discovery is a cheap
@@ -328,11 +337,15 @@ Plan a PR batch
      proposed new paths from issue/design notes and grep the repo to confirm
      existing paths. If paths still cannot be determined, record `UNKNOWN` and
      treat the item as serial.
-   - File-touch map, collision and wave scheduling: items that affect the same
-     path cannot run as parallel worktrees; keep only file-disjoint items in the
-     parallel first batch and sequence or defer collisions. A directory rename
-     reserves descendants under both the old and new directory names, so any
-     create/delete/edit under either tree collides with that rename. An `UNKNOWN`
+   - File-touch map, overlap and wave scheduling: record same-path intersections
+     as integration advisories and keep the lanes moving; do not infer or alter a
+     semantic dependency from an overlap. Repeated overlap is a modularization
+     signal. At integration, apply consequence-aware care to executable, schema,
+     security, merge-policy, and canonical-contract intersections. Resolve
+     changelog and generated-artifact ownership from the consumer repository's
+     `AGENTS.md` artifact-ownership seam (`defer`, `waive`, `dedicated-owner`, or
+     required); ordinary documentation is advisory. A directory rename reserves
+     descendants under both the old and new directory names, so any create/delete/edit under either tree is reported together. An `UNKNOWN`
      item runs as a serial "discovery lane" — a lane that first determines its
      real paths instead of editing in parallel. Never run discovery lanes
      concurrently with active editor lanes. For items already in the scheduling
@@ -347,7 +360,7 @@ Plan a PR batch
      detection; otherwise use the detectable current host, or `generic` when
      detection is ambiguous. Installed Codex/Claude homes prove install state,
      not the active runtime.
-     After collision filtering, default to these maximum file-disjoint lanes per
+     After semantic dependency planning, default to these maximum independent lanes per
      prompt or wave. Items with `UNKNOWN` path evidence remain serial discovery
      lanes and are not counted in parallel wave limits.
      - `codex`: up to 10 independent items, or 8 when any lane touches shared/risky
@@ -359,7 +372,7 @@ Plan a PR batch
      - `generic`: use the Claude-sized 5/3 limit unless the user explicitly
        names a host with larger verified capacity.
      Prefer a smaller first batch when live coordination, CI, approval, or quota
-     health is uncertain; put remaining file-disjoint work in later wave
+     health is uncertain; put remaining independent work in later wave
      prompts.
    - Model/effort routing: keep the coordinator model/effort preference
      and independent-checker preference separate from every worker
@@ -386,8 +399,9 @@ Plan a PR batch
      that route `UNKNOWN`; it remains an advisory preference rather than a launch
      blocker. Group lanes by model/effort preference,
      or dispatch-resolved class/effort route, for review and dispatch,
-     but preserve lane ownership, dependencies, serial discovery, collision
-     rules, and wave caps; grouping never combines targets into one worker.
+     but preserve lane ownership, dependencies, serial discovery,
+     active-reservation coordination, and wave caps; grouping never combines
+     targets into one worker.
      Keep coordinator and worker requested preferences independent. If the
      dispatcher or runtime inherits or defaults to the coordinator route, record
      it honestly and continue unless an independent gate blocks. Prefer a fresh strongest-capability checker
@@ -452,7 +466,7 @@ Plan a PR batch
      explicit env-var / loaded-skill / repo-local pinned-copy chain and pass a
      `batch-plan-preflight` v1 envelope on stdin to
      `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
-     owns schema, collision, backend-cap, QA, external-premise, active-wave, and
+     owns schema, advisory-overlap reporting, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
      `lane_lifecycle_states` array. Advance max-one groups only from a separate
@@ -476,7 +490,15 @@ Plan a PR batch
      the verified PR map reflects its path or exact rename pair.
      Preserve real PR `pr-file-touch-map` verified results unchanged; represent
      explicit pre-PR paths with the helper's typed `planned-path-evidence` v1
-     record and durable evidence reference. A rejected result launches no
+     record and durable evidence reference. An `issue` source must bind to the
+     target's exact repository and number through `issue://OWNER/REPO/N` or an
+     exact lowercase-host `https://github.com/OWNER/REPO/issues/N` reference;
+     both reject userinfo and query, HTTPS requires port 443, `issue://`
+     requires the exact canonical authority/path shape, and fragments remain
+     permitted;
+     other source kinds prove durability only and do not invent target identity.
+     After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
+     A rejected result launches no
      worker; an accepted result permits only its eligible lanes and keeps its
      held lanes unlaunched.
      Before launch, resolve `PR_BATCH_SKILL_DIR` through the explicit env-var /
@@ -569,8 +591,11 @@ Plan a PR batch
      after a successful claim, on blocked/cancelled state, and as the final
      handoff header. The actor that opens or updates the PR emits the PR-open
      Lane Card when the PR is opened. It records preferred model/effort,
-     observed host/model/effort, and the execution-envelope receipt; unavailable
-     observations are `UNKNOWN`. The claim holder and `dashboard_url`
+     observed host/model/effort, the execution-envelope receipt, the unchanged
+     repository-qualified canonical launch identity, and `Ad-hoc override:
+     none` or the complete accepted durable override record; unavailable route
+     observations are `UNKNOWN`, while canonical launch or override evidence
+     may not be. The claim holder and `dashboard_url`
      degrade to `UNKNOWN` when the backend does not provide them, while `pr_url`
      may use the verified GitHub PR URL from PR-open/current PR state.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
@@ -662,6 +687,7 @@ backend must say so in the declaration.
 - Batch title(s):
 - Included items:
   - `PR #N` or `Issue #N`: title, URL, state, role in batch
+  - Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch
 - Excluded or deferred:
 - File-touch map and path evidence:
 - Dependencies and sequencing:
@@ -789,8 +815,9 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 Use $pr-batch to complete this batch with subagents.
 Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
 Thread handle: <batch-short>-<lane>-<word>
-Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN
-Preflight: issue/PR=>pr-security-preflight;trusted-direct adhoc:=>skip;block=>stop;no raw GitHub/override
+Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
+Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
+PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
 Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
@@ -799,28 +826,28 @@ Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
-Dispatch <lane_id>: preferred <dispatcher>@<route>; fallback dispatchers <dispatcher>@<route>->...|none; auth dispatch <y|n>; ordinary pending/active lifecycle.
+Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
-Batch QA Lane:<owner/scope+QA Evidence|none+rationale>
+Batch QA Lane:<owner/scope+evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
 Items:
-- Target: PR #N: URL, Issue #N: URL, or Ad-hoc task: `adhoc:<yyyymmdd>-<short-slug>`
-  Original:trusted ad-hoc prompt|n/a
-  Goal:one-line outcome
-  Notes:scope/branch/deps
-  Done when:requested `merge_authority` final state+PR/no-PR evidence|no-fix rationale
+- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+  Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
+  Goal:outcome
+  Notes:scope/deps
+  Done:req auth+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
 - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
-Current wave:each target/disjoint lane exactly once;one target/lane/worker;shared=>in-lane;serial/UNKNOWN apart
+Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
-merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;document confidence data in PR description
+merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 ```
@@ -839,7 +866,7 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
   an issue with no explicit paths all go straight to a serial lane as `UNKNOWN`.
 - Do not omit links; use GitHub URLs for every item.
 - Do not put full audit evidence in the goal prompt; put bulky details in the Batch Plan outside the goal.
-- Do not fan out items that change the same path as parallel worktrees; they will conflict — sequence them or split into a later batch.
+- Do not turn file overlap into an inferred dependency; record it as an integration advisory and preserve issue-authored semantic ordering.
 - Do not use installed Codex/Claude homes as proof of the current runtime host;
   use an explicit target or fall back to `generic` sizing when detection is
   ambiguous.
@@ -847,7 +874,8 @@ Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/
   radius, reversibility, and validation difficulty can force a stronger model
   and more effort.
 - Do not treat model grouping as lane grouping; collate the plan by exact pair
-  without combining ownership or weakening dependency and collision ordering.
+  without combining ownership or weakening dependencies and active-reservation
+  coordination.
 - Do not eyeball the goal-prompt length; apply the Output-section size gate and split Codex prompts into smaller goals if they are over budget.
 
 ## Self-Check

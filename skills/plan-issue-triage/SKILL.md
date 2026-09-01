@@ -7,6 +7,12 @@ description: Use when preparing a ready prompt for Claude, Codex, or another age
 
 Generate a ready-to-run prompt for issue triage. Do not perform the full audit, change code, or launch workers unless the user explicitly asks.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the loaded `workflows/pr-processing.md` contract, and require the
+recipient triage agent to use the resolved guide before posting issue comments.
+The guide cannot remove evidence, disposition fields, URLs, or `UNKNOWN` facts.
+
 Memorable invocation:
 
 ```text

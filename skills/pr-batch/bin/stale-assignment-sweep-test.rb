@@ -8,6 +8,13 @@ require "open3"
 require "time"
 require "tmpdir"
 
+# Loaded (not just spawned as a subprocess) so #229/#246's process-group reap
+# tests below can call StaleAssignmentSweep::Runner's private
+# reap_after_timeout directly against a real, already-exited child, rather
+# than trying to force the underlying Timeout::Error race deterministically
+# from outside the process.
+load File.expand_path("stale-assignment-sweep", __dir__)
+
 # End-to-end tests for the stale-assignment sweep. A fake `gh` is written to a
 # tmp dir and prepended to PATH; it serves canned issue/timeline fixtures and
 # logs every invocation so mutation calls can be asserted (or their absence
@@ -540,6 +547,70 @@ class StaleAssignmentSweepTest < Minitest::Test
     pids.each do |pid|
       assert child_terminated?(pid),
              "gh child #{pid} was orphaned instead of terminated with its process group"
+    end
+  end
+
+  # --- #229/#246: a WNOHANG-reaped leader keeps its real status and never --
+  # --- signals an already-gone process group --------------------------------
+  #
+  # reap_after_timeout is capture_process_group's Timeout::Error handler,
+  # extracted so these two cases can be exercised directly against a real,
+  # already-exited child. The race that triggers it from outside the process
+  # (Timeout::Error landing after the blocking waitpid2 already reaped the
+  # child but before the assignment completed) is a few CPU instructions
+  # wide and not reliably forceable from a subprocess test; calling it
+  # directly against a genuinely-already-exited pid reproduces the same
+  # inputs deterministically.
+
+  def test_reap_after_timeout_keeps_real_status_when_group_is_already_gone
+    runner = StaleAssignmentSweep::Runner.new
+    pid = Process.spawn("sh", "-c", "exit 7", out: File::NULL, err: File::NULL, pgroup: true)
+    sleep 0.3 # let the trivial shell actually exit and become a zombie
+
+    status, outcome = runner.send(:reap_after_timeout, pid)
+
+    assert_equal :timed_out, outcome
+    refute_nil status,
+               "expected the WNOHANG probe's own reap to supply a real status, not a discarded nil"
+    assert_equal 7, status.exitstatus
+  end
+
+  def test_reap_after_timeout_keeps_leader_status_and_terminates_surviving_children
+    Dir.mktmpdir("stale-assignment-sweep-reap-after-timeout") do |dir|
+      pids_file = File.join(dir, "grandchild.pid")
+      # The leader forks a grandchild into the same process group (no job
+      # control in a non-interactive `sh -c`), records its pid, then exits
+      # immediately -- well before the grandchild's own 300s sleep. This
+      # reproduces "leader dead, group still holds a live descendant" (#229)
+      # without depending on process-group signal timing.
+      #
+      # The grandchild ignores TERM (mirrors the metadata_timeout_descendant
+      # stub in pr-merge-submit-test.rb), so it survives the initial TERM and
+      # only dies to the KILL escalation. A bare `sleep 300` has default TERM
+      # disposition and would die on the first signal, leaving
+      # terminate_remaining_process_group's KILL branch provably unreached.
+      pid = Process.spawn(
+        "sh", "-c", "(trap '' TERM; sleep 300) & echo \"$!\" > '#{pids_file}'; exit 7",
+        out: File::NULL, err: File::NULL, pgroup: true
+      )
+      deadline = Time.now + 5
+      until File.exist?(pids_file) && !File.read(pids_file).strip.empty?
+        raise "leader never recorded its grandchild's pid" if Time.now >= deadline
+
+        sleep 0.02
+      end
+      sleep 0.2 # let the leader's own `exit 7` complete
+      grandchild_pid = File.read(pids_file).strip.to_i
+
+      runner = StaleAssignmentSweep::Runner.new
+      status, outcome = runner.send(:reap_after_timeout, pid)
+
+      assert_equal :timed_out, outcome
+      refute_nil status,
+                 "expected the leader's real status, not one discarded by re-waiting an already-reaped pid"
+      assert_equal 7, status.exitstatus
+      assert child_terminated?(grandchild_pid),
+             "grandchild #{grandchild_pid} was orphaned instead of terminated with its group"
     end
   end
 

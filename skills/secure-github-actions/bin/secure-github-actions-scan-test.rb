@@ -631,16 +631,19 @@ class SecureGitHubActionsScanTest < Minitest::Test
       git!(root, "init", "-b", "main")
       git!(root, "add", "acción/action.yml")
 
-      stdout, stderr, status = Open3.capture3(
-        { "LC_ALL" => "C", "LANG" => "C" }, RbConfig.ruby, SCANNER, "--json", root
-      )
+      with_default_external_encoding(Encoding::US_ASCII) do
+        stdout, stderr, status = Open3.capture3(
+          { "LC_ALL" => "C", "LANG" => "C" }, RbConfig.ruby, SCANNER, "--json", root
+        )
 
-      assert_equal 1, status.exitstatus
-      assert_empty stderr
-      document = JSON.parse(stdout)
-      assert_equal ["acción/action.yml"], document.dig("scan", "files_scanned")
-      finding_files = document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
-      assert_equal ["acción/action.yml"], finding_files
+        assert_equal Encoding::US_ASCII, stdout.encoding
+        assert_equal 1, status.exitstatus
+        assert_empty stderr
+        document = JSON.parse(stdout.force_encoding(Encoding::UTF_8))
+        assert_equal ["acción/action.yml"], document.dig("scan", "files_scanned")
+        finding_files = document.fetch("review_findings").map { |finding| finding.dig("location", "file") }
+        assert_equal ["acción/action.yml"], finding_files
+      end
     end
   end
 
@@ -2128,6 +2131,14 @@ class SecureGitHubActionsScanTest < Minitest::Test
   end
 
   private
+
+  def with_default_external_encoding(encoding)
+    original = Encoding.default_external
+    Encoding.default_external = encoding
+    yield
+  ensure
+    Encoding.default_external = original
+  end
 
   def git!(root, *arguments)
     environment = {

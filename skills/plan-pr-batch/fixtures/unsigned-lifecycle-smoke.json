@@ -10,6 +10,13 @@
         "id": "install-smoke",
         "wave": "wave-a",
         "purpose": "implementation",
+        "target": {
+          "type": "github-issue",
+          "version": 1,
+          "repository": "owner/repo",
+          "number": 1,
+          "stable_coordination_identity": "owner/repo:issue:1"
+        },
         "changed_surfaces": [],
         "qa": {
           "disposition": "not-required",
@@ -22,10 +29,10 @@
   },
   "file_touch_map": {
     "install-smoke": {
-      "pr": 1,
-      "repo": "owner/repo",
-      "source": "verified",
-      "changed_files": 1,
+      "type": "planned-path-evidence",
+      "version": 1,
+      "source_kind": "issue",
+      "evidence_ref": "issue://owner/repo/1#planned-paths",
       "paths": [
         "lib/install_smoke.rb"
       ],

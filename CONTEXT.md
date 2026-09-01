@@ -1,6 +1,6 @@
 # Agent Batch Coordination
 
-Portable language for multi-agent PR-batch workflows: how coordinators, workers, and a coordination backend talk about ownership, liveness, and batch lifecycle. Keep repo-specific policy, backend names, dashboards, and domain vocabulary in each consumer repo's `AGENTS.md` seam or local docs.
+Portable language for multi-agent PR-batch workflows: how coordinators, workers, and a coordination backend talk about ownership, liveness, and batch lifecycle. Keep repo-specific policy, backend names, dashboards, and domain vocabulary in each consumer repo's `AGENTS.md` seam or local docs. The companion glossary for source-pack distribution, install-path, seam, readiness, and review terms is [docs/source-pack-glossary.md](docs/source-pack-glossary.md).
 
 ## Language
 

@@ -809,30 +809,56 @@ module StaleAssignmentSweep
       begin
         Timeout.timeout(gh_timeout) { status = Process.waitpid2(pid).last }
       rescue Timeout::Error
-        # Timeout::Error can land after the blocking waitpid2 already reaped the
-        # child but before `status =` completed. Signalling then would target a
-        # pgid the OS may have recycled onto an unrelated process group, so only
-        # terminate once we confirm the child is still ours (alive or a zombie).
-        # ECHILD means it was already reaped: nothing left to kill.
-        reaped = begin
-          Process.waitpid2(pid, Process::WNOHANG)
-        rescue Errno::ECHILD
-          :gone
-        end
-        if reaped == :gone
-          outcome = :timed_out
-        else
-          # Still ours (alive, or a zombie whose group may still hold children):
-          # terminate the group so no child is orphaned.
-          status, terminated = terminate_process_group(pid)
-          outcome = terminated ? :timed_out : :undead
-        end
+        status, outcome = reap_after_timeout(pid)
       end
 
       [scrub(read_capture(stdout_file)), scrub(read_capture(stderr_file)), status, outcome]
     ensure
       stdout_file&.close!
       stderr_file&.close!
+    end
+
+    # Classify and act on a Timeout::Error raised while blocked on the
+    # leader's exit. Returns [status, outcome] for capture_process_group.
+    #
+    # Timeout::Error can land after the blocking waitpid2 already reaped the
+    # child but before `status =` completed. ECHILD here means that discarded
+    # call did the reaping: nothing is left to signal, and its status is
+    # unrecoverable (#229, #246).
+    #
+    # A non-nil WNOHANG reap means THIS call did the reaping instead (the
+    # leader exited right at the deadline) -- its status is real and must be
+    # kept, not clobbered by terminate_process_group's own (now futile)
+    # attempt to wait on an already-reaped pid. The leader can still be dead
+    # while its group holds live children (it can fork and exit early), so
+    # this does not skip termination outright -- it only skips *signalling*
+    # once the group itself is confirmed gone, so a kill only proceeds right
+    # after process_group_alive? found the pgid still live. That check is a
+    # TOCTOU snapshot, not a lock: the pid can still be freed by a WNOHANG
+    # reap and recycled onto an unrelated group in the gap before the kill
+    # actually runs. This is strictly safer than the old no-check path, not
+    # race-free.
+    def reap_after_timeout(pid)
+      reaped = begin
+        Process.waitpid2(pid, Process::WNOHANG)
+      rescue Errno::ECHILD
+        :gone
+      end
+      if reaped == :gone
+        [nil, :timed_out]
+      elsif reaped.nil?
+        # Leader still alive: a genuine hang. Terminate the whole group.
+        status, terminated = terminate_process_group(pid)
+        [status, terminated ? :timed_out : :undead]
+      elsif process_group_alive?(pid)
+        # Leader already reaped above, but the group still has live members:
+        # terminate them without re-reaping (and re-clobbering) the leader
+        # status already captured in `reaped`.
+        terminated = terminate_remaining_process_group(pid)
+        [reaped.last, terminated ? :timed_out : :undead]
+      else
+        [reaped.last, :timed_out]
+      end
     end
 
     # Terminate the process group led by pid: TERM, a short grace to let it exit,
@@ -848,6 +874,22 @@ module StaleAssignmentSweep
       deadline = monotonic_time + kill_grace_seconds
       status ||= wait_for_child(pid, deadline)
       [status, wait_for_process_group_exit(pid, deadline)]
+    end
+
+    # Terminate a process group whose leader has already been reaped, so there
+    # is no child left on `pid` for this process to wait on: TERM, a short
+    # grace, then KILL if members remain. Returns terminated? (false only when
+    # the group still will not die after KILL). Mirrors terminate_process_group
+    # but skips waiting on the leader a second time, which would only raise
+    # ECHILD and contribute nothing (#229, #246).
+    def terminate_remaining_process_group(pid, signal: "TERM", grace_seconds: 1, kill_grace_seconds: 1)
+      signal_process_group(signal, pid)
+      deadline = monotonic_time + grace_seconds
+      return true if wait_for_process_group_exit(pid, deadline)
+
+      signal_process_group("KILL", pid)
+      deadline = monotonic_time + kill_grace_seconds
+      wait_for_process_group_exit(pid, deadline)
     end
 
     def signal_process_group(signal, pid)

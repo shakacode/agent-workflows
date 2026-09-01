@@ -1,0 +1,66 @@
+{
+  "contract": "selected-hosted-ci-incident-replays",
+  "version": 1,
+  "repository": "shakacode/hichee",
+  "selection_time_provenance": "synthetic deterministic replay binding; exact historical selection timestamps were not retained",
+  "cases": [
+    {
+      "pr": 10049,
+      "head_sha": "0f0170f69957032a300ea1a4e7b7d0754e4702e7",
+      "selected_runs": [
+        {
+          "provider": "circleci",
+          "run_id": "c506a91e-5b3b-4bb6-b136-2bcfa06f69aa",
+          "selected_at": "2026-07-30T08:00:00Z",
+          "terminal_result": "cancelled"
+        }
+      ],
+      "expected_eligible": false
+    },
+    {
+      "pr": 10048,
+      "head_sha": "0810e61e1dd358fe3f5cf4306d1a99f80450c7b3",
+      "selected_runs": [
+        {
+          "provider": "circleci",
+          "run_id": "9e16fdbb-0a81-4a2c-8e07-748675524a53",
+          "selected_at": "2026-07-30T08:00:00Z",
+          "terminal_result": "cancelled"
+        },
+        {
+          "provider": "circleci",
+          "run_id": "ce0e1e2c-a1d9-404e-8432-70778160220a",
+          "selected_at": "2026-07-30T08:00:00Z",
+          "terminal_result": "cancelled"
+        }
+      ],
+      "expected_eligible": false
+    },
+    {
+      "pr": 10026,
+      "head_sha": "57e048ed10551eb3cf8414a4de0064443bef730d",
+      "selected_runs": [
+        {
+          "provider": "circleci",
+          "run_id": "92b3c5cc-117d-4a17-a513-29d94b4e961f",
+          "selected_at": "2026-07-30T08:00:00Z",
+          "terminal_result": "nonterminal"
+        }
+      ],
+      "expected_eligible": false
+    },
+    {
+      "pr": 10036,
+      "head_sha": "ccaae6cc61287dc51519bfbafe8eb149c9451232",
+      "selected_runs": [
+        {
+          "provider": "circleci",
+          "run_id": "2f2add54-ce3f-46bf-a040-fada508f603f",
+          "selected_at": "2026-07-30T11:55:00Z",
+          "terminal_result": "success"
+        }
+      ],
+      "expected_eligible": true
+    }
+  ]
+}

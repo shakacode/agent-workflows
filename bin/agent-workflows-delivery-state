@@ -11,6 +11,8 @@ require "tmpdir"
 require_relative "agent_doctor/timeout_budget"
 
 module AgentWorkflowsDeliveryState
+  SUPERPOWERS_MARKETPLACES = %w[openai-curated openai-curated-remote superpowers-dev].freeze
+
   module_function
 
   def normalized_plugin_source(value)
@@ -115,36 +117,8 @@ module AgentWorkflowsDeliveryState
   end
 
   def codex_plugin_cli_state(target)
-    executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
-    default_timeout = AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT.to_s
-    timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", default_timeout))
-    return { "state" => "unknown", "reason" => "invalid Codex plugin state timeout" } unless timeout_seconds.positive?
-
-    output = error = status = nil
-    Open3.popen3(
-      { "CODEX_HOME" => target }, executable, "plugin", "list", "--marketplace", "agent-workflows",
-      pgroup: true
-    ) do |stdin, stdout, stderr, wait_thread|
-      stdin.close
-      stdout_reader = Thread.new { stdout.read }
-      stderr_reader = Thread.new { stderr.read }
-      unless wait_thread.join(timeout_seconds)
-        Process.kill("TERM", -wait_thread.pid)
-        wait_thread.join(0.5) || Process.kill("KILL", -wait_thread.pid)
-        wait_thread.join
-        stdout_reader.join
-        stderr_reader.join
-        return { "state" => "unknown", "reason" => "Codex plugin state command timed out" }
-      end
-      output = stdout_reader.value
-      error = stderr_reader.value
-      status = wait_thread.value
-    end
-    unless status.success?
-      reason = error.to_s.strip
-      reason = "exit #{status.exitstatus}" if reason.empty?
-      return { "state" => "unknown", "reason" => "Codex plugin state command failed: #{reason}" }
-    end
+    output, error = codex_marketplace_output(target, "agent-workflows")
+    return { "state" => "unknown", "reason" => error } if error
 
     rows = output.lines.filter_map do |line|
       columns = line.strip.split(/\s{2,}/)
@@ -171,6 +145,189 @@ module AgentWorkflowsDeliveryState
     end
   rescue ArgumentError, SystemCallError => e
     { "state" => "unknown", "reason" => "Codex plugin state command unavailable: #{e.message}" }
+  end
+
+  def codex_marketplace_output(target, marketplace)
+    executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
+    default_timeout = AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT.to_s
+    timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", default_timeout))
+    return [nil, "invalid Codex plugin state timeout"] unless timeout_seconds.positive?
+
+    filesystem_root = File.expand_path(target)
+    loop do
+      parent = File.dirname(filesystem_root)
+      break if parent == filesystem_root
+
+      filesystem_root = parent
+    end
+    environment = {
+      "CODEX_HOME" => target,
+      "TMPDIR" => filesystem_root,
+      "TMP" => filesystem_root,
+      "TEMP" => filesystem_root
+    }
+    output = error = status = nil
+    Open3.popen3(
+      environment, executable, "plugin", "list", "--marketplace", marketplace,
+      pgroup: true
+    ) do |stdin, stdout, stderr, wait_thread|
+      stdin.close
+      stdout_reader = Thread.new { stdout.read }
+      stderr_reader = Thread.new { stderr.read }
+      unless wait_thread.join(timeout_seconds)
+        Process.kill("TERM", -wait_thread.pid)
+        wait_thread.join(0.5) || Process.kill("KILL", -wait_thread.pid)
+        wait_thread.join
+        stdout_reader.join
+        stderr_reader.join
+        return [nil, "Codex plugin state command timed out for marketplace #{marketplace}"]
+      end
+      output = stdout_reader.value
+      error = stderr_reader.value
+      status = wait_thread.value
+    end
+    unless status.success?
+      reason = error.to_s.strip
+      reason = "exit #{status.exitstatus}" if reason.empty?
+      return [nil, "Codex plugin state command failed for marketplace #{marketplace}: #{reason}"]
+    end
+
+    [output.force_encoding("UTF-8").scrub, nil]
+  rescue ArgumentError, SystemCallError => e
+    [nil, "Codex plugin state command unavailable for marketplace #{marketplace}: #{e.message}"]
+  end
+
+  def superpowers_catalog_metadata(root)
+    return {} unless root.is_a?(String) && !root.empty?
+
+    normalized_root = root == File::SEPARATOR ? root : root.sub(/#{Regexp.escape(File::SEPARATOR)}+\z/, "")
+    return {} if normalized_root.empty?
+    return {} unless File.absolute_path(normalized_root) == normalized_root
+
+    manifest_path = File.join(normalized_root, ".codex-plugin", "plugin.json")
+    return {} unless File.file?(manifest_path)
+
+    manifest = JSON.parse(File.binread(manifest_path))
+    return {} unless manifest.is_a?(Hash) && manifest["name"] == "superpowers"
+
+    {
+      "catalog_version" => manifest["version"],
+      "upstream_repository" => normalized_plugin_source(manifest["repository"])
+    }.compact
+  rescue SystemCallError, JSON::ParserError, TypeError
+    {}
+  end
+
+  def safe_superpowers_cache_root(target, marketplace, installed_version)
+    components = [marketplace, installed_version]
+    return nil unless components.all? do |component|
+      component.is_a?(String) && !component.empty? && ![".", ".."].include?(component) &&
+      !component.match?(%r{[/\\\0]})
+    end
+
+    target_root = File.realpath(target)
+    cache_root = File.realpath(File.join(target_root, "plugins", "cache"))
+    return nil unless cache_root.start_with?("#{target_root}#{File::SEPARATOR}")
+
+    marketplace_root = File.realpath(File.join(cache_root, marketplace, "superpowers"))
+    return nil unless marketplace_root.start_with?("#{cache_root}#{File::SEPARATOR}")
+
+    candidate = File.realpath(File.join(marketplace_root, installed_version))
+    return nil unless candidate.start_with?("#{marketplace_root}#{File::SEPARATOR}")
+
+    candidate
+  rescue ArgumentError, SystemCallError, TypeError
+    nil
+  end
+
+  def superpowers_state(host, target)
+    unless host == "codex"
+      return {
+        "state" => "UNKNOWN",
+        "catalog_entries" => [],
+        "warnings" => [],
+        "upstream_version" => nil,
+        "upstream_version_source" => "not-queried",
+        "reason" => "Superpowers marketplace state detection is available only for Codex"
+      }
+    end
+
+    entries = []
+    failures = []
+    marketplace_queries = SUPERPOWERS_MARKETPLACES.map do |marketplace|
+      Thread.new(marketplace) do |marketplace_name|
+        result = codex_marketplace_output(target, marketplace_name)
+        [marketplace_name, result]
+      rescue StandardError => e
+        warning = "Superpowers advisory probe failed for marketplace #{marketplace_name}: #{e.message}"
+        [marketplace_name, [nil, warning]]
+      end
+    end
+    marketplace_queries.map(&:value).each do |marketplace, (output, error)|
+      if error
+        failures << error
+        next
+      end
+
+      plugin_id = "superpowers@#{marketplace}"
+      rows = output.lines.filter_map do |line|
+        columns = line.strip.split(/\s{2,}/)
+        columns if columns.first == plugin_id
+      end
+      if rows.length > 1
+        failures << "Codex Superpowers state is ambiguous in marketplace #{marketplace}"
+        next
+      end
+      next if rows.empty?
+
+      row = rows.first
+      status_text = row[1]
+      unless ["installed, enabled", "installed, disabled", "not installed"].include?(status_text)
+        failures << "unrecognized Codex Superpowers status in marketplace #{marketplace}: #{status_text || 'missing'}"
+        next
+      end
+      installed_version = status_text == "not installed" ? nil : row[2]
+      root = status_text == "not installed" ? row.last : row[3]
+
+      catalog_metadata = superpowers_catalog_metadata(root)
+      if catalog_metadata.empty? && installed_version
+        cache_root = safe_superpowers_cache_root(target, marketplace, installed_version)
+        catalog_metadata = superpowers_catalog_metadata(cache_root)
+      end
+
+      entries << {
+        "plugin_id" => plugin_id,
+        "marketplace" => marketplace,
+        "status" => status_text,
+        "installed_version" => installed_version
+      }.merge(catalog_metadata)
+    end
+
+    state = if entries.any? { |entry| entry["status"] == "installed, enabled" }
+              "active"
+            elsif failures.any?
+              "UNKNOWN"
+            elsif entries.any? { |entry| entry["status"] == "installed, disabled" }
+              "installed-disabled"
+            elsif entries.any? { |entry| entry["status"] == "not installed" }
+              "available-not-installed"
+            else
+              "UNKNOWN"
+            end
+    reason = if state == "active"
+               "Agent Workflows and Superpowers are both active; Agent Workflows remains the sole delivery orchestrator"
+             elsif state == "UNKNOWN"
+               failures.empty? ? "Superpowers was not listed by the checked Codex marketplaces" : failures.join("; ")
+             end
+    {
+      "state" => state,
+      "catalog_entries" => entries,
+      "marketplaces_checked" => SUPERPOWERS_MARKETPLACES,
+      "warnings" => failures,
+      "upstream_version" => nil,
+      "upstream_version_source" => "not-queried",
+      "reason" => reason
+    }
   end
 
   def claude_native_state(target)
@@ -576,7 +733,10 @@ module AgentWorkflowsDeliveryState
   end
 
   def check(host:, target:, source:, delivery_mode:)
-    native = native_state(host, target)
+    host_queries = [Thread.new { ["native", native_state(host, target)] }]
+    host_queries << Thread.new { ["superpowers", superpowers_state(host, target)] } if host == "codex"
+    host_state = host_queries.map(&:value).to_h
+    native = host_state.fetch("native")
     collision_names = Array(native["skill_names"])
     flat = managed_flat_inventory(
       target: target,
@@ -612,7 +772,7 @@ module AgentWorkflowsDeliveryState
       else
         "Install and enable scw@agent-workflows, then rerun with --delivery-mode plugin-companion."
       end
-    {
+    payload = {
       "compatible" => compatible,
       "delivery_mode" => delivery_mode,
       "native" => native,
@@ -620,6 +780,8 @@ module AgentWorkflowsDeliveryState
       "reason" => reason,
       "guidance" => compatible ? nil : guidance
     }
+    payload["superpowers"] = host_state.fetch("superpowers") if host_state.key?("superpowers")
+    payload
   end
 
   def migrate(**options)

@@ -20,6 +20,15 @@ DISPATCH_PERSISTENCE_RULE =
   "Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active."
 REPLACEMENT_FENCING_RULE =
   "A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities."
+DISPATCHER_PREFLIGHT_STATUSES = %w[
+  selected
+  launch-pending
+  replay-already-active
+  blocked-user-input
+  blocked-replacement-fencing
+  blocked-replacement-terminal-state
+  invalid-input
+].freeze
 CHECKER_RULE =
   "Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict."
 VERDICT_QUALIFICATION_RULE =
@@ -292,6 +301,16 @@ DIRECT_INDEPENDENT_BLOCKER_BLOCKS_EXECUTION_PATTERN =
   /(?:\b(?:but|and|yet|because|since)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks\s+execution\b/i
 DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN =
   /(?:\b(?:but|and|yet)\b|;)\s+(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+blocks?\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\b/i
+PASSIVE_DIRECT_INDEPENDENT_BLOCKER_OWNER_SEPARATOR_SOURCE =
+  "(?:,\\s*(?:(?:and|or)\\s+)?|\\s+(?:and|or)\\s+)"
+PASSIVE_DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN =
+  /
+    (?:\b(?:but|and|yet)\b|;)\s+
+    (?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\s+is\s+(?:blocked|stopped|prevented|halted)\s+by\s+
+    (?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})
+    (?:#{PASSIVE_DIRECT_INDEPENDENT_BLOCKER_OWNER_SEPARATOR_SOURCE}(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE}))*
+    \s*(?=[.!?]|\z)
+  /ix
 DIRECT_INDEPENDENT_BLOCKER_FIRST_CLAUSE_PATTERN =
   /\A\s*(?:#{DIRECT_INDEPENDENT_BLOCKER_SOURCE})\s+(?:blocks?|halts?)\s+(?:#{ROUTE_ONLY_BLOCKED_ACTIVITY_SOURCE})\s*,\s*(?:while|and)\s+/i
 NEUTRAL_ROUTE_PREDICATE_WITH_INDEPENDENT_BLOCKER_PATTERN =
@@ -518,7 +537,8 @@ def strip_route_occurrence_with_independent_blocker_clause(sentence)
   return sentence unless subject
 
   occurrence = sentence[subject.end(0)..].match(/\A\s+occurs\b/i)
-  blocker = sentence.match(DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN)
+  blocker = sentence.match(DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN) ||
+            sentence.match(PASSIVE_DIRECT_INDEPENDENT_BLOCKER_CLAUSE_PATTERN)
   return sentence unless occurrence && blocker
   return sentence unless subject.begin(0) < blocker.begin(0)
   return sentence unless subject.end(0) + occurrence.end(0) <= blocker.begin(0)
@@ -810,6 +830,15 @@ def planning_pass_section(text)
   body.join
 end
 
+def assert_dispatcher_preflight_statuses(test, text, label)
+  emitted_statuses = text.match(
+    /`dispatcher-capability-preflight`, which emits (?<statuses>.*?); that helper/m
+  )&.[](:statuses)&.scan(/`([^`]+)`/)&.flatten
+
+  test.assert_equal DISPATCHER_PREFLIGHT_STATUSES, emitted_statuses,
+                    "#{label} dispatcher preflight emitted-status list drifted"
+end
+
 def planning_pass_rows(section, pattern)
   section.scan(pattern).to_h do |case_id, *values|
     [case_id, values]
@@ -1092,6 +1121,20 @@ class ModelRoutingContractTest < Minitest::Test
     refute_includes source, "launch_confirmation"
   end
 
+  def test_model_routing_guide_documents_terminal_replacement_dispatch_block
+    guide = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
+
+    assert_dispatcher_preflight_statuses(self, guide, MODEL_ROUTING_GUIDE_PATH)
+    assert_includes guide, "reconcile or replan"
+    assert_includes guide, "refresh targeted lane state"
+
+    mutant = guide.sub("`blocked-replacement-terminal-state`, and ", "")
+    refute_equal guide, mutant, "terminal replacement status mutant did not change the emitted-status list"
+    assert_raises(Minitest::Assertion, "emitted-status list accepted the missing terminal replacement status") do
+      assert_dispatcher_preflight_statuses(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} status-list mutant")
+    end
+  end
+
   def test_checker_surfaces_preserve_independence_and_quality_without_route_blocking
     CHECKER_SURFACES.each do |path|
       raw_text = read_repo_file(path)
@@ -1348,13 +1391,13 @@ class ModelRoutingContractTest < Minitest::Test
     ].each { |phrase| assert_includes guide, phrase }
     assert_includes workflow, "MODEL_ESCALATION_REQUEST"
     assert_includes workflow, "old and replacement instances must not overlap"
-    assert_includes workflow, "stop and reconcile"
+    assert_includes workflow, "ownership is reconciled"
   end
 
   def test_lane_cards_separate_preference_from_optional_observation
     %w[
       workflows/pr-processing.md
-      skills/pr-batch/SKILL.md
+      workflows/pr-batch-worker-execution.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|
@@ -1500,6 +1543,18 @@ class ModelRoutingContractTest < Minitest::Test
       "outcome-first prevents both planning and fallback" => "Prevent both planning and fallback when a route mismatch occurs.",
       "outcome-first passive blocked launch" => "When a route mismatch occurs, launch is blocked.",
       "outcome-first passive blocked the launch" => "The launch is blocked when a route mismatch occurs.",
+      "passive route-only blocker after advisory predicate" => "A route mismatch occurs, but launch is blocked.",
+      "passive independent owners followed by a model mismatch" => "A route mismatch occurs, but launch is blocked by a credential check and an independent risk gate and a model mismatch.",
+      "passive independent owner followed by a semicolon route mismatch" => "A route mismatch occurs, but launch is blocked by a credential check; and a route mismatch.",
+      "passive model mismatch before an authorized owner" => "A route mismatch occurs, but launch is blocked by a model mismatch and a credential check.",
+      "passive route mismatch between authorized owners" => "A route mismatch occurs, but launch is blocked by a credential check and a route mismatch and an independent risk gate.",
+      "passive route mismatch after Oxford-comma owners" => "A route mismatch occurs, but launch is blocked by a credential check, an independent risk gate, and a route mismatch.",
+      "passive independent risk gate coordinated with route mismatch" => "A route mismatch occurs, but launch is blocked by an independent risk gate and a route mismatch.",
+      "passive independent scope gate alternative with model mismatch" => "A route mismatch occurs, but launch is blocked by an independent scope gate or a model mismatch.",
+      "passive independent blocker coordinated with route mismatch" => "A route mismatch occurs, but launch is blocked by a credential check and a route mismatch.",
+      "passive independent blocker coordinated with the route mismatch" => "A route mismatch occurs, but launch is blocked by a credential check and the route mismatch.",
+      "passive independent blocker coordinated after a comma" => "A route mismatch occurs, but launch is blocked by a credential check, and a route mismatch.",
+      "passive independent blocker alternative with model mismatch" => "A route mismatch occurs, but launch is blocked by a credential check or a model mismatch.",
       "outcome-first passive stopped launch" => "Launch is stopped when a route mismatch occurs.",
       "outcome-first passive halted launch" => "Launch is halted when a route mismatch occurs.",
       "outcome-first passive prevented review" => "Review is prevented when a route mismatch occurs.",
@@ -1739,6 +1794,10 @@ class ModelRoutingContractTest < Minitest::Test
       "A route mismatch occurs. An exact-head CI gate fails. This blocks launch.",
       "A route mismatch does not stop the lane; an exact-head CI gate blocks execution.",
       "A route mismatch occurs, but a credential check blocks launch.",
+      "A route mismatch occurs, but launch is blocked by a credential check.",
+      "A route mismatch occurs, but launch is blocked by a credential check and an independent risk gate.",
+      "A route mismatch occurs, but launch is blocked by a credential check, an independent risk gate.",
+      "A route mismatch occurs, but launch is blocked by a credential check, an independent risk gate, and an independent scope gate.",
       "A route mismatch occurs, but an exact-head CI gate blocks launch.",
       "A route mismatch occurs, but an independent risk gate blocks launch.",
       "A route mismatch occurs, but an independent scope gate blocks launch.",

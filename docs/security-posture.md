@@ -3,6 +3,12 @@
 This workflow pack treats prompt-injection safety as a least-privilege
 capability boundary, not only a detection problem.
 
+The normative workflow interface is the
+[PR-Batch Security Floor](../workflows/pr-batch-security-floor.md). This page
+explains its threat model and operator guidance; intake, execution, integration,
+coordination, and release components consume the versioned floor instead of
+copying these rules.
+
 Repository distribution has a separate supply-chain boundary because this pack
 ships executable helpers and agent instructions. See
 [Repository Supply-Chain Policy](repository-supply-chain.md) for dependency

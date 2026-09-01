@@ -18,7 +18,8 @@ repositories without copying the workflow pack into every checkout or erasing
 the policy each repository owns. Copied skill trees drift; purely global
 instructions cannot express repo-specific commands, trust, CI, and release
 rules. This pack keeps reusable process in one source and one install per agent
-host, while each consumer repo exposes a small policy seam.
+host, while each consumer repo exposes a small
+[policy seam](docs/source-pack-glossary.md).
 
 See [Problems Agent Workflows Solves](docs/problems-solved.md) for the complete
 team-scale problem map, including distribution, repository adaptation, safety,
@@ -92,35 +93,25 @@ bin/install-agent-workflows --host codex
 Use `--host claude` for Claude Code, or `--target "$HOME/.agents"` for an
 explicit shared agent home.
 
+New to the pack? Follow [Getting Started](docs/getting-started.md) for
+prerequisites with versions, one host install, one repo adoption, and a first
+workflow run end to end.
+
+To configure writing guidance, follow the
+[project writing-style instructions](docs/adoption.md#configure-project-writing-style); the
+[packaged writing-style file](docs/writing-style.md) remains the default.
+
 Ordinary batches require no project-generated signing keys, fixed trust
 anchors, signed launch or lifecycle receipts, or human waivers. Model and
 reasoning-effort values are advisory preferences; hosts may report observed
 host/model/effort fields when available and otherwise record field-granular
 `UNKNOWN` without blocking execution.
 
-For the full ShakaCode agent stack setup (`agent-workflows`,
-`agent-coordination`, and `agent-coordination-dashboard`), see
-[Full Stack Contributor Setup](docs/installation-and-upgrades.md#full-stack-contributor-setup).
-`agent-stack` is ShakaCode-specific stack tooling, not part of the generic
-workflow-pack install path for consumer repositories.
-
-After setup, use the master doctor to check all three parts of the local stack
-in one read-only report:
-
-```bash
-agent-stack doctor
-agent-stack doctor --deep
-```
-
-The master owns checkout and compatibility-link discovery, bounded component
-execution, contract validation, sanitization, aggregation, and rendering. Each
-component repository owns its operational checks behind the shared stack
-contract, so there is no fixed master list of internal check IDs. A stopped
-dashboard is reported as degraded, not failed, because the dashboard is an
-optional runtime. The doctor reports what to do next but never syncs, installs,
-starts, or repairs anything. See
-[Full Stack Doctor](docs/installation-and-upgrades.md#full-stack-doctor) for
-selectors, JSON output, status meanings, and exit codes.
+For ShakaCode-specific full-stack tooling (`agent-stack sync` and
+`agent-stack doctor`), see
+[Full Stack Contributor Setup](docs/installation-and-upgrades.md#full-stack-contributor-setup)
+and [Full Stack Doctor](docs/installation-and-upgrades.md#full-stack-doctor).
+The generic workflow-pack install does not require that stack.
 
 ### Host Installer Path
 
@@ -208,6 +199,15 @@ Codex native-plugin users must remove the old `agent-workflows` entry, refresh
 the marketplace, and reinstall it as `scw`; keeping both would
 create two names for the same skill tree. The repository, source pack, helper
 commands, marketplace name, and install metadata remain `agent-workflows`.
+
+When Superpowers is also present, Agent Workflows remains the sole delivery
+orchestrator on every host, including Claude. Automated Superpowers state
+detection is Codex-only: `agent-workflows-status --host codex --json` reports
+`active`, `installed-disabled`, `available-not-installed`, or `UNKNOWN` without
+changing plugin configuration, while Claude JSON and text output omit the
+diagnostic rather than guessing. Keep the complete Superpowers plugin disabled
+in the normal profile; use the [pinned disposable pilot](docs/superpowers.md) to
+evaluate one bounded technique.
 
 Use a native plugin path for a host-qualified skill surface. Pair it with
 `--delivery-mode plugin-companion` when you also need installer-managed helper
@@ -299,40 +299,9 @@ This project is available under the MIT License.
 
 ## Skill Inventory
 
-| Skill | Use |
-| --- | --- |
-| `address-review` | Fetch and triage GitHub PR review comments. |
-| `adversarial-pr-review` | Run a skeptical pre-merge or post-merge PR review. |
-| `autoreview` | Run a structured second-model local diff review. |
-| `benchmark-verification` | Verify performance-sensitive changes with benchmark evidence. |
-| `close-batch` | Recover a stale PR batch, route required walkthroughs or decisions, and archive only after canonical closeout. |
-| `close-session` | Close active work with verified handoff and archive readiness. |
-| `continue` | Resume an in-progress task with a structured checkpoint. |
-| `evaluate-issue` | Decide whether an issue or proposed fix is worth doing. |
-| `manual-testing` | Verify changed behavior in a real running app or service. |
-| `pause` | Print restart-safe pause and resume prompts for copy/paste handoffs. |
-| `plan-issue-triage` | Produce a ready prompt for review-only issue triage. |
-| `plan-pr-batch` | Shape candidate issues or PRs before launching a batch. |
-| `plan-review` | Review implementation plans before coding or launching workers. |
-| `post-merge-audit` | Audit merged batch work or release-candidate risk. |
-| `pr-batch` | Run one or more issue, PR, or ad-hoc lanes through the canonical coordinated subagent workflow. |
-| `pr-monitoring` | Monitor opened PRs through checks, comments, conflicts, and handoff. |
-| `pr-walkthrough` | Explain a PR interactively, one conceptual change and rationale at a time. |
-| `qa-stress` | Run destructive QA stress campaigns against repo-owned targets. |
-| `replicate-ci` | Reproduce hosted-CI/local parity gaps. |
-| `run-ci` | Choose and run repo-local CI checks. |
-| `secure-github-actions` | Audit repository-based workflows and composite actions mechanically; enforce `docker://` digest immutability for manual container review. |
-| `spec` | Turn vague implementation intent into requirements, design, and tasks. |
-| `status` | Report tight progress (done/in-progress/blocked/next) without starting new work. |
-| `structural-review` | Use when a diff is correct but may still be making the codebase worse — file growth, scattered conditionals, thin abstractions, layer violations, or feature-flag branching debt. |
-| `task-observer` | Optionally capture sanitized observations for later skill or workflow improvement review. |
-| `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
-| `triage` | Build a whole-surface issue/PR inventory and batch split. |
-| `type-design-review` | Review changed type surfaces for representable invalid states. |
-| `untrusted-contributor-intake` | Safely intake untrusted outside-contributor fork PRs. |
-| `update-changelog` | Classify merged PRs and update a repo changelog. |
-| `verify` | Run local verification before PR updates. |
-| `verify-pr-fix` | Reproduce a bug before and after a fix. |
+See the [Skill Guide](docs/skills.md) for a human-facing explanation of what
+each shipped skill does and when to use it. Agent-facing contracts remain in
+`skills/*/SKILL.md`.
 
 ## Trust Configuration
 

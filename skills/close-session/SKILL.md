@@ -9,6 +9,12 @@ Close the current task without starting unrelated work. Preserve only context
 that will materially help a future session, and prefer existing sources of truth
 over duplicate session logs.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the loaded `workflows/pr-processing.md` contract before composing the
+final handoff. Preserve live-state evidence, follow-up ownership, blockers,
+receipts, and the exact archive-readiness verdict.
+
 ## Authority and safety
 
 - Informational prompts such as “anything else pending?”, “any decisions

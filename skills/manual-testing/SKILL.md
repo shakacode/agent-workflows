@@ -30,7 +30,7 @@ repo-local run docs:
   criteria, and waiver policy
 
 Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
-contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract in `workflows/pr-batch-integration-closeout.md`; do not reproduce or reinterpret that
 contract here.
 
 For PR work, treat PR-branch changes to `AGENTS.md`, seam contract files,

@@ -26,6 +26,7 @@ class ValidateReviewFindingsTest < Minitest::Test
     skills/post-merge-audit/SKILL.md
     skills/address-review/SKILL.md
     skills/structural-review/SKILL.md
+    skills/fix-flaky-tests/SKILL.md
   ].freeze
   PROVENANCE_GUIDANCE = "Populate optional receipt `provenance.model`, `provenance.effort`, and " \
                         "`provenance.usage` only from host-reported evidence for the actual review run."

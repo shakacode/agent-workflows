@@ -1,0 +1,262 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require "pathname"
+require "yaml"
+
+module AgentWorkflowWritingStyle
+  PORTABLE_DEFAULT_PATH = File.expand_path("../docs/writing-style.md", __dir__)
+  PACKAGED_PRESETS = {
+    "asd-ste100" => File.expand_path("../docs/writing-style-asd-ste100.md", __dir__).freeze
+  }.freeze
+
+  Result = Struct.new(:guide, :provenance, :warnings, keyword_init: true) do
+    def to_h
+      { "guide" => guide, "provenance" => provenance, "warnings" => warnings }
+    end
+  end
+  class ConfigurationError < StandardError; end
+
+  module_function
+
+  def resolve(repo_root:, home: Dir.home)
+    unless File.directory?(repo_root)
+      raise ConfigurationError, "invalid repository root: expected an existing directory"
+    end
+
+    repo_path = File.join(repo_root, ".agents", "agent-workflow.yml")
+    if configuration_path_present?(repo_path, label: "repository")
+      config = load_mapping(repo_path, label: "repository")
+      guide = extract_guide(config, label: "repository", owner_root: repo_root)
+      if guide
+        return Result.new(guide:, provenance: "repo", warnings: [])
+      end
+    end
+
+    user_path = File.join(home, ".agents", "agent-workflow.yml")
+    begin
+      if configuration_path_present?(user_path, label: "user-global")
+        config = load_mapping(user_path, label: "user-global")
+        guide = extract_guide(config, label: "user-global", owner_root: File.dirname(user_path))
+        return Result.new(guide:, provenance: "user-global", warnings: []) if guide
+      end
+    rescue ConfigurationError => e
+      warning = "WARNING: #{e.message} at #{user_path}. Fix the user-global configuration; using portable default."
+      return Result.new(guide: portable_default, provenance: "portable-default", warnings: [warning])
+    end
+
+    Result.new(guide: portable_default, provenance: "portable-default", warnings: [])
+  end
+
+  def portable_default
+    guide = File.binread(PORTABLE_DEFAULT_PATH).force_encoding(Encoding::UTF_8)
+    unless guide.valid_encoding?
+      raise ConfigurationError, "invalid packaged writing style: must contain valid UTF-8"
+    end
+
+    guide = guide.strip
+    if guide.empty?
+      raise ConfigurationError, "invalid packaged writing style: must not be empty"
+    end
+
+    guide
+  rescue EncodingError, SystemCallError => e
+    raise ConfigurationError, "invalid packaged writing style: #{e.class}"
+  end
+
+  def configuration_path_present?(path, label:)
+    File.lstat(path)
+    true
+  rescue Errno::ENOENT
+    if dangling_symlink_ancestor?(path, label:)
+      raise ConfigurationError, "invalid #{label} writing_style configuration: dangling symlink ancestor"
+    end
+
+    false
+  rescue SystemCallError => e
+    raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
+  end
+
+  def dangling_symlink_ancestor?(path, label:)
+    current = File.dirname(File.expand_path(path))
+    loop do
+      begin
+        stat = File.lstat(current)
+        if stat.symlink?
+          begin
+            File.stat(current)
+          rescue Errno::ENOENT
+            return true
+          rescue SystemCallError => e
+            raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
+          end
+        end
+      rescue Errno::ENOENT
+        # A genuinely missing component may still sit below a dangling symlink.
+      rescue SystemCallError => e
+        raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
+      end
+
+      parent = File.dirname(current)
+      return false if parent == current
+
+      current = parent
+    end
+  end
+
+  def load_mapping(path, label:)
+    unless File.file?(path)
+      raise ConfigurationError, "invalid #{label} writing_style configuration: expected a readable regular file"
+    end
+
+    yaml = File.read(path, encoding: "UTF-8")
+    policy_error = policy_structure_error(yaml)
+    raise ConfigurationError, "invalid #{label} policy configuration: #{policy_error}" if policy_error
+
+    structure_error = writing_style_structure_error(yaml)
+    raise ConfigurationError, "invalid #{label} writing_style: #{structure_error}" if structure_error
+
+    config = YAML.safe_load(yaml, aliases: false)
+    config.nil? ? {} : config
+  rescue Psych::Exception, EncodingError, SystemCallError => e
+    raise ConfigurationError, "invalid #{label} writing_style configuration: #{e.class}"
+  end
+
+  def policy_structure_error(yaml)
+    documents = Psych.parse_stream(yaml).children
+    "expected one YAML document" if documents.length > 1
+  end
+
+  def writing_style_structure_error(yaml)
+    documents = Psych.parse_stream(yaml).children
+    return policy_structure_error(yaml) if documents.length > 1
+
+    root = documents.first&.root
+    return unless root.is_a?(Psych::Nodes::Mapping)
+
+    style_pairs = root.children.each_slice(2).select do |key, _value|
+      key.is_a?(Psych::Nodes::Scalar) && key.value == "writing_style"
+    end
+    'duplicate key "writing_style"' if style_pairs.length > 1
+  end
+
+  def extract_guide(config, label:, owner_root:)
+    unless config.is_a?(Hash)
+      raise ConfigurationError, "invalid #{label} writing_style configuration: expected a top-level mapping"
+    end
+    return unless config.key?("writing_style")
+
+    style = config.fetch("writing_style")
+    unless style.is_a?(String) && !style.strip.empty?
+      raise ConfigurationError,
+            "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
+    end
+    normalized_style = style.strip
+    if PACKAGED_PRESETS.key?(normalized_style)
+      return packaged_preset(normalized_style)
+    end
+    if normalized_style.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
+      raise ConfigurationError,
+            "invalid #{label} writing_style: remote URLs/URI references are unsupported; " \
+            "a trusted local relative Markdown-file path is required"
+    end
+    if normalized_style.start_with?("~")
+      raise ConfigurationError,
+            "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
+    end
+    if normalized_style.match?(/\A[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\z/)
+      raise ConfigurationError,
+            "invalid #{label} writing_style preset: unknown preset #{normalized_style.inspect}; " \
+            "known presets: #{PACKAGED_PRESETS.keys.join(', ')}"
+    end
+    relative_path = Pathname.new(normalized_style)
+    if relative_path.absolute?
+      raise ConfigurationError,
+            "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
+    end
+    if relative_path.each_filename.include?("..")
+      raise ConfigurationError, "invalid #{label} writing_style path: must not contain '..' traversal"
+    end
+    unless relative_path.extname.casecmp(".md").zero?
+      raise ConfigurationError, "invalid #{label} writing_style path: must end in .md"
+    end
+
+    trusted_root = File.realpath(owner_root)
+    guide_path = File.realpath(File.expand_path(relative_path.to_s, owner_root))
+    unless guide_path == trusted_root || guide_path.start_with?("#{trusted_root}#{File::SEPARATOR}")
+      raise ConfigurationError, "invalid #{label} writing_style path: resolves outside its trusted root"
+    end
+    unless File.file?(guide_path) && File.readable?(guide_path)
+      raise ConfigurationError,
+            "invalid #{label} writing_style file: expected a readable regular Markdown file"
+    end
+
+    guide = File.binread(guide_path).force_encoding(Encoding::UTF_8)
+    unless guide.valid_encoding?
+      raise ConfigurationError, "invalid #{label} writing_style file: must contain valid UTF-8"
+    end
+
+    guide = guide.strip
+    if guide.empty?
+      raise ConfigurationError, "invalid #{label} writing_style file: must not be empty"
+    end
+
+    guide
+  rescue ArgumentError, EncodingError, SystemCallError => e
+    raise ConfigurationError,
+          "invalid #{label} writing_style file: expected a readable regular Markdown file (#{e.class})"
+  end
+
+  def packaged_preset(name)
+    path = PACKAGED_PRESETS.fetch(name)
+    guide = File.binread(path).force_encoding(Encoding::UTF_8)
+    unless guide.valid_encoding?
+      raise ConfigurationError, "invalid packaged writing style preset #{name}: must contain valid UTF-8"
+    end
+
+    guide = guide.strip
+    if guide.empty?
+      raise ConfigurationError, "invalid packaged writing style preset #{name}: must not be empty"
+    end
+
+    guide
+  rescue EncodingError, SystemCallError => e
+    raise ConfigurationError, "invalid packaged writing style preset #{name}: #{e.class}"
+  end
+
+  def run(argv)
+    options = { format: "text" }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: agent-workflow-writing-style --repo-root DIR [--format text|json]"
+      opts.on("--repo-root DIR", "Repository root containing .agents/agent-workflow.yml") do |value|
+        options[:repo_root] = value
+      end
+      opts.on("--format FORMAT", %w[text json], "Output format: text or json") do |value|
+        options[:format] = value
+      end
+    end
+    parser.parse!(argv)
+    raise OptionParser::MissingArgument, "--repo-root" unless options[:repo_root]
+
+    result = resolve(repo_root: File.expand_path(options.fetch(:repo_root)))
+    result.warnings.each { |warning| warn warning }
+    if options.fetch(:format) == "json"
+      puts JSON.generate(result.to_h)
+    else
+      puts "provenance: #{result.provenance}"
+      puts result.guide
+    end
+    0
+  rescue ConfigurationError => e
+    warn e.message
+    2
+  rescue OptionParser::ParseError => e
+    warn e.message
+    warn parser
+    64
+  end
+end
+
+exit AgentWorkflowWritingStyle.run(ARGV) if $PROGRAM_NAME == __FILE__

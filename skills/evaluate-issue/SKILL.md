@@ -9,6 +9,12 @@ argument-hint: '[issue URL or number]'
 
 Decide whether an issue or proposed fix deserves implementation now. Do not treat every valid observation as a priority.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the loaded `workflows/pr-processing.md` contract before drafting a no-PR
+evidence comment or disposition handoff. Preserve every required disposition,
+mechanism, evidence, risk, and `UNKNOWN` field.
+
 Memorable invocation:
 
 ```text
