@@ -22,9 +22,12 @@ reproduction explains the failure.
    name, retry number, failing step, and log excerpt. If any fact cannot be
    verified, write `UNKNOWN`.
 3. Establish hosted run history for the exact failure identity on the exact
-   commit. If the same commit passes and fails across hosted runs, use
-   `fix-flaky-tests` before parity reproduction; that workflow owns
-   intermittency regardless of local results.
+   commit. If the history is unavailable or insufficient to classify
+   determinism, write `UNKNOWN` and stop before reproduction. If the same
+   commit passes and fails across hosted runs, stop this workflow and hand off
+   to `fix-flaky-tests` before parity reproduction; that workflow owns
+   intermittency regardless of local results. Do not produce an Outcomes
+   classification for that handoff.
 4. Confirm the local-green evidence: command or workflow path used, head SHA,
    environment, and timestamp. Use `.agents/bin/validate` instead of inventing a
    substitute command.
@@ -124,6 +127,9 @@ Then recommend the next smallest action:
 ## Self-Check
 
 - The failing hosted check and head SHA are exact.
+- Hosted history establishes deterministic failure before parity reproduction,
+  or records `UNKNOWN` and stops; same-commit hosted intermittency ends this
+  workflow with a `fix-flaky-tests` handoff, not an Outcomes classification.
 - The parity command, runner mapping, or image comes from the CI parity
   environment policy or verified repo docs it names.
 - The parity tool's default images or environments are not treated as exact
