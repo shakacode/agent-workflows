@@ -119,7 +119,7 @@ def extract_markdown_section(text, heading, label)
 
   body_start = heading_match.end(0)
   heading_level = heading[/\A#+/].length
-  next_heading = text.match(/^#{Regexp.escape("#" * heading_level)}\s+/, body_start)
+  next_heading = text.match(/^#{Regexp.escape('#' * heading_level)}\s+/, body_start)
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
 end
