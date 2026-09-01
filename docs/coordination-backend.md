@@ -68,6 +68,27 @@ receipt-contradictory proof stops before target, waiver, coordination, or POST
 activity. An authenticated `coordination_not_applicable` proof still makes zero
 coordination calls during initial assessment and reassessment.
 
+Compute the canonical digest at decision time with:
+
+```bash
+completed-batch-publication-preflight digest-applicability-proof --applicability-proof <path>
+```
+
+The digest covers the artifact's recursively key-sorted JSON, so it is stable
+across formatting. A plain `sha256sum` of the artifact file does not match
+unless that file already happens to be canonically ordered.
+
+Trust boundary: this is tamper-evidence for a decision that was already made and
+retained, not proof of who made it. The helper verifies that the artifact matches
+the retained digest; it cannot verify who produced that digest. It also validates
+`policy_source` and `topology_source` as durable HTTPS URLs without fetching
+them, so their content never gates the decision. The protection is therefore only
+as strong as the separation the controller actually maintains: retain the digest
+at classification time in a place the publishing actor does not rewrite — a
+committed repository value, an operator-held record, or a second accountable
+agent — and an actor that both writes the artifact and computes its digest at
+publication time gains no assurance from this check.
+
 `coordination_required` covers concurrent same-machine work by independently
 running sessions, concurrent multi-machine or multi-operator work,
 cross-session dependencies, any repository-required release or shared-resource
@@ -287,6 +308,84 @@ readback blocks telemetry closeout. If the active backend does not
 advertise that compatible capability or its advertisement is `UNKNOWN`, record
 `telemetry audit: unavailable` in the durable handoff and continue; backend
 `n/a` skips the check.
+
+## Directional Workflow Telemetry Report
+
+Use `skills/pr-batch/bin/workflow-telemetry-report` for the smallest replayable
+throughput view built from existing durable coordination and GitHub-shaped
+metadata. It is a reducer, not a collector or accounting ledger: callers first
+normalize field-selected timestamps, identifiers, counts, and durable source
+references into `workflow-telemetry-input` v1. The helper does not invoke GitHub,
+read rollout/session content, inspect the environment, or create backend state.
+
+The replay fixture at
+`skills/pr-batch/fixtures/workflow-telemetry-report-replay.json` is the canonical
+input example. It covers:
+
+- prompt-to-worker-start latency and the model/workflow version observed at each
+  boundary;
+- broad `planning`, `discovery`, `implementation`, `validation`, `review`, and
+  `integration` phase time;
+- human-question count, answered count, and queue time;
+- `occupied` and `stopped` slot time;
+- review, CI, and retry attempts;
+- integration time; and
+- consequential defects, reverts, and rollbacks.
+
+Phase, human-question queue, and slot totals are cumulative across the supplied
+lane intervals, not elapsed critical-path time. Concurrent work can therefore
+make these totals exceed wall-clock duration. In particular,
+`phase_seconds.integration` is cumulative time that lanes spent in the broad
+integration phase. The separate `integration_seconds` measure is the elapsed
+time across the single batch-level `integration.started_at` to
+`integration.ended_at` window selected by the normalizer; callers must not
+treat the two measures as interchangeable.
+
+Every unavailable timestamp, identifier, or count in the normalized input is
+literal `UNKNOWN`. Derived duration totals also become literal `UNKNOWN` when
+any contributing boundary is unavailable; a known partial total is never
+presented as the complete measure. Absent phase or slot rows likewise report
+`UNKNOWN`, while a present zero-length phase or slot interval reports known
+zero. Use literal `UNKNOWN` for an unavailable human-question collection; an
+explicitly empty question list instead reports a known count and queue time of
+zero. Fixed-shape amplification, integration, and outcome objects remain
+present; mark unavailable leaves `UNKNOWN` so known siblings remain reportable.
+The JSON report lists every propagated unknown in `unknown_fields`, including
+unavailable top-level identifiers such as `batch_id` or `source_ref`.
+
+The input is closed and metadata-only. Unknown fields are rejected, identifier
+and source-reference values use constrained grammars, and opaque batch IDs use
+a closed no-whitespace grammar that retains coordination delimiters such as `;`
+and `=` while rejecting whitespace and unapproved punctuation. Common
+token-shaped content is rejected even inside an allowlisted identifier. There
+is no field for a raw
+prompt, response, transcript, tool result, secret, environment value, auth
+content, or arbitrary prose. The structural grammars are defense in depth, not
+semantic declassification: callers must never derive identifier values from
+raw prose. Do not add a prose field; retain durable evidence by reference and
+query only the exact upstream fields needed for normalization.
+The reducer reads at most one MiB of input and accepts at most 4,096 entries in
+each interval or question array. Timestamps require a known explicit RFC 3339
+offset and accept at most nine fractional-second digits; `-00:00` is rejected
+because it denotes an unknown local offset.
+
+Replay JSON or a compact twelve-line text view without copying the source
+events into the result:
+
+```bash
+skills/pr-batch/bin/workflow-telemetry-report \
+  --input skills/pr-batch/fixtures/workflow-telemetry-report-replay.json \
+  --format json
+
+skills/pr-batch/bin/workflow-telemetry-report \
+  --input skills/pr-batch/fixtures/workflow-telemetry-report-replay.json \
+  --format text
+```
+
+Use the report directionally to find latency, queueing, slot pressure, and
+amplification worth investigating. It does not authorize exact token/cost
+accounting, adaptive scheduling, experiments, or an exhaustive collection
+layer, and it never replaces readiness, QA, review, CI, or closeout evidence.
 
 ## Typed Dependency Facts
 

@@ -36,7 +36,8 @@ BACKEND_TYPED_GATE_CONTRACT = "Known backend `depends_on`/`blocked_on` facts ref
                               "Run `stage-dependency-gate` and obey its returned permissions for the requested " \
                               "action. Set a blocked heartbeat or move away only when that permission is false. " \
                               "Missing or `UNKNOWN` backend dependency state remains a blanket hard stop."
-COMPACT_BACKEND_TYPED_GATE_CONTRACT = "- For coordination, respect coordination claims and dependencies: " \
+COMPACT_BACKEND_TYPED_GATE_CONTRACT = "- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;" \
+                                      "claims/deps: " \
                                       "stable ids+heartbeats; register before launch when supported; claim " \
                                       "refusal=>stop; push holder/generation check; known deps=>gate permissions; " \
                                       "missing/UNKNOWN deps=>stop."

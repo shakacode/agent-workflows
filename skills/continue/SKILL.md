@@ -26,7 +26,13 @@ repeat:
    independent in-scope steps while an external command, check, review, or agent is pending. Stop
    after completing the objective.
 
-For a resumed PR-batch lane, complete bounded ownership recovery before any
+For `coordination_not_applicable`, consume the persisted applicability outcome,
+skip every coordination and typed-event call, and never report coordination as
+unavailable or degraded, even when the repository configures a real backend.
+Recover the lane from durable local state instead.
+
+For a resumed `coordination_required` PR-batch lane, complete bounded ownership
+recovery before any
 write. If a new actor takes over abandoned ownership, emit private-backend
 `human_intervention` with `kind: takeover`; if a fenced replacement supersedes
 the prior actor, use `kind: supersede`. A routine same-thread resume with the

@@ -52,13 +52,22 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_TERMINAL_DISPOSITION_CLEAN_RULE = "Clean/none permits no records or only fully evidenced terminal records."
   REQUIRED_NON_TERMINAL_DISPOSITION_NON_CLEAN_RULE = "A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state."
   REQUIRED_OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
-  REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
+  REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, and final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
+  REQUIRED_TERMINAL_NEXT_STEP = "Every final user-visible workflow handoff must include one unambiguous `Next:` instruction."
+  REQUIRED_ALL_MODE_TERMINAL_SCOPE = "This applies to completed-batch, release/range, and coverage catch-up audits."
   COMPLETED_BATCH_AUDIT_PLACEMENT_RULE = "When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
   COMPLETED_BATCH_AUDIT_PLACEMENT_FILES = [
     "skills/post-merge-audit/SKILL.md",
     "workflows/post-merge-audit.md",
+    "workflows/pr-batch-integration-closeout.md"
+  ].freeze
+  REQUIRED_REPLACEMENT_PRECLOSE_GUARD = "Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation."
+  REQUIRED_REPLACEMENT_CHANGELOG_RULE = "Ordinary authenticated later-target reconciliation applies to an immutable terminal `abandoned` lane; a terminal `superseded` lane may reconcile only for an issue with typed no-PR evidence, while code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation."
+  REPLACEMENT_PRECLOSE_GUARD_FILES = [
+    "skills/pr-batch/SKILL.md",
     "workflows/pr-processing.md",
-    "skills/pr-batch/SKILL.md"
+    "skills/post-merge-audit/SKILL.md",
+    "workflows/post-merge-audit.md"
   ].freeze
   REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line."
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
@@ -122,7 +131,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_FILES = [
     "skills/post-merge-audit/SKILL.md",
     "workflows/post-merge-audit.md",
-    "workflows/pr-processing.md"
+    "workflows/pr-batch-integration-closeout.md"
   ].freeze
 
   OBSOLETE_APPROVAL_GATES = [
@@ -158,10 +167,26 @@ class PostMergeAuditPolicyTest < Minitest::Test
     end
   end
 
+  def test_replacement_preclose_guard_is_mirrored
+    REPLACEMENT_PRECLOSE_GUARD_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_REPLACEMENT_PRECLOSE_GUARD,
+                      "#{relative_path} should use the canonical replacement pre-close guard"
+    end
+  end
+
+  def test_changelog_uses_narrow_terminal_reconciliation_semantics
+    changelog = File.read(File.join(ROOT, "CHANGELOG.md"), encoding: "UTF-8")
+
+    assert_includes changelog, REQUIRED_REPLACEMENT_CHANGELOG_RULE
+    refute_includes changelog, "terminal `abandoned` or `superseded` lane"
+  end
+
   def test_release_gate_ledger_append_is_not_blocked_by_comment_ban
     [
       "skills/post-merge-audit/SKILL.md",
-      "workflows/pr-processing.md"
+      "workflows/pr-production-release.md"
     ].each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
@@ -202,7 +227,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   end
 
   def test_pr_processing_follow_up_policy_has_post_merge_exception
-    text = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    text = File.read(File.join(ROOT, "workflows/pr-batch-integration-closeout.md"), encoding: "UTF-8")
     normalized_text = text.gsub(/\s+/, " ")
 
     assert_includes normalized_text, REQUIRED_PR_PROCESSING_EXCEPTION
@@ -211,7 +236,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   def test_outputs_include_issue_creation_accounting
     [
       "skills/post-merge-audit/SKILL.md",
-      "workflows/pr-processing.md"
+      "workflows/pr-batch-integration-closeout.md"
     ].each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
@@ -233,14 +258,14 @@ class PostMergeAuditPolicyTest < Minitest::Test
     no_batch_branch_counts = {
       "skills/post-merge-audit/SKILL.md" => 1,
       "workflows/post-merge-audit.md" => 2,
-      "workflows/pr-processing.md" => 1
+      "workflows/pr-batch-integration-closeout.md" => 1
     }
     section_patterns = {
       "skills/post-merge-audit/SKILL.md" =>
         /4\. Worked issue list:(?<body>.*?)\nAfter the scope algorithm/m,
       "workflows/post-merge-audit.md" =>
         /First, produce the exact worked-issue scope(?<body>.*?)\nAfter the scope algorithm/m,
-      "workflows/pr-processing.md" =>
+      "workflows/pr-batch-integration-closeout.md" =>
         /2\. Resolve worked-issue scope(?<body>.*?)\n4\. After the scope algorithm/m
     }
 
@@ -277,7 +302,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
     ordering_starts = {
       "skills/post-merge-audit/SKILL.md" => "## Scope Gate",
       "workflows/post-merge-audit.md" => "- Before creating any issue, search existing open issues",
-      "workflows/pr-processing.md" => "## Post-Merge Batch Audit"
+      "workflows/pr-batch-integration-closeout.md" => "## Post-Merge Batch Audit"
     }
 
     ordering_starts.each do |relative_path, start_marker|
@@ -292,10 +317,9 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_completed_batch_audit_closes_with_an_explicit_conversation_status
     [
-      "skills/pr-batch/SKILL.md",
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md",
-      "workflows/pr-processing.md"
+      "workflows/pr-batch-integration-closeout.md"
     ].each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
@@ -410,10 +434,30 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
       assert_includes text, REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE,
                       "#{relative_path} should reserve completed-batch handoff outputs for the coordinator's combined handoff"
+      assert_includes text, REQUIRED_TERMINAL_NEXT_STEP,
+                      "#{relative_path} should translate the receipt into one user-facing next step"
       assert_includes text, REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION,
                       "#{relative_path} should prohibit qualifying and advisory reports from emitting coordinator handoff outputs"
       assert_includes text, REQUIRED_ADVISORY_VERDICT_PROHIBITION,
                       "#{relative_path} should prohibit advisory auditors from issuing the qualifying verdict"
+    end
+  end
+
+  def test_terminal_next_step_contract_applies_to_every_audit_mode
+    [
+      "skills/post-merge-audit/SKILL.md",
+      "workflows/post-merge-audit.md"
+    ].each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      terminal_contract = text.index(REQUIRED_TERMINAL_NEXT_STEP)
+      completed_batch_only = text.index(REQUIRED_COMPLETED_BATCH_MODE_SCOPE)
+
+      refute_nil terminal_contract, "#{relative_path} should contain the terminal next-step contract"
+      refute_nil completed_batch_only, "#{relative_path} should retain the completed-batch-only boundary"
+      assert_operator terminal_contract, :<, completed_batch_only,
+                      "#{relative_path} should apply terminal guidance before the completed-batch-only boundary"
+      assert_includes text, REQUIRED_ALL_MODE_TERMINAL_SCOPE
+      assert_includes text, "Keep `Action needed:` separate"
     end
   end
 

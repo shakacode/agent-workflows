@@ -10,7 +10,7 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
   TEMPLATE_PATH = File.expand_path("../references/templates.md", __dir__)
 
   def template
-    @template ||= File.read(TEMPLATE_PATH)
+    @template ||= File.read(TEMPLATE_PATH, encoding: Encoding::UTF_8)
   end
 
   def section_after(start_marker, end_marker)
@@ -93,5 +93,22 @@ class AddressReviewSummaryTemplateTest < Minitest::Test
   def test_template_never_requests_open_details
     refute_includes template, "<details open>"
     assert_equal 2, template.scan("printf '<details>\\n'").length
+  end
+
+  def test_template_read_is_independent_of_default_external_encoding
+    with_default_external_encoding(Encoding::US_ASCII) do
+      assert_equal Encoding::UTF_8, template.encoding
+      assert_equal 2, template.scan("printf '<details>\\n'").length
+    end
+  end
+
+  private
+
+  def with_default_external_encoding(encoding)
+    original = Encoding.default_external
+    Encoding.default_external = encoding
+    yield
+  ensure
+    Encoding.default_external = original
   end
 end

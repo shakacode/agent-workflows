@@ -19,6 +19,9 @@ load receipt_parser_path
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
+PROMPT_INTAKE_PATH = File.join(ROOT, "workflows/pr-batch-intake.md")
+WORKER_EXECUTION_PATH = File.join(ROOT, "workflows/pr-batch-worker-execution.md")
+INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 SPEC_SKILL_PATH = File.join(ROOT, "skills/spec/SKILL.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
@@ -37,6 +40,7 @@ HUMAN_STATUS_REPLAY_PATH = File.join(ROOT, "skills/pr-batch/fixtures/human-statu
 TEXT_FENCE = "```text\n"
 CANONICAL_CONTRACT_LINK = "../../workflows/pr-processing.md#goal-mode-completion-contract"
 CANONICAL_READINESS_LINK = "../../workflows/pr-processing.md#batch-handoff-format"
+INTEGRATION_CLOSEOUT_READINESS_LINK = "../../workflows/pr-batch-integration-closeout.md#batch-handoff-format"
 # docs/ is one level below the repo root; skills/*/SKILL.md are two.
 DOCS_CANONICAL_READINESS_LINK = "../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
@@ -149,8 +153,8 @@ SELF_LAUNCH_PLANNING_CHAT_ROLE = "Planning-chat role: not applicable after self-
 SELF_LAUNCH_CLOSEOUT_OWNER = "Archive/closeout owner: batch coordinator."
 SELF_LAUNCH_NO_RETAINED_RESPONSIBILITY = "Retained responsibilities: none (no cross-batch, dependency, release, or shared-follow-up responsibility is retained)."
 SELF_LAUNCH_NOT_A_THIRD_PLANNING_ROLE = "This is a transition out of planning, not a third planning role; neither `prompt-only` nor `parent-orchestrator` is selectable after the transition."
-PLAN_PR_BATCH_RESPONSE_ORDER = "Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
-TRIAGE_RESPONSE_ORDER = "Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
+PLAN_PR_BATCH_RESPONSE_ORDER = "Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
+TRIAGE_RESPONSE_ORDER = "Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
 PARENT_RECONCILIATION_RULE = "After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive."
 PARENT_RECONCILIATION_FORWARD_REFERENCE = "This reconciliation is the post-batch/pre-release-or-archive gate below."
 RELEASE_AUTHORITY_RECONCILIATION_RULE = "Coordinated release may pass this reconciliation gate only under separately established release authority; reconciliation never grants release or merge authority."
@@ -302,15 +306,15 @@ LAUNCH_MODE_WORKFLOW_CLAUSES = {
 # The skill carries only the concise worker/coordinator-facing requirement and
 # points at the canonical contract, so the two cannot drift into rival rules.
 PR_BATCH_HEARTBEAT_SUMMARY_CLAUSES = [
-  "schedule one same-thread heartbeat for that time before handing off",
+  "schedule the same-thread heartbeat for that time rather than relying on either monitoring cadence",
   "neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that " \
   "exact published time",
   "single scheduled mechanism for that blocker and gate",
   "do not start or retain either watcher mode for the same gate",
   "before stopping or replacing any existing watcher so no wake is lost",
-  "Update the existing heartbeat instead of duplicating it",
+  "updates the existing matching heartbeat instead of creating a duplicate",
   "never becomes an unbounded polling loop",
-  "The canonical rule is the Scheduled Retry Heartbeat paragraph in that contract"
+  "Skills that implement timed waiting or PR babysitting reuse this contract instead of inventing separate reminder behavior"
 ].freeze
 CANONICAL_READINESS_STATES = %w[
   merged
@@ -543,9 +547,14 @@ end
 
 class GoalCompletionContractTest < Minitest::Test
   def setup
-    @workflow = read_repo_file(WORKFLOW_PATH)
+    @workflow_source = read_repo_file(WORKFLOW_PATH)
+    @prompt_intake = read_repo_file(PROMPT_INTAKE_PATH)
+    @worker_execution = read_repo_file(WORKER_EXECUTION_PATH)
+    @integration_closeout = read_repo_file(INTEGRATION_CLOSEOUT_PATH)
+    @workflow = "#{@integration_closeout}\n#{@workflow_source}"
     @spec_skill = read_repo_file(SPEC_SKILL_PATH)
-    @pr_batch_skill = read_repo_file(PR_BATCH_SKILL_PATH)
+    @pr_batch_skill_source = read_repo_file(PR_BATCH_SKILL_PATH)
+    @pr_batch_skill = "#{@integration_closeout}\n#{@pr_batch_skill_source}"
     @plan_pr_batch_skill = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
     @triage_skill = read_repo_file(TRIAGE_SKILL_PATH)
     @adversarial_review_workflow = read_repo_file(ADVERSARIAL_REVIEW_WORKFLOW_PATH)
@@ -779,8 +788,10 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal "current_task", lifecycle.fetch("owner")
 
     cases = @human_status_replay.fetch("cases")
-    assert_equal cases.length, cases.map { |replay_case| replay_case.fetch("id") }.uniq.length
-    cases.each do |replay_case|
+    variants = @human_status_replay.fetch("variants")
+    replay_cases = cases + variants
+    assert_equal replay_cases.length, replay_cases.map { |replay_case| replay_case.fetch("id") }.uniq.length
+    replay_cases.each do |replay_case|
       expected = replay_case.fetch("expected_user_output")
       actual = render_human_status(replay_case, stable_payload:)
       if expected.nil?
@@ -804,6 +815,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal 1, blocked_input.fetch("expected_user_output").count("?")
     assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "exact_question")
     assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "manual_resume")
+    assert_includes blocked_input.dig("input", "manual_resume"), "Reply here"
 
     diagnostic = cases.find { |replay_case| replay_case.fetch("id") == "explicit-diagnostics" }
     diagnostic_output = diagnostic.fetch("expected_user_output")
@@ -828,6 +840,16 @@ class GoalCompletionContractTest < Minitest::Test
       walkthrough_or_approval_ready
     ], actionable_triggers.sort
 
+    actionable_user_input = (cases + variants).select do |replay_case|
+      replay_case.dig("input", "kind") == "action_required" &&
+        replay_case.dig("input", "action_needed") != "none."
+    end
+    actionable_user_input.each do |replay_case|
+      next_step = replay_case.dig("input", "next")
+      assert_match(/Reply here|Start a new task/, next_step,
+                   "#{replay_case.fetch('id')} should name the response channel")
+    end
+
     closeout = cases.find { |replay_case| replay_case.dig("input", "trigger") == "closeout_or_archive_completed" }
     closeout_output = closeout.fetch("expected_user_output")
     assert_includes closeout_output, closeout.dig("input", "existing_closeout_handoff")
@@ -835,6 +857,14 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes closeout_output, "Validation:"
     assert_includes closeout_output, "Blockers:"
     assert_equal "Conversation status: Ready for archiving.", closeout_output.lines.last.chomp
+
+    followups = variants.find { |replay_case| replay_case.fetch("id") == "closeout-followups-remain" }
+    followups_output = followups.fetch("expected_user_output")
+    assert_equal followups_output, render_human_status(followups, stable_payload:)
+    assert_includes followups_output, "Action needed: Start a new task for issue #445."
+    assert_includes followups_output,
+                    "Next: Start a new task from issue #445; keep this task open until the handoff is created."
+    assert_includes followups_output, "Conversation status: Follow-ups remain — issue #445 (open): track."
 
     unknown_diagnostic = cases.find do |replay_case|
       replay_case.fetch("id") == "explicit-diagnostic-unknown-meaning"
@@ -873,7 +903,7 @@ class GoalCompletionContractTest < Minitest::Test
     )
     assert_equal 1, continuation.lines.count { |line| line.strip == HUMAN_STATUS_VERSION_KEY },
                  "continuation monitor prompt must reference #{HUMAN_STATUS_VERSION_KEY} exactly once"
-    assert_text_includes @human_attention_section, "[`HST-v1`](#human-status-translation-contract)",
+    assert_text_includes @human_attention_section, "[`HST-v1`](pr-processing.md#human-status-translation-contract)",
                          "human-attention notification surface"
   end
 
@@ -935,9 +965,9 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces
     surfaces = {
-      "workflows/pr-processing.md" => @workflow,
+      "workflows/pr-batch-integration-closeout.md" => @integration_closeout,
       "skills/triage/SKILL.md" => @triage_skill,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill_source,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill
     }
     actual_counts = surfaces.transform_values { |text| text.scan(GMCC_ALIGNMENT_SENTENCE).length }
@@ -1046,19 +1076,33 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_lane_card_contract_is_documented
-    workflow_worker_rules = extract_markdown_section(@workflow, "### Worker Rules")
-    assert_text_includes workflow_worker_rules, "Lane Card", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "after a successful claim", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "when the PR is opened", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "`claim:`", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "holder|UNKNOWN", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "generation|UNKNOWN", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "instance|UNKNOWN", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "dashboard_url", "workflows/pr-processing.md Worker Rules"
-    assert_text_includes workflow_worker_rules, "pr_url", "workflows/pr-processing.md Worker Rules"
+    canonical_handoff = extract_markdown_section(
+      @worker_execution,
+      "## Worker-To-Coordinator Handoff",
+      end_heading: /^##\s+/
+    )
+    assert_text_includes canonical_handoff, "Lane Card", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "accepted ownership", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "later opens or updates the PR", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "`claim:`", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "holder|UNKNOWN", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "generation|UNKNOWN", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "instance|UNKNOWN", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "dashboard_url", "worker-execution handoff"
+    assert_text_includes canonical_handoff, "pr_url", "worker-execution handoff"
 
     {
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "workflows/pr-processing.md Worker Rules" =>
+        extract_markdown_section(@workflow, "### Worker Rules"),
+      "skills/pr-batch/SKILL.md Worker Rules" =>
+        extract_markdown_section(@pr_batch_skill, "## Worker Rules", end_heading: /^##\s+/)
+    }.each do |label, route|
+      assert_text_includes route, "pr-batch-worker-execution.md", label
+      assert_text_includes route, "implementation-head handoff", label
+      refute_includes route, "`claim:`", "#{label} must route instead of mirroring the Lane Card"
+    end
+
+    {
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
@@ -1103,8 +1147,8 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_completion_state_checklists_match_canonical_readiness_vocabulary
     surfaces = {
-      "skills/pr-batch/SKILL.md Required Interview" => [@pr_batch_skill, "## Required Interview", /^##\s+/],
-      "workflows/pr-processing.md Short Invocation" => [@workflow, "### Short Invocation", /^###\s+/]
+      "workflows/pr-batch-intake.md Short Invocation Expansion" =>
+        [@prompt_intake, "## Short Invocation Expansion", /^##\s+/]
     }
     mismatches = surfaces.filter_map do |label, (text, heading, end_heading)|
       actual = completion_state_checklist(text, heading:, end_heading:)
@@ -1119,11 +1163,11 @@ class GoalCompletionContractTest < Minitest::Test
   def test_completion_state_checklists_ignore_earlier_duplicate_paragraphs
     decoy = "Completion states: #{CANONICAL_READINESS_STATES.map { |state| "`#{state}`" }.join(', ')}.\n\n"
     surfaces = {
-      "skills/pr-batch/SKILL.md Required Interview" => [@pr_batch_skill, "## Required Interview", /^##\s+/],
-      "workflows/pr-processing.md Short Invocation" => [@workflow, "### Short Invocation", /^###\s+/]
+      "workflows/pr-batch-intake.md Short Invocation Expansion" =>
+        [@prompt_intake, "## Short Invocation Expansion", /^##\s+/]
     }
     false_positives = surfaces.filter_map do |label, (text, heading, end_heading)|
-      mutation = text.sub("`ready-human-review-required`, ", "")
+      mutation = text.sub("`ready-human-review-required`", "`removed-readiness-state`")
       raise "fixture mutation missed #{label}" if mutation == text
 
       actual = completion_state_checklist("#{decoy}#{mutation}", heading:, end_heading:)
@@ -1136,13 +1180,21 @@ class GoalCompletionContractTest < Minitest::Test
   def test_planning_skills_link_to_canonical_readiness_vocabulary
     {
       "skills/spec/SKILL.md" => extract_markdown_section(@spec_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
-      "skills/plan-pr-batch/SKILL.md" => extract_markdown_section(@plan_pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/),
-      "skills/pr-batch/SKILL.md" => extract_markdown_section(@pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/)
+      "skills/plan-pr-batch/SKILL.md" => extract_markdown_section(@plan_pr_batch_skill, "## Canonical Readiness Vocabulary", end_heading: /^##\s+/)
     }.each do |label, text|
       assert_text_includes text, CANONICAL_READINESS_LINK, label
       assert_text_includes text, "UNKNOWN", label
       assert_text_includes text, "JSON is not mandatory", label
     end
+
+    pr_batch_readiness = extract_markdown_section(
+      @pr_batch_skill_source,
+      "## Canonical Readiness Vocabulary",
+      end_heading: /^##\s+/
+    )
+    assert_text_includes pr_batch_readiness, INTEGRATION_CLOSEOUT_READINESS_LINK, "skills/pr-batch/SKILL.md"
+    assert_text_includes pr_batch_readiness, "UNKNOWN", "skills/pr-batch/SKILL.md"
+    assert_text_includes pr_batch_readiness, "JSON is not mandatory", "skills/pr-batch/SKILL.md"
   end
 
   def test_structured_readiness_markers_use_canonical_values
@@ -1164,10 +1216,10 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_skill_prose_points_to_canonical_contract_instead_of_pasting_it
-    assert_text_includes @pr_batch_skill, CANONICAL_CONTRACT_LINK, "skills/pr-batch/SKILL.md"
-    assert_equal 0, @pr_batch_skill.scan(PENDING_CHECKS_PRESSURE).length,
+    assert_text_includes @pr_batch_skill_source, CANONICAL_CONTRACT_LINK, "skills/pr-batch/SKILL.md"
+    assert_equal 0, @pr_batch_skill_source.scan(PENDING_CHECKS_PRESSURE).length,
                  "skills/pr-batch/SKILL.md should leave the verbose pressure example in the canonical workflow"
-    assert_equal 1, @pr_batch_skill.scan(COMPACT_CONTRACT_LINE).length,
+    assert_equal 1, @pr_batch_skill_source.scan(COMPACT_CONTRACT_LINE).length,
                  "skills/pr-batch/SKILL.md should carry one self-contained compact prompt contract"
   end
 
@@ -1387,15 +1439,19 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_batch_handoff_format_requires_the_archive_readiness_status_line
     {
-      "workflows/pr-processing.md" => extract_markdown_section(@workflow, "### Batch Handoff Format"),
-      "skills/pr-batch/SKILL.md" => extract_markdown_section(
-        @pr_batch_skill,
-        "## Batch Handoff Format",
-        end_heading: /^##\s+/
-      )
+      "workflows/pr-batch-integration-closeout.md" =>
+        extract_markdown_section(@integration_closeout, "### Batch Handoff Format")
     }.each do |label, section|
       assert_squished_includes section, ARCHIVE_READINESS_HANDOFF_RULE, "#{label} Batch Handoff Format section"
     end
+
+    skill_route = extract_markdown_section(
+      @pr_batch_skill_source,
+      "## Batch Handoff Format",
+      end_heading: /^##\s+/
+    )
+    assert_text_includes skill_route, "pr-batch-integration-closeout.md#batch-handoff-format",
+                         "skills/pr-batch/SKILL.md Batch Handoff Format route"
   end
 
   # #243/1: this section is what workers and planning chats are pointed at for the
@@ -1450,10 +1506,11 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_pr_batch_skill_carries_the_concise_heartbeat_requirement
     PR_BATCH_HEARTBEAT_SUMMARY_CLAUSES.each do |clause|
-      assert_squished_includes @pr_batch_skill, clause, "skills/pr-batch/SKILL.md heartbeat summary"
+      assert_squished_includes @workflow_contract_section, clause,
+                               "workflows/pr-batch-integration-closeout.md heartbeat contract"
     end
 
-    assert_text_includes @pr_batch_skill, CANONICAL_CONTRACT_LINK,
+    assert_text_includes @pr_batch_skill_source, CANONICAL_CONTRACT_LINK,
                          "skills/pr-batch/SKILL.md must point at the canonical Goal Mode Completion Contract"
   end
 
@@ -1849,7 +1906,8 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes @plan_pr_batch_skill, PLAN_PR_BATCH_RESPONSE_ORDER
 
     ["Batch Plan", "generated goal prompt", "Goal prompt character count",
-     "selected exact", "actual final user-visible line"].each_cons(2) do |first, second|
+     "Action needed:", "Next:", "selected exact",
+     "actual final user-visible line"].each_cons(2) do |first, second|
       assert_operator PLAN_PR_BATCH_RESPONSE_ORDER.index(first), :<,
                       PLAN_PR_BATCH_RESPONSE_ORDER.index(second),
                       "plan-pr-batch response order must keep #{first.inspect} before #{second.inspect}"
@@ -1863,7 +1921,8 @@ class GoalCompletionContractTest < Minitest::Test
 
     ["scope/repositories/sources", "phase-1 counts/dependency graph", "coordination",
      "capacity", "wave plan/prompts", "lifecycle record", "queue summary if applicable",
-     "residual risks", "maintainer decisions", "selected exact", "actual final user-visible line"].each_cons(2) do |first, second|
+     "residual risks", "maintainer decisions", "Action needed:", "Next:",
+     "selected exact", "actual final user-visible line"].each_cons(2) do |first, second|
       assert_operator TRIAGE_RESPONSE_ORDER.index(first), :<,
                       TRIAGE_RESPONSE_ORDER.index(second),
                       "triage response order must keep #{first.inspect} before #{second.inspect}"
@@ -1989,8 +2048,8 @@ class GoalCompletionContractTest < Minitest::Test
                     "independent of all target-level `n/a` decisions"
     assert_includes lifecycle,
                     "Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive."
-    assert_includes lifecycle, TERMINAL_FOLLOW_UP_EVIDENCE_RULE
-    assert_includes lifecycle, UNRESOLVED_HANDOFF_NON_CLEAN_RULE
+    assert_includes @integration_closeout, TERMINAL_FOLLOW_UP_EVIDENCE_RULE
+    assert_includes @integration_closeout, UNRESOLVED_HANDOFF_NON_CLEAN_RULE
     refute_includes lifecycle, "dispositioned/handed off"
     assert_includes lifecycle, "The parent only reconciles this handoff; it never reruns or owns the audit."
 
@@ -2229,8 +2288,7 @@ class GoalCompletionContractTest < Minitest::Test
     end
 
     {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "workflows/pr-batch-integration-closeout.md" => @integration_closeout,
       "skills/post-merge-audit/SKILL.md" => read_repo_file(File.join(ROOT, "skills/post-merge-audit/SKILL.md")),
       "workflows/post-merge-audit.md" => read_repo_file(File.join(ROOT, "workflows/post-merge-audit.md"))
     }.each do |label, text|
@@ -2285,8 +2343,7 @@ class GoalCompletionContractTest < Minitest::Test
     end
 
     {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "workflows/pr-batch-integration-closeout.md" => @integration_closeout,
       "skills/post-merge-audit/SKILL.md" => read_repo_file(File.join(ROOT, "skills/post-merge-audit/SKILL.md")),
       "workflows/post-merge-audit.md" => read_repo_file(File.join(ROOT, "workflows/post-merge-audit.md"))
     }.each do |label, text|
@@ -2859,8 +2916,7 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_completed_batch_audit_record_grammar_is_mirrored_across_closeout_surfaces
     {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "workflows/pr-batch-integration-closeout.md" => @integration_closeout,
       "skills/post-merge-audit/SKILL.md" => read_repo_file(File.join(ROOT, "skills/post-merge-audit/SKILL.md")),
       "workflows/post-merge-audit.md" => read_repo_file(File.join(ROOT, "workflows/post-merge-audit.md"))
     }.each do |label, text|
@@ -2904,12 +2960,15 @@ class GoalCompletionContractTest < Minitest::Test
               "batch coordinators execute and own live lanes and closeout"
 
     {
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, summary, label
     end
+
+    assert_text_includes @pr_batch_skill_source,
+                         "../../workflows/pr-processing.md#planning-chat-lifecycle",
+                         "skills/pr-batch/SKILL.md planning lifecycle route"
   end
 
   def test_changelog_announces_portable_planning_chat_lifecycle_contract

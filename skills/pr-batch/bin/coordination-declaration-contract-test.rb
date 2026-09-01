@@ -32,6 +32,7 @@ ROOT = File.expand_path("../../..", __dir__)
 
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
+INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
 TRIAGE_SKILL_PATH = File.join(ROOT, "skills/triage/SKILL.md")
 PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
@@ -42,8 +43,7 @@ CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
 # Every surface that generates, executes, or documents a final batch handoff has
 # to carry the rule verbatim, so a reader of any one of them learns the contract.
 REQUIRED_SURFACES = {
-  "workflows/pr-processing.md" => WORKFLOW_PATH,
-  "skills/pr-batch/SKILL.md" => PR_BATCH_SKILL_PATH,
+  "workflows/pr-batch-integration-closeout.md" => INTEGRATION_CLOSEOUT_PATH,
   "skills/plan-pr-batch/SKILL.md" => PLAN_PR_BATCH_SKILL_PATH,
   "skills/triage/SKILL.md" => TRIAGE_SKILL_PATH,
   "skills/pr-monitoring/SKILL.md" => PR_MONITORING_SKILL_PATH,
@@ -78,6 +78,14 @@ end
 
 def normalize_prose(text)
   text.gsub(/\s+/, " ")
+end
+
+def with_default_external_encoding(encoding)
+  original = Encoding.default_external
+  Encoding.default_external = encoding
+  yield
+ensure
+  Encoding.default_external = original
 end
 
 # Anchored to a whole heading line so a heading quoted in prose or a sync comment
@@ -567,37 +575,46 @@ class CoordinationDeclarationContractTest < Minitest::Test
   end
 
   def test_unrecognized_declaration_form_fails
-    blockers = coordination_declaration_blockers("coordination: fine\n")
+    with_default_external_encoding(Encoding::US_ASCII) do
+      declaration = "fíne"
+      blockers = coordination_declaration_blockers("coordination: #{declaration}\n")
 
-    refute_empty blockers
-    assert_includes blockers.first, "unrecognized"
+      refute_empty blockers
+      assert_includes blockers.first, "unrecognized"
+      assert_includes blockers.first, declaration
+    end
   end
 
   def test_near_miss_declarations_are_rejected_with_an_exact_correction
-    [
-      "`coordination: registered aw-1`",
-      "**coordination:** registered aw-1",
-      "Coordination: registered aw-1",
-      "coordination - registered aw-1",
-      "coordination – registered aw-1"
-    ].each do |near_miss|
-      blockers = coordination_declaration_blockers("#{near_miss}\n")
+    with_default_external_encoding(Encoding::US_ASCII) do
+      [
+        "`coordination: registered aw-1`",
+        "**coordination:** registered aw-1",
+        "Coordination: registered aw-1",
+        "coordination - registered aw-1",
+        "coordination – registered aw-1"
+      ].each do |near_miss|
+        blockers = coordination_declaration_blockers("#{near_miss}\n")
 
-      refute_empty blockers, "#{near_miss.inspect} must remain rejected"
-      assert_includes blockers.first, "near-miss"
-      assert_includes blockers.first, near_miss
-      assert_includes blockers.first, "coordination: registered <batch-id>"
-      assert_includes blockers.first, "coordination: unavailable #{EM_DASH} <reason>"
+        refute_empty blockers, "#{near_miss.inspect} must remain rejected"
+        assert_includes blockers.first, "near-miss"
+        assert_includes blockers.first, near_miss
+        assert_includes blockers.first, "coordination: registered <batch-id>"
+        assert_includes blockers.first, "coordination: unavailable #{EM_DASH} <reason>"
+      end
     end
   end
 
   def test_both_forms_on_one_line_fail
-    handoff = "coordination: registered aw-1 unavailable #{EM_DASH} backend flaky\n"
-    blockers = coordination_declaration_blockers(handoff)
+    with_default_external_encoding(Encoding::US_ASCII) do
+      batch_id = "aw-1 unavailable #{EM_DASH} backend flaky"
+      blockers = coordination_declaration_blockers("coordination: registered #{batch_id}\n")
 
-    refute_empty blockers, "one line carrying both forms must not pass as a clean declaration"
-    assert_includes blockers.first, "single token"
-    assert_includes blockers.first, "never both on one line"
+      refute_empty blockers, "one line carrying both forms must not pass as a clean declaration"
+      assert_includes blockers.first, "single token"
+      assert_includes blockers.first, batch_id
+      assert_includes blockers.first, "never both on one line"
+    end
   end
 
   def test_registered_batch_id_rejects_trailing_prose
@@ -640,7 +657,7 @@ class CoordinationDeclarationContractTest < Minitest::Test
 
   def test_removing_the_rule_from_a_surface_is_detected
     normalized_rule = normalize_prose(COORDINATION_DECLARATION_RULE)
-    workflow = normalize_prose(read_repo_file(WORKFLOW_PATH))
+    workflow = normalize_prose(read_repo_file(INTEGRATION_CLOSEOUT_PATH))
 
     assert_includes workflow, normalized_rule
     refute_includes workflow.sub(normalized_rule, ""), normalized_rule,
@@ -648,11 +665,18 @@ class CoordinationDeclarationContractTest < Minitest::Test
   end
 
   def test_canonical_rule_lives_in_the_batch_handoff_format_section
-    workflow = read_repo_file(WORKFLOW_PATH)
+    workflow = read_repo_file(INTEGRATION_CLOSEOUT_PATH)
     section = batch_handoff_format_section(workflow)
 
     assert_includes normalize_prose(section), normalize_prose(COORDINATION_DECLARATION_RULE),
                     "the declaration belongs in the canonical handoff contract the goal prompt routes to"
+  end
+
+  def test_legacy_entrypoints_route_to_the_canonical_handoff_contract
+    assert_includes read_repo_file(WORKFLOW_PATH),
+                    "[Batch Handoff Format](pr-batch-integration-closeout.md#batch-handoff-format)"
+    assert_includes read_repo_file(PR_BATCH_SKILL_PATH),
+                    "[Batch Handoff Format](../../workflows/pr-batch-integration-closeout.md#batch-handoff-format)"
   end
 
   def test_batch_handoff_extractor_ignores_a_quoted_heading
@@ -848,7 +872,7 @@ class CoordinationDeclarationContractTest < Minitest::Test
   # The gate was spec-only enforcement until the closeout lane actually ran it.
   def test_coordinator_closeout_lane_runs_the_declaration_helper
     closeout = extract_anchored_section(
-      read_repo_file(WORKFLOW_PATH),
+      read_repo_file(INTEGRATION_CLOSEOUT_PATH),
       "### Coordinator Closeout Lane",
       end_heading: /^##[[:blank:]]+/
     )

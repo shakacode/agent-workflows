@@ -10,6 +10,12 @@ Use this after a PR is opened or updated and the task requires current PR state,
 review-comment follow-up, check readiness, or final handoff. A PR being open is
 not itself a finished state.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the loaded `workflows/pr-processing.md` contract before writing a
+monitoring handoff or maintainer-facing explanation. Preserve current-head
+evidence, blockers, URLs, readiness vocabulary, and `UNKNOWN` facts.
+
 Default `merge_authority` is `none` unless the user, `AGENTS.md`, or a resolved
 batch plan grants more authority.
 
@@ -37,7 +43,7 @@ names:
 - local validation command
 
 Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
-contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
+contract in `workflows/pr-batch-integration-closeout.md`; do not reproduce or reinterpret that
 contract here.
 
 Use the PR's real repository, base, head branch, head SHA, and current merge
@@ -254,6 +260,15 @@ Report:
   operational-event emissions, skipped backend-`n/a`, or exact
   degraded-`UNKNOWN` evidence
 - final state
+
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. If the current task's archive gate passes, including a terminal
+`ready-no-merge-authority` state with no remaining follow-up or decision, use
+`Next: Archive this task.` Otherwise name the smallest action that advances or
+unblocks the PR and say whether to reply here or start a new task. Do not ask
+again for a merge decision already declined or durably settled. Keep `Action
+needed:` separate: name the exact user action or `none`. A PR URL, final state,
+or blocker list is evidence, not a next step.
 
 ## Boundaries
 

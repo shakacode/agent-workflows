@@ -2,6 +2,12 @@
 
 Use this prompt in Codex CLI, ChatGPT, or another coding assistant when you want the equivalent of Claude Code's `/address-review` workflow and that command is unavailable.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under `pr-processing.md` → **Writing Style Resolution** before composing review
+replies, checkpoint comments, or deferred issue bodies. Style controls prose
+only; preserve all required markers, state rows, sections, and evidence.
+
 ## How to Use
 
 Paste the prompt below into your coding assistant and replace `{{PR_REFERENCE}}` with one of:

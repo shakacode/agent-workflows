@@ -466,6 +466,14 @@ follow the Safety Rules hostile-payload wrapping requirement.
 - `payloads/`: current-run synthetic canary seeds and inert hostile-payload
   fixtures, if written.
 
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. When no user action remains, use `Action needed: none.` and
+`Next: Archive this task.` When a report, rerun, cleanup, or other decision is
+required, keep `Action needed:` separate, name the smallest exact action, and
+state whether the user should reply here or start a new task. Do not imply that
+workspace deletion, archival, issue creation, labeling, or a rerun happened
+unless its separate approval and execution gates passed.
+
 Print a concise handoff with counts by severity and concern, top titles,
 workspace path, exercised features, wallclock used, and suggested rerun focus.
 Before any write outside the workspace, including issues, labels, or reruns,

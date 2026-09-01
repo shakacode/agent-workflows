@@ -34,6 +34,31 @@ Claude:
 | `claude` | `${CLAUDE_HOME:-$HOME/.claude}` |
 | `auto` | An existing Codex or Claude home, only when exactly one is detectable |
 
+The installer also supplies `agent-workflow-writing-style`,
+[the packaged default guide](writing-style.md), and the opt-in
+[`asd-ste100` adapter](writing-style-asd-ste100.md). Shared authoring workflows
+run the resolver with the trusted repository root before composing human-facing
+prose. Resolution is repo → user-global → portable default, with provenance
+reported as `repo`, `user-global`, or `portable-default`.
+
+`writing_style` is either one nonblank relative Markdown path or the exact
+closed-registry preset `asd-ste100`. The repository value in
+`.agents/agent-workflow.yml` resolves beneath the repository root or selects
+the packaged preset, and wins. An optional personal fallback in
+`~/.agents/agent-workflow.yml` resolves beneath
+`~/.agents` and applies only when the repository does not set the key; that
+user-global file contributes no other workflow policy. If neither layer defines
+a valid guide, the resolver uses the packaged default.
+
+Malformed repository config, unknown presets, unsafe or missing paths, and
+invalid guide files block. The same user-global failures are nonblocking: the
+resolver prints an actionable warning and uses the packaged default. Install
+and upgrade deliver
+the default and preset adapter in copy, symlink, and plugin-companion layouts,
+but never write the user-global config or enable a repository override. See the
+[project writing-style setup](adoption.md#configure-project-writing-style) for
+the configuration instructions.
+
 Use `--target DIR` for custom homes such as `~/.agents`. The host name controls
 the default target and metadata; it does not change the shared workflow text.
 
@@ -398,14 +423,18 @@ The installer writes:
 
 - `<target>/skills/*` in `flat` delivery mode only
 - `<target>/LICENSE`
+- `<target>/THIRD_PARTY-NOTICES.md`
 - `<target>/workflows/*`
 - `<target>/docs/coordination-backend.md`
 - `<target>/docs/execution-provenance-schema.md`
 - `<target>/docs/review-finding-schema.md`
 - `<target>/docs/agent-workflows-model-routing.md`
 - `<target>/docs/user-facing-coordination.md`
+- `<target>/docs/writing-style.md`
+- `<target>/docs/writing-style-asd-ste100.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
+- `<target>/bin/agent-workflow-writing-style`
 - `<target>/bin/validate-execution-provenance`
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
@@ -416,16 +445,17 @@ The installer writes:
 - `<target>/bin/upgrade-agent-workflows`
 - `<target>/.agent-workflows-install.json`
 
-Copy mode replaces this pack's license file, skill and workflow names, plus the
-pack-owned docs listed above; it preserves unrelated files already present in
-the target agent home, including generic consumer-owned docs under
-`<target>/docs`.
+Copy mode replaces this pack's license and third-party notice files, skill and
+workflow names, plus the pack-owned docs listed above; it preserves unrelated
+files already present in the target agent home, including generic
+consumer-owned docs under `<target>/docs`.
 
 The metadata file records host, artifact mode, skill delivery mode, source
 clone, pack version, source revision, branch, remote, and install time. Copy
-installs also record `managed_skill_copy_fingerprints` and
-`managed_pack_doc_copy_fingerprints`, including every installed
-`<target>/docs/solutions/*` document. On repeat installation, these fingerprints
+installs also record `managed_skill_copy_fingerprints`,
+`managed_pack_doc_copy_fingerprints`, and `managed_pack_root_copy_fingerprints`,
+including every installed `<target>/docs/solutions/*` document and the
+third-party notice. On repeat installation, these fingerprints
 prove that an installed managed copy has not been edited even when the recorded
 Git object is unavailable; an exact recorded-revision or current-source match is
 the backward-compatible fallback for older metadata. The installer refuses to

@@ -10,6 +10,13 @@ Audit merged PRs as a batch after batch work or before the next release step.
 Use visible chat only to choose the obvious just-run batch default; use git,
 GitHub, and coordination ground truth for every audit fact.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the canonical rules in the loaded `workflows/pr-processing.md`. Apply the
+guide to audit issue bodies, GitHub comments, PR-description prose, and final
+handoffs. Do not alter required audit markers, receipt fields, exact protocol
+blocks, issue accounting, or evidence.
+
 Memorable invocation:
 
 ```text
@@ -348,7 +355,7 @@ Classify each PR:
 - **Needs changelog update**: user-visible change is missing from the repo's changelog; recommend `/update-changelog`.
 - **Needs follow-up issue**: non-blocking work remains valuable and is actionable after release.
 - **Needs fix PR**: a real defect, missing test, missing compatibility note, or bad interaction should be fixed before release.
-- **Needs revert consideration**: the merge appears risky enough that reverting may be safer than patching.
+- **Needs revert consideration**: the merge appears risky enough that reverting may be safer than patching. The downstream procedure is [Unwinding A Bad Agent Merge](../../docs/revert-runbook.md), which covers revert scope, order, bookkeeping, and the operator-authority rule. Reference it in the child issue; it is a runbook for the operator, not a gate on this audit, and it never blocks or alters audit completion.
 
 Classify each worked issue separately so the audit can prove every coordinated
 lane was evaluated, even when the issue produced no merged PR:
@@ -432,6 +439,15 @@ Only the coordinator should create issues. Independent Codex and Claude audits s
 
 ## Output
 
+Every final user-visible workflow handoff must include one unambiguous `Next:` instruction.
+This applies to completed-batch, release/range, and coverage catch-up audits.
+When the applicable archive gate passes, use `Next: Archive this task.` When
+user input blocks progress, state the smallest action that clears the blocker
+and whether to reply here or start a new task. When the current task will
+continue without input, state its exact next action.
+Keep `Action needed:` separate: name the exact user action or `none`. A durable
+issue, report, receipt, or blocker list is evidence, not a next step.
+
 In completed-batch mode only:
 
 Once every batch target has a final state, the batch coordinator must run its
@@ -439,7 +455,11 @@ completed-batch audit before its final handoff. Each completed-batch audit is
 owned by its batch coordinator. A parent orchestration agent only reconciles
 the durable audit handoff.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference plus the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, and final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`.
+
+Put `What changed:`, `Action needed:`, and `Next:` before the compact receipt so
+the receipt can still immediately precede the final `Conversation status:`
+line.
 Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
 
@@ -455,7 +475,11 @@ run `completed-batch-publication-preflight` against the repository's configured
 `coordination_backend`, that selected status or proof, the trusted applicability
 artifact and independently retained digest, the trusted
 target manifest, refreshed terminal target/head snapshots, and one per-target
-QA Evidence marker. The preflight derives the full target set from required
+QA Evidence marker. Compute the canonical digest at classification time with
+`completed-batch-publication-preflight digest-applicability-proof --applicability-proof <path>`
+and retain it where the publishing actor cannot rewrite it; see
+[coordination-backend.md](../../docs/coordination-backend.md) for that trust
+boundary and its limits. The preflight derives the full target set from required
 coordination lanes or from the not-applicable proof and fails closed when the
 selected evidence is absent, nonterminal, unmerged/unclosed, or `UNKNOWN`; when an exact-head QA
 disposition is not `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`
@@ -464,13 +488,11 @@ the configured coordination seam is unavailable. `unknown`, `in_progress`,
 missing, stale-head, and malformed QA evidence block completion.
 
 A normal terminal `done` lane still requires its coordination target state and
-terminal evidence. An immutable terminal `abandoned` or `superseded` lane may
-instead reconcile only when the helper independently authenticates that the
-same exact target reached `merged` or `closed` at an authenticated completion
-timestamp later than the lane closeout. The publication snapshot
-preserves the original coordination terminal and records the later-target
-completion mode. Active/nonterminal lanes, open targets, unauthenticated target
-facts, and malformed terminal timestamps remain blocked.
+terminal evidence. Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation.
+The publication snapshot preserves the original coordination terminal and records
+the later-target completion mode for accepted reconciliation. Active/nonterminal
+lanes, open targets, unauthenticated target facts, and malformed terminal
+timestamps remain blocked.
 
 Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync.
 

@@ -35,7 +35,7 @@ module CompletedBatchPublicationPreflight
   QA_WAIVER_MARKER = "qa-maintainer-waiver v1"
   HOSTED_QA_WAIVER_MARKER = "hosted-qa-maintainer-waiver v1"
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
-  RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned superseded].freeze
+  RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
   DEFAULT_GH_TIMEOUT_SECONDS = 60
   COORDINATION_TIMEOUT_SECONDS = 20
@@ -84,19 +84,19 @@ module CompletedBatchPublicationPreflight
     )
     unless applicability_proof
       blockers << "trusted coordination applicability proof is missing, invalid, or tampered"
-      return blocked_result(blockers.uniq)
+      return blocked_result(blockers)
     end
     unless applicability == applicability_proof.fetch("coordination_applicability")
       blockers << "coordination applicability contradicts trusted proof"
-      return blocked_result(blockers.uniq)
+      return blocked_result(blockers)
     end
-    return blocked_result(blockers.uniq) unless blockers.empty?
+    return blocked_result(blockers) unless blockers.empty?
 
     coordination_not_applicable = applicability == "coordination_not_applicable"
     coordination_required = applicability == "coordination_required"
     if coordination_required && backend&.downcase == "n/a"
       blockers << "coordination is required but the configured backend is unavailable"
-      return blocked_result(blockers.uniq)
+      return blocked_result(blockers)
     end
     if coordination_not_applicable
       no_backend_evidence = resolved_no_backend_evidence(
@@ -108,11 +108,15 @@ module CompletedBatchPublicationPreflight
       batch = nil
       lane_entries = []
       resolved_targets = no_backend_evidence ? expected_targets : []
+      coordination_authentic = true
     else
       no_backend_evidence = nil
       authenticated_status = coordination_verifier&.call(backend:, batch_id:)
-      unless authenticated_status == input["coordination_status"]
+      drift = coordination_status_drift(authenticated_status, input["coordination_status"])
+      coordination_authentic = drift.empty?
+      unless drift.empty?
         blockers << "coordination status is not authenticated or fresh"
+        blockers << "coordination status drift: #{drift.join(', ')}"
       end
       batch = resolved_batch(input["coordination_status"], batch_id, blockers)
       lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
@@ -150,7 +154,7 @@ module CompletedBatchPublicationPreflight
         batch,
         canonical_lanes,
         no_backend_evidence,
-        authenticated: coordination_not_applicable || authenticated_status == input["coordination_status"]
+        authenticated: coordination_authentic
       ),
       "targets" => canonical_targets,
       "qa" => canonical_qa
@@ -184,7 +188,8 @@ module CompletedBatchPublicationPreflight
   end
 
   def blocked_result(blocker)
-    blockers = Array(blocker)
+    # Deduplicate here so every fail-closed exit reports each blocker once, whatever the call site.
+    blockers = Array(blocker).uniq
     snapshot = canonicalize(
       "batch_id" => nil,
       "coordination_backend" => nil,
@@ -605,6 +610,59 @@ module CompletedBatchPublicationPreflight
     end
   end
 
+  # Append-only telemetry and heartbeat-derived freshness are not audited facts.
+  # `events` and `heartbeats` grow whenever any lane records lifecycle state, and
+  # a terminal lane's `liveness` necessarily decays to `stale` once its heartbeat
+  # ages out. Binding them made a published receipt stop replaying for reasons the
+  # audit never asserted. Terminal and target facts remain enforced by
+  # `validate_batch_terminal`, the lane entries, and the target snapshots.
+  # Stripped by key name at any depth rather than by path. That is deliberate:
+  # `liveness` is heartbeat-derived wherever it appears, including under
+  # `claims`, so path-scoping would leave the same trap in a sibling section. It
+  # does mean a future schema that reused one of these names for a genuinely
+  # audited fact would silently drop out of the comparison, so extend this list
+  # only for names that are telemetry everywhere, and switch to path-scoped
+  # stripping if that ever stops holding.
+  COORDINATION_TELEMETRY_KEYS = %w[events heartbeats].freeze
+  COORDINATION_DERIVED_KEYS = %w[liveness].freeze
+
+  def coordination_audit_facts(value)
+    case value
+    when Hash
+      value.each_with_object({}) do |(key, nested), facts|
+        next if COORDINATION_TELEMETRY_KEYS.include?(key) || COORDINATION_DERIVED_KEYS.include?(key)
+
+        facts[key] = coordination_audit_facts(nested)
+      end
+    when Array
+      value.map { |entry| coordination_audit_facts(entry) }
+    else
+      value
+    end
+  end
+
+  def coordination_status_authentic?(authenticated, supplied)
+    coordination_status_drift(authenticated, supplied).empty?
+  end
+
+  # Names the drifted top-level components so a benign telemetry-only difference
+  # is distinguishable from a real terminal-fact regression.
+  def coordination_status_drift(authenticated, supplied)
+    return ["coordination status is unavailable"] unless authenticated.is_a?(Hash) && supplied.is_a?(Hash)
+
+    left = coordination_audit_facts(authenticated)
+    right = coordination_audit_facts(supplied)
+    return [] if left == right
+
+    # Not dead: a key-wise comparison can come back empty while the hashes are
+    # unequal, because an explicit null and an absent key both read as nil here
+    # while Ruby's Hash#== distinguishes them. `{"a" => nil}` versus `{}` is
+    # unequal with no differing key, so name the payload rather than reporting
+    # authentic.
+    drifted = (left.keys | right.keys).reject { |key| left[key] == right[key] }
+    drifted.empty? ? ["coordination status"] : drifted.sort
+  end
+
   def indexed_target_snapshots(rows, expected_targets, blockers)
     indexed_rows(rows, expected_targets, blockers, "target snapshot")
   end
@@ -685,9 +743,15 @@ module CompletedBatchPublicationPreflight
         "target" => target,
         "state" => state,
         "completed_at" => verified_shape ? verified.fetch("completed_at") : nil,
-        "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
+        "verification_source" => verified_shape ? verified.fetch("verification_source") : nil,
+        "no_pr_evidence" => no_pr_evidence
       }
       authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
+      if lane&.fetch("terminal", nil) == "superseded" &&
+         authenticated_terminal_completion?(verified_target_facts) &&
+         !authenticated_later_typed_no_pr_issue_supersession?(lane, verified_target_facts)
+        blockers << "#{target_label(target)} premature terminal supersession / replacement protocol violation"
+      end
       if lane_state && state && lane_state != state && !authenticated_later_completion
         blockers << "#{target_label(target)} coordination and target state disagree"
       end
@@ -1042,7 +1106,38 @@ module CompletedBatchPublicationPreflight
 
   def authenticated_later_target_completion?(lane, target_snapshot)
     return false unless valid_terminal_lane?(lane)
-    return false unless RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"])
+    return false unless RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"]) ||
+                        typed_no_pr_issue_supersession?(lane, target_snapshot)
+
+    authenticated_target_completed_after_lane?(lane, target_snapshot)
+  end
+
+  def typed_no_pr_issue_supersession?(lane, target_snapshot)
+    target = validated_target(target_snapshot&.fetch("target", nil))
+    lane&.fetch("terminal", nil) == "superseded" &&
+      target&.fetch("type", nil) == "issue" &&
+      target_snapshot["no_pr_evidence"].is_a?(Hash)
+  end
+
+  def authenticated_later_typed_no_pr_issue_supersession?(lane, target_snapshot)
+    typed_no_pr_issue_supersession?(lane, target_snapshot) &&
+      authenticated_target_completed_after_lane?(lane, target_snapshot)
+  end
+
+  def authenticated_terminal_completion?(target_snapshot)
+    return false unless target_snapshot.is_a?(Hash)
+
+    target = validated_target(target_snapshot["target"])
+    return false unless target
+
+    expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+    target_snapshot["state"] == expected_state &&
+      target_snapshot["verification_source"] == "authenticated gh api" &&
+      valid_timestamp?(target_snapshot["completed_at"])
+  end
+
+  def authenticated_target_completed_after_lane?(lane, target_snapshot)
+    return false unless valid_terminal_lane?(lane)
     return false unless target_snapshot.is_a?(Hash)
 
     target = validated_target(target_snapshot["target"])
@@ -1570,11 +1665,44 @@ module CompletedBatchPublicationPreflight
     remaining.positive? && !!thread.join(remaining)
   end
 
+  # Lets a controller or operator compute the canonical applicability digest at decision time, before
+  # any receipt input exists, so the retained value never has to be derived at publication time.
+  # It does not make the digest independent by itself: whoever runs this must be the trusted party
+  # that retains the value separately from the artifact it later passes to preflight or replay.
+  def digest_applicability_proof(argv)
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: completed-batch-publication-preflight digest-applicability-proof " \
+                    "--applicability-proof PATH"
+      opts.on("--applicability-proof PATH") { |value| options["applicability_proof"] = value }
+      opts.on("-h", "--help") do
+        puts opts
+        return 0
+      end
+    end
+    parser.parse!(argv)
+    raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+    raise OptionParser::MissingArgument, "--applicability-proof" if options["applicability_proof"].to_s.empty?
+
+    proof = JSON.parse(File.read(options.fetch("applicability_proof"), encoding: "UTF-8"))
+    raise TypeError, "applicability proof must be a mapping" unless proof.is_a?(Hash)
+
+    puts digest(canonicalize(proof))
+    0
+  rescue OptionParser::ParseError, JSON::ParserError, SystemCallError, TypeError => e
+    warn "Error: #{e.message}"
+    64
+  end
+
   def run(argv)
+    return digest_applicability_proof(argv.drop(1)) if argv.first == "digest-applicability-proof"
+
     options = {}
     parser = OptionParser.new do |opts|
       opts.banner = "Usage: completed-batch-publication-preflight --workflow-config PATH --input PATH|- " \
-                    "--applicability-proof PATH --applicability-proof-sha256 sha256:..."
+                    "--applicability-proof PATH --applicability-proof-sha256 sha256:...\n" \
+                    "       completed-batch-publication-preflight digest-applicability-proof " \
+                    "--applicability-proof PATH"
       opts.on("--workflow-config PATH") { |value| options["workflow_config"] = value }
       opts.on("--input PATH") { |value| options["input"] = value }
       opts.on("--applicability-proof PATH") { |value| options["applicability_proof"] = value }

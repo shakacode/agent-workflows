@@ -9,6 +9,12 @@ Close the current task without starting unrelated work. Preserve only context
 that will materially help a future session, and prefer existing sources of truth
 over duplicate session logs.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the loaded `workflows/pr-processing.md` contract before composing the
+final handoff. Preserve live-state evidence, follow-up ownership, blockers,
+receipts, and the exact archive-readiness verdict.
+
 ## Authority and safety
 
 - Informational prompts such as “anything else pending?”, “any decisions
@@ -186,6 +192,17 @@ Then include the existing closeout handoff:
 - **Open follow-ups**
 - **Decisions needed**
 - **Archive verdict**
+
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. When the applicable archive gate passes and no unperformed
+downstream launch remains, use `Next: Archive this task.` When an archive-ready
+prompt-only task still requires the user to launch its fenced artifact, name
+that launch first and end the same ordered `Next:` instruction by telling the
+user to archive the planning task; a bare archive instruction may not strand
+the artifact. When user input blocks progress, state the smallest action that
+clears the blocker and whether to reply here or start a new task.
+When the current task will continue without input, state its exact next action.
+A durable issue, receipt, or blocker list is evidence, not a next step.
 
 End with exactly one of:
 

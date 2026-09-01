@@ -2,16 +2,27 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "json"
 
 class UserFacingCoordinationContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
   DOC = "docs/user-facing-coordination.md"
   WORKFLOW = "workflows/pr-processing.md"
+  INTEGRATION_CLOSEOUT = "workflows/pr-batch-integration-closeout.md"
   PR_BATCH = "skills/pr-batch/SKILL.md"
   PLAN_PR_BATCH = "skills/plan-pr-batch/SKILL.md"
   TRIAGE = "skills/triage/SKILL.md"
   CLOSE_SESSION = "skills/close-session/SKILL.md"
+  PAUSE = "skills/pause/SKILL.md"
+  POST_MERGE_AUDIT = "skills/post-merge-audit/SKILL.md"
+  PR_MONITORING = "skills/pr-monitoring/SKILL.md"
+  PR_WALKTHROUGH = "skills/pr-walkthrough/SKILL.md"
+  SPEC = "skills/spec/SKILL.md"
+  PLAN_ISSUE_TRIAGE = "skills/plan-issue-triage/SKILL.md"
+  QA_STRESS = "skills/qa-stress/SKILL.md"
   README = "README.md"
+  SKILL_GUIDE = "docs/skills.md"
+  HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
   GMCC_V4 = "GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or " \
             "threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
             "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
@@ -29,6 +40,21 @@ class UserFacingCoordinationContractTest < Minitest::Test
     return "" unless File.file?(full_path)
 
     File.read(full_path, encoding: "UTF-8").gsub(/\s+/, " ").strip
+  end
+
+  def normalized_with_integration_closeout(path)
+    [normalized(INTEGRATION_CLOSEOUT), normalized(path)].join(" ").strip
+  end
+
+  def test_normalization_keeps_compatibility_files_scoped_and_composition_explicit
+    [WORKFLOW, PR_BATCH].each do |path|
+      source = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      assert_equal source.gsub(/\s+/, " ").strip, normalized(path), path
+
+      combined = normalized_with_integration_closeout(path)
+      assert_includes combined, normalized(INTEGRATION_CLOSEOUT), path
+      assert_includes combined, normalized(path), path
+    end
   end
 
   def normalized_section(path, heading, end_heading:)
@@ -189,8 +215,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   def test_ambiguity_guard_synthesizes_ownership_without_raw_events
     sections = {
       DOC => ["## Ambiguity Guard", /^##\s+/],
-      WORKFLOW => ["### Coordinator Closeout Lane", /^###\s+/],
-      PR_BATCH => ["## Coordinator Closeout Lane", /^##\s+/],
+      INTEGRATION_CLOSEOUT => ["### Coordinator Closeout Lane", /^##\s+/],
       CLOSE_SESSION => ["## User-Facing Coordination Contract", /^##\s+/]
     }
     sections.each do |path, (heading, end_heading)|
@@ -200,6 +225,83 @@ class UserFacingCoordinationContractTest < Minitest::Test
       assert_includes text, "backend events", path
       assert_includes text, "worker transcripts", path
     end
+  end
+
+  def test_terminal_handoffs_name_one_unambiguous_next_step_or_archive
+    contract = normalized(DOC)
+    assert_includes contract, "A durable issue, receipt, or blocker list is evidence, not a next step."
+    assert_includes contract, "`Next: Archive this task.`"
+    assert_includes contract,
+                    "state the smallest action that clears the blocker and whether to reply here or start a new task"
+
+    [WORKFLOW, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION,
+     PAUSE, PR_MONITORING, PR_WALKTHROUGH, SPEC, PLAN_ISSUE_TRIAGE, QA_STRESS].each do |path|
+      text = normalized(path)
+      assert_includes text,
+                      "Every final user-visible workflow handoff must include one unambiguous `Next:` instruction",
+                      path
+    end
+
+    [WORKFLOW, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION].each do |path|
+      text = normalized(path)
+      assert_includes text, "`Next: Archive this task.`", path
+    end
+
+    pause = normalized(PAUSE)
+    assert_includes pause, "end with explicit `Action needed:` and `Next:` lines"
+    assert_includes pause, "the exact same-task resume command or new-task handoff action"
+
+    [PLAN_PR_BATCH, TRIAGE, PR_MONITORING].each do |path|
+      text = normalized(path)
+      assert_includes text, "Keep `Action needed:` separate", path
+      assert_includes text, "exact user action or `none`", path
+    end
+
+    assert_includes normalized(PR_BATCH), "../../docs/user-facing-coordination.md",
+                    "skills/pr-batch/SKILL.md must route terminal wording to the shared contract"
+
+    monitoring = normalized(PR_MONITORING)
+    assert_includes monitoring, "`Next: Archive this task.`"
+    assert_includes monitoring, "If the current task's archive gate passes"
+    refute_includes monitoring, "If the PR is merged"
+    assert_includes monitoring, "A PR URL, final state, or blocker list is evidence, not a next step."
+
+    close_session = normalized(CLOSE_SESSION)
+    assert_includes close_session, "archive-ready prompt-only task"
+    assert_includes close_session, "launch its fenced artifact"
+    assert_includes close_session, "end the same ordered `Next:` instruction"
+
+    walkthrough = normalized(PR_WALKTHROUGH)
+    assert_includes walkthrough, "Action needed: none."
+    assert_includes walkthrough, "Next: Archive this task."
+    assert_includes walkthrough,
+                    "Next: Return control to the current coordinator task for its refreshed merge decision."
+
+    [SPEC, PLAN_ISSUE_TRIAGE].each do |path|
+      text = normalized(path)
+      assert_includes text, "Keep `Action needed:` separate", path
+      assert_includes text, "`Next: Archive this task.`", path
+    end
+
+    spec = normalized(SPEC)
+    assert_includes spec, "Action needed: Start a new planning task with $plan-pr-batch."
+    assert_includes spec, "Run $plan-pr-batch with the Spec Summary above"
+
+    [PLAN_PR_BATCH, TRIAGE].each do |path|
+      text = normalized(path)
+      assert_includes text, "Action needed: Start a new task with the fenced goal prompt.", path
+      assert_includes text,
+                      "Next: Paste the prompt into that task, then archive this planning task.",
+                      path
+    end
+
+    triage = normalized(PLAN_ISSUE_TRIAGE)
+    assert_includes triage, "Start a new task with the fenced prompt"
+    assert_includes triage, "then archive this planning task"
+
+    post_merge = normalized(POST_MERGE_AUDIT)
+    refute_includes post_merge,
+                    "emits only its verified compact receipt reference plus the final `Conversation status` line"
   end
 
   def test_close_session_consumes_the_shared_model
@@ -242,9 +344,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes text, "HST-v1"
   end
 
-  def test_public_skill_inventory_lists_close_session
-    text = normalized(README)
-    assert_includes text,
-                    "| `close-session` | Close active work with verified handoff and archive readiness. |"
+  def test_public_skill_inventory_links_to_close_session_guide
+    assert_includes normalized(README), "[Skill Guide](docs/skills.md)"
+    assert_includes normalized(SKILL_GUIDE),
+                    "[`$close-session`](../skills/close-session/SKILL.md)"
   end
 end

@@ -7,6 +7,7 @@ require "json"
 ROOT = File.expand_path("../../..", __dir__)
 CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
+INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
 PR_BATCH_DOC_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
@@ -24,10 +25,9 @@ MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
 APPLICABILITY_PROMPT_LINE =
   "coordination_not_applicable=>no calls;coordination_required+n/a=>stop"
 REPOSITORY_PROMPT_LINE = "Repo:OWNER/REPO"
-BATCH_QA_LANE_PROMPT_LINE = "Batch QA Lane:<owner/scope+QA Evidence|none+rationale>"
+BATCH_QA_LANE_PROMPT_LINE = "Batch QA Lane:<owner/scope+evidence|none+rationale>"
 LANE_CARD_PROMPT_LINE =
-  "Lane Card:claim/PR-open/block/cancel/final;preferred model/effort;" \
-  "observed host/model/effort/UNKNOWN;holder/branch/PR/phase/URLs/UNKNOWN"
+  "Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN"
 MERGE_RELEASE_GATE_PROMPT_FRAGMENT = "release+gates pass"
 PATH_RESERVATION_WORKERS_PROMPT_LINE =
   "Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/" \
@@ -70,7 +70,7 @@ AUDIT_BOUNDED_EXECUTION_REQUIRED_CONCEPTS = {
     "vector, launch it in its own process group, and terminate the whole process group when the deadline expires.",
   "timeout failure evidence and closeout continuation" =>
     "A timeout or forced termination is a command failure: record best-effort `UNKNOWN` telemetry-audit evidence " \
-    "and continue closeout through steps 13-14 with that blocker; the audit subprocess must never wedge merge " \
+    "and continue closeout through steps 12-13 with that blocker; the audit subprocess must never wedge merge " \
     "closeout."
 }.freeze
 REMEDIATION_AUTHORITY_REQUIRED_CONCEPTS = {
@@ -110,8 +110,8 @@ EVENT_TRANSPORT_REQUIRED_CONCEPTS = {
 }.freeze
 COOPERATIVE_DRAIN_EMISSION_REQUIREMENT =
   "When a worker first observes cancellation at its cooperative drain checkpoint, that worker emits one " \
-  "lane-scoped typed `human_intervention` event with `kind: drain` when the active private coordination backend " \
-  "advertises typed-event support."
+  "lane-scoped typed `human_intervention` event with `kind: drain` when the lane is `coordination_required` and " \
+  "the active private coordination backend advertises typed-event support."
 COOPERATIVE_DRAIN_DEDUPLICATION_REQUIREMENT =
   "The coordinator/operator must not emit a duplicate for that cooperative path."
 COOPERATIVE_DRAIN_OWNERSHIP_REQUIREMENT =
@@ -119,8 +119,8 @@ COOPERATIVE_DRAIN_OWNERSHIP_REQUIREMENT =
   "re-emits nor duplicates it."
 HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT =
   "Immediately before terminating a worker that cannot reach that checkpoint, the coordinator/operator instead " \
-  "emits one lane-scoped typed `human_intervention` event with `kind: drain` when the active private coordination " \
-  "backend advertises typed-event support."
+  "emits one lane-scoped typed `human_intervention` event with `kind: drain` when the lane is " \
+  "`coordination_required` and the active private coordination backend advertises typed-event support."
 DRAIN_TRANSPORT_FALLBACK_REQUIREMENT =
   "For either drain path, backend `n/a` skips the emission; unadvertised or unsupported typed-event capability " \
   "records `typed event transport: unavailable` and remains nonblocking."
@@ -508,6 +508,47 @@ class CoordinationTelemetryContractTest < Minitest::Test
                     "the planner must classify trusted topology before its first backend command"
   end
 
+  def test_typed_operational_events_are_scoped_to_required_coordination
+    gate = extract_section(read_repo_file(WORKFLOW_PATH), "## Coordination Applicability Gate").gsub(/\s+/, " ")
+
+    assert_includes gate,
+                    "do not probe, register, claim, heartbeat, mirror claim labels, use public claim-comment " \
+                    "fallback, emit a typed operational event, or validate/emit a `coordination:` declaration"
+
+    workflow = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
+
+    [
+      "For `coordination_required`, when the resolved private backend is active and supports typed events, " \
+      "emit the matching event at the existing checkpoint",
+      "Alongside a qualifying `MODEL_ESCALATION_REQUEST` in a `coordination_required` lane, emit " \
+      "`escalation_requested`",
+      COOPERATIVE_DRAIN_EMISSION_REQUIREMENT,
+      HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT
+    ].each do |rule|
+      assert_includes workflow, rule
+    end
+  end
+
+  def test_pause_and_continue_consume_the_persisted_applicability_outcome
+    pause_rule =
+      "For a `coordination_required` PR-batch help-needed pause, emit private-backend `help_requested` " \
+      "alongside the restart/block handoff."
+    continue_rule =
+      "For a resumed `coordination_required` PR-batch lane, complete bounded ownership recovery before any write."
+    no_call_rule =
+      "For `coordination_not_applicable`, consume the persisted applicability outcome, skip every coordination " \
+      "and typed-event call, and never report coordination as unavailable or degraded, even when the repository " \
+      "configures a real backend."
+
+    pause = read_repo_file(PAUSE_SKILL_PATH).gsub(/\s+/, " ")
+    continue = read_repo_file(CONTINUE_SKILL_PATH).gsub(/\s+/, " ")
+
+    assert_includes pause, pause_rule
+    assert_includes pause, no_call_rule
+    assert_includes continue, continue_rule
+    assert_includes continue, no_call_rule
+  end
+
   def test_coordination_backend_documents_the_trusted_applicability_matrix
     section = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Coordination Applicability").gsub(/\s+/, " ")
 
@@ -524,6 +565,21 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "`UNKNOWN` or contradictory applicability"
     ].each do |matrix_row|
       assert_includes section, matrix_row
+    end
+  end
+
+  def test_coordination_backend_documents_the_applicability_proof_digest_boundary
+    section = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Coordination Applicability").gsub(/\s+/, " ")
+
+    [
+      "completed-batch-publication-preflight digest-applicability-proof --applicability-proof <path>",
+      "A plain `sha256sum` of the artifact file does not match",
+      "The helper verifies that the artifact matches the retained digest; it cannot verify who produced " \
+      "that digest.",
+      "an actor that both writes the artifact and computes its digest at publication time gains no " \
+      "assurance from this check"
+    ].each do |rule|
+      assert_includes section, rule
     end
   end
 
@@ -892,11 +948,17 @@ class CoordinationTelemetryContractTest < Minitest::Test
     {
       "### Question And Decision Handling" => %w[help_requested blocked-user-input question permission],
       "### Worker Model Replacement And Escalation" => %w[escalation_requested human_intervention supersede],
-      "### Cancelling Or Stopping A Batch" => %w[human_intervention drain],
-      "## Review Comment Handling" => %w[error P0 P1 regression revert],
-      "### Coordinator Closeout Lane" => %w[telemetry-completeness]
+      "### Cancelling Or Stopping A Batch" => %w[human_intervention drain]
     }.each do |heading, phrases|
       section = extract_section(workflow, heading)
+      phrases.each { |phrase| assert_includes section, phrase, "#{heading} is missing #{phrase}" }
+    end
+
+    closeout = read_repo_file(INTEGRATION_CLOSEOUT_PATH)
+    {
+      "## Review Comment Handling" => %w[error P0 P1 regression revert]
+    }.each do |heading, phrases|
+      section = extract_section(closeout, heading)
       phrases.each { |phrase| assert_includes section, phrase, "#{heading} is missing #{phrase}" }
     end
 
@@ -935,9 +997,8 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_fails_closed_only_for_an_advertised_capability
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
-      COORDINATION_DOC_PATH => ["## Operational Signal Events"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"],
+      COORDINATION_DOC_PATH => ["## Operational Signal Events"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -970,9 +1031,8 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_argv_contract_rejects_each_authoritative_section_mutation
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
-      COORDINATION_DOC_PATH => ["## Operational Signal Events"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"],
+      COORDINATION_DOC_PATH => ["## Operational Signal Events"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -1004,8 +1064,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_execution_is_bounded_and_closeout_continues
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -1017,8 +1076,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_bounded_execution_rejects_each_authoritative_section_mutation
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance", "### Coordinator Closeout Lane"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -1042,8 +1100,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_review_remediation_authority_is_section_local_and_outcome_bound
     {
-      WORKFLOW_PATH => ["## Review Comment Handling"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      INTEGRATION_CLOSEOUT_PATH => ["## Review Comment Handling"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -1055,8 +1112,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_review_remediation_authority_rejects_each_authoritative_section_mutation
     {
-      WORKFLOW_PATH => ["## Review Comment Handling"],
-      PR_BATCH_SKILL_PATH => ["## Coordinator Closeout Lane"]
+      INTEGRATION_CLOSEOUT_PATH => ["## Review Comment Handling"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
