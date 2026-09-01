@@ -312,6 +312,8 @@ untrusted_contributor_intake:
   trusted_github_repo: "OWNER/REPO"
 ```
 
+### Merge submission
+
 `merge_submission` is an optional closed mapping. Its portable default is
 `direct` when the mapping is absent or explicitly selects `direct`. A
 queue-enabled repository must explicitly select `merge_queue_only` or
