@@ -682,19 +682,20 @@ module AgentWorkflowsDeliveryState
 
     removable = []
     legacy_flat = metadata && prior_delivery_mode == "flat"
-    snapshot_names, names, snapshot = if legacy_flat && recorded_revision_unavailable
-                                        [[], recorded_fingerprints ? recorded_fingerprints.keys.sort : [], nil]
-                                      elsif legacy_flat
-                                        # A flat copy taken from a dirty checkout records the committed
-                                        # revision plus an exact fingerprint per installed skill, so the
-                                        # revision tree alone under-reports what the installer owns.
-                                        revision_names, revision_snapshot = skill_names(source, metadata)
-                                        recorded = recorded_fingerprints ? recorded_fingerprints.keys : []
-                                        [revision_names, (revision_names | recorded).sort, revision_snapshot]
-                                      else
-                                        [[], collision_names, nil]
-                                      end
-    snapshot_names = snapshot_names.to_h { |name| [name, true] }
+    fingerprint_names = recorded_fingerprints ? recorded_fingerprints.keys : []
+    # A flat copy taken from a dirty checkout records the committed revision plus an
+    # exact fingerprint per installed skill, so the revision tree alone under-reports
+    # what the installer owns. Union the recorded fingerprint keys into the inventory
+    # while tracking which names the revision itself actually carries.
+    snapshot_backed_names, names, snapshot = if legacy_flat && recorded_revision_unavailable
+                                               [[], fingerprint_names.sort, nil]
+                                             elsif legacy_flat
+                                               revision_names, revision_snapshot = skill_names(source, metadata)
+                                               [revision_names, (revision_names | fingerprint_names).sort, revision_snapshot]
+                                             else
+                                               [[], collision_names, nil]
+                                             end
+    snapshot_backed = snapshot_backed_names.to_h { |name| [name, true] }
     recorded_names = names.to_h { |name| [name, true] }
     blocking = if legacy_flat && File.directory?(skills_path) && !File.symlink?(skills_path)
                  Dir.children(skills_path).filter_map do |name|
@@ -710,7 +711,7 @@ module AgentWorkflowsDeliveryState
       fingerprint_owned = legacy_flat && recorded_skill_copy_fingerprint_matches?(path, metadata, name)
       # Names carried only by a fingerprint have no entry in the recorded revision,
       # so they must earn ownership from that fingerprint alone.
-      name_snapshot = snapshot if snapshot && snapshot_names.key?(name)
+      name_snapshot = snapshot_backed.key?(name) ? snapshot : nil
       unless legacy_flat && (name_snapshot || fingerprint_owned)
         blocking << path
         next
