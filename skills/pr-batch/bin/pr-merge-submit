@@ -331,8 +331,14 @@ module PrMergeSubmit
         raise Error, "merge-assurance receipt evidence digest mismatch"
       end
 
-      evidence = receipt["evidence"]
-      now = Time.now.utc
+      validate_merge_assurance_receipt_current!(receipt, options)
+      receipt
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "merge-assurance receipt is unavailable: #{e.message}"
+    end
+
+    def validate_merge_assurance_receipt_current!(receipt, options, now = Time.now.utc)
+      evidence = receipt.fetch("evidence")
       validate_receipt_evidence!(receipt, evidence)
       validate_receipt_freshness!(receipt, now)
       reassessed = MergeAssurance.assess(
@@ -361,8 +367,6 @@ module PrMergeSubmit
 
       validate_receipt_option_bindings!(receipt, options)
       receipt
-    rescue Errno::ENOENT, Errno::EACCES => e
-      raise Error, "merge-assurance receipt is unavailable: #{e.message}"
     end
 
     def validate_receipt_evidence!(receipt, evidence)
@@ -915,6 +919,14 @@ module PrMergeSubmit
       end
 
       replay_configured_review_gate!(options)
+      refreshed = revalidate_mutation_assurance!(options)
+      if refreshed["isInMergeQueue"] == true || refreshed["isMergeQueueEnabled"] == true
+        raise Error, direct_queue_configuration_error
+      end
+      unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil? &&
+             refreshed["isMergeQueueEnabled"] == false
+        raise Error, "PR merge-queue state became missing, inconsistent, or UNKNOWN after configured-review replay"
+      end
 
       stdout, stderr, status = run_gh(
         *direct_merge_args(refreshed, options), host: options[:host], mutation: true
@@ -1577,6 +1589,14 @@ module PrMergeSubmit
       @configured_review_replay = result
     rescue ConfiguredReviewGate::Error, Errno::ENOENT, Errno::EACCES, JSON::ParserError => e
       raise Error, "configured review receipt replay failed: #{e.message.lines.first.to_s.strip}"
+    end
+
+    def revalidate_mutation_assurance!(options)
+      validate_merge_assurance_receipt_current!(@merge_assurance_receipt, options)
+      refreshed = fetch_pr(options)
+      validate_receipt_live_bindings!(refreshed, options)
+      validate_pr!(refreshed, options)
+      refreshed
     end
 
     def default_configured_review_replay(

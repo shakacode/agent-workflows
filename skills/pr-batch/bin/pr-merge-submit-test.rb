@@ -320,13 +320,13 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "mergePullRequest"
   end
 
-  def test_direct_graphql_errors_pin_open_queue_configuration_failures
+  def test_direct_queue_configuration_races_fail_before_mutation
     %w[direct_graphql_error_queue_enabled direct_graphql_error_in_queue].each do |mode|
       result, log, = run_cli(mode:)
 
       assert_equal 1, result.fetch(:status).exitstatus, mode
       assert_equal "Error: #{DIRECT_QUEUE_ERROR}\n", result.fetch(:stderr), mode
-      assert_includes log, "mergePullRequest", mode
+      refute_includes log, "mergePullRequest", mode
     end
   end
 
@@ -1510,8 +1510,39 @@ class PrMergeSubmitTest < Minitest::Test
     refute_nil mutation_index
     refute_nil replay_index
     assert_operator replay_index, :<, mutation_index
-    assert_includes lines.fetch(replay_index + 1), " api graphql "
-    assert_includes lines.fetch(replay_index + 1), "query=mutation("
+    post_replay_metadata_index = lines.each_index.find do |index|
+      index > replay_index && index < mutation_index && lines.fetch(index).include?("query=query($owner")
+    end
+    refute_nil post_replay_metadata_index
+  end
+
+  def test_direct_revalidates_merge_assurance_and_live_bindings_after_review_replay
+    cases = {
+      "configured_review_expires_merge_receipt" => {
+        receipt_mode: :valid,
+        error: "merge-assurance receipt is stale"
+      },
+      "configured_review_moves_head" => {
+        receipt_mode: :valid,
+        error: "PR head moved"
+      },
+      "configured_review_changes_tracker" => {
+        receipt_mode: :semantic,
+        error: "semantic GitHub Actions tracker issue body binding mismatch"
+      }
+    }
+
+    failures = cases.filter_map do |mode, expectation|
+      result, log = run_cli(mode:, receipt_mode: expectation.fetch(:receipt_mode))
+
+      next if !result.fetch(:status).success? &&
+              result.fetch(:stderr).include?(expectation.fetch(:error)) &&
+              !log.include?("mergePullRequest")
+
+      "#{mode}: status=#{result.fetch(:status).exitstatus} stderr=#{result.fetch(:stderr).inspect}"
+    end
+
+    assert_empty failures
   end
 
   def test_configured_review_replay_receives_validated_current_integration_evidence
@@ -2177,7 +2208,15 @@ class PrMergeSubmitTest < Minitest::Test
       test_environment = %w[GH_LOG PR_TEST_GUARD_MARKER PR_TEST_DESCENDANT_PID_FILE].to_h { |name| [name, ENV.fetch(name)] }
       configured_review_replayer = lambda do |**_arguments|
         File.open(ENV.fetch("GH_LOG"), "a") { |file| file.puts("configured-review-replay") }
-        if ENV.fetch("PR_TEST_MODE") == "configured_review_blocked"
+        mode = ENV.fetch("PR_TEST_MODE")
+        if mode.start_with?("configured_review_")
+          File.write("\#{ENV.fetch('GH_LOG')}.configured-review-complete", "complete\n")
+        end
+        if mode == "configured_review_expires_merge_receipt"
+          advanced_now = Time.now + 301
+          Time.singleton_class.define_method(:now) { advanced_now }
+        end
+        if mode == "configured_review_blocked"
           {
             "verdict" => "NOT_READY",
             "mutation_eligible" => false,
@@ -2669,7 +2708,13 @@ class PrMergeSubmitTest < Minitest::Test
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
       end
       if ARGV.include?("repos/owner/repo/issues/1")
-        puts #{JSON.generate(semantic_issue).inspect}
+        issue = JSON.parse(#{JSON.generate(semantic_issue).inspect})
+        if #{mode.inspect} == "configured_review_changes_tracker" &&
+           File.exist?(ENV.fetch("GH_LOG") + ".configured-review-complete")
+          issue["body"] = "changed after configured-review settlement"
+          issue["updated_at"] = "2026-07-20T15:01:00Z"
+        end
+        puts JSON.generate(issue)
         exit 0
       end
 
@@ -2798,7 +2843,9 @@ class PrMergeSubmitTest < Minitest::Test
               "pullRequest" => {
                 "id" => "PR_42",
                 #{head_ref_entry}
-                "headRefOid" => if current_mode == "guard_head_moved" && guard_called
+                "headRefOid" => if (current_mode == "guard_head_moved" && guard_called) ||
+                                   (current_mode == "configured_review_moves_head" &&
+                                    File.exist?(ENV.fetch("GH_LOG") + ".configured-review-complete"))
                                   #{MOVED_SHA.inspect}
                                 else
                                   #{head.inspect}
