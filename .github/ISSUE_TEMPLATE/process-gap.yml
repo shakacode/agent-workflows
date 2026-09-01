@@ -1,0 +1,77 @@
+name: Process gap
+description: Report a recurring process miss with its required disposition fields.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this **only** for recurring process misses found by audits, reviews, batch closeout,
+        or release-gate work, as defined by `workflows/pr-processing.md` -> "Process Gap Disposition".
+        **Do not add a prose-only rule by default.** A gap with no mechanism target and no replay
+        evidence is a `park`, not another paragraph of process.
+
+        `Mechanism target` options:
+
+        - `-- not answered (choose one of the four options) --` - the placeholder GitHub
+          preselects, not a disposition. GitHub selects the first dropdown entry on page load, so
+          this is what a submitter who never opens the dropdown files. An issue left on it is
+          incomplete and cannot be used as PR evidence. It is not `park`: `park` is a deliberate
+          decision that no mechanism is worth building, and it still requires a park reason.
+        - `script` - deterministic command or checker for mechanically observable facts.
+        - `schema` - required structured output field plus a validator.
+        - `checklist+replay` - human-judgment checklist with a replay against the motivating miss.
+        - `park` - no mechanism now; record why the miss is not worth mechanizing.
+  - type: textarea
+    id: gap
+    attributes:
+      label: Gap
+      description: >-
+        What is the recurring miss? Write it so someone can act on this issue without the
+        originating conversation, PR thread, or audit session.
+      placeholder: |
+        The four Process Gap Disposition fields live only as prose in workflows/pr-processing.md,
+        so nothing mechanically requires them at intake.
+    validations:
+      required: true
+  - type: dropdown
+    id: mechanism-target
+    attributes:
+      label: Mechanism target
+      description: >-
+        Exactly one of the four, using the definitions above. This dropdown opens on the
+        placeholder rather than unselected, so choose deliberately; leaving the placeholder
+        selected files an incomplete issue.
+      options:
+        - "-- not answered (choose one of the four options) --"
+        - script
+        - schema
+        - checklist+replay
+        - park
+    validations:
+      required: true
+  - type: textarea
+    id: motivating-miss
+    attributes:
+      label: Motivating miss
+      description: >-
+        The PR, review, audit, or incident the mechanism must catch. Link it. A standing gap with
+        no single incident still qualifies, but only when you name the recurring pattern the
+        mechanism must catch and where it shows up. "Various", "general", and "we keep doing this"
+        are not answers.
+    validations:
+      required: true
+  - type: textarea
+    id: replay-evidence-or-park-reason
+    attributes:
+      label: Replay evidence or park reason
+      description: >-
+        The command, fixture, historical PR/issue, or audit artifact used to prove the mechanism
+        catches the motivating miss. For `park`, say why no mechanism is worth building now.
+    validations:
+      required: true
+  - type: textarea
+    id: non-goal
+    attributes:
+      label: Non-goal
+      description: What must not become another broad prose-only rule as a result of this issue.
+    validations:
+      required: true

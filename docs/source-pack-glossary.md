@@ -1,8 +1,9 @@
 # Source Pack Glossary
 
 Canonical vocabulary for distribution, seam, readiness, review, skill
-contracts, and state-machine terms in this source pack. Keep batch coordination
-terms in the root [CONTEXT.md](../CONTEXT.md).
+contracts, and state-machine terms in this source pack. The companion glossary
+for batch coordination and lane lifecycle terms is the root
+[CONTEXT.md](../CONTEXT.md); keep batch coordination terms there.
 
 ## Language
 
