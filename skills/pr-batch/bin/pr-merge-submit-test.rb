@@ -239,7 +239,7 @@ class PrMergeSubmitTest < Minitest::Test
 
       run_git!(root, "switch", "-q", "-c", "rebase-check", head)
       _stdout, _stderr, rebase_status = Open3.capture3(
-        "git", "rebase", "--onto", current_base, recorded_base, chdir: root
+        git_environment, "git", "rebase", "--onto", current_base, recorded_base, chdir: root
       )
       refute rebase_status.success?, "fixture must conflict when commits are replayed"
       assert_includes run_git!(root, "status", "--short"), "UU lib/shared.rb"
@@ -281,7 +281,7 @@ class PrMergeSubmitTest < Minitest::Test
       pull_request["isMergeQueueEnabled"] = true
       pull_request["isInMergeQueue"] = false
       runner.instance_variable_set(:@merge_submission, { "mode" => "merge_queue_only" })
-      %w[merge squash].each do |method|
+      %w[merge squash rebase].each do |method|
         queue_error = assert_raises(PrMergeSubmit::Error) do
           runner.send(:validate_receipt_live_bindings!, pull_request, options.merge(method:))
         end
@@ -2385,7 +2385,14 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def run_git!(root, *args)
-    environment = {
+    stdout, stderr, status = Open3.capture3(git_environment, "git", *args, chdir: root)
+    raise "git fixture failed: #{stderr}" unless status.success?
+
+    stdout
+  end
+
+  def git_environment
+    {
       "GIT_CONFIG_NOSYSTEM" => "1",
       "GIT_CONFIG_GLOBAL" => File::NULL,
       "GIT_CONFIG_PARAMETERS" => nil,
@@ -2393,10 +2400,6 @@ class PrMergeSubmitTest < Minitest::Test
       "GIT_CONFIG_KEY_0" => "commit.gpgSign",
       "GIT_CONFIG_VALUE_0" => "false"
     }
-    stdout, stderr, status = Open3.capture3(environment, "git", *args, chdir: root)
-    raise "git fixture failed: #{stderr}" unless status.success?
-
-    stdout
   end
 
   def fake_guard
