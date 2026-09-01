@@ -1294,6 +1294,50 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_accepts_markdown_wrapped_urls_after_https_labels
+    [
+      "durable: before and after HTTPS: [artifact](https://github.com/example/repo/pull/123#visual)",
+      "durable: before and after HTTPS: [see the run](https://github.com/example/repo/pull/123#visual)",
+      "durable: before and after HTTPS: <https://github.com/example/repo/pull/123#visual>"
+    ].each do |evidence|
+      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), evidence
+      assert_empty qa.fetch("missing"), evidence
+    end
+  end
+
+  def test_v2_rejects_authority_shaped_markdown_link_text
+    # The link text is prose introducing the URL; a host- or port-shaped text is a reference of its
+    # own and must still fail closed.
+    [
+      "durable: before and after HTTPS: [example.test](https://github.com/example/repo/pull/123#visual)",
+      "durable: before and after HTTPS: [10.0.0.1:8080](https://github.com/example/repo/pull/123#visual)"
+    ].each do |evidence|
+      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
+      assert_includes qa.fetch("missing"), "visual_evidence.url", evidence
+    end
+  end
+
+  def test_v2_rejects_single_token_exact_unresolved_metric_names
+    # Guards the equivalence relied on when the length-1 clause was folded into the terminal check.
+    %w[nil none null pending undefined unset].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
     # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
     # whole replay instead of returning a verdict.

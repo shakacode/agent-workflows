@@ -830,11 +830,19 @@ module CloseoutEvidenceReplay
     prose_label
   end
 
-  # A single plain word between `HTTPS:` and the next URL is consumer connector prose (`link`,
-  # `artifact`, `see:`) introducing that URL, not a reference of its own. A colon is allowed only as
-  # the final character, matching the trailing-colon prose rule in authority_colon_shape?, so a
-  # host-, port-, path-, or authority-shaped prefix still fails closed.
+  # Text between `HTTPS:` and the next URL that introduces that URL rather than naming a reference
+  # of its own: a single plain word (`link`, `artifact`, `see:`), a Markdown link opener, or an
+  # autolink opener. A colon is allowed only as a word's final character, matching the
+  # trailing-colon prose rule in authority_colon_shape?. Markdown link text is prose and is checked
+  # as such, so a host-, port-, path-, or authority-shaped prefix still fails closed either way.
   def prose_url_boundary_token?(raw_label)
+    return true if raw_label == "<"
+
+    if (markdown_link = raw_label.match(/\A\[([^\[\]]*)\]\(\z/))
+      link_text = markdown_link[1].strip
+      return link_text.empty? || !authority_shaped_https_label?(link_text)
+    end
+
     raw_label.match?(/\A\p{Alnum}[\p{Alnum}_-]*:?\z/u)
   end
 
@@ -973,7 +981,6 @@ module CloseoutEvidenceReplay
     # false positives for longer consumer domain names such as `missing_translation_count`;
     # semantic placeholder classification beyond that boundary requires a separate product contract.
     tokens == %w[n a] ||
-      (tokens.length == 1 && UNRESOLVED_METRIC_EXACT_TOKENS.include?(tokens.first)) ||
       UNRESOLVED_METRIC_TOKENS.include?(tokens.last) ||
       UNRESOLVED_METRIC_EXACT_TOKENS.include?(tokens.last) ||
       (tokens.length <= 2 && tokens.any? { |token| UNRESOLVED_METRIC_TOKENS.include?(token) }) ||
