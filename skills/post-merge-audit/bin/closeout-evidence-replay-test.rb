@@ -224,6 +224,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "https: enabled //host/path",
       "https: enabled example.test:443",
       "https: enabled [::1]",
+      "https: enabled [prod-1]",
+      "https: 10.0.1?run=1",
       "https: !!!",
       "https: ---",
       "https:",

@@ -767,13 +767,14 @@ module CloseoutEvidenceReplay
 
   def authority_shaped_https_label?(label)
     label.split(/\s+/).any? do |token|
+      square_bracketed = token.start_with?("[")
       token = normalized_https_prose_token(token)
-      version_token = token.split(/[?#]/, 2).first
-      next false if version_token.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
-      next false if version_token.match?(/\A\d{1,2}(?:\.\d{1,2}){1,2}\z/)
-
       authority = token.split(/[?#]/, 2).first
-      authority.include?(".") || authority.include?(":") || authority.start_with?("[")
+      next false if authority.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
+      next false if !token.match?(/[?#]/) && authority.match?(/\A\d{1,2}(?:\.\d{1,2}){1,2}\z/)
+      next false if authority.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z})
+
+      authority.include?(".") || authority.include?(":") || square_bracketed
     end
   end
 
