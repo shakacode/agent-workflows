@@ -110,16 +110,18 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes skill, "`waiting-on-checks-or-review`"
   end
 
-  def test_standalone_walkthrough_never_self_resolves_current_integration_readiness
+  def test_standalone_walkthrough_reports_unknown_not_a_hard_failure_claim
     skill = File.read(SKILL).gsub(/\s+/, " ")
 
     phrases = [
       "A standalone walkthrough not invoked by that gate",
       "never resolves ancestry or runs `pr-ci-readiness`",
       "it has no checklist result to consult",
+      "so it reports current-integration readiness as not evaluated",
       "does not compute the checklist above itself",
-      "never resolve ancestry or",
-      "run `pr-ci-readiness` independently to justify skipping it"
+      "reports current-integration readiness as **not evaluated (`UNKNOWN`)**",
+      "never resolve ancestry or run `pr-ci-readiness` independently to manufacture",
+      "a failed checklist there returns control to the caller with"
     ]
     positions = phrases.map do |phrase|
       position = skill.index(phrase)
@@ -127,6 +129,16 @@ class PrWalkthroughContractTest < Minitest::Test
       position
     end
     positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+
+    # A standalone walkthrough reports UNKNOWN for itself; the hard failure
+    # banner in this section only describes the ask-caller precondition
+    # (Establish The Exact Change, step 4), which must come after the UNKNOWN
+    # claim in reading order.
+    set_expectations_start = skill.index("## Set Expectations")
+    present_one_change_start = skill.index("## Present One Change", set_expectations_start)
+    set_expectations = skill[set_expectations_start...present_one_change_start]
+    assert_operator set_expectations.index("not evaluated (`UNKNOWN`)"), :<,
+                    set_expectations.index("CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE")
   end
 
   def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component

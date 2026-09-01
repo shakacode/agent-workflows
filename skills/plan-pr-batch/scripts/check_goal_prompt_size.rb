@@ -326,7 +326,7 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.",
   "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.",
   "With `ask`, after ordinary gates are clean, establish current-integration readiness before approval:",
-  'git merge-base --is-ancestor "${CURRENT_BASE_SHA}" "${EXACT_HEAD_SHA}"',
+  'git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"',
   "exact-head `pr-ci-readiness` v2 state `READY`",
   "After it completes or is skipped, refresh the diff identity, ordinary readiness, and current-integration readiness.",
   "If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop.",

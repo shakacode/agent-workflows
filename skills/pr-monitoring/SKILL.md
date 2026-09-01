@@ -166,11 +166,12 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
      mode for smaller cohesive PRs, and do not repeat a walkthrough completed
      for the same diff identity. Honor an explicit request to skip it. After it
      completes or is skipped, refresh the diff identity and ordinary readiness.
-     Also refresh the current base and current-integration checklist. If the diff
-     identity changed, invalidate the walkthrough and readiness evidence, then
-     restart the walkthrough or stop. A changed current base also invalidates
-     the walkthrough unless the refreshed checklist passes for the same diff.
-     If an ordinary gate newly fails, stop. Ask one
+     Also refresh the current base and re-apply the canonical current-integration
+     gate from `pr-batch-integration-closeout.md` in full — do not restate only
+     its changed-base case here. If the diff identity changed, invalidate the
+     walkthrough and readiness evidence, then restart the walkthrough or stop.
+     Stop if the re-applied gate no longer passes for the current head/base,
+     even without a base change. If an ordinary gate newly fails, stop. Ask one
      final merge decision only when the refreshed diff identity matches the
      recorded identity, ordinary readiness remains clean, and merge is allowed;
      a completed walkthrough must have explained that same diff identity.

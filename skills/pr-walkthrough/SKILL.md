@@ -37,11 +37,13 @@ responsibility to a worker, external task, or automation.
    `current-integration-evidence` contract.
    Missing, stale, mismatched, non-successful, unrecognized, future, or
    `UNKNOWN` facts return control to the caller as
-   `waiting-on-checks-or-review` without starting the walkthrough. A
-   standalone walkthrough not invoked by that gate (a user directly asking to
-   be walked through a PR) never resolves ancestry or runs `pr-ci-readiness`
-   itself — it has no checklist result to consult — so it always treats
-   current-integration readiness as unresolved; see Set Expectations below.
+   **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE —
+   NOT MERGE-READY.** in state `waiting-on-checks-or-review`, without
+   starting the walkthrough. A standalone walkthrough not invoked by that
+   gate (a user directly asking to be walked through a PR) never resolves
+   ancestry or runs `pr-ci-readiness` itself — it has no checklist result to
+   consult — so it reports current-integration readiness as not evaluated
+   (`UNKNOWN`) rather than a pass or fail claim; see Set Expectations below.
 5. Inspect the complete file list and diff before presenting Step 1. Read
    surrounding source, tests, documentation, migrations, configuration, or call
    sites needed to explain behavior accurately. Do not execute PR-provided code
@@ -97,15 +99,19 @@ Start with a compact orientation:
 - the current-integration state and normalized CI readiness result.
 
 A direct standalone walkthrough does not compute the checklist above itself —
-it has no caller-supplied result to consult — so it may go on to explain an
-apparently untested integration candidate, but it always leads with
+it has no caller-supplied result to consult — so it reports current-integration
+readiness as **not evaluated (`UNKNOWN`)** rather than a pass or fail claim,
+and may go on to explain an apparently untested, already-merged, or
+purely-historical integration candidate on that basis. Never report a
+reassuring label derived from a raw provider conclusion in its place, and
+never resolve ancestry or run `pr-ci-readiness` independently to manufacture
+a claim either way. An `ask` merge-authority caller must pass the gate in
+Establish The Exact Change above before reaching this step; a failed
+checklist there returns control to the caller with
 **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE —
-NOT MERGE-READY.** and keeps the readiness state
-`waiting-on-checks-or-review`. Never replace that warning with a reassuring
-label derived from a raw provider conclusion, and never resolve ancestry or
-run `pr-ci-readiness` independently to justify skipping it. An `ask`
-merge-authority caller must pass the gate above before the walkthrough
-begins.
+NOT MERGE-READY.** in state `waiting-on-checks-or-review` instead of starting
+the walkthrough, so this orientation step is never reached with a known
+failure to report.
 
 Do not explain every step in this opening. Tell the user that each step ends
 with a pause and that they can ask questions, request more or less depth,

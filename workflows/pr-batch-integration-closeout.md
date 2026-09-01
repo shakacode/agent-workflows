@@ -1585,17 +1585,17 @@ live facts. Resolve the exact head and current base. Require that the exact head
 contains the current base by requiring this command to exit zero:
 
 ```bash
-git merge-base --is-ancestor "${CURRENT_BASE_SHA}" "${EXACT_HEAD_SHA}"
+git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"
 ```
+
+Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh at this point in the
+flow rather than reusing the values fetched earlier for the Hosted Runtime QA
+Gate — the base may have advanced since then, which is exactly what this gate
+exists to catch. Use these same two names throughout; do not introduce a
+second, differently-named pair for the identical base/head facts.
 
 Also require that exact-head `pr-ci-readiness` v2 has normalized successful
 state `READY`.
-
-`CURRENT_BASE_SHA` and `EXACT_HEAD_SHA` are a freshly re-resolved read of the
-same live base/head facts named `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA`
-earlier in this hosted-QA flow, not an independent re-resolution — reuse the
-already-fetched/verified values when they are still current, and re-fetch
-only when time has passed since they were last confirmed.
 
 This sequencing checklist neither defines an evidence schema nor replaces the
 later [Merge Assurance Gate](#merge-assurance-gate). Do not claim or consume its

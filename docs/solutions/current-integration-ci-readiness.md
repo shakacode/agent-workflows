@@ -34,6 +34,8 @@ portable success values. Unknown or future values fail closed.
 
 If either condition is missing, stale, non-reusable, mismatched, or not
 successful, keep the target in `waiting-on-checks-or-review` and do not start an
-ask-authority walkthrough. A standalone read-only walkthrough may still explain
-the diff, but it must lead with the current-integration warning and make no merge
+ask-authority walkthrough, leading with the current-integration warning instead.
+A standalone read-only walkthrough may still explain the diff, but it never
+evaluates this checklist itself, so it reports current-integration readiness as
+not evaluated (`UNKNOWN`) rather than reusing that warning or any merge
 readiness claim.

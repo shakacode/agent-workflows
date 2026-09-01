@@ -273,7 +273,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     normalized_walkthrough = @pr_walkthrough.gsub(/\s+/, " ")
     prompt_gate = "- ask:I=head>=base+CI=READY;I?$pr-walkthrough(large|complex=full):wait;" \
                   "refresh;chg=>redo/stop;ordinary|I fail=>stop;ask iff same clean"
-    ancestry_command = 'git merge-base --is-ancestor "${CURRENT_BASE_SHA}" "${EXACT_HEAD_SHA}"'
+    ancestry_command = 'git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
 
     positions = [
       "Before entering this gate",
@@ -330,15 +330,21 @@ class IntegrationCloseoutContractTest < Minitest::Test
                     "If current-integration readiness fails on refresh, stop even when the base and diff are unchanged."
   end
 
-  def test_ask_gate_sha_names_tie_back_to_earlier_resolved_trusted_facts
+  def test_ask_gate_sha_names_are_unified_with_earlier_resolved_facts
     ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
-    ancestry_command = 'git merge-base --is-ancestor "${CURRENT_BASE_SHA}" "${EXACT_HEAD_SHA}"'
-    equivalence_note = "not an independent re-resolution"
+    normalized_gate = ask_gate.gsub(/\s+/, " ")
+    ancestry_command = 'git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
 
-    assert_includes ask_gate, equivalence_note
-    assert_includes ask_gate, "`TRUSTED_BASE_SHA`"
-    assert_includes ask_gate, "`CURRENT_HEAD_SHA`"
-    assert_operator ask_gate.index(ancestry_command), :<, ask_gate.index(equivalence_note)
+    assert_includes ask_gate, ancestry_command
+    assert_includes normalized_gate, "Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh"
+    assert_includes normalized_gate,
+                    "do not introduce a second, differently-named pair for the identical base/head facts"
+
+    # No orphan second name pair for the same base/head facts anywhere in the
+    # synchronized prompt copies — see workflows/pr-processing.md and
+    # skills/plan-pr-batch/scripts/check_goal_prompt_size.rb for the other copies.
+    refute_match(/CURRENT_BASE_SHA|EXACT_HEAD_SHA/, @component)
+    refute_match(/CURRENT_BASE_SHA|EXACT_HEAD_SHA/, @workflow)
   end
 
   def test_sibling_components_remain_outside_the_boundary
