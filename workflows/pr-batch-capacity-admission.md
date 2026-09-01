@@ -28,6 +28,11 @@ healthy host classification remain policy inputs. The helper deliberately has
 no M5, M1, RAM-size, or fleet-wide default. Changing those inputs does not
 change the atomic admission mechanism.
 
+All coordinators that share one host and state directory must resolve the same
+configured `--ceiling`. The helper does not persist or arbitrate caller policy;
+a different configured value is a configuration error. A live scan may still
+lower the effective ceiling for one attempt.
+
 Each scanner row is a verified live root and declares `verified: true`, owner,
 lane, worktree, command class, and a PID or PGID. Missing, malformed,
 unverified, failed, or timed-out scan evidence blocks admission; it never means

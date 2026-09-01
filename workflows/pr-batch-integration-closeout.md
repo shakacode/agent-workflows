@@ -1152,14 +1152,14 @@ Avoid horizontal TDD batches: write one failing behavior test through the public
 
 ## Local Validation Gate
 
-Run `.agents/bin/ci-detect` when routing matters.
+Run `.agents/bin/ci-detect` first when it exists and routing details matter.
 
 Heavy roots: [host admission](pr-batch-capacity-admission.md).
 
 Then run `.agents/bin/validate`, or a tighter set that covers the same changed
 area when a full local run is too expensive.
 
-Explain targeted substitutions:
+Use targeted checks when a full local run is too expensive, but explain the substitution:
 
 - Language/gem source: run the package linter, unit tests, and signature/type validation for the changed area.
 - Test-app or integration behavior: run the integration/test-app suite or the specific spec.
