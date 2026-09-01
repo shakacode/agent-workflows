@@ -707,14 +707,17 @@ Use the canonical [Integration And PR Publication](../../workflows/pr-batch-inte
 When the goal, targets, scope, and lane identity stay stable but a worker needs
 a different model/effort role, use
 [Worker Model Replacement And Escalation](../../workflows/pr-processing.md#worker-model-replacement-and-escalation)
-instead of cancelling the batch. Stop the old worker, capture or reconstruct its
-`MODEL_REPLACEMENT_HANDOFF`, reconcile the claim holder/generation/instance, and
-start the replacement only after fencing prevents overlap. For already-running
+instead of cancelling the batch. Stop the old worker and capture or reconstruct
+its `MODEL_REPLACEMENT_HANDOFF`. For `coordination_required`, reconcile the
+claim holder/generation/instance, and start the replacement only after fencing
+prevents overlap. For `coordination_not_applicable`, the one controller stops
+the prior worker and starts the replacement with no claim reconciliation, no
+typed event, and no backend call. For already-running
 batches that need the staged route policy, use the canonical
 [Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
-After the prior instance is stopped and ownership is reconciled, emit
-`human_intervention` with `kind: supersede` (or `kind: takeover` for abandoned
-ownership) when a private backend is active.
+After the prior instance is stopped and ownership is reconciled, a
+`coordination_required` lane emits `human_intervention` with `kind: supersede`
+(or `kind: takeover` for abandoned ownership) when a private backend is active.
 
 ### Normal Agent-Runner Restart
 

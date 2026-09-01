@@ -288,9 +288,9 @@ Scope:
 - Focus: for completed-batch audit, only the verified batch subset; for release/range audit, the selected range; for coverage catch-up, candidate un-audited PRs/commits in the explicit range
 - Audit id: <AUDIT_ID>
 
-BATCH_ID = the known coordination batch run id; UNKNOWN = batch work is in
-scope but no exact id or resolvable visible batch hint was supplied; not
-applicable = no coordinated batch is in scope.
+BATCH_ID = the known batch/run id, whether or not coordination applied to it;
+UNKNOWN = batch work is in scope but no exact id or resolvable visible batch
+hint was supplied; not applicable = no batch/run of any kind is in scope.
 
 First, produce the exact worked-issue scope, merged-PR range, and audit mode:
 - For a release/range or coverage audit with no batch/run of any kind in scope,

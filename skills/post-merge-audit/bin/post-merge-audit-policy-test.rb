@@ -315,6 +315,19 @@ class PostMergeAuditPolicyTest < Minitest::Test
     end
   end
 
+  def test_batch_identity_is_defined_independently_of_coordination
+    text = File.read(File.join(ROOT, "workflows/post-merge-audit.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+
+    assert_includes text,
+                    "BATCH_ID = the known batch/run id, whether or not coordination applied to it; " \
+                    "UNKNOWN = batch work is in scope but no exact id or resolvable visible batch hint was " \
+                    "supplied; not applicable = no batch/run of any kind is in scope."
+    refute_includes text, "the known coordination batch run id",
+                    "batch identity must not be defined as a coordination-only id"
+    refute_includes text, "not applicable = no coordinated batch is in scope",
+                    "an uncoordinated serialized batch must not map to the not-applicable branch"
+  end
+
   def test_completed_batch_audit_closes_with_an_explicit_conversation_status
     [
       "skills/post-merge-audit/SKILL.md",

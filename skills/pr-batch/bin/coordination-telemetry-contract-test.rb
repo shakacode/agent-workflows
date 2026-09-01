@@ -528,6 +528,20 @@ class CoordinationTelemetryContractTest < Minitest::Test
     end
   end
 
+  def test_model_only_worker_replacement_is_scoped_to_required_coordination
+    skill = read_repo_file(PR_BATCH_SKILL_PATH).gsub(/\s+/, " ")
+
+    assert_includes skill,
+                    "For `coordination_required`, reconcile the claim holder/generation/instance, and start the " \
+                    "replacement only after fencing prevents overlap."
+    assert_includes skill,
+                    "For `coordination_not_applicable`, the one controller stops the prior worker and starts the " \
+                    "replacement with no claim reconciliation, no typed event, and no backend call."
+    assert_includes skill,
+                    "After the prior instance is stopped and ownership is reconciled, a `coordination_required` " \
+                    "lane emits `human_intervention` with `kind: supersede`"
+  end
+
   def test_pause_and_continue_consume_the_persisted_applicability_outcome
     pause_rule =
       "For a `coordination_required` PR-batch help-needed pause, emit private-backend `help_requested` " \
