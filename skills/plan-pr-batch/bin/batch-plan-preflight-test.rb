@@ -1968,6 +1968,9 @@ class BatchPlanPreflightTest < Minitest::Test
       assert_includes codes, "lane-host-capacity-unknown", lifecycle_state
       refute_includes codes, "host-worker-capacity-overcommitted", lifecycle_state
       refute_includes codes, "host-external-quota-overcommitted", lifecycle_state
+      host = result.dig("capacity", "hosts", 0)
+      assert_equal 0, host.dig("worker", "lifecycle_occupied"), lifecycle_state
+      assert_equal 0, host.dig("external_quota", "lifecycle_occupied"), lifecycle_state
     end
   end
 
@@ -1988,6 +1991,39 @@ class BatchPlanPreflightTest < Minitest::Test
       assert_equal 0, rejected_host.dig(budget, "available"), budget
       assert_equal 0, rejected_host.dig(budget, "admitted"), budget
     end
+  end
+
+  def test_lifecycle_overcommit_rejection_reports_actual_host_local_occupancy
+    lanes = [
+      lane("ordinary-active"),
+      lane("quota-blocked", uses_external_quota: true)
+    ]
+    capacity = capacity_envelope(
+      host_capacity(worker_limit: 1, external_quota_limit: 0)
+    )
+    lifecycle_states = [
+      lane_lifecycle_state(lane_id: "ordinary-active", state: "active"),
+      lane_lifecycle_state(lane_id: "quota-blocked", state: "blocked")
+    ]
+
+    result, _stderr, status = evaluate(
+      input_for(lanes: lanes, lifecycle_states: lifecycle_states, capacity: capacity)
+    )
+
+    refute status.success?
+    violations_by_code = result.fetch("violations").to_h { |item| [item.fetch("code"), item] }
+    assert_equal %w[ordinary-active quota-blocked],
+                 violations_by_code.fetch("host-worker-capacity-overcommitted").fetch("lane_ids")
+    assert_equal ["quota-blocked"],
+                 violations_by_code.fetch("host-external-quota-overcommitted").fetch("lane_ids")
+    host = result.dig("capacity", "hosts", 0)
+    assert_equal 2, host.dig("worker", "lifecycle_occupied")
+    assert_equal 1, host.dig("external_quota", "lifecycle_occupied")
+    %w[worker external_quota].each do |budget|
+      assert_equal 0, host.dig(budget, "available"), budget
+      assert_equal 0, host.dig(budget, "admitted"), budget
+    end
+    assert_equal 0, result.dig("capacity", "admitted_worker_slots")
   end
 
   def test_explicit_fallback_source_rejects_arbitrary_capacity_limits

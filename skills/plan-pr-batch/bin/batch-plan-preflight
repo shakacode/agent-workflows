@@ -263,7 +263,18 @@ module BatchPlanPreflight
           infer_missing_lane_host
         )
       else
-        [[], [], {}, host_capacity ? capacity_decision_for_rejection(host_capacity) : empty_capacity_decision]
+        capacity_decision = if host_capacity
+                              capacity_decision_for_rejection(
+                                host_capacity,
+                                lanes,
+                                active_lane_ids,
+                                blocked_lane_ids,
+                                infer_missing_lane_host
+                              )
+                            else
+                              empty_capacity_decision
+                            end
+        [[], [], {}, capacity_decision]
       end
     result(
       status,
@@ -1348,23 +1359,35 @@ module BatchPlanPreflight
     [admitted.sort, (gate_held_lane_ids + capacity_held).uniq.sort, held_reasons.sort.to_h, decision]
   end
 
-  def capacity_decision_for_rejection(capacity)
+  def capacity_decision_for_rejection(capacity, lanes, active_lane_ids, blocked_lane_ids,
+                                      infer_missing_lane_host)
+    lanes_by_id = lanes.to_h { |lane| [lane["id"], lane] }
+    lifecycle_occupied_ids = active_lane_ids + blocked_lane_ids
     {
       "type" => "per-host-capacity-decision",
       "version" => 1,
       "admitted_worker_slots" => 0,
       "hosts" => capacity.fetch("hosts").sort_by { |host| host.fetch("id") }.map do |host|
+        host_id = host.fetch("id")
+        lifecycle_host_lane_ids = lifecycle_occupied_ids.select do |lane_id|
+          lane = lanes_by_id[lane_id]
+          lane && effective_lane_host_id(
+            lane, capacity, infer_missing: infer_missing_lane_host
+          ) == host_id
+        end
         {
-          "id" => host.fetch("id"),
+          "id" => host_id,
           "source" => host.fetch("source"),
           "worker" => host.fetch("worker").merge(
-            "lifecycle_occupied" => 0,
+            "lifecycle_occupied" => lifecycle_host_lane_ids.length,
             "available" => 0,
             "admitted" => 0
           ),
           "heavy_root" => host.fetch("heavy_root"),
           "external_quota" => host.fetch("external_quota").merge(
-            "lifecycle_occupied" => 0,
+            "lifecycle_occupied" => lifecycle_host_lane_ids.count do |lane_id|
+              lanes_by_id.fetch(lane_id)["uses_external_quota"] == true
+            end,
             "available" => 0,
             "admitted" => 0
           ),
