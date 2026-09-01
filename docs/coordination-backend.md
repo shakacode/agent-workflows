@@ -4,6 +4,31 @@ Shared workflow skills do not require one specific coordination backend. Each
 consumer repo declares its backend in `.agents/agent-workflow.yml` under
 `coordination_backend`.
 
+A repository may also add an optional closed `coordination_backend_contract`
+mapping to constrain that value to identifiers it has reviewed:
+
+```yaml
+coordination_backend: "agent-coord private backend"
+coordination_backend_contract:
+  version: 1
+  allowed_identifiers:
+    - "agent-coord private backend"
+```
+
+The seam doctor accepts only the two version 1 contract keys shown above, a
+nonempty list of unique, nonblank UTF-8 string identifiers without `UNKNOWN` or
+HTML comment markers, and an exact match between the selected backend and one
+allowed identifier. Unknown keys, malformed or duplicate values, duplicate
+YAML keys, and a selection outside the allowlist fail closed. Duplicate root
+`coordination_backend` keys are rejected even when the contract is absent.
+Repositories that omit this optional mapping retain the portable free-form
+backend seam.
+
+This source repository uses the exact `agent-coord private backend` identifier,
+which is the reviewed identifier used by its private-backend contracts. The
+identifier is portable policy vocabulary; backend URLs, credentials, claims,
+batches, capacity, inboxes, and other operational state remain outside Git.
+
 Use this page as the canonical vocabulary for private coordination, public
 claim-comment fallback, no-backend mode, and `UNKNOWN` coordination state.
 Individual skills should refer here instead of duplicating backend-specific
@@ -78,6 +103,217 @@ When a backend lacks one of those optional capabilities, agents should write
 `UNKNOWN` or `unavailable` for that specific fact and continue under the
 fallback rules in the workflow. Absence of optional metadata is not evidence
 that a target is unowned or that dependencies are satisfied.
+
+## Batch Provenance Manifest
+
+When the selected private backend supports batch registration, register the
+batch only after the coordinator has assembled provenance for the exact Agent
+Workflows pack and routes that will run it. The manifest is backend-neutral and
+remains ordinary JSON; an `agent-coord` compatible backend accepts it through
+its batch-registration seam. A representative dry-run manifest is:
+
+```json
+{
+  "batch_id": "batch-20260723-a",
+  "repo": "OWNER/REPO",
+  "objective": "Process the approved targets",
+  "pack_sha": "0123456789abcdef0123456789abcdef01234567",
+  "coordinator_preference": {
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh"
+  },
+  "lanes": [
+    {
+      "name": "implementation",
+      "owner": "batch-a-implementation",
+      "targets": ["issue:123"],
+      "worker_preference": {
+        "model": "gpt-5.6-terra",
+        "effort": "high"
+      },
+      "observed_host": {
+        "host": "codex",
+        "model": "UNKNOWN",
+        "effort": "UNKNOWN"
+      }
+    }
+  ]
+}
+```
+
+`pack_sha` is the verified full git SHA of the loaded Agent Workflows pack, or
+the verified installed-release identifier when the pack is not a git checkout.
+Resolve it from the pack that supplied the loaded skill and workflow, not the
+consumer repository, a different installed copy, or the latest remote ref. A
+dirty source checkout does not identify its loaded contents by `HEAD` alone;
+record literal `UNKNOWN` unless a trusted installed-release identifier covers
+those exact files.
+
+`coordinator_preference` and each lane's `worker_preference` carry advisory
+`model` and `effort`. Each lane separately carries `observed_host` with `host`,
+`model`, and `effort`. Record those observed fields only when the host exposes
+them; do not infer them from prompt text, mutable defaults, model self-report, or
+the coordinator preference. Any unavailable observed scalar is literal
+`UNKNOWN`. Register this manifest after dispatcher selection is
+persisted and before the worker launch so downstream consumers can group batch
+outcomes by `pack_sha`, preferences, and optional host observations.
+
+When fallback, escalation, or replacement changes a preference or the host later
+exposes an observation, reconcile the affected field, preserve every other known
+field, and write literal `UNKNOWN` only for each unavailable observed field.
+Never replace a whole route or lane entry with `UNKNOWN`. Observation absence or
+reconciliation failure does not block ordinary pending-to-active lifecycle.
+
+Before requiring a reconciliation write, detect whether the backend advertises
+a registration update/upsert/reconciliation capability. For an unadvertised or
+unsupported create-only backend, record each affected registration field
+`UNKNOWN`. An advertised update uses the same bounded safe
+executable-plus-opaque-argv contract below; timeout or failure records affected
+fields `UNKNOWN` and must not wedge activation or reconciliation handoff.
+
+Every advertised batch-registration invocation must provide a safe executable
+and ordered opaque argv as separate values. Resolve that backend-advertised
+executable-plus-argv seam without shell evaluation, preserve every argument as
+one argument, and run it with a finite hard deadline in its own process group.
+On expiry terminate the whole group with `TERM`, then `KILL` after a finite
+grace period. Timeout, forced termination, or an unsafe advertisement records
+best-effort field-granular `UNKNOWN`; worker launch continues and the durable
+handoff names the exact reconciliation needed.
+
+Model and effort preferences are advisory. Assignment lifecycle and provenance
+remain ordinary JSON state: the project requires no signing key, fixed trust
+anchor, launch-confirmation receipt, or human waiver.
+
+When the backend is `n/a`, keep the same provenance in the durable coordinator
+handoff instead of inventing a registration surface. A degraded registration
+write is `UNKNOWN`; preserve the manifest locally and report the exact retry or
+reconciliation needed.
+
+## Operational Signal Events
+
+An active private backend may expose a typed event interface. The portable
+workflow emits these signals at existing checkpoints, alongside its prose
+packets and handoffs:
+
+- `help_requested` requires `reason`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
+- `escalation_requested` requires nonempty `from_route`, `to_route`, and
+  `evidence`.
+- `error` requires `severity` (`P0`, `P1`, `P2`, or `P3`), nonempty `category`,
+  and nonempty `message`.
+- `human_intervention` requires `kind`: `takeover`, `supersede`, `manual-fix`,
+  or `drain`.
+
+Include batch, lane, agent, repository, target, branch, and status context when
+known. Typed payload fields remain data rather than path components. Event
+writes are best-effort for the primary operation. Backend `n/a` skips silently.
+Typed-event transport is optional: when an active private backend does not
+advertise it or reports it unsupported, record
+`typed event transport: unavailable`, skip the emission, and continue without
+marking the event emission `UNKNOWN`. Only after the transport is advertised
+does an attempted write that fails, degrades, or is rejected become `UNKNOWN`
+handoff evidence. Every attempted advertised typed-event write must resolve the
+backend-advertised event executable and ordered opaque argv; a missing,
+malformed, or unsafe advertisement is an attempted-write failure. Run that
+exact executable and separate argv without shell evaluation, with a finite
+deadline in its own process group, preserving each opaque argument; on expiry
+terminate the whole group with `TERM`, then `KILL` after a finite grace period.
+A deadline expiry, forced termination, or any other advertised-support write
+failure records best-effort `UNKNOWN` event evidence; the primary operation
+continues immediately without waiting further on the event. Public claim
+comments are not a typed event transport.
+
+Backends that auto-emit `claim.acquired`, `claim.released`, and `phase.changed`
+own those lifecycle events; workers do not duplicate them. After terminal
+releases, run a read-only check only when the active backend advertises an
+`agent-coord`-compatible telemetry-completeness audit capability bound to the
+following process contract. Executable: `agent-coord`. Arguments, in order and
+as separate values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`.
+Pass the opaque batch ID as exactly one argument value through a
+process/argument-vector API. Shell interpolation, `eval`, `sh -c`, and
+equivalent shell-evaluation paths are forbidden. When that compatible
+capability is advertised, an incomplete result, command failure, or `UNKNOWN`
+readback blocks telemetry closeout. If the active backend does not
+advertise that compatible capability or its advertisement is `UNKNOWN`, record
+`telemetry audit: unavailable` in the durable handoff and continue; backend
+`n/a` skips the check.
+
+## Directional Workflow Telemetry Report
+
+Use `skills/pr-batch/bin/workflow-telemetry-report` for the smallest replayable
+throughput view built from existing durable coordination and GitHub-shaped
+metadata. It is a reducer, not a collector or accounting ledger: callers first
+normalize field-selected timestamps, identifiers, counts, and durable source
+references into `workflow-telemetry-input` v1. The helper does not invoke GitHub,
+read rollout/session content, inspect the environment, or create backend state.
+
+The replay fixture at
+`skills/pr-batch/fixtures/workflow-telemetry-report-replay.json` is the canonical
+input example. It covers:
+
+- prompt-to-worker-start latency and the model/workflow version observed at each
+  boundary;
+- broad `planning`, `discovery`, `implementation`, `validation`, `review`, and
+  `integration` phase time;
+- human-question count, answered count, and queue time;
+- `occupied` and `stopped` slot time;
+- review, CI, and retry attempts;
+- integration time; and
+- consequential defects, reverts, and rollbacks.
+
+Phase, human-question queue, and slot totals are cumulative across the supplied
+lane intervals, not elapsed critical-path time. Concurrent work can therefore
+make these totals exceed wall-clock duration. In particular,
+`phase_seconds.integration` is cumulative time that lanes spent in the broad
+integration phase. The separate `integration_seconds` measure is the elapsed
+time across the single batch-level `integration.started_at` to
+`integration.ended_at` window selected by the normalizer; callers must not
+treat the two measures as interchangeable.
+
+Every unavailable timestamp, identifier, or count in the normalized input is
+literal `UNKNOWN`. Derived duration totals also become literal `UNKNOWN` when
+any contributing boundary is unavailable; a known partial total is never
+presented as the complete measure. Absent phase or slot rows likewise report
+`UNKNOWN`, while a present zero-length phase or slot interval reports known
+zero. Use literal `UNKNOWN` for an unavailable human-question collection; an
+explicitly empty question list instead reports a known count and queue time of
+zero. Fixed-shape amplification, integration, and outcome objects remain
+present; mark unavailable leaves `UNKNOWN` so known siblings remain reportable.
+The JSON report lists every propagated unknown in `unknown_fields`, including
+unavailable top-level identifiers such as `batch_id` or `source_ref`.
+
+The input is closed and metadata-only. Unknown fields are rejected, identifier
+and source-reference values use constrained grammars, and opaque batch IDs use
+a closed no-whitespace grammar that retains coordination delimiters such as `;`
+and `=` while rejecting whitespace and unapproved punctuation. Common
+token-shaped content is rejected even inside an allowlisted identifier. There
+is no field for a raw
+prompt, response, transcript, tool result, secret, environment value, auth
+content, or arbitrary prose. The structural grammars are defense in depth, not
+semantic declassification: callers must never derive identifier values from
+raw prose. Do not add a prose field; retain durable evidence by reference and
+query only the exact upstream fields needed for normalization.
+The reducer reads at most one MiB of input and accepts at most 4,096 entries in
+each interval or question array. Timestamps require a known explicit RFC 3339
+offset and accept at most nine fractional-second digits; `-00:00` is rejected
+because it denotes an unknown local offset.
+
+Replay JSON or a compact twelve-line text view without copying the source
+events into the result:
+
+```bash
+skills/pr-batch/bin/workflow-telemetry-report \
+  --input skills/pr-batch/fixtures/workflow-telemetry-report-replay.json \
+  --format json
+
+skills/pr-batch/bin/workflow-telemetry-report \
+  --input skills/pr-batch/fixtures/workflow-telemetry-report-replay.json \
+  --format text
+```
+
+Use the report directionally to find latency, queueing, slot pressure, and
+amplification worth investigating. It does not authorize exact token/cost
+accounting, adaptive scheduling, experiments, or an exhaustive collection
+layer, and it never replaces readiness, QA, review, CI, or closeout evidence.
 
 ## Typed Dependency Facts
 

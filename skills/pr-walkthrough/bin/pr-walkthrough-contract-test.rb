@@ -7,6 +7,7 @@ class PrWalkthroughContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
   SKILL = File.join(ROOT, "skills/pr-walkthrough/SKILL.md")
   WORKFLOW = File.join(ROOT, "workflows/pr-processing.md")
+  INTEGRATION_CLOSEOUT = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
   PR_BATCH = File.join(ROOT, "skills/pr-batch/SKILL.md")
   PR_MONITORING = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 
@@ -46,27 +47,11 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes skill, "Walkthrough participation is not merge approval."
   end
 
-  def test_missing_or_stale_hosted_ci_is_loud_and_never_described_as_clean
-    skill = File.read(SKILL).gsub(/\s+/, " ")
-
-    [
-      "Report hosted or external CI separately as `PASSED`, `PENDING`, `FAILED`, `NOT RUN`, or `UNKNOWN`",
-      "GitHub's `CLEAN` merge state reports conflict detection, not CI or merge readiness.",
-      "HOSTED CI NOT RUN FOR CURRENT INTEGRATION CANDIDATE — NOT MERGE-READY.",
-      "Never describe a PR as `gate-clean`, `clean`, `green`, `ready`, or an equivalent reassuring label",
-      "The walkthrough remains read-only and does not start CI itself."
-    ].each do |phrase|
-      assert_includes skill, phrase
-    end
-  end
-
   def test_ask_authority_automatically_walks_through_before_merge_decision
-    [WORKFLOW, PR_BATCH, PR_MONITORING].each do |path|
+    [WORKFLOW, INTEGRATION_CLOSEOUT, PR_MONITORING].each do |path|
       text = File.read(path).gsub(/\s+/, " ")
 
       phrases = [
-        "A successful check on an older head or before the current base was incorporated does not qualify.",
-        "Do not start the walkthrough while current-integration CI is missing, stale, pending, failing, or `UNKNOWN`.",
         "automatically start the exact-diff PR walkthrough",
         "full interactive mode for large or complex PRs",
         "After it completes or is skipped, refresh the diff identity and ordinary readiness.",
@@ -82,5 +67,30 @@ class PrWalkthroughContractTest < Minitest::Test
       end
       positions.each_cons(2) { |before, after| assert_operator before, :<, after, path }
     end
+  end
+
+  def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component
+    pr_batch = File.read(PR_BATCH)
+
+    assert_includes pr_batch,
+                    "[automatic interactive exact-diff walkthrough]" \
+                    "(../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)"
+  end
+
+  def test_walkthrough_is_an_internal_current_task_phase_not_a_new_owner
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+    phrases = [
+      "The current task remains the sole user-facing coordinator.",
+      "The walkthrough is an internal explanatory phase, not another task or owner.",
+      "Present exactly one conceptual change per response.",
+      "return control to the current task",
+      "ask its one final merge decision separately"
+    ]
+    positions = phrases.map do |phrase|
+      position = skill.index(phrase)
+      assert position, "expected #{phrase.inspect}"
+      position
+    end
+    positions.each_cons(2) { |before, after| assert_operator before, :<, after }
   end
 end

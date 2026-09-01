@@ -1,6 +1,6 @@
 # Agent Batch Coordination
 
-Portable language for multi-agent PR-batch workflows: how coordinators, workers, and a coordination backend talk about ownership, liveness, and batch lifecycle. Keep repo-specific policy, backend names, dashboards, and domain vocabulary in each consumer repo's `AGENTS.md` seam or local docs.
+Portable language for multi-agent PR-batch workflows: how coordinators, workers, and a coordination backend talk about ownership, liveness, and batch lifecycle. Keep repo-specific policy, backend names, dashboards, and domain vocabulary in each consumer repo's `AGENTS.md` seam or local docs. The companion glossary for source-pack distribution, install-path, seam, readiness, and review terms is [docs/source-pack-glossary.md](docs/source-pack-glossary.md).
 
 ## Language
 
@@ -47,14 +47,35 @@ _Avoid_: status (overloaded), phase by itself when release phase is in scope
 ### Batch lifecycle
 
 **Batch**:
-A coordinator-scoped unit of work: objective, instructions, targets, and lanes. Depending on repo policy and dependency risk, it may be recorded in the private backend, mirrored through public claim comments, or carried only in the coordinator handoff.
+A coordinator-scoped unit of work: objective, instructions, targets, and lanes.
+When wave scheduling is used, a batch organizes its lanes into named waves.
+Depending on repo policy and dependency risk, it may be recorded in the private
+backend, mirrored through public claim comments, or carried only in the
+coordinator handoff.
 _Avoid_: run, job
 
 **Lane**:
-One agent-owned work stream: either a direct single-PR task in the current chat
-or one worker's slice of a batch. A lane has a named owner plus its target or
-targets and optional dependencies.
+One durable, agent-owned work stream: either a direct single-PR task in the
+current chat or one worker's slice of a batch. A lane has a named owner plus
+its target or targets and optional dependencies; an **Instance** executes the
+lane but is not the lane.
 _Avoid_: track, slot, worker (the worker is the agent; the lane is the work)
+
+**Wave**:
+A named scheduling cohort of lanes within a batch.
+_Avoid_: dependency group, lane state
+
+**Active wave**:
+The one wave currently considered for scheduling. Later waves are deferred
+cohorts, not dependency evidence.
+_Avoid_: active lane, dependency-ready wave
+
+**Serialization group**:
+A named set of lanes whose concurrent execution is limited. The currently
+supported limit is `max_concurrency: 1`. A member occupies its slot while its
+durable lifecycle state is `active` or `blocked`, including `active` ↔
+`blocked` transitions, and releases it only after it leaves both states.
+_Avoid_: dependency group, lock
 
 **Stage-typed dependency**:
 A directed lane edge evaluated by the portable `stage-dependency-gate` v1 JSON
@@ -98,56 +119,64 @@ assignments keep every normalized checker distinct from every batch maker; the
 path is allocation evidence, not permission to self-check or bypass a gate.
 _Avoid_: priority guess, merge order (only one edge type)
 
-**Coordinator model/effort assignment**:
-The parent coordinator's model and supported reasoning effort, selected for
-scope, risk, routing, integration, review, and closeout independently of worker
-routes.
+**Coordinator model/effort preference**:
+The preferred parent-coordinator model and reasoning effort for scope, risk,
+routing, integration, review, and closeout, independently of worker preferences.
+Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
 _Avoid_: batch model (it does not automatically apply to every worker)
 
-**Batch launch assurance**:
-The fail-closed pre-dispatch record that the already-running initiating parent
-has the exact coordinator model/effort required by operator policy, with a
-host/runtime or explicit operator-selected binding source, and that the exact
-checker model/effort required by operator policy is reserved with qualifying
-binding evidence. Prompt text, model self-report, installed rosters, mutable
-default configuration, and dispatch-resolved classes do not prove the active
-parent or checker; runtime evidence must be effective and instance-bound. A
-mismatch or `UNKNOWN` blocks planning or dispatch when the policy requires an
-exact parent or checker. Checker freshness and independence are reverified when
-the checker instance starts and before its verdict is accepted.
-_Avoid_: requested model, prompt model
+**Observed host/model/effort**:
+Optional runtime metadata exposed by the host for a running assignment. Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
+Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback.
+When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
+Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
+Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
+_Avoid_: requested model as observation, prompt model
 
 **Worker model/effort route**:
 The staged policy for one lane: its initial assignment, optional escalation
 assignment and role, evidence gate, and maximum escalation cycles. Use exact
-pairs or host-stable aliases when the roster is known; dispatch-resolved classes
-may temporarily stand in when it is not.
+pairs or host-stable aliases as preferences when the roster is known;
+dispatch-resolved classes, the closest available route, or the runtime default
+may stand in when it is not. Record any inherited/default route honestly.
 _Avoid_: worker model (singular static choice), coordinator assignment
 
 **Worker execution envelope**:
-The coordinator-approved bounded contract a lower-capability worker executes:
+The coordinator-role-approved bounded contract used when lane risk or bounded
+delegation requires it, regardless of the worker route:
 goal and non-goals, owned paths, supported diagnosis, invariants, acceptance
 criteria, verification, and stop conditions. Contradictory evidence, ambiguity,
-scope growth, high-risk judgment, or weakened verification returns control to
-the coordinator instead of authorizing worker re-planning.
+material semantic scope growth, high-risk judgment, or weakened verification
+returns control to the coordinator instead of authorizing worker re-planning.
+Evidence-backed discovery of a necessary in-repository path alone is not such
+growth; follow the [path-expansion
+contract](docs/pr-batch-skills.md#implementation-batch-planning-flow).
 _Avoid_: task prompt, broad plan
 
-**Active model/effort assignment**:
-The exact model and supported reasoning effort used by the lane's current worker
-instance. A lane has at most one active assignment and instance at a time.
+**Active worker assignment**:
+The lane, dispatcher, stable instance, launch token, ordinary lifecycle, route
+preference, and optional host-observed metadata for one current worker. A lane
+has at most one active assignment and instance at a time.
 _Avoid_: planned route, inherited model
 
 **Dispatcher capability preflight**:
-The portable JSON-in/JSON-out decision that records a lane's requested and
-actual route/dispatcher only after binding and attestation. It chooses the
-requested tuple or the first explicitly authorized ordered fallback, never
-inherits the coordinator route or generic subagent authority, preserves lane
-state, and emits one durable `dispatch-decision-request v1` when blocked. Use
+The portable JSON-in/JSON-out decision that records a lane's route preference
+and dispatcher selection. It prefers the requested dispatcher, uses another
+dispatcher only with explicit dispatch authority, preserves lane state, and
+emits one durable `dispatch-decision-request v1` when dispatcher choice is
+blocked. Use
 `dispatcher-capability-preflight` before launch; it never launches or mutates.
 Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker.
-Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice.
-Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch.
-Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload. The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature. The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it. The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`. Resolve `<installation-root>` from the real helper path; require the root, `.agents` directory, and trust file to be owned by the helper owner and not group- or world-writable, require the directory and file to be real non-symlink paths of the expected type, and require a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
+Prospective `instance_id` equal to `UNKNOWN` is unusable. Replay identity is `lane_id`, dispatcher, `instance_id`, and launch token; route preference, observed host fields, and `candidate_index` are metadata and never trigger replacement.
+Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active.
+Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
+Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
+Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
+Persisted request history, choices, revisions, assignments, replacement proofs, and `decision_resolution` are deep-validated; malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
 _Avoid_: worker launcher, backend mutation
 
 **Model escalation request**:
@@ -157,8 +186,8 @@ smallest recommended next action, but grants no authority by itself.
 _Avoid_: self-upgrade, automatic retry
 
 **Model replacement handoff**:
-The durable checkpoint captured before changing a lane's worker instance or
-model/effort assignment: repo/worktree/branch state, changes, claim/fencing
+The durable checkpoint captured before replacing a lane's worker instance,
+including an actual runtime model/effort change: repo/worktree/branch state, changes, claim/fencing
 state, evidence, attempts, invariants, validation, running processes, unknowns,
 and next action.
 _Avoid_: restart prompt, cancellation handoff
@@ -166,9 +195,11 @@ _Avoid_: restart prompt, cancellation handoff
 **Dispatch-resolved model class**:
 A portable roster-unavailable fallback — `fastest-low-cost`, `balanced`, or
 `strongest` — paired with an effort level, optionally scoped to a known host,
-and bound to an exact supported worker-host pair before any worker starts. The
-prompt target identifies the destination host class; it does not prove the
-worker roster or authorize inheritance from the coordinator.
+and carried as an advisory preference before any worker starts. A host may
+resolve it to an available pair when the runtime exposes one; the prompt target
+does not prove the worker roster. If the dispatcher or runtime inherits or
+defaults to the coordinator route, record the actual route honestly and
+continue unless an independent gate blocks.
 _Avoid_: guessed model, default model
 
 **Model/effort route group**:
@@ -191,17 +222,27 @@ _Avoid_: force kill (without the cleanup steps it names)
 
 ## Relationships
 
-- A **Batch** has one or more **Lanes**; a direct PR task can also be one
-  standalone **Lane** without batch planning or worker split machinery. A
-  **Lane** has exactly one owner identity at a time.
+- **Batch → Wave → Lane → Instance**: when wave scheduling is used, a
+  batch contains named scheduling waves; a wave contains lanes; an **Instance**
+  executes one lane. For example,
+  `docs-batch → wave-1 → lane-glossary → instance A`. A direct
+  PR task can also be one standalone **Lane** without batch planning or worker
+  split machinery. A **Lane** has exactly one owner identity at a time.
+- An **Active wave** is the scheduling cohort considered now. Lanes in later
+  **Waves** are deferred, and that deferral does not establish a dependency.
+  A **Serialization group** with `max_concurrency: 1` admits one member at a
+  time; a member retains its slot through `active` ↔ `blocked` transitions and
+  releases it only after leaving both states. Neither wave nor serialization-
+  group membership supplies dependency evidence; use a **Stage-typed
+  dependency** for ordering.
 - A **Stage-typed dependency** connects predecessor and dependent **Lanes**;
   backend dependency state supplies facts, while `stage-dependency-gate` decides
   which lifecycle actions remain gated. Its **Stage dependency critical path**
   carries maker/checker allocation with each checker independent from every
   batch maker and never replaces downstream exact-head, review/thread,
   merge-readiness, or combined-tip gates.
-- A ready **Lane** has one verified **Worker model/effort route** and exactly one
-  active **Active model/effort assignment** while its current instance runs; a
+- A ready **Lane** has one advisory **Worker model/effort route** and exactly one
+  active **Active worker assignment** while its current instance runs; a
   **Model/effort route group** can contain several lanes but creates no
   ownership or scheduling relationship between them.
 - A **Dispatcher capability preflight** records at most one active assignment

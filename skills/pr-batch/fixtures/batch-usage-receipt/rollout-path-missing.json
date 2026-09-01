@@ -1,0 +1,31 @@
+{
+  "manifest": {
+    "schema": "batch-usage-manifest-v1",
+    "batch_id": "missing-rollout-path",
+    "coordinator": {
+      "id": "coordinator",
+      "root_thread_id": "root-thread",
+      "requested_route": {
+        "host": "codex",
+        "model": "gpt-test",
+        "effort": "high"
+      }
+    },
+    "lanes": []
+  },
+  "window": {
+    "from": "2026-08-04T00:00:00Z",
+    "to": "2026-08-05T00:00:00Z"
+  },
+  "threads": [
+    {
+      "id": "root-thread",
+      "rollout": null,
+      "model_provider": "openai",
+      "model": "gpt-test",
+      "reasoning_effort": "high"
+    }
+  ],
+  "edges": [],
+  "rollouts": {}
+}

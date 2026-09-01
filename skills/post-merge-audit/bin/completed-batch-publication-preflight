@@ -1,0 +1,1618 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Resolve a completed batch's exact target set from bounded coordination status,
+# reconcile terminal target/head and QA snapshots, and emit a deterministic
+# integrity-bound publication receipt. The input snapshots are collected by the
+# coordinator from the configured repository seams immediately before use; this
+# helper is deliberately read-only and replayable.
+
+require "digest"
+require "etc"
+require "json"
+require "open3"
+require "optparse"
+require "tmpdir"
+require "timeout"
+require "time"
+require "uri"
+require "yaml"
+
+load File.expand_path("closeout-evidence-replay", __dir__) unless defined?(CloseoutEvidenceReplay)
+
+module CompletedBatchPublicationPreflight
+  CONTRACT = "completed-batch-publication-preflight"
+  INPUT_CONTRACT = "completed-batch-publication-preflight-input"
+  VERSION = 1
+  SHA_PATTERN = /\A[0-9a-f]{40}\z/i
+  DIGEST_PATTERN = /\Asha256:[0-9a-f]{64}\z/
+  SAFE_LOGIN_PATTERN = /\A[A-Za-z0-9_-]+\z/
+  TRUSTED_ASSOCIATIONS = %w[OWNER MEMBER COLLABORATOR].freeze
+  TRUSTED_HUMAN_TYPES = %w[User].freeze
+  WRITE_PERMISSIONS = %w[write maintain admin].freeze
+  QA_WAIVER_MARKER = "qa-maintainer-waiver v1"
+  HOSTED_QA_WAIVER_MARKER = "hosted-qa-maintainer-waiver v1"
+  TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
+  RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned].freeze
+  PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
+  DEFAULT_GH_TIMEOUT_SECONDS = 60
+  COORDINATION_TIMEOUT_SECONDS = 20
+  COORDINATION_CAPTURE_TIMEOUT_SECONDS = 25
+  PROCESS_TERMINATION_GRACE_SECONDS = 0.25
+  PROCESS_CLEANUP_TIMEOUT_SECONDS = PROCESS_TERMINATION_GRACE_SECONDS * 4
+  AGENT_COORD_BOUNDED = File.expand_path("../../pr-batch/bin/agent-coord-bounded", __dir__)
+  SYSTEM_TOOL_DIRS = %w[/opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin].freeze
+  SYSTEM_TEMP_ROOTS = %w[/private/tmp /tmp /var/tmp].freeze
+  GH_CREDENTIAL_ENV_KEYS = %w[
+    GH_TOKEN
+    GITHUB_TOKEN
+    GH_ENTERPRISE_TOKEN
+    GITHUB_ENTERPRISE_TOKEN
+  ].freeze
+
+  module_function
+
+  def assess(
+    input,
+    coordination_backend:,
+    waiver_verifier: nil,
+    target_verifier: nil,
+    coordination_verifier: nil
+  )
+    blockers = []
+    input = {} unless input.is_a?(Hash)
+    validate_input_envelope(input, blockers)
+    backend = normalized_known_string(coordination_backend)
+    blockers << "configured coordination backend is unavailable" unless backend
+
+    batch_id = normalized_known_string(input["batch_id"])
+    blockers << "publication batch id is invalid" unless batch_id
+    expected_targets = validated_target_set(input["expected_targets"], blockers, "expected target")
+    no_backend = backend&.downcase == "n/a"
+    if no_backend
+      no_backend_evidence = resolved_no_backend_evidence(
+        input["coordination_status"],
+        batch_id,
+        expected_targets,
+        blockers
+      )
+      batch = nil
+      lane_entries = []
+      resolved_targets = no_backend_evidence ? expected_targets : []
+      coordination_authentic = true
+    else
+      no_backend_evidence = nil
+      authenticated_status = coordination_verifier&.call(backend:, batch_id:)
+      drift = coordination_status_drift(authenticated_status, input["coordination_status"])
+      coordination_authentic = drift.empty?
+      unless drift.empty?
+        blockers << "coordination status is not authenticated or fresh"
+        blockers << "coordination status drift: #{drift.join(', ')}"
+      end
+      batch = resolved_batch(input["coordination_status"], batch_id, blockers)
+      lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
+    end
+    compare_resolved_scope(expected_targets, resolved_targets, blockers)
+    snapshots = indexed_target_snapshots(input["target_snapshots"], expected_targets, blockers)
+    qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
+
+    validate_batch_terminal(batch, blockers) unless no_backend
+    canonical_targets, authenticated_later_target_keys = canonical_target_snapshots(
+      expected_targets,
+      snapshots,
+      lane_entries,
+      blockers,
+      target_verifier:
+    )
+    canonical_lanes = canonical_lane_snapshots(
+      lane_entries,
+      authenticated_later_target_keys,
+      blockers
+    )
+    canonical_qa = canonical_qa_snapshots(
+      expected_targets,
+      snapshots,
+      qa_entries,
+      blockers,
+      waiver_verifier:
+    )
+    snapshot = {
+      "batch_id" => batch_id,
+      "coordination_backend" => backend,
+      "coordination" => canonical_coordination_snapshot(
+        batch,
+        canonical_lanes,
+        no_backend_evidence,
+        authenticated: coordination_authentic
+      ),
+      "targets" => canonical_targets,
+      "qa" => canonical_qa
+    }
+    snapshot = canonicalize(snapshot)
+    source_input = canonicalize(input)
+    snapshot_digest = digest(snapshot)
+    blockers = blockers.uniq
+    eligible = blockers.empty?
+    result = {
+      "contract" => CONTRACT,
+      "version" => VERSION,
+      "batch_id" => batch_id,
+      "coordination_backend" => backend,
+      "eligible" => eligible,
+      "verdict" => eligible ? "ELIGIBLE" : "BLOCKED",
+      "targets" => expected_targets,
+      "blockers" => blockers,
+      "source_input" => source_input,
+      "source_input_digest" => digest(source_input),
+      "snapshot" => snapshot,
+      "snapshot_digest" => snapshot_digest
+    }
+    result["receipt_digest"] = digest(result)
+    result
+  rescue StandardError => e
+    blocked_result("publication preflight input is invalid: #{e.class}")
+  end
+
+  def blocked_result(blocker)
+    snapshot = canonicalize(
+      "batch_id" => nil,
+      "coordination_backend" => nil,
+      "coordination" => { "status" => nil, "updated_at" => nil, "completed_at" => nil, "lanes" => [] },
+      "targets" => [],
+      "qa" => []
+    )
+    result = {
+      "contract" => CONTRACT,
+      "version" => VERSION,
+      "batch_id" => nil,
+      "coordination_backend" => nil,
+      "eligible" => false,
+      "verdict" => "BLOCKED",
+      "targets" => [],
+      "blockers" => [blocker],
+      "source_input" => {},
+      "source_input_digest" => digest({}),
+      "snapshot" => snapshot,
+      "snapshot_digest" => digest(snapshot)
+    }
+    result["receipt_digest"] = digest(result)
+    result
+  end
+
+  def valid_receipt?(receipt, expected_batch_id: nil, expected_targets: nil)
+    return false unless receipt.is_a?(Hash)
+    return false unless receipt["contract"] == CONTRACT && receipt["version"] == VERSION
+    return false unless receipt["snapshot"].is_a?(Hash)
+    return false unless receipt["source_input"].is_a?(Hash)
+    return false unless receipt["source_input_digest"].to_s.match?(DIGEST_PATTERN)
+    return false unless receipt["source_input_digest"] == digest(canonicalize(receipt["source_input"]))
+    return false unless receipt["snapshot_digest"].to_s.match?(DIGEST_PATTERN)
+    return false unless receipt["receipt_digest"].to_s.match?(DIGEST_PATTERN)
+    return false unless receipt["snapshot_digest"] == digest(canonicalize(receipt["snapshot"]))
+
+    unsigned = receipt.reject { |key, _value| key == "receipt_digest" }
+    return false unless receipt["receipt_digest"] == digest(canonicalize(unsigned))
+    return false unless receipt["batch_id"] == receipt.dig("snapshot", "batch_id")
+
+    backend = normalized_known_string(receipt["coordination_backend"])
+    return false unless backend && backend == receipt.dig("snapshot", "coordination_backend")
+    return false if expected_batch_id && receipt["batch_id"] != expected_batch_id
+
+    target_blockers = []
+    targets = validated_target_set(receipt["targets"], target_blockers, "receipt target")
+    return false unless target_blockers.empty?
+    return false unless targets == receipt["targets"]
+    return false unless targets == receipt.dig("snapshot", "targets").map { |entry| entry.fetch("target") }
+
+    coordination = receipt.dig("snapshot", "coordination")
+    if receipt.dig("snapshot", "coordination_backend").to_s.downcase == "n/a"
+      return false unless coordination.fetch("lanes") == []
+      return false unless coordination.dig("not_applicable", "targets") == targets
+    else
+      return false unless targets == coordination.fetch("lanes").map { |entry| entry.fetch("target") }
+    end
+    return false unless targets == receipt.dig("snapshot", "qa").map { |entry| entry.fetch("target") }
+
+    if expected_targets
+      expected_blockers = []
+      expected = validated_target_set(expected_targets, expected_blockers, "expected target")
+      return false unless expected_blockers.empty?
+      return false unless targets == expected
+    end
+
+    if receipt["eligible"]
+      receipt["verdict"] == "ELIGIBLE" && receipt["blockers"] == []
+    else
+      receipt["verdict"] == "BLOCKED" && receipt["blockers"].is_a?(Array) && !receipt["blockers"].empty?
+    end
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def authenticated_waivers_valid?(receipt, waiver_verifier:)
+    return false unless valid_receipt?(receipt)
+    return false unless waiver_verifier.respond_to?(:call)
+
+    qa_rows = receipt.dig("snapshot", "qa")
+    targets = receipt.fetch("targets")
+    return false unless qa_rows.is_a?(Array) && qa_rows.length == targets.length
+    return false unless qa_rows.map { |row| row.fetch("target") } == targets
+
+    qa_rows.all? do |row|
+      next false unless row.keys.sort ==
+                        %w[evidence_sha256 head_sha maintainer_waiver status target user_visible_ui_change verdict]
+      next false unless row.fetch("evidence_sha256").to_s.match?(DIGEST_PATTERN)
+      next false unless %w[yes no].include?(row.fetch("user_visible_ui_change"))
+
+      verdict = row.fetch("verdict")
+      status = row.fetch("status")
+      expected_status = {
+        "SATISFIED" => "satisfied",
+        "NOT_APPLICABLE" => "not_applicable",
+        "WAIVED" => "waived"
+      }[verdict]
+      next false unless status == expected_status
+      next row["maintainer_waiver"].nil? unless verdict == "WAIVED"
+
+      target = validated_target(row.fetch("target"))
+      head_sha = row.fetch("head_sha").to_s.downcase
+      waiver = row["maintainer_waiver"]
+      next false unless target && head_sha.match?(SHA_PATTERN) && waiver.is_a?(Hash)
+
+      reference = waiver_comment_reference(waiver["url"], target)
+      next false unless reference
+
+      comment = waiver_verifier.call(
+        host: target.fetch("host"),
+        repo: target.fetch("repo"),
+        comment_id: reference.fetch("comment_id")
+      )
+      verified_waiver_comment(comment, reference:, target:, head_sha:) == waiver
+    end
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def reassessed_receipt_valid?(
+    receipt,
+    coordination_backend:,
+    waiver_verifier:,
+    target_verifier:,
+    coordination_verifier:
+  )
+    return false unless valid_receipt?(receipt)
+
+    trusted_backend = normalized_known_string(coordination_backend)
+    return false unless trusted_backend
+    return false unless receipt["coordination_backend"] == trusted_backend
+    return false unless receipt.dig("snapshot", "coordination_backend") == trusted_backend
+
+    refreshed = assess(
+      receipt.fetch("source_input"),
+      coordination_backend: trusted_backend,
+      waiver_verifier:,
+      target_verifier:,
+      coordination_verifier:
+    )
+    canonicalize(refreshed) == canonicalize(receipt)
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def validate_input_envelope(input, blockers)
+    blockers << "publication preflight input contract or version is invalid" unless
+      input["contract"] == INPUT_CONTRACT && input["version"] == VERSION
+    required = %w[batch_id expected_targets coordination_status target_snapshots qa_evidence]
+    missing = required.reject { |key| input.key?(key) }
+    blockers << "publication preflight input fields are missing: #{missing.join(', ')}" unless missing.empty?
+  end
+
+  def resolved_batch(status, batch_id, blockers)
+    unless status.is_a?(Hash)
+      blockers << "coordination status is absent or invalid"
+      return nil
+    end
+    unless status.dig("scope", "kind") == "batch" && status.dig("scope", "batch_id") == batch_id
+      blockers << "coordination status scope does not match publication batch"
+    end
+    batches = status["batches"]
+    unless batches.is_a?(Array)
+      blockers << "coordination batch list is absent or invalid"
+      return nil
+    end
+    matches = batches.select { |candidate| candidate.is_a?(Hash) && candidate["batch_id"] == batch_id }
+    unless matches.length == 1
+      blockers << "coordination batch is absent or ambiguous"
+      return nil
+    end
+
+    matches.first
+  end
+
+  def resolved_no_backend_evidence(value, batch_id, expected_targets, blockers)
+    valid_shape = value.is_a?(Hash) &&
+                  value.keys.sort == %w[batch_id completed_at contract mode rationale source targets version]
+    unless valid_shape &&
+           value["contract"] == "completed-batch-coordination-not-applicable" &&
+           value["version"] == VERSION &&
+           value["batch_id"] == batch_id &&
+           value["mode"] == "single_operator"
+      blockers << "typed no-backend coordination evidence is absent or invalid"
+      return nil
+    end
+
+    rationale = normalized_known_string(value["rationale"])
+    source = durable_https_url(value["source"])
+    targets_blockers = []
+    targets = validated_target_set(value["targets"], targets_blockers, "no-backend target")
+    unless rationale && source && valid_timestamp?(value["completed_at"]) &&
+           targets_blockers.empty? && targets == expected_targets
+      blockers << "typed no-backend coordination evidence is absent or invalid"
+      return nil
+    end
+
+    {
+      "mode" => "single_operator",
+      "rationale" => rationale,
+      "source" => source,
+      "completed_at" => value.fetch("completed_at"),
+      "targets" => targets
+    }
+  end
+
+  def canonical_coordination_snapshot(batch, lanes, no_backend_evidence, authenticated:)
+    if no_backend_evidence
+      {
+        "status" => "not_applicable",
+        "updated_at" => no_backend_evidence.fetch("completed_at"),
+        "completed_at" => no_backend_evidence.fetch("completed_at"),
+        "lanes" => [],
+        "not_applicable" => no_backend_evidence,
+        "verification_source" => "trusted workflow config plus durable typed evidence"
+      }
+    else
+      {
+        "status" => scalar_or_nil(batch&.fetch("status", nil)),
+        "updated_at" => scalar_or_nil(batch&.fetch("updated_at", nil)),
+        "completed_at" => scalar_or_nil(batch&.fetch("completed_at", nil)),
+        "lanes" => lanes,
+        "verification_source" => authenticated ? "authenticated agent-coord-bounded" : nil
+      }
+    end
+  end
+
+  def resolved_lanes(batch, expected_targets, blockers)
+    return [[], []] unless batch
+
+    lanes = batch["lanes"]
+    unless lanes.is_a?(Array) && !lanes.empty? && lanes.all? { |lane| lane.is_a?(Hash) }
+      blockers << "coordination lanes are absent or invalid"
+      return [[], []]
+    end
+    batch_repo = batch["repo"].to_s
+    seen_names = {}
+    seen_targets = {}
+    entries = []
+    lanes.each do |lane|
+      name = normalized_known_string(lane["name"])
+      if !name || seen_names[name.downcase]
+        blockers << "coordination lane identity is absent or duplicated"
+      else
+        seen_names[name.downcase] = true
+      end
+      targets = targets_for_lane(lane, batch_repo, expected_targets)
+      if targets.empty?
+        blockers << "coordination lane #{name || 'UNKNOWN'} target is absent or ambiguous"
+      end
+      targets.each do |target|
+        key = target_key(target)
+        if seen_targets[key]
+          blockers << "#{target_label(target)} appears in multiple coordination lanes"
+        else
+          seen_targets[key] = true
+        end
+        entries << { "name" => name, "target" => target, "lane" => lane }
+      end
+    end
+    entries.sort_by! { |entry| target_sort_key(entry.fetch("target")) + [entry.fetch("name").to_s] }
+    [entries, entries.map { |entry| entry.fetch("target") }]
+  end
+
+  def targets_for_lane(lane, batch_repo, expected_targets)
+    url_targets = %w[pr_url issue_url target_url].filter_map do |field|
+      value = lane[field]
+      next if value.nil?
+
+      url = normalized_known_string(value)
+      return [] unless url
+
+      target = target_from_url(url)
+      return [] unless target
+
+      target
+    end
+    url_targets.uniq! { |target| target_key(target) }
+    return [] if url_targets.length > 1
+
+    raw_targets = lane["targets"]
+    target_rows = []
+    if lane.key?("targets")
+      return [] unless raw_targets.is_a?(Array) && !raw_targets.empty?
+
+      target_rows = raw_targets.map do |raw|
+        number = Integer(raw.to_s.sub(/\A#/, ""), exception: false)
+        candidates = expected_targets.select do |target|
+          target["repo"].casecmp?(batch_repo) && target["number"] == number
+        end
+        return [] unless candidates.one?
+
+        candidates.first
+      end
+      target_rows.uniq! { |target| target_key(target) }
+    end
+
+    if url_targets.any? && target_rows.any?
+      return [] unless url_targets.map { |target| target_key(target) } ==
+                       target_rows.map { |target| target_key(target) }
+
+      url_targets
+    elsif url_targets.any?
+      url_targets
+    else
+      target_rows
+    end
+  end
+
+  def compare_resolved_scope(expected, resolved, blockers)
+    expected_keys = expected.to_h { |target| [target_key(target), target] }
+    resolved_keys = resolved.to_h { |target| [target_key(target), target] }
+    expected_keys.each do |key, target|
+      blockers << "#{target_label(target)} is absent from resolved coordination scope" unless resolved_keys.key?(key)
+    end
+    resolved_keys.each do |key, target|
+      blockers << "#{target_label(target)} is outside the trusted batch target manifest" unless expected_keys.key?(key)
+    end
+  end
+
+  def validate_batch_terminal(batch, blockers)
+    return unless batch
+
+    blockers << "coordination batch is not completed" unless batch["status"] == "completed"
+    blockers << "coordination batch update timestamp is absent or invalid" unless valid_timestamp?(batch["updated_at"])
+    blockers << "coordination batch completion timestamp is absent or invalid" unless valid_timestamp?(batch["completed_at"])
+  end
+
+  def canonical_lane_snapshots(entries, authenticated_later_target_keys, blockers)
+    entries.map do |entry|
+      lane = entry.fetch("lane")
+      target = entry.fetch("target")
+      terminal_state = lane["terminal"]
+      terminal = valid_terminal_lane?(lane)
+      blockers << "#{target_label(target)} coordination lane is nonterminal" unless terminal
+      expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+      evidence = normalized_known_string(lane["evidence_url"])
+      coordination_completion = terminal_state == "done" && lane["pr_state"] == expected_state && evidence
+      later_target_completion = authenticated_later_target_keys[target_key(target)] == true
+      unless coordination_completion || later_target_completion
+        if terminal && RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state)
+          blockers << "#{target_label(target)} target completion is not authenticated after coordination closeout"
+        end
+        blockers << "#{target_label(target)} coordination target state is not #{expected_state}" \
+          unless lane["pr_state"] == expected_state
+        blockers << "#{target_label(target)} coordination terminal evidence is absent" unless evidence
+      end
+      snapshot = {
+        "name" => entry.fetch("name"),
+        "target" => target,
+        "status" => scalar_or_nil(lane["status"]),
+        "terminal" => scalar_or_nil(lane["terminal"]),
+        "closed_at" => scalar_or_nil(lane["closed_at"]),
+        "target_state" => scalar_or_nil(lane["pr_state"]),
+        "evidence" => evidence
+      }
+      if terminal && later_target_completion
+        snapshot["completion_mode"] = "authenticated_target_after_coordination_closeout"
+      end
+      snapshot
+    end
+  end
+
+  # Append-only telemetry and heartbeat-derived freshness are not audited facts.
+  # `events` and `heartbeats` grow whenever any lane records lifecycle state, and
+  # a terminal lane's `liveness` necessarily decays to `stale` once its heartbeat
+  # ages out. Binding them made a published receipt stop replaying for reasons the
+  # audit never asserted. Terminal and target facts remain enforced by
+  # `validate_batch_terminal`, the lane entries, and the target snapshots.
+  # Stripped by key name at any depth rather than by path. That is deliberate:
+  # `liveness` is heartbeat-derived wherever it appears, including under
+  # `claims`, so path-scoping would leave the same trap in a sibling section. It
+  # does mean a future schema that reused one of these names for a genuinely
+  # audited fact would silently drop out of the comparison, so extend this list
+  # only for names that are telemetry everywhere, and switch to path-scoped
+  # stripping if that ever stops holding.
+  COORDINATION_TELEMETRY_KEYS = %w[events heartbeats].freeze
+  COORDINATION_DERIVED_KEYS = %w[liveness].freeze
+
+  def coordination_audit_facts(value)
+    case value
+    when Hash
+      value.each_with_object({}) do |(key, nested), facts|
+        next if COORDINATION_TELEMETRY_KEYS.include?(key) || COORDINATION_DERIVED_KEYS.include?(key)
+
+        facts[key] = coordination_audit_facts(nested)
+      end
+    when Array
+      value.map { |entry| coordination_audit_facts(entry) }
+    else
+      value
+    end
+  end
+
+  def coordination_status_authentic?(authenticated, supplied)
+    coordination_status_drift(authenticated, supplied).empty?
+  end
+
+  # Names the drifted top-level components so a benign telemetry-only difference
+  # is distinguishable from a real terminal-fact regression.
+  def coordination_status_drift(authenticated, supplied)
+    return ["coordination status is unavailable"] unless authenticated.is_a?(Hash) && supplied.is_a?(Hash)
+
+    left = coordination_audit_facts(authenticated)
+    right = coordination_audit_facts(supplied)
+    return [] if left == right
+
+    # Not dead: a key-wise comparison can come back empty while the hashes are
+    # unequal, because an explicit null and an absent key both read as nil here
+    # while Ruby's Hash#== distinguishes them. `{"a" => nil}` versus `{}` is
+    # unequal with no differing key, so name the payload rather than reporting
+    # authentic.
+    drifted = (left.keys | right.keys).reject { |key| left[key] == right[key] }
+    drifted.empty? ? ["coordination status"] : drifted.sort
+  end
+
+  def indexed_target_snapshots(rows, expected_targets, blockers)
+    indexed_rows(rows, expected_targets, blockers, "target snapshot")
+  end
+
+  def indexed_qa_evidence(rows, expected_targets, blockers)
+    indexed_rows(rows, expected_targets, blockers, "QA evidence")
+  end
+
+  def indexed_rows(rows, expected_targets, blockers, label)
+    unless rows.is_a?(Array) && rows.all? { |row| row.is_a?(Hash) }
+      blockers << "#{label} list is absent or invalid"
+      return {}
+    end
+    expected_keys = expected_targets.to_h { |target| [target_key(target), target] }
+    rows.each_with_object({}) do |row, indexed|
+      target = validated_target(row["target"])
+      unless target
+        blockers << "#{label} target is invalid"
+        next
+      end
+      key = target_key(target)
+      blockers << "#{target_label(target)} #{label} is duplicated" if indexed.key?(key)
+      blockers << "#{target_label(target)} #{label} is outside the trusted target manifest" unless expected_keys.key?(key)
+      indexed[key] = row.merge("target" => target)
+    end
+  end
+
+  def canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers, target_verifier:)
+    lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
+    authenticated_later_target_keys = {}
+    canonical_targets = expected_targets.map do |target|
+      key = target_key(target)
+      row = snapshots[key]
+      unless row
+        blockers << "#{target_label(target)} target snapshot is absent"
+        next(
+          {
+            "target" => target,
+            "state" => nil,
+            "head_sha" => nil,
+            "completed_at" => nil,
+            "no_pr_evidence" => nil,
+            "source" => nil,
+            "verification_source" => nil
+          }
+        )
+      end
+      expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+      state = scalar_or_nil(row["state"])
+      blockers << "#{target_label(target)} target is not #{expected_state}" unless state == expected_state
+      raw_head_sha = row["head_sha"].to_s.downcase
+      no_pr_evidence = canonical_no_pr_evidence(row["no_pr_evidence"], target)
+      if target["type"] == "issue" && raw_head_sha == "not_applicable" && no_pr_evidence
+        head_sha = nil
+      else
+        head_sha = raw_head_sha
+        blockers << "#{target_label(target)} exact head SHA is absent or invalid" unless head_sha.match?(SHA_PATTERN)
+        if row.key?("no_pr_evidence")
+          blockers << "#{target_label(target)} no-PR evidence is invalid or inconsistent"
+        end
+      end
+      source = normalized_known_string(row["source"])
+      blockers << "#{target_label(target)} target snapshot source is absent" unless source
+      verified = target_verifier&.call(target:)
+      verified_shape = verified.is_a?(Hash) &&
+                       verified.keys.sort == %w[completed_at head_sha state target verification_source] &&
+                       validated_target(verified["target"]) == target &&
+                       verified["state"] == state &&
+                       verified["head_sha"] == head_sha &&
+                       valid_timestamp?(verified["completed_at"]) &&
+                       verified["verification_source"] == "authenticated gh api"
+      unless verified_shape
+        blockers << "#{target_label(target)} target state/head is not authenticated or fresh"
+      end
+      lane = lanes_by_target.dig(key, "lane")
+      lane_state = lane&.fetch("pr_state", nil)
+      verified_target_facts = {
+        "target" => target,
+        "state" => state,
+        "completed_at" => verified_shape ? verified.fetch("completed_at") : nil,
+        "verification_source" => verified_shape ? verified.fetch("verification_source") : nil,
+        "no_pr_evidence" => no_pr_evidence
+      }
+      authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
+      if lane&.fetch("terminal", nil) == "superseded" &&
+         authenticated_terminal_completion?(verified_target_facts) &&
+         !authenticated_later_typed_no_pr_issue_supersession?(lane, verified_target_facts)
+        blockers << "#{target_label(target)} premature terminal supersession / replacement protocol violation"
+      end
+      if lane_state && state && lane_state != state && !authenticated_later_completion
+        blockers << "#{target_label(target)} coordination and target state disagree"
+      end
+      snapshot = {
+        "target" => target,
+        "state" => state,
+        "head_sha" => head_sha,
+        "no_pr_evidence" => no_pr_evidence,
+        "source" => source,
+        "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
+      }
+      snapshot["completed_at"] = verified_target_facts.fetch("completed_at") if authenticated_later_completion
+      authenticated_later_target_keys[key] = true if authenticated_later_completion
+      snapshot
+    end
+    [canonical_targets, authenticated_later_target_keys]
+  end
+
+  def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, waiver_verifier:)
+    expected_targets.map do |target|
+      key = target_key(target)
+      row = qa_entries[key]
+      raw_head_sha = snapshots.dig(key, "head_sha").to_s.downcase
+      no_pr = canonical_no_pr_evidence(snapshots.dig(key, "no_pr_evidence"), target)
+      head_sha = raw_head_sha.match?(SHA_PATTERN) ? raw_head_sha : nil
+      no_pr_disposition = target["type"] == "issue" && raw_head_sha == "not_applicable" && no_pr
+      head_sha = nil if no_pr_disposition
+      unless row
+        blockers << "#{target_label(target)} QA evidence is absent"
+        next({ "target" => target, "head_sha" => head_sha, "verdict" => "UNKNOWN", "status" => nil,
+               "user_visible_ui_change" => nil, "evidence_sha256" => nil, "maintainer_waiver" => nil })
+      end
+      raw_user_visible_ui_change = row["user_visible_ui_change"]
+      user_visible_ui_change = raw_user_visible_ui_change if %w[yes no].include?(raw_user_visible_ui_change)
+      unless user_visible_ui_change
+        blockers << "#{target_label(target)} trusted QA UI classification is absent or invalid"
+      end
+      evidence = row["evidence"]
+      unless evidence.is_a?(String) && !evidence.empty?
+        blockers << "#{target_label(target)} QA evidence is absent"
+        next({ "target" => target, "head_sha" => head_sha, "verdict" => "UNKNOWN", "status" => nil,
+               "user_visible_ui_change" => user_visible_ui_change,
+               "evidence_sha256" => nil, "maintainer_waiver" => nil })
+      end
+      replay = CloseoutEvidenceReplay.replay(
+        evidence,
+        expected_head_sha: head_sha,
+        require_visual_evidence_v2: user_visible_ui_change == "yes"
+      )
+      qa = replay.fetch("qa_evidence")
+      verdict = qa.fetch("verdict")
+      status = qa.dig("fields", "status")
+      if %w[yes no].include?(user_visible_ui_change) &&
+         qa["marker_version"] == 2 &&
+         qa.dig("fields", "user_visible_ui_change") != user_visible_ui_change
+        blockers << "#{target_label(target)} QA UI classification contradicts trusted input"
+        verdict = "UNKNOWN"
+        status = nil
+      end
+      if no_pr_disposition && !valid_no_pr_qa_disposition?(qa)
+        blockers << "#{target_label(target)} QA evidence contradicts typed no-PR disposition"
+      end
+      unless %w[SATISFIED NOT_APPLICABLE WAIVED].include?(verdict)
+        blockers << "#{target_label(target)} QA disposition is #{status || verdict}"
+      end
+      waiver = canonical_waiver(
+        row["maintainer_waiver"],
+        target,
+        evidence,
+        head_sha:,
+        verifier: waiver_verifier
+      )
+      if verdict == "WAIVED" && !waiver
+        blockers << "#{target_label(target)} maintainer QA waiver is not replayable"
+      elsif verdict != "WAIVED" && row.key?("maintainer_waiver")
+        blockers << "#{target_label(target)} maintainer QA waiver is inconsistent with QA disposition"
+      end
+      {
+        "target" => target,
+        "head_sha" => head_sha,
+        "verdict" => verdict,
+        "status" => status,
+        "user_visible_ui_change" => user_visible_ui_change,
+        "evidence_sha256" => "sha256:#{Digest::SHA256.hexdigest(evidence.encode(Encoding::UTF_8))}",
+        "maintainer_waiver" => waiver
+      }
+    end
+  end
+
+  def valid_no_pr_qa_disposition?(replayed_qa)
+    fields = replayed_qa.fetch("fields")
+    replayed_qa.fetch("verdict") == "NOT_APPLICABLE" &&
+      fields.fetch("required", nil) == "no" &&
+      fields.fetch("status", nil) == "not_applicable" &&
+      fields.fetch("head_sha", nil).to_s.downcase == "not_applicable" &&
+      fields.fetch("release_blocking", nil) == "not_applicable"
+  end
+
+  def canonical_no_pr_evidence(value, target)
+    return unless target["type"] == "issue"
+    return unless value.is_a?(Hash) && value.keys.sort == %w[rationale target url]
+
+    rationale = normalized_known_string(value["rationale"])
+    evidence_target = validated_target(value["target"])
+    return unless rationale && evidence_target == target && value["url"] == target_base_url(target)
+
+    { "url" => value.fetch("url"), "rationale" => rationale, "target" => evidence_target }
+  end
+
+  def canonical_waiver(
+    value,
+    target,
+    evidence,
+    head_sha:,
+    verifier:,
+    marker_name: QA_WAIVER_MARKER,
+    marker_bindings: {}
+  )
+    return unless value.is_a?(Hash)
+    return unless value.keys == ["url"]
+    return unless verifier.respond_to?(:call)
+
+    reference = waiver_comment_reference(value.fetch("url"), target)
+    return unless reference && evidence.include?(reference.fetch("url"))
+
+    comment = verifier.call(
+      host: target.fetch("host"),
+      repo: target.fetch("repo"),
+      comment_id: reference.fetch("comment_id")
+    )
+    verified_waiver_comment(comment, reference:, target:, head_sha:, marker_name:, marker_bindings:)
+  rescue KeyError, URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def canonical_hosted_qa_waiver(value, target, evidence, head_sha:, hosted_target:, verifier:)
+    canonical_waiver(
+      value,
+      target,
+      evidence,
+      head_sha:,
+      verifier:,
+      marker_name: HOSTED_QA_WAIVER_MARKER,
+      marker_bindings: { "hosted_target" => hosted_target }
+    )
+  end
+
+  def waiver_comment_reference(value, target)
+    uri = URI.parse(value.to_s)
+    return unless uri.is_a?(URI::HTTPS) && uri.host && uri.query.nil? && uri.userinfo.nil?
+
+    host = uri.port == 443 ? uri.host.downcase : "#{uri.host.downcase}:#{uri.port}"
+    return unless host == target.fetch("host")
+
+    path = uri.path.match(%r{\A/([^/\s]+)/([^/\s]+)/(pull|issues)/(\d+)\z})
+    return unless path && "#{path[1]}/#{path[2]}".casecmp?(target.fetch("repo"))
+
+    expected_segment = target.fetch("type") == "pull_request" ? "pull" : "issues"
+    return unless path[3] == expected_segment && Integer(path[4], 10) == target.fetch("number")
+
+    fragment = uri.fragment.to_s.match(/\Aissuecomment-(\d+)\z/)
+    comment_id = fragment && Integer(fragment[1], 10)
+    return unless comment_id&.positive?
+
+    { "url" => value, "comment_id" => comment_id }
+  rescue KeyError, URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def verified_waiver_comment(
+    comment,
+    reference:,
+    target:,
+    head_sha:,
+    marker_name: QA_WAIVER_MARKER,
+    marker_bindings: {}
+  )
+    return unless comment.is_a?(Hash)
+    return unless Integer(comment["id"], exception: false) == reference.fetch("comment_id")
+    return unless comment["html_url"] == reference.fetch("url")
+    return unless issue_api_url_matches_target?(comment["issue_url"], target)
+    return unless valid_timestamp?(comment["created_at"]) && valid_timestamp?(comment["updated_at"])
+
+    author = waiver_comment_author(comment)
+    return unless author
+
+    association = comment["author_association"].to_s
+    return unless TRUSTED_ASSOCIATIONS.include?(association)
+
+    body = comment["body"]
+    return unless body.is_a?(String) && !body.empty?
+
+    fields = waiver_marker_fields(body, marker_name:, marker_bindings:)
+    return unless fields
+    return unless fields.fetch("target") == target_base_url(target)
+    return unless fields.fetch("head_sha").casecmp?(head_sha)
+    return unless fields.fetch("decision") == "waived"
+    return unless marker_bindings.all? { |key, value| fields.fetch(key) == value }
+
+    canonical = {
+      "url" => reference.fetch("url"),
+      "comment_id" => reference.fetch("comment_id"),
+      "author" => author,
+      "author_association" => association,
+      "body_sha256" => Digest::SHA256.hexdigest(body.encode(Encoding::UTF_8)),
+      "created_at" => comment.fetch("created_at"),
+      "updated_at" => comment.fetch("updated_at"),
+      "target" => target,
+      "head_sha" => head_sha,
+      "decision" => "waived",
+      "verification_source" => "authenticated gh api"
+    }
+    canonical.merge(marker_bindings)
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def waiver_marker_fields(body, marker_name: QA_WAIVER_MARKER, marker_bindings: {})
+    return unless body.scan("<!-- #{marker_name}").length == 1
+
+    matches = body.scan(/<!-- #{Regexp.escape(marker_name)}\n(.*?)\n-->/m)
+    return unless matches.one?
+
+    lines = matches.first.fetch(0).lines(chomp: true)
+    return if lines.empty? || lines.any? { |line| line.include?("<!--") || line.include?("-->") }
+
+    expected_fields = %w[target head_sha decision] + marker_bindings.keys
+    field_pattern = Regexp.union(expected_fields)
+    fields = lines.each_with_object({}) do |line, parsed|
+      match = line.match(/\A(#{field_pattern}): (.+)\z/)
+      break unless match && !parsed.key?(match[1])
+
+      parsed[match[1]] = match[2]
+    end
+    fields if fields&.keys&.sort == expected_fields.sort
+  end
+
+  def issue_api_url_matches_target?(value, target)
+    uri = URI.parse(value.to_s)
+    return false unless uri.is_a?(URI::HTTPS) && uri.host && uri.query.nil? && uri.fragment.nil? && uri.userinfo.nil?
+
+    path = uri.path.match(%r{\A(?:/api/v3)?/repos/([^/\s]+)/([^/\s]+)/issues/(\d+)\z})
+    path && "#{path[1]}/#{path[2]}".casecmp?(target.fetch("repo")) &&
+      Integer(path[3], 10) == target.fetch("number")
+  rescue URI::InvalidURIError, ArgumentError
+    false
+  end
+
+  def target_base_url(target)
+    segment = target.fetch("type") == "pull_request" ? "pull" : "issues"
+    "https://#{target.fetch('host')}/#{target.fetch('repo')}/#{segment}/#{target.fetch('number')}"
+  end
+
+  def validated_target_set(value, blockers, label)
+    unless value.is_a?(Array) && !value.empty?
+      blockers << "#{label} set is absent or empty"
+      return []
+    end
+    targets = value.filter_map do |raw|
+      target = validated_target(raw)
+      blockers << "#{label} is invalid" unless target
+      target
+    end
+    duplicates = targets.group_by { |target| target_key(target) }.select { |_key, rows| rows.length > 1 }
+    blockers << "#{label} set contains duplicates" unless duplicates.empty?
+    targets.uniq { |target| target_key(target) }.sort_by { |target| target_sort_key(target) }
+  end
+
+  def validated_target(value)
+    return unless value.is_a?(Hash)
+    return unless value.keys.map(&:to_s).sort == %w[host number repo type]
+
+    host = value["host"].to_s.downcase
+    repo = value["repo"].to_s
+    type = value["type"].to_s
+    number = Integer(value["number"], exception: false)
+    return unless host.match?(/\A[A-Za-z0-9.-]+(?::\d+)?\z/)
+    return unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
+    return unless %w[pull_request issue].include?(type) && number&.positive?
+
+    { "host" => host, "repo" => repo, "type" => type, "number" => number }
+  end
+
+  def target_from_url(value)
+    uri = URI.parse(value)
+    return unless uri.is_a?(URI::HTTPS) && uri.host && uri.query.nil? && uri.fragment.nil? && uri.userinfo.nil?
+
+    path = uri.path.match(%r{\A/([^/\s]+)/([^/\s]+)/(pull|issues)/(\d+)\z})
+    return unless path
+
+    validated_target(
+      "host" => uri.port == 443 ? uri.host : "#{uri.host}:#{uri.port}",
+      "repo" => "#{path[1]}/#{path[2]}",
+      "type" => path[3] == "pull" ? "pull_request" : "issue",
+      "number" => Integer(path[4], 10)
+    )
+  rescue URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def target_key(target)
+    [target.fetch("host").downcase, target.fetch("repo").downcase, target.fetch("type"), target.fetch("number")].join("|")
+  end
+
+  def target_sort_key(target)
+    [target.fetch("type") == "pull_request" ? 0 : 1, target.fetch("host").downcase,
+     target.fetch("repo").downcase, target.fetch("number")]
+  end
+
+  def target_label(target)
+    "#{target.fetch('repo')}##{target.fetch('type')}:#{target.fetch('number')}"
+  end
+
+  def normalized_known_string(value)
+    return unless value.is_a?(String)
+
+    normalized = value.unicode_normalize(:nfkc).gsub(/[[:space:]]+/, " ").strip
+    return if normalized.empty? || normalized.match?(/UNKNOWN/i) || normalized.include?("<!--") || normalized.include?("-->")
+
+    normalized
+  end
+
+  def durable_https_url(value)
+    uri = URI.parse(value.to_s)
+    return unless uri.is_a?(URI::HTTPS) && uri.host && uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil?
+
+    value
+  rescue URI::InvalidURIError
+    nil
+  end
+
+  def scalar_or_nil(value)
+    value.is_a?(String) ? value : nil
+  end
+
+  def valid_timestamp?(value)
+    return false unless normalized_known_string(value)
+
+    Time.iso8601(value)
+    true
+  rescue ArgumentError
+    false
+  end
+
+  def timestamp_after?(later, earlier)
+    return false unless valid_timestamp?(later) && valid_timestamp?(earlier)
+
+    Time.iso8601(later) > Time.iso8601(earlier)
+  rescue ArgumentError
+    false
+  end
+
+  def authenticated_later_target_completion?(lane, target_snapshot)
+    return false unless valid_terminal_lane?(lane)
+    return false unless RECONCILABLE_TERMINAL_LANE_STATES.include?(lane["terminal"]) ||
+                        typed_no_pr_issue_supersession?(lane, target_snapshot)
+
+    authenticated_target_completed_after_lane?(lane, target_snapshot)
+  end
+
+  def typed_no_pr_issue_supersession?(lane, target_snapshot)
+    target = validated_target(target_snapshot&.fetch("target", nil))
+    lane&.fetch("terminal", nil) == "superseded" &&
+      target&.fetch("type", nil) == "issue" &&
+      target_snapshot["no_pr_evidence"].is_a?(Hash)
+  end
+
+  def authenticated_later_typed_no_pr_issue_supersession?(lane, target_snapshot)
+    typed_no_pr_issue_supersession?(lane, target_snapshot) &&
+      authenticated_target_completed_after_lane?(lane, target_snapshot)
+  end
+
+  def authenticated_terminal_completion?(target_snapshot)
+    return false unless target_snapshot.is_a?(Hash)
+
+    target = validated_target(target_snapshot["target"])
+    return false unless target
+
+    expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+    target_snapshot["state"] == expected_state &&
+      target_snapshot["verification_source"] == "authenticated gh api" &&
+      valid_timestamp?(target_snapshot["completed_at"])
+  end
+
+  def authenticated_target_completed_after_lane?(lane, target_snapshot)
+    return false unless valid_terminal_lane?(lane)
+    return false unless target_snapshot.is_a?(Hash)
+
+    target = validated_target(target_snapshot["target"])
+    return false unless target
+
+    expected_state = target["type"] == "pull_request" ? "merged" : "closed"
+    target_snapshot["state"] == expected_state &&
+      target_snapshot["verification_source"] == "authenticated gh api" &&
+      timestamp_after?(target_snapshot["completed_at"], lane["closed_at"])
+  end
+
+  def valid_terminal_lane?(lane)
+    return false unless lane.is_a?(Hash)
+
+    terminal_state = lane["terminal"]
+    TERMINAL_LANE_STATES.include?(terminal_state) &&
+      lane["status"] == terminal_state &&
+      valid_timestamp?(lane["closed_at"])
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.each_with_object({}) { |key, sorted| sorted[key] = canonicalize(value.fetch(key)) }
+    when Array
+      value.map { |entry| canonicalize(entry) }
+    else
+      value
+    end
+  end
+
+  def digest(value)
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(value)))}"
+  end
+
+  def authenticated_waiver_comment(host:, repo:, comment_id:, repository_root: Dir.pwd)
+    comment = authenticated_gh_api(
+      host,
+      "repos/#{repo}/issues/comments/#{comment_id}",
+      repository_root:
+    )
+    author = waiver_comment_author(comment)
+    return unless author
+
+    permission = authenticated_gh_api(
+      host,
+      "repos/#{repo}/collaborators/#{author}/permission",
+      repository_root:
+    )
+    comment if verified_waiver_author_permission?(comment, permission)
+  end
+
+  def verified_waiver_author_permission?(comment, permission)
+    author = waiver_comment_author(comment)
+    return false unless author && permission.is_a?(Hash)
+
+    permission_user = permission["user"]
+    permission_author = waiver_comment_author("user" => permission_user)
+    return false unless permission_author&.casecmp?(author)
+
+    WRITE_PERMISSIONS.include?(permission["permission"].to_s)
+  end
+
+  def waiver_comment_author(comment)
+    return unless comment.is_a?(Hash)
+
+    user = comment["user"]
+    return unless user.is_a?(Hash)
+
+    author = user["login"].to_s
+    return unless author.match?(SAFE_LOGIN_PATTERN) && !author.downcase.end_with?("[bot]")
+    return unless TRUSTED_HUMAN_TYPES.include?(user["type"])
+
+    author
+  end
+
+  def authenticated_target_snapshot(target:, repository_root: Dir.pwd)
+    endpoint_type = target.fetch("type") == "pull_request" ? "pulls" : "issues"
+    payload = authenticated_gh_api(
+      target.fetch("host"),
+      "repos/#{target.fetch('repo')}/#{endpoint_type}/#{target.fetch('number')}",
+      repository_root:
+    )
+    verified_target_api_snapshot(payload, target)
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def verified_target_api_snapshot(payload, target)
+    return unless payload.is_a?(Hash)
+    return unless Integer(payload["number"], exception: false) == target.fetch("number")
+    return unless payload["html_url"] == target_base_url(target)
+
+    if target.fetch("type") == "pull_request"
+      return unless payload["state"] == "closed" && valid_timestamp?(payload["merged_at"])
+
+      head_sha = payload.dig("head", "sha").to_s.downcase
+      return unless head_sha.match?(SHA_PATTERN)
+
+      state = "merged"
+      completed_at = payload.fetch("merged_at")
+    else
+      return unless payload["state"] == "closed" && !payload.key?("pull_request") &&
+                    valid_timestamp?(payload["closed_at"])
+
+      head_sha = nil
+      state = "closed"
+      completed_at = payload.fetch("closed_at")
+    end
+    {
+      "target" => target,
+      "state" => state,
+      "head_sha" => head_sha,
+      "completed_at" => completed_at,
+      "verification_source" => "authenticated gh api"
+    }
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def authenticated_coordination_status(backend:, batch_id:)
+    normalized_backend = normalized_known_string(backend)
+    return unless normalized_backend && normalized_backend.downcase != "n/a"
+    return if normalized_backend.match?(PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN)
+
+    command = [
+      AGENT_COORD_BOUNDED,
+      "--timeout", COORDINATION_TIMEOUT_SECONDS.to_s,
+      "status", "--batch-id", batch_id, "--json"
+    ]
+    stdout, _stderr, status = capture_process(
+      command,
+      input: "",
+      timeout: COORDINATION_CAPTURE_TIMEOUT_SECONDS
+    )
+    return unless status.success?
+
+    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
+    payload if payload.is_a?(Hash)
+  rescue JSON::ParserError, SystemCallError, Timeout::Error
+    nil
+  end
+
+  def authenticated_gh_api(host, endpoint, repository_root: Dir.pwd)
+    executable = trusted_system_tool("gh", outside_root: repository_root)
+    account = trusted_local_account(repository_root)
+    return unless executable && account
+
+    environment = {
+      "GH_HOST" => host,
+      "HOME" => account.dir,
+      "USER" => account.name,
+      "LOGNAME" => account.name,
+      "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+      "GH_PROMPT_DISABLED" => "1",
+      "GIT_TERMINAL_PROMPT" => "0"
+    }
+    GH_CREDENTIAL_ENV_KEYS.each do |name|
+      value = ENV[name]
+      environment[name] = value if value && !value.empty?
+    end
+    command = [executable, "api", "--hostname", host, endpoint]
+    result = with_safe_gh_directory(repository_root) do |directory|
+      capture_process(
+        command,
+        input: "",
+        timeout: gh_timeout_seconds,
+        environment:,
+        chdir: directory,
+        unsetenv_others: true
+      )
+    end
+    return unless result
+
+    stdout, _stderr, status = result
+    return unless status.success?
+
+    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
+    payload if payload.is_a?(Hash)
+  rescue JSON::ParserError, SystemCallError, Timeout::Error
+    nil
+  end
+
+  def trusted_system_tool(name, outside_root:)
+    candidate = SYSTEM_TOOL_DIRS
+                .map { |directory| File.join(directory, name) }
+                .find { |path| File.file?(path) && File.executable?(path) }
+    trusted_external_executable(candidate, outside_root:)
+  end
+
+  def trusted_external_executable(candidate, outside_root:)
+    return unless candidate && File.file?(candidate) && File.executable?(candidate)
+
+    realpath = File.realpath(candidate)
+    return unless path_outside_repository?(candidate, outside_root)
+    return unless path_outside_repository?(realpath, outside_root)
+
+    stat = File.stat(realpath)
+    realpath if stat.file? && File.executable?(realpath)
+  rescue Errno::ENOENT, Errno::EACCES
+    nil
+  end
+
+  def trusted_local_account(repository_root)
+    account = Etc.getpwuid
+    return unless account.name.match?(SAFE_LOGIN_PATTERN)
+    return unless File.directory?(account.dir)
+    return unless path_outside_repository?(account.dir, repository_root)
+
+    account
+  rescue ArgumentError, SystemCallError
+    nil
+  end
+
+  def path_outside_repository?(path, repository_root)
+    repository_realpath = File.realpath(repository_root)
+    repository_prefix = "#{repository_realpath}#{File::SEPARATOR}"
+    path_realpath = File.realpath(path)
+    path_realpath != repository_realpath && !path_realpath.start_with?(repository_prefix)
+  rescue Errno::ENOENT, Errno::EACCES
+    false
+  end
+
+  def with_safe_gh_directory(repository_root)
+    temporary_root = SYSTEM_TEMP_ROOTS.find do |path|
+      File.directory?(path) && path_outside_repository?(path, repository_root)
+    end
+    return unless temporary_root
+
+    Dir.mktmpdir("completed-batch-authenticated-gh", temporary_root) do |directory|
+      File.chmod(0o700, directory)
+      yield directory
+    end
+  rescue SystemCallError
+    nil
+  end
+
+  def capture_process(command, input:, timeout:, environment: nil, chdir: nil, unsetenv_others: false)
+    stdin = stdout = stderr = wait_thread = nil
+    workers = []
+    process_group_id = nil
+    completed = false
+    popen_arguments = environment ? [environment, *command] : command
+    popen_options = { pgroup: true, unsetenv_others: }
+    popen_options[:chdir] = chdir if chdir
+    stdin, stdout, stderr, wait_thread = Open3.popen3(*popen_arguments, **popen_options)
+    process_group_id = wait_thread.pid
+    writer = Thread.new do
+      stdin.write(input)
+    rescue Errno::EPIPE, IOError
+      nil
+    ensure
+      stdin.close unless stdin.closed?
+    end
+    stdout_reader = Thread.new { read_process_stream(stdout) }
+    stderr_reader = Thread.new { read_process_stream(stderr) }
+    workers = [writer, stdout_reader, stderr_reader]
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+
+    [wait_thread, *workers].each do |thread|
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      raise Timeout::Error if remaining <= 0 || !thread.join(remaining)
+    end
+
+    result = [stdout_reader.value, stderr_reader.value, wait_thread.value]
+    completed = true
+    result
+  ensure
+    terminate_process_group(process_group_id, wait_thread) unless completed
+    [stdin, stdout, stderr].compact.each do |stream|
+      stream.close unless stream.closed?
+    rescue IOError
+      nil
+    end
+    workers.each do |worker|
+      worker.kill unless worker.join(PROCESS_TERMINATION_GRACE_SECONDS)
+      worker.join
+    end
+    wait_thread&.join(PROCESS_TERMINATION_GRACE_SECONDS)
+  end
+
+  def configure_gh_timeout!
+    timeout = Integer(
+      ENV.fetch(
+        "COMPLETED_BATCH_PUBLICATION_PREFLIGHT_GH_TIMEOUT_SECONDS",
+        DEFAULT_GH_TIMEOUT_SECONDS.to_s
+      ),
+      exception: false
+    )
+    unless timeout&.positive?
+      raise OptionParser::InvalidArgument,
+            "COMPLETED_BATCH_PUBLICATION_PREFLIGHT_GH_TIMEOUT_SECONDS must be a positive integer"
+    end
+
+    @gh_timeout_seconds = timeout
+  end
+
+  def gh_timeout_seconds
+    @gh_timeout_seconds || DEFAULT_GH_TIMEOUT_SECONDS
+  end
+
+  def read_process_stream(stream)
+    stream.read
+  rescue IOError
+    ""
+  end
+
+  def terminate_process_group(process_group_id, wait_thread)
+    cleanup_deadline = monotonic_deadline(PROCESS_CLEANUP_TIMEOUT_SECONDS)
+    return unless isolated_process_group?(process_group_id)
+
+    descendant_layers = process_group_descendant_layers(
+      process_group_id,
+      deadline: cleanup_deadline
+    )
+    if descendant_layers
+      # Keep every parent alive until its deepest child layer is absent. That
+      # lets wrappers reap children before their own bounded termination.
+      terminate_process_group_child_first(process_group_id, wait_thread, deadline: cleanup_deadline)
+    else
+      # procfs is Linux-specific; retain the bounded POSIX group fallback elsewhere.
+      terminate_process_group_fallback(process_group_id, wait_thread, deadline: cleanup_deadline)
+    end
+  ensure
+    if isolated_process_group?(process_group_id) &&
+       process_group_alive?(process_group_id)
+      signal_process_group("KILL", process_group_id)
+      leader_reaped = join_thread_until(wait_thread, cleanup_deadline)
+      wait_for_process_group_exit(
+        process_group_id,
+        deadline: cleanup_deadline,
+        reap_children: leader_reaped
+      )
+    end
+  end
+
+  def terminate_process_group_child_first(process_group_id, wait_thread, deadline:)
+    loop do
+      layers = process_group_descendant_layers(process_group_id, deadline:)
+      break unless layers && !layers.empty?
+
+      deepest_layer = layers.first
+      signal_processes("TERM", deepest_layer, process_group_id)
+      term_deadline = [deadline, monotonic_deadline(PROCESS_TERMINATION_GRACE_SECONDS)].min
+      next if wait_for_processes_exit(deepest_layer, process_group_id, deadline: term_deadline)
+
+      surviving = deepest_layer.select { |pid| process_in_group?(pid, process_group_id) }
+      signal_processes("KILL", surviving, process_group_id)
+      break unless wait_for_processes_exit(surviving, process_group_id, deadline:)
+    end
+
+    leader_reaped = terminate_process_group_leader(process_group_id, wait_thread, deadline:)
+    signal_process_group("KILL", process_group_id) if process_group_alive?(process_group_id)
+    wait_for_process_group_exit(
+      process_group_id,
+      deadline:,
+      reap_children: leader_reaped
+    )
+  end
+
+  def terminate_process_group_fallback(process_group_id, wait_thread, deadline:)
+    signal_process_group("TERM", process_group_id)
+    term_deadline = [deadline, monotonic_deadline(PROCESS_TERMINATION_GRACE_SECONDS)].min
+    leader_reaped = join_thread_until(wait_thread, term_deadline)
+    unless leader_reaped && !process_group_alive?(process_group_id)
+      signal_process_group("KILL", process_group_id)
+      leader_reaped ||= join_thread_until(wait_thread, deadline)
+    end
+    wait_for_process_group_exit(
+      process_group_id,
+      deadline:,
+      reap_children: leader_reaped
+    )
+  end
+
+  def terminate_process_group_leader(process_group_id, wait_thread, deadline:)
+    return true if wait_thread&.join(0)
+
+    signal_process("TERM", process_group_id, process_group_id)
+    term_deadline = [deadline, monotonic_deadline(PROCESS_TERMINATION_GRACE_SECONDS)].min
+    return true if join_thread_until(wait_thread, term_deadline)
+
+    signal_process("KILL", process_group_id, process_group_id)
+    join_thread_until(wait_thread, deadline)
+  end
+
+  def isolated_process_group?(process_group_id)
+    process_group_id.is_a?(Integer) && process_group_id.positive? && process_group_id != Process.getpgrp
+  end
+
+  def signal_processes(signal, process_ids, process_group_id)
+    process_ids.each { |pid| signal_process(signal, pid, process_group_id) }
+  end
+
+  def signal_process(signal, pid, process_group_id)
+    return false if pid == Process.pid || Process.getpgid(pid) != process_group_id
+
+    Process.kill(signal, pid)
+    true
+  rescue Errno::ESRCH, Errno::EPERM
+    false
+  end
+
+  def signal_process_group(signal, process_group_id)
+    Process.kill(signal, -process_group_id)
+    true
+  rescue Errno::ESRCH, Errno::EPERM
+    false
+  end
+
+  def process_group_alive?(process_group_id)
+    Process.kill(0, -process_group_id)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def wait_for_processes_exit(process_ids, process_group_id, deadline:)
+    while process_ids.any? { |pid| process_in_group?(pid, process_group_id) }
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      return false if remaining <= 0
+
+      sleep [remaining, 0.01].min
+    end
+    true
+  end
+
+  def process_in_group?(pid, process_group_id)
+    Process.getpgid(pid) == process_group_id
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def wait_for_process_group_exit(process_group_id, deadline:, reap_children: false)
+    while process_group_alive?(process_group_id)
+      reap_process_group_children(process_group_id) if reap_children
+      return true unless process_group_alive?(process_group_id)
+
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      return false if remaining <= 0
+
+      sleep [remaining, 0.01].min
+    end
+    true
+  end
+
+  def process_group_descendant_layers(process_group_id, deadline:)
+    return unless File.directory?("/proc/self")
+
+    records = {}
+    deadline_expired = false
+    Dir.glob("/proc/[0-9]*/stat").each do |path|
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        deadline_expired = true
+        break
+      end
+
+      record = proc_process_record(path)
+      records[record.fetch(:pid)] = record if record&.fetch(:process_group_id) == process_group_id
+    end
+    return if deadline_expired
+
+    descendants = records.values.reject { |record| record.fetch(:pid) == process_group_id }
+    descendants
+      .group_by { |record| proc_process_depth(record, records) }
+      .sort_by { |depth, _records| -depth }
+      .map do |_depth, layer|
+        layer.map { |record| record.fetch(:pid) }.sort.reverse
+      end
+  end
+
+  def proc_process_record(path)
+    stat = File.read(path, encoding: "UTF-8")
+    closing_parenthesis = stat.rindex(") ")
+    return unless closing_parenthesis
+
+    fields = stat[(closing_parenthesis + 2)..].split
+    return if fields.length < 3
+
+    {
+      pid: Integer(File.basename(File.dirname(path)), 10),
+      parent_pid: Integer(fields.fetch(1), 10),
+      process_group_id: Integer(fields.fetch(2), 10)
+    }
+  rescue Errno::EACCES, Errno::ENOENT, Errno::EPERM, Errno::ESRCH, ArgumentError
+    nil
+  end
+
+  def proc_process_depth(record, records)
+    depth = 0
+    seen = {}
+    current = record
+    while (parent = records[current.fetch(:parent_pid)]) && !seen[parent.fetch(:pid)]
+      seen[parent.fetch(:pid)] = true
+      depth += 1
+      current = parent
+    end
+    depth
+  end
+
+  def reap_process_group_children(process_group_id)
+    # Ruby-as-PID-1 adopts orphaned group descendants; reap only after the
+    # Open3 wait thread has reaped the original group leader.
+    loop do
+      waited = Process.waitpid2(-process_group_id, Process::WNOHANG)
+      return unless waited
+    end
+  rescue Errno::ECHILD
+    nil
+  end
+
+  def monotonic_deadline(timeout)
+    Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+  end
+
+  def join_thread_until(thread, deadline)
+    return false unless thread
+    return true if thread.join(0)
+
+    remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    remaining.positive? && !!thread.join(remaining)
+  end
+
+  def run(argv)
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: completed-batch-publication-preflight --workflow-config PATH --input PATH|-"
+      opts.on("--workflow-config PATH") { |value| options["workflow_config"] = value }
+      opts.on("--input PATH") { |value| options["input"] = value }
+      opts.on("-h", "--help") do
+        puts opts
+        return 0
+      end
+    end
+    parser.parse!(argv)
+    raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+
+    %w[workflow_config input].each do |key|
+      raise OptionParser::MissingArgument, "--#{key.tr('_', '-')}" if options[key].to_s.empty?
+    end
+
+    config = YAML.safe_load(File.read(options.fetch("workflow_config"), encoding: "UTF-8"), aliases: false)
+    raise TypeError, "workflow config must be a mapping" unless config.is_a?(Hash)
+
+    raw = options.fetch("input") == "-" ? $stdin.read : File.read(options.fetch("input"), encoding: "UTF-8")
+    configure_gh_timeout!
+    result = assess(
+      JSON.parse(raw),
+      coordination_backend: config["coordination_backend"],
+      waiver_verifier: method(:authenticated_waiver_comment),
+      target_verifier: method(:authenticated_target_snapshot),
+      coordination_verifier: method(:authenticated_coordination_status)
+    )
+    puts JSON.pretty_generate(result)
+    result.fetch("eligible") ? 0 : 1
+  rescue OptionParser::ParseError => e
+    warn "Error: #{e.message}"
+    64
+  rescue JSON::ParserError, Psych::Exception, SystemCallError, TypeError => e
+    result = blocked_result("publication preflight input could not be read")
+    result["errors"] = [e.message]
+    puts JSON.pretty_generate(result)
+    1
+  end
+end
+
+exit(CompletedBatchPublicationPreflight.run(ARGV)) if $PROGRAM_NAME == __FILE__

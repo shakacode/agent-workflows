@@ -1,0 +1,640 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "fileutils"
+require "json"
+require "optparse"
+
+TASK_ACTIONS = {
+  "terminal" => "stop-task-terminal",
+  "not-resumable" => "stop-task-not-resumable",
+  "blocked-user-input" => "pause-user-input"
+}.freeze
+OBSERVATION_DIGEST_VERSION = 2
+
+options = {}
+OptionParser.new do |parser|
+  parser.banner = "Usage: goal-state-change-monitor --state PATH < observation.json"
+  parser.on("--state PATH", "Restart-safe monitor state path") { |value| options[:state_path] = value }
+end.parse!
+
+def fail_json(reason)
+  warn JSON.generate(
+    "contract" => "goal-state-change-decision",
+    "version" => 1,
+    "status" => "invalid-input",
+    "reason" => reason
+  )
+  exit 1
+end
+
+def canonicalize(value)
+  case value
+  when Hash
+    value.keys.sort.to_h { |key| [key, canonicalize(value.fetch(key))] }
+  when Array
+    value.map { |item| canonicalize(item) }
+         .uniq { |item| JSON.generate(item) }
+         .sort_by { |item| JSON.generate(item) }
+  else
+    value
+  end
+end
+
+def canonical_json(value)
+  JSON.generate(canonicalize(value))
+end
+
+def wake_id_for(monitor_id:, probe_sequence:, fingerprint:, action:)
+  Digest::SHA256.hexdigest(
+    canonical_json(
+      "monitor_id" => monitor_id,
+      "probe_sequence" => probe_sequence,
+      "fingerprint" => fingerprint,
+      "action" => action
+    )
+  )
+end
+
+def possible_stale_wake_actions(capability:, task_status:, dependency_status:, probe_sequence:)
+  return [] if TASK_ACTIONS.key?(task_status) || capability == "unsupported"
+  return ["stop-dependency-terminal"] if dependency_status == "terminal"
+  return [] unless probe_sequence.positive?
+  return ["wake-state-change"] if capability == "deterministic-watcher"
+
+  %w[wake-state-change fallback-model-poll]
+end
+
+def positive_integer(value)
+  value if value.is_a?(Integer) && value.positive?
+end
+
+def nonnegative_integer(value)
+  value if value.is_a?(Integer) && !value.negative?
+end
+
+def sha256_digest?(value)
+  value.is_a?(String) && value.match?(/\A[0-9a-f]{64}\z/)
+end
+
+def persisted_decision?(decision, monitor_id)
+  decision.is_a?(Hash) &&
+    decision["contract"] == "goal-state-change-decision" &&
+    decision["version"] == 1 &&
+    decision["status"] == "ok" &&
+    decision["monitor_id"] == monitor_id &&
+    decision["action"].is_a?(String) && !decision["action"].empty? &&
+    sha256_digest?(decision["fingerprint"]) &&
+    [true, false].include?(decision["wake_parent"]) &&
+    %w[active paused stopped].include?(decision["monitor_status"]) &&
+    (!decision.key?("wake_id") || sha256_digest?(decision["wake_id"])) &&
+    (!decision.key?("handoff") || decision["handoff"].is_a?(Hash)) &&
+    (!decision.key?("state_delta") || decision["state_delta"].is_a?(Hash))
+end
+
+def persisted_acknowledgement_payload?(payload, state, wake_id)
+  return false unless payload.is_a?(Hash) && payload == canonicalize(payload)
+  return false if payload.key?("observed_at")
+  return false unless payload["acknowledged_wake_id"] == wake_id &&
+                      payload["monitor_id"] == state["monitor_id"] &&
+                      payload["probe_sequence"] == state["probe_sequence"]
+
+  digest_payload = payload.reject { |key, _value| key == "acknowledged_wake_id" }
+  Digest::SHA256.hexdigest(canonical_json(digest_payload)) == state["last_observation_digest"]
+end
+
+def persisted_state?(state)
+  return false unless state.is_a?(Hash)
+
+  required_keys = %w[
+    contract version monitor_id fingerprint blocker_state capability monitor_status limits polling_policy
+    usage unchanged_runs probe_sequence last_observation_digest last_checked_at last_decision
+  ]
+  return false unless required_keys.all? { |key| state.key?(key) }
+
+  monitor_id = state["monitor_id"]
+  limits = state["limits"]
+  polling_policy = state["polling_policy"]
+  usage = state["usage"]
+  acknowledged_wake_ids = state.fetch("acknowledged_wake_ids", [])
+  pending_wake = state["pending_wake"]
+  pending_wake_decision = pending_wake["decision"] if pending_wake.is_a?(Hash)
+  acknowledgement_payload = pending_wake["acknowledgement_payload"] if pending_wake.is_a?(Hash)
+
+  state["contract"] == "goal-state-change-monitor-state" &&
+    state["version"] == 1 &&
+    monitor_id.is_a?(String) && !monitor_id.empty? &&
+    sha256_digest?(state["fingerprint"]) &&
+    state["blocker_state"].is_a?(Hash) &&
+    %w[deterministic-watcher model-polling-only unsupported].include?(state["capability"]) &&
+    %w[active paused stopped].include?(state["monitor_status"]) &&
+    limits.is_a?(Hash) && %w[max_unchanged_runs max_model_calls max_tokens].all? do |key|
+      positive_integer(limits[key])
+    end &&
+    polling_policy.is_a?(Hash) &&
+    %w[fast_interval_seconds fast_attempts max_interval_seconds].all? do |key|
+      positive_integer(polling_policy[key])
+    end &&
+    usage.is_a?(Hash) && %w[model_calls tokens].all? do |key|
+      nonnegative_integer(usage[key])
+    end &&
+    nonnegative_integer(state["unchanged_runs"]) &&
+    nonnegative_integer(state["probe_sequence"]) &&
+    sha256_digest?(state["last_observation_digest"]) &&
+    (!state.key?("observation_digest_version") ||
+      state["observation_digest_version"] == OBSERVATION_DIGEST_VERSION) &&
+    persisted_decision?(state["last_decision"], monitor_id) &&
+    acknowledged_wake_ids.is_a?(Array) && acknowledged_wake_ids.all? { |wake_id| sha256_digest?(wake_id) } &&
+    (!state.key?("pending_wake") ||
+      (pending_wake.is_a?(Hash) && sha256_digest?(pending_wake["wake_id"]) &&
+       persisted_decision?(pending_wake_decision, monitor_id) &&
+       pending_wake_decision["wake_parent"] == true &&
+       pending_wake_decision["wake_id"] == pending_wake["wake_id"] &&
+       persisted_acknowledgement_payload?(acknowledgement_payload, state, pending_wake["wake_id"]) &&
+       %w[wake-state-change stop-dependency-terminal fallback-model-poll].include?(pending_wake_decision["action"])))
+end
+
+def persist_state(state_path, state)
+  temporary_path = "#{state_path}.tmp.#{Process.pid}"
+  bounded_state = state.reject { |key, _value| key == "acknowledged_wake_ids" }
+  File.write(temporary_path, JSON.generate(bounded_state), mode: "w", perm: 0o600)
+  File.rename(temporary_path, state_path)
+end
+
+def json_pointer_token(value)
+  value.to_s.gsub("~", "~0").gsub("/", "~1")
+end
+
+def compact_changes(previous, current, path = "")
+  return [] if previous == current
+
+  if previous.is_a?(Hash) && current.is_a?(Hash)
+    return (previous.keys | current.keys).sort.flat_map do |key|
+      child_path = "#{path}/#{json_pointer_token(key)}"
+      if !previous.key?(key)
+        [{ "path" => child_path, "current" => current.fetch(key) }]
+      elsif !current.key?(key)
+        [{ "path" => child_path, "previous" => previous.fetch(key) }]
+      else
+        compact_changes(previous.fetch(key), current.fetch(key), child_path)
+      end
+    end
+  end
+
+  [{ "path" => path, "previous" => previous, "current" => current }]
+end
+
+state_path = options[:state_path]
+fail_json("missing-state-path") unless state_path.is_a?(String) && !state_path.empty?
+
+begin
+  observation = JSON.parse($stdin.read)
+rescue JSON::ParserError
+  fail_json("malformed-json")
+end
+
+fail_json("top-level-object-required") unless observation.is_a?(Hash)
+fail_json("wrong-contract") unless observation["contract"] == "goal-state-change-observation" && observation["version"] == 1
+
+monitor_id = observation["monitor_id"]
+fail_json("invalid-monitor-id") unless monitor_id.is_a?(String) && !monitor_id.empty?
+capability = observation["capability"]
+fail_json("invalid-capability") unless %w[deterministic-watcher model-polling-only unsupported].include?(capability)
+task_status = observation["task_status"]
+fail_json("invalid-task-status") unless %w[resumable terminal not-resumable blocked-user-input].include?(task_status)
+dependency_status = observation["dependency_status"]
+fail_json("invalid-dependency-status") unless %w[nonterminal terminal].include?(dependency_status)
+fail_json("blocker-state-object-required") unless observation["blocker_state"].is_a?(Hash)
+resume_instruction = observation["resume_instruction"]
+unless resume_instruction.is_a?(String) && !resume_instruction.strip.empty?
+  fail_json("resume-instruction-required")
+end
+if task_status == "blocked-user-input"
+  question = observation.dig("blocker_state", "question")
+  fail_json("blocked-user-input-question-required") unless question.is_a?(String) && !question.strip.empty?
+end
+
+polling_policy = observation.fetch("polling_policy", {})
+fail_json("polling-policy-object-required") unless polling_policy.is_a?(Hash)
+fast_interval_seconds = positive_integer(polling_policy.fetch("fast_interval_seconds", 900))
+fast_attempts = positive_integer(polling_policy.fetch("fast_attempts", 4))
+max_interval_seconds = positive_integer(polling_policy.fetch("max_interval_seconds", 14_400))
+fail_json("invalid-polling-policy") unless fast_interval_seconds && fast_attempts && max_interval_seconds
+fail_json("invalid-polling-policy") if max_interval_seconds < fast_interval_seconds
+if fast_interval_seconds > 900 || fast_attempts > 4 || max_interval_seconds > 14_400
+  fail_json("invalid-polling-policy")
+end
+
+limits_input = observation.fetch("limits", {})
+fail_json("limits-object-required") unless limits_input.is_a?(Hash)
+limits = {
+  "max_unchanged_runs" => positive_integer(limits_input.fetch("max_unchanged_runs", 32)),
+  "max_model_calls" => positive_integer(limits_input.fetch("max_model_calls", 16)),
+  "max_tokens" => positive_integer(limits_input.fetch("max_tokens", 1_000_000))
+}
+fail_json("invalid-limits") unless limits.values.all?
+
+usage_delta_input = observation.fetch("usage_delta", {})
+fail_json("usage-delta-object-required") unless usage_delta_input.is_a?(Hash)
+usage_delta = {
+  "model_calls" => nonnegative_integer(usage_delta_input.fetch("model_calls", 0)),
+  "tokens" => nonnegative_integer(usage_delta_input.fetch("tokens", 0))
+}
+fail_json("invalid-usage-delta") unless usage_delta.values.all?
+
+probe_sequence = nonnegative_integer(observation["probe_sequence"])
+fail_json("invalid-probe-sequence") unless probe_sequence
+acknowledged_wake_id = observation["acknowledged_wake_id"]
+if observation.key?("acknowledged_wake_id") &&
+   !(acknowledged_wake_id.is_a?(String) && acknowledged_wake_id.match?(/\A[0-9a-f]{64}\z/))
+  fail_json("invalid-wake-acknowledgement")
+end
+
+polling_policy = {
+  "fast_interval_seconds" => fast_interval_seconds,
+  "fast_attempts" => fast_attempts,
+  "max_interval_seconds" => max_interval_seconds
+}
+normalized_blocker_state = canonicalize(observation.fetch("blocker_state"))
+canonical_state = JSON.generate(normalized_blocker_state)
+fingerprint = Digest::SHA256.hexdigest(canonical_state)
+digest_observation = observation.reject do |key, _value|
+  %w[acknowledged_wake_id observed_at].include?(key)
+end
+observation_digest = Digest::SHA256.hexdigest(canonical_json(digest_observation))
+legacy_digest_observation = observation.reject { |key, _value| key == "acknowledged_wake_id" }
+legacy_observation_digest = nil
+
+FileUtils.mkdir_p(File.dirname(state_path))
+File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
+  lock.flock(File::LOCK_EX)
+  previous = if File.file?(state_path)
+               begin
+                 JSON.parse(File.read(state_path))
+               rescue JSON::ParserError
+                 fail_json("corrupt-persisted-state")
+               end
+             end
+  fail_json("corrupt-persisted-state") if previous && !persisted_state?(previous)
+  fail_json("monitor-id-collision") if previous && previous["monitor_id"] != monitor_id
+
+  legacy_digest_migrated = false
+  validate_same_sequence_replay = lambda do
+    if previous["observation_digest_version"] == OBSERVATION_DIGEST_VERSION
+      fail_json("probe-replay-mismatch") if previous["last_observation_digest"] != observation_digest
+    else
+      legacy_observation_digest ||= Digest::SHA256.hexdigest(canonical_json(legacy_digest_observation))
+      fail_json("probe-replay-mismatch") if previous["last_observation_digest"] != legacy_observation_digest
+
+      previous = previous.merge(
+        "last_observation_digest" => observation_digest,
+        "observation_digest_version" => OBSERVATION_DIGEST_VERSION
+      )
+      legacy_digest_migrated = true
+    end
+  end
+
+  pending_wake = previous&.fetch("pending_wake", nil)
+  legacy_acknowledged_wake_ids = previous.to_h.fetch("acknowledged_wake_ids", [])
+  fail_json("corrupt-persisted-state") unless legacy_acknowledged_wake_ids.is_a?(Array)
+  recognized_acknowledgement = false
+  if acknowledged_wake_id
+    validate_same_sequence_replay.call if previous && probe_sequence == previous.fetch("probe_sequence")
+    if pending_wake.is_a?(Hash) && pending_wake["wake_id"] == acknowledged_wake_id
+      fail_json("invalid-wake-acknowledgement") unless previous &&
+                                                       probe_sequence == previous.fetch("probe_sequence")
+
+      previous = previous.reject { |key, _value| %w[pending_wake acknowledged_wake_ids].include?(key) }
+      persist_state(state_path, previous)
+      legacy_digest_migrated = false
+      recognized_acknowledgement = true
+    elsif previous && probe_sequence == previous.fetch("probe_sequence") &&
+          previous.dig("last_decision", "wake_parent") == true &&
+          previous.dig("last_decision", "wake_id") == acknowledged_wake_id
+      recognized_acknowledgement = true
+    elsif previous && probe_sequence <= previous.fetch("probe_sequence") &&
+          legacy_acknowledged_wake_ids.include?(acknowledged_wake_id)
+      recognized_acknowledgement = true
+    elsif previous && probe_sequence < previous.fetch("probe_sequence")
+      possible_wake_ids = possible_stale_wake_actions(
+        capability: capability,
+        task_status: task_status,
+        dependency_status: dependency_status,
+        probe_sequence: probe_sequence
+      ).map do |action|
+        wake_id_for(
+          monitor_id: monitor_id,
+          probe_sequence: probe_sequence,
+          fingerprint: fingerprint,
+          action: action
+        )
+      end
+      recognized_acknowledgement = possible_wake_ids.include?(acknowledged_wake_id)
+      fail_json("invalid-wake-acknowledgement") unless recognized_acknowledgement
+    else
+      fail_json("invalid-wake-acknowledgement")
+    end
+
+    pending_wake = previous&.fetch("pending_wake", nil)
+  end
+  validate_same_sequence_replay.call if pending_wake && previous &&
+                                        probe_sequence == previous.fetch("probe_sequence")
+  terminal_observation = TASK_ACTIONS.key?(task_status) || dependency_status == "terminal"
+  terminal_action = TASK_ACTIONS[task_status]
+  terminal_action ||= "stop-dependency-terminal" if dependency_status == "terminal"
+  terminal_observation_supersedes_pending = pending_wake && terminal_observation && previous &&
+                                            probe_sequence > previous.fetch("probe_sequence") &&
+                                            (pending_wake.dig("decision", "action") != terminal_action ||
+                                             previous.fetch("fingerprint") != fingerprint ||
+                                             capability == "unsupported")
+  if pending_wake && !terminal_observation_supersedes_pending
+    pending_decision = pending_wake.fetch("decision")
+    decision = pending_decision.merge(
+      "action" => "redeliver-pending-wake",
+      "wake_parent" => true,
+      "replayed" => true,
+      "replayed_action" => pending_decision.fetch("action"),
+      "acknowledgement_payload" => pending_wake.fetch("acknowledgement_payload")
+    )
+    puts JSON.generate(decision)
+    next
+  end
+
+  if recognized_acknowledgement && previous && probe_sequence <= previous.fetch("probe_sequence")
+    persist_state(state_path, previous) if legacy_digest_migrated
+    puts JSON.generate(
+      "contract" => "goal-state-change-decision",
+      "version" => 1,
+      "status" => "ok",
+      "monitor_id" => monitor_id,
+      "action" => "suppress-acknowledgement-retry",
+      "fingerprint" => previous.fetch("fingerprint"),
+      "wake_parent" => false,
+      "monitor_status" => previous.fetch("monitor_status"),
+      "acknowledged_wake_id" => acknowledged_wake_id
+    )
+    next
+  end
+
+  if previous && probe_sequence <= previous.fetch("probe_sequence")
+    if probe_sequence == previous.fetch("probe_sequence")
+      validate_same_sequence_replay.call
+      persist_state(state_path, previous) if legacy_digest_migrated
+
+      previous_decision = previous.fetch("last_decision")
+      decision = previous_decision.merge(
+        "action" => "suppress-replayed-probe",
+        "wake_parent" => false,
+        "replayed" => true,
+        "replayed_action" => previous_decision.fetch("action")
+      )
+      puts JSON.generate(decision)
+      next
+    end
+
+    puts JSON.generate(
+      "contract" => "goal-state-change-decision",
+      "version" => 1,
+      "status" => "ok",
+      "monitor_id" => monitor_id,
+      "action" => "suppress-stale-probe",
+      "fingerprint" => previous.fetch("fingerprint"),
+      "wake_parent" => false,
+      "monitor_status" => previous.fetch("monitor_status"),
+      "last_probe_sequence" => previous.fetch("probe_sequence")
+    )
+    next
+  end
+
+  task_action = TASK_ACTIONS[task_status]
+  sticky_monitor_status = previous&.fetch("monitor_status", nil)
+  previous_handoff = previous&.dig("last_decision", "handoff")
+  dependency_stopped_without_wake = previous_handoff&.fetch("reason", nil) ==
+                                    "dependency-terminal-while-unsupported"
+  task_handoff_supersedes_dependency_stop = task_action && sticky_monitor_status == "stopped" &&
+                                            (!previous_handoff || dependency_stopped_without_wake)
+  if previous && ((sticky_monitor_status == "stopped" && !task_handoff_supersedes_dependency_stop &&
+                    !terminal_observation_supersedes_pending) ||
+                  (sticky_monitor_status == "paused" && !terminal_observation))
+    monitor_status = previous.fetch("monitor_status")
+    decision = {
+      "contract" => "goal-state-change-decision",
+      "version" => 1,
+      "status" => "ok",
+      "monitor_id" => monitor_id,
+      "action" => monitor_status == "stopped" ? "already-stopped" : "manual-resume-required",
+      "fingerprint" => previous.fetch("fingerprint"),
+      "wake_parent" => false,
+      "monitor_status" => monitor_status
+    }
+    decision["handoff"] = previous_handoff if previous_handoff
+    state = previous.merge(
+      "probe_sequence" => probe_sequence,
+      "last_observation_digest" => observation_digest,
+      "observation_digest_version" => OBSERVATION_DIGEST_VERSION,
+      "last_checked_at" => observation["observed_at"],
+      "last_decision" => decision
+    )
+    persist_state(state_path, state)
+    puts JSON.generate(decision)
+    next
+  end
+
+  if previous && !terminal_observation &&
+     (previous["limits"] != limits || previous["polling_policy"] != polling_policy)
+    fail_json("monitor-configuration-drift")
+  end
+  if previous && terminal_observation
+    limits = previous.fetch("limits")
+    polling_policy = previous.fetch("polling_policy")
+  end
+
+  changed = !previous.nil? && previous["fingerprint"] != fingerprint
+  dependency_terminal = dependency_status == "terminal"
+  task_monitor_status = task_status == "blocked-user-input" ? "paused" : "stopped" if task_action
+  unchanged_runs = if previous && !changed
+                     previous.fetch("unchanged_runs", 0) + 1
+                   else
+                     0
+                   end
+  model_call_delta = usage_delta.fetch("model_calls")
+  model_call_delta = 1 if previous && capability == "model-polling-only" && model_call_delta.zero?
+  usage = {
+    "model_calls" => previous.to_h.fetch("usage", {}).fetch("model_calls", 0) + model_call_delta,
+    "tokens" => previous.to_h.fetch("usage", {}).fetch("tokens", 0) + usage_delta.fetch("tokens")
+  }
+  budget_reason = if unchanged_runs >= limits.fetch("max_unchanged_runs")
+                    "unchanged-runs-ceiling"
+                  elsif usage.fetch("model_calls") >= limits.fetch("max_model_calls")
+                    "model-calls-ceiling"
+                  elsif usage.fetch("tokens") >= limits.fetch("max_tokens")
+                    "token-ceiling"
+                  end
+  budget_pause = budget_reason && !task_action && !dependency_terminal
+  monitor_status = if task_monitor_status
+                     task_monitor_status
+                   elsif dependency_terminal
+                     "stopped"
+                   elsif capability == "unsupported"
+                     "paused"
+                   elsif budget_pause
+                     "paused"
+                   else
+                     "active"
+                   end
+
+  wake_parent = if capability == "unsupported" || task_action
+                  false
+                elsif dependency_terminal
+                  true
+                elsif changed
+                  true
+                elsif budget_pause
+                  false
+                else
+                  !previous.nil? && capability == "model-polling-only"
+                end
+  decision = {
+    "contract" => "goal-state-change-decision",
+    "version" => 1,
+    "status" => "ok",
+    "monitor_id" => monitor_id,
+    "action" => if task_action
+                  task_action
+                elsif capability == "unsupported"
+                  "manual-resume-required"
+                elsif dependency_terminal
+                  "stop-dependency-terminal"
+                elsif changed
+                  "wake-state-change"
+                elsif budget_pause
+                  "pause-budget"
+                elsif previous && capability == "model-polling-only"
+                  "fallback-model-poll"
+                elsif previous
+                  "suppress-unchanged"
+                else
+                  "baseline-recorded"
+                end,
+    "fingerprint" => fingerprint,
+    "wake_parent" => wake_parent,
+    "monitor_status" => monitor_status
+  }
+  if capability == "model-polling-only" && monitor_status == "active"
+    exponent = [unchanged_runs - fast_attempts + 1, 0].max
+    decision["next_interval_seconds"] = [fast_interval_seconds * (2**exponent), max_interval_seconds].min
+  end
+  if changed && wake_parent
+    decision["state_delta"] = {
+      "changes" => compact_changes(previous.fetch("blocker_state"), normalized_blocker_state)
+    }
+  end
+  if budget_pause
+    decision["handoff"] = {
+      "contract" => "goal-state-change-budget-handoff",
+      "version" => 1,
+      "monitor_id" => monitor_id,
+      "reason" => budget_reason,
+      "fingerprint" => fingerprint,
+      "usage" => usage,
+      "blocker_state" => normalized_blocker_state,
+      "limits" => limits,
+      "resume_instruction" => resume_instruction,
+      "resume" => "manual-resume-required"
+    }
+  end
+  if %w[terminal not-resumable].include?(task_status)
+    decision["handoff"] = {
+      "contract" => "goal-state-change-monitor-handoff",
+      "version" => 1,
+      "monitor_id" => monitor_id,
+      "reason" => "task-#{task_status}",
+      "fingerprint" => fingerprint,
+      "blocker_state" => normalized_blocker_state,
+      "resume_instruction" => resume_instruction,
+      "resume" => "manual-resume-required"
+    }
+  end
+  if task_status == "blocked-user-input"
+    decision["handoff"] = {
+      "contract" => "goal-state-change-monitor-handoff",
+      "version" => 1,
+      "monitor_id" => monitor_id,
+      "reason" => "blocked-user-input",
+      "fingerprint" => fingerprint,
+      "blocker_state" => normalized_blocker_state,
+      "resume_instruction" => resume_instruction,
+      "resume" => "manual-resume-required"
+    }
+  end
+  if capability == "unsupported" && task_status == "resumable"
+    unsupported_reason = if dependency_terminal
+                           "dependency-terminal-while-unsupported"
+                         elsif changed
+                           "state-change-while-unsupported"
+                         else
+                           "unsupported-capability"
+                         end
+    decision["handoff"] = {
+      "contract" => "goal-state-change-monitor-handoff",
+      "version" => 1,
+      "monitor_id" => monitor_id,
+      "reason" => unsupported_reason,
+      "fingerprint" => fingerprint,
+      "dependency_status" => dependency_status,
+      "blocker_state" => normalized_blocker_state,
+      "resume_instruction" => resume_instruction,
+      "resume" => "manual-resume-required"
+    }
+    if budget_reason
+      decision["handoff"]["budget_reason"] = budget_reason
+      decision["handoff"]["usage"] = usage
+      decision["handoff"]["limits"] = limits
+    end
+    if changed
+      decision["handoff"]["state_delta"] = {
+        "changes" => compact_changes(previous.fetch("blocker_state"), normalized_blocker_state)
+      }
+    end
+  end
+  if wake_parent
+    wake_id = wake_id_for(
+      monitor_id: monitor_id,
+      probe_sequence: probe_sequence,
+      fingerprint: fingerprint,
+      action: decision.fetch("action")
+    )
+    decision["wake_id"] = wake_id
+  end
+
+  state = {
+    "contract" => "goal-state-change-monitor-state",
+    "version" => 1,
+    "monitor_id" => monitor_id,
+    "fingerprint" => fingerprint,
+    "blocker_state" => normalized_blocker_state,
+    "capability" => capability,
+    "polling_policy" => polling_policy,
+    "limits" => limits,
+    "usage" => usage,
+    "unchanged_runs" => unchanged_runs,
+    "monitor_status" => monitor_status,
+    "probe_sequence" => probe_sequence,
+    "last_observation_digest" => observation_digest,
+    "observation_digest_version" => OBSERVATION_DIGEST_VERSION,
+    "last_checked_at" => observation["observed_at"],
+    "last_decision" => decision
+  }
+  if wake_parent
+    state["pending_wake"] = {
+      "wake_id" => decision.fetch("wake_id"),
+      "decision" => decision,
+      "acknowledgement_payload" => canonicalize(
+        digest_observation.merge("acknowledged_wake_id" => decision.fetch("wake_id"))
+      )
+    }
+  end
+  persist_state(state_path, state)
+  puts JSON.generate(decision)
+end

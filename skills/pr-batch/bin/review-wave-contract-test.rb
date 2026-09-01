@@ -29,6 +29,7 @@ class ReviewWaveContractTest < Minitest::Test
   def setup
     @workflow = read("workflows/pr-processing.md")
     @pr_batch = read("skills/pr-batch/SKILL.md")
+    @integration_closeout = read("workflows/pr-batch-integration-closeout.md")
     @pr_monitoring = read("skills/pr-monitoring/SKILL.md")
     @continue = read("skills/continue/SKILL.md")
     @address_review = read("skills/address-review/SKILL.md")
@@ -44,32 +45,55 @@ class ReviewWaveContractTest < Minitest::Test
       WORK_CONSERVATION,
       HEAD_INVALIDATION
     ].each do |rule|
-      assert_rule @workflow, rule
+      assert_rule @integration_closeout, rule
     end
 
-    closeout = section(@workflow, "### Coordinator Closeout Lane", /^##\s+/)
+    closeout = section(@integration_closeout, "### Coordinator Closeout Lane", /^##\s+/)
     refute_match(/Wait for current-head checks.*?Fetch current unresolved review threads/m, closeout)
+
+    assert_includes @workflow,
+                    "[Coordinator Closeout Lane](pr-batch-integration-closeout.md#coordinator-closeout-lane)"
+  end
+
+  def test_section_extractor_ignores_a_quoted_heading
+    document = <<~MARKDOWN
+      <!-- Keep `### Coordinator Closeout Lane` synchronized. -->
+      decoy body
+
+      ### Coordinator Closeout Lane
+
+      real body
+
+      ## Next
+    MARKDOWN
+
+    extracted = section(document, "### Coordinator Closeout Lane", /^##\s+/)
+
+    assert_includes extracted, "real body"
+    refute_includes extracted, "decoy body"
   end
 
   def test_pr_entry_points_preserve_the_same_review_wave_contract
-    [@pr_batch, @pr_monitoring, @docs].each do |text|
+    [@pr_monitoring, @docs].each do |text|
       assert_rule text, REVIEW_WAVE_BARRIER
       assert_rule text, VALIDATION_CONCURRENCY
       assert_rule text, WORK_CONSERVATION
       assert_rule text, HEAD_INVALIDATION
     end
+
+    assert_includes @pr_batch,
+                    "[Review-Wave And Validation Cohorts](../../workflows/pr-batch-integration-closeout.md#review-wave-and-validation-cohorts)"
   end
 
   def test_usage_limit_and_observability_invariants_are_documented
     [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER, COHORT_DISCOVERY].each do |rule|
-      assert_rule @workflow, rule
+      assert_rule @integration_closeout, rule
     end
     [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER].each do |rule|
       assert_rule @docs, rule
     end
-    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER, COHORT_DISCOVERY].each do |rule|
-      assert_rule @pr_batch, rule
-    end
+    assert_includes @pr_batch,
+                    "[Review-Wave And Validation Cohorts](../../workflows/pr-batch-integration-closeout.md#review-wave-and-validation-cohorts)"
   end
 
   def test_continue_replans_serialized_handoffs_before_waiting
@@ -106,12 +130,11 @@ class ReviewWaveContractTest < Minitest::Test
   end
 
   def section(text, heading, end_heading)
-    start_index = text.index(heading)
-    raise "missing heading #{heading.inspect}" unless start_index
+    heading_match = text.match(/^#{Regexp.escape(heading)}[[:blank:]]*$/)
+    raise "missing heading #{heading.inspect}" unless heading_match
 
-    body_start = start_index + heading.length
-    tail = text[body_start..]
-    ending = tail.index(end_heading)
-    ending ? tail[0...ending] : tail
+    body_start = heading_match.end(0)
+    ending = text.match(end_heading, body_start)
+    text[body_start...(ending ? ending.begin(0) : text.length)]
   end
 end

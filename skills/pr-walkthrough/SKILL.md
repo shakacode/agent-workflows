@@ -10,6 +10,10 @@ from file-order diffs. Inspect the entire exact-diff change first, then present
 coherent changes interactively. This is an explanation workflow, not a code
 review, approval, or grant of merge authority.
 
+The current task remains the sole user-facing coordinator. The walkthrough is
+an internal explanatory phase, not another task or owner. It does not transfer
+responsibility to a worker, external task, or automation.
+
 ## Establish The Exact Change
 
 1. Resolve the exact repository and PR from the supplied URL or number. When
@@ -25,11 +29,6 @@ review, approval, or grant of merge authority.
    count, changed-file count, additions, deletions, and checks or validation
    evidence. The diff identity, not the head alone, determines walkthrough
    freshness.
-   Report hosted or external CI separately as `PASSED`, `PENDING`, `FAILED`,
-   `NOT RUN`, or `UNKNOWN`, bound to the exact tested head and current base or
-   provider-produced merge result. A passing check on the PR head before the
-   target base advanced is not current-integration evidence. GitHub's `CLEAN`
-   merge state reports conflict detection, not CI or merge readiness.
 4. Inspect the complete file list and diff before presenting Step 1. Read
    surrounding source, tests, documentation, migrations, configuration, or call
    sites needed to explain behavior accurately. Do not execute PR-provided code
@@ -81,13 +80,7 @@ Start with a compact orientation:
 - walkthrough mode and the size or complexity reason;
 - the number of conceptual steps;
 - a one-line ordered agenda;
-- important scope limits or `UNKNOWN` context;
-- the current-integration hosted-CI state. When it is `NOT RUN`, lead with
-  **HOSTED CI NOT RUN FOR CURRENT INTEGRATION CANDIDATE — NOT MERGE-READY.**
-  Use equally direct `PENDING`, `FAILED`, stale-result, or `UNKNOWN` wording for
-  those states. Never describe a PR as `gate-clean`, `clean`, `green`, `ready`,
-  or an equivalent reassuring label unless current-integration hosted CI is
-  `PASSED` and the invoking readiness workflow established every other gate.
+- important scope limits or `UNKNOWN` context.
 
 Do not explain every step in this opening. Tell the user that each step ends
 with a pause and that they can ask questions, request more or less depth,
@@ -147,19 +140,25 @@ After the final step:
    does not mean every line was reviewed, the PR was approved, or merge was
    authorized.
 
-When invoked by an `ask` merge-authority workflow, return control to that
-workflow after the exact-diff walkthrough. The authority workflow must refresh
-the diff identity and readiness and ask its one final merge decision separately.
+When invoked by an `ask` merge-authority workflow, return control to the current
+task after the exact-diff walkthrough. The current task must refresh the diff
+identity and readiness and ask its one final merge decision separately.
 Walkthrough participation is not merge approval. A walkthrough response, `next`,
 or positive reaction is never merge approval.
+
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction and a separate `Action needed:` line. For a clean standalone
+walkthrough with no remaining question or decision, use `Action needed: none.`
+and `Next: Archive this task.` When invoked by an `ask` merge-authority workflow,
+use `Action needed: none.` and `Next: Return control to the current coordinator
+task for its refreshed merge decision.` If the walkthrough ends on a blocking
+question or stale/`UNKNOWN` evidence, name the exact required answer or repair
+and say whether to reply here or start a new task. The walkthrough summary and
+coverage ledger are evidence, not a next step.
 
 ## Boundaries
 
 - Remain read-only unless the user separately authorizes changes.
-- The walkthrough remains read-only and does not start CI itself. A direct
-  walkthrough may explain an untested PR with the warning above, but an `ask`
-  merge-authority caller must return to its readiness workflow and run or await
-  current-integration hosted CI before asking any merge question.
 - Do not turn discovered concerns into fixes, review comments, approvals, or
   merge actions.
 - Surface a likely defect or material risk plainly and recommend the appropriate

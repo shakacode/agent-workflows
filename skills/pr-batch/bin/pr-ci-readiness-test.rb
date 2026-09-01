@@ -96,6 +96,72 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal "NOT_READY", out["verdict"]
   end
 
+  # --- #202 contract 1: unknown/malformed check rows fail closed -----------
+  #
+  # Reconciled from React on Rails PR #4749's review of the pinned pack: an
+  # unrecognized `bucket` value (e.g. a future gh CLI state this script does
+  # not yet know about) or a structurally invalid row was silently treated
+  # as a pass-equivalent, so a single such row could produce READY on its
+  # own. Only the explicitly recognized buckets may contribute to READY now;
+  # anything else fails closed to NOT_READY with the offending row named in
+  # `invalid` so the result explains why.
+
+  def test_unrecognized_bucket_fails_closed_instead_of_ready
+    # Exact reproduction from #202.
+    out = PrCiReadiness.assess(
+      pr_number: 1, required_used: true,
+      rows: [{ "workflow" => "CI", "name" => "mystery", "bucket" => "future-state" }]
+    )
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["mystery (bucket: \"future-state\")"], out["invalid"]
+    assert_empty out["failing"]
+    assert_empty out["pending"]
+  end
+
+  def test_missing_bucket_field_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true,
+                               rows: [{ "workflow" => "CI", "name" => "unit" }])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["unit (bucket: nil)"], out["invalid"]
+  end
+
+  def test_non_string_bucket_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true,
+                               rows: [{ "workflow" => "CI", "name" => "unit", "bucket" => 1 }])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["unit (bucket: 1)"], out["invalid"]
+  end
+
+  def test_non_object_row_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: ["not-a-row"])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["row was not an object (String)"], out["invalid"]
+  end
+
+  def test_null_row_entry_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [nil])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["row was not an object (NilClass)"], out["invalid"]
+  end
+
+  def test_invalid_row_alongside_otherwise_passing_rows_still_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
+                                 { "workflow" => "CI", "name" => "unit", "bucket" => "pass" },
+                                 { "workflow" => "CI", "name" => "mystery", "bucket" => "future-state" }
+                               ])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ["mystery (bucket: \"future-state\")"], out["invalid"]
+  end
+
+  def test_all_recognized_buckets_remain_unaffected_by_invalid_row_validation
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
+                                 { "name" => "rspec", "bucket" => "pass" },
+                                 { "name" => "examples", "bucket" => "skipping" }
+                               ])
+    assert_equal "READY", out["verdict"]
+    assert_empty out["invalid"]
+  end
+
   # --- parse helpers --------------------------------------------------------
 
   def test_usable_checks_discriminates_payloads
@@ -262,6 +328,73 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal(%w[READY READY READY READY], scopes.values.map { |scope| scope.fetch("state") })
   end
 
+  def test_exact_head_inventory_ignores_completed_cancelled_non_required_check_runs
+    head = "a" * 40
+    checked_at = "2026-08-31T12:00:00Z"
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at:,
+      required_rows: [{ "workflow" => "required-ci", "name" => "unit", "bucket" => "pass" }],
+      required_complete: true,
+      actions_rows: [],
+      actions_complete: true,
+      check_runs: [
+        {
+          "kind" => "check_run", "id" => 18, "name" => "review-app",
+          "status" => "completed", "conclusion" => "cancelled",
+          "app_slug" => "circleci-checks", "dependabot" => false
+        },
+        {
+          "kind" => "check_run", "id" => 19, "name" => "CodeRabbit",
+          "status" => "completed", "conclusion" => "success",
+          "app_slug" => "coderabbitai", "dependabot" => false
+        }
+      ],
+      check_runs_complete: true,
+      statuses: [],
+      statuses_complete: true
+    )
+    contract = PrCiReadiness.evidence_contract(
+      repo: "owner/repo", pr_number: 7, head_sha: head, checked_at:, scopes:
+    )
+
+    assert_equal(
+      [19],
+      scopes.dig("other", "rows").map { |row| row.fetch("id") }
+    )
+    assert_equal "READY", scopes.dig("other", "state")
+    assert_equal "READY", contract.fetch("verdict")
+  end
+
+  def test_exact_head_inventory_keeps_cancelled_required_context_not_ready
+    head = "a" * 40
+    checked_at = "2026-08-31T12:00:00Z"
+    scopes = PrCiReadiness.inventory_scopes(
+      head_sha: head,
+      checked_at:,
+      required_rows: [{ "workflow" => "circleci-checks", "name" => "test-suite", "bucket" => "cancel" }],
+      required_complete: true,
+      actions_rows: [],
+      actions_complete: true,
+      check_runs: [
+        {
+          "kind" => "check_run", "id" => 20, "name" => "test-suite",
+          "status" => "completed", "conclusion" => "cancelled",
+          "app_slug" => "circleci-checks", "dependabot" => false
+        }
+      ],
+      check_runs_complete: true,
+      statuses: [],
+      statuses_complete: true
+    )
+    contract = PrCiReadiness.evidence_contract(
+      repo: "owner/repo", pr_number: 7, head_sha: head, checked_at:, scopes:
+    )
+
+    assert_equal "NOT_READY", scopes.dig("required_status_check_rollup", "state")
+    assert_equal "NOT_READY", contract.fetch("verdict")
+  end
+
   def test_required_rollup_filters_other_checks_by_producer_and_context_not_name_alone
     head = "a" * 40
     scopes = PrCiReadiness.inventory_scopes(
@@ -343,6 +476,18 @@ end
 
 # CLI / Runner integration via a fake gh on PATH.
 class PrCiReadinessCliTest < Minitest::Test
+  HICHEE_DATA_431_HEAD = "6c7f86b92e2eac2fc73ce29c74ab5cce9ea9b2c1"
+
+  def hichee_data_431_identity
+    {
+      "id" => 18_431, "number" => 431,
+      "head" => {
+        "sha" => HICHEE_DATA_431_HEAD, "ref" => "upgrade-rails",
+        "repo" => { "id" => 43_100, "full_name" => "shakacode/hichee-data" }
+      }
+    }
+  end
+
   # Build a temp dir with a fake `gh` executable that emits canned `gh pr
   # checks` JSON, then run the real script with that dir prepended to PATH.
   def with_fake_gh(required_json:, full_json:, pr_head: "a" * 40, pr_identity: nil, runs: {},
@@ -915,6 +1060,89 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  # Regression for #202 contract 1, end to end through the CLI: a required
+  # row with an unrecognized bucket (e.g. a future gh CLI state) must not be
+  # silently treated as passing.
+  def test_cli_fails_closed_for_unrecognized_required_bucket
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"mystery","bucket":"future-state"}]',
+      full_json: "[]"
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal true, data["required_used"]
+      assert_equal ["mystery (bucket: \"future-state\")"], data["invalid"]
+    end
+  end
+
+  # Regression for the claude-review finding on #202: PrCiReadiness.assess
+  # was library-tested against non-object rows, but Runner#assess indexes
+  # PrCiReadiness.parse_rows output (`row["bucket"]`, `check_identity`,
+  # `active_rows`) several times *before* rows ever reach
+  # PrCiReadiness.assess -- e.g. required_cancellations = required_rows.select
+  # { |row| row["bucket"] ... }. parse_rows only validates that the parsed
+  # JSON is an Array; it does not filter non-Hash elements. A `null` or bare
+  # scalar entry in the gh CLI payload therefore raised an uncaught
+  # NoMethodError (Error is a distinct class from NoMethodError, and
+  # Runner#run only rescues Error) instead of the CLI exiting cleanly with
+  # NOT_READY and the row named in "invalid". Drive it through the real
+  # Runner/CLI path, not just the library function.
+  def test_cli_survives_and_fails_closed_for_non_object_required_rows
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"ok","bucket":"pass"},null,42]',
+      full_json: "[]"
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      refute_includes out, "NoMethodError"
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal true, data["required_used"]
+      assert_equal(
+        ["row was not an object (NilClass)", "row was not an object (Integer)"],
+        data["invalid"]
+      )
+    end
+  end
+
+  # A required-checks payload that is entirely non-object rows (e.g. `[null]`)
+  # must not be treated as "no usable required checks" -- that would fall
+  # back to the full advisory list and silently lose the malformed-evidence
+  # signal instead of failing closed on it directly.
+  def test_cli_required_only_malformed_rows_fails_closed_without_falling_back
+    with_fake_gh(
+      required_json: "[null]",
+      full_json: '[{"name":"advisory","bucket":"pass"}]'
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      refute_includes out, "NoMethodError"
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal true, data["required_used"]
+      assert_equal ["row was not an object (NilClass)"], data["invalid"]
+    end
+  end
+
+  # Same crash surface, reached via the full-list fallback path (no usable
+  # required checks) instead of the required-checks path.
+  def test_cli_full_list_fallback_survives_malformed_rows
+    with_fake_gh(
+      required_json: "",
+      full_json: '[{"workflow":"CI","name":"unit","bucket":"pass"},null]'
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      refute_includes out, "NoMethodError"
+      data = JSON.parse(out)
+      assert_equal "NOT_READY", data["verdict"]
+      assert_equal false, data["required_used"]
+      assert_equal ["row was not an object (NilClass)"], data["invalid"]
+    end
+  end
+
   def test_cli_emits_complete_exact_head_inventory_with_dynamic_and_dependabot_rows
     head = "a" * 40
     action_runs = [
@@ -1088,6 +1316,106 @@ class PrCiReadinessCliTest < Minitest::Test
       Array.new(2) { ["READY", "READY", [103, 1030, 104, 1040, 105, 1050]] },
       results
     )
+  end
+
+  # Regression: exact_head_inventory must not re-append a superseded GitHub
+  # Actions check run after fetch_exact_head_actions selects the current run.
+  def test_exact_head_actions_do_not_reappend_superseded_check_runs
+    head = "a" * 40
+    old_run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "failure",
+      "html_url" => "https://github.com/owner/repo/actions/runs/100"
+    }
+    current_run = old_run.merge(
+      "id" => 101, "run_number" => 8, "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101"
+    )
+    current_job = {
+      "id" => 1010, "name" => "unit", "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010"
+    }
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [old_run, current_run],
+      exact_check_runs: [
+        {
+          "id" => 2000, "name" => "unit", "status" => "completed", "conclusion" => "failure",
+          "head_sha" => head, "app" => { "slug" => "github-actions" },
+          "html_url" => "https://github.com/owner/repo/actions/runs/100/job/1000"
+        },
+        {
+          "id" => 2001, "name" => "unit", "status" => "completed", "conclusion" => "success",
+          "head_sha" => head, "app" => { "slug" => "github-actions" },
+          "html_url" => current_job.fetch("html_url")
+        }
+      ],
+      runs: {
+        "100" => { run: old_run, jobs: [], jobs_error: true },
+        "101" => { run: current_run, jobs: [current_job] }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal "READY", data.dig("scopes", "github_actions", "state")
+      assert_equal([101, 1010], data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") })
+    end
+  end
+
+  def test_exact_head_actions_retain_unobserved_and_unassociated_check_runs
+    head = "a" * 40
+    current_run = {
+      "id" => 101, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 8, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101"
+    }
+    current_job = {
+      "id" => 1010, "name" => "unit", "status" => "completed", "conclusion" => "success",
+      "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010"
+    }
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [current_run],
+      exact_check_runs: [
+        {
+          "id" => 2000, "name" => "unknown-run", "status" => "completed", "conclusion" => "failure",
+          "head_sha" => head, "app" => { "slug" => "github-actions" },
+          "html_url" => "https://github.com/owner/repo/actions/runs/999/job/9990"
+        },
+        {
+          "id" => 2001, "name" => "unassociated", "status" => "completed", "conclusion" => "failure",
+          "head_sha" => head, "app" => { "slug" => "github-actions" },
+          "html_url" => "https://github.com/owner/repo/actions/runs/101/job/1010/not-a-job-url"
+        }
+      ],
+      runs: { "101" => { run: current_run, jobs: [current_job] } }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal "NOT_READY", data.dig("scopes", "github_actions", "state")
+      assert_equal(
+        [101, 1010, 2000, 2001],
+        data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      )
+    end
   end
 
   def test_exact_head_actions_select_target_pr_before_current_run_grouping
@@ -1278,6 +1606,71 @@ class PrCiReadinessCliTest < Minitest::Test
       Array.new(2) { ["NOT_READY", "NOT_READY", [300, 3000]] },
       results
     )
+  end
+
+  # Regression for #282: `normalize_actions_row` dropped each run's target
+  # identity, so exact-head evidence rows (and any merge-assurance receipt
+  # built from them) could not be attributed to the PR they came from after
+  # the fact. `actions_run_targets_pr?` already scopes correctness (#279);
+  # this only adds the identity as observable data on both the run row and
+  # its job rows, sorted and de-duplicated, without gating readiness.
+  def test_exact_head_actions_rows_carry_head_branch_and_all_associated_pull_request_numbers
+    head = "a" * 40
+    target_identity = {
+      "id" => 5_001, "number" => 123,
+      "head" => {
+        "sha" => head, "ref" => "feature",
+        "repo" => { "id" => 9_002, "full_name" => "owner/repo" }
+      }
+    }
+    target_association = {
+      "id" => 5_001, "number" => 123, "url" => "https://api.example/pulls/123",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    # A second PR sharing the same branch/head/repo does not conflict with
+    # the target identity check (only a partial id/number match would), so
+    # both associated numbers should appear in the emitted row, sorted.
+    other_association = {
+      "id" => 5_003, "number" => 45, "url" => "https://api.example/pulls/45",
+      "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 9_002 } }
+    }
+    run = {
+      "id" => 200, "workflow_id" => 20, "event" => "pull_request",
+      "run_number" => 4, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [target_association, other_association],
+      "status" => "completed", "conclusion" => "success"
+    }
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      pr_identity: target_identity,
+      exact_actions: [run],
+      runs: {
+        "200" => {
+          run:,
+          jobs: [{
+            "id" => 2_000, "name" => "unit", "status" => "completed",
+            "conclusion" => "success"
+          }]
+        }
+      }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "READY", data.fetch("verdict")
+      rows = data.dig("scopes", "github_actions", "rows")
+      run_row = rows.find { |row| row.fetch("id") == 200 }
+      job_row = rows.find { |row| row.fetch("id") == 2_000 }
+
+      assert_equal "feature", run_row.fetch("head_branch")
+      assert_equal [45, 123], run_row.fetch("pull_requests")
+      assert_equal "feature", job_row.fetch("head_branch")
+      assert_equal [45, 123], job_row.fetch("pull_requests")
+    end
   end
 
   def test_target_pr_identity_move_or_malformed_refetch_invalidates_every_evidence_scope
@@ -1752,37 +2145,59 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  # Regression: commit statuses used to be read from `/commits/{ref}/statuses`,
-  # whose rows carry no commit SHA, and every row was asserted against a `sha`
-  # key that never exists. Any head carrying a single commit status therefore
-  # produced an incomplete `other` scope and an UNKNOWN verdict, which made the
-  # sanctioned merge path reject every such PR.
-  def test_commit_status_bearing_head_yields_complete_other_scope_and_known_verdict
-    head = "a" * 40
+  # Deterministic replay of shakacode/hichee-data#431: Azure check runs were
+  # exact-head green and CodeRabbit's commit-status row omitted `sha`. The
+  # combined-status envelope still binds the inventory to the requested head.
+  def test_hichee_data_431_status_row_without_sha_replays_ready
+    head = HICHEE_DATA_431_HEAD
+    coderabbit_status = {
+      "id" => 431_001, "context" => "CodeRabbit", "state" => "success",
+      "target_url" => "https://example.test/status/431001"
+    }
+    azure_check_runs = [
+      {
+        "id" => 2_770_001, "name" => "Azure Pipelines / build",
+        "status" => "completed", "conclusion" => "success", "head_sha" => head,
+        "app" => { "slug" => "azure-pipelines" },
+        "html_url" => "https://example.test/check/2770001"
+      },
+      {
+        "id" => 2_770_002, "name" => "Azure Pipelines / test",
+        "status" => "completed", "conclusion" => "success", "head_sha" => head,
+        "app" => { "slug" => "azure-pipelines" },
+        "html_url" => "https://example.test/check/2770002"
+      }
+    ]
+    refute coderabbit_status.key?("sha")
+
     with_fake_gh(
-      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      required_json: '[{"workflow":"UNKNOWN","name":"Azure Pipelines / build","bucket":"pass"}]',
       full_json: "[]",
       pr_head: head,
-      exact_statuses: [
-        { "id" => 600, "context" => "CodeRabbit", "state" => "success",
-          "target_url" => "https://example/status/600" }
-      ]
+      pr_identity: hichee_data_431_identity,
+      exact_check_runs: azure_check_runs,
+      exact_statuses: [coderabbit_status]
     ) do |env|
-      out, status = run_script(env, "123", "--repo", "owner/repo")
+      out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
       assert status.success?, out
       data = JSON.parse(out)
-
       other = data.fetch("scopes").fetch("other")
 
       refute other.key?("error"), other.inspect
       assert_equal true, other.fetch("complete")
       assert_equal head, other.fetch("head_sha")
       assert_equal(
-        [[600, "CodeRabbit", "success"]],
-        other.fetch("rows").map { |row| row.values_at("id", "name", "state") }
+        [
+          [2_770_001, "Azure Pipelines / build", "completed", "success", nil],
+          [2_770_002, "Azure Pipelines / test", "completed", "success", nil],
+          [431_001, "CodeRabbit", nil, nil, "success"]
+        ],
+        other.fetch("rows").map { |row| row.values_at("id", "name", "status", "conclusion", "state") }
       )
-      refute_equal "UNKNOWN", other.fetch("state")
-      refute_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal "READY", data.fetch("ordinary_verdict")
+      assert_equal "READY", other.fetch("state")
+      assert_equal true, data.dig("viewer_review_inventory", "complete")
+      assert_empty data.fetch("viewer_pending_review_drafts")
       assert_equal "READY", data.fetch("verdict")
     end
   end
@@ -1813,20 +2228,21 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_combined_commit_status_for_another_commit_fails_closed
-    head = "a" * 40
+  def test_hichee_data_431_wrong_combined_status_ref_remains_unknown
+    head = HICHEE_DATA_431_HEAD
     other_head = "b" * 40
     with_fake_gh(
       required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
       full_json: "[]",
       pr_head: head,
+      pr_identity: hichee_data_431_identity,
       exact_status_sha: other_head,
       exact_statuses: [
         { "id" => 602, "context" => "CodeRabbit", "state" => "success",
           "target_url" => "https://example/status/602" }
       ]
     ) do |env|
-      out, status = run_script(env, "123", "--repo", "owner/repo")
+      out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
       assert status.success?, out
       data = JSON.parse(out)
 
@@ -1838,6 +2254,62 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_includes other.fetch("error"), "combined commit status was not bound to exact head #{head}"
       assert_includes other.fetch("error"), other_head
       assert_equal "UNKNOWN", data.fetch("verdict")
+    end
+  end
+
+  def test_hichee_data_431_status_row_with_contradictory_sha_remains_unknown
+    head = HICHEE_DATA_431_HEAD
+    other_head = "b" * 40
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      pr_identity: hichee_data_431_identity,
+      exact_statuses: [
+        {
+          "id" => 603, "context" => "CodeRabbit", "state" => "success",
+          "sha" => other_head, "target_url" => "https://example/status/603"
+        }
+      ]
+    ) do |env|
+      out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
+      assert status.success?, out
+      data = JSON.parse(out)
+      other = data.fetch("scopes").fetch("other")
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, other.fetch("complete")
+      assert_equal "UNKNOWN", other.fetch("state")
+      assert_empty other.fetch("rows")
+      assert_includes other.fetch("error"), "status context contradicted exact head #{head}"
+      assert_includes other.fetch("error"), other_head
+    end
+  end
+
+  def test_hichee_data_431_status_row_with_matching_sha_remains_ready
+    head = HICHEE_DATA_431_HEAD
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      pr_identity: hichee_data_431_identity,
+      exact_statuses: [
+        {
+          "id" => 604, "context" => "CodeRabbit", "state" => "success",
+          "sha" => head, "target_url" => "https://example/status/604"
+        }
+      ]
+    ) do |env|
+      out, status = run_script(env, "431", "--repo", "shakacode/hichee-data")
+      assert status.success?, out
+      data = JSON.parse(out)
+      other = data.fetch("scopes").fetch("other")
+
+      assert_equal "READY", data.fetch("verdict")
+      assert_equal true, other.fetch("complete")
+      assert_equal "READY", other.fetch("state")
+      normalized_rows = other.fetch("rows").map { |row| row.values_at("id", "name", "state") }
+      assert_equal [[604, "CodeRabbit", "success"]], normalized_rows
     end
   end
 
@@ -1925,6 +2397,96 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal false, data.dig("scopes", "other", "complete")
       assert_empty data.dig("scopes", "other", "rows")
       assert_includes data.dig("scopes", "other", "error"), "state changed during pagination"
+    end
+  end
+
+  # Regression for #287: `fetch_paginated_collection` calls
+  # `validate_page&.call(payload)` unconditionally on every page, so the
+  # combined-status envelope's top-level `sha` should be asserted on page 2
+  # and beyond, not just page 1. The two existing single-page fixtures above
+  # (and `test_combined_commit_status_without_sha_fails_closed` /
+  # `test_hichee_data_431_wrong_combined_status_ref_remains_unknown`) only
+  # ever exercised a single page, so nothing proved the hook re-fires past
+  # its first call. This drives a well-formed 100-row first page (accepted)
+  # followed by a second page whose envelope `sha` is mismatched or missing
+  # entirely -- if the hook only ran once, neither defect would be caught and
+  # the run would incorrectly finish READY.
+  def test_combined_status_validate_page_hook_fires_on_every_page_not_just_the_first
+    head = "a" * 40
+    page_one = Array.new(100) do |index|
+      { "id" => index + 1, "context" => "status-#{index}", "state" => "success",
+        "target_url" => "https://example/status/#{index + 1}" }
+    end
+    page_two_statuses = [
+      { "id" => 101, "context" => "status-100", "state" => "success",
+        "target_url" => "https://example/status/101" }
+    ]
+    bad_second_pages = {
+      "mismatched sha on page 2" => {
+        "sha" => "b" * 40, "state" => "success", "total_count" => 101, "statuses" => page_two_statuses
+      },
+      "missing sha on page 2" => {
+        "state" => "success", "total_count" => 101, "statuses" => page_two_statuses
+      }
+    }
+
+    accepted_bad_pages = bad_second_pages.filter_map do |label, bad_page_two|
+      pages = [
+        { "sha" => head, "state" => "success", "total_count" => 101, "statuses" => page_one },
+        bad_page_two
+      ]
+      with_fake_gh(
+        required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+        full_json: "[]",
+        pr_head: head,
+        exact_status_pages: pages
+      ) do |env|
+        out, status = run_script(env, "123", "--repo", "owner/repo")
+        assert status.success?, out
+        data = JSON.parse(out)
+        other = data.dig("scopes", "other")
+        failed_closed = data.fetch("verdict") == "UNKNOWN" &&
+                        other.fetch("complete") == false &&
+                        other.fetch("rows").empty? &&
+                        other.fetch("error").include?("combined commit status was not bound to exact head #{head}")
+        label unless failed_closed
+      end
+    end
+
+    assert_empty accepted_bad_pages
+  end
+
+  # Follow-up from the #287 review comment: a page can be structurally
+  # malformed -- a JSON array instead of an object -- rather than merely
+  # missing/mismatching `sha`. `fetch_paginated_collection` already fails
+  # closed on this ("... response was not an object") before `validate_page`
+  # even runs; this is direct regression coverage for that branch on the
+  # combined commit status endpoint specifically, proven on the second page
+  # so it cannot be satisfied by only validating the first response.
+  def test_combined_status_second_page_returning_json_array_fails_closed
+    head = "a" * 40
+    page_one = Array.new(100) do |index|
+      { "id" => index + 1, "context" => "status-#{index}", "state" => "success",
+        "target_url" => "https://example/status/#{index + 1}" }
+    end
+    pages = [
+      { "sha" => head, "state" => "success", "total_count" => 101, "statuses" => page_one },
+      %w[not an object]
+    ]
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_status_pages: pages
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "UNKNOWN", data.fetch("verdict")
+      assert_equal false, data.dig("scopes", "other", "complete")
+      assert_empty data.dig("scopes", "other", "rows")
+      assert_includes data.dig("scopes", "other", "error"), "statuses response was not an object"
     end
   end
 

@@ -26,12 +26,47 @@ repeat:
    independent in-scope steps while an external command, check, review, or agent is pending. Stop
    after completing the objective.
 
+For a resumed PR-batch lane, complete bounded ownership recovery before any
+write. If a new actor takes over abandoned ownership, emit private-backend
+`human_intervention` with `kind: takeover`; if a fenced replacement supersedes
+the prior actor, use `kind: supersede`. A routine same-thread resume with the
+same verified holder is neither a takeover nor a supersede and emits no event.
+Backend `n/a` skips silently. Typed-event transport is optional: when an active
+private backend does not advertise it or reports it
+unsupported, record `typed event transport: unavailable`, skip the emission,
+and continue without marking the event emission `UNKNOWN`. Only after the
+transport is advertised does an attempted write that fails, degrades, or is
+rejected become `UNKNOWN` handoff evidence. Every attempted advertised
+typed-event write must resolve the backend-advertised event executable and
+ordered opaque argv; a missing, malformed, or unsafe advertisement is an
+attempted-write failure. Run that exact executable and separate argv without
+shell evaluation, with a finite deadline in its own process group, preserving
+each opaque argument; on expiry terminate the whole group with `TERM`, then
+`KILL` after a finite grace period. A deadline expiry, forced termination, or
+any other advertised-support write failure records best-effort `UNKNOWN` event
+evidence; the primary operation continues immediately without waiting further
+on the event.
+
 If the user supplied focus text or arguments, treat it as additional direction or a narrowed scope
 for what to continue.
 
 - Do not re-do completed work, and do not ask the user to repeat context you can reconstruct from
   the conversation, open files, or git state.
 - Before another bounded poll or sleep, finish every runnable in-scope closeout task; wait only when no such work remains.
+- When continuation is driven by a Goal monitor, require a material state-change
+  delta or a typed terminal action with `wake_parent: true` before rebuilding
+  task context for `deterministic-watcher` decisions. An unchanged deterministic
+  probe is a persisted heartbeat, not a reason to continue. A `model-polling-only`
+  fallback wake refreshes the minimal live blocker evidence, submits the next
+  observation, and follows that decision; do not suppress the bounded fallback
+  merely because its prior fingerprint was unchanged. After durably enqueuing
+  each fallback continuation, acknowledge its `wake_id` before submitting the next observation;
+  otherwise restart-safe redelivery intentionally fences newer evidence. On a changed fingerprint or typed terminal action,
+  accept only the compact decision, refresh live dependencies, and rerun the
+  task's security, origin, coordination, overlap, review, readiness, and
+  exact-head gates before acting. A stale or duplicate probe remains suppressed;
+  a terminal, non-resumable, user-input, or budget outcome stays stopped or
+  paused with its restart-safe handoff.
 - Honor `AGENTS.md` boundaries and safety rules while resuming; never push or take irreversible
   actions unless the task already authorized them.
 - End with a `$status` report when that companion skill is installed; otherwise use the same four

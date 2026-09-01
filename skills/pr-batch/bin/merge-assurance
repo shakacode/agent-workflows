@@ -8,18 +8,32 @@
 # trusted runtime.
 
 require "digest"
+require "etc"
+require "fileutils"
+require "find"
 require "json"
+require "open3"
 require "optparse"
+require "rbconfig"
 require "tempfile"
 require "time"
 require "uri"
+require "yaml"
 
 module MergeAssurance
   class Error < StandardError; end
 
   CONTEXT_KEYS = %w[
     contract version host repo pr base head_sha authority diff_identity
-    human_merge_decision walkthrough semantic_github_actions_change operations
+    human_merge_decision walkthrough semantic_github_actions_change
+    selected_hosted_runs operations
+  ].freeze
+  SELECTED_HOSTED_RUN_KEYS = %w[provider run_id].freeze
+  SELECTED_HOSTED_RECEIPT_KEYS = %w[
+    head_sha pr provider repository run_id selected_at terminal_result
+  ].freeze
+  SELECTED_HOSTED_TERMINAL_RESULTS = %w[
+    cancelled failed nonterminal success
   ].freeze
   SCOPE_NAMES = %w[
     required_status_check_rollup github_actions dependabot other
@@ -47,15 +61,17 @@ module MergeAssurance
     verdict head_sha policy_provenance helper_provenance helper_trust metrics
     path_matches safe_class triggered_gates shadow_triggered_gates
     shadow_evidence_unknown rollback_assessment human_decision_evidence
-    evidence_failures
+    current_integration evidence_failures
   ].freeze
   AUTONOMOUS_METRIC_KEYS = %w[
     changed_files changed_lines commits reviewed_heads
   ].freeze
   AUTONOMOUS_RUNTIME_MANIFEST_KEYS = %w[
     helper
+    closeout-helper
     decision-library
     evidence-library
+    integration-evidence-library
     policy-library
     policy-glob-library
     policy-yaml-library
@@ -88,6 +104,9 @@ module MergeAssurance
   AUTONOMOUS_SAFE_CLASSES = %w[
     none documentation tests formatting-comments
   ].freeze
+  AUTONOMOUS_PATH_REASONS = %w[
+    migration infrastructure release security hot-path policy other
+  ].freeze
   AUTONOMOUS_ROLLBACK_ASSESSMENTS = %w[
     code-only-rollback-established forward-recovery-established not-applicable
   ].freeze
@@ -102,20 +121,49 @@ module MergeAssurance
   TRACKER_GH_TIMEOUT_SECONDS = 60
   TRACKER_GH_TERMINATION_GRACE_SECONDS = 0.25
   TRACKER_GH_POLL_SECONDS = 0.01
+  SELECTED_HOSTED_CI_TIMEOUT_SECONDS = 60
+  SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS = 0.25
+  SELECTED_HOSTED_CI_POLL_SECONDS = 0.01
+  SELECTED_HOSTED_CI_STDOUT_MAX_BYTES = 1_048_576
+  SELECTED_HOSTED_CI_STDERR_MAX_BYTES = 1_048_576
+  SELECTED_HOSTED_CI_MATERIALIZATION_TIMEOUT_SECONDS = 60
+  SELECTED_HOSTED_CI_MATERIALIZATION_DIAGNOSTIC_MAX_BYTES = 4096
+  SELECTED_HOSTED_CI_TREE_ENTRY_MAX_BYTES = 65_536
+  SELECTED_HOSTED_CI_SYMLINK_MAX_BYTES = 4096
+  POLICY_CONFIG = ".agents/agent-workflow.yml"
+  SELECTED_HOSTED_CI_POLICY_KEY = "selected_hosted_ci_receipts"
+  SELECTED_HOSTED_CI_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
+  SELECTED_HOSTED_CI_ENV_NAME = /\A[A-Z][A-Z0-9_]*\z/
+  SELECTED_HOSTED_CI_CREDENTIAL_ENV = /
+    \A[A-Z][A-Z0-9_]*(?:
+      _TOKEN|_API_KEY|_SECRET|_PASSWORD|_CREDENTIALS|_ACCESS_KEY_ID|
+      _SECRET_ACCESS_KEY|_PRIVATE_KEY
+    )\z
+  /x
+  # Defense in depth if the accepted credential suffix grammar broadens.
+  SELECTED_HOSTED_CI_RESERVED_ENV = %w[
+    GH_HOST GH_REPO SELECTED_HOSTED_CI_PR SELECTED_HOSTED_CI_HEAD_SHA
+    HOME USER LOGNAME PATH
+    GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL GIT_NO_REPLACE_OBJECTS
+    GIT_OPTIONAL_LOCKS GIT_TERMINAL_PROMPT
+  ].freeze
+  SYSTEM_TOOL_DIRS = %w[
+    /opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin
+  ].freeze
+  TRUSTED_INTERPRETER_DIRS = ([File.dirname(RbConfig.ruby)] + SYSTEM_TOOL_DIRS).uniq.freeze
 
   module_function
 
-  def assess(ci_result:, autonomous_result:, context:, now: Time.now.utc)
+  def assess(
+    ci_result:, autonomous_result:, context:, selected_hosted_ci_receipts: nil,
+    now: Time.now.utc
+  )
     failures = []
-    safe_context = context.is_a?(Hash) ? context : {}
-    validate_context(context, failures)
-    validate_ci(ci_result, safe_context, now, failures)
-    validate_autonomous(autonomous_result, safe_context, failures)
-    failures << "ci_result contains UNKNOWN" if contains_unknown?(ci_result)
-    failures << "autonomous_result contains UNKNOWN" if contains_unknown?(autonomous_result)
-    failures << "context contains UNKNOWN" if contains_unknown?(context)
-    validate_authority(safe_context, autonomous_result, now, failures)
-    follow_up_accounting, semantic_tracker = validate_operations(safe_context, now, failures)
+    selected_hosted_ci_receipts ||= empty_selected_hosted_ci_receipts
+    safe_context, follow_up_accounting, semantic_tracker = validate_evidence(
+      ci_result:, autonomous_result:, context:, selected_hosted_ci_receipts:,
+      now:, failures:
+    )
     authenticated_tracker_reads = []
     if failures.empty? && semantic_tracker
       tracker_read = authenticate_semantic_tracker(semantic_tracker, safe_context, now, failures)
@@ -126,13 +174,14 @@ module MergeAssurance
 
     evidence = {
       "ci_result" => ci_result,
+      "selected_hosted_ci_receipts" => selected_hosted_ci_receipts,
       "autonomous_result" => autonomous_result,
       "context" => context,
       "authenticated_tracker_reads" => authenticated_tracker_reads
     }
     receipt = {
       "contract" => "merge-assurance-receipt",
-      "version" => 1,
+      "version" => 2,
       "eligible" => true,
       "verdict" => "ELIGIBLE",
       "issued_at" => now.utc.iso8601,
@@ -143,7 +192,8 @@ module MergeAssurance
         "base" => safe_context["base"],
         "head_sha" => safe_context["head_sha"],
         "authority" => safe_context["authority"],
-        "diff_identity" => safe_context["diff_identity"]
+        "diff_identity" => safe_context["diff_identity"],
+        "current_integration" => autonomous_result["current_integration"]
       },
       "freshness" => {
         "ci_checked_at" => ci_result["checked_at"],
@@ -155,6 +205,40 @@ module MergeAssurance
     }
     receipt["evidence_digest"] = evidence_digest(evidence)
     receipt
+  end
+
+  def local_evidence_failures(ci_result:, autonomous_result:, context:, now: Time.now.utc)
+    failures = []
+    validate_evidence(
+      ci_result:, autonomous_result:, context:, now:, failures:,
+      preflight_selected_hosted_runs: true
+    )
+    failures.uniq
+  end
+
+  def validate_evidence(
+    ci_result:, autonomous_result:, context:, now:, failures:,
+    selected_hosted_ci_receipts: nil, preflight_selected_hosted_runs: false
+  )
+    safe_context = context.is_a?(Hash) ? context : {}
+    validate_context(context, failures)
+    validate_ci(ci_result, safe_context, now, failures)
+    if selected_hosted_ci_receipts
+      validate_selected_hosted_ci(
+        selected_hosted_ci_receipts, safe_context, now, failures
+      )
+    elsif preflight_selected_hosted_runs
+      validate_selected_hosted_run_duplicates(safe_context, failures)
+    end
+    validate_autonomous(autonomous_result, safe_context, failures)
+    failures << "ci_result contains UNKNOWN" if contains_unknown?(ci_result)
+    failures << "autonomous_result contains UNKNOWN" if contains_unknown?(autonomous_result)
+    failures << "context contains UNKNOWN" if contains_unknown?(context)
+    failures << "selected_hosted_ci_receipts contains UNKNOWN" if
+      selected_hosted_ci_receipts && contains_unknown?(selected_hosted_ci_receipts)
+    validate_authority(safe_context, autonomous_result, now, failures)
+    follow_up_accounting, semantic_tracker = validate_operations(safe_context, now, failures)
+    [safe_context, follow_up_accounting, semantic_tracker]
   end
 
   def blocked_result(failures)
@@ -190,7 +274,7 @@ module MergeAssurance
     unknown_keys = context.keys - CONTEXT_KEYS
     failures << "context has unknown keys: #{unknown_keys.sort.join(', ')}" unless unknown_keys.empty?
     failures << "context host is invalid" unless valid_host?(context["host"])
-    failures << "context repo is invalid" unless context["repo"].to_s.match?(%r{\A[^/\s]+/[^/\s]+\z})
+    failures << "context repo is invalid" unless valid_repo?(context["repo"])
     failures << "context PR is invalid" unless context["pr"].is_a?(Integer) && context["pr"].positive?
     base = context["base"]
     unless base.is_a?(Hash) && base.keys.sort == %w[ref sha] &&
@@ -204,6 +288,14 @@ module MergeAssurance
     failures << "context operations must be an array" unless context["operations"].is_a?(Array)
     failures << "context semantic_github_actions_change must be boolean" unless
       [true, false].include?(context["semantic_github_actions_change"])
+    selections = context["selected_hosted_runs"]
+    unless selections.nil? || (selections.is_a?(Array) &&
+      selections.all? do |selection|
+        exact_keys?(selection, SELECTED_HOSTED_RUN_KEYS) &&
+          valid_selected_hosted_identity?(selection["provider"], selection["run_id"])
+      end)
+      failures << "context selected_hosted_runs are invalid"
+    end
   end
 
   def validate_ci(ci_result, context, now, failures)
@@ -239,6 +331,112 @@ module MergeAssurance
       validate_timestamp(scope["checked_at"], now, "ci_result scope #{name}", failures)
     end
     validate_timestamp(ci_result["checked_at"], now, "ci_result", failures)
+  end
+
+  def empty_selected_hosted_ci_receipts
+    {
+      "contract" => "selected-hosted-ci-receipts",
+      "version" => 1,
+      "complete" => true,
+      "records" => []
+    }
+  end
+
+  def validate_selected_hosted_ci(receipts, context, now, failures)
+    selections = context["selected_hosted_runs"]
+    selections = [] if selections.nil?
+    unless selections.is_a?(Array) &&
+           selections.all? { |selection| exact_keys?(selection, SELECTED_HOSTED_RUN_KEYS) }
+      failures << "context selected_hosted_runs are invalid"
+      return
+    end
+    invalid_selections = selections.reject do |selection|
+      valid_selected_hosted_identity?(selection["provider"], selection["run_id"])
+    end
+    failures << "context selected_hosted_runs contain invalid identities" if invalid_selections.any?
+    selection_ids = validate_selected_hosted_run_duplicates(context, failures)
+
+    unless exact_keys?(receipts, %w[complete contract records version]) &&
+           receipts["contract"] == "selected-hosted-ci-receipts" &&
+           receipts["version"] == 1 && receipts["complete"] == true &&
+           receipts["records"].is_a?(Array)
+      failures << "selected hosted CI receipts are incomplete or malformed"
+      return
+    end
+
+    records = receipts["records"]
+    records.each do |record|
+      unless exact_keys?(record, SELECTED_HOSTED_RECEIPT_KEYS)
+        failures << "selected hosted CI receipt is malformed"
+        next
+      end
+      identity = selected_hosted_identity(record)
+      unless valid_selected_hosted_identity?(record["provider"], record["run_id"])
+        failures << "selected hosted CI receipt identity is invalid"
+        next
+      end
+      failures << "selected hosted run #{identity} repository mismatch" unless
+        record["repository"] == context["repo"]
+      failures << "selected hosted run #{identity} PR mismatch" unless
+        record["pr"] == context["pr"]
+      failures << "selected hosted run #{identity} head mismatch" unless
+        record["head_sha"] == context["head_sha"]
+      validate_selected_at(record["selected_at"], now, identity, failures)
+      result = record["terminal_result"]
+      unless SELECTED_HOSTED_TERMINAL_RESULTS.include?(result)
+        failures << "selected hosted run #{identity} terminal result is invalid"
+        next
+      end
+      failures << "selected hosted run #{identity} is #{result}" unless result == "success"
+    end
+
+    record_ids = records.filter_map do |record|
+      next unless exact_keys?(record, SELECTED_HOSTED_RECEIPT_KEYS)
+      next unless valid_selected_hosted_identity?(record["provider"], record["run_id"])
+
+      selected_hosted_identity(record)
+    end
+    failures << "selected hosted CI receipts contain duplicates" unless
+      record_ids.length == record_ids.uniq.length
+    (selection_ids - record_ids).each do |identity|
+      failures << "selected hosted run #{identity} is missing"
+    end
+    (record_ids - selection_ids).each do |identity|
+      failures << "hosted run #{identity} was not explicitly selected"
+    end
+  end
+
+  def validate_selected_hosted_run_duplicates(context, failures)
+    return unless context.is_a?(Hash)
+
+    selections = context["selected_hosted_runs"]
+    selections = [] if selections.nil?
+    return unless selections.is_a?(Array) &&
+                  selections.all? { |selection| exact_keys?(selection, SELECTED_HOSTED_RUN_KEYS) }
+
+    selection_ids = selections.map { |selection| selected_hosted_identity(selection) }
+    failures << "context selected_hosted_runs contain duplicates" unless
+      selection_ids.length == selection_ids.uniq.length
+    selection_ids
+  end
+
+  def valid_selected_hosted_identity?(provider, run_id)
+    provider.is_a?(String) &&
+      provider.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\z/) &&
+      run_id.is_a?(String) &&
+      run_id.match?(/\A[^\s[:cntrl:]]+\z/)
+  end
+
+  def selected_hosted_identity(record)
+    "#{record['provider']}/#{record['run_id']}"
+  end
+
+  def validate_selected_at(raw, now, identity, failures)
+    selected_at = Time.iso8601(raw.to_s)
+    failures << "selected hosted run #{identity} selection time is too far in the future" if
+      selected_at - now > MAX_FUTURE_SKEW_SECONDS
+  rescue ArgumentError
+    failures << "selected hosted run #{identity} selection time is invalid"
   end
 
   def recompute_ci_scope_state(scope)
@@ -381,6 +579,7 @@ module MergeAssurance
       valid_policy_provenance?(result["policy_provenance"], context.dig("base", "sha"))
     failures << "autonomous_result helper provenance binding mismatch" unless
       valid_helper_provenance?(result["helper_provenance"], context.dig("base", "sha"))
+    validate_current_integration(result["current_integration"], context, failures)
     if !result["evidence_failures"].is_a?(Array)
       failures << "autonomous_result evidence failures are unavailable"
     elsif !result["evidence_failures"].empty?
@@ -393,6 +592,108 @@ module MergeAssurance
     return if expected_verdict == result["verdict"]
 
     failures << "autonomous_result verdict contradicts gates and decision evidence"
+  end
+
+  def validate_current_integration(integration, context, failures)
+    expected_keys = %w[
+      base_delta candidate contract current_base head_sha patch_identity pr
+      recorded_base_sha repository reuse telemetry version
+    ]
+    unless exact_keys?(integration, expected_keys) &&
+           integration["contract"] == "current-integration-evidence" &&
+           integration["version"] == 1
+      failures << "autonomous_result current integration contract is invalid"
+      return
+    end
+    return unless valid_current_integration_context?(context)
+
+    failures << "autonomous_result current integration repository mismatch" unless
+      integration["repository"] == context["repo"]
+    failures << "autonomous_result current integration PR mismatch" unless
+      integration["pr"] == context["pr"]
+    failures << "autonomous_result current integration head mismatch" unless
+      integration["head_sha"] == context["head_sha"]
+    failures << "autonomous_result current integration base mismatch" unless
+      integration["current_base"] == context["base"]
+
+    reuse = integration["reuse"]
+    telemetry = integration["telemetry"]
+    unless exact_keys?(reuse, %w[decision reasons]) && reuse["reasons"].is_a?(Array) &&
+           reuse["reasons"] == reuse["reasons"].uniq.sort
+      failures << "autonomous_result current integration reuse decision is invalid"
+      return
+    end
+    unless exact_keys?(telemetry, %w[elapsed_seconds_saved review_replays_avoided validator_replays_avoided]) &&
+           [telemetry["validator_replays_avoided"], telemetry["review_replays_avoided"]].all? do |value|
+             value.is_a?(Integer) && value >= 0
+           end &&
+           (telemetry["elapsed_seconds_saved"].nil? ||
+            (telemetry["elapsed_seconds_saved"].is_a?(Numeric) && telemetry["elapsed_seconds_saved"] >= 0))
+      failures << "autonomous_result current integration telemetry is invalid"
+      return
+    end
+
+    case reuse["decision"]
+    when "base-unchanged"
+      valid = reuse["reasons"] == ["base-unchanged"] &&
+              integration["recorded_base_sha"] == context.dig("base", "sha") &&
+              integration["patch_identity"].nil? && integration["candidate"].nil? &&
+              integration["base_delta"] == { "paths" => [] } &&
+              telemetry["validator_replays_avoided"].zero? && telemetry["review_replays_avoided"].zero?
+      failures << "autonomous_result base-unchanged integration evidence is invalid" unless valid
+    when "reuse-exact-head"
+      validate_reused_current_integration(integration, context, failures)
+    else
+      failures << "autonomous_result current integration is not reusable"
+    end
+  end
+
+  def valid_current_integration_context?(context)
+    return false unless context.is_a?(Hash) && valid_repo?(context["repo"])
+    return false unless context["pr"].is_a?(Integer) && context["pr"].positive?
+    return false unless full_sha?(context["head_sha"])
+
+    base = context["base"]
+    base.is_a?(Hash) && base.keys.sort == %w[ref sha] &&
+      valid_ref?(base["ref"]) && full_sha?(base["sha"])
+  end
+
+  def validate_reused_current_integration(integration, context, failures)
+    recorded_base = integration["recorded_base_sha"]
+    paths = integration.dig("base_delta", "paths")
+    reasons = integration.dig("reuse", "reasons")
+    candidate = integration["candidate"]
+    valid_paths = exact_keys?(integration["base_delta"], ["paths"]) &&
+                  paths.is_a?(Array) && paths == paths.uniq.sort &&
+                  paths.all? { |path| valid_repository_path?(path) }
+    valid_reasons = reasons.is_a?(Array) && !reasons.empty? &&
+                    (reasons - %w[base-delta-reuse-safe pr-delta-reuse-safe]).empty?
+    path_reason_consistent = !paths.empty? || reasons == ["pr-delta-reuse-safe"]
+    valid = full_sha?(recorded_base) && recorded_base != context.dig("base", "sha") &&
+            integration["patch_identity"].to_s.match?(/\A[0-9a-f]{64}\z/) &&
+            valid_paths && valid_reasons && path_reason_consistent &&
+            valid_current_integration_candidate?(candidate, context)
+    telemetry = integration["telemetry"]
+    valid &&= telemetry["validator_replays_avoided"] == 1 && telemetry["review_replays_avoided"] == 1
+    failures << "autonomous_result reused current integration evidence is invalid" unless valid
+  end
+
+  def valid_current_integration_candidate?(candidate, context)
+    return false unless exact_keys?(candidate, %w[oid parents source tree_oid])
+    return false unless %w[github-potential-merge-commit git-merge-tree].include?(candidate["source"])
+    return false unless full_sha?(candidate["tree_oid"])
+    return false unless candidate["parents"] == [context.dig("base", "sha"), context["head_sha"]]
+
+    if candidate["source"] == "github-potential-merge-commit"
+      full_sha?(candidate["oid"])
+    else
+      candidate["oid"].nil?
+    end
+  end
+
+  def valid_repository_path?(path)
+    path.is_a?(String) && !path.empty? && !path.start_with?("/") && !path.include?("\\") &&
+      path.split("/", -1).none? { |part| part.empty? || %w[. ..].include?(part) }
   end
 
   def expected_autonomous_verdict(triggered_gates, human_decision_evidence)
@@ -437,12 +738,17 @@ module MergeAssurance
     path = match["path"]
     return false unless path.is_a?(String) && !path.strip.empty?
 
-    if exact_keys?(match, %w[gate path reason])
+    if match.key?("gate")
       gate = match["gate"]
       reason = match["reason"]
-      (gate == "autonomous-merge-policy-change" ||
-       gate.to_s.match?(/\Arepo-path:[a-z0-9]+(?:-[a-z0-9]+)*\z/)) &&
-        reason.is_a?(String) && !reason.strip.empty?
+      expected_keys = reason == "other" ? %w[detail gate path reason] : %w[gate path reason]
+      return false unless exact_keys?(match, expected_keys)
+      return false unless AUTONOMOUS_PATH_REASONS.include?(reason)
+      return false if gate == "autonomous-merge-policy-change" && reason != "policy"
+      return false unless gate == "autonomous-merge-policy-change" ||
+                          gate.to_s.match?(/\Arepo-path:[a-z0-9]+(?:-[a-z0-9]+)*\z/)
+
+      reason != "other" || (match["detail"].is_a?(String) && !match["detail"].strip.empty?)
     elsif exact_keys?(match, %w[classification path])
       match["classification"] == "generated"
     else
@@ -676,6 +982,27 @@ module MergeAssurance
     [accounting, semantic_tracker]
   end
 
+  # A semantic GitHub Actions change is not always in the repository's own
+  # `.github/`. Generated templates (for example `sim/template/.github/`) ship
+  # workflows to downstream repositories, and those are higher blast radius than
+  # a repo-local workflow, not lower. Accept the directory anywhere in a
+  # canonical repository-relative path while still requiring a file below it.
+  def semantic_tracker_workflow_path?(path)
+    return false unless path.is_a?(String)
+
+    components = path.split("/", -1)
+    return false if components.empty? || path.start_with?("/") || path.include?("\\") || path.include?("\0")
+
+    # Fail closed for any scheme- or drive-like prefix. This intentionally also
+    # rejects repository-relative first components containing a colon.
+    return false if path.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
+    return false if components.any? { |component| component.empty? || %w[. ..].include?(component) }
+
+    components.each_cons(3).any? do |first, second, _file|
+      first == ".github" && %w[workflows actions].include?(second)
+    end
+  end
+
   def validate_semantic_tracker(tracker, context, failures)
     required_keys = %w[
       changed_files cleanup_instructions exercise expected_evidence source_pr tracker type
@@ -701,10 +1028,7 @@ module MergeAssurance
       tracker["source_pr"] == expected_source_pr
     changed_files = tracker["changed_files"]
     unless changed_files.is_a?(Array) && !changed_files.empty? &&
-           changed_files.all? do |path|
-             path.is_a?(String) &&
-             (path.start_with?(".github/workflows/") || path.start_with?(".github/actions/"))
-           end
+           changed_files.all? { |path| semantic_tracker_workflow_path?(path) }
       failures << "semantic GitHub Actions tracker changed_files are invalid"
     end
     if tracker.key?("owner") &&
@@ -1000,7 +1324,13 @@ module MergeAssurance
   end
 
   def valid_host?(value)
-    value.to_s.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?\z/i)
+    value.is_a?(String) &&
+      value.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?\z/i)
+  end
+
+  def valid_repo?(value)
+    value.is_a?(String) &&
+      value.match?(%r{\A[^/\s\x00-\x1F\x7F]+/[^/\s\x00-\x1F\x7F]+\z})
   end
 
   class Runner
@@ -1008,10 +1338,26 @@ module MergeAssurance
       options = parse_options(argv)
       return help if options[:help]
 
+      ci_result = read_json(options[:ci_result], "--ci-result")
+      autonomous_result = read_json(options[:autonomous_result], "--autonomous-result")
+      context = read_json(options[:context], "--context")
+      preflight_now = Time.now.utc
+      local_failures = MergeAssurance.local_evidence_failures(
+        ci_result:, autonomous_result:, context:, now: preflight_now
+      )
+      unless local_failures.empty?
+        puts JSON.pretty_generate(MergeAssurance.blocked_result(local_failures))
+        return 1
+      end
+
+      selected_hosted_ci_receipts = load_selected_hosted_ci_receipts!(context)
+      assessment_now = Time.now.utc
       result = MergeAssurance.assess(
-        ci_result: read_json(options[:ci_result], "--ci-result"),
-        autonomous_result: read_json(options[:autonomous_result], "--autonomous-result"),
-        context: read_json(options[:context], "--context")
+        ci_result:,
+        autonomous_result:,
+        context:,
+        selected_hosted_ci_receipts:,
+        now: assessment_now
       )
       puts JSON.pretty_generate(result)
       result["eligible"] ? 0 : 1
@@ -1021,6 +1367,883 @@ module MergeAssurance
     end
 
     private
+
+    def load_selected_hosted_ci_receipts!(context)
+      context_failures = []
+      MergeAssurance.validate_context(context, context_failures)
+      context_failures << "context contains UNKNOWN" if MergeAssurance.contains_unknown?(context)
+      raise Error, context_failures.uniq.join("; ") unless context_failures.empty?
+
+      selections = context["selected_hosted_runs"]
+      return MergeAssurance.empty_selected_hosted_ci_receipts if selections.nil? || selections.empty?
+      raise Error, "context selected_hosted_runs must be an array" unless selections.is_a?(Array)
+
+      base_sha = context.dig("base", "sha").to_s
+      raise Error, "context base SHA is invalid for selected hosted CI" unless
+        MergeAssurance.full_sha?(base_sha)
+
+      repo_root = trusted_repo_root!
+      config = load_trusted_policy!(repo_root, base_sha)
+      executable, credential_env = selected_hosted_ci_policy!(config)
+      trusted_bytes = trusted_executable!(repo_root, base_sha, executable)
+      request = {
+        "contract" => "selected-hosted-ci-receipt-request",
+        "version" => 1,
+        "host" => context["host"],
+        "repository" => context["repo"],
+        "pr" => context["pr"],
+        "head_sha" => context["head_sha"],
+        "selected_runs" => selections
+      }
+      run_selected_hosted_ci_seam!(
+        repo_root:, base_sha:, executable:, trusted_bytes:, request:, credential_env:
+      )
+    end
+
+    def trusted_repo_root!
+      stdout, stderr, status = git_capture("rev-parse", "--show-toplevel", chdir: Dir.pwd)
+      raise Error, "could not resolve consumer repository root: #{failure_output(stdout, stderr)}" unless
+        status.success?
+
+      root = File.realpath(stdout.strip)
+      raise Error, "consumer repository root is invalid" unless File.directory?(root)
+
+      root
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "could not resolve consumer repository root: #{e.message}"
+    end
+
+    def load_trusted_policy!(repo_root, base_sha)
+      raw = trusted_blob!(
+        repo_root, base_sha, POLICY_CONFIG, "trusted-base selected hosted CI policy"
+      )
+      config = YAML.safe_load(
+        raw, permitted_classes: [], permitted_symbols: [], aliases: false
+      )
+      raise Error, "trusted-base selected hosted CI policy must be a mapping" unless config.is_a?(Hash)
+
+      config
+    rescue Psych::Exception => e
+      raise Error, "trusted-base selected hosted CI policy is invalid YAML: #{e.message.lines.first.to_s.strip}"
+    end
+
+    def selected_hosted_ci_policy!(config)
+      seam = config[SELECTED_HOSTED_CI_POLICY_KEY]
+      unless MergeAssurance.exact_keys?(seam, %w[credential_env executable])
+        raise Error, "selected hosted runs require an exact trusted-base " \
+                     "#{SELECTED_HOSTED_CI_POLICY_KEY} executable and credential_env seam"
+      end
+      executable = seam["executable"]
+      unless executable.is_a?(String) && executable.match?(SELECTED_HOSTED_CI_EXECUTABLE)
+        raise Error, "trusted-base selected hosted CI executable must name one file under .agents/bin"
+      end
+
+      credential_env = seam["credential_env"]
+      unless credential_env.is_a?(Array) && credential_env.all? do |name|
+        name.is_a?(String) && name.match?(SELECTED_HOSTED_CI_ENV_NAME)
+      end
+        raise Error, "trusted-base selected hosted CI credential_env must contain uppercase environment names"
+      end
+      if credential_env.uniq.length != credential_env.length
+        raise Error, "trusted-base selected hosted CI credential_env must not contain duplicates"
+      end
+
+      reserved = credential_env & SELECTED_HOSTED_CI_RESERVED_ENV
+      unless reserved.empty?
+        raise Error, "trusted-base selected hosted CI credential_env contains reserved names: " \
+                     "#{reserved.sort.join(', ')}"
+      end
+      noncredentials = credential_env.reject do |name|
+        name.match?(SELECTED_HOSTED_CI_CREDENTIAL_ENV)
+      end
+      unless noncredentials.empty?
+        raise Error, "trusted-base selected hosted CI credential_env contains non-credential names: " \
+                     "#{noncredentials.sort.join(', ')}"
+      end
+
+      [executable, credential_env]
+    end
+
+    def trusted_executable!(repo_root, base_sha, executable)
+      trusted_bytes = trusted_blob!(
+        repo_root, base_sha, executable, "trusted-base selected hosted CI executable"
+      )
+      stdout, stderr, status = git_capture(
+        "-C", repo_root, "ls-tree", base_sha, "--", executable, chdir: repo_root
+      )
+      unless status.success?
+        raise Error, "trusted-base selected hosted CI executable metadata is unavailable: " \
+                     "#{failure_output(stdout, stderr)}"
+      end
+
+      match = stdout.match(/\A(?<mode>\d{6}) blob [0-9a-f]+\t(?<path>[^\r\n]+)\n?\z/)
+      unless match && match[:mode] == "100755" && match[:path] == executable
+        raise Error, "trusted-base selected hosted CI executable must be one executable regular file"
+      end
+
+      trusted_bytes.b
+    end
+
+    def trusted_blob!(repo_root, base_sha, relative_path, label)
+      stdout, stderr, status = git_capture(
+        "-C", repo_root, "cat-file", "blob", "#{base_sha}:#{relative_path}", chdir: repo_root
+      )
+      raise Error, "#{label} is unavailable: #{failure_output(stdout, stderr)}" unless status.success?
+
+      stdout
+    end
+
+    def run_selected_hosted_ci_seam!(
+      repo_root:, base_sha:, executable:, trusted_bytes:, request:, credential_env:
+    )
+      directory = Dir.mktmpdir("merge-assurance-selected-hosted-ci")
+      File.chmod(0o700, directory)
+      snapshot_root = File.join(directory, "trusted-base")
+      seam_home = File.join(directory, "home")
+      FileUtils.mkdir_p(snapshot_root, mode: 0o700)
+      FileUtils.mkdir_p(seam_home, mode: 0o700)
+      File.chmod(0o700, seam_home)
+      materialize_trusted_base!(repo_root, base_sha, snapshot_root)
+
+      validate_snapshot_symlinks!(snapshot_root)
+      materialized = File.join(snapshot_root, executable)
+      validate_materialized_executable!(snapshot_root, materialized, trusted_bytes)
+      launch = selected_hosted_ci_launch_command!(trusted_bytes, materialized, repo_root)
+      stdout, stderr, status = run_selected_hosted_ci_process!(
+        selected_hosted_ci_environment(request, credential_env, home: seam_home),
+        launch,
+        request,
+        chdir: snapshot_root
+      )
+      unless status.success?
+        raise Error, "trusted-base selected hosted CI seam failed: " \
+                     "#{selected_hosted_ci_diagnostic(stdout, stderr, credential_env)}"
+      end
+
+      parsed = JSON.parse(stdout)
+      raise Error, "trusted-base selected hosted CI seam returned non-object JSON" unless parsed.is_a?(Hash)
+
+      parsed
+    rescue JSON::ParserError
+      raise Error, "trusted-base selected hosted CI seam returned invalid JSON"
+    ensure
+      FileUtils.remove_entry(directory) if directory && File.exist?(directory)
+    end
+
+    def materialize_trusted_base!(repo_root, base_sha, snapshot_root)
+      timeout_seconds = selected_hosted_ci_materialization_timeout_seconds
+      deadline = selected_hosted_ci_monotonic_time + timeout_seconds
+      tree_file = Tempfile.new("merge-assurance-selected-hosted-ci-tree")
+      tree_file.binmode
+      run_trusted_git_to_io!(
+        repo_root,
+        ["-C", repo_root, "ls-tree", "-rz", "--full-tree", base_sha],
+        tree_file,
+        "could not materialize trusted-base selected hosted CI seam",
+        deadline:,
+        timeout_seconds:
+      )
+      tree_file.rewind
+      with_trusted_blob_batch(repo_root, deadline:, timeout_seconds:) do |blob_reader|
+        tree_file.each_line("\0", SELECTED_HOSTED_CI_TREE_ENTRY_MAX_BYTES + 1) do |entry|
+          materialize_trusted_tree_entry!(snapshot_root, entry, blob_reader)
+        end
+      end
+    ensure
+      tree_file&.close!
+    end
+
+    def materialize_trusted_tree_entry!(snapshot_root, entry, blob_reader)
+      if !entry.end_with?("\0") || entry.bytesize > SELECTED_HOSTED_CI_TREE_ENTRY_MAX_BYTES
+        raise Error, "trusted-base selected hosted CI snapshot contains malformed tree metadata"
+      end
+
+      metadata, relative_path = entry.delete_suffix("\0").split("\t", 2)
+      mode, type, object_id = metadata.to_s.split(" ", 3)
+      expected_type = mode == "160000" ? "commit" : "blob"
+      unless %w[100644 100755 120000 160000].include?(mode) &&
+             type == expected_type && object_id&.match?(/\A[0-9a-f]{40}\z/) &&
+             relative_path
+        raise Error, "trusted-base selected hosted CI snapshot contains malformed tree metadata"
+      end
+      return if mode == "160000"
+
+      components = trusted_tree_path_components!(relative_path)
+      ensure_trusted_tree_parent_directories!(snapshot_root, components[0...-1])
+      destination = File.join(snapshot_root, *components)
+      if File.exist?(destination) || File.symlink?(destination)
+        raise Error, "trusted-base selected hosted CI snapshot contains a duplicate path"
+      end
+
+      if mode == "120000"
+        materialize_trusted_symlink!(blob_reader, object_id, destination)
+      else
+        File.open(destination, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+          blob_reader.call(object_id, file)
+        end
+        File.chmod(mode == "100755" ? 0o755 : 0o644, destination)
+      end
+    rescue SystemCallError => e
+      raise Error, "could not extract trusted-base selected hosted CI seam: #{e.message}"
+    end
+
+    def trusted_tree_path_components!(relative_path)
+      components = relative_path.b.split("/", -1)
+      unless !components.empty? && components.none? { |component| component.empty? || %w[. ..].include?(component) }
+        raise Error, "trusted-base selected hosted CI snapshot contains an unsafe path"
+      end
+
+      components
+    end
+
+    def ensure_trusted_tree_parent_directories!(snapshot_root, components)
+      parent = snapshot_root
+      components.each do |component|
+        directory = File.join(parent, component)
+        if File.exist?(directory) || File.symlink?(directory)
+          unless File.directory?(directory) && !File.symlink?(directory)
+            raise Error, "trusted-base selected hosted CI snapshot contains an unsafe parent path"
+          end
+        else
+          Dir.mkdir(directory, 0o700)
+        end
+        parent = directory
+      end
+    end
+
+    def materialize_trusted_symlink!(blob_reader, object_id, destination)
+      target_file = Tempfile.new("merge-assurance-selected-hosted-ci-symlink")
+      target_file.binmode
+      blob_reader.call(
+        object_id, target_file, max_bytes: SELECTED_HOSTED_CI_SYMLINK_MAX_BYTES
+      )
+
+      target_file.rewind
+      target = target_file.read
+      if target.empty? || target.include?("\0")
+        raise Error, "trusted-base selected hosted CI snapshot contains an unsafe symlink"
+      end
+
+      File.symlink(target, destination)
+    rescue SystemCallError => e
+      raise Error, "could not extract trusted-base selected hosted CI seam: #{e.message}"
+    ensure
+      target_file&.close!
+    end
+
+    def with_trusted_blob_batch(repo_root, deadline:, timeout_seconds:)
+      input_reader, input_writer = IO.pipe
+      output_reader, output_writer = IO.pipe
+      error_file = Tempfile.new("merge-assurance-selected-hosted-ci-git-error")
+      [input_reader, input_writer, output_reader, output_writer, error_file].each(&:binmode)
+      git = resolve_system_tool!("git", outside_root: repo_root)
+      pid = Process.spawn(
+        system_tool_environment, git, "-C", repo_root, "cat-file", "--batch",
+        in: input_reader, out: output_writer, err: error_file, pgroup: true,
+        chdir: repo_root, unsetenv_others: true
+      )
+      input_reader.close
+      output_writer.close
+      blob_reader = lambda do |object_id, destination, max_bytes: nil|
+        stream_trusted_blob_from_batch!(
+          input_writer, output_reader, object_id, destination,
+          max_bytes:, deadline:, timeout_seconds:
+        )
+      end
+      yield blob_reader
+      input_writer.close
+      status = wait_for_selected_hosted_ci_child(pid, deadline)
+      unless status
+        raise Error, selected_hosted_ci_materialization_timeout_message(timeout_seconds)
+      end
+
+      if selected_hosted_ci_process_group_alive?(pid)
+        _ignored_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        pid = nil
+        unless cleanup_complete
+          raise Error, "trusted-base selected hosted CI materialization process group " \
+                       "did not exit after forced termination"
+        end
+        raise Error, "trusted-base selected hosted CI materialization left a running " \
+                     "process group, which was terminated"
+      end
+      pid = nil
+      return if status.success?
+
+      raise Error, "could not extract trusted-base selected hosted CI seam: " \
+                   "#{failure_output('', bounded_materialization_diagnostic(error_file))}"
+    rescue SystemCallError => e
+      raise Error, "could not extract trusted-base selected hosted CI seam: #{e.message}"
+    ensure
+      [input_reader, input_writer, output_reader, output_writer].compact.each do |stream|
+        stream.close unless stream.closed?
+      end
+      if pid
+        _status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        unless cleanup_complete
+          cleanup_error = "could not extract trusted-base selected hosted CI seam: " \
+                          "git process group did not exit after forced termination"
+        end
+      end
+      error_file&.close!
+      raise Error, cleanup_error if cleanup_error
+    end
+
+    def stream_trusted_blob_from_batch!(
+      input, output, object_id, destination, max_bytes:, deadline:, timeout_seconds:
+    )
+      write_materialization_bytes!(
+        input, "#{object_id}\n", deadline:, timeout_seconds:
+      )
+      header = read_materialization_line!(output, deadline:, timeout_seconds:)
+      match = header.match(
+        /\A#{Regexp.escape(object_id)} blob (?<size>0|[1-9]\d*)\n\z/
+      )
+      unless match
+        raise Error, "could not extract trusted-base selected hosted CI seam: " \
+                     "git returned malformed blob metadata"
+      end
+
+      size = Integer(match[:size], 10)
+      if max_bytes && size > max_bytes
+        raise Error, "trusted-base selected hosted CI snapshot contains an unsafe symlink"
+      end
+
+      copy_materialization_bytes!(
+        output, destination, size, deadline:, timeout_seconds:
+      )
+      separator = read_materialization_bytes!(
+        output, 1, deadline:, timeout_seconds:
+      )
+      return if separator == "\n"
+
+      raise Error, "could not extract trusted-base selected hosted CI seam: " \
+                   "git returned malformed blob content"
+    end
+
+    def read_materialization_line!(input, deadline:, timeout_seconds:)
+      line = +"".b
+      loop do
+        byte = read_materialization_bytes!(
+          input, 1, deadline:, timeout_seconds:
+        )
+        line << byte
+        if line.bytesize > 256
+          raise Error, "could not extract trusted-base selected hosted CI seam: " \
+                       "git returned malformed blob metadata"
+        end
+        return line if byte == "\n"
+      end
+    end
+
+    def copy_materialization_bytes!(
+      input, destination, byte_count, deadline:, timeout_seconds:
+    )
+      remaining = byte_count
+      while remaining.positive?
+        chunk = read_materialization_bytes!(
+          input, [remaining, 16_384].min, deadline:, timeout_seconds:
+        )
+        destination.write(chunk)
+        remaining -= chunk.bytesize
+      end
+    end
+
+    def read_materialization_bytes!(input, byte_count, deadline:, timeout_seconds:)
+      bytes = +"".b
+      while bytes.bytesize < byte_count
+        begin
+          wait_for_materialization_io!(input, :read, deadline:, timeout_seconds:)
+          bytes << input.read_nonblock(byte_count - bytes.bytesize)
+        rescue IO::WaitReadable
+          next
+        rescue EOFError
+          raise Error, "could not extract trusted-base selected hosted CI seam: " \
+                       "git ended before returning the requested blob"
+        end
+      end
+      bytes
+    end
+
+    def write_materialization_bytes!(output, bytes, deadline:, timeout_seconds:)
+      offset = 0
+      while offset < bytes.bytesize
+        begin
+          wait_for_materialization_io!(output, :write, deadline:, timeout_seconds:)
+          offset += output.write_nonblock(bytes.byteslice(offset..))
+        rescue IO::WaitWritable
+          next
+        end
+      end
+    end
+
+    def wait_for_materialization_io!(stream, operation, deadline:, timeout_seconds:)
+      remaining = deadline - selected_hosted_ci_monotonic_time
+      if remaining <= 0
+        raise Error, selected_hosted_ci_materialization_timeout_message(timeout_seconds)
+      end
+
+      ready = if operation == :read
+                IO.select([stream], nil, nil, remaining)
+              else
+                IO.select(nil, [stream], nil, remaining)
+              end
+      return if ready
+
+      raise Error, selected_hosted_ci_materialization_timeout_message(timeout_seconds)
+    end
+
+    def selected_hosted_ci_materialization_timeout_message(timeout_seconds)
+      "trusted-base selected hosted CI materialization timed out after #{timeout_seconds} seconds " \
+        "and its process group was terminated"
+    end
+
+    def run_trusted_git_to_io!(
+      repo_root, arguments, output, label, deadline:, timeout_seconds:
+    )
+      error_file = Tempfile.new("merge-assurance-selected-hosted-ci-git-error")
+      error_file.binmode
+      git = resolve_system_tool!("git", outside_root: repo_root)
+      pid = Process.spawn(
+        system_tool_environment, git, *arguments,
+        out: output, err: error_file, pgroup: true,
+        chdir: repo_root, unsetenv_others: true
+      )
+      status = nil
+      loop do
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        if waited
+          status = waited[1]
+          break
+        end
+        if selected_hosted_ci_monotonic_time >= deadline
+          _status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          pid = nil
+          unless cleanup_complete
+            raise Error, "trusted-base selected hosted CI materialization process group " \
+                         "did not exit after forced termination"
+          end
+          raise Error, "trusted-base selected hosted CI materialization timed out after " \
+                       "#{timeout_seconds} seconds and its process group was terminated"
+        end
+
+        sleep SELECTED_HOSTED_CI_POLL_SECONDS
+      end
+      if selected_hosted_ci_process_group_alive?(pid)
+        _ignored_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        pid = nil
+        unless cleanup_complete
+          raise Error, "trusted-base selected hosted CI materialization process group " \
+                       "did not exit after forced termination"
+        end
+        raise Error, "trusted-base selected hosted CI materialization left a running " \
+                     "process group, which was terminated"
+      end
+      pid = nil
+      return if status.success?
+
+      raise Error, "#{label}: #{failure_output('', bounded_materialization_diagnostic(error_file))}"
+    rescue SystemCallError => e
+      raise Error, "#{label}: #{e.message}"
+    ensure
+      if pid
+        _status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        cleanup_error = "#{label}: git process group did not exit after forced termination" unless
+          cleanup_complete
+      end
+      error_file&.close!
+      raise Error, cleanup_error if cleanup_error
+    end
+
+    def bounded_materialization_diagnostic(file)
+      file.rewind
+      file.read(SELECTED_HOSTED_CI_MATERIALIZATION_DIAGNOSTIC_MAX_BYTES).to_s
+    end
+
+    def selected_hosted_ci_materialization_timeout_seconds
+      value = Float(
+        ENV.fetch(
+          "MERGE_ASSURANCE_SELECTED_HOSTED_CI_MATERIALIZATION_TIMEOUT_SECONDS",
+          SELECTED_HOSTED_CI_MATERIALIZATION_TIMEOUT_SECONDS.to_s
+        )
+      )
+      unless value.positive? && value.finite?
+        raise Error, "selected hosted CI materialization timeout must be a positive finite number"
+      end
+
+      value
+    rescue ArgumentError
+      raise Error, "selected hosted CI materialization timeout must be a positive finite number"
+    end
+
+    def run_selected_hosted_ci_process!(environment, launch, request, chdir:)
+      stdin_file = Tempfile.new("merge-assurance-selected-hosted-ci-stdin")
+      stdout_reader, stdout_writer = IO.pipe
+      stderr_reader, stderr_writer = IO.pipe
+      [stdout_reader, stdout_writer, stderr_reader, stderr_writer].each(&:binmode)
+      stdin_file.write(JSON.generate(request))
+      stdin_file.rewind
+      timeout_seconds = selected_hosted_ci_timeout_seconds
+      pid = Process.spawn(
+        environment, *launch,
+        in: stdin_file.path, out: stdout_writer, err: stderr_writer,
+        pgroup: true, chdir:, unsetenv_others: true
+      )
+      stdout_writer.close
+      stderr_writer.close
+      deadline = selected_hosted_ci_monotonic_time + timeout_seconds
+      stdout = +"".b
+      stderr = +"".b
+      streams = {
+        stdout_reader => [stdout, SELECTED_HOSTED_CI_STDOUT_MAX_BYTES],
+        stderr_reader => [stderr, SELECTED_HOSTED_CI_STDERR_MAX_BYTES]
+      }
+      status = nil
+      timed_out = false
+      lingering_group = false
+      output_overflow = false
+      cleanup_complete = true
+      group_deadline = nil
+      loop do
+        output_overflow = drain_selected_hosted_ci_output!(streams) || output_overflow
+        if output_overflow
+          status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          pid = nil
+          break
+        end
+
+        waited = Process.waitpid2(pid, Process::WNOHANG) unless status
+        status = waited[1] if waited
+        now = selected_hosted_ci_monotonic_time
+        if now >= deadline
+          timed_out = true
+          terminated_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          pid = nil
+          status ||= terminated_status
+          break
+        end
+
+        next unless status
+
+        group_deadline ||= now + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
+        group_alive = selected_hosted_ci_process_group_alive?(pid)
+        break if !group_alive && streams.empty?
+        next unless group_alive && now >= group_deadline
+
+        lingering_group = true
+        _ignored_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        pid = nil
+        break
+      end
+      unless cleanup_complete
+        raise Error, "trusted-base selected hosted CI seam process group did not exit after forced termination"
+      end
+      if output_overflow
+        raise Error, "trusted-base selected hosted CI seam output exceeded its byte limit " \
+                     "and its process group was terminated"
+      end
+      if timed_out
+        raise Error, "trusted-base selected hosted CI seam timed out after #{timeout_seconds} seconds " \
+                     "and its process group was terminated"
+      end
+      if lingering_group
+        raise Error, "trusted-base selected hosted CI seam left a running process group, which was terminated"
+      end
+
+      [stdout, stderr, status]
+    rescue Errno::EACCES, Errno::ENOENT => e
+      raise Error, "trusted-base selected hosted CI seam could not be launched: #{e.message}"
+    ensure
+      terminate_selected_hosted_ci_process_group(pid) if
+        pid && selected_hosted_ci_process_group_alive?(pid)
+      stdin_file&.close!
+      [stdout_reader, stdout_writer, stderr_reader, stderr_writer].compact.each do |stream|
+        stream.close unless stream.closed?
+      end
+    end
+
+    def drain_selected_hosted_ci_output!(streams)
+      if streams.empty?
+        sleep SELECTED_HOSTED_CI_POLL_SECONDS
+        return false
+      end
+
+      ready = IO.select(
+        streams.keys, nil, nil, SELECTED_HOSTED_CI_POLL_SECONDS
+      )&.first.to_a
+      ready.any? do |stream|
+        buffer, limit = streams.fetch(stream)
+        remaining = limit - buffer.bytesize
+        read_size = [16_384, remaining + 1].min
+        chunk = stream.read_nonblock([read_size, 1].max)
+        if chunk.bytesize > remaining
+          buffer << chunk.byteslice(0, remaining) if remaining.positive?
+          true
+        else
+          buffer << chunk
+          false
+        end
+      rescue IO::WaitReadable
+        false
+      rescue EOFError
+        streams.delete(stream)
+        stream.close
+        false
+      end
+    end
+
+    def selected_hosted_ci_timeout_seconds
+      value = Float(
+        ENV.fetch(
+          "MERGE_ASSURANCE_SELECTED_HOSTED_CI_TIMEOUT_SECONDS",
+          SELECTED_HOSTED_CI_TIMEOUT_SECONDS.to_s
+        )
+      )
+      unless value.positive? && value.finite?
+        raise Error, "selected hosted CI seam timeout must be a positive finite number"
+      end
+
+      value
+    rescue ArgumentError
+      raise Error, "selected hosted CI seam timeout must be a positive finite number"
+    end
+
+    def terminate_selected_hosted_ci_process_group(pid)
+      term_result = signal_selected_hosted_ci_process_group("TERM", pid)
+      status = nil
+      unless term_result == :permission_denied
+        deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
+        status = wait_for_selected_hosted_ci_child(pid, deadline)
+        return [status, true] if term_result == :gone ||
+                                 wait_for_selected_hosted_ci_process_group_exit(pid, deadline)
+      end
+
+      kill_result = signal_selected_hosted_ci_process_group("KILL", pid)
+      if kill_result == :permission_denied
+        return [status, !selected_hosted_ci_process_group_alive?(pid)]
+      end
+
+      deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
+      status ||= wait_for_selected_hosted_ci_child(pid, deadline)
+      [status, kill_result == :gone || wait_for_selected_hosted_ci_process_group_exit(pid, deadline)]
+    end
+
+    def signal_selected_hosted_ci_process_group(signal, pid)
+      Process.kill(signal, -pid)
+      :sent
+    rescue Errno::ESRCH
+      :gone
+    rescue Errno::EPERM
+      :permission_denied
+    end
+
+    def wait_for_selected_hosted_ci_child(pid, deadline)
+      while selected_hosted_ci_monotonic_time < deadline
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        return waited[1] if waited
+
+        sleep SELECTED_HOSTED_CI_POLL_SECONDS
+      end
+      nil
+    rescue Errno::ECHILD
+      nil
+    end
+
+    def selected_hosted_ci_process_group_alive?(pid)
+      Process.kill(0, -pid)
+      selected_hosted_ci_process_group_has_executing_member?(pid)
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      selected_hosted_ci_process_group_has_executing_member?(pid)
+    end
+
+    def selected_hosted_ci_process_group_has_executing_member?(pid)
+      ps = resolve_system_tool!("ps", outside_root: __dir__)
+      stdout, _stderr, status = Open3.capture3(
+        system_tool_environment, ps, *selected_hosted_ci_ps_arguments,
+        unsetenv_others: true
+      )
+      return true unless status.success?
+
+      states = stdout.each_line.filter_map do |line|
+        fields = line.split
+        next if fields.empty?
+        return true unless fields.length == 2 && fields.first.match?(/\A\d+\z/)
+
+        fields.last if fields.first.to_i == pid
+      end
+      return true if states.empty?
+
+      states.any? { |state| !state.start_with?("Z") }
+    rescue Error, SystemCallError
+      true
+    end
+
+    def selected_hosted_ci_ps_arguments(platform = RUBY_PLATFORM)
+      arguments = ["-A"]
+      arguments << "-L" if platform.match?(/linux/)
+      arguments.concat(["-o", "pgid=", "-o", "state="])
+    end
+
+    def wait_for_selected_hosted_ci_process_group_exit(pid, deadline)
+      while selected_hosted_ci_monotonic_time < deadline
+        return true unless selected_hosted_ci_process_group_alive?(pid)
+
+        sleep SELECTED_HOSTED_CI_POLL_SECONDS
+      end
+      !selected_hosted_ci_process_group_alive?(pid)
+    end
+
+    def selected_hosted_ci_monotonic_time
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    def validate_materialized_executable!(snapshot_root, executable, trusted_bytes)
+      realpath = File.realpath(executable)
+      prefix = "#{File.realpath(snapshot_root)}#{File::SEPARATOR}"
+      stat = File.lstat(executable)
+      unless realpath.start_with?(prefix) && !stat.symlink? && stat.file? &&
+             File.executable?(realpath) && File.binread(realpath) == trusted_bytes
+        raise Error, "materialized selected hosted CI executable is unsafe or mismatched"
+      end
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "materialized selected hosted CI executable is unavailable: #{e.message}"
+    end
+
+    def validate_snapshot_symlinks!(snapshot_root)
+      root = File.realpath(snapshot_root)
+      prefix = "#{root}#{File::SEPARATOR}"
+      Find.find(root) do |path|
+        next unless File.lstat(path).symlink?
+
+        resolved = File.realpath(path)
+        next if resolved == root || resolved.start_with?(prefix)
+
+        raise Error, "trusted-base selected hosted CI snapshot contains an escaping symlink"
+      rescue Errno::ENOENT, Errno::EACCES, Errno::ELOOP
+        raise Error, "trusted-base selected hosted CI snapshot contains an unsafe symlink"
+      end
+    end
+
+    def selected_hosted_ci_launch_command!(trusted_bytes, executable, repo_root)
+      shebang = trusted_bytes.lines.first
+      match = shebang&.match(%r{\A#!(?<interpreter>/\S+?)(?:[ \t]+(?<argument>\S+))?\r?\n?\z})
+      raise Error, "trusted-base selected hosted CI executable needs a supported explicit shebang" unless match
+
+      interpreter = match[:interpreter]
+      argument = match[:argument]
+      if interpreter == "/usr/bin/env"
+        unless argument&.match?(/\A[A-Za-z0-9][A-Za-z0-9_.+-]*\z/)
+          raise Error, "trusted-base selected hosted CI /usr/bin/env shebang must name one fixed program"
+        end
+
+        interpreter = resolve_env_interpreter!(argument, repo_root)
+        [interpreter, executable]
+      else
+        # Trusted bytes pin this interpreter; resolution still rejects repo-local or non-executable paths.
+        [resolve_absolute_interpreter!(interpreter, repo_root), *[argument].compact, executable]
+      end
+    end
+
+    def resolve_env_interpreter!(program, repo_root)
+      candidate = if program == "ruby" || program == File.basename(RbConfig.ruby)
+                    RbConfig.ruby
+                  else
+                    TRUSTED_INTERPRETER_DIRS
+                      .map { |directory| File.join(directory, program) }
+                      .find { |path| File.file?(path) && File.executable?(path) }
+                  end
+      raise Error, "trusted-base selected hosted CI interpreter is unavailable: #{program}" unless candidate
+
+      resolve_absolute_interpreter!(candidate, repo_root)
+    end
+
+    def resolve_absolute_interpreter!(path, repo_root)
+      realpath = File.realpath(path)
+      repo_prefix = "#{File.realpath(repo_root)}#{File::SEPARATOR}"
+      stat = File.stat(realpath)
+      unless !realpath.start_with?(repo_prefix) && stat.file? && File.executable?(realpath)
+        raise Error, "trusted-base selected hosted CI interpreter is unsafe: #{path}"
+      end
+
+      realpath
+    rescue Errno::ENOENT, Errno::EACCES
+      raise Error, "trusted-base selected hosted CI interpreter is unavailable: #{path}"
+    end
+
+    def selected_hosted_ci_environment(request, credential_env, home:)
+      environment = system_tool_environment.merge(
+        "HOME" => home,
+        "GH_HOST" => request.fetch("host"),
+        "GH_REPO" => request.fetch("repository"),
+        "SELECTED_HOSTED_CI_PR" => request.fetch("pr").to_s,
+        "SELECTED_HOSTED_CI_HEAD_SHA" => request.fetch("head_sha").to_s
+      )
+      credential_env.each do |name|
+        value = ENV[name]
+        if value.nil? || value.empty?
+          raise Error, "declared selected hosted CI credential is missing or empty: #{name}"
+        end
+
+        environment[name] = value
+      end
+      environment
+    end
+
+    def selected_hosted_ci_diagnostic(stdout, stderr, credential_env)
+      return "diagnostic output suppressed because credentials were forwarded" unless credential_env.empty?
+
+      failure_output(stdout, stderr)
+    end
+
+    def system_tool_environment
+      account = Etc.getpwuid(Process.uid)
+      {
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => File::NULL,
+        "GIT_NO_REPLACE_OBJECTS" => "1",
+        "GIT_OPTIONAL_LOCKS" => "0",
+        "GIT_TERMINAL_PROMPT" => "0"
+      }
+    rescue ArgumentError
+      raise Error, "local account identity is unavailable"
+    end
+
+    def git_capture(*args, chdir:)
+      git = resolve_system_tool!("git", outside_root: chdir)
+      Open3.capture3(
+        system_tool_environment, git, *args, chdir:, unsetenv_others: true
+      )
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "git could not be launched after trusted resolution: #{e.message}"
+    end
+
+    def resolve_system_tool!(name, outside_root:)
+      candidate = SYSTEM_TOOL_DIRS
+                  .map { |directory| File.join(directory, name) }
+                  .find { |path| File.file?(path) && File.executable?(path) }
+      raise Error, "#{name} is unavailable in approved system tool directories" unless candidate
+
+      realpath = File.realpath(candidate)
+      root = File.realpath(outside_root)
+      prefix = "#{root}#{File::SEPARATOR}"
+      raise Error, "#{name} must resolve outside the consumer repository" if
+        realpath == root || realpath.start_with?(prefix)
+
+      realpath
+    rescue Errno::ENOENT, Errno::EACCES
+      raise Error, "#{name} is unavailable in approved system tool directories"
+    end
+
+    def failure_output(stdout, stderr)
+      text = [stderr, stdout].map(&:to_s).map(&:strip).reject(&:empty?).join(" | ")
+      text.empty? ? "no diagnostic output" : text.lines.first.to_s.strip
+    end
 
     def parse_options(argv)
       options = {}

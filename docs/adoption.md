@@ -17,6 +17,73 @@ See [seam-design.md](seam-design.md) for the design rationale. See
 paths, upgrade commands, status states, rollback behavior, and Codex/Claude
 notes.
 
+## Configure Project Writing Style
+
+To give a project its own writing guidance, create
+`<project>/docs/writing-style.md`, then add this key to
+`<project>/.agents/agent-workflow.yml`:
+
+```yaml
+writing_style: docs/writing-style.md
+```
+
+The path is relative to the project root, and the repository setting wins. As
+an optional personal fallback for projects that do not set the key, create
+`~/.agents/personal/my-writing-style.md`, then add this key to
+`~/.agents/agent-workflow.yml`:
+
+```yaml
+writing_style: personal/my-writing-style.md
+```
+
+That path is relative to `~/.agents`. The file
+`~/.agents/docs/writing-style.md` is the packaged default managed by
+installation and upgrades; do not edit it or use it for personal
+customization.
+
+An invalid repository configuration, preset, path, or guide blocks resolution.
+An invalid user-global configuration, preset, path, or guide emits a warning
+and falls back to [the packaged portable default](writing-style.md). When
+`writing_style` is absent from both repository and user-global configuration,
+the resolver also uses that packaged default. Resolution is
+repo → user-global → portable default, and one complete Markdown file wins
+without merging prose.
+
+### Adopt ASD-STE100 for Technical Documentation
+
+A project can opt in to the independently authored packaged adapter with the
+exact preset scalar:
+
+```yaml
+writing_style: asd-ste100
+```
+
+The same scalar can be set once in `~/.agents/agent-workflow.yml` as a personal
+fallback. Any repository `writing_style` value, whether the preset or a
+relative Markdown path, overrides that user-global selection. The portable
+default remains the generic [writing style](writing-style.md).
+
+The preset keeps the generic plain-language baseline and adds
+ASD-STE100-inspired constraints only for human-facing technical-documentation
+prose. It preserves exact identifiers, commands, templates, evidence, quoted
+text, and machine-readable protocol fields. It does not load the standard from
+a URL, fetch remote content, or check conformance, and it does not contain the
+ASD-STE100 specification or dictionary.
+
+Use the official standard as the primary reference:
+
+- [ASD-STE100 official site](https://www.asd-ste100.org/)
+- [Official downloads](https://www.asd-ste100.org/STE_downloads.html)
+- [Official software information](https://www.asd-ste100.org/STEsoftware.html)
+- [Official training information](https://www.asd-ste100.org/STE_training.html)
+- [ASD-STE100 Issue 9 PDF](https://www.asd-ste100.org/assets/files/ASD-STE100_ISSUE9.pdf)
+  (Issue 9, 2025-01-15)
+
+Do not vendor or copy the copyrighted standard PDF or its dictionary into this
+repository or a project guide. Formal ASD-STE100 work requires access to an
+authorized specification and review by a qualified human. The packaged adapter
+and AI tools do not establish ASD approval, certification, or conformance.
+
 ## One-Time Adoption
 
 1. **Inventory the target repo.** Identify base branch, package managers,
@@ -84,6 +151,48 @@ notes.
    override the deterministic repository-name abbreviation used in batch titles
    and thread handles. The initializer does not add this optional key.
 
+   Writing style is optional. Follow
+   [Configure Project Writing Style](#configure-project-writing-style) to add a
+   repository guide or personal fallback. The initializer leaves the optional
+   repository key absent until the project chooses to enable it.
+
+   Repositories that use repository-based GitHub Actions and reusable workflows
+   must also add a closed, exact `trusted_actions` allowlist. Its entries are
+   case-insensitive `owner/repository` identities, with no refs, subpaths, or
+   wildcards:
+
+   ```yaml
+   trusted_actions:
+     - actions/checkout
+     - ruby/setup-ruby
+   ```
+
+   A missing or invalid allowlist trusts no external action. Adding an identity
+   never waives the independent full-SHA and readable-version-comment rules.
+   Maintainers must review the action before adding it. The scanner reads this
+   policy from the checkout under review and cannot prove that a pull request
+   left it unchanged, so compare every `trusted_actions` addition with the
+   trusted base.
+
+   For `docker://` references, the scanner enforces digest immutability, but
+   `trusted_actions` does not mechanically approve the container. Maintainers
+   must manually review the exact registry, image, and digest.
+
+   Initialization adds the optional merge-submission seam in its portable
+   default form:
+
+   ```yaml
+   merge_submission:
+     mode: direct
+   ```
+
+   Keep that value, or omit the mapping, for the normal direct-merge path.
+   Repositories using Merge Queue or a repository-owned guarded direct-merge
+   exception must deliberately choose the matching mode and review its safety
+   contract. See [Merge submission](seam-design.md#merge-submission) for the
+   available modes, guard requirements, fixed argument contract, and the
+   non-atomic base-binding caveat.
+
    The optional `autonomous_merge` mapping is seeded as an empty mapping by
    downstream presets without overwriting repo-owned policy. An empty or absent
    mapping uses portable defaults. Add only repository-specific critical paths,
@@ -122,7 +231,14 @@ notes.
 8. **Validate the contract.** Initialization runs the same seam-doctor check.
    After resolving any fail-closed wrapper guidance, rerun
    `agent-workflow-seam-doctor` with `--shared` pointing at the cloned or
-   installed pack root. Then run one dry workflow pass without making changes.
+   installed pack root. The doctor scans `.github/workflows/*.{yml,yaml}` and
+   recursively discovers eligible tracked or unignored `action.yml` / `action.yaml` descriptors.
+   Unreferenced ignored descriptors and excluded roots are not discovered. Any
+   explicitly referenced ignored local actions are resolved separately and scanned.
+   Workflow/action changes also activate the same checks in `$autoreview` and `$adversarial-pr-review`.
+   A clean mechanical scan is necessary but not sufficient: review permissions,
+   triggers, untrusted checkout/execution, and credential persistence manually.
+   Then run one dry workflow pass without making changes.
 
 9. **Make `AGENTS.md` canonical.** Tool-specific files such as `CLAUDE.md`
    should stay thin and link back to `AGENTS.md`.
@@ -165,9 +281,10 @@ For repos that keep the checker in the checkout:
 ```
 
 The checker fails when the pointer section is missing, core scripts are missing
-or malformed, policy YAML is incomplete, or executable snippets in repo-local or
-installed shared skill Markdown still contain unresolved placeholders such as
-`<follow-up prefix>`.
+or malformed, policy YAML is incomplete, a configured guarded-direct merge
+guard is malformed, missing, or non-executable, or executable snippets in
+repo-local or installed shared skill Markdown still contain unresolved
+placeholders such as `<follow-up prefix>`.
 
 ## Keeping The Installed Pack Current
 
@@ -300,6 +417,11 @@ malformed schema.
 - `agent-workflows-status --host <codex|claude>` reports `UP_TO_DATE`, or the
   upgrade decision is recorded.
 - `agent-workflow-seam-doctor --shared <path-to-shakacode/agent-workflows>` passes.
+- `/path/to/trusted/agent-workflows/skills/secure-github-actions/bin/secure-github-actions-scan <path-to-consumer>`
+  passes, and a human reviews
+  GitHub Actions permissions, triggers, checkout trust, and credentials.
+- Every `docker://` reference is digest-pinned, and a human reviews its exact
+  registry, image, and digest.
 - Every generated wrapper's underlying command exists in the target repo.
 - `pr-security-preflight --repo OWNER/REPO --trust-config .agents/trusted-github-actors.yml --strict-trust <exact-targets>`
   reports `SECURITY_PREFLIGHT_OK` for maintainer-approved exact targets.
