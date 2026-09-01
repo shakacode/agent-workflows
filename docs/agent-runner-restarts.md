@@ -112,6 +112,9 @@ current AGENTS.md and the installed `pr-processing.md` workflow first. Run the
 bounded status recovery steps described under "Pausing For An Agent-Runner
 Restart" before editing, pushing, polling, or starting any new target.
 
+If this lane is `coordination_not_applicable`, recover from local and GitHub
+state only and make no coordination or public-fallback call.
+
 Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
 state, and private claim or active public `codex-claim` fallback comments. If
 the claim holder changed, cancellation or reassignment is present, ownership is

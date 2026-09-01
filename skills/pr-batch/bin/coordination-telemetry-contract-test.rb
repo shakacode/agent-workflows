@@ -542,6 +542,29 @@ class CoordinationTelemetryContractTest < Minitest::Test
                     "lane emits `human_intervention` with `kind: supersede`"
   end
 
+  def test_embedded_restart_prompts_carry_the_applicability_gate
+    prompt_rule =
+      "If this lane is `coordination_not_applicable`, skip every claim-preservation write and coordination " \
+      "check in this prompt, make no backend or public-fallback call, and go straight to the handoff reply."
+    recovery_rule =
+      "For `coordination_not_applicable`, bounded status recovery uses the local worktree, branch, HEAD SHA, " \
+      "uncommitted changes, and live GitHub PR/check state only; make no coordination or public-fallback call, " \
+      "and read every claim, heartbeat, holder, and fallback clause below as `coordination_required` only."
+    new_chat_rule =
+      "If this lane is `coordination_not_applicable`, recover from local and GitHub state only and make no " \
+      "coordination or public-fallback call."
+
+    workflow = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
+    pause_skill = read_repo_file(PAUSE_SKILL_PATH).gsub(/\s+/, " ")
+    restart_docs = read_repo_file(File.join(ROOT, "docs/agent-runner-restarts.md")).gsub(/\s+/, " ")
+
+    assert_includes workflow, prompt_rule, WORKFLOW_PATH
+    assert_includes pause_skill, prompt_rule, PAUSE_SKILL_PATH
+    assert_includes workflow, recovery_rule, WORKFLOW_PATH
+    assert_includes restart_docs, new_chat_rule, "docs/agent-runner-restarts.md"
+    assert_includes pause_skill, new_chat_rule, PAUSE_SKILL_PATH
+  end
+
   def test_pause_and_continue_consume_the_persisted_applicability_outcome
     pause_rule =
       "For a `coordination_required` PR-batch help-needed pause, emit private-backend `help_requested` " \

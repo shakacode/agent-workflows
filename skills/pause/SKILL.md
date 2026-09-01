@@ -115,6 +115,9 @@ Pause for agent-runner restart now.
 Do not start new targets, spawn workers, create branches or worktrees, push,
 request CI, poll reviews, merge, or change repository files. Limit work to the
 minimal status checks and claim-preservation write needed for the handoff.
+If this lane is `coordination_not_applicable`, skip every claim-preservation
+write and coordination check in this prompt, make no backend or public-fallback
+call, and go straight to the handoff reply.
 If this lane already owns a private backend claim, send one heartbeat update,
 using a paused or operator-restart reason if the backend supports it; otherwise
 send a plain heartbeat preserving the current status. If it is using only the
@@ -189,6 +192,9 @@ Treat the pasted handoff as stale evidence, not authority. Read the repo's
 current AGENTS.md and the installed `pr-processing.md` workflow first. Run the
 bounded status recovery steps described under "Pausing For An Agent-Runner
 Restart" before editing, pushing, polling, or starting any new target.
+
+If this lane is `coordination_not_applicable`, recover from local and GitHub
+state only and make no coordination or public-fallback call.
 
 Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
 state, and private claim or active public `codex-claim` fallback comments. If

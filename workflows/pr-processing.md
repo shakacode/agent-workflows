@@ -1811,6 +1811,9 @@ Pause for agent-runner restart now.
 Do not start new targets, spawn workers, create branches or worktrees, push,
 request CI, poll reviews, merge, or change repository files. Limit work to the
 minimal status checks and claim-preservation write needed for the handoff.
+If this lane is `coordination_not_applicable`, skip every claim-preservation
+write and coordination check in this prompt, make no backend or public-fallback
+call, and go straight to the handoff reply.
 If this lane already owns a private backend claim, send one heartbeat update,
 using a paused or operator-restart reason if the backend supports it; otherwise
 send a plain heartbeat preserving the current status. If it is using only the
@@ -1888,7 +1891,10 @@ saved handoff instead of assuming the old worker will resume. The first resume
 or replacement action is bounded status recovery: re-check the worktree, branch,
 HEAD SHA, uncommitted changes, current PR/check state, and either private
 claim/heartbeat state or active public `codex-claim` fallback comments before
-continuing. Recompute live dependencies and runnable work from that snapshot;
+continuing. For `coordination_not_applicable`, bounded status recovery uses the
+local worktree, branch, HEAD SHA, uncommitted changes, and live GitHub PR/check
+state only; make no coordination or public-fallback call, and read every claim,
+heartbeat, holder, and fallback clause below as `coordination_required` only. Recompute live dependencies and runnable work from that snapshot;
 a saved handoff order is a stale hint, not permission to block on its first
 pending item. If bounded status shows a private backend claim is stale or dead but
 still held by this same stable agent/thread id with no cancellation or
