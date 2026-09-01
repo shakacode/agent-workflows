@@ -788,6 +788,15 @@ GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads
 
 Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. For an autonomously clearable blocker, prefer one deduplicated deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint persists without loading parent context, while a material change resumes once with only `state_delta` and reruns security, origin, coordination, overlap, review, readiness, and exact-head gates. If deterministic watching is unavailable, use one bounded model-mediated fallback: the default fast window is four 15-minute polls, then the interval doubles to a four-hour cap, with finite unchanged-run, model-call, and token ceilings. Stop or pause on clear, done, terminal, non-resumable, `blocked-user-input`, or budget state and preserve an exact restart-safe manual-resume handoff; do not create a duplicate. If neither watcher is available, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
+A prerequisite PR whose ordinary readiness gates are clean and whose only
+remaining progress gate under `merge_authority: ask` is the human review and
+merge decision is `blocked-user-input`, not `external-gate-failing` or an
+autonomously clearable blocker. Do not consume external-blocker retries or
+start or retain a watcher, monitor, or heartbeat. For an authorized batch
+target, start the exact-diff walkthrough before asking the one final merge
+question. For an external prerequisite, provide its exact PR link and one
+manual resume instruction.
+
 The `auto-clear=>watch(same:0wake,delta:gates)` phrase in the compact `GMCC-v4` line
 is the preferred watcher. Before creating its bounded fallback, detect whether
 the host can run a deterministic probe without resuming the parent task. A

@@ -112,8 +112,14 @@ HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE = "The current task remains the owner, an
                                          "that ownership changed."
 HUMAN_STATUS_BLOCKED_USER_INPUT_RULE = "For `blocked-user-input`, do not create or retain a heartbeat or monitor; " \
                                        "preserve one exact question and manual resume instructions."
+HUMAN_STATUS_READY_PREREQUISITE_RULE = "For a ready prerequisite whose only remaining gate under " \
+                                       "`merge_authority: ask` is the human review and merge decision"
 HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE = "At closeout/archive completion, place the three labeled parts before, not " \
-                                       "instead of, the existing mandatory closeout handoff."
+                                      "instead of, the existing mandatory closeout handoff."
+READY_PREREQUISITE_ASK_GATE_RULE = "A prerequisite PR whose ordinary readiness gates are clean and whose only " \
+                                   "remaining progress gate under `merge_authority: ask` is the human review and " \
+                                   "merge decision is `blocked-user-input`, not `external-gate-failing` or an " \
+                                   "autonomously clearable blocker."
 HUMAN_STATUS_REQUIRED_PHRASES = [
   "internal telemetry",
   "routine successful, intermediate, repeated, or unchanged wake",
@@ -126,6 +132,7 @@ HUMAN_STATUS_REQUIRED_PHRASES = [
   HUMAN_STATUS_AUTOMATION_CLEANUP_RULE,
   HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE,
   HUMAN_STATUS_BLOCKED_USER_INPUT_RULE,
+  HUMAN_STATUS_READY_PREREQUISITE_RULE,
   HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE,
   "required handoff evidence and exact `Conversation status:` line",
   "security, ownership, retry, scope, continuous integration (CI), review, or merge gates"
@@ -647,6 +654,10 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_contract, "manual resume instructions", "canonical completion contract"
     assert_text_includes normalized_contract, "`blocked-user-input` does not start a watcher",
                          "canonical completion contract"
+    assert_squished_includes normalized_contract, READY_PREREQUISITE_ASK_GATE_RULE,
+                             "canonical ready-prerequisite ask gate"
+    assert_text_includes normalized_contract, "Do not consume external-blocker retries",
+                         "canonical ready-prerequisite ask gate"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
       line = compact_contract_line(text)
@@ -724,6 +735,19 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_pr_monitoring,
                          "`stop-dependency-terminal` is a waking outcome and does not require a manual handoff",
                          "standalone dependency-terminal delivery"
+  end
+
+  def test_ready_prerequisite_ask_gate_rejects_external_failure_reclassification
+    deletion = delete_squished_phrase(@workflow_contract_section, READY_PREREQUISITE_ASK_GATE_RULE)
+    refute_equal @workflow_contract_section, deletion,
+                 "ready-prerequisite mutation must delete the production classification"
+    refute_includes squish(deletion), squish(READY_PREREQUISITE_ASK_GATE_RULE)
+    assert_squished_includes @workflow_contract_section,
+                             "For an authorized batch target, start the exact-diff walkthrough",
+                             "canonical ready-prerequisite owned-target route"
+    assert_squished_includes @workflow_contract_section,
+                             "For an external prerequisite, provide its exact PR link and one manual resume instruction.",
+                             "canonical ready-prerequisite external route"
   end
 
   def test_state_change_monitor_regressions_are_part_of_the_canonical_goal_contract_gate
@@ -816,6 +840,15 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "exact_question")
     assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "manual_resume")
     assert_includes blocked_input.dig("input", "manual_resume"), "Reply here"
+
+    ready_prerequisite = cases.find { |replay_case| replay_case.fetch("id") == "ready-prerequisite-ask" }
+    assert_equal "none", ready_prerequisite.dig("input", "automation_action")
+    assert_includes ready_prerequisite.fetch("expected_user_output"),
+                    "no code or continuous integration failure remains"
+    assert_includes ready_prerequisite.fetch("expected_user_output"),
+                    "Review PR #41 and decide whether to merge it."
+    assert_includes ready_prerequisite.dig("input", "manual_resume"),
+                    "https://github.com/acme/widgets/pull/41"
 
     diagnostic = cases.find { |replay_case| replay_case.fetch("id") == "explicit-diagnostics" }
     diagnostic_output = diagnostic.fetch("expected_user_output")
@@ -952,6 +985,15 @@ class GoalCompletionContractTest < Minitest::Test
                  "blocked-user-input mutation must delete the production rule"
     assert_includes human_status_contract_drift_errors(blocked_input_deletion),
                     HUMAN_STATUS_BLOCKED_USER_INPUT_RULE
+
+    ready_prerequisite_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_READY_PREREQUISITE_RULE
+    )
+    refute_equal @human_status_contract_section, ready_prerequisite_deletion,
+                 "ready-prerequisite mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(ready_prerequisite_deletion),
+                    HUMAN_STATUS_READY_PREREQUISITE_RULE
 
     closeout_deletion = delete_squished_phrase(
       @human_status_contract_section,

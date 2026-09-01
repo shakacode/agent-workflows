@@ -1189,6 +1189,14 @@ notification wording.
   plain English with exactly these labeled parts: `What changed:`, `Action needed:`
   (use `none` when applicable), and `Next:`. Each part must answer its
   label directly.
+- For a ready prerequisite whose only remaining gate under
+  `merge_authority: ask` is the human review and merge decision, `What changed:`
+  identifies the exact PR and says that no code or continuous integration (CI)
+  failure remains; `Action needed:` asks the user to review it and decide
+  whether to merge; and `Next:` gives the exact link and manual resume
+  instruction. Do not present that decision as an external failure or say that
+  no decision was requested. For an owned target, start the required exact-diff
+  walkthrough before asking the final merge question.
 - Include an internal identifier only when it is necessary for the requested
   action, and expand it on first use. Never guess an expansion that the evidence
   does not establish.
