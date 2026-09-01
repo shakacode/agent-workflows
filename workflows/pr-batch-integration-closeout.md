@@ -2178,8 +2178,8 @@ small batch, or already-merged PRs before a release candidate.
 
 Choose the audit mode before deep audit:
 
-- **Completed-batch audit**: use after a coordinated batch reaches terminal
-  states. When `worked_issue_scope` is verified from either the authenticated
+- **Completed-batch audit**: use after a completed batch, coordinated or
+  single-controller, reaches terminal states. When `worked_issue_scope` is verified from either the authenticated
   single-controller proof or required coordination state, deep
   audit only the batch worked issues, QA lane, mapped PRs, no-PR evidence,
   blocker, parked, and done-unmerged lanes. Keep the commit range as the

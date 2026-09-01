@@ -185,8 +185,9 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
      `help_requested`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
 
 Only `coordination_required` runs attempt typed event emission. Emission is
-best-effort and follows the canonical `pr-batch` backend-neutral rule. Backend
-`n/a` skips silently. Typed-event transport is
+best-effort and follows the canonical `pr-batch` backend-neutral rule. A trusted
+`coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
+not a silent skip. Typed-event transport is
 optional: when an active private backend does not advertise it or reports it
 unsupported, record `typed event transport: unavailable`, skip the emission,
 and continue without marking the event emission `UNKNOWN`. Only after the

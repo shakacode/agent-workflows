@@ -16,6 +16,13 @@ the approved execution envelope, and optional
 the shared security floor before using public GitHub content; it does not own
 security, dependency planning, dispatch, claims, liveness, or telemetry.
 
+Every ownership refresh and typed event below is `coordination_required` only.
+For `coordination_not_applicable`, consume the trusted outcome persisted by the
+[Coordination Applicability Gate](pr-processing.md#coordination-applicability-gate)
+and make no claim, heartbeat, holder, or typed-event call: the one controller
+records path reservations, lane lifecycle, and stop packets in durable local
+state instead, and never reports coordination as unavailable or degraded.
+
 It emits a committed implementation head and replayable evidence. It does not
 own base integration, conflict resolution, final validation, PR publication,
 review convergence, hosted CI, readiness, merge, production, promotion, or
@@ -155,9 +162,11 @@ Queue one compact `worker-attention v1` record rather than a transcript:
 - the safe resume instruction plus any dependency, claim, or path-expansion
   state that must be replayed.
 
-When an active private backend advertises typed events, emit the corresponding
+For `coordination_required`, when an active private backend advertises typed
+events, emit the corresponding
 `help_requested` event through its bounded transport; backend absence or
-unadvertised transport does not invent an execution blocker. Do not ask merely
+unadvertised transport does not invent an execution blocker. A
+`coordination_not_applicable` lane emits nothing and probes nothing here. Do not ask merely
 because a dependency is still progressing or optional telemetry is unavailable.
 
 ## Worker-To-Coordinator Handoff

@@ -2170,10 +2170,13 @@ process-level escape hatch**, not a single kill switch:
      the coordinator/operator instead emits one lane-scoped typed
      `human_intervention` event with `kind: drain` when the lane is
      `coordination_required` and the active private coordination backend
-     advertises typed-event support. For either drain path,
-     backend `n/a` skips the emission; unadvertised or unsupported typed-event
-     capability records `typed event transport: unavailable` and remains
-     nonblocking. For either drain path with advertised support, resolve the
+     advertises typed-event support. A `coordination_required` lane never
+     legitimately reaches a drain checkpoint under a trusted
+     `coordination_backend: n/a`, because that is a pre-launch stop; treat it as
+     a classification violation to report, not an emission to skip. For either
+     drain path, an unreachable, degraded, unadvertised, or unsupported
+     typed-event capability records `typed event transport: unavailable` and
+     remains nonblocking. For either drain path with advertised support, resolve the
      active backend's advertised drain-event executable and ordered opaque argv;
      reject a missing, malformed, or unsafe advertisement as an emission
      failure. Run that exact executable and separate argv without shell
