@@ -1322,7 +1322,7 @@ this compact marker exactly once inside **FYI / decisions made**, self-counted
 over its own user-visible messages in the task:
 
 ```text
-<!-- coordinator-narration-volume v1 batch_id=<percent-encoded-id>; messages=<int|UNKNOWN>; characters=<int|UNKNOWN>; checkpoints=dispatch:<int|UNKNOWN>,pr-open:<int|UNKNOWN>,decision-required:<int|UNKNOWN>,merge-decision:<int|UNKNOWN>,final-handoff:<int|UNKNOWN>; always_allowed=direct-answer:<int|UNKNOWN>,requested-status:<int|UNKNOWN>,required-turn:<int|UNKNOWN>,safety-stop:<int|UNKNOWN>; unclassified_messages=<int|UNKNOWN>; source=<coordinator-self-count|UNKNOWN> -->
+<!-- coordinator-narration-volume v1 batch_id=<percent-encoded-id>; messages=<int|UNKNOWN>; characters=<int|UNKNOWN>; checkpoints=dispatch:<int|UNKNOWN>,pr-open:<int|UNKNOWN>,decision-required:<int|UNKNOWN>,merge-decision:<int|UNKNOWN>,final-handoff:<int|UNKNOWN>; always_allowed=<int|UNKNOWN>; always_allowed_detail=direct-answer:<int|UNKNOWN>,requested-status:<int|UNKNOWN>,required-turn:<int|UNKNOWN>,safety-stop:<int|UNKNOWN>; unclassified_messages=<int|UNKNOWN>; source=<coordinator-self-count|UNKNOWN> -->
 ```
 
 `characters` counts Unicode code points, not bytes or grapheme clusters, over
@@ -1331,14 +1331,16 @@ rendered output — summed across every user-visible coordinator message in the
 task, including the final handoff. It excludes text the coordinator did not
 author, such as tool output and quoted reviewer bodies, and it excludes this
 marker itself, which cannot count itself. `messages` uses the same inclusion
-boundary. `always_allowed` counts the four always-allowed non-checkpoint kinds, broken out
-per kind for the same reason the checkpoints are: a single combined total cannot
-distinguish a legitimately long required walkthrough from a coordinator routing
-ordinary narration through the loosest category. `direct-answer` in particular
-means a reply to a question the user actually asked in this task, not narration
-the coordinator characterizes as answering something; narration that fails that
-test is `unclassified_messages`. A large `required-turn` count is expected and
-benign; a large `direct-answer` count is a drift signal exactly like a nonzero
+boundary. `always_allowed` remains the v1 aggregate of the four always-allowed
+non-checkpoint kinds so existing readers retain the field shape they already
+parse. `always_allowed_detail` breaks that aggregate out per kind for the same
+reason the checkpoints are broken out: a single combined total cannot distinguish
+a legitimately long required walkthrough from a coordinator routing ordinary
+narration through the loosest category. `direct-answer` in particular means a
+reply to a question the user actually asked in this task, not narration the
+coordinator characterizes as answering something; narration that fails that test
+is `unclassified_messages`. A large `required-turn` count is expected and benign;
+a large `direct-answer` count is a drift signal exactly like a nonzero
 `unclassified_messages`.
 `unclassified_messages` counts user-visible messages that matched no checkpoint
 and no always-allowed category. Only text the coordinator shows the user is in
@@ -1359,9 +1361,10 @@ preserves the most specific reason the message was allowed instead of letting a
 broader direct answer absorb required or explicitly requested output. A final
 handoff that also carries per-target merge verdicts is therefore one
 `final-handoff` message, not two. With that rule and every field known,
-`messages` equals the five checkpoint counts plus the four `always_allowed`
-counts plus `unclassified_messages`; report a reconciliation mismatch rather
-than silently adjusting a field.
+`always_allowed` equals the four `always_allowed_detail` counts, and `messages`
+equals the five checkpoint counts plus `always_allowed` plus
+`unclassified_messages`; report a reconciliation mismatch rather than silently
+adjusting a field.
 
 A coordination-backed `batch_id` is opaque and may legitimately contain
 characters that collide with this marker's own syntax: `;` and `=` are its field

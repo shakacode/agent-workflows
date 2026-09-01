@@ -163,6 +163,18 @@ class UserFacingCoordinationContractTest < Minitest::Test
                     "`requested-status`, then `direct-answer`"
   end
 
+  def test_oc_v1_preserves_the_scalar_always_allowed_field
+    text = normalized_section(
+      WORKFLOW,
+      "### Coordinator Output Contract",
+      end_heading: /^###\s+/
+    )
+
+    assert_includes text, "always_allowed=<int|UNKNOWN>; always_allowed_detail="
+    assert_includes text, "`always_allowed` remains the v1 aggregate"
+    assert_includes text, "`always_allowed_detail` breaks that aggregate out"
+  end
+
   def test_user_facing_coordination_routes_oc_v1_without_stale_duplicate_rules
     canonical = normalized_section(
       WORKFLOW,
