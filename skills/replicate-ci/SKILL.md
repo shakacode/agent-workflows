@@ -22,10 +22,10 @@ reproduction explains the failure.
    name, retry number, failing step, and log excerpt. If any fact cannot be
    verified, write `UNKNOWN`.
 3. Establish hosted run history for the exact failure identity on the exact
-   commit. A single verified hosted failure with no conflicting same-commit run
-   is sufficient to proceed as a candidate deterministic/parity case. If the
-   failure identity or hosted run history cannot be retrieved or verified,
-   write `UNKNOWN` and stop before reproduction. If equivalent hosted
+   commit. A single verified hosted failure with no conflicting equivalent
+   same-commit run is sufficient to proceed as a candidate deterministic/parity
+   case. If the failure identity or hosted run history cannot be retrieved or
+   verified, write `UNKNOWN` and stop before reproduction. If equivalent hosted
    invocations for the same commit (workflow event, inputs, and matrix
    configuration) pass and fail, stop before parity reproduction and use
    `fix-flaky-tests`; that workflow owns
