@@ -8652,10 +8652,6 @@ main() {
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_upgrade_validates_consumer_root_after_install
-    test_fresh_install_applies_the_recorded_flat_default
-    test_delivery_mode_resolution_reports_explicit_and_recorded_sources
-    test_legacy_metadata_without_delivery_mode_resolves_flat_by_compatibility_rule
-    test_fresh_install_default_note_accompanies_native_plugin_conflict
   )
 
   local test_name

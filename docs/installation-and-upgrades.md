@@ -75,32 +75,11 @@ host/profile:
 `--mode copy|symlink` controls how installer-managed assets are materialized.
 It is separate from `--delivery-mode flat|plugin-companion`.
 
-### Delivery Mode Resolution
-
-When `--delivery-mode` is omitted, `bin/install-agent-workflows` resolves the
-mode from the target's install metadata. The install summary reports the
-resolved mode and which rule produced it:
-
-| Target state | Resolved mode | Reported source |
-| --- | --- | --- |
-| `--delivery-mode` was passed | The requested mode | `explicit --delivery-mode` |
-| Metadata records `delivery_mode` | The recorded mode | `recorded install metadata` |
-| Metadata predates delivery modes | `flat` | `legacy install metadata` |
-| No install metadata (fresh install) | `flat` | `fresh-install default` |
-
-An invalid recorded `delivery_mode` fails before any mutation, and the resolved
-mode is always persisted as a concrete mode.
-
 ### Fresh-Install Delivery Default
 
 **Decision (issue #248): the generic installer keeps `flat` as its fresh-install
 default. This is an explicit product decision, not an inherited side effect of
 the legacy-metadata compatibility rule.**
-
-The two rules are now separate constants in `bin/install-agent-workflows`
-(`fresh_install_delivery_mode` and `legacy_metadata_delivery_mode`). They
-resolve to the same value today for different reasons and can be changed
-independently.
 
 Rationale:
 
@@ -122,10 +101,6 @@ Rationale:
   the native `scw` plugin plus `--delivery-mode plugin-companion` on
   plugin-capable Codex CLI/Desktop and Claude Code, and choose it explicitly
   rather than having the installer infer it.
-- A fresh install that collides with an active native plugin already fails
-  closed with exact guidance instead of installing the wrong route. It now also
-  reports that the fresh-install default was applied because the target
-  recorded no delivery mode.
 
 Unchanged by this decision:
 
