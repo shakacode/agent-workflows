@@ -1764,6 +1764,28 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_symlinked_managed_bin_root_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      bin_root = File.join(target, "bin")
+      relocated = File.join(target, "relocated-bin")
+      # Every recorded byte still matches through the link, so only the root
+      # classification can catch it.
+      File.rename(bin_root, relocated)
+      File.symlink(relocated, bin_root)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [bin_root], payload.dig("bin", "blocking")
+      assert_includes payload.dig("bin", "reason"), "symlink"
+      assert_includes payload.fetch("reason"), bin_root
+      assert_equal relocated, File.readlink(bin_root)
+    end
+  end
+
   def test_symlinked_managed_bin_directory_blocks_the_delivery_check
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)

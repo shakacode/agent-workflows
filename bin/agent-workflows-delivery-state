@@ -660,6 +660,15 @@ module AgentWorkflowsDeliveryState
     return { "state" => "unrecorded", "paths" => [], "missing" => [], "blocking" => [] } if fingerprints == :unrecorded
 
     bin_root = File.join(target, "bin")
+    # A symlinked bin root is never a copy install's managed directory, even when
+    # every recorded byte still matches through the link.
+    if File.symlink?(bin_root)
+      return {
+        "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [bin_root],
+        "reason" => "managed bin root is a symlink"
+      }
+    end
+
     present = []
     missing = []
     blocking = []

@@ -340,6 +340,31 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
 }
 
 
+test_copy_install_refuses_a_symlinked_managed_bin_root() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  mv "$target/bin" "$target/relocated-bin"
+  ln -s "$target/relocated-bin" "$target/bin"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "copy install accepted a symlinked managed bin root"
+  assert_contains "$output" "$target/bin"
+  assert_symlink "$target/bin"
+  [[ "$(readlink "$target/bin")" = "$target/relocated-bin" ]] || \
+    fail "refused install changed the managed bin root symlink"
+  assert_file "$target/relocated-bin/agent_doctor/autonomous_merge_policy.rb"
+}
+
 test_fresh_copy_install_refuses_a_non_file_managed_helper_path() {
   local tmp target output status
   tmp="$(mktemp -d)"
@@ -8792,6 +8817,7 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_copy_install_refuses_a_symlinked_managed_bin_root
     test_fresh_copy_install_refuses_a_non_file_managed_helper_path
     test_copy_metadata_records_managed_bin_copy_fingerprints
     test_symlink_metadata_records_no_managed_bin_copy_fingerprints
