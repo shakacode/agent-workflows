@@ -297,7 +297,10 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_operator ask_gate.index(ancestry_command), :<,
                     ask_gate.index("automatically start the exact-diff PR walkthrough")
     assert_includes ask_gate, "[Merge Assurance Gate](#merge-assurance-gate)"
-    refute_includes ask_gate, "provider-produced merge-result or merge-group result"
+    # The Ask gate must not redefine current-integration-evidence's own machine
+    # evidence schema — that belongs solely to the later Merge Assurance Gate.
+    refute_includes ask_gate, "potentialMergeCommit"
+    refute_includes ask_gate, "git merge-tree"
     assert_includes normalized_gate,
                     "Do not claim or consume its machine `current-integration-evidence` here."
     assert_includes normalized_gate, "Compact goals encode that checklist inline as `head>=base+CI=READY`"
@@ -359,8 +362,10 @@ class IntegrationCloseoutContractTest < Minitest::Test
 
     assert_includes normalized_gate, "PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY."
     assert_includes normalized_gate,
-                    "If ancestry failed while CI `verdict` is `READY`, lead with **PR IS BEHIND THE CURRENT BASE"
-    assert_includes normalized_gate, "instead of blaming CI; otherwise lead with"
+                    "If the ancestry command exits `1` (proven non-ancestor, not a missing-SHA command"
+    assert_includes normalized_gate, "while CI `verdict` is `READY`, lead with **PR IS BEHIND THE CURRENT BASE"
+    assert_includes normalized_gate, "instead of blaming CI; any other nonzero exit is"
+    assert_includes normalized_gate, "`UNKNOWN` per the rule above. Otherwise lead with"
     assert_includes normalized_gate, "CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT MERGE-READY."
 
     behind_base_position = normalized_gate.index("PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY.")
