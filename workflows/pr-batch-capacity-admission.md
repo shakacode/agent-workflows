@@ -54,7 +54,8 @@ the configured maximum.
    immediately run `bin/heavy-root-admission bind` with the same state
    directory, host, and launch token plus the real `--pid` and `--pgid`. Binding
    verifies the local process and process group. A bound reservation does not
-   expire automatically.
+   expire automatically. Replaying `reserve` for that token returns an
+   `already-bound` denial and never authorizes another launch.
 4. Preserve the process and descendants to natural terminal. Verify the exact
    terminal outcome and complete no-writer cleanup, including descendants,
    loggers, open repository writers, and Git locks. Only then run

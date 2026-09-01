@@ -98,6 +98,19 @@ class HeavyRootAdmissionTest < Minitest::Test
         assert_equal 0, bind.fetch(:status), bind.inspect
         assert_equal "bound", JSON.parse(bind.fetch(:stdout)).dig("reservation", "status")
 
+        reserve_replay = run_helper(
+          "reserve", "--state-dir", state_dir, "--host", "M5",
+          "--owner", "maker", "--lane", "issue-604-maker",
+          "--worktree", "/tmp/maker", "--command-class", "validator",
+          "--launch-token", token, "--ceiling", "1",
+          "--scan-command-json", scan_command, "--json"
+        )
+        assert_equal 3, reserve_replay.fetch(:status), reserve_replay.inspect
+        replay_payload = JSON.parse(reserve_replay.fetch(:stdout))
+        assert_equal "already-bound", replay_payload.fetch("reason")
+        assert_equal pid, replay_payload.dig("reservation", "pid")
+        assert_match(/do not relaunch/i, replay_payload.fetch("retry_when"))
+
         premature = run_helper(
           "release", "--state-dir", state_dir, "--host", "M5",
           "--launch-token", token, "--terminal-outcome", "exit 0",

@@ -364,6 +364,22 @@ module HeavyRootAdmission
           raise Error, "launch token belongs to different owner, lane, worktree, command class, or intended PID/PGID metadata"
         end
 
+        if existing["status"] == "bound"
+          next({
+            write: recovered.any?,
+            report: {
+              "version" => VERSION,
+              "decision" => "denied",
+              "reason" => "already-bound",
+              "host" => options.fetch(:host),
+              "launch_token" => options.fetch(:launch_token),
+              "reservation" => existing,
+              "retry_when" => "do not relaunch; wait for the bound PID/PGID to reach terminal/no-writer cleanup and release",
+              "recovered_prelaunch_tokens" => recovered
+            }
+          })
+        end
+
         next({
           write: recovered.any?,
           report: {
