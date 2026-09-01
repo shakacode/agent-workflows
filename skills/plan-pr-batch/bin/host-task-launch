@@ -47,6 +47,9 @@ module HostTaskLaunch
     return invalid_input if publication == :invalid
 
     lane["state"] = "waiting" if input["dependency_state"] == "waiting"
+    if input["dependency_state"] == "ready" && lane["state"] == "waiting"
+      lane["state"] = lane.dig("task", "id") == "UNKNOWN" ? "launch-pending" : "active"
+    end
     record["reconciliation_due"] = publication.fetch("reconciliation_due")
     record["coordination"] = publication.fetch("coordination")
     record["no_backend_override"] = publication["override"] if publication.key?("override")

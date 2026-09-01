@@ -313,6 +313,46 @@ class HostTaskLaunchTest < Minitest::Test
     end
   end
 
+  def test_dependency_ready_clears_a_persisted_pre_create_wait
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      prepared = invoke(input)
+      input["operation"] = "publish"
+      input["publication"] = publication_evidence(prepared.fetch("record"))
+      input["dependency_state"] = "waiting"
+      waiting = invoke(input)
+      assert_equal "wait-for-dependencies", waiting.dig("action", "kind")
+
+      input["operation"] = "begin-create"
+      input["dependency_state"] = "ready"
+      ready = invoke(input)
+
+      assert_equal "launch-pending", ready.dig("record", "lanes", 0, "state")
+      assert_equal "create-task", ready.dig("action", "kind")
+    end
+  end
+
+  def test_dependency_ready_restores_an_existing_task_to_active
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      begin_create(input)
+      input["operation"] = "bind-task"
+      input["task_identity"] = { "task_id" => "task-1", "task_url" => "https://example.test/task-1" }
+      assert_equal "active", invoke(input).dig("record", "lanes", 0, "state")
+
+      input["operation"] = "retry"
+      input.delete("task_identity")
+      input["dependency_state"] = "waiting"
+      assert_equal "waiting", invoke(input).dig("record", "lanes", 0, "state")
+
+      input["dependency_state"] = "ready"
+      ready = invoke(input)
+
+      assert_equal "active", ready.dig("record", "lanes", 0, "state")
+      assert_equal "reconcile-by-run-id", ready.dig("action", "kind")
+    end
+  end
+
   def test_valid_no_backend_override_keeps_reconciliation_due_visible_and_invalid_override_is_rejected
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
