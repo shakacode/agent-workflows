@@ -23,6 +23,7 @@ Installed paths:
   <target>/docs/agent-workflows-model-routing.md
   <target>/docs/user-facing-coordination.md
   <target>/docs/writing-style.md
+  <target>/docs/writing-style-asd-ste100.md
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflow-writing-style
@@ -63,6 +64,7 @@ pack_docs=(
   agent-workflows-model-routing.md
   user-facing-coordination.md
   writing-style.md
+  writing-style-asd-ste100.md
 )
 for solution_path in "$repo_root"/docs/solutions/*; do
   [[ -f "$solution_path" && ! -L "$solution_path" ]] || continue
