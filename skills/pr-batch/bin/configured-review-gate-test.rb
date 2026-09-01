@@ -1324,6 +1324,53 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "configured-review-receipt-binding-mismatch", moved_result.dig("blockers", 0, "code")
   end
 
+  def test_replay_ignores_unconfigured_check_churn_but_binds_configured_checks
+    initial = live_snapshot(
+      "checks" => [check, check(name: "validate")],
+      "artifacts" => [artifact]
+    )
+    receipt = ConfiguredReviewGate.evaluate(
+      policy:, policy_source: JSON.generate(policy), snapshot: initial,
+      settled: true, now: NOW, trusted_live: true
+    ).fetch("receipt")
+    replay_snapshot = Marshal.load(Marshal.dump(initial))
+    replay_snapshot["collected_at"] = (NOW + 20).iso8601
+    replay_snapshot.dig("checks", 1)["completed_at"] = (NOW + 10).iso8601
+
+    replay = ConfiguredReviewGate.replay(
+      receipt:, policy:, policy_source: JSON.generate(policy),
+      snapshot: replay_snapshot, settled: true, now: NOW + 20, trusted_live: true
+    )
+    configured_check_moved = Marshal.load(Marshal.dump(replay_snapshot))
+    configured_check_moved.dig("checks", 0)["completed_at"] = (NOW + 10).iso8601
+    moved = ConfiguredReviewGate.replay(
+      receipt:, policy:, policy_source: JSON.generate(policy),
+      snapshot: configured_check_moved, settled: true, now: NOW + 20, trusted_live: true
+    )
+
+    assert_equal "READY", replay.fetch("verdict")
+    assert_equal "configured-review-receipt-artifact-snapshot-moved", moved.dig("blockers", 0, "code")
+  end
+
+  def test_not_applicable_replay_ignores_check_churn
+    initial = live_snapshot("checks" => [check(name: "validate")])
+    policy_source = JSON.generate("n/a")
+    receipt = ConfiguredReviewGate.evaluate(
+      policy: "n/a", policy_source:, snapshot: initial,
+      settled: true, now: NOW, trusted_live: true
+    ).fetch("receipt")
+    replay_snapshot = Marshal.load(Marshal.dump(initial))
+    replay_snapshot["collected_at"] = (NOW + 20).iso8601
+    replay_snapshot.dig("checks", 0)["completed_at"] = (NOW + 10).iso8601
+
+    replay = ConfiguredReviewGate.replay(
+      receipt:, policy: "n/a", policy_source:, snapshot: replay_snapshot,
+      settled: true, now: NOW + 20, trusted_live: true
+    )
+
+    assert_equal "READY", replay.fetch("verdict")
+  end
+
   def test_replay_accepts_a_reviewed_base_only_with_safe_current_integration_evidence
     initial = live_snapshot("checks" => [check], "artifacts" => [artifact])
     receipt = ConfiguredReviewGate.evaluate(
@@ -1685,6 +1732,33 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "READY", result.fetch("verdict")
     assert_equal [30], sleeps
     assert_equal true, result.dig("receipt", "mutation_eligible")
+  end
+
+  def test_live_evaluator_settles_while_unconfigured_checks_change
+    current = NOW
+    sleeps = []
+    initial = live_snapshot(
+      "checks" => [check, check(name: "validate")],
+      "artifacts" => [artifact]
+    )
+    later = Marshal.load(Marshal.dump(initial))
+    later.dig("checks", 1)["completed_at"] = (NOW + 10).iso8601
+    result = ConfiguredReviewGate::LiveEvaluator.new(
+      client: FakeClient.new([initial, later]),
+      policy:,
+      policy_source: JSON.generate(policy),
+      expected_base_sha: BASE_SHA,
+      wait_seconds: 60,
+      poll_seconds: 30,
+      clock: -> { current },
+      sleeper: lambda { |seconds|
+        sleeps << seconds
+        current += seconds
+      }
+    ).run
+
+    assert_equal "READY", result.fetch("verdict")
+    assert_equal [30], sleeps
   end
 
   def test_live_evaluator_returns_unknown_for_malformed_policy_shape

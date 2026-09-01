@@ -483,7 +483,7 @@ module ConfiguredReviewGate
         return unsettled if terminal_without_wait?(blocker_codes)
 
         current_result = unsettled
-        digest = ConfiguredReviewGate.semantic_snapshot_digest(snapshot)
+        digest = ConfiguredReviewGate.semantic_snapshot_digest(snapshot, policy: @policy)
         if digest == baseline_digest
           quiet_seconds = @policy == "n/a" ? 0 : @policy.dig("artifact_settlement", "quiet_period_seconds")
           if now - baseline_at >= quiet_seconds
@@ -579,7 +579,7 @@ module ConfiguredReviewGate
   def evaluate(policy:, policy_source:, snapshot:, settled:, now: Time.now.utc, trusted_live: false)
     validate_snapshot!(snapshot)
     policy_digest = "sha256:#{Digest::SHA256.hexdigest(policy_source)}"
-    snapshot_digest = semantic_snapshot_digest(snapshot)
+    snapshot_digest = semantic_snapshot_digest(snapshot, policy:)
 
     if policy == "n/a"
       receipt = build_receipt(
@@ -713,7 +713,7 @@ module ConfiguredReviewGate
       return replay_blocked("UNKNOWN", "configured-review-receipt-projection-mismatch")
     end
     unless receipt.dig("artifact_settlement", "snapshot_digest") ==
-           semantic_snapshot_digest(comparable_snapshot)
+           semantic_snapshot_digest(comparable_snapshot, policy:)
       return replay_blocked("NOT_READY", "configured-review-receipt-artifact-snapshot-moved")
     end
     unless receipt["mutation_eligible"] == true && current.dig("receipt", "mutation_eligible") == true
@@ -726,7 +726,7 @@ module ConfiguredReviewGate
       "verdict" => "READY",
       "mutation_eligible" => true,
       "bindings" => snapshot.fetch("bindings"),
-      "snapshot_digest" => semantic_snapshot_digest(snapshot),
+      "snapshot_digest" => semantic_snapshot_digest(snapshot, policy:),
       "blockers" => []
     }
   end
@@ -832,7 +832,7 @@ module ConfiguredReviewGate
     return "configured-review-receipt-evidence-digest-mismatch" unless
       receipt["evidence_digest"] == receipt_evidence_digest(receipt)
     return "configured-review-receipt-projection-mismatch" unless
-      settlement["snapshot_digest"] == semantic_snapshot_digest(evidence) &&
+      settlement["snapshot_digest"] == semantic_snapshot_digest(evidence, policy: receipt["policy"]) &&
       settlement["collected_at"] == evidence["collected_at"] &&
       settlement["settled"] == true
 
@@ -867,9 +867,25 @@ module ConfiguredReviewGate
     )
   end
 
-  def semantic_snapshot_digest(snapshot)
+  def semantic_snapshot_digest(snapshot, policy: nil)
     semantic = snapshot.reject { |key, _value| key == "collected_at" }
+    unless policy.nil?
+      relevant_check_names = policy_relevant_check_names(policy)
+      semantic["checks"] = Array(semantic["checks"]).select do |check|
+        check.is_a?(Hash) && relevant_check_names.include?(check["name"])
+      end
+    end
     "sha256:#{Digest::SHA256.hexdigest(canonical_json(semantic))}"
+  end
+
+  def policy_relevant_check_names(policy)
+    return [] if policy == "n/a" || policy.is_a?(Hash) && policy["not_applicable"] == true
+    return [] unless policy.is_a?(Hash)
+
+    reviewers = Array(policy["reviewers"])
+    fallback_reviewer = policy.dig("fallback", "reviewer")
+    reviewers += [fallback_reviewer] if fallback_reviewer.is_a?(Hash)
+    reviewers.filter_map { |reviewer| reviewer["check_name"] if reviewer.is_a?(Hash) }.uniq
   end
 
   def validated_receipt_base_sha!(receipt)
