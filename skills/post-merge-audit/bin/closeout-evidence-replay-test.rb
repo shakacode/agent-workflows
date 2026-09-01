@@ -761,6 +761,33 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_only_ignores_protocol_slash_tokens_inside_https_labels
+    ["http/2", "Http/2"].each do |protocol|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before HTTPS: #{protocol}; after https://github.com/example/repo/pull/123#visual",
+          "interaction_change" => "yes",
+          "interaction_evidence" =>
+            "clip: HTTPS: #{protocol}; https://github.com/example/repo/pull/123#clip"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), protocol
+      refute_includes qa.fetch("missing"), "visual_evidence.local_reference", protocol
+    end
+
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" =>
+          "durable: before ARTIFACTS/2.3 and after https://github.com/example/repo/pull/123#visual"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.local_reference"
+  end
+
   def test_v2_github_destination_requires_a_github_url
     data = run_replay(
       v2_marker(

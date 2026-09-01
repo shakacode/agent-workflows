@@ -592,7 +592,7 @@ module CloseoutEvidenceReplay
 
   def disallowed_durable_reference?(value)
     non_url_text = without_https_urls(value)
-    path_candidate_text = without_schema_slash_labels(non_url_text)
+    path_candidate_text = without_https_urls(without_schema_slash_labels(value))
     local_path = absolute_local_path?(non_url_text) ||
                  path_candidate_text.match?(
                    %r{(?:\A|[\s("'=;])(?:\./\S++|\.\./\S++|~[/\\]\S++|[A-Za-z]:[^/\\\s]++|[^/\s]++/\S++)}
@@ -608,9 +608,26 @@ module CloseoutEvidenceReplay
   end
 
   def without_schema_slash_labels(value)
-    value
-      .gsub(%r{\b(?:before/after|baseline/candidate|pass/fail|on/off|yes/no)\b}i, "")
-      .gsub(%r{\b[A-Z][A-Z0-9_-]*/\d+(?:\.\d+)*\b}, "")
+    cleaned = value.gsub(
+      %r{\b(?:before/after|baseline/candidate|pass/fail|on/off|yes/no)\b}i,
+      ""
+    )
+
+    https_token_matches(value).reverse_each do |match|
+      label = https_prose_label(value, match)
+      next unless label
+
+      label_start = value.index(label, match.end(0))
+      next unless label_start
+
+      label_range = label_start...(label_start + label.length)
+      cleaned[label_range] = cleaned[label_range].gsub(
+        %r{\b[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\b},
+        ""
+      )
+    end
+
+    cleaned
   end
 
   def failed_visual_artifact_claim?(value)
@@ -707,20 +724,24 @@ module CloseoutEvidenceReplay
   end
 
   def prose_https_label?(value, match)
-    return false unless match[0].casecmp?("https:")
+    !https_prose_label(value, match).nil?
+  end
+
+  def https_prose_label(value, match)
+    return unless match[0].casecmp?("https:")
 
     suffix = value[match.end(0)..]
-    return false unless suffix&.match?(/\A\s+/)
+    return unless suffix&.match?(/\A\s+/)
 
     raw_label = suffix.lstrip
     if (next_https = HTTPS_TOKEN.match(raw_label))
       raw_label = raw_label[0...next_https.begin(0)].rstrip.sub(/\s+(?:after|at|from|see|via)\z/i, "")
     end
     leading_symbols = raw_label[/\A[^\p{Alnum}]*/u]
-    return false if leading_symbols.match?(%r{[/\\]})
+    return if leading_symbols.match?(%r{[/\\]})
 
     label = raw_label.sub(/\A[^\p{Alnum}]+/u, "")
-    return false if label.empty?
+    return if label.empty?
 
     recognized_status = label.match?(
       /\A(?:[1-5]\d{2}\s+)?(?:#{HTTPS_PROSE_LABEL_STATUS_PATTERN})(?=\s|[,;]|\.(?:\s|\z)|\z)/i
@@ -728,14 +749,14 @@ module CloseoutEvidenceReplay
 
     punctuation_bounded = label.match?(/[;,]|\.(?=\s|\z)/)
     prose_label = label.split(/[;,]|\.(?=\s|\z)/, 2).first.strip
-    return false if prose_label.include?("\\")
-    return false if prose_label.split(/\s+/).any? do |token|
+    return if prose_label.include?("\\")
+    return if prose_label.split(/\s+/).any? do |token|
       token.include?("/") && !token.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z})
     end
-    return false if authority_shaped_https_label?(prose_label)
-    return false if text_tokens(prose_label).length < 2 && !punctuation_bounded && !recognized_status
+    return if authority_shaped_https_label?(prose_label)
+    return if text_tokens(prose_label).length < 2 && !punctuation_bounded && !recognized_status
 
-    true
+    prose_label
   end
 
   def authority_shaped_https_label?(label)
