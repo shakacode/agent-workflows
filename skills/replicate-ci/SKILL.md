@@ -24,12 +24,14 @@ reproduction explains the failure.
 3. Establish hosted run history for the exact failure identity on the exact
    commit. A single verified hosted failure with no conflicting equivalent
    same-commit run is sufficient to proceed as a candidate deterministic/parity
-   case. Equivalent hosted invocations have matching invocation parameters and
-   all known realized hosted environment/parity state. If the failure identity,
-   hosted run history, or invocation equivalence cannot be retrieved or
-   verified, write `UNKNOWN` and stop before reproduction. If equivalent hosted
-   invocations for the same commit pass and fail, stop before parity reproduction
-   and use `fix-flaky-tests`; that workflow owns intermittency regardless of local
+   case. Equivalent hosted invocations have matching controlled invocation
+   parameters and selected or known pre-run hosted environment identity—event,
+   inputs, matrix, runner image, toolchain, and configuration selection—not
+   runtime behavior or outcomes. If the failure identity, hosted run history,
+   or invocation equivalence cannot be retrieved or verified, write `UNKNOWN`
+   and stop before reproduction. If equivalent hosted invocations for the same
+   commit pass and fail, stop before parity reproduction and use
+   `fix-flaky-tests`; that workflow owns intermittency regardless of local
    results. Do not produce an Outcomes classification for that handoff.
 4. Confirm the local-green evidence: command or workflow path used, head SHA,
    environment, and timestamp. Use `.agents/bin/validate` instead of inventing a

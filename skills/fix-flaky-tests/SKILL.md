@@ -80,9 +80,11 @@ into this workflow:
    open a second fix for the same flake.
 3. **Broken, not flaky, or deterministic parity gap.** Obtain exact hosted
    failure logs and history for the failure identity, then record the local
-   result separately. An equivalent hosted invocation has matching invocation
-   parameters and all known realized hosted environment/parity state. If
-   equivalence is unverifiable, record `UNKNOWN` and do not take either exit.
+   result separately. An equivalent hosted invocation has matching controlled
+   invocation parameters and selected or known pre-run hosted environment
+   identity—event, inputs, matrix, runner image, toolchain, and configuration
+   selection—not runtime behavior or outcomes. If equivalence is unverifiable,
+   record `UNKNOWN` and do not take either exit.
    If the same exact failure occurs on every equivalent hosted invocation and
    reproduces locally, it is an ordinary bug. If the same exact failure occurs
    on every equivalent hosted invocation and the
@@ -233,6 +235,9 @@ gap:
   attempt passes or fails. A green parity run proves nothing about a test that
   fails one run in twenty, and a locally failing attempt does not turn hosted
   intermittency into a parity gap.
+
+If equivalence is unverifiable, record `UNKNOWN`; do not classify or route the
+failure.
 
 If the classification itself is unclear, establish determinism first by
 inspecting the run history for that commit. Do not run both workflows in
