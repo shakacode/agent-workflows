@@ -29,7 +29,9 @@ Print operator prompts for safe agent-runner restarts.
 - For a `coordination_required` PR-batch help-needed pause, emit private-backend
   `help_requested` alongside the restart/block handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. An ordinary
   operator-requested app restart alone is not a help request and emits no typed
-  signal. Backend `n/a` skips silently. Typed-event transport is optional: when
+  signal. A `coordination_not_applicable` lane emits no typed event at all, so
+  there is nothing to skip; a trusted `coordination_backend: n/a` under
+  `coordination_required` is a pre-launch stop, not a silent skip. Typed-event transport is optional: when
   an active private backend
   does not advertise it or reports it unsupported, record
   `typed event transport: unavailable`, skip the emission, and continue without

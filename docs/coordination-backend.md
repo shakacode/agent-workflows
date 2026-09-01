@@ -83,12 +83,28 @@ Trust boundary: this is tamper-evidence for a decision that was already made and
 retained, not proof of who made it. The helper verifies that the artifact matches
 the retained digest; it cannot verify who produced that digest. It also validates
 `policy_source` and `topology_source` as durable HTTPS URLs without fetching
-them, so their content never gates the decision. The protection is therefore only
-as strong as the separation the controller actually maintains: retain the digest
-at classification time in a place the publishing actor does not rewrite — a
-committed repository value, an operator-held record, or a second accountable
-agent — and an actor that both writes the artifact and computes its digest at
-publication time gains no assurance from this check.
+them, so their content never gates the decision.
+
+State the guarantee precisely. Against accidental drift, a stale artifact, or a
+swapped decision between classification and publication, the digest is real
+protection. Against an adversarial or careless single session it is none,
+because an actor that writes the artifact and computes its own digest at
+publication time satisfies every check here.
+
+`coordination_not_applicable` is by definition the single-controller case, so
+that weak case is the common one. Two requirements follow, and neither is
+optional:
+
+- The digest must be recorded at classification time, before the work it
+  authorizes begins, in a store the publishing actor does not write: a committed
+  repository value, an operator-held record, or a second accountable agent.
+- The actor that runs `publish` or `replay` must not be the actor that produced
+  the digest it passes. When one agent is the only participant, the operator
+  supplies the digest.
+
+A run that cannot meet both is not `coordination_not_applicable` with an
+authenticated proof. Reclassify it as `coordination_required`, or publish it
+with the digest recorded by the operator rather than by the agent.
 
 `coordination_required` covers concurrent same-machine work by independently
 running sessions, concurrent multi-machine or multi-operator work,
@@ -282,7 +298,10 @@ packets and handoffs:
 
 Include batch, lane, agent, repository, target, branch, and status context when
 known. Typed payload fields remain data rather than path components. Event
-writes are best-effort for the primary operation. Backend `n/a` skips silently.
+writes are best-effort for the primary operation. A `coordination_not_applicable`
+lane emits no typed event at all, so there is nothing to skip; a trusted
+`coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
+not a silent skip.
 Typed-event transport is optional: when an active private backend does not
 advertise it or reports it unsupported, record
 `typed event transport: unavailable`, skip the emission, and continue without

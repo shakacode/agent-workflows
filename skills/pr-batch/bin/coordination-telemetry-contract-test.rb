@@ -647,8 +647,12 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "A plain `sha256sum` of the artifact file does not match",
       "The helper verifies that the artifact matches the retained digest; it cannot verify who produced " \
       "that digest.",
-      "an actor that both writes the artifact and computes its digest at publication time gains no " \
-      "assurance from this check"
+      "an actor that writes the artifact and computes its own digest at publication time satisfies every " \
+      "check here.",
+      "The digest must be recorded at classification time, before the work it authorizes begins, in a store " \
+      "the publishing actor does not write",
+      "The actor that runs `publish` or `replay` must not be the actor that produced the digest it passes.",
+      "A run that cannot meet both is not `coordination_not_applicable` with an authenticated proof."
     ].each do |rule|
       assert_includes section, rule
     end

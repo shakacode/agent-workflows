@@ -1030,7 +1030,10 @@ and is part of what the post-incident review needs to see.
 
 ### Coordination events and terminal state
 
-Record these against the original lane. Backend `n/a` skips silently; an
+Record these against the original lane. A `coordination_not_applicable` lane
+emits no typed event at all, so there is nothing to skip; a trusted
+`coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
+not a silent skip. An
 advertised typed-event transport that fails records best-effort `UNKNOWN`
 evidence and does not block the revert. Extending that same rule: a transport
 the backend does not advertise, or reports unsupported, means skip the emission

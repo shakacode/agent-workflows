@@ -43,7 +43,9 @@ write. If a new actor takes over abandoned ownership, emit private-backend
 `human_intervention` with `kind: takeover`; if a fenced replacement supersedes
 the prior actor, use `kind: supersede`. A routine same-thread resume with the
 same verified holder is neither a takeover nor a supersede and emits no event.
-Backend `n/a` skips silently. Typed-event transport is optional: when an active
+A `coordination_not_applicable` lane emits no typed event at all, so there is
+nothing to skip; a trusted `coordination_backend: n/a` under
+`coordination_required` is a pre-launch stop, not a silent skip. Typed-event transport is optional: when an active
 private backend does not advertise it or reports it
 unsupported, record `typed event transport: unavailable`, skip the emission,
 and continue without marking the event emission `UNKNOWN`. Only after the

@@ -1667,8 +1667,15 @@ module CompletedBatchPublicationPreflight
 
   # Lets a controller or operator compute the canonical applicability digest at decision time, before
   # any receipt input exists, so the retained value never has to be derived at publication time.
-  # It does not make the digest independent by itself: whoever runs this must be the trusted party
-  # that retains the value separately from the artifact it later passes to preflight or replay.
+  #
+  # This subcommand does not make the digest independent, and nothing here can. When the same agent
+  # or session both classifies applicability and later runs publish/replay -- the ordinary
+  # `coordination_not_applicable` shape -- the digest binding is a self-consistency check, not
+  # authentication of who decided applicability. Enforcing the separation is procedural: see
+  # docs/coordination-backend.md -> Coordination Applicability -> Trust boundary, which requires the
+  # digest to be recorded before the authorized work begins, in a store the publishing actor does not
+  # write, and requires a different actor to supply it at publication time. Issue 638 tracks whether
+  # that control should become technical.
   def digest_applicability_proof(argv)
     options = {}
     parser = OptionParser.new do |opts|
