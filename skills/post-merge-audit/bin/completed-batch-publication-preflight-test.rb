@@ -1703,6 +1703,67 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  # One case per guard in `validated_applicability_proof`. Each mutation is re-digested, so the
+  # digest check cannot stand in for the guard under test: deleting any single guard fails a case.
+  def test_each_applicability_proof_guard_blocks_a_freshly_digested_mutation
+    mutations = {
+      "contract" => ->(proof) { proof["contract"] = "completed-batch-coordination-applicability-v2" },
+      "version" => ->(proof) { proof["version"] = 2 },
+      "unknown key" => ->(proof) { proof["operator"] = "someone" },
+      "missing key" => ->(proof) { proof.delete("rationale") },
+      "batch id" => ->(proof) { proof["batch_id"] = "aw-some-other-batch" },
+      "applicability value" => ->(proof) { proof["coordination_applicability"] = "coordination_optional" },
+      "different target set" => lambda { |proof|
+        proof["expected_targets"] = [proof.fetch("expected_targets").first.merge("number" => 999_999)]
+      },
+      "insecure policy source" => ->(proof) { proof["policy_source"] = proof.fetch("policy_source").sub("https", "http") },
+      "non-url topology source" => ->(proof) { proof["topology_source"] = "internal wiki page" },
+      "unparseable verified_at" => ->(proof) { proof["verified_at"] = "last Tuesday" },
+      "blank rationale" => ->(proof) { proof["rationale"] = "   " }
+    }
+
+    mutations.each do |label, mutate|
+      input = no_backend_input
+      proof = applicability_proof(input)
+      mutate.call(proof)
+      verifier = ->(**) { flunk "#{label}: an invalid applicability proof must stop before verifier activity" }
+
+      result = CompletedBatchPublicationPreflight.assess(
+        input,
+        coordination_backend: BACKEND,
+        trusted_applicability: proof,
+        trusted_applicability_digest: applicability_proof_digest(proof),
+        waiver_verifier: verifier,
+        target_verifier: verifier,
+        coordination_verifier: verifier
+      )
+
+      refute result.fetch("eligible"), label
+      assert_includes result.fetch("blockers"),
+                      "trusted coordination applicability proof is missing, invalid, or tampered",
+                      label
+    end
+  end
+
+  def test_applicability_proof_target_order_is_bound_after_canonicalization
+    input = no_backend_input
+    proof = applicability_proof(input)
+    proof["expected_targets"] = proof.fetch("expected_targets").reverse
+    verifier = ->(**) { flunk "a reordered proof target set must stop before verifier activity" }
+
+    result = CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: applicability_proof_digest(proof),
+      waiver_verifier: verifier,
+      target_verifier: verifier,
+      coordination_verifier: verifier
+    )
+
+    refute result.fetch("eligible")
+  end
+
   def test_blocked_results_never_repeat_a_blocker
     result = CompletedBatchPublicationPreflight.blocked_result(
       ["configured coordination backend is unavailable", "configured coordination backend is unavailable"]

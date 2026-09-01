@@ -577,7 +577,8 @@ before mutating GitHub or the branch.
   that reapplied the label is not cleared) — the same visible-hint-not-lock rule
   as the batch claim step (see the `agent-claimed` label-mirror rule in
   `workflows/pr-processing.md`). Mirror only when the backend provides claim-label
-  expiry reconciliation; skip entirely when `coordination_backend: n/a`.
+  expiry reconciliation; skip entirely for `coordination_not_applicable`. A
+  `coordination_backend: n/a` seam is not itself that outcome.
 - Use a structured public `codex-claim` comment only when the repo's
   `coordination_backend` seam explicitly selects public claim-comment fallback,
   or when the private claim cannot be started or definitively fails with a

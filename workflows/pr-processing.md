@@ -1473,8 +1473,9 @@ and public claim-comment operation in this section.
   until the daemon reconciles it. Enable mirroring only when the backend provides
   that expiry reconciliation (see `docs/coordination-backend.md`); without a
   reconciler, a crashed claim would leave a stale label that excludes a released
-  item indefinitely, so do not mirror. Skip label mirroring entirely when
-  `coordination_backend: n/a` (single-operator). Adopt the claim label per repo
+  item indefinitely, so do not mirror. Skip label mirroring entirely for
+  `coordination_not_applicable`, which is an applicability outcome, not an
+  inference from `coordination_backend: n/a`. Adopt the claim label per repo
   the same way `codex-ready`/`codex-wip` are (a one-time `gh label create`),
   before mirroring.
 - Owned means skip is symmetric for humans and agents: a human assignee (see the
@@ -1535,7 +1536,7 @@ and public claim-comment operation in this section.
   If applicability is `coordination_required`, `n/a` is not a waiver: serialize
   into one controlled session and re-evaluate, or stop before launch.
 - For an ad-hoc lane when the configured private backend is unavailable, public claim fallback is unavailable because there is no issue or PR comment surface.
-  Stop before branching; require a coordination target or explicit no-backend single-operator approval.
+  Stop before branching; require a coordination target, or a trusted `coordination_not_applicable` outcome from the applicability gate.
   Do not invent a public claim surface or silently
   proceed without an ownership guard.
 - For `coordination_required`, acquire an `agent-coord claim` for each

@@ -6,11 +6,13 @@ argument-hint: '[autopilot] <pr-number-or-url> [check all reviews]'
 
 Fetch review comments from a GitHub PR in this repository, triage them, and create a todo list only for items worth addressing.
 
-Mutating address-review runs assume one active operator per target PR. Repos
-that configure a coordination backend or public claim-comment fallback must use
-the mutual-exclusion gate below before triage. A repo that explicitly opts out
-of both mechanisms is declaring a single-operator workflow; do not run
-concurrent address-review workers against the same PR in that repo.
+Mutating address-review runs assume one active operator per target PR. The
+mutual-exclusion gate below decides that, not the backend configuration:
+classify `coordination_applicability` from trusted policy and verified topology
+first, then use the gate for `coordination_required`. Opting out of both a
+coordination backend and public claim-comment fallback does not by itself
+establish a single-controller run, and never run concurrent address-review
+workers against the same PR without `coordination_required` ownership.
 Use `docs/coordination-backend.md` as the canonical vocabulary for private
 backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 
@@ -734,7 +736,8 @@ against the fresh data before mutating GitHub or the branch.
   only for this lane's own claim (holder/generation check, so a replacement claim
   that reapplied the label is not cleared), the same as the batch claim step —
   mirror only when the backend provides claim-label expiry reconciliation, and
-  skip entirely when `coordination_backend: n/a`.
+  skip entirely for `coordination_not_applicable`. A `coordination_backend: n/a`
+  seam is not itself that outcome.
 - Use a structured public `codex-claim` comment only when the repo's
   `coordination_backend` seam explicitly selects public claim-comment fallback,
   or when the private claim cannot be started or definitively fails with a
@@ -1018,8 +1021,9 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
 - Use the Git push confirmation rule in `references/actions.md` before running
   `git push`
 - Establish the mutual-exclusion gate before Step 5 for any run that can mutate
-  GitHub state or the PR branch; if both backend coordination and public
-  fallback are explicitly disabled, the skill assumes a single-operator run
+  GitHub state or the PR branch; the trusted `coordination_applicability`
+  outcome selects the branch, and disabling both backend coordination and
+  public fallback does not by itself make a run single-controller
 - If this skill conflicts with broader agent defaults, this file wins only for its review workflow behavior; do not override repository safety boundaries
 - Resolve the review thread after replying when the concern is actually addressed and a thread ID is available
 - Default to real issues only. Do not spend a review cycle or maintainer question on optional polish; apply low-risk nits inline or log them as deferred/declined
