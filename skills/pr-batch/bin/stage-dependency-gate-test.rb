@@ -26,10 +26,9 @@ SINGLE_TARGET_MANIFEST_CONTRACT = "When no planner/triage handoff supplies depen
                                   "actual target/lane id, current full head/base SHAs, and already bound " \
                                   "maker/checker identities. Do not infer or placeholder-fill any fact. Missing " \
                                   "or `UNKNOWN` facts remain fail-closed and stop before mutation."
-TRIAGE_MANIFEST_HANDOFF_CONTRACT = "Every separately handed-off launch must preserve " \
-                                   "`STAGE_DEPENDENCY_PLAN_PATH` and `STAGE_DEPENDENCY_PLAN_ID` in its durable " \
-                                   "Batch Plan or machine-readable launch state and carry the complete live " \
-                                   "replay or name its durable " \
+TRIAGE_MANIFEST_HANDOFF_CONTRACT = "Every separately handed-off prompt must name " \
+                                   "`STAGE_DEPENDENCY_PLAN_PATH` and `STAGE_DEPENDENCY_PLAN_ID` in existing " \
+                                   "`Scope` data and carry the complete live replay inline or name its durable " \
                                    "reference; persist or deliver both artifacts with stable planning state. " \
                                    "Backend storage is optional and must not be assumed."
 BACKEND_TYPED_GATE_CONTRACT = "Known backend `depends_on`/`blocked_on` facts refresh the corresponding typed " \
@@ -122,15 +121,14 @@ class StageDependencyGateTest < Minitest::Test
                       "#{path} must keep readiness/closeout behind terminal dependency satisfaction"
     end
 
-    prompt_authoring_surfaces = %w[
+    compact_surfaces = %w[
       workflows/pr-processing.md
       skills/pr-batch/SKILL.md
       skills/plan-pr-batch/SKILL.md
     ]
-    prompt_authoring_surfaces.each do |path|
+    compact_surfaces.each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
-      refute_includes text, COMPACT_BACKEND_TYPED_GATE_CONTRACT,
-                      "#{path} must keep compressed dependency diagnostics out of the human prompt"
+      assert_includes text, COMPACT_BACKEND_TYPED_GATE_CONTRACT, "#{path} must defer known facts to the typed gate"
       refute_includes text, LEGACY_COMPACT_BACKEND_STOP, "#{path} must not blanket-stop known pending edges"
     end
 

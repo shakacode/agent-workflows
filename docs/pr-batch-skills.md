@@ -322,75 +322,24 @@ omit the queue summary and note that queue state is unavailable.
    it collides with another active lane and cannot be safely coordinated; it exposes
    consequential ambiguity; or it weakens verification. An omitted path alone is not
    such a condition.
-8. Give the user the Batch Plan and fenced readable `$pr-batch` goal prompt.
-   The work request lives in exactly one accepted canonical issue or
-   pull-request body, or one trusted maintainer comment. A direct accepted PR
-   target uses its exact PR URL without requiring a synthetic comment. A later
-   trusted maintainer comment may define or override the issue or pull-request
-   body; select its exact URL. Do not synthesize or combine
-   sources. A preflight-accepted trusted ad-hoc override with no GitHub surface
-   uses its existing `plan-state://` or `batch://` durable authorization
-   reference. `Fix issue #123 using $pr-batch with merge authority ask.` is a
-   sufficient one-line shortcut when the repository makes the target
-   unambiguous.
-
-   Use the same readable body for every host; prepend only `/goal` for Codex. <!-- host-allow: codex-only -->
-   The prompt fields are repository, exact work-item URL, task name,
-   instruction, human `auto` or `ask` merge authority, and optional human-
-   availability time. Keep digest, timestamps, model/workflow observations,
-   thread handles, claim holders, Lane Cards, file-touch and dependency
-   evidence, registration-first coordination, and other derived workflow state
-   outside the human-authored prompt.
-
-   Canonical source bytes are the exact GitHub API `body` string for the
-   selected issue, pull request, or comment after JSON decoding, encoded as
-   UTF-8 without Unicode normalization, Markdown rendering, whitespace
-   trimming, or newline insertion or removal. Selection, launch, and worker
-   checks fetch the same object and field and hash only those bytes.
-
-   The launcher keeps one compact collapsed run record with one entry per target
-   lane. Before prompt creation, it persists one immutable unique per-execution
-   `run_id` and one exact canonical `record_destination` in the Batch Plan. A
-   GitHub-backed or mixed run explicitly chooses one exact selected issue or PR
-   work-item URL; a maintainer-comment source anchors to its parent work item. A
-   wholly non-GitHub trusted-ad-hoc run uses its existing durable plan/backend
-   destination. Neither field belongs in the human prompt. The launcher fetches
-   each lane's canonical source bytes when selected and writes
-   its selection timestamp plus `Prompt digest at selection`, then records the
-   run-level prompt-creation timestamp after rendering. Immediately before each
-   dispatch it re-fetches that lane's source and directly appends `Launched at`
-   plus `Prompt digest at launch`. If the selection and launch digests differ,
-   that dispatch stops until the changed source is deliberately reselected as a
-   new run and the security preflight is rerun. The Batch Plan or its exact
-   durable reference gives each worker that destination, `run_id`, lane launch
-   digest, and existing immutable replay identity (`lane_id`, dispatcher,
-   `instance_id`, and launch token). The worker opens the destination, resolves
-   the exactly matching `run_id` and replay identity, re-fetches the source, and
-   verifies both identity and digest before it interprets the source or appends its start and
-   observations; a mismatch stops work and is recorded.
-   The launcher records directional model
-   and Agent Workflows observations at prompt creation and worker start, using
-   `UNKNOWN` field by field without inference, and appends later workflow
-   observations with timestamps. Reruns append new collapsed `<details>`
-   history keyed by the unique per-execution `run_id`, not the deterministic
-   launch token, without rewriting earlier runs or lane values.
-   For the narrow non-GitHub trusted-ad-hoc exception, record the accepted
-   durable reference as the prompt source and write each source-digest field as
-   exact `not applicable — trusted-ad-hoc-override`. Reverify that the reference
-   resolves to the same immutable accepted provenance/authority record revision,
-   or an equivalent existing content binding, at selection, launch, and worker
-   start; missing, mutable, changed, or `UNKNOWN` binding stops. Do not invent a
-   snapshot schema.
-   Do not wait for a telemetry aggregator. Human `auto` maps to machine
-   `auto_merge_when_gates_pass`; `ask` maps to machine `ask`; machine-only
-   `merge_authority: none` remains outside the normal human prompt.
-   Host budget changes item count, not prompt vocabulary.
+8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
+   the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
+   `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
+   line using the optional validated `repo_prefix` from
+   `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
+   repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
+   multiple prompts are produced, `MM-DD HH:MM` from
+   `date +'%m-%d %H:%M'` in the local shell, and a short title.
+   `skills/pr-batch/SKILL.md` carries the full fallback derivation rule.
+   Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
+   `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
+   and a coordinator-chosen session word. Add the compact `Lane Card:` line so
+   workers emit the canonical card after claim, PR-open, blocked/cancelled, and
+   final handoff states. Dashboard-generated and skill-generated prompts must
+   carry the same execution rules, including thread handles, claim holders, Lane
+   Cards, registration-first coordination when supported, and UNKNOWN fallbacks.
    Do not launch workers yet.
-9. When the user says to run it, use `$pr-batch` with the fenced goal prompt
-   and the complete Batch Plan for that coordinator group or an exact durable
-   plan-state reference it can resolve before preflight or dispatch. A
-   multi-target group remains one coordinator launch with one target per worker
-   lane; the plan or reference preserves its complete scope.
+9. When the user says to run it, use `$pr-batch` with the fenced goal prompt.
    If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`
    resolves the spec tasks into exact GitHub targets before running.
 

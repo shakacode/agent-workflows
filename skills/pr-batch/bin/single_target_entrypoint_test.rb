@@ -63,6 +63,10 @@ batch = read_repo_file("skills/pr-batch/SKILL.md")
 guide = read_repo_file("docs/pr-batch-skills.md")
 plan_batch = read_repo_file("skills/plan-pr-batch/SKILL.md")
 workflow = read_repo_file("workflows/pr-processing.md")
+integration_closeout = read_repo_file("workflows/pr-batch-integration-closeout.md")
+prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
+security_floor = read_repo_file("workflows/pr-batch-security-floor.md")
+worker_execution = read_repo_file("workflows/pr-batch-worker-execution.md")
 batch_metadata = read_repo_file("skills/pr-batch/agents/openai.yaml")
 address_review = read_repo_file("skills/address-review/SKILL.md")
 address_review_workflow = read_repo_file("workflows/address-review.md")
@@ -86,26 +90,32 @@ durable_override_rule = "The only exception is a named, trusted, task-specific d
 insufficient_override_rule = "Generic instructions, `$pr-batch` invocation, fix-it intent, or PR-publication authority do not create this override."
 override_evidence_rule = "Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff."
 canonical_claim_binding_rule = "Before branch creation, editing, or dispatch, every bounded status and claim invocation binds `--repo` to lowercase `target.repository` and `--target` to the backend-safe canonical token derived from target v1: decimal `target.number` for either GitHub target type, or exact `target.target` for trusted ad-hoc; this raw pair is the canonical repository-qualified claim identity. Run status before claim; a second claim for the same canonical target, including a repository-casing alias or issue/PR type alias at the same number, must stop on `CLAIM_REFUSED` / exit 3 and cannot reach branch creation or dispatch."
+github_target_schema_rule = "GitHub targets carry\nthe exact keys `type`, `version`, `repository`, `number`, and\n`stable_coordination_identity`."
+durable_ad_hoc_schema_rule = "Durable ad-hoc targets\ncarry the exact keys `type`, `version`, `repository`, `target`,\n`stable_coordination_identity`, `override_name`, `trusted_authorizer`,\n`durable_authorization_ref`, and `original_task_identity`."
 
-[batch, workflow].each do |text|
-  assert(text.include?(canonical_launch_rule), "canonical launch must require an exact issue or existing PR")
-  assert(text.include?(canonical_identity_rule), "canonical issue/PR identity must survive every launch and evidence surface")
-  assert(text.include?(unbound_prompt_rule), "an unbound direct prompt must fail closed before implementation launch")
-  assert(text.include?(durable_override_rule), "only a named trusted task-specific durable override may launch ad-hoc work")
-  assert(text.include?(insufficient_override_rule), "generic implementation or publication intent must not synthesize override authority")
-  assert(text.include?(override_evidence_rule), "durable override provenance and stable identity must survive every evidence surface")
-  assert(text.include?(canonical_claim_binding_rule), "canonical status and claim operations must bind one normalized target and stop duplicate launch")
+[canonical_launch_rule, canonical_identity_rule, unbound_prompt_rule,
+ durable_override_rule, insufficient_override_rule, override_evidence_rule,
+ canonical_claim_binding_rule, github_target_schema_rule,
+ durable_ad_hoc_schema_rule].each do |rule|
+  assert(prompt_intake.include?(rule), "prompt intake must own canonical launch rule: #{rule}")
+  [batch, plan_batch, workflow].each do |entrypoint|
+    assert(!entrypoint.include?(rule), "entrypoints must route to prompt intake instead of mirroring canonical launch prose")
+  end
 end
-assert(plan_batch.include?(canonical_launch_rule), "planning must enforce the canonical launch target")
-assert(plan_batch.include?(unbound_prompt_rule), "planning must fail closed for an unbound direct prompt")
-assert(plan_batch.include?(durable_override_rule), "planning must recognize only the durable ad-hoc exception")
-assert(plan_batch.include?(override_evidence_rule), "planning must preserve durable override evidence")
+
+{
+  "skills/pr-batch/SKILL.md" => batch,
+  "skills/plan-pr-batch/SKILL.md" => plan_batch,
+  "workflows/pr-processing.md" => workflow
+}.each do |path, text|
+  assert(text.include?("workflows/pr-batch-intake.md") || text.include?("pr-batch-intake.md"),
+         "#{path} must route to the canonical prompt-intake component")
+end
+assert(prompt_intake.include?("duplicate discovery is not a global stall"), "duplicate intake must not globally stall unrelated targets")
+assert(prompt_intake.include?("PR-Batch Security Floor"), "prompt intake must call the shared security floor")
 assert(plan_batch.include?("Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch"), "batch plans must include every durable ad-hoc item field")
-assert(batch.include?("equivalent wording cannot create another synthetic coordination lane"), "equivalent prompts must reconcile before claiming a new lane")
-assert(plan_batch.include?("equivalent prompt wording cannot create independently claimable synthetic lanes"), "planning must prevent semantic duplicate synthetic lanes")
-assert(workflow.include?("Equivalent direct prompts cannot become independently claimable synthetic lanes"), "canonical processing must prevent semantic duplicate synthetic lanes")
-assert(workflow.include?("claim refusal prevents duplicate work"), "canonical issue/PR claims must remain the duplicate-work gate")
-assert(batch.include?("direct user instruction, a maintainer-approved exact list"), "the required interview must classify direct-prompt trust")
+assert(prompt_intake.include?("Equivalent prompt wording cannot create an independently claimable synthetic lane"), "equivalent prompts must reconcile before claiming a new lane")
+assert(prompt_intake.include?("direct user instruction, a maintainer-approved exact list"), "the canonical interview must classify direct-prompt trust")
 assert(batch.include?("when present, otherwise from the `AGENTS.md`"), "canonical base-branch resolution must support inline AGENTS configuration")
 
 legacy_skill = %w[pr lane].join("-")
@@ -129,14 +139,18 @@ assert(workflow.include?("heartbeat --help"), "canonical coordination must prese
 assert(workflow.include?("--thread-handle"), "canonical coordination must preserve extended lane metadata")
 assert(workflow.include?("`coordination_backend: n/a`"), "canonical coordination must define no-backend single-target behavior")
 assert(workflow.include?("single-operator assumption in the Lane Card and final handoff"), "no-backend mode must preserve its assumption in evidence")
-assert(workflow.include?("A durably\n  overridden ad-hoc request also carries its complete typed override record"), "canonical intake must accept only durably overridden ad-hoc targets")
-assert(workflow.include?("Do not pass a durably overridden `adhoc:` target to `pr-security-preflight`"), "only accepted durable ad-hoc targets may skip the GitHub preflight helper")
-assert(workflow.include?("The durable plan, not the prompt, still emits one exact `target` v1 object per\nlane."), "canonical durable launch state must represent stable issue, PR, and overridden ad-hoc identities")
-assert(workflow.include?("type `github-issue` or `github-pull-request`"), "canonical goal handoff must name executable GitHub target types")
-assert(workflow.include?("The sole ad-hoc object type is\n`trusted-ad-hoc-override`"), "canonical goal handoff must reserve ad-hoc launch for the typed durable override")
-assert(workflow.include?("Put one exact `target` v1 object on every preflight lane."), "canonical durable plan must preserve canonical launch identity")
-assert(workflow.include?("`Target:` for a GitHub target is its `<verified GitHub issue/PR link>`; for an ad-hoc target use exactly `n/a — durably overridden ad-hoc; durable_ref=<exact accepted durable_authorization_ref>`"), "lane cards must not invent a GitHub link for a durable ad-hoc target")
-assert(workflow.include?("For a durably overridden ad-hoc target, record the\n  evidence, rationale, complete override provenance"), "canonical final handoff must preserve overridden ad-hoc provenance")
+assert(prompt_intake.include?("A durably\n  overridden ad-hoc request carries its complete typed override record"), "canonical intake must accept only durably overridden ad-hoc targets")
+assert(prompt_intake.include?("[PR-Batch Security Floor](pr-batch-security-floor.md)"), "canonical intake must reference the shared security floor")
+assert(security_floor.include?("A durable `adhoc:` override has no public GitHub\ntarget to scan"), "the shared security floor must own the durable ad-hoc exception")
+assert(!prompt_intake.include?("Do not pass a durably overridden `adhoc:` target to `pr-security-preflight`"), "canonical intake must not restate the shared security floor")
+assert(workflow.include?("- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>"), "canonical goal handoff must represent stable issue, PR, and overridden ad-hoc identities")
+assert(prompt_intake.include?("type `github-issue` or `github-pull-request`"), "canonical intake must name executable GitHub target types")
+assert(prompt_intake.include?("The sole ad-hoc object type is `trusted-ad-hoc-override`"), "canonical intake must reserve ad-hoc launch for the typed durable override")
+assert(workflow.include?("Target ids: repository-qualified PR/Issue #N or durably overridden ad-hoc `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`"), "canonical file-touch map must preserve canonical launch identity")
+worker_execution_handoff = worker_execution.gsub(/\s+/, " ")
+assert(worker_execution_handoff.include?("`Target:` `<verified GitHub issue/PR link>` or exactly `n/a — durably overridden ad-hoc; durable_ref=<exact accepted durable_authorization_ref>`"), "lane cards must not invent a GitHub link for a durable ad-hoc target")
+assert(integration_closeout.include?("For a durably overridden ad-hoc target, record the\n  evidence, rationale, complete override provenance"), "canonical final handoff must preserve overridden ad-hoc provenance")
+assert(workflow.include?("[Batch Handoff Format](pr-batch-integration-closeout.md#batch-handoff-format)"), "processing compatibility entrypoint must route final handoffs to the integration/closeout component")
 assert(workflow.include?("For a durably overridden ad-hoc task,\n  the final handoff is the evidence surface"), "canonical outcome classification must support accepted ad-hoc no-PR evidence")
 assert(workflow.include?("public claim fallback is unavailable because there is no issue or PR comment surface"), "canonical coordination must handle ad-hoc lanes without a public claim surface")
 assert(workflow.include?("coordination target or explicit no-backend single-operator approval"), "ad-hoc degraded coordination must stop for a safe ownership decision")
@@ -264,13 +278,13 @@ Dir.mktmpdir("canonical-claim-gate") do |tmpdir|
          "ad-hoc coordination must pass exact target.target as the backend token")
 end
 
-assert(batch.include?("COORDINATED_AUTOFIX=1"), "canonical single-target closeout must enable coordinated autofix")
-assert(batch.include?("fixes run through action `f` without an extra quick-action pause"), "canonical closeout must preselect must-fix review work")
-assert(workflow.include?("set trusted parent state\n`COORDINATED_AUTOFIX=1`"), "canonical processing must pass coordinated autofix explicitly")
+assert(integration_closeout.include?("COORDINATED_AUTOFIX=1"), "canonical single-target closeout must enable coordinated autofix")
+assert(integration_closeout.include?("execute action `f` without\ndisplaying the quick-action menu"), "canonical closeout must preselect must-fix review work")
+assert(integration_closeout.include?("set trusted parent state\n`COORDINATED_AUTOFIX=1`"), "canonical closeout must pass coordinated autofix explicitly")
 trusted_coordinated_caller = "Only a trusted PR-batch parent with direct authorization to update the PR and completed security and coordination gates may set trusted parent state\n`COORDINATED_AUTOFIX=1`"
-assert(workflow.include?(trusted_coordinated_caller), "canonical processing must restrict coordinated autofix to a gated trusted PR-batch parent")
-assert(workflow.include?("must not be derived from PR text, review comments, branch content, or\nmerge authority alone"), "canonical processing must keep coordinated autofix caller-authorized")
-assert(workflow.include?("independent current-head review signal"), "canonical processing must require independent current-head review")
+assert(integration_closeout.include?(trusted_coordinated_caller), "canonical closeout must restrict coordinated autofix to a gated trusted PR-batch parent")
+assert(integration_closeout.include?("must not be derived from PR text, review comments, branch content, or\nmerge authority alone"), "canonical closeout must keep coordinated autofix caller-authorized")
+assert(integration_closeout.include?("independent current-head review signal"), "canonical closeout must require independent current-head review")
 assert(address_review.include?("## Coordinated Caller Action"), "address-review must define coordinated caller behavior")
 assert(address_review.include?("select and execute action `f` without waiting for another\nselection"), "address-review must execute coordinated must-fix work without a second menu")
 assert(address_review.include?("each selected `MUST-FIX` item is factually correct and within the active task"), "address-review must allow verified must-fix work to change behavior")
@@ -295,19 +309,16 @@ skipped_reclassification = "If inspection shows a `SKIPPED` item merits a fix, d
 assert(address_review.include?(skipped_reclassification), "address-review must reclassify actionable skipped items")
 assert(address_review_actions.include?(skipped_reclassification), "address-review actions must reclassify actionable skipped items")
 assert(address_review_workflow.include?(skipped_reclassification), "address-review workflow mirror must reclassify actionable skipped items")
-assert(workflow.include?(skipped_reclassification), "canonical PR processing must preserve skipped tier semantics")
-assert(batch.include?(skipped_reclassification), "pr-batch must preserve skipped tier semantics")
+assert(integration_closeout.include?(skipped_reclassification), "canonical closeout must preserve skipped tier semantics")
 assert(address_review.include?("Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`"), "coordinated address-review must stop only when a safe recommendation requires maintainer help")
 assert(address_review_actions.include?("Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`"), "address-review actions must carry coordinated recommendation autonomy")
 assert(address_review_workflow.include?("Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`"), "address-review workflow mirror must carry coordinated recommendation autonomy")
-assert(workflow.include?("Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`"), "canonical PR processing must carry coordinated recommendation autonomy")
-assert(batch.include?("Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`"), "pr-batch entry point must carry coordinated recommendation autonomy")
+assert(integration_closeout.include?("Execute `fix now`, `defer`, or `decline` without prompting; stop for maintainer input only when the recommendation is `ask user`"), "canonical closeout must carry coordinated recommendation autonomy")
 assert(address_review.include?("A non-blocking `defer` defaults to durable PR summary or decision-log evidence unless existing repository policy selects a tracker."), "coordinated address-review must not create expansive follow-up tracking by default")
 merge_authority_separation = "Coordinated review-decision authority comes from direct authorization to update the PR and is independent of `merge_authority`; merge authority governs merge only."
 assert(address_review.include?(merge_authority_separation), "address-review coordinated decisions must not require auto-merge authority")
 assert(address_review_workflow.include?(merge_authority_separation), "address-review workflow mirror must separate review decisions from merge authority")
-assert(workflow.include?(merge_authority_separation), "canonical PR processing must separate review decisions from merge authority")
-assert(batch.include?(merge_authority_separation), "pr-batch must use coordinated review decisions for every merge-authority mode")
+assert(integration_closeout.include?(merge_authority_separation), "canonical closeout must separate review decisions from merge authority")
 coordinated_fix_tracking = "Before action `f`, add every coordinated actionable outcome recommended as `fix now` to the executable work list; normal interactive TodoWrite remains `MUST-FIX`-only."
 assert(address_review.include?(coordinated_fix_tracking), "coordinated fix-now outcomes must become tracked executable work")
 assert(address_review_actions.include?(coordinated_fix_tracking), "address-review actions must execute tracked coordinated fix-now work")
@@ -342,13 +353,11 @@ assert(address_review_workflow.include?(interactive_menu), "address-review workf
 checkpoint_order = "Complete the coordinated verification checkpoint before final triage display, TodoWrite construction, coordinated executable-work construction, or action `f`."
 assert(address_review.include?(checkpoint_order), "address-review must verify coordinated classifications before display or work construction")
 assert(address_review_workflow.include?(checkpoint_order), "address-review workflow mirror must verify before display or work construction")
-assert(workflow.include?(checkpoint_order), "canonical PR processing must verify before coordinated triage execution")
-assert(batch.include?(checkpoint_order), "pr-batch must verify before coordinated triage execution")
+assert(integration_closeout.include?(checkpoint_order), "canonical closeout must verify before coordinated triage execution")
 verified_rebuild = "If verification changes any tier or recommendation, rebuild and re-number the triage, rebuild the TodoWrite `MUST-FIX` list and coordinated executable-work list from verified classifications, and remove stale work items."
 assert(address_review.include?(verified_rebuild), "address-review must rebuild coordinated state after verification changes")
 assert(address_review_workflow.include?(verified_rebuild), "address-review workflow mirror must rebuild coordinated state after verification changes")
-assert(workflow.include?(verified_rebuild), "canonical PR processing must rebuild coordinated state after verification changes")
-assert(batch.include?(verified_rebuild), "pr-batch must rebuild coordinated state after verification changes")
+assert(integration_closeout.include?(verified_rebuild), "canonical closeout must rebuild coordinated state after verification changes")
 coordinated_bot_exception = "Only a trusted `COORDINATED_AUTOFIX=1` invocation that passed security and coordination gates and verified the item as in-scope and safe at the checkpoint may execute an evidence-backed `DISCUSS` recommendation of `fix now`; bot priority or severity alone never qualifies."
 assert(address_review.scan(coordinated_bot_exception).length >= 2, "both address-review bot-severity rules must carry the narrow coordinated exception")
 assert(address_review_workflow.scan(coordinated_bot_exception).length >= 2, "both workflow mirror bot-severity rules must carry the narrow coordinated exception")
@@ -356,17 +365,14 @@ unsafe_discuss_route = "Anything outside the active task or behavior, security, 
 assert(address_review.scan(unsafe_discuss_route).length >= 2, "address-review must keep unsafe or material discuss outcomes non-automatic")
 assert(address_review_workflow.scan(unsafe_discuss_route).length >= 2, "address-review workflow mirror must keep unsafe or material discuss outcomes non-automatic")
 pushable_coordinated_target = "Do not invoke coordinated `address-review` on an original PR whose verified head cannot be pushed; first use the replacement branch/PR fallback, then invoke it only for the PR whose verified head is pushable and owned."
-assert(batch.include?(pushable_coordinated_target), "pr-batch must not run coordinated closeout against an unpushable original PR")
-assert(workflow.include?(pushable_coordinated_target), "canonical PR processing must route unpushable heads through replacement closeout")
+assert(integration_closeout.include?(pushable_coordinated_target), "canonical closeout must route unpushable heads through replacement closeout")
 remaining_discuss_phase = "During the remaining-decision phase, coordinated `fix now` items are already fixed, replied to, and resolved; process only `defer` or `decline`, stop on `ask user`, and never execute `fix now` again."
 assert(address_review_actions.include?(remaining_discuss_phase), "address-review must not replay coordinated fix-now items in step 9")
 assert(address_review_workflow.include?(remaining_discuss_phase), "address-review workflow mirror must not replay coordinated fix-now items")
 replacement_review_carryover = "Replacement-PR review carryover: do not run action `f` or push against the unpushable original head; fetch and triage its review data, carry every actionable original item into the replacement PR executable/decision worklist, apply it on the pushable owned replacement, and post the replacement link plus evidence-backed handled/deferred/declined outcome back on the original item or thread where possible."
-assert(batch.include?(replacement_review_carryover), "pr-batch replacement fallback must preserve original review obligations")
-assert(workflow.include?(replacement_review_carryover), "canonical replacement fallback must preserve original review obligations")
+assert(integration_closeout.include?(replacement_review_carryover), "canonical replacement fallback must preserve original review obligations")
 replacement_review_gate = "Resolve original threads only when the conversation is complete, and require original review-inventory closeout plus replacement-PR current-head review and readiness before signaling ready."
-assert(batch.include?(replacement_review_gate), "pr-batch replacement fallback must close both review surfaces")
-assert(workflow.include?(replacement_review_gate), "canonical replacement fallback must close both review surfaces")
+assert(integration_closeout.include?(replacement_review_gate), "canonical replacement fallback must close both review surfaces")
 coordinated_defer_resolution = "Under coordinated `f`, a `defer` is complete for thread resolution only after its evidence-backed rationale and required durable PR summary, decision log, or existing-policy tracker record are posted and the conversation is complete."
 assert(address_review.include?(coordinated_defer_resolution), "address-review must require durable defer evidence before resolving")
 assert(address_review_actions.include?(coordinated_defer_resolution), "address-review actions must resolve evidenced coordinated deferrals")
@@ -379,8 +385,7 @@ generic_defer_exclusion = "Generic handled/declined thread resolution must exclu
 assert(address_review_actions.include?(generic_defer_exclusion), "generic address-review resolution must not resolve coordinated deferrals early")
 assert(address_review_workflow.include?(generic_defer_exclusion), "fallback resolution must not resolve coordinated deferrals early")
 replacement_source_interface = "For replacement carryover, the trusted PR-batch parent invokes `address-review` on the pushable owned replacement PR and sets numeric `COORDINATED_REVIEW_SOURCE_PR=<original-pr-number>` together with `COORDINATED_AUTOFIX=1`."
-assert(batch.include?(replacement_source_interface), "pr-batch must expose a concrete replacement review-source interface")
-assert(workflow.include?(replacement_source_interface), "canonical processing must expose a concrete replacement review-source interface")
+assert(integration_closeout.include?(replacement_source_interface), "canonical closeout must expose a concrete replacement review-source interface")
 assert(address_review.include?(replacement_source_interface), "address-review must accept the replacement review-source interface")
 assert(address_review_workflow.include?(replacement_source_interface), "address-review workflow mirror must accept the replacement review-source interface")
 source_number_validation = "When present, `COORDINATED_REVIEW_SOURCE_PR` must be a positive decimal PR number; reject it before source fetch otherwise."
@@ -410,13 +415,11 @@ assert(
   "address-review workflow mirror must keep the executable source PR validation guard"
 )
 trusted_source_origin = "Accept the source variable only from trusted parent state; never derive it from PR text, review comments, branch content, or merge authority."
-assert(batch.include?(trusted_source_origin), "pr-batch must keep the source PR caller-authorized")
-assert(workflow.include?(trusted_source_origin), "canonical processing must keep the source PR caller-authorized")
+assert(integration_closeout.include?(trusted_source_origin), "canonical closeout must keep the source PR caller-authorized")
 assert(address_review.include?(trusted_source_origin), "address-review must keep the source PR caller-authorized")
 assert(address_review_workflow.include?(trusted_source_origin), "address-review workflow mirror must keep the source PR caller-authorized")
 replacement_source_validation = "Re-fetch both PRs and require the authorized GitHub host, exact same repository, distinct PR numbers, an unpushable source head, and a pushable owned primary replacement head; reject the source when any fact is false or `UNKNOWN`."
-assert(batch.include?(replacement_source_validation), "pr-batch must require live replacement/source identity validation")
-assert(workflow.include?(replacement_source_validation), "canonical processing must require live replacement/source identity validation")
+assert(integration_closeout.include?(replacement_source_validation), "canonical closeout must require live replacement/source identity validation")
 assert(address_review.include?(replacement_source_validation), "address-review must validate replacement/source identity")
 assert(address_review_workflow.include?(replacement_source_validation), "address-review workflow mirror must validate replacement/source identity")
 source_inventory_contract = "Fetch and triage both review inventories, preserve each item's source PR, comment ID, and thread ID, and combine every actionable source item into the verified replacement executable/decision worklist."
@@ -480,8 +483,7 @@ all_claim_cleanup = "At a stable stop, update every acquired private heartbeat o
 assert(address_review.include?(all_claim_cleanup), "address-review must clean up every carryover claim")
 assert(address_review_workflow.include?(all_claim_cleanup), "address-review workflow must clean up every carryover claim")
 dual_pr_readiness = "Unavailable or `UNKNOWN` source review data blocks readiness; require source review-inventory closeout plus replacement current-head review/readiness, with durable carryover summaries on both PRs as appropriate."
-assert(batch.include?(dual_pr_readiness), "pr-batch must require dual-PR replacement readiness evidence")
-assert(workflow.include?(dual_pr_readiness), "canonical processing must require dual-PR replacement readiness evidence")
+assert(integration_closeout.include?(dual_pr_readiness), "canonical closeout must require dual-PR replacement readiness evidence")
 assert(address_review.include?(dual_pr_readiness), "address-review must require dual-PR replacement readiness evidence")
 assert(address_review_workflow.include?(dual_pr_readiness), "address-review workflow mirror must require dual-PR replacement readiness evidence")
 standalone_source_absence = "When `COORDINATED_REVIEW_SOURCE_PR` is absent, keep normal single-PR and standalone behavior unchanged."
@@ -492,8 +494,7 @@ assert(address_review.include?("SOURCE_PR_NUMBER=\"${COORDINATED_REVIEW_SOURCE_P
 assert(address_review.include?("''|0|0[0-9]*|*[!0-9]*)"), "address-review must reject leading-zero coordinated source PR numbers")
 assert(address_review_workflow.include?("leading-zero forms"), "address-review workflow mirror must reject leading-zero coordinated source PR numbers")
 replacement_source_invocation = 'COORDINATED_AUTOFIX=1 COORDINATED_REVIEW_SOURCE_PR="${ORIGINAL_PR_NUMBER}" address-review "${REPLACEMENT_PR_NUMBER}"'
-assert(batch.include?(replacement_source_invocation), "pr-batch must show the executable replacement-source invocation")
-assert(workflow.include?(replacement_source_invocation), "canonical processing must show the executable replacement-source invocation")
+assert(integration_closeout.include?(replacement_source_invocation), "canonical closeout must show the executable replacement-source invocation")
 assert(address_review.include?("source-review-data.json"), "address-review must fetch a separate source review inventory")
 assert(address_review_workflow.include?("source-review-data.json"), "address-review workflow mirror must fetch a separate source review inventory")
 guarded_source_fetch = %r{if \[ -n "\$\{SOURCE_PR_NUMBER\}" \]; then\n\s+"\$\{ADDRESS_REVIEW_SKILL_DIR\}/bin/fetch-pr-review-data" "\$\{SOURCE_PR_NUMBER\}" --repo "\$\{REPO\}" > source-review-data\.json}

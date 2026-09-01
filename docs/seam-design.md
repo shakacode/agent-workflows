@@ -103,17 +103,19 @@ Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 
 ### Writing Style
 
-`writing_style` is an optional nonblank Markdown-file path in the repository
-policy:
+`writing_style` is an optional scalar in the repository policy. It accepts
+either a nonblank relative Markdown-file path or the exact built-in preset
+`asd-ste100`:
 
 ```yaml
 writing_style: docs/writing-style.md
+# or: writing_style: asd-ste100
 ```
 
-The path is relative to the repository root, and the repository setting wins.
-The same scalar key may appear in the user-global
+The path form is relative to the repository root, and either repository form
+wins. The same scalar key may appear in the user-global
 `~/.agents/agent-workflow.yml` as an optional personal fallback for repositories
-that do not set it. `agent-workflow-writing-style` resolves one complete file
+that do not set it. `agent-workflow-writing-style` resolves one complete guide
 without merging prose. Resolution is repo → user-global → portable default:
 
 1. repository `.agents/agent-workflow.yml`
@@ -127,21 +129,38 @@ Repository omission falls through per key even when the repository seam file
 exists. Repository paths resolve beneath the repository root; user-global paths
 resolve beneath `~/.agents`. Absolute paths, parent traversal, paths that escape
 through symlinks, non-Markdown paths, and missing, unreadable, nonregular,
-empty, or invalid-UTF-8 files are invalid.
+empty, or invalid-UTF-8 files are invalid. URLs and URI references, including
+`https:` and `file:`, are invalid: the path form accepts only trusted local
+relative Markdown files, and the resolver never performs a network lookup.
 
-An explicitly present malformed repository config, path, or file is a blocking
-seam error. The same user-global failure produces an actionable warning and
-uses the portable default. User-global configuration contributes only
+Preset selection uses a closed exact registry. Only `asd-ste100` is registered;
+unknown preset-like values are invalid, and the resolver does not construct a
+path dynamically from an alias. The preset loads the installer-managed
+[independent adapter](writing-style-asd-ste100.md). Selecting it preserves the
+provenance of its configuration layer.
+
+An explicitly present malformed repository config, preset, path, or file is a
+blocking seam error. The same user-global failure produces an actionable
+warning and uses the portable default. User-global configuration contributes only
 `writing_style`; branch, merge, CI, trust, coordination, and every other policy
 remain repository-owned.
 
 The initializer and example configuration do not enable a repository guide;
-the commented example tells a project to create its guide before enabling the
-key. The packaged prose lives once in the linked Markdown file and the resolver
-loads that file. A company-wide or common guide could be added later only as a
+the commented example shows both opt-in forms. Packaged prose lives once in
+each linked Markdown file, and the resolver loads the selected file. A
+company-wide or common guide could be added later only as a
 future explicitly trusted distribution/source layer. The current resolver does
 not fetch a company repository and does not perform network or cross-repository
 lookup.
+
+The `asd-ste100` adapter keeps the generic plain-language baseline and applies
+ASD-STE100-inspired constraints only to technical-documentation prose. It
+preserves exact project terminology, identifiers, APIs, commands, paths,
+templates, evidence, quoted text, and machine-readable protocol fields. The
+resolver distributes neither the external standard nor its dictionary and does
+not check conformance. Formal ASD-STE100 work requires an authorized
+specification and qualified human review; the adapter makes no certification or
+conformance claim.
 
 The resolved guide applies only to human-facing prose. Repository PR and issue
 templates, required evidence, machine-readable receipts, and exact protocol
@@ -292,6 +311,8 @@ untrusted_contributor_intake:
   trusted_github_scheme: "https"
   trusted_github_repo: "OWNER/REPO"
 ```
+
+### Merge submission
 
 `merge_submission` is an optional closed mapping. Its portable default is
 `direct` when the mapping is absent or explicitly selects `direct`. A

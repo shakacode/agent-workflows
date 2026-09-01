@@ -24,7 +24,7 @@ module AutonomousMergeCloseout
     verdict head_sha policy_provenance helper_provenance helper_trust metrics
     path_matches safe_class triggered_gates shadow_triggered_gates
     shadow_evidence_unknown rollback_assessment human_decision_evidence
-    evidence_failures
+    current_integration evidence_failures
   ].freeze
   RUNTIME_MANIFEST_KEYS = (
     AutonomousMergeRuntimeTrust::RUNTIME_SOURCES.keys + ["calibration-decision"]
@@ -138,6 +138,15 @@ module AutonomousMergeCloseout
     errors << "metrics shape is invalid" unless valid_metrics?(metrics, verdict:)
     if verdict == "UNKNOWN" && metrics == {} && !canonical_early_unknown_evidence_shape?(result)
       errors << "empty metrics require the canonical early UNKNOWN evidence shape"
+    end
+    current_integration = result["current_integration"]
+    valid_current_integration = current_integration.nil? ||
+                                (current_integration.is_a?(Hash) &&
+                                 current_integration["contract"] == "current-integration-evidence" &&
+                                 current_integration["version"] == 1)
+    errors << "current_integration is invalid" unless valid_current_integration
+    if verdict == "human-approval-required" && current_integration.nil?
+      errors << "human-approval-required needs current integration evidence"
     end
     helper_trust = result["helper_trust"]
     if helper_trust.is_a?(Hash) && helper_trust["status"] == "unverified" &&
@@ -261,7 +270,8 @@ module AutonomousMergeCloseout
       result["shadow_triggered_gates"] == [] &&
       result["shadow_evidence_unknown"] == [] &&
       result["rollback_assessment"] == "UNKNOWN" &&
-      result["human_decision_evidence"] == { "status" => "none" }
+      result["human_decision_evidence"] == { "status" => "none" } &&
+      result["current_integration"].nil?
   end
 
   def valid_human_decision_evidence?(decision, verdict:)
