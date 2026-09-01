@@ -21,10 +21,14 @@ reproduction explains the failure.
 2. Identify the exact failing check: PR or commit SHA, workflow/provider, job
    name, retry number, failing step, and log excerpt. If any fact cannot be
    verified, write `UNKNOWN`.
-3. Confirm the local-green evidence: command or workflow path used, head SHA,
+3. Establish hosted run history for the exact failure identity on the exact
+   commit. If the same commit passes and fails across hosted runs, use
+   `fix-flaky-tests` before parity reproduction; that workflow owns
+   intermittency regardless of local results.
+4. Confirm the local-green evidence: command or workflow path used, head SHA,
    environment, and timestamp. Use `.agents/bin/validate` instead of inventing a
    substitute command.
-4. Find the intended parity environment from `ci_parity_environment` in
+5. Find the intended parity environment from `ci_parity_environment` in
    `.agents/agent-workflow.yml`. Use the documented parity command, runner image,
    or reproduction guide exactly as written. If the policy names a local runner tool, use the repo's
    documented workflow or provider target, job selector, image or environment
@@ -85,7 +89,9 @@ Classify the result as one of:
 
 - `REPRODUCED_SAME`: parity run matches the hosted failure signature.
 - `REPRODUCED_DIFFERENT`: parity run fails, but not the same way.
-- `NOT_REPRODUCED`: parity run passes while hosted CI fails.
+- `NOT_REPRODUCED`: parity run passes while hosted CI fails. It records a
+  passing parity run, not exoneration; if hosted history on that commit is
+  intermittent, use `fix-flaky-tests`.
 - `BLOCKED`: required logs, runner image, secrets, services, or permissions are
   missing.
 
