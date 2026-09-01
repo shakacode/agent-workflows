@@ -314,7 +314,7 @@ Launching the worker for lane issue-42.
 Worker: branch 42-fix-empty-config-crash pushed with 2 commits.
 .agents/bin/validate PASS, .agents/bin/test PASS. PR #57 opened.
 
-Checks on PR #57: all green. Exact head contains current main and
+Checks on PR #57: all green. Exact head contains the current base and
 exact-head CI reports normalized `READY`. merge_authority is ask, so
 starting the walkthrough.
 
