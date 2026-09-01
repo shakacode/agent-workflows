@@ -31,7 +31,9 @@ change the atomic admission mechanism.
 Each scanner row is a verified live root and declares `verified: true`, owner,
 lane, worktree, command class, and a PID or PGID. Missing, malformed,
 unverified, failed, or timed-out scan evidence blocks admission; it never means
-zero roots. A scanner may return nonnegative `ceiling` and human-readable
+zero roots. The timeout covers the scanner process group and output-pipe drain;
+on expiry the helper terminates that group, closes inherited pipes, and denies
+the reservation. A scanner may return nonnegative `ceiling` and human-readable
 `retry_when` fields; the effective ceiling is the lower of that live result and
 `--ceiling`, so a live policy observation can reduce but never silently expand
 the configured maximum.
@@ -61,9 +63,13 @@ the configured maximum.
 
 A crashed claimant's unbound reservation expires after the bounded TTL. The
 next claimant recovers it while holding the same lock, but must use a new launch
-token and repeat the whole-host scan. An expired record never authorizes killing
-or ignoring an unverified live root. A bound record remains occupied until its
-owner supplies terminal/no-writer cleanup evidence and releases it.
+token and repeat the whole-host scan. Launch tokens are single-use for the life
+of the state directory: hashed tombstones reject a token even after its
+detailed record is pruned. Released and expired detail records are retained for
+at most one hour and the newest 128 records per host, whichever bound is reached
+first. Active records are never pruned. An expired record never authorizes
+killing or ignoring an unverified live root. A bound record remains occupied
+until its owner supplies terminal/no-writer cleanup evidence and releases it.
 
 ## Remote M1 Pattern
 

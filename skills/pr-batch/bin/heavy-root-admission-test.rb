@@ -11,6 +11,8 @@ HELPER = File.expand_path("heavy-root-admission", __dir__)
 ROOT = File.expand_path("../../..", __dir__)
 CAPACITY_WORKFLOW = File.join(ROOT, "workflows/pr-batch-capacity-admission.md")
 
+load HELPER
+
 class HeavyRootAdmissionTest < Minitest::Test
   def run_helper(*arguments)
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, HELPER, *arguments)
@@ -213,6 +215,9 @@ class HeavyRootAdmissionTest < Minitest::Test
     assert_includes capacity_workflow, "ssh <m1-alias> 'zsh -lc"
     assert_includes capacity_workflow, "policy input"
     assert_includes capacity_workflow, "terminal/no-writer cleanup"
+    assert_includes capacity_workflow, "output-pipe drain"
+    assert_includes capacity_workflow, "Launch tokens are single-use"
+    assert_includes capacity_workflow, "newest 128 records per host"
 
     {
       "skills/pr-batch/SKILL.md" => "workflows/pr-batch-capacity-admission.md",
@@ -357,6 +362,139 @@ class HeavyRootAdmissionTest < Minitest::Test
       assert_equal 3, second.fetch(:status), second.inspect
       owner_lanes = JSON.parse(second.fetch(:stdout)).fetch("current_owners").map { |row| row.fetch("lane") }
       assert_equal ["pr-425-validator"], owner_lanes
+    end
+  end
+
+  def test_store_canonicalizes_host_before_selecting_the_lock_domain
+    Dir.mktmpdir("heavy-root-admission-store-host-test") do |state_dir|
+      first_store = HeavyRootAdmission::Store.new(state_dir: state_dir, host: " M1 ")
+      first_store.locked_update do |state, _now|
+        state.fetch("reservations") << { "launch_token" => "direct-store", "status" => "reserved" }
+        { write: true, report: nil }
+      end
+
+      reservations = HeavyRootAdmission::Store.new(state_dir: state_dir, host: "m1").locked_update do |state, _now|
+        { write: false, report: state.fetch("reservations") }
+      end
+
+      launch_tokens = reservations.map { |reservation| reservation.fetch("launch_token") }
+      assert_equal ["direct-store"], launch_tokens
+      assert_equal 1, Dir[File.join(state_dir, "host-*.json")].length
+      assert_equal 1, Dir[File.join(state_dir, "host-*.lock")].length
+    end
+  end
+
+  def test_scan_timeout_bounds_descendants_that_keep_output_pipes_open
+    Dir.mktmpdir("heavy-root-admission-scan-descendant-test") do |state_dir|
+      scanner = File.join(state_dir, "scan-with-descendant.rb")
+      File.write(
+        scanner,
+        "require 'json'; fork { sleep 3 }; puts JSON.generate(roots: [])\n"
+      )
+      scan_command = JSON.generate([RbConfig.ruby, scanner])
+
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      attempt = run_helper(
+        "reserve", "--state-dir", state_dir, "--host", "M5",
+        "--owner", "maker", "--lane", "issue-604-maker",
+        "--worktree", "/tmp/maker", "--command-class", "validator",
+        "--launch-token", "launch-with-descendant", "--ceiling", "1",
+        "--scan-timeout", "1", "--scan-command-json", scan_command, "--json"
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert_equal 1, attempt.fetch(:status), attempt.inspect
+      assert_operator elapsed, :<, 2.5, "scan timeout took #{elapsed.round(2)} seconds"
+      assert_match(/whole-host scan exceeded 1s/i, attempt.fetch(:stderr))
+      assert_empty Dir[File.join(state_dir, "host-*.json")]
+    end
+  end
+
+  def test_terminal_reservations_are_pruned_by_age_and_count
+    Dir.mktmpdir("heavy-root-admission-retention-test") do |state_dir|
+      now = Time.utc(2026, 9, 1, 6, 0, 0)
+      store = HeavyRootAdmission::Store.new(state_dir: state_dir, host: "M5", clock: -> { now })
+      terminal_limit = HeavyRootAdmission::MAX_TERMINAL_RESERVATIONS
+      retention_seconds = HeavyRootAdmission::TERMINAL_RETENTION_SECONDS
+
+      store.locked_update do |state, _locked_at|
+        state.fetch("reservations") << {
+          "launch_token" => "active-token",
+          "status" => "reserved",
+          "expires_at" => HeavyRootAdmission.iso8601(now + 30)
+        }
+        state.fetch("reservations") << {
+          "launch_token" => "too-old",
+          "status" => "released",
+          "released_at" => HeavyRootAdmission.iso8601(now - retention_seconds - 1)
+        }
+        (terminal_limit + 2).times do |index|
+          status = index.even? ? "released" : "expired"
+          state.fetch("reservations") << {
+            "launch_token" => "recent-#{index}",
+            "status" => status,
+            "#{status}_at" => HeavyRootAdmission.iso8601(now - index)
+          }
+        end
+        { write: true, report: nil }
+      end
+
+      retained = store.locked_update do |state, _locked_at|
+        { write: false, report: state.fetch("reservations") }
+      end
+      persisted = HeavyRootAdmission::Store.new(state_dir: state_dir, host: "m5", clock: -> { now }).locked_update do |state, _locked_at|
+        { write: false, report: state.fetch("reservations") }
+      end
+      terminal = retained.select { |reservation| %w[released expired].include?(reservation.fetch("status")) }
+
+      assert_equal retained, persisted
+      assert_equal terminal_limit, terminal.length
+      assert_includes retained.map { |reservation| reservation.fetch("launch_token") }, "active-token"
+      refute_includes terminal.map { |reservation| reservation.fetch("launch_token") }, "too-old"
+      assert_equal((0...terminal_limit).map { |index| "recent-#{index}" }.sort,
+                   terminal.map { |reservation| reservation.fetch("launch_token") }.sort)
+    end
+  end
+
+  def test_a_launch_token_remains_single_use_after_its_terminal_record_is_pruned
+    Dir.mktmpdir("heavy-root-admission-single-use-token-test") do |state_dir|
+      scan_command = scanner_command(state_dir)
+      first = run_helper(
+        "reserve", "--state-dir", state_dir, "--host", "M5",
+        "--owner", "first-maker", "--lane", "issue-604-first-maker",
+        "--worktree", "/tmp/first-maker", "--command-class", "validator",
+        "--launch-token", "single-use-token", "--ceiling", "1",
+        "--scan-command-json", scan_command, "--json"
+      )
+      assert_equal 0, first.fetch(:status), first.inspect
+
+      now = Time.utc(2026, 9, 1, 6, 0, 0)
+      store = HeavyRootAdmission::Store.new(state_dir: state_dir, host: "M5", clock: -> { now })
+      store.locked_update do |state, _locked_at|
+        reservation = state.fetch("reservations").fetch(0)
+        reservation["status"] = "released"
+        reservation["released_at"] = HeavyRootAdmission.iso8601(
+          now - HeavyRootAdmission::TERMINAL_RETENTION_SECONDS - 1
+        )
+        { write: true, report: nil }
+      end
+      retained = store.locked_update do |state, _locked_at|
+        { write: false, report: state.fetch("reservations") }
+      end
+      assert_empty retained
+
+      reused = run_helper(
+        "reserve", "--state-dir", state_dir, "--host", "M5",
+        "--owner", "other-maker", "--lane", "issue-999-other-maker",
+        "--worktree", "/tmp/other-maker", "--command-class", "review",
+        "--launch-token", "single-use-token", "--ceiling", "1",
+        "--scan-command-json", scan_command, "--json"
+      )
+
+      assert_equal 3, reused.fetch(:status), reused.inspect
+      payload = JSON.parse(reused.fetch(:stdout))
+      assert_equal "previously-seen-launch-token", payload.fetch("reason")
+      assert_match(/new launch token/i, payload.fetch("retry_when"))
     end
   end
 end

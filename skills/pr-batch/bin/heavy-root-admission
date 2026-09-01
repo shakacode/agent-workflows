@@ -15,6 +15,9 @@ module HeavyRootAdmission
   MAX_TTL = 300
   DEFAULT_SCAN_TIMEOUT = 15
   MAX_SCAN_TIMEOUT = 60
+  TERMINAL_RETENTION_SECONDS = 3600
+  MAX_TERMINAL_RESERVATIONS = 128
+  TERMINAL_STATUSES = %w[released expired].freeze
 
   class Error < StandardError; end
   class UsageError < Error; end
@@ -48,9 +51,10 @@ module HeavyRootAdmission
       @state_dir = File.expand_path(state_dir)
       @host = HeavyRootAdmission.canonical_host(host)
       @clock = clock
-      host_key = Digest::SHA256.hexdigest(host)[0, 24]
+      host_key = Digest::SHA256.hexdigest(@host)[0, 24]
       @state_path = File.join(@state_dir, "host-#{host_key}.json")
       @lock_path = File.join(@state_dir, "host-#{host_key}.lock")
+      @token_dir = File.join(@state_dir, "host-#{host_key}.seen-launch-tokens")
     end
 
     def locked_update
@@ -59,12 +63,34 @@ module HeavyRootAdmission
       File.open(@lock_path, File::RDWR | File::CREAT, 0o600) do |lock|
         lock.flock(File::LOCK_EX)
         state = load_state
-        result = yield(state, @clock.call.utc)
-        write_state(state) if result.fetch(:write, false)
-        result.fetch(:report)
+        now = @clock.call.utc
+        remember_existing_launch_tokens!(state)
+        pruned_count = HeavyRootAdmission.prune_terminal_reservations!(state, now)
+        result = yield(state, now)
+        write_state(state) if result.fetch(:write, false) || pruned_count.positive?
+        report = result.fetch(:report)
+        report["pruned_terminal_reservations"] = pruned_count if report.is_a?(Hash) && pruned_count.positive?
+        report
       ensure
         lock&.flock(File::LOCK_UN)
       end
+    end
+
+    def launch_token_seen?(launch_token)
+      File.exist?(launch_token_path(launch_token))
+    end
+
+    def remember_launch_token!(launch_token)
+      FileUtils.mkdir_p(@token_dir, mode: 0o700)
+      File.chmod(0o700, @token_dir)
+      File.open(launch_token_path(launch_token), File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
+        file.write("#{VERSION}\n")
+        file.flush
+        file.fsync
+      end
+      true
+    rescue Errno::EEXIST
+      false
     end
 
     private
@@ -86,6 +112,20 @@ module HeavyRootAdmission
       { "version" => VERSION, "host" => @host, "reservations" => [] }
     end
 
+    def remember_existing_launch_tokens!(state)
+      state.fetch("reservations").each do |reservation|
+        launch_token = reservation["launch_token"].to_s
+        raise Error, "invalid reservation without a launch token at #{@state_path}" if launch_token.empty?
+
+        remember_launch_token!(launch_token) unless launch_token_seen?(launch_token)
+      end
+    end
+
+    def launch_token_path(launch_token)
+      token_key = Digest::SHA256.hexdigest(launch_token.to_s)
+      File.join(@token_dir, "#{token_key}.seen")
+    end
+
     def write_state(state)
       temporary_path = "#{@state_path}.tmp-#{Process.pid}-#{SecureRandom.hex(6)}"
       File.open(temporary_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
@@ -100,22 +140,90 @@ module HeavyRootAdmission
     end
   end
 
+  def terminal_reservation?(reservation)
+    TERMINAL_STATUSES.include?(reservation["status"])
+  end
+
+  def terminal_timestamp(reservation)
+    timestamp_key = reservation["status"] == "released" ? "released_at" : "expired_at"
+    timestamp = parse_time(reservation[timestamp_key])
+    raise Error, "terminal reservation has invalid `#{timestamp_key}`" unless timestamp
+
+    timestamp
+  end
+
+  def prune_terminal_reservations!(state, now)
+    reservations = state.fetch("reservations")
+    cutoff = now - TERMINAL_RETENTION_SECONDS
+    recent_terminal = reservations.each_with_index.filter_map do |reservation, index|
+      next unless terminal_reservation?(reservation)
+
+      timestamp = terminal_timestamp(reservation)
+      [index, timestamp] if timestamp >= cutoff
+    end
+    kept_terminal_indexes = recent_terminal
+                            .sort_by { |index, timestamp| [-timestamp.to_f, index] }
+                            .first(MAX_TERMINAL_RESERVATIONS)
+                            .to_h { |index, _timestamp| [index, true] }
+    retained = reservations.each_with_index.filter_map do |reservation, index|
+      reservation unless terminal_reservation?(reservation) && !kept_terminal_indexes[index]
+    end
+    pruned_count = reservations.length - retained.length
+    state["reservations"] = retained if pruned_count.positive?
+    pruned_count
+  end
+
+  def monotonic_now
+    Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  def join_before(thread, deadline)
+    remaining = deadline - monotonic_now
+    remaining.positive? && !thread.join(remaining).nil?
+  end
+
+  def join_all_before(threads, deadline)
+    threads.all? { |thread| join_before(thread, deadline) }
+  end
+
+  def signal_process_group(signal, process_group_id)
+    Process.kill(signal, -process_group_id)
+  rescue Errno::ESRCH
+    nil
+  end
+
+  def stop_scan_process_group(process_group_id, waiter, readers, streams)
+    threads = [waiter, *readers]
+    signal_process_group("TERM", process_group_id)
+    return if join_all_before(threads, monotonic_now + 1)
+
+    signal_process_group("KILL", process_group_id)
+    streams.each { |stream| stream.close unless stream.closed? }
+    join_all_before(threads, monotonic_now + 1)
+  end
+
+  def read_stream(stream)
+    stream.read
+  rescue IOError
+    ""
+  end
+
   def scan_capacity(command_json, timeout_seconds)
     command = JSON.parse(command_json)
     unless command.is_a?(Array) && command.any? && command.all? { |part| part.is_a?(String) && !part.empty? }
       raise UsageError, "--scan-command-json must be a nonempty JSON array of command arguments"
     end
 
-    stdin, stdout, stderr, waiter = Open3.popen3(*command)
+    stdin, stdout, stderr, waiter = Open3.popen3(*command, pgroup: true)
     stdin.close
-    stdout_reader = Thread.new { stdout.read }
-    stderr_reader = Thread.new { stderr.read }
+    stdout_reader = Thread.new { read_stream(stdout) }
+    stderr_reader = Thread.new { read_stream(stderr) }
+    stdout_reader.report_on_exception = false
+    stderr_reader.report_on_exception = false
+    readers = [stdout_reader, stderr_reader]
 
-    unless waiter.join(timeout_seconds)
-      Process.kill("TERM", waiter.pid)
-      waiter.join(1)
-      Process.kill("KILL", waiter.pid) if waiter.alive?
-      waiter.join
+    unless join_all_before([waiter, *readers], monotonic_now + timeout_seconds)
+      stop_scan_process_group(waiter.pid, waiter, readers, [stdout, stderr])
       raise ScanError, "whole-host scan exceeded #{timeout_seconds}s; no reservation was created"
     end
 
@@ -246,7 +354,8 @@ module HeavyRootAdmission
   end
 
   def reserve(options)
-    Store.new(state_dir: options.fetch(:state_dir), host: options.fetch(:host)).locked_update do |state, now|
+    store = Store.new(state_dir: options.fetch(:state_dir), host: options.fetch(:host))
+    store.locked_update do |state, now|
       recovered = expire_stale_prelaunch!(state, now)
       active = state.fetch("reservations").select { |reservation| active_reservation?(reservation) }
       existing = active.find { |reservation| reservation["launch_token"] == options.fetch(:launch_token) }
@@ -267,16 +376,21 @@ module HeavyRootAdmission
         })
       end
 
-      expired_token = state.fetch("reservations").find do |reservation|
-        reservation["status"] == "expired" && reservation["launch_token"] == options.fetch(:launch_token)
+      previous_token = state.fetch("reservations").find do |reservation|
+        reservation["launch_token"] == options.fetch(:launch_token)
       end
-      if expired_token
+      if previous_token || store.launch_token_seen?(options.fetch(:launch_token))
+        reason = if previous_token&.fetch("status") == "expired"
+                   "expired-launch-token"
+                 else
+                   "previously-seen-launch-token"
+                 end
         next({
           write: recovered.any?,
           report: {
             "version" => VERSION,
             "decision" => "denied",
-            "reason" => "expired-launch-token",
+            "reason" => reason,
             "host" => options.fetch(:host),
             "launch_token" => options.fetch(:launch_token),
             "retry_when" => "run a fresh whole-host scan and reserve with a new launch token",
@@ -327,6 +441,10 @@ module HeavyRootAdmission
         "created_at" => iso8601(now),
         "expires_at" => iso8601(now + options.fetch(:ttl))
       }.compact
+      unless store.remember_launch_token!(options.fetch(:launch_token))
+        raise Error, "launch token was previously seen; reserve with a new launch token"
+      end
+
       state.fetch("reservations") << reservation
 
       {
