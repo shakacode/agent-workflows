@@ -1262,6 +1262,40 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     )
   end
 
+  def test_target_snapshot_reconciliation_returns_completion_modes_without_mutating_lane_entries
+    input = mixed_issue_and_pr_lane_input
+    expected_targets = input.fetch("expected_targets")
+    blockers = []
+    lane_entries, = CompletedBatchPublicationPreflight.resolved_lanes(
+      input.dig("coordination_status", "batches", 0),
+      expected_targets,
+      blockers
+    )
+    original_lane_entries = Marshal.load(Marshal.dump(lane_entries))
+    snapshots = CompletedBatchPublicationPreflight.indexed_target_snapshots(
+      input.fetch("target_snapshots"),
+      expected_targets,
+      blockers
+    )
+
+    _targets, completion_modes = CompletedBatchPublicationPreflight.canonical_target_snapshots(
+      expected_targets,
+      snapshots,
+      lane_entries,
+      blockers,
+      target_verifier: valid_target_verifier(input)
+    )
+
+    expected_modes = expected_targets.to_h do |target|
+      [CompletedBatchPublicationPreflight.target_key(target),
+       "authenticated_per_target_terminal_reconciliation"]
+    end
+    assert_empty blockers
+    assert_equal original_lane_entries, lane_entries
+    assert_equal expected_modes, completion_modes
+    assert_predicate completion_modes, :frozen?
+  end
+
   def test_mixed_target_reconciliation_requires_url_less_done_evidenced_and_authenticated_targets
     cases = {
       unauthenticated_issue: lambda do |input|

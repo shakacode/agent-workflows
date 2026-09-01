@@ -36,6 +36,8 @@ module CompletedBatchPublicationPreflight
   TARGET_PROJECTION_VERSION = 1
   TARGET_PROJECTION_VERIFICATION_SOURCE = "authenticated github graphql symmetric closing references"
   TARGET_PROJECTION_MAX_PAGES = 100
+  AUTHENTICATED_PER_TARGET_TERMINAL_RECONCILIATION = "authenticated_per_target_terminal_reconciliation"
+  AUTHENTICATED_TARGET_AFTER_COORDINATION_CLOSEOUT = "authenticated_target_after_coordination_closeout"
   TARGET_PROJECTION_QUERY = <<~GRAPHQL
     query(
       $owner: String!
@@ -141,7 +143,7 @@ module CompletedBatchPublicationPreflight
     qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
 
     validate_batch_terminal(batch, blockers) unless no_backend
-    canonical_targets, authenticated_later_target_keys = canonical_target_snapshots(
+    canonical_targets, target_completion_modes = canonical_target_snapshots(
       expected_targets,
       snapshots,
       lane_entries,
@@ -150,7 +152,7 @@ module CompletedBatchPublicationPreflight
     )
     canonical_lanes = canonical_lane_snapshots(
       lane_entries,
-      authenticated_later_target_keys,
+      target_completion_modes,
       blockers
     )
     canonical_qa = canonical_qa_snapshots(
@@ -158,7 +160,7 @@ module CompletedBatchPublicationPreflight
       snapshots,
       qa_entries,
       blockers,
-      lane_entries:,
+      target_completion_modes:,
       waiver_verifier:
     )
     snapshot = {
@@ -647,19 +649,20 @@ module CompletedBatchPublicationPreflight
     blockers << "coordination batch completion timestamp is absent or invalid" unless valid_timestamp?(batch["completed_at"])
   end
 
-  def canonical_lane_snapshots(entries, authenticated_later_target_keys, blockers)
+  def canonical_lane_snapshots(entries, target_completion_modes, blockers)
     entries.map do |entry|
       lane = entry.fetch("lane")
       target = entry.fetch("target")
+      completion_mode = target_completion_modes[target_key(target)]
       terminal_state = lane["terminal"]
       terminal = valid_terminal_lane?(lane)
       blockers << "#{target_label(target)} coordination lane is nonterminal" unless terminal
       expected_state = target["type"] == "pull_request" ? "merged" : "closed"
       evidence = normalized_known_string(lane["evidence_url"])
-      per_target_completion = entry["authenticated_per_target_terminal_reconciliation"] == true
+      per_target_completion = completion_mode == AUTHENTICATED_PER_TARGET_TERMINAL_RECONCILIATION
       coordination_completion = terminal_state == "done" && evidence &&
                                 (lane["pr_state"] == expected_state || per_target_completion)
-      later_target_completion = authenticated_later_target_keys[target_key(target)] == true
+      later_target_completion = completion_mode == AUTHENTICATED_TARGET_AFTER_COORDINATION_CLOSEOUT
       unless coordination_completion || later_target_completion
         if terminal && RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state)
           blockers << "#{target_label(target)} target completion is not authenticated after coordination closeout"
@@ -679,9 +682,9 @@ module CompletedBatchPublicationPreflight
       }
       if terminal && per_target_completion
         snapshot["coordination_target_state"] = scalar_or_nil(lane["pr_state"])
-        snapshot["completion_mode"] = "authenticated_per_target_terminal_reconciliation"
+        snapshot["completion_mode"] = completion_mode
       elsif terminal && later_target_completion
-        snapshot["completion_mode"] = "authenticated_target_after_coordination_closeout"
+        snapshot["completion_mode"] = completion_mode
       end
       snapshot["target_projection"] = entry["target_projection"] if entry["target_projection"]
       snapshot
@@ -770,7 +773,7 @@ module CompletedBatchPublicationPreflight
 
   def canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers, target_verifier:)
     lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
-    authenticated_later_target_keys = {}
+    target_completion_modes = {}
     canonical_targets = expected_targets.map do |target|
       key = target_key(target)
       lane_entry = lanes_by_target[key]
@@ -840,9 +843,6 @@ module CompletedBatchPublicationPreflight
       authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
       authenticated_per_target_reconciliation =
         verified_shape && lane_entry&.fetch("per_target_terminal_candidate", false)
-      if authenticated_per_target_reconciliation
-        lane_entry["authenticated_per_target_terminal_reconciliation"] = true
-      end
       if lane&.fetch("terminal", nil) == "superseded" &&
          authenticated_terminal_completion?(verified_target_facts) &&
          !authenticated_later_typed_no_pr_issue_supersession?(lane, verified_target_facts)
@@ -861,14 +861,24 @@ module CompletedBatchPublicationPreflight
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
       }
       snapshot["completed_at"] = verified_target_facts.fetch("completed_at") if authenticated_later_completion
-      authenticated_later_target_keys[key] = true if authenticated_later_completion
+      if authenticated_per_target_reconciliation
+        target_completion_modes[key] = AUTHENTICATED_PER_TARGET_TERMINAL_RECONCILIATION
+      elsif authenticated_later_completion
+        target_completion_modes[key] = AUTHENTICATED_TARGET_AFTER_COORDINATION_CLOSEOUT
+      end
       snapshot
     end
-    [canonical_targets, authenticated_later_target_keys]
+    [canonical_targets, target_completion_modes.freeze]
   end
 
-  def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, lane_entries:, waiver_verifier:)
-    lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
+  def canonical_qa_snapshots(
+    expected_targets,
+    snapshots,
+    qa_entries,
+    blockers,
+    target_completion_modes:,
+    waiver_verifier:
+  )
     expected_targets.map do |target|
       key = target_key(target)
       row = qa_entries[key]
@@ -877,7 +887,8 @@ module CompletedBatchPublicationPreflight
       head_sha = raw_head_sha.match?(SHA_PATTERN) ? raw_head_sha : nil
       no_pr_disposition = target["type"] == "issue" && raw_head_sha == "not_applicable" && no_pr
       mixed_target_issue_disposition = target["type"] == "issue" &&
-                                       lanes_by_target.dig(key, "authenticated_per_target_terminal_reconciliation")
+                                       target_completion_modes[key] ==
+                                       AUTHENTICATED_PER_TARGET_TERMINAL_RECONCILIATION
       head_sha = nil if no_pr_disposition
       unless row
         blockers << "#{target_label(target)} QA evidence is absent"
