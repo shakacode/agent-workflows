@@ -466,7 +466,7 @@ module CompletedBatchPublicationPreflight
   end
 
   def complementary_pr_url?(lane, additional_url_targets, target_rows)
-    return false unless additional_url_targets.one?
+    return false unless additional_url_targets.one? && target_rows.one?
 
     produced_pr = additional_url_targets.first
     return false unless produced_pr["type"] == "pull_request"
@@ -486,8 +486,6 @@ module CompletedBatchPublicationPreflight
     type = "pull_request" if type == "pr"
     number = Integer(match[2], 10)
     [type, number.positive? ? number : nil]
-  rescue ArgumentError
-    [nil, nil]
   end
 
   def compare_resolved_scope(expected, resolved, blockers)
@@ -721,12 +719,14 @@ module CompletedBatchPublicationPreflight
   def complementary_pr_target?(issue_target, lane, lane_entries)
     return false unless lane
 
-    lane_entries.any? do |entry|
-      target = entry.fetch("target")
-      entry.fetch("lane").equal?(lane) && target["type"] == "pull_request" &&
-        target["host"].casecmp?(issue_target.fetch("host")) &&
-        target["repo"].casecmp?(issue_target.fetch("repo"))
+    lane_targets = lane_entries.filter_map do |entry|
+      entry.fetch("target") if entry.fetch("lane").equal?(lane)
     end
+    return false unless lane_targets.length == 2 && lane_targets.include?(issue_target)
+
+    produced_pr = lane_targets.find { |target| target["type"] == "pull_request" }
+    produced_pr && produced_pr["host"].casecmp?(issue_target.fetch("host")) &&
+      produced_pr["repo"].casecmp?(issue_target.fetch("repo"))
   end
 
   def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, waiver_verifier:)
@@ -1075,6 +1075,12 @@ module CompletedBatchPublicationPreflight
     return false unless valid_terminal_lane?(lane)
 
     if lane["terminal"] == "done"
+      # This is a trusted lane's complementary issue/PR pair, not a target that
+      # completed after an abandoned lane. A successful lane may be released
+      # either before or after GitHub records the merge/close timestamps, so
+      # ordering the target completion after closed_at would reject valid
+      # issue-to-PR publication. The exact pair and current terminal facts are
+      # authenticated independently instead.
       complementary_terminal_states?(lane, lane_entries) &&
         authenticated_terminal_completion?(target_snapshot) && lane["pr_state"] != target_snapshot["state"]
     else
@@ -1086,11 +1092,11 @@ module CompletedBatchPublicationPreflight
     lane_targets = lane_entries.filter_map do |entry|
       entry.fetch("target") if entry.fetch("lane").equal?(lane)
     end
-    return false unless lane_targets.map { |target| target["type"] }.uniq.sort == %w[issue pull_request]
+    return false unless lane_targets.length == 2 &&
+                        lane_targets.map { |target| target["type"] }.sort == %w[issue pull_request]
 
     repos = lane_targets.map { |target| [target["host"].downcase, target["repo"].downcase] }.uniq
-    terminal_states = lane_targets.map { |target| target["type"] == "pull_request" ? "merged" : "closed" }.uniq
-    repos.one? && terminal_states.include?(lane["pr_state"])
+    repos.one? && %w[closed merged].include?(lane["pr_state"])
   end
 
   def typed_no_pr_issue_supersession?(lane, target_snapshot)

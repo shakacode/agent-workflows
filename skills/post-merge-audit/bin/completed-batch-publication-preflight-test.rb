@@ -1363,6 +1363,27 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_produced_pr_is_not_treated_as_complementary_to_multiple_issue_targets
+    first_issue = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
+    }
+    second_issue = first_issue.merge("number" => 131)
+    produced_pr = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 156
+    }
+
+    targets = CompletedBatchPublicationPreflight.targets_for_lane(
+      {
+        "targets" => ["issue:130", "issue:131"],
+        "pr_url" => "https://github.com/shakacode/hichee/pull/156"
+      },
+      "shakacode/hichee",
+      [first_issue, second_issue, produced_pr]
+    )
+
+    assert_empty targets
+  end
+
   def test_issue_targeted_lane_fails_closed_without_strict_issue_authentication
     input = issue_with_pr_input
     issue_snapshot = input.fetch("target_snapshots").find do |row|
