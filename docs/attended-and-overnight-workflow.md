@@ -40,7 +40,9 @@ continue. Each entry names the target, one exact question, why it blocks, and
 what the answer will unlock. Keep product or architecture choices, missing
 authority, and required human review in the queue. Continue through
 non-blocking implementation choices and record those decisions in the PR's
-agent details instead of interrupting the operator.
+`Agent details` decision log when the target has a PR, or otherwise the final
+handoff's **FYI / decisions made** section, instead of interrupting the
+operator.
 
 The operator owns the queue order. While the operator is available, ask the
 first question, apply the answer, refresh the queue, and ask the next one.
@@ -48,8 +50,10 @@ During an overnight window, leave the queue durable and work on independent
 ready tasks until the recorded availability time.
 
 While the operator is unavailable, continue through routine choices with
-reversible best judgment and record them in the PR's agent details; do not add
-them to the decision queue. Queue one concise question and stop only when the
+reversible best judgment and record them in the PR's `Agent details` decision
+log when the target has a PR, or otherwise the final handoff's **FYI /
+decisions made** section; do not add them to the decision queue. Queue one
+concise question and stop only when the
 missing answer changes the intended outcome, crosses the safety floor, or would
 cause a difficult-to-reverse external action.
 
@@ -92,7 +96,7 @@ required human decision.
   heads, checks, reviews, conflicts, unresolved threads, and merge readiness.
 - Use the [question and decision rules](../workflows/pr-processing.md#question-and-decision-handling)
   to distinguish a blocking question from a safe local decision.
-- Use the [goal-mode completion contract](../workflows/pr-processing.md#goal-mode-completion-contract)
+- Use the [goal-mode completion contract](../workflows/pr-batch-integration-closeout.md#goal-mode-completion-contract)
   for exact-time heartbeats, state-change watching, bounded backoff, and stop
   conditions.
 - Use [typed dependency facts](coordination-backend.md#typed-dependency-facts)
