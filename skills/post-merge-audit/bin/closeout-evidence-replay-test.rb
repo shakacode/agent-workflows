@@ -983,6 +983,105 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_rejects_relative_paths_inside_https_prose_labels
+    # A consumer path that merely looks like `word/number` must stay visible to local-path
+    # detection; only bounded protocol/version tokens are removed before the check.
+    [
+      "HTTPS: evidence ARTIFACTS/2.3;",
+      "HTTPS: stored screenshots/2.3;",
+      "HTTPS: see captures/1.0 now;"
+    ].each do |label|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before #{label} after https://github.com/example/repo/pull/123#visual"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), label
+      assert_includes qa.fetch("missing"), "visual_evidence.local_reference", label
+    end
+  end
+
+  def test_v2_accepts_bounded_protocol_versions_inside_https_prose_labels
+    [
+      "HTTPS: protocol HTTP/2;",
+      "HTTPS: HTTP/1.1;",
+      "HTTPS: negotiated h2/1.1;",
+      "HTTPS: TLS 1.2/1.3;"
+    ].each do |label|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before #{label} after https://github.com/example/repo/pull/123#visual"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), label
+      assert_empty qa.fetch("missing"), label
+    end
+  end
+
+  def test_hosted_v1_accepts_slash_separated_and_quoted_https_version_labels
+    [
+      "HTTPS: TLS 1.2/1.3;",
+      "HTTPS: TLS 1.0/1.1/1.2/1.3;",
+      'HTTPS: "TLS 1.3";',
+      "HTTPS: 'TLS 1.3';",
+      "HTTPS: `TLS 1.3`;",
+      'HTTPS: version "1.2.3" shipped;',
+      "HTTPS: status: enabled;",
+      "HTTPS: note: artifact retained;"
+    ].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+  end
+
+  def test_hosted_v1_still_rejects_scheme_and_bracketed_authority_https_labels
+    # The prose exemption for a trailing-colon label must not admit an opaque scheme, and the
+    # decorative leading-symbol strip must not erase a bracketed authority.
+    [
+      "HTTPS: mailto:someone;",
+      "HTTPS: blob:abc;",
+      "HTTPS: ftp:host;",
+      "HTTPS: data:image/png;base64,AAA;",
+      "HTTPS: [::1];",
+      "HTTPS: [2001:db8::1];"
+    ].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), label
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", label
+    end
+  end
+
+  def test_hosted_v1_still_rejects_authority_shaped_https_labels_with_delimiters
+    [
+      'HTTPS: "example.test:443";',
+      "HTTPS: `available.example.test`;",
+      "HTTPS: 'example.test';",
+      "HTTPS: admin:secret@internal;",
+      "HTTPS: host [::1]:443;"
+    ].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), label
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", label
+    end
+  end
+
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
     hosts = %w[
       github.com/example/repo/pull/123#visual

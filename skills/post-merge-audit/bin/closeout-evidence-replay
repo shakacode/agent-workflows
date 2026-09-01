@@ -53,6 +53,28 @@ module CloseoutEvidenceReplay
   # punctuation-bounded or multi-token and non-authority-shaped so malformed HTTPS fails closed.
   HTTPS_PROSE_LABEL_STATUSES = %w[available disabled enabled enforced failed ok only optional passed required supported].freeze
   HTTPS_PROSE_ABBREVIATIONS = %w[e.g i.e].freeze
+  # Bounded protocol/version vocabulary. Only these shapes name a protocol rather than a consumer
+  # path, so `HTTP/2` is removed before local-path detection while a repository path such as
+  # `ARTIFACTS/2.3` stays visible to it.
+  HTTPS_PROTOCOL_LABEL_NAMES = %w[alpn grpc h2 h2c h3 http https quic spdy ssl tls ws wss].freeze
+  HTTPS_PROTOCOL_LABEL_NAME_PATTERN = HTTPS_PROTOCOL_LABEL_NAMES.map { |name| Regexp.escape(name) }.join("|")
+  # A dotted numeric version, or a slash-separated list of them (`1.2/1.3`). No letters and no
+  # authority separators, so a URL-shaped path cannot match.
+  HTTPS_PROSE_VERSION_LIST = %r{\A\d{1,2}(?:\.\d{1,2}){1,2}(?:/\d{1,2}(?:\.\d{1,2}){1,2})*\z}
+  # Path-boundary lookarounds keep `screenshots/2.3/1.4` intact: a version list only qualifies when
+  # no path separator abuts it on either side.
+  HTTPS_PROTOCOL_LABEL_CLEANUP = %r{
+    (?<![\w./-])
+    (?:
+      (?:#{HTTPS_PROTOCOL_LABEL_NAME_PATTERN})/\d{1,2}(?:\.\d{1,2}){0,2}
+      |\d{1,2}(?:\.\d{1,2}){1,2}(?:/\d{1,2}(?:\.\d{1,2}){1,2})+
+    )
+    (?![\w./-])
+  }ix
+  # Prose delimiters that wrap a label token (`"TLS 1.3"`, `` `TLS 1.3` ``, `(HTTP/2)`) and must be
+  # removed before authority classification.
+  HTTPS_PROSE_OPEN_DELIMITERS = ["(", "[", "{", '"', "'", "`"].freeze
+  HTTPS_PROSE_CLOSE_DELIMITERS = [")", "]", "}", '"', "'", "`"].freeze
   HTTPS_PROSE_LABEL_STATUS_PATTERN = HTTPS_PROSE_LABEL_STATUSES.map { |status| Regexp.escape(status) }.join("|")
   HTTPS_PROSE_LABEL_RECOGNIZED_STATUS = /
     \A(?:[1-5]\d{2}\s+)?(?:#{HTTPS_PROSE_LABEL_STATUS_PATTERN})(?=\s|[,;]|\.(?:\s|\z)|\z)
@@ -622,10 +644,7 @@ module CloseoutEvidenceReplay
       next unless label_start
 
       label_range = label_start...(label_start + label.length)
-      cleaned[label_range] = cleaned[label_range].gsub(
-        %r{\b[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\b},
-        ""
-      )
+      cleaned[label_range] = cleaned[label_range].gsub(HTTPS_PROTOCOL_LABEL_CLEANUP, "")
     end
 
     cleaned.gsub(
@@ -743,12 +762,14 @@ module CloseoutEvidenceReplay
     if (next_https = HTTPS_TOKEN.match(raw_label))
       raw_label = raw_label[0...next_https.begin(0)].rstrip
       direct_url_boundary = raw_label.empty? || raw_label.match?(/\A(?:after|at|from|see|via)\z/i)
-      return "" if match[0] == "HTTPS:" && direct_url_boundary
+      return "" if direct_url_boundary
 
       raw_label = raw_label.sub(/\s+(?:after|at|from|see|via)\z/i, "")
     end
     leading_symbols = raw_label[/\A[^\p{Alnum}]*/u]
-    return if leading_symbols.match?(%r{[/\\]})
+    # `:` never decorates a prose label, so a leading run containing one opens an authority
+    # (`[::1];`) that the decorative strip below would otherwise erase.
+    return if leading_symbols.match?(%r{[/\\:]})
 
     label = raw_label.sub(/\A[^\p{Alnum}]+/u, "")
     return if label.empty?
@@ -760,7 +781,9 @@ module CloseoutEvidenceReplay
     return if prose_label.include?("\\")
     return if prose_label.split(/\s+/).any? do |token|
       token = normalized_https_prose_token(token)
-      token.include?("/") && !token.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z})
+      token.include?("/") &&
+      !token.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z}) &&
+      !token.match?(HTTPS_PROSE_VERSION_LIST)
     end
     return if authority_shaped_https_label?(prose_label)
     return if text_tokens(prose_label).length < 2 && !punctuation_bounded && !recognized_status
@@ -781,19 +804,26 @@ module CloseoutEvidenceReplay
       next false if authority.include?(".") && HTTPS_PROSE_ABBREVIATIONS.include?(authority.downcase)
       next false if authority.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
 
-      if !token.match?(/[?#]/) && authority.match?(/\A\d{1,2}(?:\.\d{1,2}){1,2}\z/)
+      if !token.match?(/[?#]/) && authority.match?(HTTPS_PROSE_VERSION_LIST)
         previous_token = normalized_https_prose_token(tokens[index - 1]) if index.positive?
         next false if previous_token&.match?(/\A(?:protocol|ssl|tls|version)\z/i)
       end
       next false if authority.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z})
 
-      authority.include?(".") || authority.include?(":") || square_bracketed
+      authority.include?(".") || authority_colon_shape?(authority) || square_bracketed
     end
   end
 
+  # A colon marks an authority (`host:port`, IPv6, userinfo) or an opaque scheme (`mailto:someone`)
+  # unless it only terminates a prose label such as `status:`. That trailing-colon form is the sole
+  # exemption, so every scheme- and authority-shaped token still fails closed.
+  def authority_colon_shape?(authority)
+    authority.include?(":") && !authority.match?(/\A[^:]+:\z/)
+  end
+
   def normalized_https_prose_token(token)
-    token = token[1..] if token.start_with?("(", "[", "{")
-    token = token[...-1] if token.end_with?(")", "]", "}")
+    token = token[1..] if token.start_with?(*HTTPS_PROSE_OPEN_DELIMITERS)
+    token = token[...-1] if token.end_with?(*HTTPS_PROSE_CLOSE_DELIMITERS)
     token
   end
 
@@ -921,6 +951,9 @@ module CloseoutEvidenceReplay
       return !runtime_memory_metric?(tokens)
     end
 
+    # The carve-out deliberately stops at the bare `*_bytes`/`*_size` shape. `heap_byte_count`
+    # stays rejected because a terminal `count` names an occurrence tally, not a memory reading;
+    # widening it is part of the metric-vocabulary decision tracked separately.
     qualified_terminal_count?(tokens, SIZE_METRIC_TOKENS)
   end
 
