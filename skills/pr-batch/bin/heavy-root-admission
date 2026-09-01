@@ -213,7 +213,11 @@ module HeavyRootAdmission
   end
 
   def scan_capacity(command_json, timeout_seconds)
-    command = JSON.parse(command_json)
+    command = begin
+      JSON.parse(command_json)
+    rescue JSON::ParserError => e
+      raise UsageError, "--scan-command-json must be valid JSON: #{e.message}"
+    end
     unless command.is_a?(Array) && command.any? && command.all? { |part| part.is_a?(String) && !part.empty? }
       raise UsageError, "--scan-command-json must be a nonempty JSON array of command arguments"
     end

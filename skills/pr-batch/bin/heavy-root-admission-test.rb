@@ -513,6 +513,23 @@ class HeavyRootAdmissionTest < Minitest::Test
     end
   end
 
+  def test_malformed_scan_command_json_is_reported_as_usage_error
+    Dir.mktmpdir("heavy-root-admission-scan-command-json-test") do |state_dir|
+      attempt = run_helper(
+        "reserve", "--state-dir", state_dir, "--host", "M5",
+        "--owner", "maker", "--lane", "issue-604-maker",
+        "--worktree", "/tmp/maker", "--command-class", "validator",
+        "--launch-token", "malformed-scan-command", "--ceiling", "1",
+        "--scan-command-json", "[\"unterminated", "--json"
+      )
+
+      assert_equal 64, attempt.fetch(:status), attempt.inspect
+      assert_match(/USAGE:.*--scan-command-json must be valid JSON/i, attempt.fetch(:stderr))
+      refute_match(/whole-host scan did not return valid JSON/i, attempt.fetch(:stderr))
+      assert_empty Dir[File.join(state_dir, "host-*.json")]
+    end
+  end
+
   def test_terminal_reservations_are_pruned_by_age_and_count
     Dir.mktmpdir("heavy-root-admission-retention-test") do |state_dir|
       now = Time.utc(2026, 9, 1, 6, 0, 0)
