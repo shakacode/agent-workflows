@@ -81,6 +81,22 @@ end
 puts JSON.generate(status_payload("UP_TO_DATE", installed_version: "1.0.0", available_version: "1.0.0"))
 RUBY
   chmod +x "$path"
+  warm_status_fixture "$path"
+}
+
+# Pay the fixture's first-execution cost before the doctor times it.
+#
+# macOS assesses a newly written executable the first time it runs, and that
+# first execution has a multi-second tail on a loaded machine -- long enough
+# to blow the doctor's workflow-status timeout budget and report "diagnostic
+# timed out" instead of exercising the scenario under test (#239, same shape
+# as `warm_stub` in skills/pr-batch/bin/pr-merge-submit-test.rb). The
+# `malformed` fixture mode exits immediately without reading ARGV, so this
+# warmup call is safe with no other setup and has no side effects any test
+# asserts on.
+warm_status_fixture() {
+  local path="$1"
+  WORKFLOW_STATUS_FIXTURE=malformed "$path" >/dev/null 2>&1 || true
 }
 
 write_seam_fixture() {
