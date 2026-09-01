@@ -121,11 +121,11 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_floor,
                     "same base/head from complete policy, semantic, and file evidence"
     assert_includes normalized_floor,
-                    "bind the canonical helper path and `sha256:` digest of the exact `pr-security-preflight` bytes"
+                    "preserve the helper's self-reported canonical path, `sha256:` digest of its exact bytes"
     assert_includes normalized_floor,
-                    "preserve its emitted predicate matches with the flat risky-path list"
+                    "emitted predicate matches, and flat risky-path list"
     assert_includes normalized_floor,
-                    "require that digest remain unchanged"
+                    "require the digest remain unchanged"
     assert_includes normalized_floor,
                     "rerun at exact head"
     assert_includes normalized_floor,

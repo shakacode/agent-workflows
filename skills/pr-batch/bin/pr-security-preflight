@@ -1080,6 +1080,15 @@ def changed_files(repo, pr_number)
   run_gh("pr", "diff", pr_number.to_s, "--repo", repo, "--name-only").lines.map(&:strip).reject(&:empty?)
 end
 
+def preflight_helper_provenance
+  path = File.realpath(__FILE__)
+  contents = File.binread(path)
+
+  { path:, content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}" }
+rescue SystemCallError => e
+  abort "Cannot bind preflight helper provenance: #{e.message}"
+end
+
 def high_risk_file_findings(files)
   files.filter_map do |path|
     matches = []
@@ -1801,6 +1810,9 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
   puts
 end
 
+helper_provenance = preflight_helper_provenance
+puts "Preflight helper: #{helper_provenance.fetch(:path)}"
+puts "Preflight helper content digest: #{helper_provenance.fetch(:content_digest)}"
 repo_info = options[:repo] ? repo_option_info(options[:repo]) : current_repo_info
 repo = repo_info.fetch(:repo)
 github_host = repo_info.fetch(:github_host)

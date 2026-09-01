@@ -18,6 +18,26 @@ require_relative "../lib/git_probe_env"
 SCRIPT = File.expand_path("pr-security-preflight", __dir__)
 
 class PrSecurityPreflightTest < Minitest::Test
+  def test_self_reports_canonical_helper_path_and_digest
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      path = File.realpath(SCRIPT)
+      digest = "sha256:#{Digest::SHA256.hexdigest(File.binread(path))}"
+
+      assert status.success?, out
+      assert_includes out.lines.map(&:chomp), "Preflight helper: #{path}"
+      assert_includes out.lines.map(&:chomp), "Preflight helper content digest: #{digest}"
+    end
+  end
+
   def test_missing_repo_config_uses_env_global_config
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")
