@@ -1545,6 +1545,39 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty failures
   end
 
+  def test_enqueue_revalidates_merge_assurance_and_live_bindings_after_review_replay
+    cases = {
+      "configured_review_queue_expires_merge_receipt" => {
+        receipt_mode: :valid,
+        error: "merge-assurance receipt is stale"
+      },
+      "configured_review_queue_moves_head" => {
+        receipt_mode: :valid,
+        error: "PR head moved"
+      },
+      "configured_review_queue_changes_tracker" => {
+        receipt_mode: :semantic,
+        error: "semantic GitHub Actions tracker issue body binding mismatch"
+      }
+    }
+
+    failures = cases.filter_map do |mode, expectation|
+      result, log = run_cli(
+        mode:,
+        merge_submission: merge_queue_policy,
+        receipt_mode: expectation.fetch(:receipt_mode)
+      )
+
+      next if !result.fetch(:status).success? &&
+              result.fetch(:stderr).include?(expectation.fetch(:error)) &&
+              !log.include?("enqueuePullRequest")
+
+      "#{mode}: status=#{result.fetch(:status).exitstatus} stderr=#{result.fetch(:stderr).inspect}"
+    end
+
+    assert_empty failures
+  end
+
   def test_configured_review_replay_receives_validated_current_integration_evidence
     integration = {
       "recorded_base_sha" => "9" * 40,
@@ -2212,7 +2245,10 @@ class PrMergeSubmitTest < Minitest::Test
         if mode.start_with?("configured_review_")
           File.write("\#{ENV.fetch('GH_LOG')}.configured-review-complete", "complete\n")
         end
-        if mode == "configured_review_expires_merge_receipt"
+        if %w[
+          configured_review_expires_merge_receipt
+          configured_review_queue_expires_merge_receipt
+        ].include?(mode)
           advanced_now = Time.now + 301
           Time.singleton_class.define_method(:now) { advanced_now }
         end
@@ -2709,7 +2745,9 @@ class PrMergeSubmitTest < Minitest::Test
       end
       if ARGV.include?("repos/owner/repo/issues/1")
         issue = JSON.parse(#{JSON.generate(semantic_issue).inspect})
-        if #{mode.inspect} == "configured_review_changes_tracker" &&
+        if %w[
+          configured_review_changes_tracker configured_review_queue_changes_tracker
+        ].include?(#{mode.inspect}) &&
            File.exist?(ENV.fetch("GH_LOG") + ".configured-review-complete")
           issue["body"] = "changed after configured-review settlement"
           issue["updated_at"] = "2026-07-20T15:01:00Z"
@@ -2738,6 +2776,8 @@ class PrMergeSubmitTest < Minitest::Test
         File.write(query_count_path, (query_count + 1).to_s)
         current_mode = #{mode.inspect}
         guard_called = File.exist?(ENV.fetch("PR_TEST_GUARD_MARKER"))
+        gh_log = File.read(ENV.fetch("GH_LOG"))
+        enqueue_attempted = gh_log.include?("enqueuePullRequest")
         queue_enabled = case current_mode
                         when "queue", "queue_guarded", "queue_guarded_becomes_queued",
                              "queue_fast_merged", "queue_fast_merged_base_advanced",
@@ -2754,7 +2794,10 @@ class PrMergeSubmitTest < Minitest::Test
                              "enqueue_transport_queued_base_advanced", "queue_post_queued_base_advanced",
                              "queue_post_queued_with_commit",
                              "enqueue_non_object_response_queued", "queue_base_race",
-                             "queue_entry_replaced", "queue_entry_replaced_same_target" then true
+                             "queue_entry_replaced", "queue_entry_replaced_same_target",
+                             "configured_review_queue_expires_merge_receipt",
+                             "configured_review_queue_moves_head",
+                             "configured_review_queue_changes_tracker" then true
                         when "direct_queue_race", "guard_becomes_queued" then query_count.positive?
                         when "queue_flip_disabled" then query_count.zero?
                         when "direct_graphql_error_queue_enabled" then query_count >= 2
@@ -2770,13 +2813,13 @@ class PrMergeSubmitTest < Minitest::Test
                       "enqueue_graphql_error_merged_queued",
                       "queue_entry_replaced_same_target",
                       "queue_post_queued_base_advanced",
-                      "queue_post_queued_with_commit" then query_count.positive?
+                      "queue_post_queued_with_commit" then enqueue_attempted
                  when "queue_guarded"
-                   File.read(ENV.fetch("GH_LOG")).include?("enqueuePullRequest")
+                   enqueue_attempted
                  when "guard_becomes_queued", "queue_guarded_becomes_queued"
                    query_count.positive?
                  when "queue_base_race", "enqueue_transport_base_race",
-                      "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
+                      "enqueue_graphql_error_base_race", "queue_entry_replaced" then enqueue_attempted
                  when "direct_graphql_error_in_queue" then query_count >= 2
                  else false
                  end
@@ -2789,17 +2832,17 @@ class PrMergeSubmitTest < Minitest::Test
           guard_success guard_path_swap hichee_replay guard_failure_merged
         ].include?(current_mode) &&
                                 guard_called
-        direct_attempted = File.read(ENV.fetch("GH_LOG")).include?("mergePullRequest")
+        direct_attempted = gh_log.include?("mergePullRequest")
         directly_merged = %w[
           direct_transport_merged direct_graphql_error_merged direct_response_invalid_merged
         ].include?(current_mode) && direct_attempted
         merged = ["already_merged", "already_merged_base_advanced"].include?(current_mode) ||
-                 (merged_after_mutation && query_count.positive?) || guarded_direct_merged || directly_merged
+                 (merged_after_mutation && enqueue_attempted) || guarded_direct_merged || directly_merged
         base_race_modes = [
           "queue_base_race", "queue_entry_replaced", "enqueue_transport_base_race",
           "enqueue_graphql_error_base_race"
         ]
-        live_base = if base_race_modes.include?(current_mode) && query_count.positive?
+        live_base = if base_race_modes.include?(current_mode) && enqueue_attempted
                       "release"
                     else
                       #{base.inspect}
@@ -2816,7 +2859,7 @@ class PrMergeSubmitTest < Minitest::Test
         live_base_oid = if current_mode == "current_integration_live_base_mismatch"
                           #{ADVANCED_BASE_SHA.inspect}
                         elsif base_advanced_modes.include?(current_mode) &&
-                           (initially_advanced_modes.include?(current_mode) || query_count.positive?)
+                           (initially_advanced_modes.include?(current_mode) || enqueue_attempted)
                           #{ADVANCED_BASE_SHA.inspect}
                         else
                           #{base_sha.inspect}
@@ -2844,7 +2887,9 @@ class PrMergeSubmitTest < Minitest::Test
                 "id" => "PR_42",
                 #{head_ref_entry}
                 "headRefOid" => if (current_mode == "guard_head_moved" && guard_called) ||
-                                   (current_mode == "configured_review_moves_head" &&
+                                   (%w[
+                                     configured_review_moves_head configured_review_queue_moves_head
+                                   ].include?(current_mode) &&
                                     File.exist?(ENV.fetch("GH_LOG") + ".configured-review-complete"))
                                   #{MOVED_SHA.inspect}
                                 else
