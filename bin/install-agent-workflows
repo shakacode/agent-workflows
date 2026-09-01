@@ -3682,6 +3682,47 @@ link_pack_third_party_notices() {
   ln -sfn "$repo_root/THIRD_PARTY-NOTICES.md" "$destination"
 }
 
+# The delivery-state helper reports its structured response on stdout and exits
+# nonzero when the delivery state is incompatible. Incidental stderr from the
+# surrounding toolchain (a tool-manager warning, for example) is not part of
+# that response, so keep the two channels apart: capture only stdout for the
+# JSON parser and let the helper's own stderr reach this installer's stderr,
+# where it stays visible as a diagnostic.
+delivery_state=""
+delivery_status=0
+run_delivery_state() {
+  set +e
+  delivery_state="$(ruby "$delivery_state_script" "$@" --json)"
+  delivery_status=$?
+  set -e
+}
+
+# Report a nonzero delivery-state result. Parsing is fail-closed: a response
+# that is not a usable JSON object is named as such instead of surfacing a raw
+# parser backtrace, and every caller still refuses the install.
+report_delivery_state_conflict() {
+  local prefix="${1:-}" parse_status=0
+  set +e
+  printf '%s' "$delivery_state" | ruby -rjson -e '
+    prefix = ARGV.fetch(0)
+    payload =
+      begin
+        JSON.parse(STDIN.read)
+      rescue JSON::ParserError
+        exit 65
+      end
+    exit 65 unless payload.is_a?(Hash) && payload.key?("reason") && payload.key?("guidance")
+    warn "DELIVERY_MODE_CONFLICT: #{prefix}#{payload.fetch("reason")}"
+    warn payload.fetch("guidance")
+  ' "$prefix"
+  parse_status=$?
+  set -e
+  if [[ "$parse_status" -ne 0 ]]; then
+    echo "DELIVERY_MODE_CONFLICT: ${prefix}the delivery-state helper exited $delivery_status and did not return a parseable JSON response." >&2
+    echo "Any helper diagnostics are reported above. Resolve them and rerun the installer; this install was refused." >&2
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --host)
@@ -3752,16 +3793,9 @@ fi
 
 pending_migration_receipt="$target/.agent-workflows-migration-staging"
 if [[ ! -f "$pending_migration_receipt" ]]; then
-  set +e
-  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
-  delivery_status=$?
-  set -e
+  run_delivery_state check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode"
   if [[ "$delivery_status" -ne 0 ]]; then
-    printf '%s' "$delivery_state" | ruby -rjson -e '
-      payload = JSON.parse(STDIN.read)
-      warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
-      warn payload.fetch("guidance")
-    '
+    report_delivery_state_conflict
     exit 1
   fi
 fi
@@ -4021,16 +4055,9 @@ trap release_install_transaction EXIT
 
 # The pre-lock check avoids mutating an obviously unsafe target. This second
 # check is authoritative and holds the advisory install lock through commit.
-set +e
-delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
-delivery_status=$?
-set -e
+run_delivery_state check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode"
 if [[ "$delivery_status" -ne 0 ]]; then
-  printf '%s' "$delivery_state" | ruby -rjson -e '
-    payload = JSON.parse(STDIN.read)
-    warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
-    warn payload.fetch("guidance")
-  '
+  report_delivery_state_conflict
   exit 1
 fi
 verify_pack_doc_destinations
@@ -4131,16 +4158,9 @@ if [[ "$delivery_mode" = "plugin-companion" ]]; then
     "$repo_root/skills/secure-github-actions/lib/secure_github_actions_scanner.rb" \
     "$scanner_companion"
 
-  set +e
-  delivery_state="$(ruby "$delivery_state_script" migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --retain-staging --staging-receipt "$migration_receipt" --json 2>&1)"
-  delivery_status=$?
-  set -e
+  run_delivery_state migrate --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --retain-staging --staging-receipt "$migration_receipt"
   if [[ "$delivery_status" -ne 0 ]]; then
-    printf '%s' "$delivery_state" | ruby -rjson -e '
-      payload = JSON.parse(STDIN.read)
-      warn "DELIVERY_MODE_CONFLICT: #{payload.fetch("reason")}"
-      warn payload.fetch("guidance")
-    '
+    report_delivery_state_conflict
     exit 1
   fi
   migration_staging="$(
@@ -4148,16 +4168,9 @@ if [[ "$delivery_mode" = "plugin-companion" ]]; then
       ruby -rjson -e 'payload = JSON.parse(STDIN.read); puts payload.dig("flat", "staging")'
   )"
 
-  set +e
-  delivery_state="$(ruby "$delivery_state_script" check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode" --json 2>&1)"
-  delivery_status=$?
-  set -e
+  run_delivery_state check --host "$host" --target "$target" --source "$repo_root" --delivery-mode "$delivery_mode"
   if [[ "$delivery_status" -ne 0 ]]; then
-    printf '%s' "$delivery_state" | ruby -rjson -e '
-      payload = JSON.parse(STDIN.read)
-      warn "DELIVERY_MODE_CONFLICT: final delivery verification failed: #{payload.fetch("reason")}"
-      warn payload.fetch("guidance")
-    '
+    report_delivery_state_conflict "final delivery verification failed: "
     exit 1
   fi
 fi
