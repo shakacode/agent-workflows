@@ -27,7 +27,7 @@ reproduction explains the failure.
    For GitHub Actions with no provider seam, use the shipped default:
 
    ```bash
-   gh run list --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,conclusion,headSha,event,workflowName,number,createdAt,url
+   gh run list --all --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,conclusion,headSha,event,workflowName,number,createdAt,url
    gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
    ```
 
