@@ -213,6 +213,7 @@ class CoordinationObservabilityContractTest < Minitest::Test
 
   def test_restart_replacement_and_cancellation_are_replayable
     recovery = squish(section(@component, "## Restart, Replacement, And Cancellation", /^##\s+/))
+    pause_flow = squish(section(@workflow, "### Pausing For An Agent-Runner Restart", /^###\s+/))
 
     assert_includes recovery, "Bounded Status Recovery"
     assert_includes recovery, "MODEL_REPLACEMENT_HANDOFF"
@@ -225,6 +226,9 @@ class CoordinationObservabilityContractTest < Minitest::Test
     workflow_recovery = squish(@workflow)
     assert_includes workflow_recovery, "matching stable, non-`unavailable` thread"
     assert_includes workflow_recovery, "explicit reassignment"
+    assert_includes pause_flow,
+                    "refresh the existing claim comment only when it has the matching stable, " \
+                    "non-`unavailable` thread and inspection finds neither conflicting nor `UNKNOWN` ownership evidence"
   end
 
   def test_private_registration_preserves_operational_recovery_context
