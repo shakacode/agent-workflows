@@ -658,8 +658,12 @@ module CompletedBatchPublicationPreflight
       lane = lanes_by_target.dig(key, "lane")
       raw_head_sha = row["head_sha"].to_s.downcase
       no_pr_evidence = canonical_no_pr_evidence(row["no_pr_evidence"], target)
-      issue_resolved_by_pr = target["type"] == "issue" && raw_head_sha == "not_applicable" &&
-                             !row.key?("no_pr_evidence") && complementary_pr_target?(target, lane, lane_entries)
+      complementary_issue_target = target["type"] == "issue" && raw_head_sha == "not_applicable" &&
+                                   complementary_pr_target?(target, lane, lane_entries)
+      if complementary_issue_target && row.key?("no_pr_evidence")
+        blockers << "#{target_label(target)} no-PR evidence contradicts complementary produced PR"
+      end
+      issue_resolved_by_pr = complementary_issue_target && !row.key?("no_pr_evidence")
       issue_resolved_by_pr_keys[key] = true if issue_resolved_by_pr
       if target["type"] == "issue" && raw_head_sha == "not_applicable" &&
          (no_pr_evidence || issue_resolved_by_pr)

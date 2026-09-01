@@ -1456,6 +1456,22 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                     "shakacode/hichee#issue:10036 QA evidence contradicts issue-resolved-by-PR disposition"
   end
 
+  def test_issue_resolved_by_pr_rejects_stale_no_pr_evidence
+    input = issue_with_pr_input
+    issue_snapshot = input.fetch("target_snapshots").find { |row| row.dig("target", "type") == "issue" }
+    issue_snapshot["no_pr_evidence"] = {
+      "url" => "https://github.com/shakacode/hichee/issues/10036",
+      "rationale" => "closed issue; no implementation PR was created",
+      "target" => JSON.parse(JSON.generate(issue_snapshot.fetch("target")))
+    }
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 no-PR evidence contradicts complementary produced PR"
+  end
+
   def test_no_pr_issue_rejects_head_bound_satisfied_qa
     input = no_pr_input
     fabricated_head = "a" * 40
