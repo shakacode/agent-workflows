@@ -1590,6 +1590,12 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
+  def test_close_session_non_clean_handoff_uses_the_canonical_unblock_block
+    assert_squished_includes @close_session_skill,
+                             UNBLOCK_BLOCK_STANDALONE_EMISSION_RULE,
+                             "skills/close-session/SKILL.md Final response"
+  end
+
   def test_post_merge_audit_surfaces_require_the_unblock_block_with_the_follow_ups_line
     {
       "workflows/post-merge-audit.md" => [@post_merge_audit_workflow, "pr-processing.md#unblock-block"],

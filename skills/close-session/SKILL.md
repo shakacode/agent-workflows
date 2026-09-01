@@ -208,6 +208,14 @@ clears the blocker and whether to reply here or start a new task.
 When the current task will continue without input, state its exact next action.
 A durable issue, receipt, or blocker list is evidence, not a next step.
 
+Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the
+canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block)
+immediately before that line: one numbered entry per blocker in the same union,
+each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next
+action or wait instruction with an exact command, paste-ready prompt, URL,
+question, trigger, or clearing condition, and each with a `Help:` line giving a
+different route to clearing it or exactly `none — <reason>`.
+
 End with exactly one of:
 
 ```text
