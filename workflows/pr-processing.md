@@ -621,13 +621,16 @@ nonempty `hosts` array. Each unique host record has this exact shape:
 ```
 
 Host ids use lowercase letters, digits, dots, underscores, or hyphens and start
-with a letter or digit. `source` is exactly `verified` or `fallback`;
-nonnegative `occupied` values may not exceed their limits.
+with a letter or digit. `source` is exactly `verified` or `fallback`.
+A fallback-source host has at most one worker slot, one heavy-root policy slot,
+and one external-quota slot; nonnegative `occupied` values may not exceed their
+limits.
 `worker.occupied` and `external_quota.occupied` count
 live ownership or reservations outside the current plan. Separate durable
 `active` and `blocked` lifecycle rows from this plan are added by preflight, so
-the envelope must not double-count them. Every lane names a declared `host_id`;
-`uses_external_quota` is an optional boolean and defaults false.
+the envelope must not double-count them. With an explicit envelope, every lane
+names one declared `host_id`; `uses_external_quota` is an optional boolean and
+defaults false.
 
 The planner may keep more ready lanes than currently fit. Preflight visits hosts
 and their ready lanes in lexical id order, admits no more than each host's free
@@ -644,6 +647,9 @@ and reports it but never performs or duplicates heavy-root reservation.
 When no envelope is supplied, preflight uses one documented fallback host with
 one worker, one heavy-root policy slot, and one external-quota slot, and reports
 `source: fallback`; it never labels that default measured capacity. A planner
+may omit lane `host_id` only on this no-envelope path, where preflight infers the
+single fallback host. One compatible declared host may name that fallback;
+incompatible or multiple distinct declared host assignments fail closed. A planner
 that cannot resolve ownership, dependencies, or a safe host assignment records
 `UNKNOWN` and stops instead of using fallback to bypass those gates. Items with
 `UNKNOWN` path evidence remain serial discovery lanes.

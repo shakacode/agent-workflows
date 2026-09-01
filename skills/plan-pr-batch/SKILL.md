@@ -360,11 +360,14 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      agent homes prove neither the active hosts nor their capacity.
      After semantic dependency planning, emit the canonical
      `per-host-capacity-envelope` v1 from `workflows/pr-processing.md`. Give every
-     lane a declared `host_id` and optional boolean `uses_external_quota`. For
+     lane in an explicit envelope a declared `host_id` and optional boolean
+     `uses_external_quota`. Only the no-envelope single-host fallback may infer
+     an omitted lane host; incompatible or multiple distinct assignments fail closed. For
      each unique host, keep worker, heavy-root, and external-quota budgets
      separate; count verified live ownership/reservations in `occupied`, use
      `source: verified` only for verified capacity, and label a documented
-     conservative default `source: fallback`. Missing or stale ownership,
+     conservative default `source: fallback` with at most one slot in each
+     budget. Missing or stale ownership,
      dependency, or host facts remain `UNKNOWN` and fail closed.
      Keep a ready queue larger than free worker capacity when useful. The
      preflight deterministically admits up to the sum of independently free

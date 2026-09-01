@@ -373,6 +373,9 @@ Before implementation or worker launch, produce:
 10. The canonical `per-host-capacity-envelope` v1: each lane's selected host,
     separate worker/heavy-root/external-quota budgets, verified or fallback
     provenance, current admitted lanes, and the ready lanes held for refill.
+    Explicit envelopes require each lane's `host_id`. Only the no-envelope
+    single-host fallback may infer an omitted host and it permits at most one
+    slot in each budget; incompatible or multiple distinct assignments fail closed.
     Prompt target controls rendering only; it is not a worker ceiling.
 11. A coordinator model/effort preference, independent-checker preference,
     plus a separate staged worker model/effort preference for every lane,

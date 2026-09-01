@@ -344,8 +344,13 @@ module BatchPlanPreflight
     return false unless valid_capacity_slot_budget?(host["external_quota"])
 
     heavy_root = host["heavy_root"]
-    heavy_root.is_a?(Hash) && heavy_root.keys.sort == HEAVY_ROOT_BUDGET_KEYS &&
-      nonnegative_integer?(heavy_root["limit"]) && heavy_root["admission"] == HEAVY_ROOT_ADMISSION
+    return false unless heavy_root.is_a?(Hash) && heavy_root.keys.sort == HEAVY_ROOT_BUDGET_KEYS &&
+                        nonnegative_integer?(heavy_root["limit"]) &&
+                        heavy_root["admission"] == HEAVY_ROOT_ADMISSION
+    return true unless host["source"] == "fallback"
+
+    host.dig("worker", "limit") <= 1 && heavy_root["limit"] <= 1 &&
+      host.dig("external_quota", "limit") <= 1
   end
 
   def valid_capacity_slot_budget?(budget)
@@ -374,10 +379,11 @@ module BatchPlanPreflight
         lane = lanes_by_id[lane_id]
         lane_id if lane && effective_lane_host_id(lane, capacity) == host_id
       end
-      worker_total = host.dig("worker", "occupied") + lifecycle_lanes.length
-      quota_total = host.dig("external_quota", "occupied") + lifecycle_lanes.count do |lane_id|
+      quota_lifecycle_lanes = lifecycle_lanes.select do |lane_id|
         lanes_by_id.fetch(lane_id)["uses_external_quota"] == true
       end
+      worker_total = host.dig("worker", "occupied") + lifecycle_lanes.length
+      quota_total = host.dig("external_quota", "occupied") + quota_lifecycle_lanes.length
       violations = []
       if worker_total > host.dig("worker", "limit")
         violations << violation(
@@ -392,7 +398,7 @@ module BatchPlanPreflight
           "host-external-quota-overcommitted",
           "$.host_capacity.hosts",
           "Host #{host_id} has more occupied external-quota slots than its declared budget.",
-          lane_ids: lifecycle_lanes.sort
+          lane_ids: quota_lifecycle_lanes.sort
         )
       end
       violations

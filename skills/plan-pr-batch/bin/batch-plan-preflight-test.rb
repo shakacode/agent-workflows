@@ -1884,6 +1884,29 @@ class BatchPlanPreflightTest < Minitest::Test
     assert(capacity_violations.all? { |item| item.fetch("lane_ids") == ["quota-active"] })
   end
 
+  def test_external_quota_overcommit_attributes_only_quota_lifecycle_lanes
+    lanes = [
+      lane("ordinary-active", host_id: "m5"),
+      lane("quota-active", host_id: "m5", uses_external_quota: true)
+    ]
+    capacity = capacity_envelope(
+      host_capacity(id: "m5", worker_limit: 2, external_quota_limit: 0)
+    )
+    lifecycle_states = lanes.map do |record|
+      lane_lifecycle_state(lane_id: record.fetch("id"), state: "active")
+    end
+
+    result, _stderr, status = evaluate(
+      input_for(lanes: lanes, lifecycle_states: lifecycle_states, capacity: capacity)
+    )
+
+    refute status.success?
+    quota_violation = result.fetch("violations").find do |item|
+      item.fetch("code") == "host-external-quota-overcommitted"
+    end
+    assert_equal ["quota-active"], quota_violation.fetch("lane_ids")
+  end
+
   def test_capacity_envelope_and_lane_host_assignment_fail_closed
     valid = capacity_envelope(host_capacity)
     cases = {
@@ -1921,6 +1944,46 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.dig("launch", "eligible_lane_ids")
   end
 
+  def test_explicit_fallback_source_rejects_arbitrary_capacity_limits
+    cases = {
+      "all limits" => host_capacity(
+        source: "fallback",
+        worker_limit: 99,
+        heavy_root_limit: 99,
+        external_quota_limit: 99
+      ),
+      "worker limit" => host_capacity(source: "fallback", worker_limit: 2),
+      "heavy-root limit" => host_capacity(source: "fallback", heavy_root_limit: 2),
+      "external-quota limit" => host_capacity(source: "fallback", external_quota_limit: 2)
+    }
+
+    cases.each do |label, host|
+      result, _stderr, status = evaluate(input_for(capacity: capacity_envelope(host)))
+
+      refute status.success?, label
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "host-capacity-envelope-invalid", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+  end
+
+  def test_explicit_fallback_source_accepts_occupied_slots_within_conservative_limits
+    capacity = capacity_envelope(
+      host_capacity(
+        source: "fallback",
+        worker_occupied: 1,
+        external_quota_occupied: 1
+      )
+    )
+
+    result, stderr, status = evaluate(input_for(capacity: capacity))
+
+    assert status.success?, stderr
+    assert_empty result.dig("launch", "eligible_lane_ids")
+    assert_equal ["lane-a"], result.dig("launch", "held_lane_ids")
+    assert_equal "worker-budget-full", result.dig("launch", "held_reasons", "lane-a")
+  end
+
   def test_missing_capacity_uses_documented_single_slot_fallback
     lanes = [lane("lane-b"), lane("lane-a")]
     input = input_for(lanes: lanes)
@@ -1932,6 +1995,31 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
     assert_equal ["lane-b"], result.dig("launch", "held_lane_ids")
     assert_equal "fallback", result.dig("capacity", "hosts", 0, "source")
+  end
+
+  def test_missing_capacity_infers_one_fallback_host_only_for_compatible_lane_assignments
+    inferred_lanes = [lane("lane-b", host_id: nil), lane("lane-a", host_id: nil)]
+    inferred_input = input_for(lanes: inferred_lanes)
+    inferred_input.delete("host_capacity")
+
+    result, stderr, status = evaluate(inferred_input)
+
+    assert status.success?, stderr
+    assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+    assert_equal ["lane-b"], result.dig("launch", "held_lane_ids")
+    assert_equal "generic-fallback", result.dig("capacity", "hosts", 0, "id")
+
+    incompatible_lanes = [lane("lane-a", host_id: "m1"), lane("lane-b", host_id: "m5")]
+    incompatible_input = input_for(lanes: incompatible_lanes)
+    incompatible_input.delete("host_capacity")
+
+    result, _stderr, status = evaluate(incompatible_input)
+
+    refute status.success?
+    assert_equal 2, result.fetch("violations").count do |item|
+      item.fetch("code") == "lane-host-capacity-unknown"
+    end
+    assert_empty result.dig("launch", "eligible_lane_ids")
   end
 
   def test_unknown_external_api_support_blocks_implementation_but_allows_investigation
