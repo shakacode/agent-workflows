@@ -163,7 +163,7 @@ class LintCommandTest < Minitest::Test
     assert_includes workflow, "persist-credentials: false"
     assert_includes workflow, "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
     assert_includes workflow, "ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b"
-    assert_includes workflow, "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"
+    assert_includes workflow, "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020"
     assert_includes workflow, "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
   end
 
