@@ -721,7 +721,7 @@ module AgentWorkflowsDeliveryState
         resolved = File.expand_path(File.readlink(path), File.dirname(path))
         allowed = [metadata["source"], source].compact.map { |root| File.expand_path(File.join(root, "skills", name)) }
         (allowed.include?(resolved) ? removable : blocking) << path
-      elsif fingerprint_owned || matches_directory_snapshot?(path, name_snapshot, name)
+      elsif fingerprint_owned || (name_snapshot && matches_directory_snapshot?(path, name_snapshot, name))
         removable << path
       else
         blocking << path
