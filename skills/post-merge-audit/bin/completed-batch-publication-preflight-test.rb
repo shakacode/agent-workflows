@@ -972,6 +972,20 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.valid_receipt?(result)
   end
 
+  def test_direct_url_and_target_lane_uses_expected_target_as_canonical_across_repository_case
+    input = issue_to_result_pr_input(raw_target: "pr:10299")
+    expected_target = input.fetch("expected_targets").first
+    expected_target["repo"] = "ShakaCode/HiChee"
+    input.dig("coordination_status", "batches", 0)["repo"] = expected_target.fetch("repo")
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal [expected_target], result.fetch("targets")
+    assert_equal expected_target, result.dig("snapshot", "coordination", "lanes", 0, "target")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+  end
+
   def test_typed_issue_target_projects_deterministically_to_expected_result_pr
     input = issue_to_result_pr_input(raw_target: "issue:9521")
     verifier = ->(source:, target:) { issue_projection_proof(source:, target:) }
@@ -1303,6 +1317,25 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       result = assess_input(input)
 
       assert result.fetch("eligible"), "#{batch_repo.inspect}: #{result.fetch('blockers').join(', ')}"
+    end
+  end
+
+  def test_url_only_lane_uses_expected_target_as_canonical_across_repository_case
+    [nil, "acme/legacy-batch-repo"].each do |batch_repo|
+      input = issue_to_result_pr_input(raw_target: "pr:10299")
+      expected_target = input.fetch("expected_targets").first
+      expected_target["repo"] = "ShakaCode/HiChee"
+      lane = input.dig("coordination_status", "batches", 0, "lanes", 0)
+      lane.delete("targets")
+      batch = input.dig("coordination_status", "batches", 0)
+      batch_repo ? batch["repo"] = batch_repo : batch.delete("repo")
+
+      result = assess_input(input)
+
+      assert result.fetch("eligible"), "#{batch_repo.inspect}: #{result.fetch('blockers').join(', ')}"
+      assert_equal [expected_target], result.fetch("targets")
+      assert_equal expected_target, result.dig("snapshot", "coordination", "lanes", 0, "target")
+      assert CompletedBatchPublicationPreflight.valid_receipt?(result)
     end
   end
 

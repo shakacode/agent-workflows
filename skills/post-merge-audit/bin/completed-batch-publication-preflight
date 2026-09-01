@@ -521,7 +521,9 @@ module CompletedBatchPublicationPreflight
     return [] if url_targets.length > 1
 
     unless lane.key?("targets")
-      return url_targets.map { |target| { "target" => target, "target_projection" => nil } }
+      target = url_targets.first
+      canonical_target = target && expected_targets.find { |candidate| target_key(candidate) == target_key(target) }
+      return canonical_target ? [{ "target" => canonical_target, "target_projection" => nil }] : []
     end
 
     raw_targets = lane["targets"]
@@ -558,7 +560,7 @@ module CompletedBatchPublicationPreflight
       target_key(candidate) == target_key(target) && candidate["number"] == parsed.fetch("number") &&
         (!parsed["type"] || parsed["type"] == target["type"])
     end
-    return [{ "target" => target, "target_projection" => nil }] if direct_target
+    return [{ "target" => direct_target, "target_projection" => nil }] if direct_target
     return [] if parsed["type"] && parsed["type"] != "issue"
 
     source = validated_target(
