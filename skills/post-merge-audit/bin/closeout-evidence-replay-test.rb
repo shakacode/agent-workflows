@@ -219,6 +219,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "https: example.test?run=1;",
       "https: example.test#run;",
       "https: //available",
+      "https: enabled; //host/path",
       "HTTPS: ✅//available",
       "https: enabled //host/path",
       "https: enabled example.test:443",
@@ -241,7 +242,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_hosted_v1_accepts_https_as_a_prose_label
     [
       "HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced", "HTTPS: TLS 1.3",
-      "HTTPS: TLSv1.3", "HTTPS: v1.2.3 released", "HTTPS: v1.2.3?build=5",
+      "HTTPS: TLSv1.3", "HTTPS: (TLS 1.3)", "HTTPS: v1.2.3 released", "HTTPS: v1.2.3?build=5",
       "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active"
     ].each do |label|
       evidence = "#{label}; https://evidence.example.test/sign-in-abc123"
@@ -924,7 +925,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_v2_accepts_https_prose_labels_beside_durable_urls
     [
       "HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced", "HTTPS: TLS 1.3",
-      "HTTPS: TLSv1.3", "HTTPS: v1.2.3 released", "HTTPS: v1.2.3?build=5",
+      "HTTPS: TLSv1.3", "HTTPS: (TLS 1.3)", "HTTPS: v1.2.3 released", "HTTPS: v1.2.3?build=5",
       "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active"
     ].each do |label|
       qa = run_replay(
@@ -950,6 +951,16 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "SATISFIED", unpunctuated.fetch("verdict")
     assert_empty unpunctuated.fetch("missing")
+
+    malformed_continuation = run_replay(
+      v2_marker(
+        "visual_evidence" =>
+          "durable: before HTTPS: enabled; //host/path after https://github.com/example/repo/pull/123#visual"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", malformed_continuation.fetch("verdict")
+    assert_includes malformed_continuation.fetch("missing"), "visual_evidence.url"
   end
 
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts

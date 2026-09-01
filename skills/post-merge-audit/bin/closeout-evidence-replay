@@ -53,6 +53,9 @@ module CloseoutEvidenceReplay
   # punctuation-bounded or multi-token and non-authority-shaped so malformed HTTPS fails closed.
   HTTPS_PROSE_LABEL_STATUSES = %w[available disabled enabled enforced failed ok only optional passed required supported].freeze
   HTTPS_PROSE_LABEL_STATUS_PATTERN = HTTPS_PROSE_LABEL_STATUSES.map { |status| Regexp.escape(status) }.join("|")
+  HTTPS_PROSE_LABEL_RECOGNIZED_STATUS = /
+    \A(?:[1-5]\d{2}\s+)?(?:#{HTTPS_PROSE_LABEL_STATUS_PATTERN})(?=\s|[,;]|\.(?:\s|\z)|\z)
+  /ix
   HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*/i
   # Keep performance-only URL stripping aligned with semicolon-delimited evidence fields without
   # truncating field-like semicolon parameters in visual or interaction artifact URLs.
@@ -743,9 +746,7 @@ module CloseoutEvidenceReplay
     label = raw_label.sub(/\A[^\p{Alnum}]+/u, "")
     return if label.empty?
 
-    recognized_status = label.match?(
-      /\A(?:[1-5]\d{2}\s+)?(?:#{HTTPS_PROSE_LABEL_STATUS_PATTERN})(?=\s|[,;]|\.(?:\s|\z)|\z)/i
-    )
+    recognized_status = label.match?(HTTPS_PROSE_LABEL_RECOGNIZED_STATUS)
 
     punctuation_bounded = label.match?(/[;,]|\.(?=\s|\z)/)
     prose_label = label.split(/[;,]|\.(?=\s|\z)/, 2).first.strip
@@ -756,11 +757,17 @@ module CloseoutEvidenceReplay
     return if authority_shaped_https_label?(prose_label)
     return if text_tokens(prose_label).length < 2 && !punctuation_bounded && !recognized_status
 
+    continuation = label[prose_label.length..].to_s.sub(/\A(?:[;,]|\.(?=\s|\z))\s*/, "")
+    return if continuation.match?(%r{[/\\]})
+    return if !continuation.empty? && authority_shaped_https_label?(continuation)
+
     prose_label
   end
 
   def authority_shaped_https_label?(label)
     label.split(/\s+/).any? do |token|
+      token = token[1..] if token.start_with?("(", "[", "{")
+      token = token[...-1] if token.end_with?(")", "]", "}")
       version_token = token.split(/[?#]/, 2).first
       next false if version_token.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
       next false if version_token.match?(/\A\d{1,2}(?:\.\d{1,2}){1,2}\z/)
