@@ -26,8 +26,8 @@ reproduction explains the failure.
    is sufficient to proceed as a candidate deterministic/parity case. If the
    failure identity or hosted run history cannot be retrieved or verified,
    write `UNKNOWN` and stop before reproduction. If the same commit passes and
-   fails across hosted runs, stop this workflow and hand off to
-   `fix-flaky-tests` before parity reproduction; that workflow owns
+   fails across hosted runs, stop this workflow and use `fix-flaky-tests`
+   before parity reproduction; that workflow owns
    intermittency regardless of local results. Do not produce an Outcomes
    classification for that handoff.
 4. Confirm the local-green evidence: command or workflow path used, head SHA,
@@ -95,8 +95,8 @@ Classify the result as one of:
 - `REPRODUCED_SAME`: parity run matches the hosted failure signature.
 - `REPRODUCED_DIFFERENT`: parity run fails, but not the same way.
 - `NOT_REPRODUCED`: parity run passes while hosted CI fails. It records a
-  passing parity run, not exoneration; if hosted history on that commit is
-  intermittent, use `fix-flaky-tests`.
+  passing parity run, not exoneration; if hosted history becomes intermittent
+  during reproduction, use `fix-flaky-tests`.
 - `BLOCKED`: required logs, runner image, secrets, services, or permissions are
   missing.
 
