@@ -743,6 +743,19 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_writing_style_accepts_the_asd_ste100_preset
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("writing_style" => "asd-ste100"))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
   def test_writing_style_rejects_a_missing_repository_markdown_file
     with_repo do |root|
       write_valid_binstub_contract(root)
