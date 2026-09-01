@@ -429,10 +429,10 @@ record it and proceed to consolidated triage instead of parking in
   them to `skills/pr-batch/bin/pr-ci-readiness` with `--requested-hosted-run` so
   readiness waits for the explicitly requested current-head hosted runs only; in
   repos with no usable required checks, those requested runs gate readiness
-  instead of the full advisory check list. Exact-head non-required checks from
-  GitHub Actions, Dependabot, and external providers remain recorded as
-  informational rows, so approval-held or otherwise unselected workflows stay
-  visible without becoming gates. The receipt records every successfully
+  instead of the full advisory check list. Once any hosted run is explicitly
+  requested, all exact-head non-required checks from GitHub Actions, Dependabot,
+  and external providers remain recorded as informational rows—including failing
+  and pending unselected checks—without becoming gates. The receipt records every successfully
   completed selected run with its exact head SHA so merge assurance can verify
   the non-gating scopes came from this mode. A
   repository that relies on a hosted Markdown formatter or linter should make

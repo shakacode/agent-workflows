@@ -3286,7 +3286,7 @@ class PrCiReadinessCliTest < Minitest::Test
       out, status = run_script(
         env,
         "123", "--repo", "owner/repo",
-        "--requested-hosted-run", "42",
+        "--requested-hosted-run", "00042",
         "--requested-hosted-run", "https://github.com/owner/repo/actions/runs/42"
       )
       assert status.success?, out

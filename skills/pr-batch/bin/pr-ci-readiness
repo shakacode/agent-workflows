@@ -1244,7 +1244,12 @@ module PrCiReadiness
       run_id = value[%r{/actions/runs/(\d+)}, 1] || value[/\A\d+\z/]
       raise Error, "requested hosted run must be a run id or Actions run URL (got: '#{input}')" if run_id.nil?
 
-      run_id
+      canonical_run_id = Integer(run_id, 10)
+      if canonical_run_id <= 0
+        raise Error, "requested hosted run must be a positive run id (got: '#{input}')"
+      end
+
+      canonical_run_id.to_s
     end
 
     def classify_requested_run(summary, repo, run_id, run, expected_head_sha)

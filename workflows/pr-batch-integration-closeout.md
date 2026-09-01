@@ -1299,9 +1299,10 @@ zero required status-check contexts, so the helper falls back to the full list;
 if required checks are later configured per #3844 option (a), it uses them.)
 When hosted CI was explicitly requested for the current head, pass each requested
 Actions run id or URL as `--requested-hosted-run <run-id-or-url>`; the helper
-then blocks only those requested current-head hosted runs. Exact-head
-non-required GitHub Actions, Dependabot, and external-provider checks remain
-advisory and appear in the v2 receipt as informational rows. When no usable
+then blocks only those requested current-head hosted runs. Once any hosted run
+is explicitly requested, all exact-head non-required GitHub Actions, Dependabot,
+and external-provider checks remain advisory—including failing and pending
+unselected checks—and appear in the v2 receipt as informational rows. When no usable
 required checks exist, the requested runs become the gate instead of the full
 advisory list, and their completed records carry the exact head SHA that merge
 assurance requires before accepting any non-gating scope. A repository that
