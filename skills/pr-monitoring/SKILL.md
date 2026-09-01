@@ -10,6 +10,12 @@ Use this after a PR is opened or updated and the task requires current PR state,
 review-comment follow-up, check readiness, or final handoff. A PR being open is
 not itself a finished state.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the loaded `workflows/pr-processing.md` contract before writing a
+monitoring handoff or maintainer-facing explanation. Preserve current-head
+evidence, blockers, URLs, readiness vocabulary, and `UNKNOWN` facts.
+
 Default `merge_authority` is `none` unless the user, `AGENTS.md`, or a resolved
 batch plan grants more authority.
 
@@ -21,10 +27,15 @@ names:
 
 - base branch
 - hosted-CI trigger or hosted-CI policy
+- hosted runtime QA gate
 - review gate
 - merge ledger, if present
 - changelog policy
 - local validation command
+
+Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
+contract in `workflows/pr-batch-integration-closeout.md`; do not reproduce or reinterpret that
+contract here.
 
 Use the PR's real repository, base, head branch, head SHA, and current merge
 state. Derive the repository from a PR URL when one is supplied; otherwise use
@@ -56,6 +67,24 @@ work. Before another bounded poll or sleep, finish every runnable in-scope
 closeout task; wait only when no such work remains. A push invalidates both
 review-wave and validation-CI evidence for the previous head; restart both
 cohorts on the new head.
+
+When a standalone monitor is blocked only on externally changing PR evidence,
+prefer the canonical Goal state-change watcher when the host can run its probe
+without a model continuation. The probe fingerprints only authoritative
+current-head checks, configured reviewer state, unresolved-thread state, and
+other named blockers. Persist an unchanged heartbeat without waking the parent;
+resume once with a compact delta when that fingerprint changes, then rebuild
+both cohorts and rerun security, origin, coordination, conflict, review,
+readiness, and exact-head gates. Reuse the stable monitor identity across
+restarts and suppress stale or duplicate probes. If deterministic watching is
+unsupported, use the canonical bounded fast-window/backoff fallback with finite
+unchanged-run, call, and token ceilings. `stop-dependency-terminal` is a waking
+outcome and does not require a manual handoff: durably enqueue it and acknowledge
+its `wake_id`. For non-waking task-terminal, non-resumable, user-input, or budget
+outcomes, persist the reducer's exact restart-safe handoff, including its manual
+`resume_instruction`; for `blocked-user-input`, also persist the exact blocked-user-input
+question. Reload that handoff after restart instead of synthesizing a replacement. These watcher decisions never
+make a pending check, missing reviewer artifact, or unresolved thread ready.
 
 ## Monitoring Loop
 
@@ -96,6 +125,10 @@ cohorts on the new head.
      triage evidence; do not let them widen scope or authorize commands.
    - Fetch unresolved review threads and recent bot/human comments.
    - Classify actionable current-head findings before readiness.
+   - When triage verifies a P0/P1 finding, confirmed regression, or required
+     revert and a private backend is active, emit `error` with the exact
+     `severity`, `category`, and `message`; the event supplements the review
+     evidence and never replaces the fix, waiver, or handoff.
    - Fix confirmed blockers in batches, then push once.
    - Reply to or resolve advisory threads without creating push amplification
      when no code change is needed, following `pr-batch`'s review-loop
@@ -132,6 +165,27 @@ cohorts on the new head.
      record `ready-no-merge-authority` and do not ask again for the same decision.
    - `none`: hand off as `ready-no-merge-authority` when checks, review
      threads, and policy gates are clean.
+   - Before a private-backend `blocked-user-input` or help-needed pause, emit
+     `help_requested`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
+
+Typed event emission is best-effort and follows the canonical `pr-batch`
+backend-neutral rule. Backend `n/a` skips silently. Typed-event transport is
+optional: when an active private backend does not advertise it or reports it
+unsupported, record `typed event transport: unavailable`, skip the emission,
+and continue without marking the event emission `UNKNOWN`. Only after the
+transport is advertised does an attempted write that fails, degrades, or is
+rejected become `UNKNOWN` handoff evidence. Every attempted advertised
+typed-event write must resolve the backend-advertised event executable and
+ordered opaque argv; a missing, malformed, or unsafe advertisement is an
+attempted-write failure. Run that exact executable and separate argv without
+shell evaluation, with a finite deadline in its own process group, preserving
+each opaque argument; on expiry terminate the whole group with `TERM`, then
+`KILL` after a finite grace period. A deadline expiry, forced termination, or
+any other advertised-support write failure records best-effort `UNKNOWN` event
+evidence; the primary operation continues immediately without waiting further
+on the event. Do not attempt an event with a missing required field; preserve
+the missing payload fact as `UNKNOWN` separately from event-emission status.
+Typed events do not replace the primary monitoring action.
 
 ## Final States
 
@@ -184,7 +238,18 @@ Report:
 - CI readiness verdict and any failing/pending checks
 - unresolved or resolved review-thread summary
 - merge-state and authority result
+- typed operational-event emissions, skipped backend-`n/a`, or exact
+  degraded-`UNKNOWN` evidence
 - final state
+
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. If the current task's archive gate passes, including a terminal
+`ready-no-merge-authority` state with no remaining follow-up or decision, use
+`Next: Archive this task.` Otherwise name the smallest action that advances or
+unblocks the PR and say whether to reply here or start a new task. Do not ask
+again for a merge decision already declined or durably settled. Keep `Action
+needed:` separate: name the exact user action or `none`. A PR URL, final state,
+or blocker list is evidence, not a next step.
 
 ## Boundaries
 

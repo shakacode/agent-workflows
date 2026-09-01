@@ -17,27 +17,79 @@ pause procedure, see
 for cancellation, see
 [Cancelling Or Stopping A Batch](../workflows/pr-processing.md#cancelling-or-stopping-a-batch).
 
-For a verified Codex GPT-5.6 host, the recommended exact routing profile is:
+## Planning-Pass Route Assessment
 
-- Multi-lane coordinator: Sol/xhigh
+Assess the current `$plan-pr-batch` planning pass separately from the future
+batch coordinator, worker, and checker routes. Named routes are advisory; use
+the provider-neutral route when the active host or roster is not verified.
+
+| Classification | Provider-neutral | Codex GPT-5.6 | Claude profile |
+| --- | --- | --- | --- |
+| `affirmatively-simple` | `balanced/medium` | `Terra/medium` | `Sonnet 5/medium` |
+| `routine-multi-lane` | `balanced/high` | `Terra/high` | `Sonnet 5/high` |
+| `default-or-uncertain-single-target` | `strongest/high` | `Sol/high` | `Opus 5/high` |
+| `pinned-high-risk-or-escalation` | `strongest/xhigh` | `Sol/xhigh` | `Opus 5/xhigh` |
+
+Use `affirmatively-simple` only after verified scope establishes explicit
+acceptance criteria, a known bounded file surface, no unresolved design or
+dependency question, no security, authorization, concurrency, persistence,
+lifecycle, routing, release, public-contract, or other high-consequence
+boundary, easy failure detection and rollback, and a strong deterministic
+verification oracle. Any missing or disputed simplicity criterion keeps a
+single target in `default-or-uncertain-single-target`; a present or disputed
+pinned high-risk trigger uses `pinned-high-risk-or-escalation`. Multiple
+verified routine targets use `routine-multi-lane` unless a high-risk trigger
+applies. This classification describes only the current planning pass and does
+not select the future batch coordinator.
+
+| Observed comparison | Disposition | Maximum routed reviews | Compare routes? | Restart advice? |
+| --- | --- | --- | --- | --- |
+| `stronger-current` | `future-cost-advisory` | `0` | `yes` | `no` |
+| `weaker-current-host-supported` | `bounded-independent-review` | `1` | `yes` | `no` |
+| `any-observed-field-UNKNOWN` | `non-blocking-advisory` | `0` | `no` | `no` |
+
+When the fully observed current route is stronger than recommended, report the
+cheaper recommendation for a future planning run only. Do not spawn another
+planner merely to save cost after a stronger route is already active.
+When it is materially weaker, the host may run at most one bounded independent
+plan review at the recommended route, but only when explicit route-specific
+execution is supported and the review can finish without user interaction.
+Keep the reviewer distinct from the plan maker and disclose the review route.
+Unavailable, inherited, substituted, or unverifiable route-specific execution
+gets a non-blocking advisory instead; never require a restart.
+Record observed host, model, and effort field by field only from host-exposed
+runtime evidence. If any field needed for comparison is `UNKNOWN`, make no
+stronger/weaker comparison, launch no route-correct review, and give no restart
+advice. Requested preferences, prompt text, and model self-report are not
+observations.
+
+For a verified Codex GPT-5.6 host, the recommended future execution profile is:
+
+- Default single-target future coordinator: Sol/high
+- Affirmatively simple single-target future coordinator: Terra/high
+- Routine multi-lane coordinator: balanced/high (`Terra/high` only when host-verified)
 - Simple, positively classified worker: Terra/high
 - Unknown or uncertain worker: Sol/high
-- High-risk or escalated work: Sol/xhigh
+- Sol/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
 - Independent adversarial QA: Sol/xhigh
 - Routine deterministic QA: Sol/high
 
-For a verified Claude host, the provisional recommended exact routing profile
-(`claude-profile v0`) is:
+For a verified Claude host, the provisional recommended future execution profile
+(`claude-profile v1`) is:
 
-- Multi-lane coordinator: Opus 4.8/xhigh
+- Default single-target future coordinator: Opus 5/high
+- Affirmatively simple single-target future coordinator: Sonnet 5/high
+- Routine multi-lane coordinator: balanced/high (`Sonnet 5/high` only when host-verified)
 - Simple, positively classified worker: Sonnet 5/high
-- Unknown or uncertain worker: Opus 4.8/xhigh
-- High-risk or escalated work: Opus 4.8/xhigh
-- Independent adversarial QA: Opus 4.8/xhigh
-- Routine deterministic QA: Opus 4.8/high
+- Unknown or uncertain worker: Opus 5/high
+- Opus 5/xhigh exception: pinned high-risk trigger, bounded plan challenge, repeated credible failures, or evidence-backed `MODEL_ESCALATION_REQUEST`
+- Independent adversarial QA: Opus 5/xhigh
+- Routine deterministic QA: Opus 5/high
 
 Other runtimes continue to use the portable `fastest-low-cost`, `balanced`, and
-`strongest` classes until dispatch binds an exact supported pair.
+`strongest` classes as advisory preferences. Dispatch may bind an exact
+supported pair, the closest available route, or the runtime default; record the
+requested and observed route honestly without blocking on the binding alone.
 
 ## Skill Roles
 
@@ -50,6 +102,7 @@ Other runtimes continue to use the portable `fastest-low-cost`, `balanced`, and
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
 | `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A Batch Plan with separate coordinator and staged worker model/effort routes plus a target-specific ready `$pr-batch` prompt. |
 | `$pr-batch`          | One or more exact targets are trusted and ready to run or convert into a `/goal` prompt.                    | A single-target lane, launch plan, worker split, or final `/goal` prompt.              |
+| `$close-batch`       | A stale batch task needs live recovery, any required walkthrough or decision, and archive-safe closeout.   | Resumed closeout, one interactive attention route when needed, or a canonical archive verdict. |
 | `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | An exact-diff, one-change-at-a-time explanation with questions between each change.   |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
@@ -143,7 +196,8 @@ live, blocked, and reserved lanes. If any of those inputs cannot be verified,
 phase 2 stops instead of inventing a group count. The value is never committed in
 this repo or hardcoded in the skill. Each generated implementation group still
 obeys the host-aware per-wave item caps described below; capacity slots do not
-override Codex, Claude, generic, file-collision, or `UNKNOWN` path limits.
+override Codex, Claude, or generic limits, consequence-aware care for
+shared/risky surfaces, or `UNKNOWN` path discovery limits.
 
 If live capacity profiles or enabled inbox config are unavailable, `$triage` may
 still produce the phase-1 inventory and graph, but phase 2 must stop with a
@@ -157,56 +211,117 @@ omit the queue summary and note that queue state is unavailable.
    start with `$spec` to produce requirements, design, and executable tasks.
 2. If the target scope is a filter, label, milestone, pasted list, or ambiguous bare number for implementation planning, start with `$plan-pr-batch`.
 3. If exact candidate issues are already known and may be hypothetical, AI/code-analysis-only, over-scoped, or better handled with a no-PR evidence comment, start with `$evaluate-issue` directly.
-4. Record `Launch assurance` separately from every `Worker model/effort route`:
-   exact initiating coordinator model/effort, host/runtime or explicit
-   operator-selected binding source, and exact independent-checker model/effort
-   with qualifying binding evidence. Record it before reading targets, planning,
-   or dispatch. When operator policy requires an exact parent or checker, prompt
-   text, model self-report, installed rosters, and a dispatch-resolved class do
-   not qualify; a missing, mismatched, or `UNKNOWN` binding stops for a correctly
-   bound parent relaunch or checker reservation. Without that policy, preserve
-   unavailable binding as `UNKNOWN` and continue portable class-based planning.
-   Reverify checker freshness and independence when its instance starts.
+4. Record the current planning-pass assessment and future coordinator, worker,
+   and checker model/effort preferences separately.
+   Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+   Checker independence and evidence quality remain mandatory; a preferred checker model or effort is advisory and its unavailability alone does not block an otherwise qualifying verdict.
+   Named models, efforts, and route classes are recommendations only; an independent review, audit, readiness, or checker verdict qualifies by role separation, scope, current-head evidence, and evidence quality, not by route.
+   A host-observed model, effort, or route mismatch, unavailability, or `UNKNOWN` never alone disqualifies an otherwise independent, evidence-backed review, audit, readiness, or checker verdict.
+   Named coordinator and worker models, efforts, and route classes are recommendations; no named route is a prerequisite for planning, launch, coordination, execution, escalation, or fallback.
+   When a preferred route is unavailable, different, inherited, or `UNKNOWN`, use the closest available route or runtime default, record requested and host-observed fields honestly, and continue unless an independent risk, scope, evidence, or authority gate blocks.
+   Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
+   Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
+   Classify the current planning pass with the Planning-Pass Route Assessment
+   above. Treat one issue or PR as a single target even when `$pr-batch` will
+   use bounded implementation, review, or QA subagents. Multiple verified
+   routine targets use the routine multi-lane route unless an exception applies.
+   A straightforward exact target may go directly to `$pr-batch` when no
+   selection, shaping, dependency, or planning decision remains.
+   A fully observed stronger current route produces future-cost advice only. A
+   fully observed weaker route may receive at most one independent bounded
+   review only when the host supports explicit route-specific execution. Any
+   observed `UNKNOWN` field prevents comparison and review. Never recommend a
+   restart for a planning-route mismatch.
    Before worker launch, resolve `PR_BATCH_SKILL_DIR` through the explicit
    env-var / loaded-skill / repo-local pinned-copy chain, then use
    `"${PR_BATCH_SKILL_DIR}/bin/dispatcher-capability-preflight"`: a
-   JSON-in/JSON-out selector that requires binding and attestation, records the
-   requested/actual route and dispatcher, and chooses only the requested tuple
-   or first explicitly authorized ordered fallback. It does not launch workers
-   or mutate coordination. `selected` resumes Goal mode; `blocked-user-input`
-   emits one durable `dispatch-decision-request v1` and stops.
+   JSON-in/JSON-out selector that records the route preference and enforces
+   dispatcher authority. It does not launch workers or mutate coordination.
+   `selected` resumes Goal mode; `blocked-user-input` emits one durable
+   `dispatch-decision-request v1` and stops.
    Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker.
-   Binding, attestation, and prospective `instance_id` evidence whose trimmed case-insensitive value is `UNKNOWN` is unusable and must not select or resume Goal mode. Replay identity is `lane_id`, route, dispatcher, `instance_id`, and launch token; `candidate_index` is discovery metadata rebuilt from the current candidate order. Replacement fencing returns `blocked-replacement-fencing` with required action `stop-and-reconcile-prior-instance`, preserves the active assignment and lane state, and emits no `dispatch-decision-request`; `blocked-user-input` is reserved for missing authorized route/dispatcher choice.
-   Persist a selected assignment as lifecycle `launch-pending` with its idempotency launch token before worker launch; persist a request plus validated resolution, lifecycle, and replacement-proof consumption before resume or launch. A decision request includes canonical viable fallback choices.
-   Accepted binding evidence is `operator-selected` or `dispatcher-bound`; accepted attestation evidence is `instance-bound` or `dispatcher-attested`; `UNKNOWN` or negative evidence fails closed. A replacement proof is single-use and identity-bound to exact prior and replacement tuples, and both proof lane ids must equal the current input `lane_id`; cross-lane proof fences. A matching `launch-pending` assignment reissues the same launch instruction and token; only a qualifying identity-bound `launch-confirmation v2` transitions it to `confirmed-active`, which returns `replay-already-active` with no launch instruction. A qualifying version 2 confirmation requires dispatcher-bound and instance-bound host-observed runtime evidence: exact actual model and effort, explicit non-inherited routing, a durable `evidence_ref`, and an RSA-SHA256 signature over the canonical assignment-bound observation payload. The signed payload is canonical JSON with recursively sorted object keys and fields `type: dispatcher-launch-observation`, `version: 1`, `confirmation_id`, `key_id`, `lane_id`, `route`, `dispatcher`, `instance_id`, `launch_token`, `actual_model`, `actual_effort`, `binding_source`, `attestation`, `observed_at`, `routing_mode`, `inherited`, and `evidence_ref`; `signature` is its strict Base64-encoded RSA-SHA256 signature. The helper accepts dispatcher trust only from the fixed authenticated installation/repository file `<installation-root>/.agents/dispatcher-launch-trust.json`; caller input and environment cannot select or replace it. The version 1 JSON record has type `agent-workflow-dispatcher-trust-anchor` and namespaced fields `agent_workflow_dispatcher_trusted_key_id` and `agent_workflow_dispatcher_trusted_public_key_pem`. Resolve `<installation-root>` from the real helper path; require the root, `.agents` directory, and trust file to be owned by the helper owner and not group- or world-writable, require the directory and file to be real non-symlink paths of the expected type, and require a public-only RSA key; missing, unsafe, mismatched, malformed, or replaced trust that does not verify the pending observation fails closed. Version 1 confirmations are history-only and cannot activate a launch-pending assignment. During migration, preserve version 1 records only as historical state; never infer or synthesize version 2 evidence from them, and leave launch pending until a fresh signed version 2 host observation verifies. Persisted request history, choices, revisions, assignments, proof, confirmation, and `decision_resolution` are deep-validated; a valid resolution replays without transient `operator_decision`, while malformed nested state returns structured `invalid-input`. Every self-contained or autoload-failure execution path loads persisted dispatch state before preflight and persists its output before any Goal-mode resume or launch.
+   Replay identity is `lane_id`, dispatcher, `instance_id`, and launch token; route preference, observed host fields, and `candidate_index` are metadata and never trigger replacement.
+   Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active.
+   Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
+   Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
+   A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
 5. Verify every candidate through GitHub. Use `UNKNOWN` for facts that cannot be checked.
 6. After `$plan-pr-batch` resolves exact candidates, use `$evaluate-issue` for speculative, AI/code-analysis-only, over-scoped, or unclear items before assigning implementation work.
 7. Shape the batch into independent worker lanes and choose the batch-size
    target before final lane packing. Codex-targeted waves may use up to 10
-   fully independent file-disjoint items, or 8 when verified file-disjoint lanes
+   fully independent items, or 8 when verified independent lanes
    touch shared or risky surfaces. Claude and generic waves use up to 5
-   independent items, or 3 under those same shared/risky conditions. Overlapping
-   or `UNKNOWN` path lanes are sequenced, deferred, or run as serial discovery;
+   independent items, or 3 under those same shared/risky conditions. File
+   overlap is an integration advisory; issue-authored semantic dependencies are
+   the only ordering constraints. Record any non-safety coordination override in
+   the Batch Plan and affected Lane Cards; it cannot alter protected gates.
+   `UNKNOWN` path lanes run as serial discovery;
    never count them as parallel capacity. Propose a smaller first batch when
    live coordination, CI, approval, or quota health is uncertain. For multiple
    concurrent batches, keep this as a per-wave cap and apply the target repo's
    coordination-backend rules before launching.
-   Keep the `Coordinator model/effort` assignment separate from every worker
-   route. Resolve the roster on each actual host, start routine workers on the
+   Keep the coordinator model/effort preference separate from every worker
+   preference. Resolve the roster on each actual host, start routine workers on the
    fastest or balanced pair justified by lane risk and verification, and reserve
-   the strongest pair for evidence-gated escalation. Workers must not inherit
-   the coordinator pair. A small first failure gets a focused correction on the
+   the strongest pair for evidence-gated escalation. Do not silently copy the
+   coordinator pair into a worker's requested preference; if the runtime inherits
+   or defaults to that pair, record it honestly and continue. A small first failure gets a focused correction on the
    initial route; two materially different credible failures, or an earlier
    canonical high-risk trigger, require `MODEL_ESCALATION_REQUEST`. Prefer
    stronger-model plan review followed by implementation on the initial tier.
-   Group lanes by exact model/effort route without combining ownership,
-   dependencies, collision ordering, or wave schedule. When a known host's
+   Group lanes by model/effort preference without combining ownership,
+   issue-authored semantic dependencies, active-reservation coordination, or
+   wave schedule. When a known host's
    roster is unavailable, use portable dispatch-resolved initial and escalation
-   classes, then bind and revalidate exact pairs before dispatch. Keep an
-   unresolved route `UNKNOWN` and the prompt unready. Give lower-capability
-   workers a coordinator-approved execution envelope and require immediate
-   return to the coordinator on contradictory evidence, ambiguity, scope/risk
-   growth, weakened verification, or consequential judgment.
+   classes. Keep an unresolved preference `UNKNOWN`; it never alone blocks the
+   prompt, launch, or readiness. Give every lane whose risk or bounded delegation
+   requires an execution envelope a coordinator-role-approved envelope regardless
+   of route. Necessary in-repository path expansion defaults to allowed when
+   repository evidence shows an added path is reasonably necessary to complete the
+   already-authorized goal or its required validation. Treat owned paths and the
+   execution envelope as coordination and collision controls, not as a
+   user-permission boundary. Before editing, record each added path and reason in
+   the lane envelope when one is present; otherwise use a durable coordinator-owned
+   lane record or Lane Card that the coordinator can read. Every added path not yet
+   reflected in its verified file-touch map must have an active typed
+   `expansion-path-reservation` before edit. When a lane is the sole active editor,
+   the coordinator durably records the reservation, refreshes authoritative
+   file-touch maps, lane lifecycle state, and active-lane claim and collision checks,
+   and reruns `batch-plan-preflight`; the worker continues without user approval or
+   a blocked lifecycle only after the preflight accepts. Before a worker in a multi-editor wave
+   changes an added path, it persists a typed expansion request, marks its durable
+   lane lifecycle blocked, refreshes its heartbeat, emits a Lane Card with the path,
+   reason, and request evidence reference, and pauses at a safe checkpoint. The
+   coordinator processes expansion requests serially, records an active
+   `expansion_path_reservations` entry, refreshes authoritative file-touch maps and
+   lane lifecycle state, and reruns `batch-plan-preflight`. For every multi-editor
+   request, acceptance alone does not authorize resume: the requester must durably
+   transition out of `blocked`, a fresh preflight must accept, and the requester
+   must be absent from `launch.held_lane_ids`; when launch or relaunch is needed,
+   it must also be present in `launch.eligible_lane_ids`. Under
+   maximum-concurrency-one serialization, the current holder must also release the
+   slot before resume. The reservation persists until the verified PR file-touch map
+   contains the path or the request is cancelled, and it is removed once reflected
+   or cancelled. A collision or `UNKNOWN` collision state remains stopped until
+   then. A missing path alone is not material scope growth and must not produce
+   `blocked-user-input`.
+   Directory renames use a distinct `expansion-rename-reservation` v1 record with
+   canonical, distinct `old` and `new` endpoints; only this typed rename form adds
+   ancestor/descendant collision checks, while scalar path reservations remain
+   exact-path collision controls.
+   Necessary additions can include contract or type files, tests or fixtures,
+   offline demo stubs, and build or generated integration surfaces when repository
+   evidence makes them necessary.
+   Contradictory evidence remains an immediate stop. Stop and return control when
+   any of the following applies: the approved goal, accepted behavior, or acceptance
+   criteria changes; the work adds unrelated work; it crosses a repository or trust
+   boundary; it requires a destructive or difficult-to-reverse action; it introduces
+   secrets, permissions, deployments, billing, or other external effects; it
+   requires consequential architecture, performance, compatibility, or product
+   judgment; it materially changes security, privacy, compliance, or release policy;
+   it collides with another active lane and cannot be safely coordinated; it exposes
+   consequential ambiguity; or it weakens verification. An omitted path alone is not
+   such a condition.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
    `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
@@ -214,8 +329,7 @@ omit the queue summary and note that queue state is unavailable.
    `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
    repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
    multiple prompts are produced, `MM-DD HH:MM` from
-   `date +'%m-%d %H:%M'` in the local shell, and a short title with no trailing
-   period.
+   `date +'%m-%d %H:%M'` in the local shell, and a short title.
    `skills/pr-batch/SKILL.md` carries the full fallback derivation rule.
    Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
    `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
@@ -276,7 +390,7 @@ When an already-running batch needs model-route replacement rather than generic
 closeout, keep its existing goal and use the distinct
 [Model-Routing Recovery Prompt](../workflows/pr-processing.md#model-routing-recovery-prompt).
 It stops nonconforming workers with handoff documents, prevents old/new overlap,
-preserves claims and useful changes, binds the initial worker route explicitly,
+preserves claims and useful changes, records the initial worker route preference explicitly,
 and requires `MODEL_ESCALATION_REQUEST` before stronger-model review or replacement.
 
 ## Review And Readiness
@@ -319,7 +433,7 @@ record it and proceed to consolidated triage instead of parking in
 - Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 - Use `$replicate-ci` when local validation is green but hosted CI is red, or
   when a failing hosted check appears to depend on runner/toolchain parity.
-- Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, and explicit `UNKNOWN` entries.
+- Final batch handoffs should include links, validation evidence, last-known CI/review state, blockers, explicit `UNKNOWN` entries, and the exact archive-readiness status line required by [`workflows/pr-processing.md` -> Batch Handoff Format](../workflows/pr-processing.md#batch-handoff-format), either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`. That status line belongs to the batch-level final message only; a lane-level worker handoff does not carry it. For supported Codex evidence, also include the compact `batch-usage-receipt-v1` total or a durable artifact reference; see [Batch Usage Receipt v1](batch-usage-receipt.md). Structured usage `UNKNOWN` is informational and never substitutes for a closeout gate.
 
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
@@ -343,9 +457,9 @@ Unblock Block: when a batch stops non-clean, the last thing before the exact
 is an `Unblock:` block with one numbered entry per blocker in that same union.
 Each entry is tagged `[you]`, `[agent]`, or `[external]` so an operator can tell
 at a glance whether anything is owed from them, names the smallest next action
-as an exact command, paste-ready prompt, URL, or question, and carries a `Help:`
-line offering a different route to clearing the same blocker (waive, rerun,
-reassign, cancel, escalate) or exactly `none — <reason>`. A clean batch omits the
-block; `Conversation status: Ready for archiving.` already says the only
-remaining action is archiving. See
+or wait instruction with the exact command, paste-ready prompt, URL, question,
+exact trigger or clearing condition, and carries a `Help:` line offering a different
+route to clearing the same blocker (waive, rerun, reassign, cancel, escalate)
+or exactly `none — <reason>`. A clean batch omits the block because the
+normalized blocker union is empty. See
 [Unblock Block](../workflows/pr-processing.md#unblock-block).

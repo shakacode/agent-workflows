@@ -24,16 +24,34 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_TERMINAL_DISPOSITION_CLEAN_RULE = "Clean/none permits no records or only fully evidenced terminal records."
   REQUIRED_NON_TERMINAL_DISPOSITION_NON_CLEAN_RULE = "A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state."
   REQUIRED_OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
-  REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits only its verified compact receipt reference, the Unblock Block when the status is not clean, and the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section to a freshly read PR description."
+  REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, the Unblock Block when the status is not clean, and the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
+  REQUIRED_UNBLOCK_FOLLOW_UP_RULE = "Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and emit the [Unblock Block]"
+  REQUIRED_UNBLOCK_RECEIPT_ORDER = "this compact receipt line opens the closing lines: it is followed by the [Unblock Block]"
+  REQUIRED_TERMINAL_NEXT_STEP = "Every final user-visible workflow handoff must include one unambiguous `Next:` instruction."
+  REQUIRED_ALL_MODE_TERMINAL_SCOPE = "This applies to completed-batch, release/range, and coverage catch-up audits."
+  COMPLETED_BATCH_AUDIT_PLACEMENT_RULE = "When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
+  COMPLETED_BATCH_AUDIT_PLACEMENT_FILES = [
+    "skills/post-merge-audit/SKILL.md",
+    "workflows/post-merge-audit.md",
+    "workflows/pr-batch-integration-closeout.md"
+  ].freeze
+  REQUIRED_REPLACEMENT_PRECLOSE_GUARD = "Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation."
+  REQUIRED_REPLACEMENT_CHANGELOG_RULE = "Ordinary authenticated later-target reconciliation applies to an immutable terminal `abandoned` lane; a terminal `superseded` lane may reconcile only for an issue with typed no-PR evidence, while code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation."
+  REPLACEMENT_PRECLOSE_GUARD_FILES = [
+    "skills/pr-batch/SKILL.md",
+    "workflows/pr-processing.md",
+    "skills/post-merge-audit/SKILL.md",
+    "workflows/post-merge-audit.md"
+  ].freeze
   REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION = "Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line."
   REQUIRED_ADVISORY_VERDICT_PROHIBITION = "Advisory auditors must not issue the qualifying clean/ready verdict."
   COMPLETED_BATCH_AUDIT_MARKER_HEADER = "<!-- completed-batch-audit v1"
   REQUIRED_DURABLE_RECEIPT_HEADER = "Completed-batch audit: replay evidence follows."
-  REQUIRED_PR_DESCRIPTION_SUMMARY_RULE = "For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it through a separate freshly-read update, preserves all surrounding text, never duplicates the markers, and never reruns `publish` to retry description sync:"
+  REQUIRED_PR_DESCRIPTION_SUMMARY_RULE = "For a PR anchor, `publish` and `replay` emit this small managed section after comment readback; neither mutates the PR description. The coordinator applies it inside `### Audit receipts` in the canonical `Agent details` disclosure through a separate freshly-read update, preserves all surrounding text, never duplicates the markers, and never reruns `publish` to retry description sync:"
   REQUIRED_PR_DESCRIPTION_SUMMARY_START = "<!-- completed-batch-audit-summary:start -->"
   REQUIRED_PR_DESCRIPTION_SUMMARY_END = "<!-- completed-batch-audit-summary:end -->"
   REQUIRED_COMPACT_RECEIPT_FORMAT = "Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`."
-  REQUIRED_RECEIPT_PUBLISH_ORDER = "Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section in one separately retriable update, and read it back; never rerun `publish` to retry description sync."
+  REQUIRED_RECEIPT_PUBLISH_ORDER = "Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync."
   REQUIRED_RECEIPT_REPLAY_RULE = "Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result."
   REQUIRED_RECEIPT_HELPER_RULE = "Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects."
   REQUIRED_BATCH_IDENTITY_FIELD = "batch_id: <opaque coordination batch id (may contain : or ;)|non-backend: identity; rationale: why no backend applies|not-applicable: rationale|UNKNOWN>"
@@ -45,6 +63,25 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated records with ref, owner, current status, disposition, and evidence; unescaped `;` and `|` are rejected in every record-field value; escaping is not supported; terminal disposition is resolved|accepted-waiver|accepted-deferral|not-applicable; nonterminal action is investigate|fix|await-input|retry|replay|track>"
   OBSOLETE_FOLLOWUPS_DISPOSITIONS_FIELD = "followups_dispositions: <none|one or more ` | `-separated terminal disposition records"
   REQUIRED_STRICT_MARKER_REPLAY_RULE = "Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails."
+  REQUIRED_PUBLICATION_PREFLIGHT = "completed-batch-publication-preflight"
+  REQUIRED_PUBLICATION_SNAPSHOT = "helper-managed `publication_snapshot`"
+  REQUIRED_TERMINAL_PUBLICATION_STATES = "`SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`"
+  REQUIRED_WAIVER_INPUT_RULE = "WAIVED input supplies only the exact same-target `#issuecomment-<id>` URL."
+  REQUIRED_AUTHENTICATED_WAIVER_RULE = "The helper must fetch that comment through authenticated `gh api`; HTTP/API failure or any comment ID, URL, target, exact-head, decision-marker, human author, trusted association, timestamp, or body mismatch blocks completion."
+  REQUIRED_WAIVER_SNAPSHOT_RULE = "The authenticated snapshot binds the exact comment ID/URL, body SHA-256, author/association, timestamps, target, and head."
+  REQUIRED_WAIVER_MARKER_RULE = "The fetched body must contain exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`, `head_sha: <full exact head>`, and `decision: waived`."
+  REQUIRED_WAIVER_PUBLICATION_REPLAY_RULE = "Receipt publication and replay independently re-fetch and compare the bound waiver; a self-consistent preflight digest is not authentication."
+  REQUIRED_RAW_PREFLIGHT_INPUT_BINDING = "The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate terminal facts."
+  REQUIRED_LIVE_PREFLIGHT_REASSESSMENT = "Before publish or replay accepts a complete receipt, it re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status when a backend applies, and re-authenticates any waiver; missing, altered, stale, or mismatched terminal facts block before POST or ready replay."
+  REQUIRED_TRUSTED_RECEIPT_WORKFLOW_CONFIG = "Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay."
+  REQUIRED_TRUSTED_UI_CLASSIFICATION = "Each `qa_evidence` row must carry a coordinator-owned `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's canonical target and publication snapshot; `yes` requires strict visual-evidence v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or v2-contradictory classification blocks."
+  REQUIRED_PUBLIC_FALLBACK_PUBLICATION_BLOCK = "Configured `public claim-comment fallback` is advisory ownership state only; it must not invoke private `agent-coord`, and without a separate authenticated terminal coordination contract it leaves completed-batch publication blocked as `UNKNOWN`."
+  REQUIRED_TYPED_NO_BACKEND_EVIDENCE = "When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks."
+  REQUIRED_TYPED_NO_PR_EVIDENCE = "An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks."
+  REQUIRED_LEGACY_PUBLICATION_REFRESH = "A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness."
+  REQUIRED_ACCEPTED_DEFERRAL_LIFECYCLE = "Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it."
+  REQUIRED_ACCEPTED_DEFERRAL_GUARD = "This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed."
+  REQUIRED_ACCEPTED_DEFERRAL_DECISION = "The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number."
   REQUIRED_RECORD_DELIMITER_RULE = "Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported."
   REQUIRED_RECORD_REF_CANONICALIZATION_RULE = "Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union."
   REQUIRED_CANONICAL_DISPLAY_SAFETY_RULE = "After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union."
@@ -66,7 +103,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_FILES = [
     "skills/post-merge-audit/SKILL.md",
     "workflows/post-merge-audit.md",
-    "workflows/pr-processing.md"
+    "workflows/pr-batch-integration-closeout.md"
   ].freeze
 
   OBSOLETE_APPROVAL_GATES = [
@@ -91,10 +128,37 @@ class PostMergeAuditPolicyTest < Minitest::Test
     end
   end
 
+  def test_completed_batch_audit_placement_is_mirrored
+    placement_pattern = /When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section[^.]*\./
+
+    COMPLETED_BATCH_AUDIT_PLACEMENT_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+
+      assert_equal [COMPLETED_BATCH_AUDIT_PLACEMENT_RULE], text.scan(placement_pattern),
+                   "#{relative_path} should use the canonical completed-batch audit placement rule"
+    end
+  end
+
+  def test_replacement_preclose_guard_is_mirrored
+    REPLACEMENT_PRECLOSE_GUARD_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_REPLACEMENT_PRECLOSE_GUARD,
+                      "#{relative_path} should use the canonical replacement pre-close guard"
+    end
+  end
+
+  def test_changelog_uses_narrow_terminal_reconciliation_semantics
+    changelog = File.read(File.join(ROOT, "CHANGELOG.md"), encoding: "UTF-8")
+
+    assert_includes changelog, REQUIRED_REPLACEMENT_CHANGELOG_RULE
+    refute_includes changelog, "terminal `abandoned` or `superseded` lane"
+  end
+
   def test_release_gate_ledger_append_is_not_blocked_by_comment_ban
     [
       "skills/post-merge-audit/SKILL.md",
-      "workflows/pr-processing.md"
+      "workflows/pr-production-release.md"
     ].each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
@@ -135,7 +199,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   end
 
   def test_pr_processing_follow_up_policy_has_post_merge_exception
-    text = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    text = File.read(File.join(ROOT, "workflows/pr-batch-integration-closeout.md"), encoding: "UTF-8")
     normalized_text = text.gsub(/\s+/, " ")
 
     assert_includes normalized_text, REQUIRED_PR_PROCESSING_EXCEPTION
@@ -144,7 +208,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   def test_outputs_include_issue_creation_accounting
     [
       "skills/post-merge-audit/SKILL.md",
-      "workflows/pr-processing.md"
+      "workflows/pr-batch-integration-closeout.md"
     ].each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
@@ -164,10 +228,9 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_completed_batch_audit_closes_with_an_explicit_conversation_status
     [
-      "skills/pr-batch/SKILL.md",
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md",
-      "workflows/pr-processing.md"
+      "workflows/pr-batch-integration-closeout.md"
     ].each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
@@ -198,7 +261,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
       assert_includes text, REQUIRED_COMPLETED_BATCH_MODE_SCOPE,
                       "#{relative_path} should scope completed-batch ownership to completed-batch mode"
-      assert_includes text, REQUIRED_RECEIPT_HELPER_RULE,
+      assert_includes text.gsub(/\s+/, " "), REQUIRED_RECEIPT_HELPER_RULE,
                       "#{relative_path} should document the durable receipt helper manifest"
     end
   end
@@ -220,7 +283,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
     ].each do |rule|
       assert_includes body, rule, "completed-batch-only guard must contain #{rule.inspect}"
     end
-    nested_marker_rule = "  - Post this exact durable GitHub comment body, with one concise header, one blank line, and exactly one unchanged v1 wrapper; fill every field explicitly and use `none` rather than omitting a field:\n\n"
+    nested_marker_rule = "  - Give the local marker body below to the receipt helper. It publishes one concise header, one blank line, and exactly one canonical v1 wrapper after injecting the integrity-bound `publication_snapshot` after `scope_evidence`; fill every operator-authored field explicitly and use `none` rather than omitting a field:\n\n"
     indented_marker_block = [
       "    ```text\n",
       "    #{REQUIRED_DURABLE_RECEIPT_HEADER}\n",
@@ -282,10 +345,34 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
       assert_includes text, REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE,
                       "#{relative_path} should reserve completed-batch handoff outputs for the coordinator's combined handoff"
+      assert_includes text, REQUIRED_TERMINAL_NEXT_STEP,
+                      "#{relative_path} should translate the receipt into one user-facing next step"
       assert_includes text, REQUIRED_INDEPENDENT_REPORT_HANDOFF_PROHIBITION,
                       "#{relative_path} should prohibit qualifying and advisory reports from emitting coordinator handoff outputs"
       assert_includes text, REQUIRED_ADVISORY_VERDICT_PROHIBITION,
                       "#{relative_path} should prohibit advisory auditors from issuing the qualifying verdict"
+      assert_includes text, REQUIRED_UNBLOCK_FOLLOW_UP_RULE,
+                      "#{relative_path} should pair every non-clean final status with an Unblock Block"
+      assert_includes text, REQUIRED_UNBLOCK_RECEIPT_ORDER,
+                      "#{relative_path} should place the Unblock Block between the compact receipt and final status"
+    end
+  end
+
+  def test_terminal_next_step_contract_applies_to_every_audit_mode
+    [
+      "skills/post-merge-audit/SKILL.md",
+      "workflows/post-merge-audit.md"
+    ].each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      terminal_contract = text.index(REQUIRED_TERMINAL_NEXT_STEP)
+      completed_batch_only = text.index(REQUIRED_COMPLETED_BATCH_MODE_SCOPE)
+
+      refute_nil terminal_contract, "#{relative_path} should contain the terminal next-step contract"
+      refute_nil completed_batch_only, "#{relative_path} should retain the completed-batch-only boundary"
+      assert_operator terminal_contract, :<, completed_batch_only,
+                      "#{relative_path} should apply terminal guidance before the completed-batch-only boundary"
+      assert_includes text, REQUIRED_ALL_MODE_TERMINAL_SCOPE
+      assert_includes text, "Keep `Action needed:` separate"
     end
   end
 
@@ -330,6 +417,60 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should make non-backend and not-applicable identities replayable"
       assert_includes text, REQUIRED_TERMINAL_DISPOSITION_REPLAY_RULE,
                       "#{relative_path} should require canonical terminal disposition records"
+    end
+  end
+
+  def test_complete_publication_requires_terminal_coordination_and_exact_head_qa_snapshot
+    REQUIRED_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      normalized_text = text.gsub(/\s+/, " ")
+
+      assert_includes normalized_text, REQUIRED_PUBLICATION_PREFLIGHT,
+                      "#{relative_path} should require the deterministic publication preflight"
+      assert_includes normalized_text, REQUIRED_PUBLICATION_SNAPSHOT,
+                      "#{relative_path} should bind the terminal publication snapshot"
+      assert_includes normalized_text, REQUIRED_TERMINAL_PUBLICATION_STATES,
+                      "#{relative_path} should name the accepted terminal exact-head QA dispositions"
+      assert_includes normalized_text, REQUIRED_WAIVER_INPUT_RULE,
+                      "#{relative_path} should accept only a same-target waiver comment URL from input"
+      assert_includes normalized_text, REQUIRED_AUTHENTICATED_WAIVER_RULE,
+                      "#{relative_path} should authenticate and replay the waiver comment"
+      assert_includes normalized_text, REQUIRED_WAIVER_SNAPSHOT_RULE,
+                      "#{relative_path} should bind authenticated waiver metadata into the snapshot"
+      assert_includes normalized_text, REQUIRED_WAIVER_MARKER_RULE,
+                      "#{relative_path} should require an exact-head waiver decision marker"
+      assert_includes normalized_text, REQUIRED_WAIVER_PUBLICATION_REPLAY_RULE,
+                      "#{relative_path} should re-authenticate the waiver during publication and replay"
+      assert_includes normalized_text, REQUIRED_RAW_PREFLIGHT_INPUT_BINDING,
+                      "#{relative_path} should bind the exact raw preflight input"
+      assert_includes normalized_text, REQUIRED_LIVE_PREFLIGHT_REASSESSMENT,
+                      "#{relative_path} should reacquire terminal facts before publication and replay"
+      assert_includes normalized_text, REQUIRED_TRUSTED_RECEIPT_WORKFLOW_CONFIG,
+                      "#{relative_path} should bind receipt replay to the trusted workflow config backend"
+      assert_includes normalized_text, REQUIRED_TRUSTED_UI_CLASSIFICATION,
+                      "#{relative_path} should bind trusted per-target UI classification to strict QA replay"
+      assert_includes normalized_text, REQUIRED_PUBLIC_FALLBACK_PUBLICATION_BLOCK,
+                      "#{relative_path} should keep advisory public claims out of terminal publication proof"
+      assert_includes normalized_text, REQUIRED_TYPED_NO_BACKEND_EVIDENCE,
+                      "#{relative_path} should require typed bounded no-backend evidence"
+      assert_includes normalized_text, REQUIRED_TYPED_NO_PR_EVIDENCE,
+                      "#{relative_path} should require typed no-PR evidence without a fabricated SHA"
+      assert_includes normalized_text, REQUIRED_LEGACY_PUBLICATION_REFRESH,
+                      "#{relative_path} should keep legacy complete markers parseable but non-ready"
+      assert_includes normalized_text, "unmerged",
+                      "#{relative_path} should block an unmerged coordinated target"
+      assert_includes normalized_text, "in_progress",
+                      "#{relative_path} should block in-progress QA"
+    end
+  end
+
+  def test_accepted_deferral_is_append_only_authenticated_and_non_product_only
+    REQUIRED_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_LIFECYCLE, relative_path
+      assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_GUARD, relative_path
+      assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_DECISION, relative_path
     end
   end
 end

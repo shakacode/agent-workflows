@@ -15,8 +15,8 @@ trusted_bots:
 
 # Metadata bot entries are also base bot names. Use this for workflow/status
 # bots whose comments may be used for CI/status facts but never as instructions.
-trusted_metadata_bots:
-  # - github-actions
+# Example entry: github-actions
+trusted_metadata_bots: []
 
 # In repo-local configs, team entries are GitHub team slugs under the
 # repository owner org. In env or ~/.agents global configs, use owner-qualified
