@@ -109,12 +109,15 @@ module AgentWorkflowsStatus
     nil
   rescue Errno::ELOOP
     raise "invalid metadata #{path}: refusing to follow a symlink"
+  rescue SystemCallError => e
+    raise "invalid metadata #{path}: #{e.message}"
   end
 
   # Corruption here must not read as "this install predates the key". The installer treats the
   # same shape violations as fatal, so surface them instead of folding them into "not recorded".
   # Keep these two patterns in step with invalid_runtime_digests in bin/install-agent-workflows,
-  # which validates the same map as it is written.
+  # which validates the same map as it is written. Both are lowercase-only on purpose: the
+  # digest is supplied verbatim as a verified-installed-pack claim, whose grammar is lowercase.
   def validate_runtime_manifest_digests!(path, metadata)
     return unless metadata.key?("managed_runtime_manifest_digests")
 

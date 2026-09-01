@@ -277,6 +277,8 @@ read_installed_metadata_value() {
           !valid_name || !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/i)
         end
       end
+      # Deliberately stricter than the fingerprint checks above: these digests are supplied
+      # verbatim as verified-installed-pack claims, whose grammar is lowercase-only.
       # Keep these patterns in step with validate_runtime_manifest_digests! in
       # bin/agent-workflows-status, which validates the same map as it is read back.
       invalid_runtime_digests = if metadata.key?("managed_runtime_manifest_digests")
