@@ -158,6 +158,7 @@ module AgentWorkflowSeamDoctor
   REVIEW_GATE_COMPLETION_KEYS = %w[mode].freeze
   REVIEW_GATE_ARTIFACT_KINDS = %w[pull_request_review review_thread].freeze
   REVIEW_GATE_SETTLEMENT_KEYS = %w[required quiet_period_seconds].freeze
+  REVIEW_GATE_MAX_SETTLEMENT_QUIET_PERIOD_SECONDS = 119
   REVIEW_GATE_THREAD_DISPOSITION_KEYS = %w[required marker].freeze
   REVIEW_GATE_FALLBACK_KEYS = %w[mode triggers reviewer].freeze
   REVIEW_GATE_FALLBACK_TRIGGERS = %w[
@@ -1861,6 +1862,11 @@ module AgentWorkflowSeamDoctor
       end
       if review_gate["fallback"].is_a?(Hash)
         errors.concat(review_gate_fallback_errors(review_gate["fallback"]))
+        errors.concat(
+          review_gate_fallback_primary_conflict_errors(
+            review_gate["fallback"], review_gate["reviewers"]
+          )
+        )
       elsif review_gate.key?("fallback")
         errors << "fallback must be a closed mapping"
       end
@@ -1968,8 +1974,10 @@ module AgentWorkflowSeamDoctor
     errors = review_gate_mapping_key_errors(settlement, REVIEW_GATE_SETTLEMENT_KEYS, "artifact_settlement")
     errors << "artifact_settlement.required must be true" unless settlement["required"] == true
     seconds = settlement["quiet_period_seconds"]
-    errors << "artifact_settlement.quiet_period_seconds must be between 1 and 300" unless
-      seconds.is_a?(Integer) && seconds.between?(1, 300)
+    unless seconds.is_a?(Integer) && seconds.between?(1, REVIEW_GATE_MAX_SETTLEMENT_QUIET_PERIOD_SECONDS)
+      errors << "artifact_settlement.quiet_period_seconds must be between 1 and " \
+                "#{REVIEW_GATE_MAX_SETTLEMENT_QUIET_PERIOD_SECONDS}"
+    end
     errors
   end
 
@@ -1998,6 +2006,23 @@ module AgentWorkflowSeamDoctor
       errors << "fallback.triggers contains an invalid trigger"
     end
     errors.concat(review_gate_reviewer_errors(fallback["reviewer"], "fallback.reviewer"))
+    errors
+  end
+
+  def review_gate_fallback_primary_conflict_errors(fallback, reviewers)
+    return [] unless fallback["mode"] == "named_attested_check" &&
+                     fallback["reviewer"].is_a?(Hash) && reviewers.is_a?(Array)
+
+    fallback_reviewer = fallback.fetch("reviewer")
+    primary_reviewers = reviewers.select { |reviewer| reviewer.is_a?(Hash) }
+    errors = []
+    { "id" => "id", "check_name" => "check_name" }.each do |key, label|
+      value = fallback_reviewer[key]
+      next unless value.is_a?(String)
+      next unless primary_reviewers.any? { |reviewer| reviewer[key] == value }
+
+      errors << "fallback.reviewer duplicates primary reviewer #{label} #{value.inspect}"
+    end
     errors
   end
 

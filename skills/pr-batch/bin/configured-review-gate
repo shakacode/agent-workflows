@@ -23,6 +23,7 @@ module ConfiguredReviewGate
   SNAPSHOT_CONTRACT = "configured-review-snapshot"
   VERSION = 1
   MAX_RECEIPT_AGE_SECONDS = 300
+  MAX_SETTLEMENT_QUIET_PERIOD_SECONDS = 119
   MAX_FUTURE_SKEW_SECONDS = 30
   PENDING_CHECK_STATES = %w[queued in_progress pending waiting requested].freeze
   ACCEPTABLE_PULL_REQUEST_REVIEW_STATES = %w[APPROVED COMMENTED].freeze
@@ -911,6 +912,7 @@ module ConfiguredReviewGate
     valid &&= valid_policy_settlement?(policy["artifact_settlement"])
     valid &&= valid_policy_thread_disposition?(policy["thread_disposition"])
     valid &&= valid_policy_fallback?(policy["fallback"])
+    valid &&= valid_policy_fallback_primary_separation?(policy["fallback"], policy["reviewers"])
 
     raise ArgumentError, "review_gate policy is not executable" unless valid
   end
@@ -956,7 +958,7 @@ module ConfiguredReviewGate
   def valid_policy_settlement?(settlement)
     policy_mapping?(settlement, %w[required quiet_period_seconds]) && settlement["required"] == true &&
       settlement["quiet_period_seconds"].is_a?(Integer) &&
-      settlement["quiet_period_seconds"].between?(1, MAX_RECEIPT_AGE_SECONDS)
+      settlement["quiet_period_seconds"].between?(1, MAX_SETTLEMENT_QUIET_PERIOD_SECONDS)
   end
 
   def valid_policy_thread_disposition?(disposition)
@@ -974,6 +976,16 @@ module ConfiguredReviewGate
     triggers.is_a?(Array) && !triggers.empty? &&
       triggers.all? { |trigger| BLOCKER_TRIGGER.value?(trigger) } &&
       valid_policy_reviewer?(fallback["reviewer"])
+  end
+
+  def valid_policy_fallback_primary_separation?(fallback, reviewers)
+    return true if fallback["mode"] == "disabled"
+
+    fallback_reviewer = fallback.fetch("reviewer")
+    reviewers.none? do |reviewer|
+      reviewer["id"] == fallback_reviewer["id"] ||
+        reviewer["check_name"] == fallback_reviewer["check_name"]
+    end
   end
 
   def check_blockers(policy, snapshot)

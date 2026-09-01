@@ -1539,7 +1539,17 @@ class ConfiguredReviewGateTest < Minitest::Test
   def test_live_evaluator_returns_unknown_for_malformed_policy_shape
     cases = {
       "missing fallback" => ->(candidate) { candidate.delete("fallback") },
-      "missing artifact settlement" => ->(candidate) { candidate.delete("artifact_settlement") }
+      "missing artifact settlement" => ->(candidate) { candidate.delete("artifact_settlement") },
+      "settlement exceeds replay budget" => lambda do |candidate|
+        candidate.fetch("artifact_settlement")["quiet_period_seconds"] = 120
+      end,
+      "fallback reuses primary identity and check" => lambda do |candidate|
+        candidate["fallback"] = {
+          "mode" => "named_attested_check",
+          "triggers" => ["rate_limited"],
+          "reviewer" => Marshal.load(Marshal.dump(candidate.fetch("reviewers").first))
+        }
+      end
     }
 
     cases.each do |label, mutate|

@@ -525,7 +525,7 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       assert_includes out, "invalid review_gate policy: reviewers[0].artifact.kinds contains an invalid kind"
       assert_includes out, "invalid review_gate policy: artifact_settlement keys must be exactly: quiet_period_seconds, required"
       assert_includes out, "invalid review_gate policy: artifact_settlement.required must be true"
-      assert_includes out, "invalid review_gate policy: artifact_settlement.quiet_period_seconds must be between 1 and 300"
+      assert_includes out, "invalid review_gate policy: artifact_settlement.quiet_period_seconds must be between 1 and 119"
       assert_includes out, "invalid review_gate policy: thread_disposition keys must be exactly: marker, required"
       assert_includes out, "invalid review_gate policy: thread_disposition.required must be true"
       assert_includes out, "invalid review_gate policy: thread_disposition.marker must be a nonempty single-line string"
@@ -578,6 +578,43 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
       refute status.success?
       assert_includes out, 'invalid review_gate policy: duplicate reviewer id "claude"'
       assert_includes out, 'invalid review_gate policy: duplicate reviewer check_name "claude-review"'
+    end
+  end
+
+  def test_review_gate_rejects_settlement_period_that_cannot_fit_the_mutation_replay_budget
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      gate = structured_review_gate_policy
+      gate.fetch("artifact_settlement")["quiet_period_seconds"] = 120
+      write_policy(root, POLICY.merge("review_gate" => gate))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid review_gate policy: artifact_settlement.quiet_period_seconds must be between 1 and 119"
+    end
+  end
+
+  def test_review_gate_rejects_fallback_identity_or_check_name_reused_from_a_primary
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      gate = structured_review_gate_policy
+      gate["fallback"] = {
+        "mode" => "named_attested_check",
+        "triggers" => ["rate_limited"],
+        "reviewer" => Marshal.load(Marshal.dump(gate.fetch("reviewers").first))
+      }
+      write_policy(root, POLICY.merge("review_gate" => gate))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, 'invalid review_gate policy: fallback.reviewer duplicates primary reviewer id "claude"'
+      assert_includes out,
+                      'invalid review_gate policy: fallback.reviewer duplicates primary reviewer check_name "claude-review"'
     end
   end
 
