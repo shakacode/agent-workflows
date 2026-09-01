@@ -28,9 +28,10 @@ reproduction explains the failure.
    parameters and selected or known pre-run hosted environment identity—event,
    inputs, matrix, runner image, toolchain, and configuration selection—not
    runtime behavior or outcomes. If the failure identity, hosted run history,
-   or invocation equivalence cannot be retrieved or verified, write `UNKNOWN`
-   and stop before reproduction. If equivalent hosted invocations for the same
-   commit pass and fail, stop before parity reproduction and use
+   or invocation equivalence cannot be retrieved or verified, record each fact
+   as `UNKNOWN`, classify the result as `BLOCKED`, and stop before reproduction.
+   If equivalent hosted invocations for the same commit pass and fail, stop
+   before parity reproduction and use
    `fix-flaky-tests`; that workflow owns intermittency regardless of local
    results. Do not produce an Outcomes classification for that handoff.
 4. Confirm the local-green evidence: command or workflow path used, head SHA,
@@ -99,8 +100,9 @@ Classify the result as one of:
 - `REPRODUCED_DIFFERENT`: parity run fails, but not the same way.
 - `NOT_REPRODUCED`: parity run passes while hosted CI fails. It records a
   passing parity run, not exoneration.
-- `BLOCKED`: required logs, runner image, secrets, services, or permissions are
-  missing.
+- `BLOCKED`: required preflight evidence—failure identity, hosted run history,
+  or invocation equivalence—is unavailable or unverifiable; or required logs,
+  runner image, secrets, services, or permissions are missing.
 
 If equivalent hosted invocations for the commit become intermittent during
 reproduction, stop and use `fix-flaky-tests` instead of finalizing any Outcomes
@@ -136,8 +138,8 @@ Then recommend the next smallest action:
 
 - The failing hosted check and head SHA are exact.
 - Hosted history supports the candidate deterministic/parity case, or records
-  `UNKNOWN` and stops when the failure identity, history, or invocation
-  equivalence cannot be retrieved or verified; equivalent same-commit hosted
+  unavailable failure identity, history, or invocation equivalence as `UNKNOWN`,
+  classifies the result as `BLOCKED`, and stops; equivalent same-commit hosted
   intermittency uses `fix-flaky-tests` before parity reproduction when known,
   or before finalizing any Outcomes classification when discovered during
   reproduction.

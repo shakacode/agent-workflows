@@ -87,10 +87,9 @@ into this workflow:
    record `UNKNOWN` and do not take either exit.
    If the same exact failure occurs on every equivalent hosted invocation and
    reproduces locally, it is an ordinary bug. If the same exact failure occurs
-   on every equivalent hosted invocation and the
-   local reproduction is green, hand it to
-   `replicate-ci` as a deterministic parity gap. Either Step 1 exit requires
-   citations to the exact hosted determinism and the corresponding local
+   on every equivalent hosted invocation and the local reproduction is green,
+   hand it to `replicate-ci` as a deterministic parity gap. Either Step 1 exit
+   requires citations to the exact hosted determinism and the corresponding local
    reproduction evidence; the parity handoff must also name `replicate-ci`.
 4. **Historical recurrence.** Search closed issues and PRs for the same test
    file. Three or more prior fixes on one file means the per-occurrence fix has
@@ -279,8 +278,7 @@ Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt t
   exits 1-2 return `NOT_THIS_WORKFLOW` with a cited existing-work ownership
   artifact, while exit 3 cites exact hosted determinism across equivalent
   hosted invocations and the corresponding local reproduction evidence; a
-  local-green exit 3 also names the
-  `replicate-ci` handoff.
+  local-green exit 3 also names the `replicate-ci` handoff.
 - Local runs were used only for investigation; the pass claim cites CI.
 - No skip, sleep, retry wrapper, or unjustified timeout increase was proposed.
 - Infrastructure flakiness was claimed only with build-wide evidence.
