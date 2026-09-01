@@ -1279,9 +1279,10 @@ Evaluate configured reviews through the executable gate before merge assurance:
   --receipt "${CONFIGURED_REVIEW_RECEIPT_PATH}"
 ```
 
-It loads the exact-base closed [policy contract](../docs/seam-design.md#policy-contract);
-non-ready or `UNKNOWN` evidence blocks. The receipt binds target and snapshot;
-`pr-merge-submit` recollects and replays it before mutation or exact-queue success.
+It loads the closed [policy contract](../docs/seam-design.md#policy-contract);
+`NOT_READY`/`UNKNOWN` blocks. The receipt binds target/snapshot;
+`pr-merge-submit` replays before direct mutation. Structured gates reject
+queues: advisory state cannot stop a queued merge.
 
 The advisory `configured-review-gate` commit status is visibility only. Never configure
 this context as a required ruleset or merge-queue check. GitHub does not emit an Actions

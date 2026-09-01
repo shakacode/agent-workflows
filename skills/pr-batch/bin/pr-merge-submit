@@ -1347,6 +1347,7 @@ module PrMergeSubmit
     end
 
     def verified_existing_queue_result(pull_request, options)
+      validate_merge_queue_review_gate!
       replay_configured_review_gate!(options)
       existing_queue_result(pull_request, options)
     end
@@ -1381,6 +1382,7 @@ module PrMergeSubmit
         pull_request = refreshed
       end
 
+      validate_merge_queue_review_gate!
       replay_configured_review_gate!(options)
       stdout, stderr, status = run_gh(
         "api", "graphql",
@@ -1445,6 +1447,19 @@ module PrMergeSubmit
       end
 
       raise UnknownOutcome, "merge-queue submission returned an entry but live membership could not be confirmed"
+    end
+
+    def validate_merge_queue_review_gate!
+      case @merge_submission["review_gate"]
+      when "not_applicable"
+        nil
+      when "structured"
+        raise Error, "structured review_gate cannot be durably enforced by Merge Queue; " \
+                     "use direct submission or configure review_gate: n/a"
+      else
+        raise Error, "Merge Queue requires trusted-base review_gate: n/a; missing or legacy review " \
+                     "policy is not executable"
+      end
     end
 
     def queue_result(pull_request, entry, options, reconciled: false)

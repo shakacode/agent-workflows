@@ -1008,33 +1008,17 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty guard_log
   end
 
-  def test_enabled_merge_queue_enqueues_the_same_head_without_a_direct_attempt
+  def test_structured_review_gate_rejects_enabled_merge_queue
     result, log, guard_log = run_cli(
       mode: "queue_guarded", merge_submission: guarded_direct_policy, review_gate: structured_review_gate
     )
 
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "merge_queue", payload.fetch("submission")
-    assert_equal "squash", payload.fetch("direct_method_requested")
-    refute payload.key?("requested_method")
-    assert_equal HEAD_SHA, payload.fetch("expected_head")
-    assert_equal "main", payload.fetch("expected_base")
-    assert_equal "MQE_1", payload.dig("merge_queue_entry", "id")
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr),
+                    "structured review_gate cannot be durably enforced by Merge Queue"
     assert_empty guard_log
-    assert_includes log, "enqueuePullRequest"
-    assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
-    assert_includes log, "GH_HOST=#{HOST} api graphql"
-    assert_equal 4, log.scan("GraphQL-Features: merge_queue").length
+    refute_includes log, "enqueuePullRequest"
     refute_includes log, "--auto"
-    lines = log.lines
-    replay_index = lines.index("configured-review-replay\n")
-    enqueue_index = lines.index { |line| line.include?("enqueuePullRequest") }
-    refute_nil replay_index
-    refute_nil enqueue_index
-    assert_operator replay_index, :<, enqueue_index
-    assert_includes lines.fetch(replay_index + 1), " api graphql "
-    assert_includes lines.fetch(replay_index + 1), "query=mutation("
   end
 
   def test_enqueue_graphql_failure_with_unresolved_state_is_unknown
@@ -1103,18 +1087,31 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "mergePullRequest"
   end
 
-  def test_exact_queue_races_replay_configured_review_before_returning_success
+  def test_structured_review_gate_rejects_an_existing_exact_queue_entry
+    result, log = run_cli(
+      mode: "already_queued", merge_submission: merge_queue_policy,
+      review_gate: structured_review_gate
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr),
+                    "structured review_gate cannot be durably enforced by Merge Queue"
+    refute_includes log, "configured-review-replay"
+    refute_includes log, "enqueuePullRequest"
+    refute_includes log, "mergePullRequest"
+  end
+
+  def test_exact_queue_races_reject_structured_review_gate
     {
       "guarded-direct refresh" => ["guard_becomes_queued", guarded_direct_policy],
       "pre-enqueue refresh" => ["queue_guarded_becomes_queued", guarded_direct_policy]
     }.each do |label, (mode, policy)|
       result, log = run_cli(mode:, merge_submission: policy, review_gate: structured_review_gate)
 
-      assert result.fetch(:status).success?, "#{label}: #{result.fetch(:stderr)}"
-      payload = JSON.parse(result.fetch(:stdout))
-      assert_equal "merge_queue", payload.fetch("submission"), label
-      assert_equal "MQE_1", payload.dig("merge_queue_entry", "id"), label
-      assert_equal 1, log.lines.count("configured-review-replay\n"), label
+      assert_equal 1, result.fetch(:status).exitstatus, label
+      assert_includes result.fetch(:stderr),
+                      "structured review_gate cannot be durably enforced by Merge Queue", label
+      refute_includes log, "configured-review-replay", label
       refute_includes log, "enqueuePullRequest", label
       refute_includes log, "mergePullRequest", label
     end
@@ -1884,7 +1881,7 @@ class PrMergeSubmitTest < Minitest::Test
       end
       if !source_repo_policy && review_gate.equal?(SOURCE_REVIEW_GATE)
         review_gate = if merge_submission.is_a?(Hash) &&
-                         merge_submission["mode"] == "merge_queue_or_guarded_direct"
+                         %w[merge_queue_only merge_queue_or_guarded_direct].include?(merge_submission["mode"])
                         "n/a"
                       end
       end

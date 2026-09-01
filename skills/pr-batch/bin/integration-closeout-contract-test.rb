@@ -253,6 +253,8 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes @component, "ready-no-merge-authority"
     assert_includes @component, "autonomous-merge-evidence-unknown"
     assert_includes @component, "receipt's reviewed base while binding the current live base"
+    assert_includes @component.gsub(/\s+/, " "),
+                    "Structured gates reject queues: advisory state cannot stop a queued merge."
     assert_includes @component, "Conversation status: Ready for archiving."
     assert_includes @component, "Conversation status: Follow-ups remain"
   end
