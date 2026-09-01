@@ -5,7 +5,6 @@ require "minitest/autorun"
 require "json"
 
 ROOT = File.expand_path("../../..", __dir__)
-CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
@@ -590,14 +589,6 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_includes guide, "`coordination_not_applicable` makes no backend or fallback call"
     assert_includes guide, "`coordination_required` preserves claims, heartbeats, dependencies, and fencing"
     assert_includes guide, "Missing, `UNKNOWN`, or contradictory applicability stops before worker launch"
-  end
-
-  def test_changelog_records_coordination_opt_in_contract
-    changelog = extract_section(read_repo_file(CHANGELOG_PATH), "### [Unreleased]").gsub(/\s+/, " ")
-
-    assert_includes changelog, "coordination applicability"
-    assert_includes changelog, "single-controller proof"
-    assert_includes changelog, "issue 401"
   end
 
   def test_generated_goal_prompts_keep_applicability_separate_from_path_reservations

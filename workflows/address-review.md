@@ -478,11 +478,12 @@ rollback, heartbeat, and fail-closed behavior below.
 Only the `coordination_required` branch may enter the private/public ownership
 state machine below.
 
-For private backends,
-do not create todos, present an unattended `autopilot` action, commit, push,
-post replies, resolve threads, or post a summary checkpoint until the private
-claim gate passes. If Steps 3-4 fetched review data before a private claim,
-rerun the Step 4 fetch after the claim succeeds and use the post-claim data for
+Do not create todos, present an unattended `autopilot` action, commit, push,
+post replies, resolve threads, or post a summary checkpoint until the required
+ownership gate passes: the private claim gate for `coordination_required`, or
+the verified single-controller check above for `coordination_not_applicable`.
+If Steps 3-4 fetched review data before the ownership gate, rerun the Step 4
+fetch after it passes and use that data for
 Step 5. Public fallback claims are GitHub comments,
 so do not post them merely to triage, run `autopilot`, or execute local-only
 action `a`; for public-fallback repos, Step 5 may proceed after the read-only

@@ -655,6 +655,17 @@ class CoordinationDeclarationContractTest < Minitest::Test
     assert_empty missing.keys, "surfaces missing the coordination-applicability declaration rule"
   end
 
+  def test_mechanical_declaration_validation_is_scoped_to_required_coordination
+    closeout = normalize_prose(read_repo_file(INTEGRATION_CLOSEOUT_PATH))
+
+    assert_includes closeout,
+                    "Before emitting that final message, for `coordination_required`, validate its Batch " \
+                    "Coordination Declaration mechanically rather than by self-report"
+    assert_includes closeout,
+                    "For `coordination_not_applicable`, skip that helper: the handoff carries no " \
+                    "`coordination:` line for it to accept, so running it would force a false NOT COMPLETE."
+  end
+
   def test_removing_the_rule_from_a_surface_is_detected
     normalized_rule = normalize_prose(COORDINATION_DECLARATION_RULE)
     workflow = normalize_prose(read_repo_file(INTEGRATION_CLOSEOUT_PATH))
