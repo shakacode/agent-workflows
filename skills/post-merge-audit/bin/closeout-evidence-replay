@@ -33,7 +33,9 @@ module CloseoutEvidenceReplay
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
   STRUCTURAL_COUNT_TOKENS = %w[chunk chunks file files module modules test tests].freeze
   SIZE_METRIC_TOKENS = %w[asset assets bundle bundles byte bytes shape shapes size sizes].freeze
-  BUNDLE_HYGIENE_SHAPE_TOKENS = (STRUCTURAL_COUNT_TOKENS + SIZE_METRIC_TOKENS).freeze
+  BUILD_OUTPUT_SHAPE_TOKENS = (STRUCTURAL_COUNT_TOKENS + SIZE_METRIC_TOKENS).freeze
+  BUNDLE_HYGIENE_STRUCTURAL_TOKENS = (STRUCTURAL_COUNT_TOKENS - %w[test tests]).freeze
+  BUNDLE_HYGIENE_SHAPE_TOKENS = (BUNDLE_HYGIENE_STRUCTURAL_TOKENS + SIZE_METRIC_TOKENS).freeze
   # Runtime-memory names are the only reason a terminal size/byte noun measures behavior rather
   # than build output, so they are the sole carve-out from the terminal-size rejection.
   MEMORY_METRIC_TOKENS = %w[heap memory ram resident rss].freeze
@@ -53,10 +55,6 @@ module CloseoutEvidenceReplay
   MEASUREMENT_VALUE = %r{([-+]?\d+(?:\.\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)}i
   EPHEMERAL_ARTIFACT_SCHEME = /\b(?:about|blob|chrome-extension|data|file|filesystem|ftp|http|mediastream|moz-extension):/i
   UNRESOLVED_PLACEHOLDER = %r{\b(?:missing|unavailable|unmeasured|unknown|not[ _](?:available|measured))\b|n/a}i
-  HOSTED_CRITERION_UNRESOLVED_PLACEHOLDER = %r{
-    \b(?:missing|unavailable|unmeasured|unknown|tbd|not[ _](?:available|measured))\b|n/a
-  }ix
-  URI_SCHEME = %r{\A[A-Za-z][A-Za-z0-9+.-]*://}
 
   def run(argv)
     options, parser = parse_options(argv)
@@ -692,10 +690,6 @@ module CloseoutEvidenceReplay
     !parse_https_url(value).nil?
   end
 
-  def malformed_https_reference?(value)
-    http_urls(value).any? { |url| !valid_https_url?(url) }
-  end
-
   def prose_https_label?(value, match)
     return false unless match[0].casecmp?("https:")
 
@@ -710,10 +704,12 @@ module CloseoutEvidenceReplay
 
   def unresolved_hosted_criterion_evidence?(evidence)
     return false if valid_https_url?(evidence)
-    return true if malformed_https_reference?(evidence)
-    return true if evidence.match?(URI_SCHEME)
 
-    evidence.match?(HOSTED_CRITERION_UNRESOLVED_PLACEHOLDER)
+    label, url = evidence.split(";", 2).map(&:strip)
+    return true unless label && url && valid_https_url?(url)
+
+    match = HTTPS_TOKEN.match(label)
+    !(match&.begin(0)&.zero? && prose_https_label?(label, match))
   end
 
   def immutable_deployment_url?(value)
@@ -764,7 +760,7 @@ module CloseoutEvidenceReplay
   def bundle_hygiene_shape?(tokens)
     return true if tokens.length == 1 && BUNDLE_HYGIENE_SHAPE_TOKENS.include?(tokens.first)
 
-    size_metric_shape?(tokens) || structural_metric_count?(tokens)
+    size_metric_shape?(tokens) || qualified_terminal_count?(tokens, BUNDLE_HYGIENE_STRUCTURAL_TOKENS)
   end
 
   def valid_measured_metric?(value)
@@ -802,7 +798,8 @@ module CloseoutEvidenceReplay
   end
 
   def structural_metric_count?(tokens)
-    qualified_terminal_count?(tokens, STRUCTURAL_COUNT_TOKENS)
+    (tokens.length == 1 && STRUCTURAL_COUNT_TOKENS.include?(tokens.first)) ||
+      qualified_terminal_count?(tokens, STRUCTURAL_COUNT_TOKENS)
   end
 
   def qualifier_only_terminal_count?(tokens)
@@ -825,8 +822,9 @@ module CloseoutEvidenceReplay
   end
 
   def runtime_memory_metric?(tokens)
-    MEMORY_METRIC_TOKENS.include?(tokens.first) &&
-      tokens[1...-1].none? { |token| BUNDLE_HYGIENE_SHAPE_TOKENS.include?(token) }
+    scoped_tokens = SIZE_METRIC_TOKENS.include?(tokens.last) ? tokens[0...-1] : tokens
+    scoped_tokens.any? { |token| MEMORY_METRIC_TOKENS.include?(token) } &&
+      scoped_tokens.none? { |token| BUILD_OUTPUT_SHAPE_TOKENS.include?(token) }
   end
 
   # Terminal `*_count` over a `vocabulary` noun, looking through consecutive bounded qualifiers so

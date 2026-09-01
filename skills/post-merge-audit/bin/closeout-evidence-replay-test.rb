@@ -215,6 +215,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "https: broken",
       "https: available.example.test",
       "https:",
+      "HTTPS: enforced; screenshot stored in run 123",
       "https://bad host/run/sign-in-abc123"
     ]
 
@@ -229,7 +230,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
   def test_hosted_v1_accepts_https_as_a_prose_label
     ["HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced"].each do |label|
-      evidence = "#{label}; screenshot stored in run 123"
+      evidence = "#{label}; https://evidence.example.test/sign-in-abc123"
       body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
 
       hosted = run_replay(body).fetch("hosted_qa_evidence")
@@ -1227,7 +1228,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     %w[
       chunk_count chunks_count file_count files_count module_count modules_count test_count tests_count
       chunk_counts chunksCounts file_counts filesCounts module_counts modulesCounts test_counts testsCounts
-      total_file_count totalFilesCount
+      total_file_count totalFilesCount chunk chunks file files module modules test tests
     ].each do |metric_name|
       qa = run_replay(
         v2_marker(
@@ -1310,7 +1311,10 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_measured_metric_accepts_runtime_memory_names_with_terminal_size_nouns
-    %w[heap_size rss_size memory_size resident_set_size ram_bytes heapUsedBytes].each do |metric_name|
+    %w[
+      heap_size rss_size memory_size resident_set_size ram_bytes heapUsedBytes
+      process_heap_bytes used_rss_kb node_heap_size
+    ].each do |metric_name|
       qa = run_replay(
         v2_marker(
           "performance_impact" => "measured_metric",
@@ -1456,7 +1460,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_bundle_hygiene_requires_a_terminal_shape_in_non_byte_metric_names
-    %w[bundleParseTime fileUploadLatency].each do |metric_name|
+    %w[bundleParseTime fileUploadLatency test tests test_count tests_count].each do |metric_name|
       qa = run_replay(
         v2_marker(
           "performance_impact" => "bundle_hygiene",
