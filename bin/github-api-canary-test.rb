@@ -295,7 +295,16 @@ class GitHubApiCanaryTest < Minitest::Test
   end
 
   def test_rate_limit_endpoint_variants_are_rejected_without_a_request
-    ["/rate_limit", "/rate_limit/", "/Rate_Limit", "/RATE_LIMIT?resource=core"].each do |endpoint|
+    [
+      "/rate_limit",
+      "/rate_limit/",
+      "/Rate_Limit",
+      "/RATE_LIMIT?resource=core",
+      "/user/../rate_limit",
+      "//rate_limit",
+      "/user/%2e%2e/rate_limit",
+      "/user%2f..%2frate_limit"
+    ].each do |endpoint|
       with_fake_gh(response_fixture: "healthy.headers") do |environment, call_log|
         result, stderr, status = run_canary("--endpoint", endpoint, environment: environment)
 

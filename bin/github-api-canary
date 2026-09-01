@@ -5,6 +5,7 @@ require "json"
 require "optparse"
 require "tempfile"
 require "time"
+require "uri"
 
 module GitHubApiCanary
   CONTRACT = "github-api-canary"
@@ -22,6 +23,16 @@ module GitHubApiCanary
   class RequestTimeout < StandardError; end
 
   module_function
+
+  def representative_endpoint?(endpoint)
+    return false unless endpoint.match?(SAFE_ENDPOINT)
+
+    path = URI::DEFAULT_PARSER.unescape(endpoint.split("?", 2).first)
+    return false if path.start_with?("//")
+    return false if path.split("/", -1).any? { |segment| [".", ".."].include?(segment) }
+
+    !path.match?(RATE_LIMIT_ENDPOINT)
+  end
 
   def parse_options(arguments)
     options = { endpoint: "/user", timeout: DEFAULT_TIMEOUT_SECONDS }
@@ -52,9 +63,7 @@ module GitHubApiCanary
     end
 
     endpoint = options.fetch(:endpoint)
-    if !endpoint.match?(SAFE_ENDPOINT) || endpoint.match?(RATE_LIMIT_ENDPOINT)
-      raise InputError, "endpoint is invalid"
-    end
+    raise InputError, "endpoint is invalid" unless representative_endpoint?(endpoint)
     if options[:reported_rate_limit_remaining]&.negative?
       raise InputError, "reported rate-limit remaining is malformed"
     end
