@@ -141,6 +141,17 @@ class PrWalkthroughContractTest < Minitest::Test
                     set_expectations.index("CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE")
   end
 
+  def test_hard_failure_banner_is_scoped_to_the_applicable_sub_case
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+
+    # An ancestry-only failure (base behind, CI itself READY) must not be
+    # reported as a CI failure — the caller has two distinct banners, quoted
+    # in both places this skill describes the caller's failed-checklist result.
+    assert_equal 2, skill.scan("that gate's applicable hard-failure banner").length
+    assert_includes skill, "when CI itself is not `READY`, or a"
+    assert_includes skill, "behind-base banner when only ancestry fails"
+  end
+
   def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component
     pr_batch = File.read(PR_BATCH)
 

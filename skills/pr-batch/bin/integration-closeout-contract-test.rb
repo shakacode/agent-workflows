@@ -350,6 +350,25 @@ class IntegrationCloseoutContractTest < Minitest::Test
     refute_match(/CURRENT_BASE_SHA|EXACT_HEAD_SHA/, @workflow)
   end
 
+  def test_ask_gate_requires_aggregate_verdict_and_distinguishes_ancestry_from_ci
+    ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
+    normalized_gate = ask_gate.gsub(/\s+/, " ")
+
+    assert_includes normalized_gate, "its aggregate `verdict` equal to `READY`, not an individual"
+    assert_includes normalized_gate,
+                    "a scope can report `state: READY` while the top-level `verdict` is `NOT_READY` or `UNKNOWN`"
+
+    assert_includes normalized_gate, "PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY."
+    assert_includes normalized_gate,
+                    "If ancestry failed while CI `verdict` is `READY`, lead with **PR IS BEHIND THE CURRENT BASE"
+    assert_includes normalized_gate, "instead of blaming CI; otherwise lead with"
+    assert_includes normalized_gate, "CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT MERGE-READY."
+
+    behind_base_position = normalized_gate.index("PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY.")
+    ci_banner_position = normalized_gate.index("CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE")
+    assert_operator behind_base_position, :<, ci_banner_position
+  end
+
   def test_sibling_components_remain_outside_the_boundary
     refute_match(/^## Release Mode Preflight$/, @component)
     refute_match(/^### Accelerated RC Auto-Merge$/, @component)

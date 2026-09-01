@@ -1592,17 +1592,20 @@ Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh here — the base may
 have advanced since the earlier QA gate fetch — and do not introduce a
 second, differently-named pair for the identical base/head facts.
 
-Also require that exact-head `pr-ci-readiness` v2 has normalized successful
-state `READY`.
+Also require the exact-head `pr-ci-readiness` v2 contract's normalized
+successful state: its aggregate `verdict` equal to `READY`, not an individual
+scope's `state` — a scope can report `state: READY` while the top-level
+`verdict` is `NOT_READY` or `UNKNOWN`.
 
 This sequencing checklist neither defines an evidence schema nor replaces the
 later [Merge Assurance Gate](#merge-assurance-gate). Do not claim or consume its
 machine `current-integration-evidence` here. Missing, stale, mismatched,
 non-successful, unrecognized, future, or `UNKNOWN` facts keep the target in
-`waiting-on-checks-or-review`; lead with
+`waiting-on-checks-or-review` and do not start the walkthrough. If ancestry
+failed while CI `verdict` is `READY`, lead with **PR IS BEHIND THE CURRENT
+BASE — NOT MERGE-READY.** instead of blaming CI; otherwise lead with
 **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT
-MERGE-READY.** and do not start the walkthrough. GitHub's conflict or
-mergeability status is not CI evidence.
+MERGE-READY.** GitHub's conflict or mergeability status is not CI evidence.
 
 Compact goals encode that checklist inline: `head>=base+CI=READY` means both
 ancestry and the normalized `pr-ci-readiness` result must pass. Every other
