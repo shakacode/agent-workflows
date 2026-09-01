@@ -137,7 +137,7 @@ GOAL_MODE_COMPACT_CONTRACT = "GMCC-v5:CI@head/configured-reviewers " \
                              "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                              "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
                              "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
-                             "ask=>walk|ext:merge/add;" \
+                             "ask=>walk;ext:user-merge|add-target;no retry/watch;" \
                              "auto=>exact verdict/head/sorted-gates/rollback;" \
                              "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
                              "durable(proven-human+merge-authority);else ready-human-review-required|" \
@@ -158,7 +158,9 @@ GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-chec
                                 "available, preserve exact manual resume instructions. A batch with 5 PRs, 3 " \
                                 "pending hosted checks, and clean " \
                                 "review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when " \
-                                "`merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done " \
+                                "`merge_authority` does not allow merging. `ask` starts the owned-target walkthrough; " \
+                                "external refs require the user to merge or authorize target addition, with " \
+                                "`blocked-user-input` and no retry/watch. With `auto_merge_when_gates_pass`, done " \
                                 "requires ordinary readiness plus `autonomous-merge-eligible`, or " \
                                 "`human-approved-for-current-head` whose exact live verdict/head, exact sorted " \
                                 "gate set, rollback disposition, and durable proven-human decision with verified " \
@@ -174,7 +176,7 @@ GOAL_MODE_REQUIRED_SEMANTICS = [
   "fallback:4x15m+exp/4h|manual",
   "stop clear/done/term/budget/user",
   "noauth=>ready-no-merge-authority",
-  "ask=>walk|ext:merge/add",
+  "ask=>walk;ext:user-merge|add-target;no retry/watch",
   "auto=>exact verdict/head/sorted-gates/rollback",
   "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
   "durable(proven-human+merge-authority)",
@@ -1282,18 +1284,18 @@ bulky_items = (1..12).map do |number|
 end.join("\n")
 
 first_ready_item = <<~ITEM.chomp
-  - Target: Issue #1: https://github.com/acme/x/issues/1
-    Original: n/a.
-    Goal: Guard.
-    Notes: impl.
+  - Target: Issue #1: https://github.com/a/x/issues/1
+    Original: n/a
+    Goal:G
+    Notes: i
     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 ITEM
 
 second_ready_item = <<~ITEM.chomp
-  - Target: Issue #2: https://github.com/acme/x/issues/2
-    Original: n/a.
-    Goal: Route.
-    Notes: QA.
+  - Target: Issue #2: https://github.com/a/x/issues/2
+    Original: n/a
+    Goal:R
+    Notes: q
     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 ITEM
 

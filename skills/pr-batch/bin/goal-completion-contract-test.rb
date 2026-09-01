@@ -49,7 +49,7 @@ COMPACT_CONTRACT_LINE = "GMCC-v5:CI@head/configured-reviewers " \
                         "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                         "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
                         "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
-                        "ask=>walk|ext:merge/add;" \
+                        "ask=>walk;ext:user-merge|add-target;no retry/watch;" \
                         "auto=>exact verdict/head/sorted-gates/rollback;" \
                         "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
                         "durable(proven-human+merge-authority);else ready-human-review-required|" \
@@ -60,6 +60,8 @@ CANONICAL_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done requir
                                  "proven-human decision with verified merge authority are established; otherwise " \
                                  "stop in the exact autonomous eligibility state, and unless another real " \
                                  "blocker prevents it, merge and close the PR, target, and issue."
+CANONICAL_ASK_EXPANSION = "`ask` starts the owned-target walkthrough; external refs require the user " \
+                          "to merge or authorize target addition, with `blocked-user-input` and no retry/watch."
 LEGACY_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done means merged and closed out " \
                               "unless a real blocker prevents it."
 CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
@@ -78,7 +80,8 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "available, preserve exact manual resume instructions. A batch with 5 PRs, 3 " \
                           "pending hosted checks, and clean " \
                           "review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when " \
-                          "`merge_authority` does not allow merging. #{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
+                          "`merge_authority` does not allow merging. #{CANONICAL_ASK_EXPANSION} " \
+                          "#{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
 COMPACT_CONTRACT_INVARIANTS = [
   "CI@head/configured-reviewers pending|missing|untriaged|failed",
   "threads open",
@@ -88,7 +91,7 @@ COMPACT_CONTRACT_INVARIANTS = [
   "fallback:4x15m+exp/4h|manual",
   "stop clear/done/term/budget/user",
   "noauth=>ready-no-merge-authority",
-  "ask=>walk|ext:merge/add",
+  "ask=>walk;ext:user-merge|add-target;no retry/watch",
   "auto=>exact verdict/head/sorted-gates/rollback",
   "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
   "durable(proven-human+merge-authority)",
@@ -669,7 +672,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_canonical_contract, "without consuming external-blocker retries",
                          "canonical ready-prerequisite ask gate"
     assert_text_includes COMPACT_CONTRACT_LINE,
-                         "ask=>walk|ext:merge/add",
+                         "ask=>walk;ext:user-merge|add-target;no retry/watch",
                          "compact ready-prerequisite ask gate"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
