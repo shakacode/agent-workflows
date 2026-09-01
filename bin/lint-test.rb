@@ -190,6 +190,22 @@ class LintCommandTest < Minitest::Test
     assert_lint_workflow_checkout_contract(anchored)
   end
 
+  def test_ci_checkout_precedes_the_first_repository_dependent_lint_command
+    workflow = File.read(WORKFLOW)
+    checkout = workflow.match(
+      /^      - name: Checkout repository\n(?:        .*\n)+?          persist-credentials: false\n/
+    ).to_s
+    refute_empty checkout
+    misplaced = workflow.sub(checkout, "").sub(
+      "      - name: Install binary linters",
+      "#{checkout}\n      - name: Install binary linters"
+    )
+
+    assert_raises(Minitest::Assertion) do
+      assert_lint_workflow_checkout_contract(misplaced)
+    end
+  end
+
   def test_validation_and_contributor_docs_expose_the_lint_command
     contributing = File.read(File.join(ROOT, "CONTRIBUTING.md"))
     assert_includes File.read(VALIDATE), "ruby bin/lint-test.rb"
@@ -225,7 +241,9 @@ class LintCommandTest < Minitest::Test
     checkout_index = steps.index do |step|
       checkout_action_reference?(step["uses"])
     end
-    lint_index = steps.index { |step| step["run"] == "bin/lint" }
+    lint_index = steps.index do |step|
+      step["run"].is_a?(String) && step["run"].match?(%r{\bbin/lint\b})
+    end
 
     refute_nil checkout_index, "expected the lint workflow to check out the repository"
     refute_nil lint_index, "expected the lint workflow to run the canonical lint command"
