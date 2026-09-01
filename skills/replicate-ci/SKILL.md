@@ -31,6 +31,10 @@ reproduction explains the failure.
    gh run view <RUN_ID> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
    ```
 
+   `gh run list`'s `conclusion` reflects only the latest attempt of each run.
+   When a run was retried, also check earlier attempts with
+   `gh run view <RUN_ID> --attempt <N>` so a retry that flipped pass/fail is
+   not missed as same-commit hosted history.
    An equivalent hosted invocation has matching controlled
    invocation parameters and selected or known pre-run hosted environment
    identity—event, inputs, matrix, runner image, toolchain, and configuration
@@ -138,7 +142,7 @@ Then recommend the next smallest action:
 - Hosted failure:
 - Local green evidence:
 - Parity environment:
-- Reproduction result: <OUTCOME> | N/A — `fix-flaky-tests` handoff for equivalent hosted intermittency
+- Reproduction result: <OUTCOME | N/A: fix-flaky-tests handoff>
 - Environment delta:
 - Likely cause:
 - Next action:
