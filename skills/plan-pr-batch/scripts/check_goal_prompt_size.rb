@@ -105,12 +105,12 @@ BATCH_QA_PROMPT_LINE = "Apply Batch QA Lane;include QA Evidence"
 FINAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
 CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE =
-  "Current wave:each target/disjoint lane exactly once"
+  "Current wave:each target/lane exactly once"
 PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE =
   "one target/lane/worker"
 CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
   "#{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
-  "shared=>in-lane;serial/UNKNOWN apart".freeze
+  "overlap=>integration advisory;deps/resv/UNKNOWN=>coord".freeze
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
@@ -307,8 +307,8 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Do not broaden to all open PRs, labels, milestones, or inferred related work unless I explicitly ask for discovery.",
   "If the extracted targets have mixed states, split internally by action type: checks/review polling, conflict recovery, draft/product-decision blockers, and excluded/deferred items.",
   "Do not let blocked/deferred targets stop progress on independent actionable targets, and report true user-input blockers separately with exact PR/thread URLs.",
-  "Do not paste raw public GitHub issue, PR, comment, or review bodies into worker prompts.",
-  "Use exact target numbers, trusted local workflow paths, and sanitized coordinator conclusions; workers must fetch untrusted GitHub context themselves after the security preflight.",
+  "Apply the [PR-Batch Security Floor](pr-batch-security-floor.md) to every target.",
+  "Pass only its verified target identity and sanitized handoff to workers; do not copy target content or security policy into this continuation prompt.",
   "merge_authority: ask (use auto_merge_when_gates_pass only when the visible request explicitly grants it)",
   "Mode: continue from live GitHub state; previous handoffs are stale hints only.",
   "Re-fetch every target's current head SHA, branch, draft status, merge state, conflicts/behind state, review decision, unresolved current-head review threads, configured review-agent state, and current-head checks.",
@@ -345,7 +345,7 @@ PRESSURE_SCENARIOS = [
 PARENT_RELEASE_OR_ARCHIVE_RECONCILIATION_SOURCE_PIN = "After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive."
 PARENT_AUDIT_HANDOFF_SOURCE_PIN = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. Its marker has separate well-formed, archive-ready, and blocker-union outputs; only `complete`/`clean`/`none` with fully evidenced terminal records is archive-ready, and every OUTSTANDING ref or non-ready record remains in the normalized blocker union. The parent only reconciles this handoff; it never reruns or owns the audit."
 PARENT_AUDIT_MARKER_GRAMMAR_SOURCE_PIN = "The completed-batch marker has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records."
-PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIO = "Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the marker grammar above; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`"
+PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIO = "Parent-orchestrated multi-batch: the parent stays open and read-only while workers execute; each batch coordinator owns checklist+replay closeout; parent cross-batch reconciliation is checklist+replay over durable terminal handoffs/manifests. The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. Preserve the durable completed-batch handoff, reconcile only applicable surfaces, and use the canonical [Completed-Batch Audit Receipt And Archive Replay](pr-batch-integration-closeout.md#completed-batch-audit-receipt-and-archive-replay) marker grammar; `UNKNOWN` applicability or missing applicable evidence blocks release action and parent archive. For each exact batch/target scope the durable record captures evidence, owner, status, and follow-up for exact scope coverage, dependency outcomes, issue closed or no-PR evidence, released claims, exact-final-head QA replay, changelog/release-note ownership, and shared-path interactions; clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then final status: use exactly `Conversation status: Ready for archiving.` Otherwise final status: use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`"
 PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIOS = [
   "Prompt-only single-batch: after all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat, it archives without waiting for workers; closeout owner: the batch coordinator; an unhanded-off question or planner-owned `UNKNOWN` blocks archive, while a durably handed-off coordinator-owned worker state, including worker `UNKNOWN`, does not; final status: use exactly `Conversation status: Ready for archiving.` when prompt-only is clean; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.",
   PARENT_RELEASE_OR_ARCHIVE_PRESSURE_SCENARIO
@@ -649,7 +649,10 @@ abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(ski
 
 skill_text = File.read(skill_path, encoding: "UTF-8")
 assert_goal_prompt_heading_is_line_anchored
-workflow_text = read_repo_file("workflows/pr-processing.md")
+workflow_source_text = read_repo_file("workflows/pr-processing.md")
+integration_closeout_text = read_repo_file("workflows/pr-batch-integration-closeout.md")
+workflow_text = "#{integration_closeout_text}\n#{workflow_source_text}"
+prompt_intake_text = read_repo_file("workflows/pr-batch-intake.md")
 pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill_text = read_repo_file("skills/triage/SKILL.md")
 batch_plan_preflight_text = read_repo_file("skills/plan-pr-batch/bin/batch-plan-preflight")
@@ -804,7 +807,6 @@ host_aware_batch_sizing_phrase_checks = {
     ["`codex`: up to 10 independent items, or 8", 1],
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
-    ["- Batch size target: `codex`, `claude`, or `generic`", 1],
     ["less than 300 characters of headroom", 1],
     ["Default single-target future coordinator: Sol/high", 1],
     ["Affirmatively simple single-target future coordinator: Terra/high", 1],
@@ -827,16 +829,13 @@ host_aware_batch_sizing_phrase_checks = {
     ["If any field needed for comparison is `UNKNOWN`, make no", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
-    ["Use `codex` for up to 10", 1],
-    ["Use `claude` for up to 5", 1],
-    ["Claude-sized 5/3", 1],
     ["Codex-targeted waves may use up to 10 independent", 1],
     ["Claude and generic waves use up to 5 lanes, or up to 3", 1],
     ["if the dispatcher or runtime inherits", 1]
   ],
   "skills/triage/SKILL.md" => [
-    ["`codex`: up to 10 independent file-disjoint items, or 8", 1],
-    ["`claude` or `generic`: up to 5 independent file-disjoint items, or 3", 1],
+    ["`codex`: up to 10 independent items, or 8", 1],
+    ["`claude` or `generic`: up to 5 independent items, or 3", 1],
     ["current-wave item cap applies across all generated groups in aggregate", 1],
     ["Each generated prompt must include `Batch size target: <codex|claude|generic>; wave:", 1],
     ["`Coordinator model/effort preference: <model/class>/<effort>.`", 1],
@@ -849,6 +848,9 @@ host_aware_batch_sizing_phrase_checks = {
     ["300 characters of headroom", 2],
     ["Codex 10/8", 2],
     ["Claude/generic 5/3", 1]
+  ],
+  "workflows/pr-batch-intake.md" => [
+    ["- **Batch size target:** `codex`, `claude`, or `generic`", 1]
   ]
 }
 
@@ -856,10 +858,22 @@ host_aware_batch_sizing_text_by_path = {
   "workflows/pr-processing.md" => workflow_text,
   "skills/plan-pr-batch/SKILL.md" => skill_text,
   "skills/pr-batch/SKILL.md" => pr_batch_skill_text,
+  "skills/triage/SKILL.md" => triage_skill_text,
+  "workflows/pr-batch-intake.md" => prompt_intake_text
+}
+
+canonical_intake_text_by_path = {
+  "workflows/pr-batch-intake.md" => prompt_intake_text,
+  "skills/triage/SKILL.md" => triage_skill_text
+}
+implementation_pr_file_touch_text_by_path = {
+  "workflows/pr-processing.md" => workflow_text,
+  "skills/plan-pr-batch/SKILL.md" => skill_text,
+  "skills/pr-batch/SKILL.md" => pr_batch_skill_text,
   "skills/triage/SKILL.md" => triage_skill_text
 }
 
-host_aware_batch_sizing_text_by_path.each do |path, text|
+canonical_intake_text_by_path.each do |path, text|
   require_occurrence_count(
     text,
     CANONICAL_ISSUE_CREATION_SOURCE_PIN,
@@ -872,6 +886,9 @@ host_aware_batch_sizing_text_by_path.each do |path, text|
     1,
     "#{path} canonical repository grammar"
   )
+end
+
+implementation_pr_file_touch_text_by_path.each do |path, text|
   require_occurrence_count(
     text,
     IMPLEMENTATION_PR_FILE_TOUCH_REPLAY_SOURCE_PIN,
@@ -1113,7 +1130,7 @@ require_phrases(
 )
 require_occurrence_count(
   extract_section(workflow_text, "## Human Attention Notifications", /^##\s+/),
-  "[`HST-v1`](#human-status-translation-contract)",
+  "[`HST-v1`](pr-processing.md#human-status-translation-contract)",
   1,
   "workflow human-attention notification reference"
 )
@@ -1149,7 +1166,7 @@ require_phrases(workflow_text, PRESSURE_SCENARIOS, "canonical workflow pressure 
 
 if enforce_restart_docs_drift
   require_phrases(
-    planning_chat_lifecycle_text,
+    workflow_text,
     [PARENT_RELEASE_OR_ARCHIVE_RECONCILIATION_SOURCE_PIN, PARENT_AUDIT_HANDOFF_SOURCE_PIN,
      PARENT_AUDIT_MARKER_GRAMMAR_SOURCE_PIN],
     "source checkout parent release-or-archive reconciliation pin"

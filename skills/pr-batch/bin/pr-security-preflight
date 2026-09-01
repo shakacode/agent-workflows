@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "json"
 require "open3"
 require "optparse"
@@ -9,6 +10,7 @@ require "shellwords"
 # rubocop:disable Lint/RedundantRequireStatement
 require "set"
 # rubocop:enable Lint/RedundantRequireStatement
+require "tempfile"
 require "timeout"
 require "tmpdir"
 require "uri"
@@ -132,6 +134,7 @@ GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECON
 TRUSTED_BASE_FETCH_TIMEOUT_SECONDS = Integer(
   ENV.fetch("PR_SECURITY_PREFLIGHT_TRUSTED_BASE_FETCH_TIMEOUT_SECONDS", "300")
 )
+INTERACTION_QUEUE_DISPLAY_LIMIT = 10
 ACKNOWLEDGEABLE_RISKS = Set.new(
   %w[
     github-api-coverage
@@ -190,13 +193,15 @@ def parse_options!(argv)
     repo: nil,
     fail_on_high_risk_files: false,
     include_reactions: false,
+    interaction_artifact_dir: nil,
     strict_trust: false,
     trust_config: nil
   }
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: pr-security-preflight [--repo OWNER/REPO] [--trust-config PATH] " \
                   "[--acknowledge-risk NUMBER:RISK[,RISK]] [--include-reactions] " \
-                  "[--strict-trust] [--fail-on-high-risk-files] NUMBER [...]"
+                  "[--interaction-artifact-dir DIR] [--strict-trust] " \
+                  "[--fail-on-high-risk-files] NUMBER [...]"
     opts.on("--repo OWNER/REPO", "GitHub repository, defaulting to gh repo view") { |repo| options[:repo] = repo }
     opts.on("--trust-config PATH", "Trusted GitHub actor allowlist") { |path| options[:trust_config] = path }
     acknowledge_help = "Maintainer-acknowledged exact-target risk. " \
@@ -210,6 +215,11 @@ def parse_options!(argv)
                              "Without this flag, reaction-only users already present in GitHub participants " \
                              "appear as hidden participants and block when --strict-trust is set."
     opts.on("--include-reactions", include_reactions_help) { options[:include_reactions] = true }
+    artifact_dir_help = "Existing caller-owned directory for unique mode-0600 interaction queue artifacts. " \
+                        "The invoking workflow retains each exact file through batch terminal and any retry/recovery."
+    opts.on("--interaction-artifact-dir DIR", artifact_dir_help) do |directory|
+      options[:interaction_artifact_dir] = directory
+    end
     opts.on("--strict-trust", "Exit non-zero on non-allowlisted or hidden actor findings") do
       options[:strict_trust] = true
     end
@@ -219,6 +229,25 @@ def parse_options!(argv)
   end
 
   parser.parse!(argv)
+
+  if options[:interaction_artifact_dir]
+    if options.fetch(:interaction_artifact_dir).empty?
+      abort "Invalid interaction artifact directory: value must not be empty"
+    end
+
+    requested_directory = File.expand_path(options.fetch(:interaction_artifact_dir))
+    begin
+      resolved_directory = File.realpath(requested_directory)
+    rescue SystemCallError => e
+      abort "Invalid interaction artifact directory #{requested_directory.inspect}: #{e.message}"
+    end
+    unless File.directory?(resolved_directory)
+      abort "Invalid interaction artifact directory #{requested_directory.inspect}: not a directory"
+    end
+
+    options[:interaction_artifact_dir] = resolved_directory
+  end
+
   if !options[:fail_on_high_risk_files] &&
      options.fetch(:acknowledged_risks).values.any? { |risks| risks.include?("high-risk-files") }
     warn "WARN: high-risk-files acknowledgement has no effect unless --fail-on-high-risk-files is set"
@@ -228,7 +257,14 @@ def parse_options!(argv)
     return [nil, 64]
   end
 
-  target_numbers = argv.filter_map { |arg| Integer(arg, exception: false) }.to_set
+  target_number_list = argv.map do |arg|
+    number = Integer(arg, exception: false)
+    abort "Invalid issue/PR number: #{arg.inspect}" unless number&.positive?
+
+    number
+  end
+  options[:target_number_list] = target_number_list
+  target_numbers = target_number_list.to_set
   unused_targets = options.fetch(:acknowledged_risks).keys.reject { |number| target_numbers.include?(number) }
   if unused_targets.any?
     warn "WARN: acknowledgement target(s) not in scan list: " \
@@ -644,7 +680,11 @@ end
 
 def load_trust_config(path:, global:)
   path = File.expand_path(path)
-  data = File.exist?(path) ? YAML.safe_load_file(path, aliases: false) || {} : {}
+  contents = File.exist?(path) ? File.binread(path) : ""
+  parse_contents = contents.dup.force_encoding(Encoding::UTF_8)
+  abort "Invalid trust config #{path}: expected valid UTF-8" unless parse_contents.valid_encoding?
+
+  data = parse_contents.empty? ? {} : YAML.safe_load(parse_contents, aliases: false, filename: path) || {}
   abort "Invalid trust config #{path}: expected a YAML mapping at the top level" unless data.is_a?(Hash)
 
   trusted_bots = Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) }
@@ -657,12 +697,15 @@ def load_trust_config(path:, global:)
   end
 
   {
+    content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}",
     path:,
     trusted_bots:,
     trusted_metadata_bots:,
     trusted_teams: normalized_trusted_teams(data["trusted_teams"], require_owner: global),
     trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
   }
+rescue Psych::Exception
+  abort "Invalid trust config #{path}: malformed YAML"
 end
 
 def bot_login_in_set?(login, trusted_set)
@@ -2761,10 +2804,11 @@ def print_untrusted_interactions(findings)
   end
 
   puts "  Untrusted comment/review queue:"
-  findings.first(10).each do |finding|
+  findings.first(INTERACTION_QUEUE_DISPLAY_LIMIT).each do |finding|
     puts "    - #{finding.fetch(:author)} #{finding.fetch(:kind)} (#{finding.fetch(:url)})"
   end
-  puts "    - ... #{findings.size - 10} more" if findings.size > 10
+  overflow = findings.size - INTERACTION_QUEUE_DISPLAY_LIMIT
+  puts "    - ... #{overflow} more (see interaction queue artifact below)" if overflow.positive?
 end
 
 def print_metadata_only_interactions(findings)
@@ -2774,10 +2818,106 @@ def print_metadata_only_interactions(findings)
   end
 
   puts "  Metadata-only comment/review queue:"
-  findings.first(10).each do |finding|
+  findings.first(INTERACTION_QUEUE_DISPLAY_LIMIT).each do |finding|
     puts "    - #{finding.fetch(:author)} #{finding.fetch(:kind)} (#{finding.fetch(:url)})"
   end
-  puts "    - ... #{findings.size - 10} more" if findings.size > 10
+  overflow = findings.size - INTERACTION_QUEUE_DISPLAY_LIMIT
+  puts "    - ... #{overflow} more (see interaction queue artifact below)" if overflow.positive?
+end
+
+def interaction_queue_entry(finding)
+  {
+    "actor" => finding.fetch(:author),
+    "kind" => finding.fetch(:kind),
+    "url" => finding.fetch(:url)
+  }
+end
+
+def interaction_queue_artifact_target(result)
+  target = result.fetch(:target)
+  {
+    "number" => target.fetch("number"),
+    "url" => target.fetch("url"),
+    "untrusted" => result.fetch(:untrusted_interactions).map { |finding| interaction_queue_entry(finding) },
+    "metadata_only" => result.fetch(:metadata_only_interactions).map do |finding|
+      interaction_queue_entry(finding)
+    end
+  }
+end
+
+def interaction_queue_artifact_payload(repo, targets)
+  {
+    "contract" => "pr-security-preflight-interaction-queues",
+    "version" => 1,
+    "repository" => repo,
+    "retention" => {
+      "owner" => "invoking-workflow",
+      "delete_after" => "batch-terminal-and-no-retry-or-recovery"
+    },
+    "targets" => targets
+  }
+end
+
+def interaction_queue_overflow?(target)
+  target.fetch("untrusted").size > INTERACTION_QUEUE_DISPLAY_LIMIT ||
+    target.fetch("metadata_only").size > INTERACTION_QUEUE_DISPLAY_LIMIT
+end
+
+def write_interaction_queue_artifact(repo, targets, directory: nil)
+  contents = "#{JSON.generate(interaction_queue_artifact_payload(repo, targets))}\n"
+  file = nil
+  path = nil
+  file = if directory
+           Tempfile.create(["pr-security-preflight-interaction-queues-", ".json"], directory)
+         else
+           Tempfile.create(["pr-security-preflight-interaction-queues-", ".json"])
+         end
+  path = file.path
+  file.binmode
+  file.write(contents)
+  file.flush
+  file.fsync
+  file.close
+
+  {
+    path:,
+    content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}",
+    entry_count: targets.sum do |target|
+      target.fetch("untrusted").size + target.fetch("metadata_only").size
+    end
+  }
+rescue SystemCallError => e
+  close_error = nil
+  begin
+    file.close if file && !file.closed?
+  rescue SystemCallError => error
+    close_error = error
+  end
+  close_detail = close_error ? "; close also failed: #{close_error.message}" : ""
+  if path
+    begin
+      File.unlink(path)
+    rescue Errno::ENOENT
+      nil
+    rescue SystemCallError => unlink_error
+      abort "Could not write interaction queue artifact: #{e.message}; " \
+            "incomplete artifact cleanup failed at #{path.inspect}: #{unlink_error.message}#{close_detail}"
+    end
+  end
+
+  abort "Could not write interaction queue artifact: #{e.message}"
+end
+
+def print_interaction_queue_artifact(repo, targets, directory: nil)
+  return unless targets.any? { |target| interaction_queue_overflow?(target) }
+
+  artifact = write_interaction_queue_artifact(repo, targets, directory:)
+  puts "Interaction queue artifact: #{artifact.fetch(:path)}"
+  puts "Interaction queue artifact digest: #{artifact.fetch(:content_digest)}"
+  puts "Interaction queue artifact entries: #{artifact.fetch(:entry_count)}"
+  puts "Interaction queue artifact retention owner: invoking workflow"
+  puts "Interaction queue artifact delete after: batch terminal and no retry or recovery depends on it"
+  puts
 end
 
 def print_findings_list(findings, label)
@@ -2995,6 +3135,7 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
   permission_cache = {}
   team_cache = {}
   canonical_bot_cache = {}
+  interaction_queue_targets = []
   trust_config_resolution = resolved_trust_config(options.fetch(:trust_config), repo:, github_host:)
   puts "Trust config: #{trust_config_resolution.fetch(:path)}"
   puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
@@ -3002,24 +3143,32 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
     path: trust_config_resolution.fetch(:path),
     global: trust_config_resolution.fetch(:global)
   )
+  puts "Trust config content digest: #{trust_config.fetch(:content_digest)}"
 
-  argv.each do |arg|
-    number = Integer(arg, exception: false)
-    abort "Invalid issue/PR number: #{arg.inspect}" unless number
-
-    result = scan_target(
-      repo:,
-      owner:,
-      name:,
-      number:,
-      pr_query:,
-      issue_query:,
-      include_reactions: options[:include_reactions],
-      permission_cache:,
-      trust_config:,
-      team_cache:,
-      canonical_bot_cache:
-    )
+  options.fetch(:target_number_list).each do |number|
+    result = begin
+      scan_target(
+        repo:,
+        owner:,
+        name:,
+        number:,
+        pr_query:,
+        issue_query:,
+        include_reactions: options[:include_reactions],
+        permission_cache:,
+        trust_config:,
+        team_cache:,
+        canonical_bot_cache:
+      )
+    rescue StandardError
+      print_interaction_queue_artifact(
+        repo,
+        interaction_queue_targets,
+        directory: options[:interaction_artifact_dir]
+      )
+      raise
+    end
+    interaction_queue_targets << interaction_queue_artifact_target(result)
     if options[:fail_on_high_risk_files] && result.fetch(:risky_files).any? &&
        !options.fetch(:acknowledged_risks).fetch(number, Set.new).include?("high-risk-files")
       receipt, rejection = trusted_base_high_risk_receipt(
@@ -3042,6 +3191,12 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
     )
   end
 
+  print_interaction_queue_artifact(
+    repo,
+    interaction_queue_targets,
+    directory: options[:interaction_artifact_dir]
+  )
+
   if overall_blockers.any?
     if acknowledged_findings.any?
       puts "Acknowledged security preflight findings:"
@@ -3052,7 +3207,6 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
     overall_blockers.each { |blocker| puts "- #{blocker}" }
     return 2
   end
-
   if acknowledged_findings.any?
     puts "Acknowledged security preflight findings:"
     acknowledged_findings.each { |finding| puts "- #{finding}" }

@@ -1391,13 +1391,13 @@ class ModelRoutingContractTest < Minitest::Test
     ].each { |phrase| assert_includes guide, phrase }
     assert_includes workflow, "MODEL_ESCALATION_REQUEST"
     assert_includes workflow, "old and replacement instances must not overlap"
-    assert_includes workflow, "stop and reconcile"
+    assert_includes workflow, "ownership is reconciled"
   end
 
   def test_lane_cards_separate_preference_from_optional_observation
     %w[
       workflows/pr-processing.md
-      skills/pr-batch/SKILL.md
+      workflows/pr-batch-worker-execution.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|

@@ -643,8 +643,8 @@ short SHA by the same rule.
 
 #### Claim the repair lane
 
-**Claim before the branch exists, not after.** Per
-[pr-processing](../workflows/pr-processing.md#canonical-launch-target-gate), the
+**Claim before the branch exists, not after.** Per the
+[PR-Batch Prompt Intake gate](../workflows/pr-batch-intake.md#canonical-launch-target-gate), the
 bounded status-then-claim sequence runs *before* branch creation, editing, or
 dispatch, and a refused claim must not reach branch creation at all. Deriving
 the name first and creating the branch after the claim satisfies both
