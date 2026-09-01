@@ -54,10 +54,11 @@ class PrWalkthroughContractTest < Minitest::Test
       phrases = [
         "automatically start the exact-diff PR walkthrough",
         "full interactive mode for large or complex PRs",
-        "After it completes or is skipped, refresh the diff identity and ordinary readiness.",
-        "If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop.",
-        "If an ordinary gate newly fails, stop.",
-        "Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity.",
+        "After it completes or is skipped",
+        "refresh the diff identity",
+        "invalidate the walkthrough",
+        "ordinary gate newly fails",
+        "Ask one final merge decision only when the refreshed diff",
         "Walkthrough participation is not merge approval."
       ]
       positions = phrases.map do |phrase|

@@ -157,7 +157,7 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
      Provider-specific status strings are inputs to normalization, not portable
      success values. Missing, stale, mismatched, non-successful, unrecognized,
      future, or `UNKNOWN` facts remain
-     `waiting-on-checks-or-review` and does not start a walkthrough.
+     `waiting-on-checks-or-review` and do not start a walkthrough.
 
 5. **Apply authority.**
    - `auto_merge_when_gates_pass`: merge only if ordinary readiness and the

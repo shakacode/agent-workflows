@@ -290,12 +290,14 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes normalized_gate,
                     "Do not claim or consume its machine `current-integration-evidence` here."
     assert_includes normalized_gate,
-                    "`NCI?` is a runtime requirement to evaluate this normalized current-integration CI checklist now"
-    assert_includes normalized_gate, "It never asserts success."
+                    "`NCI?` requires runtime evaluation of this normalized current-integration CI checklist"
+    assert_includes normalized_gate, "it never asserts success."
     assert_includes normalized_gate,
-                    "every missing, stale, mismatched, non-successful, unrecognized, future, or `UNKNOWN` result stays waiting and no walkthrough starts"
+                    "every non-passing or `UNKNOWN` result wait without a walkthrough"
     refute_match(/\bPASSED\b/, ask_gate)
     assert_includes normalized_monitoring, "Provider-specific status strings are inputs to normalization"
+    assert_includes normalized_monitoring,
+                    "future, or `UNKNOWN` facts remain `waiting-on-checks-or-review` and do not start a walkthrough."
     assert_includes normalized_monitoring,
                     "A behind branch remains not ready unless the current-integration gate below passes through an explicit provider merge-result or merge-group result bound to the exact head and current base with normalized successful CI."
     assert_includes normalized_walkthrough,

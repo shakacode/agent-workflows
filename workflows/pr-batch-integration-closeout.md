@@ -1581,27 +1581,26 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 ### Ask Merge Authority Walkthrough Gate
 
 Before entering this gate, establish current-integration readiness from trusted
-live facts. Resolve the exact head and current base, then require either:
+live facts. Resolve the exact head and current base. Require either:
 
-- the exact head contains the current base and exact-head CI is in its
-  normalized successful state; or
-- an explicit provider-produced merge-result or merge-group result is bound to
-  that exact head and current base, with CI in its normalized successful state.
+- the exact head contains the current base and exact-head CI has a normalized
+  successful state; or
+- a provider-produced merge-result or merge-group result bound to that head and
+  base has normalized successful CI.
 
-This is an early sequencing checklist, not a second evidence schema or a
-substitute for the later [Merge Assurance Gate](#merge-assurance-gate). Do not
-claim or consume its machine `current-integration-evidence` here. A missing,
-stale, mismatched, non-successful, unrecognized, future, or `UNKNOWN` fact keeps
-the target in `waiting-on-checks-or-review`; lead with
+This sequencing checklist neither defines an evidence schema nor replaces the
+later [Merge Assurance Gate](#merge-assurance-gate). Do not claim or consume its
+machine `current-integration-evidence` here. Missing, stale, mismatched,
+non-successful, unrecognized, future, or `UNKNOWN` facts keep the target in
+`waiting-on-checks-or-review`; lead with
 **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT
 MERGE-READY.** and do not start the walkthrough. GitHub's conflict or
 mergeability status is not CI evidence.
 
-In generated compact goals, `NCI?` is a runtime requirement to evaluate this
-normalized current-integration CI checklist now. It never asserts success. The
-adjacent `gate fail=>stop` and `ask iff same clean` clauses mean every missing,
-stale, mismatched, non-successful, unrecognized, future, or `UNKNOWN` result
-stays waiting and no walkthrough starts.
+In compact goals, `NCI?` requires runtime evaluation of this normalized
+current-integration CI checklist; it never asserts success. The adjacent
+`gate fail=>stop` and `ask iff same clean` clauses make every non-passing or
+`UNKNOWN` result wait without a walkthrough.
 
 When `merge_authority` is `ask` and every ordinary gate is clean,
 automatically start the exact-diff PR walkthrough before asking for merge
@@ -1618,17 +1617,15 @@ architecture, or difficult rollback may require full mode below those limits.
 Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
 
-After it completes or is skipped, refresh the diff identity and ordinary
-readiness. Also refresh the current base and the current-integration checklist
-above. If the diff identity changed, invalidate the walkthrough and readiness
-evidence, then restart the walkthrough or stop. A changed current base also
-invalidates the walkthrough unless the refreshed checklist passes for the same
-diff. If an ordinary gate newly fails, stop. Ask one final merge decision only
-when the refreshed diff identity matches the recorded identity, ordinary
-readiness remains clean, and merge is allowed; a completed walkthrough must have
-explained that same diff identity. Current-integration readiness is part of that
-refreshed ordinary readiness. Walkthrough participation is not merge approval.
-Merge still requires the explicit authority decision.
+After it completes or is skipped, refresh the diff identity, ordinary
+readiness, current base, and checklist above. If the diff changes, invalidate
+the walkthrough and readiness evidence; restart or stop. A changed base also
+invalidates the walkthrough unless the checklist still passes for the same
+diff. Stop if any ordinary gate newly fails. Ask one final merge decision only
+when the refreshed diff matches the recorded identity, ordinary readiness is
+clean, and merge is allowed; a completed walkthrough must cover that diff.
+Walkthrough participation is not merge approval. Merge still requires the
+explicit authority decision.
 
 ### Autonomous Merge Eligibility Gate
 
