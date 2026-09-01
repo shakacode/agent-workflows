@@ -261,6 +261,15 @@ class IntegrationCloseoutContractTest < Minitest::Test
     refute_includes @component, "Before the Unblock Block and final status, emit only:"
   end
 
+  def test_goal_closeout_puts_unblock_immediately_before_non_clean_status
+    closeout = route_after(@component, "Coordinator Closeout Lane")
+
+    assert_includes closeout,
+                    "Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; " \
+                    "otherwise put an `Unblock:` block with every normalized blocker immediately before the final " \
+                    "`Conversation status: Follow-ups remain — <each exact action or blocker>.` line."
+  end
+
   def test_sibling_components_remain_outside_the_boundary
     refute_match(/^## Release Mode Preflight$/, @component)
     refute_match(/^### Accelerated RC Auto-Merge$/, @component)

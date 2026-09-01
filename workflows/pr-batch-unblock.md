@@ -9,7 +9,7 @@ block as the last thing before that status line.
 
 Closing order for the final user-visible message, with nothing between these:
 
-1. The compact `Completed-batch audit:` receipt line, only when an existing verified receipt is available. When it is missing, emit no receipt line; carry the missing receipt only as a blocker and matching Unblock entry.
+1. The compact `Completed-batch audit:` receipt line, only when a completed-batch receipt is required and an existing verified receipt is available. When a completed-batch receipt is required but missing, emit no receipt line; carry the missing receipt only as a blocker and matching Unblock entry.
 2. The `Unblock:` block, whenever the final status is `Follow-ups remain`.
 3. The exact `Conversation status:` line.
 

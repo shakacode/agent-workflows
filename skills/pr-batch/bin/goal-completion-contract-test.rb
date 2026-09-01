@@ -221,7 +221,7 @@ UNBLOCK_BLOCK_HELP_RULE = "Each `Help:` line offers one genuinely different rout
 UNBLOCK_BLOCK_WAITING_RULE = "When every entry is `[agent]` or `[external]`, still emit the block and say that waiting is the correct action, so the operator can tell that nothing is owed from them."
 UNBLOCK_BLOCK_CLEAN_OMISSION_RULE = "Omit the block when the final status is `Conversation status: Ready for archiving.`; that status is valid only when the normalized blocker union is empty."
 UNBLOCK_BLOCK_TEMPLATE_LINE = "1. [<you|agent|external>] <smallest next action or wait instruction> — <exact command, paste-ready prompt, URL, question, trigger, or clearing condition>"
-UNBLOCK_BLOCK_VERIFIED_RECEIPT_RULE = "The compact `Completed-batch audit:` receipt line, only when an existing verified receipt is available. When it is missing, emit no receipt line; carry the missing receipt only as a blocker and matching Unblock entry."
+UNBLOCK_BLOCK_VERIFIED_RECEIPT_RULE = "The compact `Completed-batch audit:` receipt line, only when a completed-batch receipt is required and an existing verified receipt is available. When a completed-batch receipt is required but missing, emit no receipt line; carry the missing receipt only as a blocker and matching Unblock entry."
 # #243: the qualifier is the whole point of the sentence. An unqualified "A final
 # handoff without one of those two exact lines is incomplete" reads as binding on
 # the worker and planning-chat audiences that this section is their canonical
