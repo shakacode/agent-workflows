@@ -775,7 +775,8 @@ module CompletedBatchAuditReceipt
     targets:,
     publication_preflight:,
     coordination_backend:,
-    accepted_tracking_issue: nil
+    accepted_tracking_issue: nil,
+    allow_legacy_product_evidence: false
   )
     return unless input.is_a?(Hash) && input.keys.sort == %w[contract decision_url version]
     return unless input["contract"] == ACCEPTED_DEFERRAL_INPUT_CONTRACT && input["version"] == 1
@@ -784,7 +785,8 @@ module CompletedBatchAuditReceipt
       publication_preflight,
       expected_batch_id:,
       targets:,
-      coordination_backend:
+      coordination_backend:,
+      allow_legacy_replay: allow_legacy_product_evidence
     )
 
     predecessor = accepted_deferral_predecessor_snapshot(
@@ -893,7 +895,35 @@ module CompletedBatchAuditReceipt
       coordination_backend:,
       accepted_tracking_issue: snapshot["tracking_issue"]
     )
-    refreshed == snapshot
+    return true if refreshed == snapshot
+
+    legacy_preflight = accepted_deferral_legacy_preflight(
+      publication_preflight,
+      expected_batch_id:,
+      targets: deterministic_targets(expected_targets),
+      coordination_backend:
+    )
+    return false unless legacy_preflight
+
+    legacy_product_evidence = {
+      "receipt_digest" => legacy_preflight.fetch("receipt_digest"),
+      "snapshot_digest" => legacy_preflight.fetch("snapshot_digest"),
+      "blockers" => legacy_preflight.fetch("blockers")
+    }
+    return false unless snapshot["product_evidence"] == legacy_product_evidence
+
+    legacy_refreshed = accepted_deferral_assessment(
+      snapshot.fetch("input"),
+      predecessor_marker:,
+      predecessor_receipt:,
+      expected_batch_id:,
+      targets: deterministic_targets(expected_targets),
+      publication_preflight: legacy_preflight,
+      coordination_backend:,
+      accepted_tracking_issue: snapshot["tracking_issue"],
+      allow_legacy_product_evidence: true
+    )
+    legacy_refreshed == snapshot
   rescue Error, KeyError, TypeError, ArgumentError
     false
   end
@@ -995,23 +1025,39 @@ module CompletedBatchAuditReceipt
     end
   end
 
-  def accepted_deferral_product_evidence?(preflight, expected_batch_id:, targets:, coordination_backend:)
+  def accepted_deferral_product_evidence?(
+    preflight,
+    expected_batch_id:,
+    targets:,
+    coordination_backend:,
+    allow_legacy_replay: false
+  )
     return false unless accepted_deferral_preflight_integrity?(
       preflight,
       expected_batch_id:,
       targets:,
       coordination_backend:
     )
-    return false unless accepted_deferral_preflight_reassessed?(
+
+    current_reassessment = accepted_deferral_preflight_reassessed?(
       preflight,
       expected_batch_id:,
       targets:,
       coordination_backend:
     )
+    legacy_reassessment = allow_legacy_replay && accepted_deferral_legacy_preflight_reassessed?(
+      preflight,
+      expected_batch_id:,
+      targets:,
+      coordination_backend:
+    )
+    return false unless current_reassessment || legacy_reassessment
     return false unless preflight["eligible"] == false && preflight["verdict"] == "BLOCKED"
 
     blockers = preflight["blockers"]
-    return false unless accepted_deferral_target_resolution_blockers?(preflight, targets, blockers)
+    return false unless legacy_reassessment ||
+                        accepted_deferral_target_resolution_blockers?(preflight, targets, blockers)
+
     return false if nested_unknown?(preflight)
 
     coordination = preflight.dig("snapshot", "coordination")
@@ -1069,6 +1115,65 @@ module CompletedBatchAuditReceipt
       CompletedBatchPublicationPreflight.canonicalize(preflight)
   rescue KeyError, NoMethodError, TypeError
     false
+  end
+
+  def accepted_deferral_legacy_preflight_reassessed?(preflight, expected_batch_id:, targets:, coordination_backend:)
+    return false unless accepted_deferral_preflight_integrity?(
+      preflight,
+      expected_batch_id:,
+      targets:,
+      coordination_backend:
+    )
+
+    refreshed = CompletedBatchPublicationPreflight.assess(
+      preflight.fetch("source_input"),
+      coordination_backend:,
+      waiver_verifier: method(:authenticated_publication_waiver_comment),
+      target_verifier: method(:authenticated_publication_target_snapshot),
+      coordination_verifier: method(:authenticated_publication_coordination_status)
+    )
+    legacy = accepted_deferral_legacy_preflight(
+      refreshed,
+      expected_batch_id:,
+      targets:,
+      coordination_backend:
+    )
+    legacy && CompletedBatchPublicationPreflight.canonicalize(legacy) ==
+      CompletedBatchPublicationPreflight.canonicalize(preflight)
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def accepted_deferral_legacy_preflight(preflight, expected_batch_id:, targets:, coordination_backend:)
+    return unless accepted_deferral_preflight_integrity?(
+      preflight,
+      expected_batch_id:,
+      targets:,
+      coordination_backend:
+    )
+    return unless preflight["eligible"] == false && preflight["verdict"] == "BLOCKED"
+    return unless accepted_deferral_target_resolution_blockers?(preflight, targets, preflight["blockers"])
+
+    target = validated_target(targets.first)
+    source_input = preflight.fetch("source_input")
+    target_row = source_input.fetch("target_snapshots").first
+    lane = accepted_deferral_target_resolution_lane(source_input, target, target_row.fetch("source"))
+    return unless lane
+
+    label = "#{target.fetch('repo')}#issue:#{target.fetch('number')}"
+    legacy = JSON.parse(JSON.generate(preflight))
+    legacy["blockers"] = [
+      "coordination lane #{lane.fetch('name')} target is absent or ambiguous",
+      "#{label} is absent from resolved coordination scope",
+      "#{label} target state/head is not authenticated or fresh"
+    ]
+    legacy.dig("snapshot", "coordination")["lanes"] = []
+    legacy["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(legacy.fetch("snapshot"))
+    unsigned = legacy.reject { |key, _value| key == "receipt_digest" }
+    legacy["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+    legacy
+  rescue KeyError, TypeError
+    nil
   end
 
   def accepted_deferral_target_resolution_blockers?(preflight, targets, blockers)

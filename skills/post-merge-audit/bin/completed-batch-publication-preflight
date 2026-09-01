@@ -532,6 +532,8 @@ module CompletedBatchPublicationPreflight
           unless lane["pr_state"] == expected_state
         blockers << "#{target_label(target)} coordination terminal evidence is absent" unless evidence
       end
+      # The authenticated complementary-target path skips the branch above but
+      # still requires the lane's durable terminal evidence.
       if terminal_state == "done" && authenticated_target_completion && !evidence
         blockers << "#{target_label(target)} coordination terminal evidence is absent"
       end

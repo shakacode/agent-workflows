@@ -674,6 +674,72 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_replay_preserves_pre_issue_522_product_evidence
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    current_preflight = accepted_deferral_publication_preflight(target)
+    legacy_preflight = legacy_accepted_deferral_publication_preflight(current_preflight)
+    current_terminal = nil
+
+    with_accepted_deferral_api(current_preflight, accepted_deferral_api(current_preflight)) do
+      current_terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: current_preflight,
+        coordination_backend: REAL_BACKEND
+      )
+    end
+
+    current_state = CompletedBatchAuditReceipt.marker_state(current_terminal)
+    snapshot = CompletedBatchAuditReceipt.accepted_deferral_snapshot(
+      current_state.fields.fetch("accepted_deferral_snapshot")
+    )
+    legacy_snapshot = JSON.parse(JSON.generate(snapshot))
+    legacy_snapshot["product_evidence"] = {
+      "receipt_digest" => legacy_preflight.fetch("receipt_digest"),
+      "snapshot_digest" => legacy_preflight.fetch("snapshot_digest"),
+      "blockers" => legacy_preflight.fetch("blockers")
+    }
+    legacy_api = accepted_deferral_api(legacy_preflight)
+    decision_comment = legacy_api.call(
+      "github.com", "repos/shakacode/react_on_rails/issues/comments/5400000000"
+    )
+    legacy_snapshot.fetch("decision")["body_sha256"] =
+      "sha256:#{Digest::SHA256.hexdigest(decision_comment.fetch('body'))}"
+    legacy_terminal = accepted_deferral_terminal_from_snapshot(legacy_snapshot)
+
+    with_accepted_deferral_api(current_preflight, legacy_api) do
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        legacy_terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: [target],
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: current_preflight
+      )
+
+      assert replay.fetch("ready"), replay.fetch("blockers").join("\n")
+      assert_empty replay.fetch("blockers")
+
+      assert_raises(CompletedBatchAuditReceipt::AcceptedDeferralError) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: legacy_preflight,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
   def test_post_publication_accepted_deferral_rejects_a_foreign_predecessor_before_fetch
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
@@ -3693,6 +3759,36 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
     end
     result
+  end
+
+  def legacy_accepted_deferral_publication_preflight(current)
+    legacy = JSON.parse(JSON.generate(current))
+    target = legacy.fetch("targets").fetch(0)
+    lane = legacy.dig("source_input", "coordination_status", "batches", 0, "lanes", 0)
+    label = "#{target.fetch('repo')}#issue:#{target.fetch('number')}"
+    legacy["blockers"] = [
+      "coordination lane #{lane.fetch('name')} target is absent or ambiguous",
+      "#{label} is absent from resolved coordination scope",
+      "#{label} target state/head is not authenticated or fresh"
+    ]
+    legacy.dig("snapshot", "coordination")["lanes"] = []
+    legacy["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(legacy.fetch("snapshot"))
+    unsigned = legacy.reject { |key, _value| key == "receipt_digest" }
+    legacy["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+    legacy
+  end
+
+  def accepted_deferral_terminal_from_snapshot(snapshot)
+    fields = CompletedBatchAuditReceipt.accepted_deferral_terminal_fields(snapshot)
+    ordered = CompletedBatchAuditReceipt::LEGACY_FIELDS.flat_map do |field|
+      line = "#{field}: #{fields.fetch(field)}\n"
+      if field == "scope_evidence"
+        [line, "accepted_deferral_snapshot: #{fields.fetch('accepted_deferral_snapshot')}\n"]
+      else
+        [line]
+      end
+    end.join
+    "<!-- completed-batch-audit v1\n#{ordered}-->\n"
   end
 
   def accepted_deferral_predecessor_receipt(marker)
