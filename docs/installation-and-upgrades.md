@@ -57,7 +57,7 @@ and upgrade deliver
 the default and preset adapter in copy, symlink, and plugin-companion layouts,
 but never write the user-global config or enable a repository override. See the
 [project writing-style setup](adoption.md#configure-project-writing-style) for
-the copy/paste instructions.
+the configuration instructions.
 
 Use `--target DIR` for custom homes such as `~/.agents`. The host name controls
 the default target and metadata; it does not change the shared workflow text.
