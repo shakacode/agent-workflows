@@ -151,6 +151,11 @@ module AgentWorkflowWritingStyle
             "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
     end
     normalized_style = style.strip
+    if normalized_style.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
+      raise ConfigurationError,
+            "invalid #{label} writing_style: remote URLs/URI references are unsupported; " \
+            "a trusted local relative Markdown-file path is required"
+    end
     if normalized_style.start_with?("~")
       raise ConfigurationError,
             "invalid #{label} writing_style: expected a nonblank relative Markdown-file path"
