@@ -711,6 +711,9 @@ module CloseoutEvidenceReplay
     return false unless suffix&.match?(/\A\s+/)
 
     raw_label = suffix.lstrip
+    if (next_https = HTTPS_TOKEN.match(raw_label))
+      raw_label = raw_label[0...next_https.begin(0)].rstrip.sub(/\s+(?:after|at|from|see|via)\z/i, "")
+    end
     leading_symbols = raw_label[/\A[^\p{Alnum}]*/u]
     return false if leading_symbols.match?(%r{[/\\]})
 

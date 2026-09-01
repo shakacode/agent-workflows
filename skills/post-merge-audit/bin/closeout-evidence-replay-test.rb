@@ -905,6 +905,16 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "SATISFIED", qa.fetch("verdict"), label
       assert_empty qa.fetch("missing"), label
     end
+
+    unpunctuated = run_replay(
+      v2_marker(
+        "visual_evidence" =>
+          "durable: before HTTPS: TLS 1.3 after https://github.com/example/repo/pull/123#visual"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", unpunctuated.fetch("verdict")
+    assert_empty unpunctuated.fetch("missing")
   end
 
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
