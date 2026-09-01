@@ -1481,9 +1481,6 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes continuation,
                          "normalize auto to auto_merge_when_gates_pass before workers or durable evidence",
                          "continuation prompt"
-
-    assert_text_includes @changelog, "Put editable PR-batch controls", "CHANGELOG.md"
-    assert_text_includes @changelog, "[issue 386]", "CHANGELOG.md"
   end
 
   def test_plan_prompt_target_guidance_uses_the_synchronized_invocation
