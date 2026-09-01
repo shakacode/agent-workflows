@@ -121,26 +121,29 @@ receives a `security-floor v1` result with preflight `n/a` and its complete
 trusted provenance embedded. Skipping preflight is never override authority.
 
 One narrow integration-closeout resolution applies to a `high-risk-files`
-finding caused only by the broad protected-parent match. Require completed
-exact-head validation and configured review plus final `safe_class == "tests"`
-from `skills/pr-batch/bin/autonomous-merge-eligibility` after it parses the
-trusted-base `AutonomousMergePolicy` for the same base/head from complete policy,
-semantic, and file evidence. Otherwise remain blocked; never reconstruct policy
-or add another test-path list. At the initial scan, bind the canonical helper
-path and `sha256:` digest of the exact `pr-security-preflight` bytes and preserve
-its emitted predicate matches with the flat risky-path list. At resolution,
-require that digest unchanged and an exact-head rerun; use only its emitted
-`root-prefix`, `nested-script-dir`, and `exact-filename` matches per path. Never
-copy them into a second classifier. Root-prefix or nested-script-dir may qualify,
-including a `nested-script-dir`-only match; exact-filename never qualifies as broad
-protected-parent-only. Bind the full safe-class verdict to every current and
-previous path. It already enforces `safe_path_groups.tests` inclusion/exclusion
-and unambiguous `test_change == "strengthens-only"`; never substitute a path-only
-check. Production helpers, mixed diffs, excluded tests, `human_review_paths`, and
-`policy_paths` keep their own stops. Malformed, incomplete, stale, changed-digest,
-contradictory, or `UNKNOWN` policy, helper, file, validation, or review evidence
-remains `UNKNOWN` and blocked. This clears only the `high-risk-files`
-protected-parent stop; it never clears another security-floor or review gate.
+finding caused only by the broad protected-parent match:
+
+- Preconditions: require completed exact-head validation and configured review,
+  plus final `safe_class == "tests"` from `skills/pr-batch/bin/autonomous-merge-eligibility`
+  after it parses the trusted-base `AutonomousMergePolicy` for the same base/head
+  from complete policy, semantic, and file evidence. Otherwise remain blocked;
+  never reconstruct policy or add another test-path list.
+- Evidence binding: at the initial scan, bind the canonical helper path and
+  `sha256:` digest of the exact `pr-security-preflight` bytes; preserve its emitted
+  predicate matches with the flat risky-path list. At resolution, require that
+  digest remain unchanged and rerun at exact head. Never copy its predicates into another classifier.
+- Predicate decision: use only emitted `root-prefix`, `nested-script-dir`, and
+  `exact-filename` matches per path. Root-prefix or nested-script-dir may qualify,
+  including a `nested-script-dir`-only match; exact-filename never qualifies as
+  broad protected-parent-only. Bind the full safe-class verdict to every current
+  and previous path. It enforces `safe_path_groups.tests`
+  inclusion/exclusion and unambiguous `test_change == "strengthens-only"`; never
+  substitute a path-only check.
+- Independent stops: production helpers, mixed diffs, excluded tests,
+  `human_review_paths`, and `policy_paths` keep their own stops. Malformed,
+  incomplete, stale, changed-digest, contradictory, or `UNKNOWN` policy, helper,
+  file, validation, or review evidence remains `UNKNOWN` and blocked. This clears
+  only the `high-risk-files` protected-parent stop; it never clears another security-floor or review gate.
 
 ## Security-Floor Result
 

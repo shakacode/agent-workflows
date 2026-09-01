@@ -125,9 +125,11 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_floor,
                     "preserve its emitted predicate matches with the flat risky-path list"
     assert_includes normalized_floor,
-                    "require that digest unchanged"
+                    "require that digest remain unchanged"
     assert_includes normalized_floor,
-                    "exact-head rerun; use only its emitted `root-prefix`, `nested-script-dir`, and `exact-filename` matches per path"
+                    "rerun at exact head"
+    assert_includes normalized_floor,
+                    "use only emitted `root-prefix`, `nested-script-dir`, and `exact-filename` matches per path"
     assert_includes normalized_floor,
                     "Root-prefix or nested-script-dir may qualify"
     assert_includes normalized_floor,
@@ -141,7 +143,7 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_floor,
                     "never substitute a path-only check"
     assert_includes normalized_floor,
-                    "Production helpers, mixed diffs, excluded tests, `human_review_paths`, and `policy_paths` keep their own stops"
+                    "production helpers, mixed diffs, excluded tests, `human_review_paths`, and `policy_paths` keep their own stops"
     assert_includes normalized_floor,
                     "Malformed, incomplete, stale, changed-digest, contradictory, or `UNKNOWN` policy, helper"
     assert_includes normalized_floor,
