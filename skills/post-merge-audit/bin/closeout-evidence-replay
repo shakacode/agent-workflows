@@ -86,10 +86,15 @@ module CloseoutEvidenceReplay
     )
     (?![\w./-])
   }ix
-  # Percent-encoded authority markers denote the same authority once decoded. Only these three are
-  # decoded, so ordinary prose containing `%` (`99.9%`) is untouched.
-  HTTPS_ENCODED_AUTHORITY_MARKER = /%(?:2[eE]|3[aA]|40)/
-  HTTPS_ENCODED_AUTHORITY_MARKERS = { "%2e" => ".", "%3a" => ":", "%40" => "@" }.freeze
+  # Authority and path markers have Unicode and percent-encoded spellings that URL and IDNA
+  # parsers fold to ASCII, so `example｡test` and `example%2Etest` resolve exactly like
+  # `example.test`. Fold them before classification, or a homoglyph host reads as prose. NFKC
+  # covers the fullwidth forms; IDNA's three alternate full stops need an explicit mapping.
+  HTTPS_IDNA_FULL_STOPS = /[\u3002\uFF0E\uFF61]/
+  HTTPS_ENCODED_AUTHORITY_MARKER = /%(?:2[eEfF]|3[aA]|40|5[cC])/
+  HTTPS_ENCODED_AUTHORITY_MARKERS = {
+    "%2e" => ".", "%2f" => "/", "%3a" => ":", "%40" => "@", "%5c" => "\\"
+  }.freeze
   # Prose delimiters that wrap a label token (`"TLS 1.3"`, `` `TLS 1.3` ``, `(HTTP/2)`,
   # `**TLS 1.3**`) and must be removed before authority classification. Runs are stripped so
   # Markdown emphasis of any width is handled; the delimiters carry no authority meaning, and a
@@ -201,6 +206,11 @@ module CloseoutEvidenceReplay
   end
 
   def replay(text, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
+    # A PR body is untrusted input and may carry invalid bytes. Scrub once at the entry point so
+    # every downstream regex is safe: an undecodable body must replay to a verdict, not abort the
+    # gate with a stack trace. U+FFFD is not an authority marker, so scrubbing cannot manufacture
+    # an accepted reference.
+    text = text.to_s.scrub
     qa_v1_markers = marker_bodies(text, "qa-evidence v1")
     qa_v2_markers = marker_bodies(text, "qa-evidence v2")
     applicable_v2_markers = qa_v2_markers.select do |marker|
@@ -870,11 +880,15 @@ module CloseoutEvidenceReplay
     token.match?(/\A\p{Alnum}[\p{Alnum}_-]*:?\z/u)
   end
 
-  # A `/` marks a path unless the token is a bounded protocol or version shape. Shared so the
+  # A `/` marks a path unless the token is a bounded protocol or version shape; a `\` always does.
+  # Both are tested after marker folding, so `host%5Cpath` and `host／path` cannot slip past. Shared
+  # so the
   # Markdown-link branch applies the same rule as ordinary prose rather than drifting from it.
   def path_shaped_https_label?(label)
     label.split(/\s+/).any? do |token|
       token = normalized_https_prose_token(token)
+      next true if token.include?("\\")
+
       token.include?("/") &&
         !token.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z}) &&
         !token.match?(HTTPS_PROSE_VERSION_LIST)
@@ -885,7 +899,7 @@ module CloseoutEvidenceReplay
     tokens = label.split(/\s+/)
     tokens.each_with_index.any? do |token, index|
       square_bracketed = token.start_with?("[")
-      token = decoded_https_authority_markers(normalized_https_prose_token(token))
+      token = normalized_https_prose_token(token)
       # Checked before the exemptions below: the trailing-colon prose rule would otherwise read
       # `view-source:` as a bounded label rather than as a scheme.
       next true if token.match?(NON_DURABLE_OPAQUE_SCHEME)
@@ -909,12 +923,6 @@ module CloseoutEvidenceReplay
     end
   end
 
-  def decoded_https_authority_markers(token)
-    return token unless token.match?(HTTPS_ENCODED_AUTHORITY_MARKER)
-
-    token.gsub(HTTPS_ENCODED_AUTHORITY_MARKER) { |marker| HTTPS_ENCODED_AUTHORITY_MARKERS.fetch(marker.downcase) }
-  end
-
   # `user@host` is authority-shaped with or without a password, and with or without a dot in the
   # host. A leading `@` is a handle mention (`@octocat`) rather than userinfo, so it stays prose.
   def userinfo_shaped_https_authority?(authority)
@@ -929,7 +937,19 @@ module CloseoutEvidenceReplay
   end
 
   def normalized_https_prose_token(token)
-    token.sub(HTTPS_PROSE_LEADING_DELIMITERS, "").sub(HTTPS_PROSE_TRAILING_DELIMITERS, "")
+    folded_https_authority_markers(
+      token.sub(HTTPS_PROSE_LEADING_DELIMITERS, "").sub(HTTPS_PROSE_TRAILING_DELIMITERS, "")
+    )
+  end
+
+  # Never raises: classification must return a verdict even on invalid encoding.
+  def folded_https_authority_markers(token)
+    token = token.unicode_normalize(:nfkc).gsub(HTTPS_IDNA_FULL_STOPS, ".")
+    return token unless token.match?(HTTPS_ENCODED_AUTHORITY_MARKER)
+
+    token.gsub(HTTPS_ENCODED_AUTHORITY_MARKER) { |marker| HTTPS_ENCODED_AUTHORITY_MARKERS.fetch(marker.downcase) }
+  rescue ArgumentError, Encoding::CompatibilityError
+    token
   end
 
   def unresolved_hosted_criterion_evidence?(evidence)

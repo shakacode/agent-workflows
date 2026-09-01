@@ -1580,6 +1580,39 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_empty hosted.fetch("missing")
   end
 
+  def test_https_labels_fold_encoded_and_unicode_authority_markers
+    # One marker per payload, so nothing else can carry the signal. URL and IDNA parsers fold
+    # these to ASCII, so a homoglyph host resolves exactly like the ASCII one and must not read
+    # as prose. Found by sweeping the marker alphabet; the position sweep above missed all of it.
+    payloads = [
+      "example%2Etest", "internal%3A8080", "admin%40internal", "host%2Fpath", "host%5Cpath",
+      "example\u3002test", "example\uFF0Etest", "example\uFF61test",
+      "admin\uFF20internal", "internal\uFF1A8080", "host\uFF0Fpath"
+    ]
+    url = "https://github.com/example/repo/pull/123#visual"
+
+    payloads.each do |payload|
+      ["HTTPS: #{payload}; #{url}", "HTTPS: seen #{payload}; #{url}",
+       "HTTPS: #{payload} #{url}", "HTTPS: [#{payload}](#{url})",
+       "durable: before HTTPS: #{payload}; after #{url}"].each do |value|
+        assert CloseoutEvidenceReplay.malformed_https_reference?(value) ||
+               CloseoutEvidenceReplay.disallowed_durable_reference?(value),
+               "folded marker accepted: #{value}"
+      end
+    end
+  end
+
+  def test_replay_survives_invalid_utf8_in_the_body
+    # A PR body is untrusted input. Invalid bytes used to abort the whole replay with a stack
+    # trace from the first regex, rather than producing a verdict.
+    body = +"<!-- qa-evidence v2\nrequired: yes\nstatus: satisfied\nscope: caf\xFF broken\n-->\n"
+    body.force_encoding("UTF-8")
+
+    data = run_replay(body)
+
+    refute_nil data.dig("qa_evidence", "verdict")
+  end
+
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
     # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
     # whole replay instead of returning a verdict.
