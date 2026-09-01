@@ -1408,6 +1408,34 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", valid.fetch("verdict")
   end
 
+  def test_v2_bundle_hygiene_requires_a_terminal_shape_in_non_byte_metric_names
+    %w[bundleParseTime fileUploadLatency].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "bundle_hygiene",
+          "performance_evidence" =>
+            "repo_seam: source=bin/bundle-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+
+    %w[chunks modules assets bundles shapes bundle_compressed_size file_total_count].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "bundle_hygiene",
+          "performance_evidence" =>
+            "repo_seam: source=bin/bundle-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
   def test_v2_performance_evidence_requires_named_repo_seam_source
     invalid_sources = [
       "repo_seam: metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",

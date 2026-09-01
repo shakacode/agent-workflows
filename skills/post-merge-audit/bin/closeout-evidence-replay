@@ -33,6 +33,7 @@ module CloseoutEvidenceReplay
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
   STRUCTURAL_COUNT_TOKENS = %w[chunk chunks file files module modules test tests].freeze
   SIZE_METRIC_TOKENS = %w[asset assets bundle bundles byte bytes shape shapes size sizes].freeze
+  BUNDLE_HYGIENE_SHAPE_TOKENS = (STRUCTURAL_COUNT_TOKENS + SIZE_METRIC_TOKENS).freeze
   # Runtime-memory names are the only reason a terminal size/byte noun measures behavior rather
   # than build output, so they are the sole carve-out from the terminal-size rejection.
   MEMORY_METRIC_TOKENS = %w[heap memory ram resident rss].freeze
@@ -727,8 +728,13 @@ module CloseoutEvidenceReplay
     names = non_url_text.scan(/(?:\A|[\s;])metric_name\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
     return false unless names.length == 1
 
-    shape_tokens = %w[asset bundle byte bytes chunk file module shape size]
-    text_tokens(names.first.first).any? { |token| shape_tokens.include?(token) }
+    bundle_hygiene_shape?(text_tokens(names.first.first))
+  end
+
+  def bundle_hygiene_shape?(tokens)
+    return true if tokens.length == 1 && BUNDLE_HYGIENE_SHAPE_TOKENS.include?(tokens.first)
+
+    size_metric_shape?(tokens) || structural_metric_count?(tokens)
   end
 
   def valid_measured_metric?(value)
