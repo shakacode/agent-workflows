@@ -56,6 +56,7 @@ module PushDownstream
   AUDIT_UNKNOWN = "UNKNOWN"
   AUDIT_CLEAN = "clean"
   AUDIT_STATUSES = [AUDIT_CLEAN, "drifted", "blocked"].freeze
+  AUDIT_DOCTOR_READ_TREES = %w[.agents/skills .agents/workflows].freeze
   # The audit covers repo-local seam drift only. Shared skills and workflows are
   # installed per host and are intentionally never copied into consumer repos,
   # so a drifted consumer must not be read as "every upstream commit needs a
@@ -73,7 +74,7 @@ module PushDownstream
                           "is never used to represent an unknown value.",
     "exit_codes" => {
       "0" => "every selected consumer is clean",
-      "1" => "at least one consumer is drifted or blocked"
+      "1" => "at least one consumer is drifted or blocked, or no consumers were selected"
     }
   }.freeze
   AUDIT_SCOPE = {
@@ -395,6 +396,7 @@ module PushDownstream
   end
 
   def reconcile_scaffold(root, contract)
+    validate_audit_read_paths!(root)
     changed = false
     follow_ups = []
     preexisting_scripts = repo_owned_standard_scripts(root)
@@ -828,7 +830,9 @@ module PushDownstream
     repos = select_repos(load_config(config_path), only: only, include_disabled: include_disabled)
     presets = File.file?(presets_path) ? load_presets(presets_path) : {}
     consumers = repos.map { |repo| audit_repo(repo, presets) }
-    puts JSON.pretty_generate(audit_report(consumers))
+    puts JSON.pretty_generate(audit_json_safe(audit_report(consumers)))
+    return 1 if consumers.empty?
+
     consumers.all? { |consumer| consumer.fetch("status") == AUDIT_CLEAN } ? 0 : 1
   end
 
@@ -873,6 +877,112 @@ module PushDownstream
     AUDIT_UNKNOWN
   end
 
+  def managed_scaffold_paths
+    fixed_paths = [
+      "AGENTS.md",
+      "CLAUDE.md",
+      AgentWorkflowSeamDoctor::POLICY_CONFIG,
+      TRUST_CONFIG,
+      ".agents/bin/README.md"
+    ]
+    fixed_paths + COMMAND_ORDER.map { |command| ".agents/bin/#{command}" }
+  end
+
+  # Reconciliation is confined to a disposable clone, but it must not follow a
+  # consumer-controlled symlink out of that clone. Treat an unsafe managed path
+  # as uninterpretable so the audit reports blocked/UNKNOWN without writing it.
+  def validate_managed_scaffold_paths!(root)
+    clone_root = File.expand_path(root)
+    root_stat = File.lstat(clone_root)
+    unless root_stat.directory? && !root_stat.symlink?
+      raise "managed scaffold clone root is not a safe directory"
+    end
+
+    managed_scaffold_paths.each do |relative_path|
+      target = File.expand_path(relative_path, clone_root)
+      unless target.start_with?("#{clone_root}#{File::SEPARATOR}")
+        raise "managed scaffold path escapes the clone root: #{relative_path}"
+      end
+
+      current = clone_root
+      components = relative_path.split(File::SEPARATOR)
+      components.each_with_index do |component, index|
+        current = File.join(current, component)
+        begin
+          stat = File.lstat(current)
+        rescue Errno::ENOENT
+          break
+        end
+        raise "managed scaffold path contains a symlink: #{relative_path}" if stat.symlink?
+        if index == components.length - 1 && !stat.file?
+          raise "managed scaffold path is not a regular file: #{relative_path}"
+        end
+      end
+    end
+    true
+  rescue Errno::EACCES, Errno::ENOTDIR => e
+    raise "managed scaffold path could not be safely inspected: #{e.message}"
+  end
+
+  # The seam doctor discovers repo-local Markdown below these trees. Reject
+  # symlinks it could read before audit or apply discovery, while allowing
+  # non-Markdown links that are outside the doctor's input surface.
+  def validate_audit_read_paths!(root)
+    validate_managed_scaffold_paths!(root)
+    clone_root = File.expand_path(root)
+
+    AUDIT_DOCTOR_READ_TREES.each do |relative_path|
+      tree_root = File.join(clone_root, relative_path)
+      pending = [tree_root]
+      until pending.empty?
+        current = pending.pop
+        begin
+          stat = File.lstat(current)
+        rescue Errno::ENOENT
+          next
+        end
+        if stat.symlink?
+          if current == tree_root || current.b.end_with?(".md".b)
+            displayed = audit_display_path(current.delete_prefix("#{clone_root}#{File::SEPARATOR}"))
+            raise "audit read path contains a symlink: #{displayed}"
+          end
+          next
+        end
+        unless stat.directory?
+          if current.b.end_with?(".md".b) && !stat.file?
+            displayed = audit_display_path(current.delete_prefix("#{clone_root}#{File::SEPARATOR}"))
+            raise "audit read path is not a regular file: #{displayed}"
+          end
+          next
+        end
+
+        Dir.each_child(current) { |entry| pending << File.join(current, entry) }
+      end
+    end
+    true
+  rescue Errno::EACCES, Errno::ENOTDIR => e
+    raise "audit read path could not be safely inspected: #{e.message}"
+  end
+
+  def audit_display_path(path)
+    path.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+  end
+
+  def audit_json_safe(value)
+    case value
+    when String
+      source = value.dup
+      source.force_encoding(Encoding::UTF_8) if source.encoding == Encoding::ASCII_8BIT
+      source.encode(Encoding::UTF_8, invalid: :replace, undef: :replace)
+    when Array
+      value.map { |item| audit_json_safe(item) }
+    when Hash
+      value.to_h { |key, item| [audit_json_safe(key), audit_json_safe(item)] }
+    else
+      value
+    end
+  end
+
   def audit_repo(repo, presets)
     begin
       contract = resolve_contract(repo, presets)
@@ -902,12 +1012,19 @@ module PushDownstream
       end
 
       begin
-        base_sha = audit_local_ref_head(clone, "HEAD") || AUDIT_UNKNOWN
+        base_sha = audit_local_ref_head(clone, "HEAD^{commit}")
+        tracked_base_sha = audit_local_ref_head(
+          clone, "refs/remotes/origin/#{repo.fetch(:base_branch)}^{commit}"
+        )
       rescue RuntimeError, SystemCallError => e
         return audit_blocked(repo, "consumer base commit could not be resolved: #{e.message}")
       end
+      unless base_sha && tracked_base_sha == base_sha
+        return audit_blocked(repo, "configured base branch is not the tracked remote branch")
+      end
 
       begin
+        validate_audit_read_paths!(clone)
         issues = AgentWorkflowSeamDoctor.check(clone)
       rescue RuntimeError, SystemCallError => e
         # The doctor reads consumer files and shells out (bash -n), so a single
@@ -2497,7 +2614,7 @@ if $PROGRAM_NAME == __FILE__
     opts.on("--apply", "Apply changes (write files; push branches and open PRs)") { options[:apply] = true }
     opts.on("--audit",
             "Read-only fleet seam-drift report as JSON; never writes, pushes, or opens PRs.",
-            "Exit 0 when every consumer is clean, 1 when any is drifted or blocked.",
+            "Exit 0 when every selected consumer is clean; 1 when any is drifted or blocked, or none are selected.",
             "Per consumer, seam_doctor_issues, changed_managed_paths, and follow_ups are",
             "each an Array, or the string \"UNKNOWN\" when the consumer is blocked and the",
             "value could not be established. Type-check these fields before iterating.") do

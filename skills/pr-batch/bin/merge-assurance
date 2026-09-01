@@ -61,7 +61,7 @@ module MergeAssurance
     verdict head_sha policy_provenance helper_provenance helper_trust metrics
     path_matches safe_class triggered_gates shadow_triggered_gates
     shadow_evidence_unknown rollback_assessment human_decision_evidence
-    evidence_failures
+    current_integration evidence_failures
   ].freeze
   AUTONOMOUS_METRIC_KEYS = %w[
     changed_files changed_lines commits reviewed_heads
@@ -71,6 +71,7 @@ module MergeAssurance
     closeout-helper
     decision-library
     evidence-library
+    integration-evidence-library
     policy-library
     policy-glob-library
     policy-yaml-library
@@ -180,7 +181,7 @@ module MergeAssurance
     }
     receipt = {
       "contract" => "merge-assurance-receipt",
-      "version" => 1,
+      "version" => 2,
       "eligible" => true,
       "verdict" => "ELIGIBLE",
       "issued_at" => now.utc.iso8601,
@@ -191,7 +192,8 @@ module MergeAssurance
         "base" => safe_context["base"],
         "head_sha" => safe_context["head_sha"],
         "authority" => safe_context["authority"],
-        "diff_identity" => safe_context["diff_identity"]
+        "diff_identity" => safe_context["diff_identity"],
+        "current_integration" => autonomous_result["current_integration"]
       },
       "freshness" => {
         "ci_checked_at" => ci_result["checked_at"],
@@ -577,6 +579,7 @@ module MergeAssurance
       valid_policy_provenance?(result["policy_provenance"], context.dig("base", "sha"))
     failures << "autonomous_result helper provenance binding mismatch" unless
       valid_helper_provenance?(result["helper_provenance"], context.dig("base", "sha"))
+    validate_current_integration(result["current_integration"], context, failures)
     if !result["evidence_failures"].is_a?(Array)
       failures << "autonomous_result evidence failures are unavailable"
     elsif !result["evidence_failures"].empty?
@@ -589,6 +592,108 @@ module MergeAssurance
     return if expected_verdict == result["verdict"]
 
     failures << "autonomous_result verdict contradicts gates and decision evidence"
+  end
+
+  def validate_current_integration(integration, context, failures)
+    expected_keys = %w[
+      base_delta candidate contract current_base head_sha patch_identity pr
+      recorded_base_sha repository reuse telemetry version
+    ]
+    unless exact_keys?(integration, expected_keys) &&
+           integration["contract"] == "current-integration-evidence" &&
+           integration["version"] == 1
+      failures << "autonomous_result current integration contract is invalid"
+      return
+    end
+    return unless valid_current_integration_context?(context)
+
+    failures << "autonomous_result current integration repository mismatch" unless
+      integration["repository"] == context["repo"]
+    failures << "autonomous_result current integration PR mismatch" unless
+      integration["pr"] == context["pr"]
+    failures << "autonomous_result current integration head mismatch" unless
+      integration["head_sha"] == context["head_sha"]
+    failures << "autonomous_result current integration base mismatch" unless
+      integration["current_base"] == context["base"]
+
+    reuse = integration["reuse"]
+    telemetry = integration["telemetry"]
+    unless exact_keys?(reuse, %w[decision reasons]) && reuse["reasons"].is_a?(Array) &&
+           reuse["reasons"] == reuse["reasons"].uniq.sort
+      failures << "autonomous_result current integration reuse decision is invalid"
+      return
+    end
+    unless exact_keys?(telemetry, %w[elapsed_seconds_saved review_replays_avoided validator_replays_avoided]) &&
+           [telemetry["validator_replays_avoided"], telemetry["review_replays_avoided"]].all? do |value|
+             value.is_a?(Integer) && value >= 0
+           end &&
+           (telemetry["elapsed_seconds_saved"].nil? ||
+            (telemetry["elapsed_seconds_saved"].is_a?(Numeric) && telemetry["elapsed_seconds_saved"] >= 0))
+      failures << "autonomous_result current integration telemetry is invalid"
+      return
+    end
+
+    case reuse["decision"]
+    when "base-unchanged"
+      valid = reuse["reasons"] == ["base-unchanged"] &&
+              integration["recorded_base_sha"] == context.dig("base", "sha") &&
+              integration["patch_identity"].nil? && integration["candidate"].nil? &&
+              integration["base_delta"] == { "paths" => [] } &&
+              telemetry["validator_replays_avoided"].zero? && telemetry["review_replays_avoided"].zero?
+      failures << "autonomous_result base-unchanged integration evidence is invalid" unless valid
+    when "reuse-exact-head"
+      validate_reused_current_integration(integration, context, failures)
+    else
+      failures << "autonomous_result current integration is not reusable"
+    end
+  end
+
+  def valid_current_integration_context?(context)
+    return false unless context.is_a?(Hash) && valid_repo?(context["repo"])
+    return false unless context["pr"].is_a?(Integer) && context["pr"].positive?
+    return false unless full_sha?(context["head_sha"])
+
+    base = context["base"]
+    base.is_a?(Hash) && base.keys.sort == %w[ref sha] &&
+      valid_ref?(base["ref"]) && full_sha?(base["sha"])
+  end
+
+  def validate_reused_current_integration(integration, context, failures)
+    recorded_base = integration["recorded_base_sha"]
+    paths = integration.dig("base_delta", "paths")
+    reasons = integration.dig("reuse", "reasons")
+    candidate = integration["candidate"]
+    valid_paths = exact_keys?(integration["base_delta"], ["paths"]) &&
+                  paths.is_a?(Array) && paths == paths.uniq.sort &&
+                  paths.all? { |path| valid_repository_path?(path) }
+    valid_reasons = reasons.is_a?(Array) && !reasons.empty? &&
+                    (reasons - %w[base-delta-reuse-safe pr-delta-reuse-safe]).empty?
+    path_reason_consistent = !paths.empty? || reasons == ["pr-delta-reuse-safe"]
+    valid = full_sha?(recorded_base) && recorded_base != context.dig("base", "sha") &&
+            integration["patch_identity"].to_s.match?(/\A[0-9a-f]{64}\z/) &&
+            valid_paths && valid_reasons && path_reason_consistent &&
+            valid_current_integration_candidate?(candidate, context)
+    telemetry = integration["telemetry"]
+    valid &&= telemetry["validator_replays_avoided"] == 1 && telemetry["review_replays_avoided"] == 1
+    failures << "autonomous_result reused current integration evidence is invalid" unless valid
+  end
+
+  def valid_current_integration_candidate?(candidate, context)
+    return false unless exact_keys?(candidate, %w[oid parents source tree_oid])
+    return false unless %w[github-potential-merge-commit git-merge-tree].include?(candidate["source"])
+    return false unless full_sha?(candidate["tree_oid"])
+    return false unless candidate["parents"] == [context.dig("base", "sha"), context["head_sha"]]
+
+    if candidate["source"] == "github-potential-merge-commit"
+      full_sha?(candidate["oid"])
+    else
+      candidate["oid"].nil?
+    end
+  end
+
+  def valid_repository_path?(path)
+    path.is_a?(String) && !path.empty? && !path.start_with?("/") && !path.include?("\\") &&
+      path.split("/", -1).none? { |part| part.empty? || %w[. ..].include?(part) }
   end
 
   def expected_autonomous_verdict(triggered_gates, human_decision_evidence)
@@ -877,6 +982,27 @@ module MergeAssurance
     [accounting, semantic_tracker]
   end
 
+  # A semantic GitHub Actions change is not always in the repository's own
+  # `.github/`. Generated templates (for example `sim/template/.github/`) ship
+  # workflows to downstream repositories, and those are higher blast radius than
+  # a repo-local workflow, not lower. Accept the directory anywhere in a
+  # canonical repository-relative path while still requiring a file below it.
+  def semantic_tracker_workflow_path?(path)
+    return false unless path.is_a?(String)
+
+    components = path.split("/", -1)
+    return false if components.empty? || path.start_with?("/") || path.include?("\\") || path.include?("\0")
+
+    # Fail closed for any scheme- or drive-like prefix. This intentionally also
+    # rejects repository-relative first components containing a colon.
+    return false if path.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
+    return false if components.any? { |component| component.empty? || %w[. ..].include?(component) }
+
+    components.each_cons(3).any? do |first, second, _file|
+      first == ".github" && %w[workflows actions].include?(second)
+    end
+  end
+
   def validate_semantic_tracker(tracker, context, failures)
     required_keys = %w[
       changed_files cleanup_instructions exercise expected_evidence source_pr tracker type
@@ -902,10 +1028,7 @@ module MergeAssurance
       tracker["source_pr"] == expected_source_pr
     changed_files = tracker["changed_files"]
     unless changed_files.is_a?(Array) && !changed_files.empty? &&
-           changed_files.all? do |path|
-             path.is_a?(String) &&
-             (path.start_with?(".github/workflows/") || path.start_with?(".github/actions/"))
-           end
+           changed_files.all? { |path| semantic_tracker_workflow_path?(path) }
       failures << "semantic GitHub Actions tracker changed_files are invalid"
     end
     if tracker.key?("owner") &&
@@ -1785,6 +1908,7 @@ module MergeAssurance
         output_overflow = drain_selected_hosted_ci_output!(streams) || output_overflow
         if output_overflow
           status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          pid = nil
           break
         end
 
@@ -1794,6 +1918,7 @@ module MergeAssurance
         if now >= deadline
           timed_out = true
           terminated_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+          pid = nil
           status ||= terminated_status
           break
         end
@@ -1807,6 +1932,7 @@ module MergeAssurance
 
         lingering_group = true
         _ignored_status, cleanup_complete = terminate_selected_hosted_ci_process_group(pid)
+        pid = nil
         break
       end
       unless cleanup_complete
@@ -1883,21 +2009,32 @@ module MergeAssurance
     end
 
     def terminate_selected_hosted_ci_process_group(pid)
-      signal_selected_hosted_ci_process_group("TERM", pid)
-      deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
-      status = wait_for_selected_hosted_ci_child(pid, deadline)
-      return [status, true] if wait_for_selected_hosted_ci_process_group_exit(pid, deadline)
+      term_result = signal_selected_hosted_ci_process_group("TERM", pid)
+      status = nil
+      unless term_result == :permission_denied
+        deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
+        status = wait_for_selected_hosted_ci_child(pid, deadline)
+        return [status, true] if term_result == :gone ||
+                                 wait_for_selected_hosted_ci_process_group_exit(pid, deadline)
+      end
 
-      signal_selected_hosted_ci_process_group("KILL", pid)
+      kill_result = signal_selected_hosted_ci_process_group("KILL", pid)
+      if kill_result == :permission_denied
+        return [status, !selected_hosted_ci_process_group_alive?(pid)]
+      end
+
       deadline = selected_hosted_ci_monotonic_time + SELECTED_HOSTED_CI_TERMINATION_GRACE_SECONDS
       status ||= wait_for_selected_hosted_ci_child(pid, deadline)
-      [status, wait_for_selected_hosted_ci_process_group_exit(pid, deadline)]
+      [status, kill_result == :gone || wait_for_selected_hosted_ci_process_group_exit(pid, deadline)]
     end
 
     def signal_selected_hosted_ci_process_group(signal, pid)
       Process.kill(signal, -pid)
+      :sent
     rescue Errno::ESRCH
-      nil
+      :gone
+    rescue Errno::EPERM
+      :permission_denied
     end
 
     def wait_for_selected_hosted_ci_child(pid, deadline)

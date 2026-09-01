@@ -157,11 +157,16 @@ module ConfiguredReviewGate
       }
     GRAPHQL
 
-    def initialize(host:, repo:, pull_request_number:, policy:)
+    def initialize(host:, repo:, pull_request_number:, policy:, reviewed_base_sha: nil)
       @host = host
       @repo = repo
       @pr = pull_request_number
       @policy = policy
+      if reviewed_base_sha && !reviewed_base_sha.to_s.match?(/\A[0-9a-f]{40}\z/i)
+        raise Error, "reviewed base SHA must be a full commit SHA"
+      end
+
+      @reviewed_base_sha = reviewed_base_sha&.downcase
       @gh = ConfiguredReviewGate.resolve_system_tool!("gh", outside_root: Dir.pwd)
     end
 
@@ -175,7 +180,13 @@ module ConfiguredReviewGate
         "base_sha" => pull.dig("base", "sha"),
         "head_sha" => pull.dig("head", "sha")
       }
-      checks = collect_checks(bindings.fetch("head_sha"), bindings.fetch("base_sha"))
+      reviewed_base_sha = @reviewed_base_sha || bindings.fetch("base_sha")
+      unless reviewed_base_sha.to_s.casecmp?(bindings.fetch("base_sha").to_s)
+        bindings["reviewed_base_sha"] = reviewed_base_sha
+      end
+      checks = collect_checks(
+        bindings.fetch("head_sha"), bindings.fetch("base_sha"), reviewed_base_sha
+      )
       artifacts = collect_artifacts
       threads, threads_complete, thread_artifacts = collect_threads(bindings.fetch("head_sha"))
       artifacts.concat(thread_artifacts)
@@ -195,7 +206,7 @@ module ConfiguredReviewGate
 
     private
 
-    def collect_checks(head_sha, base_sha)
+    def collect_checks(head_sha, base_sha, reviewed_base_sha)
       pages = api_json(
         "--paginate", "--slurp",
         "repos/#{@repo}/commits/#{head_sha}/check-runs?per_page=100",
@@ -211,13 +222,13 @@ module ConfiguredReviewGate
           "completed_at" => check["completed_at"],
           "details_url" => check["details_url"],
           "output" => [check.dig("output", "title"), check.dig("output", "summary"), check.dig("output", "text")].compact.join("\n"),
-          "producer" => collect_check_producer(check, head_sha, base_sha)
+          "producer" => collect_check_producer(check, head_sha, base_sha, reviewed_base_sha)
         }
       end
       checks.sort_by { |check| [check["name"].to_s, check["started_at"].to_s] }
     end
 
-    def collect_check_producer(check, head_sha, base_sha)
+    def collect_check_producer(check, head_sha, base_sha, reviewed_base_sha)
       expected = all_reviewers.find { |reviewer| reviewer["check_name"] == check["name"] }&.fetch("producer", nil)
       producer = {
         "app_slug" => check.dig("app", "slug"),
@@ -257,7 +268,7 @@ module ConfiguredReviewGate
           association.is_a?(Hash) && association["number"].is_a?(Integer) &&
           association["number"].positive? && association["number"] == @pr &&
           association.dig("head", "sha").to_s.casecmp?(head_sha.to_s) &&
-          association.dig("base", "sha").to_s.casecmp?(base_sha.to_s) &&
+          association.dig("base", "sha").to_s.casecmp?(reviewed_base_sha.to_s) &&
           head_blob == base_blob
       )
     end
@@ -671,17 +682,23 @@ module ConfiguredReviewGate
     receipt
   end
 
-  def replay(receipt:, policy:, policy_source:, snapshot:, settled: false, now: Time.now.utc, trusted_live: false)
+  def replay(
+    receipt:, policy:, policy_source:, snapshot:, settled: false, now: Time.now.utc,
+    trusted_live: false, current_integration: nil
+  )
     validate_snapshot!(snapshot)
     receipt_error = receipt_validation_error(receipt, policy, policy_source, now, trusted_live:)
     return replay_blocked("UNKNOWN", receipt_error) if receipt_error
-    unless receipt.fetch("bindings") == snapshot.fetch("bindings")
+
+    comparable_snapshot = receipt_comparable_snapshot(receipt, snapshot, current_integration)
+    unless comparable_snapshot
       return replay_blocked("NOT_READY", "configured-review-receipt-binding-mismatch")
     end
 
     current = evaluate(policy:, policy_source:, snapshot:, settled:, now:, trusted_live:)
     return current unless current["verdict"] == "READY"
-    unless receipt.dig("artifact_settlement", "snapshot_digest") == semantic_snapshot_digest(snapshot)
+    unless receipt.dig("artifact_settlement", "snapshot_digest") ==
+           semantic_snapshot_digest(comparable_snapshot)
       return replay_blocked("NOT_READY", "configured-review-receipt-artifact-snapshot-moved")
     end
     unless receipt["mutation_eligible"] == true && current.dig("receipt", "mutation_eligible") == true
@@ -697,6 +714,54 @@ module ConfiguredReviewGate
       "snapshot_digest" => semantic_snapshot_digest(snapshot),
       "blockers" => []
     }
+  end
+
+  def receipt_comparable_snapshot(receipt, snapshot, current_integration)
+    receipt_bindings = receipt.fetch("bindings")
+    snapshot_bindings = snapshot.fetch("bindings")
+    return snapshot if receipt_bindings == snapshot_bindings
+    return unless safe_base_advance_bindings?(receipt_bindings, snapshot_bindings, current_integration)
+
+    snapshot.merge("bindings" => receipt_bindings)
+  rescue KeyError, TypeError
+    nil
+  end
+
+  def safe_base_advance_bindings?(receipt_bindings, snapshot_bindings, integration)
+    # The mutation path supplies this only from a reassessed merge-assurance v2
+    # receipt. Recheck every identity used to normalize the live snapshot so
+    # this gate cannot turn unrelated current-integration data into a waiver.
+    return false unless receipt_bindings.is_a?(Hash) && snapshot_bindings.is_a?(Hash) &&
+                        integration.is_a?(Hash)
+
+    reviewed_base_sha = snapshot_bindings["reviewed_base_sha"]
+    normalized_bindings = snapshot_bindings.reject { |key, _value| key == "reviewed_base_sha" }
+    stable_binding_keys = receipt_bindings.keys - ["base_sha"]
+    candidate = integration["candidate"]
+    telemetry = integration["telemetry"]
+    current_base = integration["current_base"]
+    receipt_base_sha = receipt_bindings["base_sha"]
+    current_base_sha = snapshot_bindings["base_sha"]
+    object_id = /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i
+
+    normalized_bindings.keys.sort == receipt_bindings.keys.sort &&
+      stable_binding_keys.all? { |key| normalized_bindings[key] == receipt_bindings[key] } &&
+      receipt_base_sha.to_s.match?(object_id) && current_base_sha.to_s.match?(object_id) &&
+      !current_base_sha.to_s.casecmp?(receipt_base_sha.to_s) &&
+      reviewed_base_sha.to_s.casecmp?(receipt_base_sha.to_s) &&
+      integration["contract"] == "current-integration-evidence" && integration["version"] == 1 &&
+      integration.dig("reuse", "decision") == "reuse-exact-head" &&
+      integration["repository"] == snapshot_bindings["repo"] &&
+      integration["pr"] == snapshot_bindings["pr"] &&
+      integration["recorded_base_sha"].to_s.casecmp?(receipt_base_sha.to_s) &&
+      integration["head_sha"].to_s.casecmp?(snapshot_bindings["head_sha"].to_s) &&
+      current_base.is_a?(Hash) && current_base["ref"] == snapshot_bindings["base_ref"] &&
+      current_base["sha"].to_s.casecmp?(current_base_sha.to_s) &&
+      %w[github-potential-merge-commit git-merge-tree].include?(candidate&.[]("source")) &&
+      candidate.is_a?(Hash) && candidate["parents"] == [current_base_sha, snapshot_bindings["head_sha"]] &&
+      candidate["tree_oid"].to_s.match?(object_id) &&
+      telemetry.is_a?(Hash) && telemetry["validator_replays_avoided"] == 1 &&
+      telemetry["review_replays_avoided"] == 1
   end
 
   def receipt_validation_error(receipt, policy, policy_source, now, trusted_live:)
@@ -922,9 +987,11 @@ module ConfiguredReviewGate
         blocker("configured-review-missing", reviewer, nil, "missing")
       else
         check = governing_check(candidates, snapshot.dig("bindings", "head_sha"))
+        reviewed_base_sha = snapshot.dig("bindings", "reviewed_base_sha") ||
+                            snapshot.dig("bindings", "base_sha")
         producer_blocker = classify_producer_blocker(
           reviewer, check, snapshot.dig("bindings", "head_sha"),
-          snapshot.dig("bindings", "base_sha"), snapshot.dig("bindings", "pr")
+          reviewed_base_sha, snapshot.dig("bindings", "pr")
         )
         producer_blocker || classify_check_blocker(reviewer, check, snapshot.dig("bindings", "head_sha"))
       end

@@ -126,6 +126,93 @@ waiting when no configured fallback can apply. The configured-review helper
 reads this mapping from the trusted base and binds its receipt to host,
 repository, PR, base, head, and the settled artifact snapshot.
 
+### Writing Style
+
+`writing_style` is an optional scalar in the repository policy. It accepts
+either a nonblank relative Markdown-file path or the exact built-in preset
+`asd-ste100`:
+
+```yaml
+writing_style: docs/writing-style.md
+# or: writing_style: asd-ste100
+```
+
+The path form is relative to the repository root, and either repository form
+wins. The same scalar key may appear in the user-global
+`~/.agents/agent-workflow.yml` as an optional personal fallback for repositories
+that do not set it. `agent-workflow-writing-style` resolves one complete guide
+without merging prose. Resolution is repo → user-global → portable default:
+
+1. repository `.agents/agent-workflow.yml`
+2. user-global `~/.agents/agent-workflow.yml`
+3. [the packaged portable default](writing-style.md)
+
+The task's explicit audience or format instructions remain outside this
+configuration resolver and may impose a more-specific constraint. The resolver
+returns provenance as exactly `repo`, `user-global`, or `portable-default`.
+Repository omission falls through per key even when the repository seam file
+exists. Repository paths resolve beneath the repository root; user-global paths
+resolve beneath `~/.agents`. Absolute paths, parent traversal, paths that escape
+through symlinks, non-Markdown paths, and missing, unreadable, nonregular,
+empty, or invalid-UTF-8 files are invalid. URLs and URI references, including
+`https:` and `file:`, are invalid: the path form accepts only trusted local
+relative Markdown files, and the resolver never performs a network lookup.
+
+Preset selection uses a closed exact registry. Only `asd-ste100` is registered;
+unknown preset-like values are invalid, and the resolver does not construct a
+path dynamically from an alias. The preset loads the installer-managed
+[independent adapter](writing-style-asd-ste100.md). Selecting it preserves the
+provenance of its configuration layer.
+
+An explicitly present malformed repository config, preset, path, or file is a
+blocking seam error. The same user-global failure produces an actionable
+warning and uses the portable default. User-global configuration contributes only
+`writing_style`; branch, merge, CI, trust, coordination, and every other policy
+remain repository-owned.
+
+The initializer and example configuration do not enable a repository guide;
+the commented example shows both opt-in forms. Packaged prose lives once in
+each linked Markdown file, and the resolver loads the selected file. A
+company-wide or common guide could be added later only as a
+future explicitly trusted distribution/source layer. The current resolver does
+not fetch a company repository and does not perform network or cross-repository
+lookup.
+
+The `asd-ste100` adapter keeps the generic plain-language baseline and applies
+ASD-STE100-inspired constraints only to technical-documentation prose. It
+preserves exact project terminology, identifiers, APIs, commands, paths,
+templates, evidence, quoted text, and machine-readable protocol fields. The
+resolver distributes neither the external standard nor its dictionary and does
+not check conformance. Formal ASD-STE100 work requires an authorized
+specification and qualified human review; the adapter makes no certification or
+conformance claim.
+
+The resolved guide applies only to human-facing prose. Repository PR and issue
+templates, required evidence, machine-readable receipts, and exact protocol
+blocks keep their defined structure and content. Public PR workflows resolve
+from a trusted repository checkout; a PR-head seam change is untrusted diff
+content until it becomes repository policy.
+
+Covered in the first iteration:
+
+- PR descriptions, updates, comments, and final batch handoffs in
+  `workflows/pr-processing.md` and `skills/pr-batch/SKILL.md`
+- review replies, checkpoint comments, and deferred issue bodies in
+  `skills/address-review/SKILL.md` and `workflows/address-review.md`
+- audit issue bodies, comments, PR updates, and final audit handoffs in
+  `skills/post-merge-audit/SKILL.md` and `workflows/post-merge-audit.md`
+- manual verification comments in `skills/verify-pr-fix/SKILL.md`
+- issue-triage comments in `skills/plan-issue-triage/SKILL.md`
+- no-PR evidence comments and disposition handoffs in
+  `skills/evaluate-issue/SKILL.md` and `workflows/evaluate-issue.md`
+- monitoring and closeout handoffs in `skills/pr-monitoring/SKILL.md` and
+  `skills/close-session/SKILL.md`
+
+Deferred authoring surfaces include commit messages, changelog entries,
+planner-generated worker prompts, and report-only review output. Commit-message
+scope remains with its dedicated evidence/proportionality work. Machine-readable
+receipts and protocol blocks are excluded from style rewriting by design.
+
 `hosted_qa_gate` is an optional closed mapping during first-phase adoption.
 Omission or the exact string `n/a` means that no hosted runtime gate is
 configured. A mapping has exactly these fields:
@@ -166,10 +253,11 @@ interpreters and system tools are trusted host OS/toolchain state; arbitrary
 same-user replacement outside the repository is out of scope for this helper.
 
 `autonomous_merge` is an optional closed mapping. When absent, the shared
-workflow uses its portable thresholds and common hard-risk categories. When
-present, it may tighten or explicitly justify relaxing the four thresholds,
-add reason-tagged human-review paths and policy paths, define bounded
-documentation/test safe groups, and identify generated paths for reporting:
+workflow uses its portable thresholds, safe path groups, and common hard-risk
+categories. When present, it may tighten or explicitly justify relaxing the
+four thresholds, add reason-tagged human-review paths and policy paths, extend
+the portable documentation/test safe groups, and identify generated paths for
+reporting:
 
 ADR 0003 is the source of truth for these copied portable defaults. File, line,
 and commit maxima are enforced; `max_reviewed_heads` is shadow-only until a
@@ -188,6 +276,7 @@ autonomous_merge:
       reason: infrastructure
   policy_paths:
     - ".agents/**"
+  # Added to the portable safe path groups; never replacing them.
   safe_path_groups:
     documentation:
       include: ["docs/**"]
@@ -198,6 +287,19 @@ autonomous_merge:
   generated_paths:
     - "dist/generated/**"
 ```
+
+Portable `safe_path_groups` defaults ship for `documentation` and `tests`.
+Consumer `include` and `exclude` patterns are added to the portable sets; a
+consumer can never remove a portable exclude. An absent `safe_path_groups`
+mapping, an empty one, and one that declares a single group all keep the full
+portable defaults for every group the repository did not declare. A declared
+group may carry only `exclude` and no `include`: it then inherits the portable
+include list unchanged and only tightens that group. ADR 0003 is
+the source of truth for the exact portable include and exclude sets. Every
+portable group excludes the built-in autonomous-merge policy surface -
+`AGENTS.md`/`CLAUDE.md`, `**/SKILL.md`, `workflows/**`, `.agents/**`,
+`docs/adr/**`, and the autonomous-merge helpers - so a repository cannot widen
+its includes into a positive safe classification for a policy path.
 
 Thresholds are inclusive maxima: the next value triggers human review. A value
 above a portable default also requires
@@ -234,6 +336,8 @@ untrusted_contributor_intake:
   trusted_github_scheme: "https"
   trusted_github_repo: "OWNER/REPO"
 ```
+
+### Merge submission
 
 `merge_submission` is an optional closed mapping. Its portable default is
 `direct` when the mapping is absent or explicitly selects `direct`. A

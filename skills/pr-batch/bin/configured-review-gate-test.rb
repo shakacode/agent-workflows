@@ -23,6 +23,7 @@ class ConfiguredReviewGateTest < Minitest::Test
   SOURCE_POLICY = File.expand_path("../../../.agents/agent-workflow.yml", __dir__)
   CLAUDE_REVIEW_WORKFLOW = File.expand_path("../../../.github/workflows/claude-code-review.yml", __dir__)
   CONFIGURED_REVIEW_WORKFLOW = File.expand_path("../../../.github/workflows/configured-review-gate.yml", __dir__)
+  INTEGRATION_CLOSEOUT = File.expand_path("../../../workflows/pr-batch-integration-closeout.md", __dir__)
 
   FakeClient = Struct.new(:snapshots) do
     def collect
@@ -33,11 +34,16 @@ class ConfiguredReviewGateTest < Minitest::Test
   class FakeGitHubApiClient < ConfiguredReviewGate::GitHubClient
     # This API fixture deliberately bypasses the production initializer's system-tool resolution.
     # rubocop:disable Lint/MissingSuper
-    def initialize(policy:, threads:, reviews: [], checks: [], permissions: {}, workflow_runs: nil)
+    def initialize(
+      policy:, threads:, reviews: [], checks: [], permissions: {}, workflow_runs: nil,
+      reviewed_base_sha: nil, live_base_sha: BASE_SHA
+    )
       @host = HOST
       @repo = REPO
       @pr = PR
       @policy = policy
+      @reviewed_base_sha = reviewed_base_sha
+      @live_base_sha = live_base_sha
       @threads = threads
       @reviews = reviews
       @checks = checks
@@ -75,7 +81,7 @@ class ConfiguredReviewGateTest < Minitest::Test
 
     def pull_response
       {
-        "base" => { "ref" => "main", "sha" => BASE_SHA },
+        "base" => { "ref" => "main", "sha" => @live_base_sha },
         "head" => { "sha" => HEAD_SHA }
       }
     end
@@ -447,10 +453,10 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "${{ steps.bindings.outputs.head_sha }}", gate.dig("env", "REVIEW_GATE_HEAD_SHA")
     assert_includes gate.fetch("run"), 'post_status success "Advisory:'
 
-    processing = File.read(File.expand_path("../../../workflows/pr-processing.md", __dir__))
-    assert_includes processing, "advisory `configured-review-gate` commit"
-    assert_includes processing, "Never configure\nthis context as a required ruleset or merge-queue check"
-    assert_includes processing, "GitHub does not emit an Actions\nevent when a review thread is resolved or unresolved"
+    closeout = File.read(INTEGRATION_CLOSEOUT)
+    assert_includes closeout, "advisory `configured-review-gate` commit"
+    assert_includes closeout, "Never configure\nthis context as a required ruleset or merge-queue check"
+    assert_includes closeout, "GitHub does not emit an Actions\nevent when a review thread is resolved or unresolved"
   end
 
   def test_producer_reviewed_base_must_match_current_base
@@ -690,6 +696,21 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "github-actions", producer.fetch("app_slug")
     assert_equal ".github/workflows/claude-code-review.yml", producer.fetch("workflow_path")
     assert_equal producer.fetch("workflow_blob_sha"), producer.fetch("trusted_base_workflow_blob_sha")
+  end
+
+  def test_live_collector_retains_the_reviewed_base_during_a_safe_base_advance
+    current_base = "c" * 40
+    raw_check = check.merge("output" => { "title" => "review complete", "summary" => nil, "text" => nil })
+    client = FakeGitHubApiClient.new(
+      policy:, threads: [], checks: [raw_check],
+      reviewed_base_sha: BASE_SHA, live_base_sha: current_base
+    )
+
+    collected = client.collect
+
+    assert_equal current_base, collected.dig("bindings", "base_sha")
+    assert_equal BASE_SHA, collected.dig("bindings", "reviewed_base_sha")
+    assert_equal true, collected.dig("checks", 0, "producer", "verified")
   end
 
   def test_live_collector_authorizes_disposition_markers_from_repository_permission
@@ -1108,6 +1129,67 @@ class ConfiguredReviewGateTest < Minitest::Test
     )
     assert_equal "NOT_READY", moved_result.fetch("verdict")
     assert_equal "configured-review-receipt-binding-mismatch", moved_result.dig("blockers", 0, "code")
+  end
+
+  def test_replay_accepts_a_reviewed_base_only_with_safe_current_integration_evidence
+    initial = live_snapshot("checks" => [check], "artifacts" => [artifact])
+    receipt = ConfiguredReviewGate.evaluate(
+      policy:, policy_source: JSON.generate(policy), snapshot: initial,
+      settled: true, now: NOW, trusted_live: true
+    ).fetch("receipt")
+    current_base = "c" * 40
+    replay_snapshot = Marshal.load(Marshal.dump(initial))
+    replay_snapshot["collected_at"] = (NOW + 20).iso8601
+    replay_snapshot["bindings"]["base_sha"] = current_base
+    replay_snapshot["bindings"]["reviewed_base_sha"] = BASE_SHA
+    integration = {
+      "contract" => "current-integration-evidence",
+      "version" => 1,
+      "repository" => REPO,
+      "pr" => PR,
+      "recorded_base_sha" => BASE_SHA,
+      "head_sha" => HEAD_SHA,
+      "current_base" => { "ref" => "main", "sha" => current_base },
+      "candidate" => {
+        "source" => "github-potential-merge-commit",
+        "tree_oid" => "d" * 40,
+        "parents" => [current_base, HEAD_SHA]
+      },
+      "reuse" => { "decision" => "reuse-exact-head" },
+      "telemetry" => { "validator_replays_avoided" => 1, "review_replays_avoided" => 1 }
+    }
+
+    result = ConfiguredReviewGate.replay(
+      receipt:, policy:, policy_source: JSON.generate(policy),
+      snapshot: replay_snapshot, settled: true, now: NOW + 20,
+      trusted_live: true, current_integration: integration
+    )
+    unproven = ConfiguredReviewGate.replay(
+      receipt:, policy:, policy_source: JSON.generate(policy),
+      snapshot: replay_snapshot, settled: true, now: NOW + 20,
+      trusted_live: true
+    )
+    unsafe_integration = Marshal.load(Marshal.dump(integration))
+    unsafe_integration["reuse"]["decision"] = "fresh-integration-required"
+    unsafe = ConfiguredReviewGate.replay(
+      receipt:, policy:, policy_source: JSON.generate(policy),
+      snapshot: replay_snapshot, settled: true, now: NOW + 20,
+      trusted_live: true, current_integration: unsafe_integration
+    )
+    changed_snapshot = Marshal.load(Marshal.dump(replay_snapshot))
+    changed_snapshot.dig("checks", 0)["completed_at"] = "2026-08-25T12:00:01Z"
+    changed = ConfiguredReviewGate.replay(
+      receipt:, policy:, policy_source: JSON.generate(policy),
+      snapshot: changed_snapshot, settled: true, now: NOW + 20,
+      trusted_live: true, current_integration: integration
+    )
+
+    assert_equal "READY", result.fetch("verdict")
+    assert_equal current_base, result.dig("bindings", "base_sha")
+    assert_equal "NOT_READY", unproven.fetch("verdict")
+    assert_equal "configured-review-receipt-binding-mismatch", unproven.dig("blockers", 0, "code")
+    assert_equal "configured-review-receipt-binding-mismatch", unsafe.dig("blockers", 0, "code")
+    assert_equal "configured-review-receipt-artifact-snapshot-moved", changed.dig("blockers", 0, "code")
   end
 
   def test_replay_rejects_inconsistent_receipt_security_projections_before_live_evaluation

@@ -79,6 +79,7 @@ echo "== host adapter syntax =="
 bin/validate-host-adapter-syntax
 
 echo "== validator unit tests =="
+ruby bin/agent-workflow-writing-style-test.rb
 ruby bin/agent-workflow-seam-doctor-test.rb
 ruby bin/codex-plugin-manifest-check-test.rb
 ruby bin/validate-openai-agent-metadata-test.rb
@@ -153,15 +154,23 @@ ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/batch-status/bin/batch-status-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
+ruby skills/pr-batch/bin/security-floor-contract-test.rb
+ruby skills/pr-batch/bin/writing-style-contract-test.rb
 ruby skills/pr-batch/bin/user-facing-coordination-contract-test.rb
+ruby skills/pr-batch/bin/production-release-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/file-expansion-contract-test.rb
+ruby skills/pr-batch/bin/worker-execution-contract-test.rb
+ruby skills/pr-batch/bin/integration-closeout-contract-test.rb
+ruby skills/pr-batch/bin/dependency-conflict-policy-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-closeout-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-eligibility-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-evidence-test.rb
+ruby skills/pr-batch/bin/current-integration-evidence-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-calibrate-test.rb
 ruby skills/pr-batch/bin/coordination-telemetry-contract-test.rb
+ruby skills/pr-batch/bin/workflow-telemetry-report-test.rb
 ruby skills/pr-batch/bin/review-wave-contract-test.rb
 ruby skills/pr-batch/bin/assignee-exclusion-contract-test.rb
 ruby skills/pr-batch/bin/agent-claimed-mirror-contract-test.rb
