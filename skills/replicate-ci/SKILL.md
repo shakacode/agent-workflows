@@ -96,8 +96,8 @@ Classify the result as one of:
 - `REPRODUCED_SAME`: parity run matches the hosted failure signature.
 - `REPRODUCED_DIFFERENT`: parity run fails, but not the same way.
 - `NOT_REPRODUCED`: parity run passes while hosted CI fails. It records a
-  passing parity run, not exoneration; if hosted history becomes intermittent
-  during reproduction, use `fix-flaky-tests`.
+  passing parity run, not exoneration; if equivalent hosted invocations for the
+  commit become intermittent during reproduction, use `fix-flaky-tests`.
 - `BLOCKED`: required logs, runner image, secrets, services, or permissions are
   missing.
 

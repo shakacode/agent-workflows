@@ -223,10 +223,11 @@ gap:
 - **Deterministic hosted and local failure** — the same exact failure appears
   in both places. This is an ordinary bug, so take Step 1's broken-test exit.
 - **Intermittent hosted failure** — the same commit passes and fails across
-  hosted runs. Use this skill regardless of whether a local attempt passes or
-  fails. A green parity run proves nothing about a test that fails one run in
-  twenty, and a locally failing attempt does not turn hosted intermittency into
-  a parity gap.
+  equivalent hosted invocations (workflow event, inputs, and matrix
+  configuration). Use this skill regardless of whether a local attempt passes
+  or fails. A green parity run proves nothing about a test that fails one run
+  in twenty, and a locally failing attempt does not turn hosted intermittency
+  into a parity gap.
 
 If the classification itself is unclear, establish determinism first by
 inspecting the run history for that commit. Do not run both workflows in
