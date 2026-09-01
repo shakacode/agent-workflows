@@ -608,10 +608,7 @@ module CloseoutEvidenceReplay
   end
 
   def without_schema_slash_labels(value)
-    cleaned = value.gsub(
-      %r{\b(?:before/after|baseline/candidate|pass/fail|on/off|yes/no)\b}i,
-      ""
-    )
+    cleaned = value.dup
 
     https_token_matches(value).reverse_each do |match|
       label = https_prose_label(value, match)
@@ -627,7 +624,10 @@ module CloseoutEvidenceReplay
       )
     end
 
-    cleaned
+    cleaned.gsub(
+      %r{\b(?:before/after|baseline/candidate|pass/fail|on/off|yes/no)\b}i,
+      ""
+    )
   end
 
   def failed_visual_artifact_claim?(value)

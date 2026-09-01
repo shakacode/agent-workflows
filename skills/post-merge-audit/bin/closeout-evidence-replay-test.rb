@@ -766,7 +766,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       qa = run_replay(
         v2_marker(
           "visual_evidence" =>
-            "durable: before HTTPS: #{protocol}; after https://github.com/example/repo/pull/123#visual",
+            "durable: before before/after HTTPS: #{protocol}; after https://github.com/example/repo/pull/123#visual",
           "interaction_change" => "yes",
           "interaction_evidence" =>
             "clip: HTTPS: #{protocol}; https://github.com/example/repo/pull/123#clip"
