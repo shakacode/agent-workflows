@@ -1001,7 +1001,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       waiver_verifier: valid_waiver_verifier(input),
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND),
-      target_projection_verifier: ->(source:, target:) { nil }
+      target_projection_verifier: ->(**_arguments) { nil }
     )
   end
 
@@ -1087,7 +1087,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       "shakacode/hichee",
       input.fetch("expected_targets")
     )
-    assert_equal [input.fetch("expected_targets").first], typed_targets.map { |row| row.fetch("target") }
+    assert_equal([input.fetch("expected_targets").first], typed_targets.map { |row| row.fetch("target") })
   end
 
   def test_typed_issue_target_preserves_truthful_no_pr_closeout

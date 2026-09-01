@@ -262,10 +262,12 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
     assert_equal expected_blockers, preflight.fetch("blockers")
   ensure
-    CompletedBatchAuditReceipt.define_singleton_method(
-      :authenticated_publication_target_projection,
-      original_projection
-    ) if original_projection
+    if original_projection
+      CompletedBatchAuditReceipt.define_singleton_method(
+        :authenticated_publication_target_projection,
+        original_projection
+      )
+    end
   end
 
   def test_accepted_deferral_replay_binds_the_exact_terminal_wrapper
@@ -3735,7 +3737,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
           "verification_source" => "authenticated gh api"
         }
       end,
-      coordination_verifier: ->(backend:, batch_id:) do
+      coordination_verifier: lambda do |backend:, batch_id:|
         coordination_status if backend == REAL_BACKEND && batch_id == "batch-issue-173"
       end,
       target_projection_verifier: ->(source:, target:) { proof if source == proof["source_target"] && target == proof["result_target"] }
