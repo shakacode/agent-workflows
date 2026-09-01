@@ -74,7 +74,7 @@ the consumer repo, not this shared pack.
    repo-wide `bin/` only for helpers shared across skills.
 5. If you add a helper test such as `bin/*-test.rb` or `scripts/*.rb`, add it to
    the helper tests section of `bin/validate`.
-6. Update the root `README.md` skill inventory when adding or removing a public
-   skill.
+6. Update the human-facing `docs/skills.md` guide when adding or removing a
+   public skill.
 
 Do not add README files inside individual skill folders.
