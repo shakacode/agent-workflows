@@ -8,6 +8,7 @@ require "timeout"
 require "minitest/autorun"
 
 SCRIPT = File.expand_path("closeout-evidence-replay", __dir__)
+load SCRIPT unless defined?(CloseoutEvidenceReplay)
 
 class CloseoutEvidenceReplayTest < Minitest::Test
   def run_replay(body, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
@@ -69,12 +70,28 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     MARKDOWN
   end
 
+  def hosted_v1_marker
+    <<~MARKDOWN
+      <!-- hosted-qa-evidence v1
+      status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
+      deployed_head_sha: 1111111111111111111111111111111111111111
+      deployment_id: production-20260808-abc123
+      deployment_url: https://deployments.example.test/production-20260808-abc123
+      target: production
+      criterion: id=sign-in | status=passed | evidence=https://evidence.example.test/sign-in-abc123
+      criterion: id=checkout | status=passed | evidence=https://evidence.example.test/checkout-abc123
+      -->
+    MARKDOWN
+  end
+
   def test_help_describes_required_priority_evidence
     out, status = Open3.capture2e("ruby", SCRIPT, "--help")
 
     assert status.success?, out
     assert_includes out, "Fail when priority evidence is missing or explicitly not_applicable"
     assert_includes out, "Fail when current UI evidence lacks the durable visual-evidence v2 contract"
+    assert_includes out, "hosted-qa-evidence v1"
   end
 
   def test_strict_visual_gate_requires_expected_head_sha
@@ -108,6 +125,214 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     assert_equal "SATISFIED", data.fetch("qa_evidence").fetch("verdict")
     assert_equal 1, data.fetch("qa_evidence").fetch("marker_version")
+  end
+
+  def test_hosted_v1_replays_as_distinct_exact_head_deployment_evidence
+    head_sha = "1111111111111111111111111111111111111111"
+
+    data = run_replay(v2_marker + hosted_v1_marker, expected_head_sha: head_sha)
+
+    hosted = data.fetch("hosted_qa_evidence")
+    assert_equal "SATISFIED", hosted.fetch("verdict")
+    assert_equal 1, hosted.fetch("marker_version")
+    assert_equal head_sha, hosted.dig("fields", "head_sha")
+    assert_equal head_sha, hosted.dig("fields", "deployed_head_sha")
+    assert_equal(%w[sign-in checkout], hosted.fetch("criteria").map { |row| row.fetch("id") })
+    assert_equal "SATISFIED", data.fetch("overall_verdict")
+  end
+
+  def test_hosted_v1_canonicalizes_valid_uppercase_sha_fields_to_lowercase
+    head_sha = "abcdef0123456789abcdef0123456789abcdef01"
+    uppercase_head = head_sha.upcase
+    body = hosted_v1_marker.gsub("1" * 40, uppercase_head)
+
+    hosted = run_replay(body, expected_head_sha: uppercase_head).fetch("hosted_qa_evidence")
+
+    assert_equal "SATISFIED", hosted.fetch("verdict")
+    assert_equal head_sha, hosted.fetch("expected_head_sha")
+    assert_equal head_sha, hosted.dig("fields", "head_sha")
+    assert_equal head_sha, hosted.dig("fields", "deployed_head_sha")
+  end
+
+  def test_hosted_v1_does_not_canonicalize_or_accept_malformed_sha_fields
+    malformed_sha = "ABCDEF0123456789ABCDEF0123456789ABCDEF0"
+    body = hosted_v1_marker.gsub("1" * 40, malformed_sha)
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert_equal malformed_sha, hosted.dig("fields", "head_sha")
+    assert_equal malformed_sha, hosted.dig("fields", "deployed_head_sha")
+    assert_includes hosted.fetch("missing"), "head_sha"
+    assert_includes hosted.fetch("missing"), "deployed_head_sha"
+  end
+
+  def test_hosted_v1_rejects_multiple_conflicting_same_head_markers
+    conflicting_marker = hosted_v1_marker
+                         .sub("production-20260808-abc123", "production-20260808-other")
+                         .sub("production-20260808-abc123", "production-20260808-other")
+
+    hosted = run_replay(hosted_v1_marker + conflicting_marker).fetch("hosted_qa_evidence")
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert_equal 2, hosted.fetch("marker_count")
+    assert_includes hosted.fetch("missing"), "exactly one hosted-qa-evidence v1 marker is required"
+  end
+
+  def test_standalone_hosted_v1_replay_requires_one_marker
+    hosted = CloseoutEvidenceReplay.replay_hosted_qa_markers([])
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert_equal 0, hosted.fetch("marker_count")
+    assert_includes hosted.fetch("missing"), "exactly one hosted-qa-evidence v1 marker is required"
+  end
+
+  def test_hosted_v1_accepts_placeholder_words_as_criterion_evidence_url_path_segments
+    evidence_urls = [
+      "https://evidence.example.test/runs/n/a/sign-in-abc123",
+      "https://evidence.example.test/runs/unknown/sign-in-abc123",
+      "https://evidence.example.test/runs/tbd/sign-in-abc123",
+      "https://evidence.example.test/run/artifact/sign-in-abc123"
+    ]
+
+    evidence_urls.each do |evidence_url|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence_url)
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), evidence_url
+      assert_empty hosted.fetch("missing"), evidence_url
+    end
+  end
+
+  def test_hosted_v1_rejects_non_url_placeholders_and_malformed_evidence_urls
+    invalid_evidence = [
+      "n/a",
+      "unknown pending",
+      "TBD",
+      "proof unavailable",
+      "http://evidence.example.test/run/sign-in-abc123",
+      "https://bad host/run/sign-in-abc123"
+    ]
+
+    invalid_evidence.each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+  end
+
+  def test_generic_qa_evidence_alone_never_replays_as_hosted_qa
+    data = run_replay(v2_marker)
+
+    assert_equal "SATISFIED", data.dig("qa_evidence", "verdict")
+    assert_equal "NOT_APPLICABLE", data.dig("hosted_qa_evidence", "verdict")
+    assert_empty data.dig("hosted_qa_evidence", "criteria")
+  end
+
+  def test_hosted_waiver_replays_as_a_distinct_closed_variant
+    head_sha = "1111111111111111111111111111111111111111"
+    waiver_url = "https://github.com/example/repo/pull/123#issuecomment-456"
+    body = <<~MARKDOWN
+      <!-- hosted-qa-evidence v1
+      status: waived
+      head_sha: #{head_sha}
+      target: production
+      maintainer_waiver: #{waiver_url}
+      -->
+    MARKDOWN
+
+    hosted = run_replay(body, expected_head_sha: head_sha).fetch("hosted_qa_evidence")
+
+    assert_equal "WAIVED", hosted.fetch("verdict")
+    assert_equal waiver_url, hosted.dig("fields", "maintainer_waiver")
+    assert_empty hosted.fetch("criteria")
+  end
+
+  def test_hosted_v1_rejects_malformed_unknown_and_duplicate_rows
+    malformed = hosted_v1_marker.sub("-->", "unparsed injected text\n-->")
+    unknown = hosted_v1_marker.sub("-->", "substitute: local-system-test\n-->")
+    duplicate = hosted_v1_marker.sub(
+      "-->",
+      "criterion: id=sign-in | status=passed | evidence=https://evidence.example.test/duplicate\n-->"
+    )
+
+    { "malformed" => malformed, "unknown" => unknown, "duplicate" => duplicate }.each do |label, body|
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), label
+      refute_empty hosted.fetch("errors"), label
+    end
+  end
+
+  def test_hosted_v1_rejects_a_comment_opener_inside_criterion_evidence
+    body = hosted_v1_marker.sub(
+      "https://evidence.example.test/sign-in-abc123",
+      "proof<!--injected"
+    )
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert hosted.fetch("errors").any? { |error| error.include?("criterion[0].evidence") }, hosted
+  end
+
+  def test_hosted_v1_rejects_a_comment_closer_inside_criterion_evidence
+    body = hosted_v1_marker.sub(
+      "https://evidence.example.test/sign-in-abc123",
+      "proof-->injected"
+    )
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "UNKNOWN", hosted.fetch("verdict")
+    assert hosted.fetch("errors").any? { |error| error.include?("criterion[0].evidence") }, hosted
+  end
+
+  def test_hosted_v1_keeps_pipe_and_multiline_criterion_evidence_fail_closed
+    unsafe_values = {
+      "pipe" => "proof|injected",
+      "newline" => "proof\ninjected"
+    }
+
+    unsafe_values.each do |label, value|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", value)
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), label
+      refute_empty hosted.fetch("errors"), label
+    end
+  end
+
+  def test_hosted_v1_rejects_unsafe_or_mutable_deployment_urls
+    invalid_urls = {
+      "userinfo" => "https://user@deployments.example.test/build-abc123",
+      "query" => "https://deployments.example.test/current?head=abc123",
+      "fragment" => "https://deployments.example.test/build-abc123#logs",
+      "empty path" => "https://build-abc123.deployments.example.test",
+      "malformed" => "https://[invalid",
+      "non-HTTPS" => "http://deployments.example.test/build-abc123",
+      "placeholder" => "n/a",
+      "comment opener" => "https://deployments.example.test/build-abc123<!--comment",
+      "comment closer" => "https://deployments.example.test/build-abc123-->comment",
+      "pipe" => "https://deployments.example.test/build-abc123|injected",
+      "newline" => "https://deployments.example.test/build-abc123\ninjected"
+    }
+
+    invalid_urls.each do |label, url|
+      body = hosted_v1_marker.sub(
+        "https://deployments.example.test/production-20260808-abc123",
+        url
+      )
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), "#{label}: #{hosted}"
+      assert(
+        hosted.fetch("missing").include?("deployment_url") || hosted.fetch("errors").any?,
+        "#{label}: #{hosted}"
+      )
+    end
   end
 
   def test_current_ui_gate_rejects_v1_only_evidence
@@ -800,6 +1025,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "not applicable: unavailable",
       "not applicable: evidence missing",
       "not applicable: N/A",
+      "not applicable: n/a pending",
+      "not applicable: see n/a",
       "not applicable: unmeasured",
       "not applicable: not measured",
       "not_applicable: not available"

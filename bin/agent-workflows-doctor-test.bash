@@ -81,6 +81,22 @@ end
 puts JSON.generate(status_payload("UP_TO_DATE", installed_version: "1.0.0", available_version: "1.0.0"))
 RUBY
   chmod +x "$path"
+  warm_status_fixture "$path"
+}
+
+# Pay the fixture's first-execution cost before the doctor times it.
+#
+# macOS assesses a newly written executable the first time it runs, and that
+# first execution has a multi-second tail on a loaded machine -- long enough
+# to blow the doctor's workflow-status timeout budget and report "diagnostic
+# timed out" instead of exercising the scenario under test (#239, same shape
+# as `warm_stub` in skills/pr-batch/bin/pr-merge-submit-test.rb). The
+# `malformed` fixture mode exits immediately without reading ARGV, so this
+# warmup call is safe with no other setup and has no side effects any test
+# asserts on.
+warm_status_fixture() {
+  local path="$1"
+  WORKFLOW_STATUS_FIXTURE=malformed "$path" >/dev/null 2>&1 || true
 }
 
 write_seam_fixture() {
@@ -165,6 +181,8 @@ test_adds_fallback_guidance_for_upgrade_without_remediation() {
   set -e
   [[ "$status" -eq 1 ]] || fail "upgrade without guidance returned $status instead of 1"
 
+  # The Ruby assertion must receive the backticked command literally.
+  # shellcheck disable=SC2016
   ruby -rjson -e '
     install = JSON.parse(STDIN.read).fetch("checks").find { |item| item["id"] == "workflows.installation" }
     abort install.inspect unless install["guidance"] == "Upgrade workflows with `agent-stack sync`."
@@ -235,7 +253,7 @@ test_deep_mode_runs_workflow_seam_check() {
 }
 
 test_missing_or_mismatched_status_helper_returns_failed_contract() {
-  local tmp output status mode
+  local tmp output status
   make_tmp_dir tmp
   mkdir -p "$tmp/source" "$tmp/target/bin"
 

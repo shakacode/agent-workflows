@@ -1,3 +1,5 @@
+# Shared globals are populated by options.bash after all modules are sourced.
+declare runtime_root
 agent_stack_prepare_runtime() {
   local directory runtime_directory
   for directory in cache logs state; do

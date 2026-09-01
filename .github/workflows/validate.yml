@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -13,10 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
         with:
           ruby-version: "3.4"
 
@@ -24,14 +30,16 @@ jobs:
         id: gem-cache
         run: echo "dir=$(gem env gemdir)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache RuboCop gems
-        uses: actions/cache@v4
+      - name: Cache validation gems
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ steps.gem-cache.outputs.dir }}
-          key: ${{ runner.os }}-ruby-3.4-rubocop-${{ hashFiles('.rubocop-version') }}
+          key: ${{ runner.os }}-ruby-3.4-validation-${{ hashFiles('.rubocop-version', '.json-schemer-version') }}
 
-      - name: Install RuboCop
-        run: gem install rubocop -v "$(tr -d '[:space:]' < .rubocop-version)" --no-document
+      - name: Install validation gems
+        run: |
+          gem install rubocop -v "$(tr -d '[:space:]' < .rubocop-version)" --no-document
+          gem install json_schemer -v "$(tr -d '[:space:]' < .json-schemer-version)" --no-document
 
       - name: Run pack validation (bin/validate)
         run: bin/validate
