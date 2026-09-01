@@ -11,6 +11,7 @@ SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
 PR_MONITORING_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 PR_WALKTHROUGH_PATH = File.join(ROOT, "skills/pr-walkthrough/SKILL.md")
+TRIAGE_PATH = File.join(ROOT, "skills/triage/SKILL.md")
 VALIDATE_WORKFLOW_PATH = File.join(ROOT, ".github/workflows/validate.yml")
 
 def route_after(text, heading)
@@ -70,6 +71,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     @plan_skill = File.read(PLAN_SKILL_PATH, encoding: "UTF-8")
     @pr_monitoring = File.read(PR_MONITORING_PATH, encoding: "UTF-8")
     @pr_walkthrough = File.read(PR_WALKTHROUGH_PATH, encoding: "UTF-8")
+    @triage = File.read(TRIAGE_PATH, encoding: "UTF-8")
     @validate_workflow = File.read(VALIDATE_WORKFLOW_PATH, encoding: "UTF-8")
   end
 
@@ -265,6 +267,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
 
   def test_ask_walkthrough_waits_for_normalized_current_integration_success
     ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
+    continuation_prompt = route_after(@workflow, "Generic PR-Batch Continuation Prompt")
     normalized_gate = ask_gate.gsub(/\s+/, " ")
     normalized_monitoring = @pr_monitoring.gsub(/\s+/, " ")
     normalized_walkthrough = @pr_walkthrough.gsub(/\s+/, " ")
@@ -297,6 +300,8 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes normalized_gate,
                     "`head>=base+CI=READY` means both ancestry and the normalized `pr-ci-readiness` result must pass."
     assert_includes normalized_gate, "Every other result waits without a walkthrough."
+    assert_includes normalized_gate,
+                    "Stop if the checklist above no longer passes for the current head/base, even without a base change."
     refute_match(/\bPASSED\b/, ask_gate)
     assert_includes normalized_monitoring, "Raw provider status strings"
     assert_includes normalized_monitoring,
@@ -317,6 +322,12 @@ class IntegrationCloseoutContractTest < Minitest::Test
                       "Batch QA Lane:<owner/scope+evidence|none+rationale>", label
       assert_includes text, "release+gates pass", label
     end
+    assert_equal 1, @triage.scan(prompt_gate).length, "triage target prompt"
+
+    assert_includes continuation_prompt, ancestry_command
+    assert_includes continuation_prompt, "exact-head `pr-ci-readiness` v2 state `READY`"
+    assert_includes continuation_prompt,
+                    "If current-integration readiness fails on refresh, stop even when the base and diff are unchanged."
   end
 
   def test_sibling_components_remain_outside_the_boundary

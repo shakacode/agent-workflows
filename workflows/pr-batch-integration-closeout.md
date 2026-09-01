@@ -1623,11 +1623,12 @@ After it completes or is skipped, refresh the diff identity, ordinary
 readiness, current base, and checklist above. If the diff changes, invalidate
 the walkthrough and readiness evidence; restart or stop. A changed base also
 invalidates the walkthrough unless the checklist still passes for the same
-diff. Stop if any ordinary gate newly fails. Ask one final merge decision only
-when the refreshed diff matches the recorded identity, ordinary readiness is
-clean, and merge is allowed; a completed walkthrough must cover that diff.
-Walkthrough participation is not merge approval. Merge still requires the
-explicit authority decision.
+diff. Stop if the checklist above no longer passes for the current head/base,
+even without a base change. Stop if any ordinary gate newly fails. Ask one final
+merge decision only when the refreshed diff matches the recorded identity,
+ordinary readiness is clean, and merge is allowed; a completed walkthrough must
+cover that diff. Walkthrough participation is not merge approval. Merge still
+requires the explicit authority decision.
 
 ### Autonomous Merge Eligibility Gate
 
