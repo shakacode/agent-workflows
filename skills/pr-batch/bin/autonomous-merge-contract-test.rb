@@ -91,7 +91,7 @@ class AutonomousMergeContractTest < Minitest::Test
   end
 
   def test_goal_generation_surfaces_resolve_autonomous_stop_states_without_restatement
-    workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    workflow = File.read(File.join(ROOT, "workflows/pr-batch-integration-closeout.md"), encoding: "UTF-8")
     assert_includes workflow, "GMCC-v4:"
     assert_includes workflow, "ready-human-review-required"
     assert_includes workflow, "autonomous-merge-evidence-unknown"

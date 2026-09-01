@@ -143,7 +143,7 @@ assert(prompt_intake.include?("A durably\n  overridden ad-hoc request carries it
 assert(prompt_intake.include?("[PR-Batch Security Floor](pr-batch-security-floor.md)"), "canonical intake must reference the shared security floor")
 assert(security_floor.include?("A durable `adhoc:` override has no public GitHub\ntarget to scan"), "the shared security floor must own the durable ad-hoc exception")
 assert(!prompt_intake.include?("Do not pass a durably overridden `adhoc:` target to `pr-security-preflight`"), "canonical intake must not restate the shared security floor")
-assert(workflow.include?("Target: <exact issue, pull-request, or durable override identity>"), "launcher run record must preserve the stable intake identity")
+assert(prompt_intake.include?("Target: <exact issue, pull-request, or durable override identity>"), "launcher run record must preserve the stable intake identity")
 assert(prompt_intake.include?("type `github-issue` or `github-pull-request`"), "canonical intake must name executable GitHub target types")
 assert(prompt_intake.include?("The sole ad-hoc object type is `trusted-ad-hoc-override`"), "canonical intake must reserve ad-hoc launch for the typed durable override")
 worker_execution_handoff = worker_execution.gsub(/\s+/, " ")
