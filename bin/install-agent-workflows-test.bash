@@ -4614,6 +4614,46 @@ test_flat_copy_migrates_uncommitted_skill_to_companion_with_recorded_revision() 
   ' "$modified_target/.agent-workflows-install.json"
 }
 
+test_hidden_source_skill_entry_is_never_recorded_or_migrated() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/.shadow"
+  printf 'shadow payload\n' > "$source/skills/.shadow/notes.md"
+  mkdir -p "$target/skills/.shadow"
+  printf 'shadow payload\n' > "$target/skills/.shadow/notes.md"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/flat.out"
+
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints")
+    abort metadata.inspect if fingerprints.keys.any? { |name| name.start_with?(".") }
+  ' "$target/.agent-workflows-install.json"
+  assert_file "$target/skills/.shadow/notes.md"
+  write_native_scw_state codex "$target"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "migration accepted a personal hidden entry under skills"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'shadow payload' "$target/skills/.shadow/notes.md" || \
+    fail "blocked migration removed or changed the personal hidden entry"
+  assert_file "$target/skills/pr-batch/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$target/.agent-workflows-install.json"
+}
+
 test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
   local tmp source target recorded_fingerprint verified_fingerprint
   tmp="$(mktemp -d)"
@@ -8623,6 +8663,7 @@ main() {
     test_repeat_flat_copy_install_uses_fingerprints_without_git_history
     test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history
     test_flat_copy_migrates_uncommitted_skill_to_companion_with_recorded_revision
+    test_hidden_source_skill_entry_is_never_recorded_or_migrated
     test_copy_metadata_fingerprint_matches_delivery_state_verifier
     test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
     test_repeat_copy_install_blocks_modified_solution_document

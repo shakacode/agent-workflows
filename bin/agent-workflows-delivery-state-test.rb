@@ -1523,6 +1523,89 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_hidden_recorded_name_cannot_authorize_removing_an_uninstalled_target_path
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      FileUtils.mkdir_p(File.join(source, "skills/.shadow"))
+      File.write(File.join(source, "skills/.shadow/notes.md"), "shadow payload\n")
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      # The flat installer copies `skills/*`, so it never placed this path; an
+      # unrelated personal directory happens to hold identical content.
+      shadow = File.join(target, "skills/.shadow")
+      FileUtils.mkdir_p(shadow)
+      File.write(File.join(shadow, "notes.md"), "shadow payload\n")
+      fingerprints = %w[alpha beta].to_h do |name|
+        installed = File.join(target, "skills", name)
+        FileUtils.cp_r(File.join(source, "skills", name), installed)
+        [name, AgentWorkflowsDeliveryState.directory_fingerprint(installed)]
+      end
+      fingerprints[".shadow"] = AgentWorkflowsDeliveryState.directory_fingerprint(File.join(source, "skills/.shadow"))
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => revision,
+        "managed_skill_copy_fingerprints" => fingerprints
+      )
+
+      out, _err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal [shadow], flat.fetch("blocking")
+      assert_equal "shadow payload\n", File.read(File.join(shadow, "notes.md"))
+      assert_path_exists File.join(target, "skills/alpha/SKILL.md")
+    end
+  end
+
+  def test_hidden_revision_entry_cannot_authorize_removing_an_uninstalled_target_path
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      create_source(source)
+      FileUtils.mkdir_p(File.join(source, "skills/.shadow"))
+      File.write(File.join(source, "skills/.shadow/notes.md"), "shadow payload\n")
+      system("git", "-C", source, "add", ".", exception: true)
+      system("git", "-C", source, "commit", "--quiet", "-m", "commit shadow", exception: true)
+      revision = Open3.capture2("git", "-C", source, "rev-parse", "HEAD").first.strip
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      shadow = File.join(target, "skills/.shadow")
+      FileUtils.cp_r(File.join(source, "skills/.shadow"), shadow)
+      FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(target, "skills/alpha"))
+      FileUtils.cp_r(File.join(source, "skills/beta"), File.join(target, "skills/beta"))
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => revision
+      )
+
+      out, _err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal [shadow], flat.fetch("blocking")
+      assert_equal "shadow payload\n", File.read(File.join(shadow, "notes.md"))
+      assert_path_exists File.join(target, "skills/alpha/SKILL.md")
+    end
+  end
+
   def test_malformed_fingerprint_names_do_not_widen_revision_backed_inventory
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source = File.join(tmp, "source")

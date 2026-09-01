@@ -688,13 +688,20 @@ module AgentWorkflowsDeliveryState
     # what the installer owns. Union the recorded fingerprint keys into the inventory
     # while tracking which names the revision itself actually carries.
     snapshot_backed_names, names, snapshot = if legacy_flat && recorded_revision_unavailable
-                                               [[], fingerprint_names.sort, nil]
+                                               [[], fingerprint_names, nil]
                                              elsif legacy_flat
                                                revision_names, revision_snapshot = skill_names(source, metadata)
-                                               [revision_names, (revision_names | fingerprint_names).sort, revision_snapshot]
+                                               [revision_names, revision_names | fingerprint_names, revision_snapshot]
                                              else
                                                [[], collision_names, nil]
                                              end
+    if legacy_flat
+      # The flat installer copies `skills/*`, which the shell expands without dot
+      # entries. A recorded dot name therefore describes source content that was
+      # never installed, so it can never authorize removing a same-named target path.
+      snapshot_backed_names = snapshot_backed_names.grep_v(/\A\./)
+      names = names.grep_v(/\A\./).sort
+    end
     snapshot_backed = snapshot_backed_names.to_h { |name| [name, true] }
     recorded_names = names.to_h { |name| [name, true] }
     blocking = if legacy_flat && File.directory?(skills_path) && !File.symlink?(skills_path)
