@@ -711,28 +711,40 @@ module AgentWorkflowsDeliveryState
                else
                  []
                end
+    # Two recorded names can resolve to one installed entry, for example a case-only
+    # rename recorded on a case-insensitive volume. Classify each entry once so the
+    # migration never stages the same directory twice, and let any recorded name that
+    # proves ownership own it.
+    entries = {}
     names.each do |name|
       path = File.join(target, "skills", name)
       next unless File.exist?(path) || File.symlink?(path)
+
+      begin
+        stat = File.lstat(path)
+      rescue SystemCallError
+        next
+      end
+      entry = (entries[[stat.dev, stat.ino]] ||= { path: path, owned: false })
 
       fingerprint_owned = legacy_flat && recorded_skill_copy_fingerprint_matches?(path, metadata, name)
       # Names carried only by a fingerprint have no entry in the recorded revision,
       # so they must earn ownership from that fingerprint alone.
       name_snapshot = snapshot_backed.key?(name) ? snapshot : nil
-      unless legacy_flat && (name_snapshot || fingerprint_owned)
-        blocking << path
-        next
-      end
+      next unless legacy_flat && (name_snapshot || fingerprint_owned)
 
-      if File.symlink?(path)
-        resolved = File.expand_path(File.readlink(path), File.dirname(path))
-        allowed = [metadata["source"], source].compact.map { |root| File.expand_path(File.join(root, "skills", name)) }
-        (allowed.include?(resolved) ? removable : blocking) << path
-      elsif fingerprint_owned || (name_snapshot && matches_directory_snapshot?(path, name_snapshot, name))
-        removable << path
-      else
-        blocking << path
-      end
+      entry[:owned] ||= if File.symlink?(path)
+                          resolved = File.expand_path(File.readlink(path), File.dirname(path))
+                          allowed = [metadata["source"], source].compact.map do |root|
+                            File.expand_path(File.join(root, "skills", name))
+                          end
+                          allowed.include?(resolved)
+                        else
+                          fingerprint_owned || (name_snapshot && matches_directory_snapshot?(path, name_snapshot, name))
+                        end
+    end
+    entries.each_value do |entry|
+      (entry.fetch(:owned) ? removable : blocking) << entry.fetch(:path)
     end
 
     { "state" => if blocking.empty?

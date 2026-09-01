@@ -1894,8 +1894,9 @@ prepare_metadata() {
     end
     skill_fingerprints = if mode == "copy" && delivery_mode == "flat"
                            Dir.children(File.join(source, "skills")).sort.each_with_object({}) do |name, fingerprints|
-                             # The installer copies `skills/*`, which the shell expands without dot
-                             # entries. Recording one would name content it never installed.
+                             # The installer copies skills/* through a shell glob, which
+                             # excludes dot entries. Recording one would name content it
+                             # never installed.
                              next if name.start_with?(".")
 
                              root = File.join(source, "skills", name)

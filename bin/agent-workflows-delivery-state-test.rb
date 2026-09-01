@@ -1523,6 +1523,58 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def case_insensitive_filesystem?(root)
+    probe = File.join(root, "CaseProbe")
+    FileUtils.mkdir_p(probe)
+    File.directory?(File.join(root, "caseprobe"))
+  ensure
+    FileUtils.rm_rf(probe)
+  end
+
+  def test_case_only_recorded_rename_stages_one_installed_entry
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      skip "requires a case-insensitive filesystem" unless case_insensitive_filesystem?(tmp)
+
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      # A case-only rename in the dirty checkout: the recorded revision still
+      # carries "alpha" while the installed copy is spelled "Alpha".
+      File.rename(File.join(source, "skills/alpha"), File.join(source, "skills/Alpha"))
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      fingerprints = %w[Alpha beta].to_h do |name|
+        installed = File.join(target, "skills", name)
+        FileUtils.cp_r(File.join(source, "skills", name), installed)
+        [name, AgentWorkflowsDeliveryState.directory_fingerprint(installed)]
+      end
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => revision,
+        "managed_skill_copy_fingerprints" => fingerprints
+      )
+
+      out, err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      assert status.success?, "expected migration to succeed: #{out}#{err}"
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal [], flat.fetch("blocking")
+      assert_equal(
+        [File.join(target, "skills/Alpha"), File.join(target, "skills/beta")],
+        flat.fetch("removed").sort
+      )
+      assert_empty Dir.children(File.join(target, "skills"))
+    end
+  end
+
   def test_hidden_recorded_name_cannot_authorize_removing_an_uninstalled_target_path
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source = File.join(tmp, "source")
