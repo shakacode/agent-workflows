@@ -39,7 +39,7 @@ class WritingStyleContractTest < Minitest::Test
   end
 
   def test_style_guidance_cannot_replace_templates_evidence_or_receipts
-    workflow = "#{read('workflows/pr-batch-integration-closeout.md')}\n#{read('workflows/pr-processing.md')}"
+    workflow = read("workflows/pr-processing.md")
     address_templates = read("skills/address-review/references/templates.md")
     audit = read("skills/post-merge-audit/SKILL.md")
 

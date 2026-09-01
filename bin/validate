@@ -144,6 +144,7 @@ ruby skills/address-review/bin/address-review-summary-template-test.rb
 ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
 ruby skills/plan-pr-batch/bin/batch-plan-preflight-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
+ruby skills/plan-pr-batch/bin/readable-goal-prompt-contract-test.rb
 ruby skills/pause/bin/pause-prompt-test.rb
 ruby skills/close-batch/bin/close-batch-contract-test.rb
 ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb
@@ -154,27 +155,22 @@ ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/batch-status/bin/batch-status-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
-ruby skills/pr-batch/bin/security-floor-contract-test.rb
 ruby skills/pr-batch/bin/writing-style-contract-test.rb
 ruby skills/pr-batch/bin/user-facing-coordination-contract-test.rb
-ruby skills/pr-batch/bin/production-release-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/file-expansion-contract-test.rb
-ruby skills/pr-batch/bin/worker-execution-contract-test.rb
-ruby skills/pr-batch/bin/integration-closeout-contract-test.rb
 ruby skills/pr-batch/bin/dependency-conflict-policy-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-closeout-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-eligibility-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-evidence-test.rb
-ruby skills/pr-batch/bin/current-integration-evidence-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-calibrate-test.rb
 ruby skills/pr-batch/bin/coordination-telemetry-contract-test.rb
-ruby skills/pr-batch/bin/workflow-telemetry-report-test.rb
 ruby skills/pr-batch/bin/review-wave-contract-test.rb
 ruby skills/pr-batch/bin/assignee-exclusion-contract-test.rb
 ruby skills/pr-batch/bin/agent-claimed-mirror-contract-test.rb
 ruby skills/pr-batch/bin/coordination-declaration-contract-test.rb
+ruby skills/pr-batch/bin/agent-run-record-test.rb
 echo "== json_schemer =="
 JSON_SCHEMER_VERSION=$(tr -d '[:space:]' < .json-schemer-version)
 JSON_SCHEMER_VERSION="${JSON_SCHEMER_VERSION}" ruby skills/pr-batch/bin/batch-usage-receipt-test.rb

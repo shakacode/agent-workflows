@@ -10,7 +10,7 @@ module AgentDoctor
     WORKFLOW_DOCTOR_MODULES = %w[contract process_runner sanitizer timeout_budget workflows_cli workflows_component].freeze
 
     def initialize(options, runner:, sanitizer:, environment: ENV, now: -> { Time.now.utc })
-      @options = { source_git_timeout: SourceChecks::GIT_TIMEOUT_SECONDS }.merge(options)
+      @options = options
       @runner = runner
       @sanitizer = sanitizer
       @environment = environment
@@ -20,7 +20,7 @@ module AgentDoctor
     def call
       paths = expanded_paths
       sources = COMPONENTS.to_h { |name| [name, File.join(paths[:source_root], name)] }
-      checker = SourceChecks.new(runner: @runner, environment: @environment, git_timeout: @options[:source_git_timeout])
+      checker = SourceChecks.new(runner: @runner, environment: @environment)
       source_results = sources.to_h { |name, source| [name, checker.checkout(name, source)] }
       components = contracts(paths, sources, source_results).map do |contract|
         component = contract.fetch("component")

@@ -7,16 +7,9 @@ require "tmpdir"
 require_relative "../../bin/agent_doctor/orchestrator"
 require_relative "../../bin/agent_doctor/process_runner"
 require_relative "../../bin/agent_doctor/sanitizer"
-require_relative "../../bin/agent_doctor/timeout_budget"
 
 class AgentDoctorOrchestratorTrustTest < Minitest::Test
   COMPONENTS = %w[agent-workflows agent-coordination agent-coordination-dashboard].freeze
-  # These tests verify source/delegate trust decisions, not timeout behavior.
-  # Use the largest production-supported budget so concurrent validators do
-  # not make a freshly created fixture executable miss an unrelated deadline
-  # (#490). ProcessRunner's production defaults remain unchanged, and its
-  # timeout behavior has dedicated coverage in process_runner_test.rb.
-  NON_DEADLINE_TIMEOUT_SECONDS = AgentDoctor::TimeoutBudget::MAXIMUM
 
   def setup
     @tmp = Dir.mktmpdir("agent-doctor-trust")
@@ -35,12 +28,9 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
   end
 
   def test_failed_dashboard_source_is_not_executed
-    payload = AgentDoctor::Orchestrator.new(
-      options.merge(source_git_timeout: nil),
-      runner: non_deadline_runner,
-      sanitizer: AgentDoctor::Sanitizer.new,
-      environment: @environment
-    ).call
+    payload = AgentDoctor::Orchestrator.new(options, runner: AgentDoctor::ProcessRunner.new,
+                                                     sanitizer: AgentDoctor::Sanitizer.new,
+                                                     environment: @environment).call
     dashboard = payload.fetch("components").last
     checks = dashboard.fetch("checks")
     ids = checks.map { |check| check.fetch("id") }
@@ -343,14 +333,10 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
   end
 
   def orchestrator(selected_options = options)
-    AgentDoctor::Orchestrator.new(selected_options.merge(source_git_timeout: nil),
-                                  runner: non_deadline_runner,
+    AgentDoctor::Orchestrator.new(selected_options,
+                                  runner: AgentDoctor::ProcessRunner.new,
                                   sanitizer: AgentDoctor::Sanitizer.new,
                                   environment: @environment)
-  end
-
-  def non_deadline_runner
-    AgentDoctor::ProcessRunner.new(timeout: NON_DEADLINE_TIMEOUT_SECONDS)
   end
 
   def write_delegate(file, component, check_id, sentinel: nil)

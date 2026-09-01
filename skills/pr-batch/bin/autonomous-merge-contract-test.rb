@@ -7,14 +7,11 @@ require_relative "../lib/autonomous_merge_runtime_trust"
 
 ROOT = File.expand_path("../../..", __dir__)
 PARITY_PATHS = %w[
-  workflows/pr-batch-integration-closeout.md
+  workflows/pr-processing.md
+  skills/pr-batch/SKILL.md
   skills/pr-monitoring/SKILL.md
   skills/plan-pr-batch/SKILL.md
   skills/triage/SKILL.md
-].freeze
-ROUTE_PATHS = %w[
-  workflows/pr-processing.md
-  skills/pr-batch/SKILL.md
 ].freeze
 NECESSARY_NOT_SUFFICIENT = "Ordinary readiness is necessary but not sufficient for autonomous merge; " \
                            "evaluate exact-head autonomous-merge eligibility after every ordinary gate passes."
@@ -66,15 +63,10 @@ class AutonomousMergeContractTest < Minitest::Test
       assert_includes text, HUMAN_STATE, path
       assert_includes text, UNKNOWN_STATE, path
     end
-
-    ROUTE_PATHS.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
-      assert_includes text, "pr-batch-integration-closeout.md#autonomous-merge-eligibility-gate", path
-    end
   end
 
   def test_canonical_workflow_binds_helper_to_trusted_base_and_exact_current_head
-    workflow = File.read(File.join(ROOT, "workflows/pr-batch-integration-closeout.md"), encoding: "UTF-8")
+    workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
 
     assert_includes workflow, "autonomous-merge-eligibility"
     assert_includes workflow, "--trusted-base"
@@ -90,19 +82,30 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_match(/`merge_authority`\s+remains separate from\s+eligibility/, workflow)
   end
 
-  def test_goal_generation_surfaces_carry_both_autonomous_stop_states
+  def test_goal_generation_surfaces_resolve_autonomous_stop_states_without_restatement
+    workflow = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    assert_includes workflow, "GMCC-v4:"
+    assert_includes workflow, "ready-human-review-required"
+    assert_includes workflow, "autonomous-merge-evidence-unknown"
+    assert_includes workflow, GMCC_HUMAN_DECISION_BINDING
+
+    compact_fallback = workflow.lines.find { |line| line.start_with?("GMCC-v4:") }
+    pr_batch = File.read(File.join(ROOT, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
+    refute_nil compact_fallback
+    assert_includes pr_batch, compact_fallback
+    assert_includes pr_batch, "ready-human-review-required"
+    assert_includes pr_batch, "autonomous-merge-evidence-unknown"
+
     %w[
-      workflows/pr-processing.md
-      skills/pr-batch/SKILL.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
 
-      assert_includes text, "GMCC-v4:"
+      refute_includes text, "GMCC-v4:"
+      assert_includes text, "$pr-batch"
       assert_includes text, "ready-human-review-required"
       assert_includes text, "autonomous-merge-evidence-unknown"
-      assert_includes text, GMCC_HUMAN_DECISION_BINDING
     end
   end
 
@@ -255,8 +258,6 @@ class AutonomousMergeContractTest < Minitest::Test
     builtin = AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS
 
     refute_empty AutonomousMergePolicy::SOURCE_POLICY_PATTERNS
-    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, "workflows/pr-batch-security-floor.md"
-    assert_includes builtin, ".agents/workflows/pr-batch-security-floor.md"
     AutonomousMergePolicy::SOURCE_POLICY_PATTERNS.each do |pattern|
       assert_includes builtin, pattern
       assert_includes builtin, ".agents/#{pattern}"
@@ -268,23 +269,6 @@ class AutonomousMergeContractTest < Minitest::Test
       docs/adr/0003-smarter-autonomous-merge-gates.md
     ].each { |pattern| assert_includes builtin, pattern }
     assert_equal builtin.uniq, builtin
-  end
-
-  def test_release_policy_component_is_an_unconditional_policy_surface
-    source_path = "workflows/pr-production-release.md"
-
-    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_path
-    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_path
-    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
-  end
-
-  def test_current_integration_policy_components_are_portably_self_protecting
-    source_pattern = "skills/pr-batch/lib/current_integration_*.rb"
-
-    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_pattern
-    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_pattern
-    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_pattern}"
-    assert_includes AutonomousMergePolicy::PORTABLE_POLICY_EXCLUDES, "**/current_integration_*.rb"
   end
 
   def test_portable_safe_path_group_constants_are_frozen_and_not_mutated_by_callers

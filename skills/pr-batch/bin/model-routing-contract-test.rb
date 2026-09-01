@@ -1089,7 +1089,7 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
-  def test_goal_prompts_describe_preferences_observations_and_ordinary_activation
+  def test_goal_prompts_keep_directional_observations_in_the_launcher_record
     prompts = {
       "workflow" => extract_prompt(read_repo_file("workflows/pr-processing.md"), "### Plan To Goal Handoff"),
       "pr-batch" => extract_prompt(read_repo_file("skills/pr-batch/SKILL.md"), "## Goal Prompt Template"),
@@ -1097,13 +1097,33 @@ class ModelRoutingContractTest < Minitest::Test
     }
 
     prompts.each do |label, prompt|
-      assert_includes prompt, "Coordinator model/effort preference:", label
-      assert_includes prompt, "Worker model/effort preferences:", label
-      assert_includes prompt, "Observed host/model/effort:", label
-      assert_includes prompt, "ordinary pending/active lifecycle", label
+      assert_includes prompt, "Task name:", label
+      refute_match(/observed|model|workflow|UNKNOWN/i, prompt, label)
+      refute_includes prompt, "Coordinator model/effort preference:", label
+      refute_includes prompt, "Worker model/effort preferences:", label
+      refute_includes prompt, "ordinary pending/active lifecycle", label
       refute_includes prompt, "Launch assurance:", label
       refute_includes prompt, "exact-policy", label
     end
+
+    run_record_docs = read_repo_file("docs/github-task-prompts-and-run-records.md")
+    compact_record = run_record_docs[/^## Compact record\n.*?(?=^## )/m]
+    launcher_contract = run_record_docs[/^## Launcher composition boundary\n.*?(?=^## )/m]
+    refute_nil compact_record
+    refute_nil launcher_contract
+
+    assert_includes compact_record, "Model at prompt creation:"
+    assert_includes compact_record, "Model observed by worker:"
+    assert_includes compact_record, "Workflow at prompt creation"
+    assert_includes compact_record, "Workflow observed at worker start"
+    assert_includes compact_record, "Later workflow observations:"
+    assert_includes compact_record, "Launched at:"
+    assert_includes compact_record, "Run ID:"
+    assert_includes compact_record, "Record destination:"
+    assert_includes compact_record, "Replay identity:"
+    assert_includes normalized(launcher_contract), "one unique entry per planned lane"
+    assert_includes launcher_contract, "never substitutes for `run_id`"
+    assert_includes run_record_docs, "field-granular `UNKNOWN`"
   end
 
   def test_dispatcher_helper_is_portable_unsigned_and_preserves_dispatcher_fencing
@@ -1391,13 +1411,13 @@ class ModelRoutingContractTest < Minitest::Test
     ].each { |phrase| assert_includes guide, phrase }
     assert_includes workflow, "MODEL_ESCALATION_REQUEST"
     assert_includes workflow, "old and replacement instances must not overlap"
-    assert_includes workflow, "ownership is reconciled"
+    assert_includes workflow, "stop and reconcile"
   end
 
   def test_lane_cards_separate_preference_from_optional_observation
     %w[
       workflows/pr-processing.md
-      workflows/pr-batch-worker-execution.md
+      skills/pr-batch/SKILL.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|

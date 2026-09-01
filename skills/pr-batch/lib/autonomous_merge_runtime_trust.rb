@@ -35,13 +35,6 @@ module AutonomousMergeRuntimeTrust
         .agents/skills/pr-batch/lib/autonomous_merge_evidence.rb
       ]
     },
-    "integration-evidence-library" => {
-      path: File.expand_path("current_integration_evidence.rb", __dir__),
-      tree_paths: %w[
-        skills/pr-batch/lib/current_integration_evidence.rb
-        .agents/skills/pr-batch/lib/current_integration_evidence.rb
-      ]
-    },
     "policy-library" => {
       path: File.expand_path("../../../bin/agent_doctor/autonomous_merge_policy.rb", __dir__),
       tree_paths: %w[

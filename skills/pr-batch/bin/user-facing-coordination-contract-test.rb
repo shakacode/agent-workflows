@@ -8,7 +8,6 @@ class UserFacingCoordinationContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
   DOC = "docs/user-facing-coordination.md"
   WORKFLOW = "workflows/pr-processing.md"
-  INTEGRATION_CLOSEOUT = "workflows/pr-batch-integration-closeout.md"
   PR_BATCH = "skills/pr-batch/SKILL.md"
   PLAN_PR_BATCH = "skills/plan-pr-batch/SKILL.md"
   TRIAGE = "skills/triage/SKILL.md"
@@ -21,7 +20,6 @@ class UserFacingCoordinationContractTest < Minitest::Test
   PLAN_ISSUE_TRIAGE = "skills/plan-issue-triage/SKILL.md"
   QA_STRESS = "skills/qa-stress/SKILL.md"
   README = "README.md"
-  SKILL_GUIDE = "docs/skills.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
   GMCC_V4 = "GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or " \
             "threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
@@ -40,21 +38,6 @@ class UserFacingCoordinationContractTest < Minitest::Test
     return "" unless File.file?(full_path)
 
     File.read(full_path, encoding: "UTF-8").gsub(/\s+/, " ").strip
-  end
-
-  def normalized_with_integration_closeout(path)
-    [normalized(INTEGRATION_CLOSEOUT), normalized(path)].join(" ").strip
-  end
-
-  def test_normalization_keeps_compatibility_files_scoped_and_composition_explicit
-    [WORKFLOW, PR_BATCH].each do |path|
-      source = File.read(File.join(ROOT, path), encoding: "UTF-8")
-      assert_equal source.gsub(/\s+/, " ").strip, normalized(path), path
-
-      combined = normalized_with_integration_closeout(path)
-      assert_includes combined, normalized(INTEGRATION_CLOSEOUT), path
-      assert_includes combined, normalized(path), path
-    end
   end
 
   def normalized_section(path, heading, end_heading:)
@@ -173,9 +156,20 @@ class UserFacingCoordinationContractTest < Minitest::Test
   end
 
   def test_coordination_changes_preserve_exact_gmcc_v4_merge_authority_clauses
-    [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
+    workflow = File.read(File.join(ROOT, WORKFLOW), encoding: "UTF-8")
+    assert_includes workflow, GMCC_V4, WORKFLOW
+
+    pr_batch = File.read(File.join(ROOT, PR_BATCH), encoding: "UTF-8")
+    assert_includes pr_batch, GMCC_V4, PR_BATCH
+    assert_includes pr_batch, "ready-human-review-required", PR_BATCH
+    assert_includes pr_batch, "autonomous-merge-evidence-unknown", PR_BATCH
+    refute_includes pr_batch, "GMCC-v3:", PR_BATCH
+
+    [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
-      assert_includes text, GMCC_V4, path
+      refute_includes text, "GMCC-v4:", path
+      assert_includes text, "ready-human-review-required", path
+      assert_includes text, "autonomous-merge-evidence-unknown", path
       refute_includes text, "GMCC-v3:", path
     end
   end
@@ -215,7 +209,8 @@ class UserFacingCoordinationContractTest < Minitest::Test
   def test_ambiguity_guard_synthesizes_ownership_without_raw_events
     sections = {
       DOC => ["## Ambiguity Guard", /^##\s+/],
-      INTEGRATION_CLOSEOUT => ["### Coordinator Closeout Lane", /^##\s+/],
+      WORKFLOW => ["### Coordinator Closeout Lane", /^###\s+/],
+      PR_BATCH => ["## Coordinator Closeout Lane", /^##\s+/],
       CLOSE_SESSION => ["## User-Facing Coordination Contract", /^##\s+/]
     }
     sections.each do |path, (heading, end_heading)|
@@ -234,7 +229,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes contract,
                     "state the smallest action that clears the blocker and whether to reply here or start a new task"
 
-    [WORKFLOW, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION,
+    [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION,
      PAUSE, PR_MONITORING, PR_WALKTHROUGH, SPEC, PLAN_ISSUE_TRIAGE, QA_STRESS].each do |path|
       text = normalized(path)
       assert_includes text,
@@ -242,7 +237,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
                       path
     end
 
-    [WORKFLOW, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION].each do |path|
+    [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE, POST_MERGE_AUDIT, CLOSE_SESSION].each do |path|
       text = normalized(path)
       assert_includes text, "`Next: Archive this task.`", path
     end
@@ -251,14 +246,11 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes pause, "end with explicit `Action needed:` and `Next:` lines"
     assert_includes pause, "the exact same-task resume command or new-task handoff action"
 
-    [PLAN_PR_BATCH, TRIAGE, PR_MONITORING].each do |path|
+    [PR_BATCH, PLAN_PR_BATCH, TRIAGE, PR_MONITORING].each do |path|
       text = normalized(path)
       assert_includes text, "Keep `Action needed:` separate", path
       assert_includes text, "exact user action or `none`", path
     end
-
-    assert_includes normalized(PR_BATCH), "../../docs/user-facing-coordination.md",
-                    "skills/pr-batch/SKILL.md must route terminal wording to the shared contract"
 
     monitoring = normalized(PR_MONITORING)
     assert_includes monitoring, "`Next: Archive this task.`"
@@ -289,9 +281,11 @@ class UserFacingCoordinationContractTest < Minitest::Test
 
     [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = normalized(path)
-      assert_includes text, "Action needed: Start a new task with the fenced goal prompt.", path
       assert_includes text,
-                      "Next: Paste the prompt into that task, then archive this planning task.",
+                      "Action needed: Start a new task with the fenced goal prompt and its Batch Plan or exact durable plan-state reference.",
+                      path
+      assert_includes text,
+                      "Next: Paste both into that task, then archive this planning task.",
                       path
     end
 
@@ -344,9 +338,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes text, "HST-v1"
   end
 
-  def test_public_skill_inventory_links_to_close_session_guide
-    assert_includes normalized(README), "[Skill Guide](docs/skills.md)"
-    assert_includes normalized(SKILL_GUIDE),
-                    "[`$close-session`](../skills/close-session/SKILL.md)"
+  def test_public_skill_inventory_lists_close_session
+    text = normalized(README)
+    assert_includes text,
+                    "| `close-session` | Close active work with verified handoff and archive readiness. |"
   end
 end

@@ -4,14 +4,11 @@ module AgentDoctor
   class ProcessRunner
     DEFAULT_STDOUT_LIMIT = 1024 * 1024
     DEFAULT_STDERR_LIMIT = 64 * 1024
-    SPAWN_RETRY_DELAY_SECONDS = 0.05
 
-    def initialize(timeout: 10.0, stdout_limit: DEFAULT_STDOUT_LIMIT, stderr_limit: DEFAULT_STDERR_LIMIT,
-                   spawn: Process.method(:spawn))
+    def initialize(timeout: 10.0, stdout_limit: DEFAULT_STDOUT_LIMIT, stderr_limit: DEFAULT_STDERR_LIMIT)
       @timeout = timeout
       @stdout_limit = stdout_limit
       @stderr_limit = stderr_limit
-      @spawn = spawn
     end
 
     def capture(command, timeout: @timeout, environment: nil)
@@ -19,13 +16,13 @@ module AgentDoctor
       stderr_reader, stderr_writer = IO.pipe
       spawn_arguments = [*command, { out: stdout_writer, err: stderr_writer, pgroup: true }]
       spawn_arguments.unshift(environment) if environment
-      deadline = monotonic + timeout
-      pid = spawn_with_retry(spawn_arguments, deadline)
+      pid = Process.spawn(*spawn_arguments)
       stdout_writer.close
       stderr_writer.close
       stdout = +""
       stderr = +""
       streams = { stdout_reader => [stdout, @stdout_limit], stderr_reader => [stderr, @stderr_limit] }
+      deadline = monotonic + timeout
       child_status = nil
       failure = nil
 
@@ -71,24 +68,6 @@ module AgentDoctor
 
     def monotonic
       Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    end
-
-    def spawn_with_retry(arguments, deadline)
-      retried = false
-      begin
-        @spawn.call(*arguments)
-      rescue Errno::EAGAIN, Errno::EPERM
-        raise if retried
-
-        retried = true
-        remaining = deadline - monotonic
-        raise unless remaining.positive?
-
-        sleep [SPAWN_RETRY_DELAY_SECONDS, remaining].min
-        raise unless monotonic < deadline
-
-        retry
-      end
     end
 
     def terminate_group(pid)

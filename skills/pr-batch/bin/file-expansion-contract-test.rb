@@ -46,39 +46,65 @@ PATH_EXPANSION_STOPS =
   "release policy; it collides with another active lane and cannot be safely coordinated; it exposes consequential " \
   "ambiguity; or it weakens verification. An omitted path alone is not such a condition."
 
-COMPACT_WORKER_CONTRACT =
+COMPRESSED_WORKER_RESTATEMENT =
   "Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/" \
   "verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN"
+
+WORKER_SUBAGENT_COORDINATION =
+  "A sole active editor records the path and reason in the envelope or durable coordinator-owned lane record, " \
+  "then the coordinator records the active reservation, refreshes authoritative file-touch maps, lane lifecycle " \
+  "state, and active claims and collision checks, and reruns `batch-plan-preflight`; the worker continues without " \
+  "user approval or a blocked lifecycle only after the preflight accepts. In a multi-editor wave, the worker " \
+  "persists a typed expansion request, marks its durable lifecycle blocked, refreshes its heartbeat, emits a Lane " \
+  "Card with path, reason, and request evidence reference, and pauses before changing the path. The coordinator " \
+  "processes requests serially, records the active reservation, refreshes authoritative file-touch maps and lane " \
+  "lifecycle state, and reruns `batch-plan-preflight`. For every multi-editor request, acceptance alone does not " \
+  "authorize resume: the requester must durably transition out of `blocked`, a fresh preflight must accept, and " \
+  "the requester must be absent from `launch.held_lane_ids`; when launch or relaunch is needed, it must also be " \
+  "present in `launch.eligible_lane_ids`. Under maximum-concurrency-one serialization, the current holder must " \
+  "also release the slot before resume. The reservation remains active until the verified file-touch map reflects the " \
+  "path or the request is cancelled. A collision or `UNKNOWN` collision state remains stopped."
+
+WORKER_SUBAGENT_RESTATEMENT =
+  "With or without an envelope, contradictory evidence remains an immediate stop. Stop and return control when " \
+  "any of the following applies: the approved goal, accepted behavior, or acceptance criteria changes; the work " \
+  "adds unrelated work; it crosses a repository or trust boundary; it requires a destructive or " \
+  "difficult-to-reverse action; it introduces secrets, permissions, deployments, billing, or other external " \
+  "effects; it requires consequential architecture, performance, compatibility, or product judgment; it " \
+  "materially changes security, privacy, compliance, or release policy; it collides with another active lane and " \
+  "cannot be safely coordinated; it exposes consequential ambiguity; or it weakens verification. An omitted path " \
+  "alone is not such a condition."
+
+LANE_CARD_EXPANSION_SIGNAL =
+  "`Path expansion:` `<canonical path|none>`; `reason:` `<known reason|n/a>`; `request_ref:` " \
+  "`<durable evidence ref|n/a>`"
 
 MATERIAL_SCOPE_GROWTH_STOP = "material semantic scope growth or material blast-radius growth"
 NECESSARY_PATH_SCOPE_QUALIFIER =
   "Evidence-backed discovery of a necessary in-repository path alone is not such growth"
 
-PLANNING_CONTRACT_SURFACES = {
+FULL_CONTRACT_SURFACES = {
   "skills/plan-pr-batch/SKILL.md" => File.join(ROOT, "skills/plan-pr-batch/SKILL.md"),
+  "skills/pr-batch/SKILL.md" => File.join(ROOT, "skills/pr-batch/SKILL.md"),
+  "workflows/pr-processing.md" => File.join(ROOT, "workflows/pr-processing.md"),
   "skills/triage/SKILL.md" => File.join(ROOT, "skills/triage/SKILL.md"),
   "docs/pr-batch-skills.md" => File.join(ROOT, "docs/pr-batch-skills.md")
 }.freeze
 
-COMPACT_SURFACES = %w[
-  skills/plan-pr-batch/SKILL.md
-  skills/pr-batch/SKILL.md
-  workflows/pr-processing.md
-].to_h { |path| [path, File.join(ROOT, path)] }.freeze
-
-WORKER_EXECUTION_PATH = File.join(ROOT, "workflows/pr-batch-worker-execution.md")
+PROMPT_AUTHORING_SURFACES = FULL_CONTRACT_SURFACES.slice(
+  "skills/plan-pr-batch/SKILL.md",
+  "skills/pr-batch/SKILL.md",
+  "workflows/pr-processing.md"
+).freeze
 
 class FileExpansionContractTest < Minitest::Test
   def setup
-    @planning_contract_surfaces = PLANNING_CONTRACT_SURFACES.transform_values do |path|
-      File.read(path, encoding: "UTF-8")
-    end
-    @compact_surfaces = COMPACT_SURFACES.transform_values { |path| File.read(path, encoding: "UTF-8") }
-    @worker_execution = File.read(WORKER_EXECUTION_PATH, encoding: "UTF-8")
+    @full_contract_surfaces = FULL_CONTRACT_SURFACES.transform_values { |path| File.read(path, encoding: "UTF-8") }
+    @prompt_authoring_surfaces = PROMPT_AUTHORING_SURFACES.transform_values { |path| File.read(path, encoding: "UTF-8") }
   end
 
   def test_public_surfaces_allow_evidence_backed_in_repository_path_expansion
-    @planning_contract_surfaces.each do |label, text|
+    @full_contract_surfaces.each do |label, text|
       normalized = text.gsub(/\s+/, " ")
 
       assert_includes normalized, PATH_EXPANSION_DEFAULT, label
@@ -88,31 +114,18 @@ class FileExpansionContractTest < Minitest::Test
     end
   end
 
-  def test_compact_worker_contracts_are_mirrored_and_do_not_block_on_a_missing_path
-    contracts = @compact_surfaces.transform_values do |text|
-      text.lines.grep(/^Workers:/).map(&:strip).uniq
+  def test_human_prompt_surfaces_drop_the_compressed_worker_restatement
+    @prompt_authoring_surfaces.each do |label, text|
+      refute_includes text, COMPRESSED_WORKER_RESTATEMENT, label
     end
-
-    contracts.each do |label, lines|
-      assert_equal [COMPACT_WORKER_CONTRACT], lines, label
-    end
-    assert_includes COMPACT_WORKER_CONTRACT, "path+resv;multi=>coord"
-    assert_includes COMPACT_WORKER_CONTRACT, "stop:contradiction/ambig/scope-risk/verify-down"
-    assert_includes COMPACT_WORKER_CONTRACT, "Verify live GitHub before edits"
-    assert_includes COMPACT_WORKER_CONTRACT, "unverifiable=>UNKNOWN"
   end
 
   def test_worker_subagent_restatement_preserves_every_material_stop
-    contract = @worker_execution.gsub(/\s+/, " ")
+    workflow = @full_contract_surfaces.fetch("workflows/pr-processing.md").gsub(/\s+/, " ")
 
-    assert_includes contract, "active typed `expansion-path-reservation`"
-    assert_includes contract, "For a sole active editor"
-    assert_includes contract, "In a multi-editor wave"
-    assert_includes contract, "`launch.held_lane_ids`"
-    assert_includes contract, "`expansion-rename-reservation`"
-    assert_includes contract, "An omitted path alone is not material scope growth"
-    assert_includes contract, "Stop at a safe checkpoint when contradictory evidence appears"
-    assert_includes contract, "`Path expansion:` `<canonical path|none>`"
+    assert_includes workflow, WORKER_SUBAGENT_COORDINATION
+    assert_includes workflow, WORKER_SUBAGENT_RESTATEMENT
+    assert_includes workflow, LANE_CARD_EXPANSION_SIGNAL
   end
 
   def test_scope_summaries_distinguish_semantic_growth_from_necessary_path_discovery

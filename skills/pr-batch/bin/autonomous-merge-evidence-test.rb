@@ -40,7 +40,6 @@ class AutonomousMergeEvidenceTest < Minitest::Test
     assert_equal 101, objective.fetch("files").length
     assert_equal HEAD_SHA, objective.fetch("head_sha")
     assert_equal BASE_SHA, objective.fetch("base_sha")
-    assert_equal "main", objective.fetch("base_ref")
     assert objective.fetch("files_complete")
     assert objective.fetch("commits_complete")
     assert objective.fetch("reviews_complete")
@@ -68,25 +67,6 @@ class AutonomousMergeEvidenceTest < Minitest::Test
     assert_includes error.message, "head or base moved during evidence collection"
   end
 
-  def test_base_ref_movement_during_collection_is_unknown
-    reads = 0
-    api = lambda do |path|
-      if path == "repos/example/repo/pulls/7"
-        reads += 1
-        detail = pull_detail
-        detail.fetch("base")["ref"] = reads == 1 ? "main" : "release"
-        next(detail)
-      end
-      []
-    end
-
-    error = assert_raises(AutonomousMergeEvidence::CollectionError) do
-      AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api:)
-    end
-
-    assert_includes error.message, "head or base moved during evidence collection"
-  end
-
   def test_force_push_aba_during_collection_is_unknown_even_when_detail_timestamps_match
     detail_reads = 0
     timeline_reads = 0
@@ -96,7 +76,7 @@ class AutonomousMergeEvidenceTest < Minitest::Test
         detail_reads += 1
         {
           "head" => { "sha" => HEAD_SHA },
-          "base" => { "sha" => BASE_SHA, "ref" => "main" },
+          "base" => { "sha" => BASE_SHA },
           "updated_at" => "2026-07-25T12:00:00Z",
           "changed_files" => 1,
           "commits" => 0
@@ -127,7 +107,7 @@ class AutonomousMergeEvidenceTest < Minitest::Test
         detail_reads += 1
         {
           "head" => { "sha" => HEAD_SHA },
-          "base" => { "sha" => BASE_SHA, "ref" => "main" },
+          "base" => { "sha" => BASE_SHA },
           "updated_at" => detail_reads == 1 ? "2026-07-25T12:00:00Z" : "2026-07-25T12:00:01Z",
           "changed_files" => 1,
           "commits" => 0
@@ -540,7 +520,7 @@ class AutonomousMergeEvidenceTest < Minitest::Test
   def pull_detail(head_sha: HEAD_SHA, updated_at: UPDATED_AT, changed_files: 1, commits: 1)
     {
       "head" => { "sha" => head_sha },
-      "base" => { "sha" => BASE_SHA, "ref" => "main" },
+      "base" => { "sha" => BASE_SHA },
       "updated_at" => updated_at,
       "changed_files" => changed_files,
       "commits" => commits

@@ -181,7 +181,7 @@ module CoordinationDeclaration
     if values.empty?
       near_misses = near_miss_lines(handoff_text)
       unless near_misses.empty?
-        return ["final handoff contains a near-miss coordination declaration #{JSON.generate(near_misses.first)}; " \
+        return ["final handoff contains a near-miss coordination declaration #{near_misses.first.inspect}; " \
                 "use exact `coordination: registered <batch-id>` or " \
                 "`coordination: unavailable #{EM_DASH} <reason>` syntax"]
       end
@@ -205,7 +205,7 @@ module CoordinationDeclaration
     when /\Aunavailable(?:[[:space:]]+(.*))?\z/m
       unavailable_blockers(Regexp.last_match(1).to_s)
     else
-      ["unrecognized `coordination:` declaration #{JSON.generate(value)}; " \
+      ["unrecognized `coordination:` declaration #{value.inspect}; " \
        "use `registered <batch-id>` or `unavailable #{EM_DASH} <reason>`"]
     end
   end
@@ -228,7 +228,7 @@ module CoordinationDeclaration
              else
                "drop the trailing text after the batch id"
              end
-      return ["`coordination: registered` batch id must be a single token, got #{JSON.generate(batch_id)}; #{hint}"]
+      return ["`coordination: registered` batch id must be a single token, got #{batch_id.inspect}; #{hint}"]
     end
 
     []

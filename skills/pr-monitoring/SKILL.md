@@ -34,7 +34,7 @@ names:
 - local validation command
 
 Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
-contract in `workflows/pr-batch-integration-closeout.md`; do not reproduce or reinterpret that
+contract in `workflows/pr-processing.md`; do not reproduce or reinterpret that
 contract here.
 
 Use the PR's real repository, base, head branch, head SHA, and current merge

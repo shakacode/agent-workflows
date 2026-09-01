@@ -33,57 +33,6 @@ class AgentDoctorProcessRunnerTest < Minitest::Test
     assert_operator result[:stdout].bytesize, :<=, 8
   end
 
-  def test_retries_one_transient_spawn_capacity_failure
-    attempts = 0
-    spawn = lambda do |*arguments|
-      attempts += 1
-      raise Errno::EPERM if attempts == 1
-
-      Process.spawn(*arguments)
-    end
-
-    result = runner(spawn: spawn).capture([RbConfig.ruby, "-e", 'STDOUT.write("ok")'])
-
-    assert_equal 2, attempts
-    assert_equal "ok", result[:stdout]
-    assert_equal 0, result[:exit]
-    assert_nil result[:failure]
-  end
-
-  def test_persistent_spawn_capacity_failure_is_reported_after_one_retry
-    attempts = 0
-    spawn = lambda do |*_arguments|
-      attempts += 1
-      raise Errno::EPERM
-    end
-
-    result = runner(spawn: spawn).capture([RbConfig.ruby, "-e", "exit 0"])
-
-    assert_equal 2, attempts
-    assert_equal "unable to start diagnostic: Errno::EPERM", result[:failure]
-    assert_nil result[:exit]
-  end
-
-  def test_spawn_retry_consumes_the_original_capture_deadline
-    attempts = 0
-    spawn = lambda do |*arguments|
-      attempts += 1
-      raise Errno::EPERM if attempts == 1
-
-      Process.spawn(*arguments)
-    end
-    ticks = [0.0, 0.01, 0.05, 0.11]
-    process_runner = runner(timeout: 0.1, spawn: spawn)
-    process_runner.define_singleton_method(:monotonic) { ticks.shift || 0.11 }
-    process_runner.define_singleton_method(:sleep) { |_seconds| nil }
-
-    result = process_runner.capture([RbConfig.ruby, "-e", "exit 0"])
-
-    assert_equal 2, attempts
-    assert_equal "diagnostic timed out", result[:failure]
-    assert_nil result[:exit]
-  end
-
   def test_timeout_terminates_descendant_process_group
     Dir.mktmpdir do |directory|
       pid_file = File.join(directory, "child")

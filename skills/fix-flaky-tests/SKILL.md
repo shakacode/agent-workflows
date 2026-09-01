@@ -279,10 +279,7 @@ Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt t
 
 ## Source Note
 
-Adapted from the upstream
-[`fix-flaky-tests` skill](https://github.com/intercom/2x-skills/blob/59213af0a2db9321ef10355ff24e9bd619151b6b/plugins/test-tools/skills/fix-flaky-tests/SKILL.md)
-in [intercom/2x-skills](https://github.com/intercom/2x-skills). The hard gate,
-fast exits, and reproduction/verification split are preserved; the
+Adapted from the `fix-flaky-tests` skill in
+[intercom/2x-skills](https://github.com/intercom/2x-skills) (MIT). The hard
+gate, fast exits, and reproduction/verification split are preserved; the
 provider-specific log-fetch tier is replaced by this pack's repository seam.
-See the pinned upstream [MIT license and copyright
-notice](https://github.com/intercom/2x-skills/blob/59213af0a2db9321ef10355ff24e9bd619151b6b/LICENSE).

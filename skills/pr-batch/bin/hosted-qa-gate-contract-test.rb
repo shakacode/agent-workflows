@@ -12,7 +12,7 @@ require_relative "../lib/hosted_qa_runtime_trust"
 
 ROOT = File.expand_path("../../..", __dir__)
 DELEGATION = "Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA contract " \
-             "in `workflows/pr-batch-integration-closeout.md`; do not reproduce or reinterpret that contract here."
+             "in `workflows/pr-processing.md`; do not reproduce or reinterpret that contract here."
 
 class HostedQaGateContractTest < Minitest::Test
   def read(path)
@@ -30,7 +30,7 @@ class HostedQaGateContractTest < Minitest::Test
   end
 
   def test_canonical_workflow_owns_the_executable_contract
-    workflow = read("workflows/pr-batch-integration-closeout.md")
+    workflow = read("workflows/pr-processing.md")
 
     assert_includes workflow, "hosted-qa-evidence v1"
     assert_includes workflow, "Generic `qa-evidence v2` never proves a hosted deployment"
@@ -45,7 +45,7 @@ class HostedQaGateContractTest < Minitest::Test
   end
 
   def test_canonical_workflow_requires_pre_execution_runtime_trust_and_criteria_authentication
-    workflow = read("workflows/pr-batch-integration-closeout.md")
+    workflow = read("workflows/pr-processing.md")
     section = workflow[/### Hosted Runtime QA Gate\n(.*?)\n### QA Evidence/m, 1]&.gsub(/\s+/, " ")
 
     refute_nil section
@@ -65,7 +65,7 @@ class HostedQaGateContractTest < Minitest::Test
   end
 
   def test_canonical_materialization_uses_only_coordinator_verified_outer_tools
-    workflow = read("workflows/pr-batch-integration-closeout.md")
+    workflow = read("workflows/pr-processing.md")
     section = workflow[/### Hosted Runtime QA Gate\n(.*?)\n### QA Evidence/m, 1]
     normalized = section&.gsub(/\s+/, " ")
 
@@ -108,7 +108,7 @@ class HostedQaGateContractTest < Minitest::Test
       run_git!(git, repository, "commit", "-q", "-m", "trusted base with runtime symlink")
       base_sha = run_git!(git, repository, "rev-parse", "HEAD").strip
 
-      script = read("workflows/pr-batch-integration-closeout.md").match(
+      script = read("workflows/pr-processing.md").match(
         /```bash\n(?<script>set -o pipefail.*?HOSTED_HELPER_PROVENANCE="trusted-base:\$\{TRUSTED_BASE_SHA\}"\n)```/m
       )&.[](:script)
       refute_nil script
@@ -147,7 +147,7 @@ class HostedQaGateContractTest < Minitest::Test
   end
 
   def test_canonical_helper_launcher_uses_sanitized_absolute_ruby_from_a_trusted_cwd
-    workflow = read("workflows/pr-batch-integration-closeout.md")
+    workflow = read("workflows/pr-processing.md")
     section = workflow[/### Hosted Runtime QA Gate\n(.*?)\n### QA Evidence/m, 1]
     normalized = section&.gsub(/\s+/, " ")
 

@@ -1354,13 +1354,13 @@ class UntrustedContributorIntakeContractTest < Minitest::Test
     assert_includes changelog, "Add a portable report-first safe intake skill for untrusted outside-contributor fork pull requests."
   end
 
-  def test_human_facing_skill_guide_lists_the_skill
+  def test_readme_inventory_lists_the_skill_in_alphabetical_order
     readme = File.read(File.join(ROOT, "README.md"), encoding: "UTF-8")
-    skill_guide = File.read(File.join(ROOT, "docs/skills.md"), encoding: "UTF-8")
-    entry = "[`$untrusted-contributor-intake`](../skills/untrusted-contributor-intake/SKILL.md)"
+    row = "| `untrusted-contributor-intake` | Safely intake untrusted outside-contributor fork PRs. |"
 
-    assert_includes readme, "[Skill Guide](docs/skills.md)"
-    assert_includes skill_guide, entry
+    assert_includes readme, row
+    assert_operator readme.index("| `type-design-review`"), :<, readme.index(row)
+    assert_operator readme.index(row), :<, readme.index("| `update-changelog`")
   end
 
   def test_repo_validation_registers_this_contract_test_and_the_helper_test
