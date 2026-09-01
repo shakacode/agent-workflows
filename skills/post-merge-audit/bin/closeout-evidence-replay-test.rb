@@ -214,6 +214,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "https:broken",
       "https: broken",
       "https: available.example.test",
+      "https: example.test artifact",
       "https: example.test:443;",
       "https: example.test?run=1;",
       "https: example.test#run;",
@@ -829,7 +830,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
   def test_v2_rejects_malformed_https_reference_beside_a_valid_url
     malformed_urls = [
-      "https:broken", "https: broken", "https: available.example.test",
+      "https:broken", "https: broken", "https: available.example.test", "https: example.test artifact",
       "https: example.test:443;", "https: example.test?run=1;", "https: example.test#run;",
       "https: //available", "HTTPS: ✅//available"
     ]
