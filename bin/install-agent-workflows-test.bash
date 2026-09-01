@@ -207,6 +207,7 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/docs/agent-workflows-model-routing.md"
   assert_file "$target/docs/user-facing-coordination.md"
   assert_file "$target/docs/writing-style.md"
+  assert_file "$target/docs/writing-style-asd-ste100.md"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflow-writing-style"
@@ -216,6 +217,14 @@ test_codex_host_install_writes_helpers_and_metadata() {
   writing_style_output="$(HOME="$tmp/home" "$ruby_bin" "$target/bin/agent-workflow-writing-style" --repo-root "$tmp" --format json)"
   ruby -rjson -e 'result = JSON.parse(ARGV.fetch(0)); abort result.inspect unless result["provenance"] == "repo"' \
     "$writing_style_output" || fail "installed writing-style resolver did not resolve the repository smoke guide"
+  rm "$tmp/.agents/agent-workflow.yml"
+  printf 'writing_style: asd-ste100\n' > "$tmp/.agents/agent-workflow.yml"
+  writing_style_output="$(HOME="$tmp/home" "$ruby_bin" "$target/bin/agent-workflow-writing-style" --repo-root "$tmp" --format json)"
+  ruby -rjson -e '
+    result = JSON.parse(ARGV.fetch(0))
+    abort result.inspect unless result["provenance"] == "repo" &&
+                                result["guide"].include?("ASD-STE100-inspired constraints")
+  ' "$writing_style_output" || fail "installed writing-style resolver did not load the ASD-STE100 preset"
   rm "$tmp/.agents/agent-workflow.yml"
   writing_style_output="$(HOME="$tmp/home" "$ruby_bin" "$target/bin/agent-workflow-writing-style" --repo-root "$tmp" --format json)"
   ruby -rjson -e '
@@ -249,12 +258,15 @@ test_codex_host_install_writes_helpers_and_metadata() {
   [[ ! -e "$target/.claude-plugin/marketplace.json" ]] || fail "Claude marketplace metadata is source-pack metadata, not installer-managed install metadata"
   ruby -rjson -e '
     metadata = JSON.parse(File.read(ARGV.fetch(0)))
-    provenance_fingerprint = metadata.fetch("managed_pack_doc_copy_fingerprints")["execution-provenance-schema.md"]
+    fingerprints = metadata.fetch("managed_pack_doc_copy_fingerprints")
+    provenance_fingerprint = fingerprints["execution-provenance-schema.md"]
+    preset_fingerprint = fingerprints["writing-style-asd-ste100.md"]
     abort metadata.inspect unless metadata["host"] == "codex" &&
                                   metadata["mode"] == "copy" &&
                                   metadata["delivery_mode"] == "flat" &&
                                   metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
-                                  provenance_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/)
+                                  provenance_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/) &&
+                                  preset_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/)
   ' "$target/.agent-workflows-install.json"
 }
 
@@ -456,6 +468,7 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/workflows/pr-processing.md"
     assert_file "$target/docs/coordination-backend.md"
     assert_file "$target/docs/writing-style.md"
+    assert_file "$target/docs/writing-style-asd-ste100.md"
     assert_file "$target/bin/agent-workflow-seam-doctor"
     assert_file "$target/bin/agent-workflows-status"
     assert_file "$target/bin/agent-workflows-doctor"
@@ -464,7 +477,10 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/lib/agent-workflows/secure_github_actions_scanner.rb"
     ruby -rjson -e '
       metadata = JSON.parse(File.read(ARGV.fetch(0)))
-      abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" && metadata["mode"] == "copy"
+      preset_fingerprint = metadata.fetch("managed_pack_doc_copy_fingerprints")["writing-style-asd-ste100.md"]
+      abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion" &&
+                                    metadata["mode"] == "copy" &&
+                                    preset_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/)
     ' "$target/.agent-workflows-install.json"
 
     write_consumer_agents "$consumer"
@@ -4576,6 +4592,7 @@ test_installation_docs_describe_managed_coordination_doc_fingerprints() {
 
   assert_contains "$docs" '<target>/docs/user-facing-coordination.md'
   assert_contains "$docs" '<target>/docs/writing-style.md'
+  assert_contains "$docs" '<target>/docs/writing-style-asd-ste100.md'
   assert_contains "$docs" '<target>/docs/execution-provenance-schema.md'
   assert_contains "$docs" '<target>/bin/validate-execution-provenance'
   assert_contains "$docs" 'managed_skill_copy_fingerprints'
@@ -4599,8 +4616,8 @@ test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc()
   ruby -e '
     path = ARGV.fetch(0)
     text = File.read(path)
-    insertion = "  writing-style.md\n  uncommitted-pack-doc.md\n)"
-    abort "missing pack_docs insertion point" unless text.sub!("  writing-style.md\n)", insertion)
+    insertion = "pack_docs=(\n  uncommitted-pack-doc.md\n"
+    abort "missing pack_docs insertion point" unless text.sub!("pack_docs=(\n", insertion)
     File.write(path, text)
   ' "$source/bin/install-agent-workflows"
   printf 'managed-v1\n' > "$source/docs/$doc_name"
@@ -7061,7 +7078,7 @@ test_copy_mode_does_not_replace_generic_consumer_docs() {
 }
 
 test_symlink_mode_links_skills_workflows_and_helpers() {
-  local tmp target
+  local tmp target ruby_bin writing_style_output
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   mkdir -p "$target/docs"
@@ -7081,6 +7098,17 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/docs/agent-workflows-model-routing.md"
   assert_symlink "$target/docs/user-facing-coordination.md"
   assert_symlink "$target/docs/writing-style.md"
+  assert_symlink "$target/docs/writing-style-asd-ste100.md"
+  ruby_bin="$(ruby -rrbconfig -e 'print RbConfig.ruby')"
+  mkdir -p "$tmp/repo/.agents" "$tmp/home"
+  printf 'writing_style: asd-ste100\n' > "$tmp/repo/.agents/agent-workflow.yml"
+  writing_style_output="$(HOME="$tmp/home" "$ruby_bin" "$target/bin/agent-workflow-writing-style" \
+    --repo-root "$tmp/repo" --format json)"
+  ruby -rjson -e '
+    result = JSON.parse(ARGV.fetch(0))
+    abort result.inspect unless result["provenance"] == "repo" &&
+                                result["guide"].include?("ASD-STE100-inspired constraints")
+  ' "$writing_style_output" || fail "symlink-installed resolver did not load the ASD-STE100 preset"
   [[ -d "$target/docs/solutions" && ! -L "$target/docs/solutions" ]] || fail "expected real docs/solutions directory"
   assert_symlink "$target/docs/solutions/README.md"
   assert_symlink "$target/bin/agent-workflow-seam-doctor"
