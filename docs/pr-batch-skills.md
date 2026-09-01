@@ -331,9 +331,9 @@ omit the queue summary and note that queue state is unavailable.
    multiple prompts are produced, `MM-DD HH:MM` from
    `date +'%m-%d %H:%M'` in the local shell, and a short title.
    The issue-bearing shapes are
-   `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <short title>.`
+   `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
    for GitHub and
-   `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <short title>.`
+   `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
    for Linear. The verified source-issue set contains only exact
    provider-verified source records `Issue #N: <verified GitHub URL>` and
    `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub records

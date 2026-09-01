@@ -189,8 +189,8 @@ CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
-GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <short title>."
-LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <short title>."
+GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>."
+LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>."
 BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
   "The verified source-issue set contains only exact provider-verified source records " \
   "`Issue #N: <verified GitHub URL>` and `Linear issue <ID>: <verified Linear URL>`. " \
@@ -212,6 +212,11 @@ CONTINUATION_TITLE_IDENTIFIER_RULE =
   "for exactly one verified source issue, even alongside PR or ad-hoc execution targets; omit it for zero or " \
   "multiple verified source issues. Evidence, blocker, dependency, next-action, comment, and example refs are not " \
   "targets and cannot supply title identifiers."
+CONTINUATION_HANDLE_SELECTION_RULE =
+  "Otherwise, after exact target and lane resolution, derive one top-level `Thread handle:` using the normal " \
+  "`<batch-short>-<lane>-<word>` rule: use the resumed lane id or owner slug for one resumed lane, or use literal " \
+  "`coordinator` as `<lane>` for a multi-lane continuation. Keep any lane-specific handles in their lane state; do not treat " \
+  "them as competing top-level candidates."
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
                       "`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII " \
@@ -1486,6 +1491,17 @@ class GoalCompletionContractTest < Minitest::Test
                              "workflow continuation prompt"
     assert continuation_title_thread_handle_shape_valid?(@workflow_resume_prompt),
            "workflow continuation prompt must expose the optional verified source issue ID in its title"
+  end
+
+  def test_continuation_handle_selects_one_single_or_multi_lane_role
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+
+    assert_squished_includes continuation, CONTINUATION_HANDLE_SELECTION_RULE,
+                             "workflow continuation prompt"
   end
 
   def test_batch_title_instructions_pin_local_date_source

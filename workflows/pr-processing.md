@@ -1074,9 +1074,9 @@ result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` ->
 `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid
 configured `repo_prefix` is a blocker; do not silently fall back.
 The issue-bearing shapes are
-`Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <short title>.`
+`Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
 for GitHub and
-`Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <short title>.`
+`Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
 for Linear. The verified source-issue set contains only exact provider-verified
 source records `Issue #N: <verified GitHub URL>` and
 `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub records through
@@ -2010,10 +2010,14 @@ Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule 
 [Plan To Goal Handoff](#plan-to-goal-handoff), and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
 Preserve exactly one trusted persisted coordinator continuation handle when it
-can be verified. Otherwise derive the one top-level `Thread handle:` after exact
-target and lane resolution, using the normal `<batch-short>-<lane>-<word>`
-rule. Conflicting, ambiguous, or unverified candidates are literal `UNKNOWN`
-and stop continuation; never infer a handle from free-form text.
+can be verified. Otherwise, after exact target and lane resolution, derive one
+top-level `Thread handle:` using the normal `<batch-short>-<lane>-<word>` rule:
+use the resumed lane id or owner slug for one resumed lane, or use literal
+`coordinator` as `<lane>` for a multi-lane continuation. Keep any lane-specific
+handles in their lane state; do not treat them as competing top-level candidates.
+Conflicting persisted coordinator handles, an unverified selected lane, or an
+ambiguous target or lane set are literal `UNKNOWN` and stop continuation; never
+infer a handle from free-form text.
 
 ```text
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
