@@ -1302,9 +1302,7 @@ ones—are informational. Without required checks, selected runs replace the
 advisory list; completed rows must carry the exact head for merge assurance.
 Require or select relied-on hosted Markdown checks. Older-head runs are
 `UNKNOWN`.
-Current-head `PENDING` drafts visible to the authenticated viewer block. Here,
-`complete` covers only the paginated viewer-visible scope; other reviewers'
-drafts are unobservable. Incomplete or unavailable inventory is `UNKNOWN`.
+Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 Avoid long-lived `gh ... --watch` commands in agent sessions. Avoid relying on
 `statusCheckRollup` alone when `gh pr checks` can answer the readiness question more
