@@ -22,9 +22,11 @@ reproduction explains the failure.
    name, retry number, failing step, and log excerpt. If any fact cannot be
    verified, write `UNKNOWN`.
 3. Establish hosted run history for the exact failure identity on the exact
-   commit. A single verified hosted failure with no conflicting equivalent
-   same-commit run is sufficient to proceed as a candidate deterministic/parity
-   case. Equivalent hosted invocations have matching controlled invocation
+   commit. Use provider-native run history for that exact commit and failure
+   identity, resolving a repo command or policy seam when defined. A single
+   verified hosted failure with no conflicting equivalent same-commit run is
+   sufficient to proceed as a candidate deterministic/parity case. Equivalent
+   hosted invocations have matching controlled invocation
    parameters and selected or known pre-run hosted environment identity—event,
    inputs, matrix, runner image, toolchain, and configuration selection—not
    runtime behavior or outcomes. If the failure identity, hosted run history,
@@ -128,7 +130,8 @@ Then recommend the next smallest action:
 - Hosted failure:
 - Local green evidence:
 - Parity environment:
-- Reproduction result:
+- Reproduction result: <OUTCOME> | N/A — `fix-flaky-tests` handoff for
+  equivalent hosted intermittency
 - Environment delta:
 - Likely cause:
 - Next action:
