@@ -96,7 +96,9 @@ class HeavyRootAdmissionTest < Minitest::Test
           "--launch-token", token, "--pid", pid.to_s, "--pgid", pid.to_s, "--json"
         )
         assert_equal 0, bind.fetch(:status), bind.inspect
-        assert_equal "bound", JSON.parse(bind.fetch(:stdout)).dig("reservation", "status")
+        bound_reservation = JSON.parse(bind.fetch(:stdout)).fetch("reservation")
+        assert_equal "bound", bound_reservation.fetch("status")
+        refute_empty bound_reservation.fetch("pid_start_identity")
 
         reserve_replay = run_helper(
           "reserve", "--state-dir", state_dir, "--host", "M5",
@@ -147,6 +149,40 @@ class HeavyRootAdmissionTest < Minitest::Test
       )
       assert_equal 0, replacement.fetch(:status), replacement.inspect
     end
+  end
+
+  def test_pid_reuse_does_not_keep_an_old_bound_reservation_live
+    assert HeavyRootAdmission.reused_process_identity?("original process start", "new process start")
+  end
+
+  def test_matching_bound_process_identity_remains_live
+    refute HeavyRootAdmission.reused_process_identity?("original process start", "original process start")
+  end
+
+  def test_process_start_identity_is_stable_across_caller_locales
+    original_lc_all = ENV.fetch("LC_ALL", nil)
+    ENV["LC_ALL"] = "C"
+    c_identity = HeavyRootAdmission.process_start_identity(Process.pid)
+    ENV["LC_ALL"] = "definitely-not-an-installed-locale"
+    other_identity = HeavyRootAdmission.process_start_identity(Process.pid)
+
+    refute_empty c_identity
+    assert_equal c_identity, other_identity
+  ensure
+    ENV["LC_ALL"] = original_lc_all
+  end
+
+  def test_reused_pid_still_preserves_a_live_original_process_group
+    mismatched_identity = "not #{HeavyRootAdmission.process_start_identity(Process.pid)}"
+
+    assert HeavyRootAdmission.process_or_group_live?(Process.pid, Process.getpgrp, mismatched_identity)
+  end
+
+  def test_reused_pid_without_a_live_original_process_group_can_release
+    mismatched_identity = "not #{HeavyRootAdmission.process_start_identity(Process.pid)}"
+    nonexistent_pgid = 2_000_000_000
+
+    refute HeavyRootAdmission.process_or_group_live?(Process.pid, nonexistent_pgid, mismatched_identity)
   end
 
   def test_expired_prelaunch_token_is_recovered_but_cannot_be_reused
@@ -231,6 +267,8 @@ class HeavyRootAdmissionTest < Minitest::Test
     assert_includes capacity_workflow, "output-pipe drain"
     assert_includes capacity_workflow, "Launch tokens are single-use"
     assert_includes capacity_workflow, "newest 128 records per host"
+    assert_includes capacity_workflow, "replacement coordinator"
+    assert_includes capacity_workflow, "PID reuse"
 
     {
       "skills/pr-batch/SKILL.md" => "workflows/pr-batch-capacity-admission.md",
@@ -466,6 +504,39 @@ class HeavyRootAdmissionTest < Minitest::Test
       refute_includes terminal.map { |reservation| reservation.fetch("launch_token") }, "too-old"
       assert_equal((0...terminal_limit).map { |index| "recent-#{index}" }.sort,
                    terminal.map { |reservation| reservation.fetch("launch_token") }.sort)
+    end
+  end
+
+  def test_malformed_terminal_timestamps_are_retained_without_blocking_admission
+    Dir.mktmpdir("heavy-root-admission-malformed-terminal-test") do |state_dir|
+      malformed_terminal = [
+        { "launch_token" => "missing-released-at", "status" => "released" },
+        { "launch_token" => "invalid-expired-at", "status" => "expired", "expired_at" => "not-a-time" }
+      ]
+      HeavyRootAdmission::Store.new(state_dir: state_dir, host: "M5").locked_update do |state, _now|
+        state.fetch("reservations").concat(malformed_terminal)
+        { write: true, report: nil }
+      end
+
+      attempt = run_helper(
+        "reserve", "--state-dir", state_dir, "--host", "M5",
+        "--owner", "maker", "--lane", "issue-604-maker",
+        "--worktree", "/tmp/maker", "--command-class", "validator",
+        "--launch-token", "fresh-token", "--ceiling", "1",
+        "--scan-command-json", scanner_command(state_dir), "--json"
+      )
+
+      assert_equal 0, attempt.fetch(:status), attempt.inspect
+      payload = JSON.parse(attempt.fetch(:stdout))
+      assert_equal "reserved", payload.fetch("decision")
+      assert_equal 1, payload.fetch("occupied_after_reservation")
+
+      state_path = Dir[File.join(state_dir, "host-*.json")].fetch(0)
+      persisted = JSON.parse(File.read(state_path, encoding: "UTF-8"))
+      retained_terminal = persisted.fetch("reservations").select do |reservation|
+        malformed_terminal.any? { |malformed| reservation["launch_token"] == malformed["launch_token"] }
+      end
+      assert_equal malformed_terminal, retained_terminal
     end
   end
 

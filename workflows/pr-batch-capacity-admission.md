@@ -46,6 +46,8 @@ the configured maximum.
    `--scan-command-json`. The helper holds a host-local file lock only while it
    runs the bounded scan, recovers expired pre-launch records, counts live roots
    plus active reservations, and persists its decision.
+   That lock includes the scan duration, so a concurrent bind or release may
+   wait up to `--scan-timeout`; keep the timeout at the smallest reliable value.
 2. Launch only when the decision is `reserved` (exit 0). A `capacity-full`
    decision (exit 3) names the owning tasks/lanes and says to retry after a live
    root or reservation reaches terminal/no-writer cleanup and releases. Do not
@@ -53,8 +55,9 @@ the configured maximum.
 3. Start the root in a traceable process group, retain its durable log, then
    immediately run `bin/heavy-root-admission bind` with the same state
    directory, host, and launch token plus the real `--pid` and `--pgid`. Binding
-   verifies the local process and process group. A bound reservation does not
-   expire automatically. Replaying `reserve` for that token returns an
+   verifies the local process and process group and records the root process's
+   start identity so later PID reuse is not mistaken for that root. A bound
+   reservation does not expire automatically. Replaying `reserve` for that token returns an
    `already-bound` denial and never authorizes another launch.
 4. Preserve the process and descendants to natural terminal. Verify the exact
    terminal outcome and complete no-writer cleanup, including descendants,
@@ -70,7 +73,14 @@ detailed record is pruned. Released and expired detail records are retained for
 at most one hour and the newest 128 records per host, whichever bound is reached
 first. Active records are never pruned. An expired record never authorizes
 killing or ignoring an unverified live root. A bound record remains occupied
-until its owner supplies terminal/no-writer cleanup evidence and releases it.
+until terminal/no-writer cleanup evidence is supplied and it is released. If
+the original claimant disappears after binding, a replacement coordinator may
+read the stored lane, launch token, PID/PGID, and start identity, perform a
+fresh verified whole-host scan, confirm natural terminal and zero descendants,
+loggers, writers, and Git locks, then run the same `release` command. Release
+does not require the original claimant identity. It still fails closed for an
+ambiguous live process group; it does not auto-expire a bound root. A reused PID
+with a different recorded start identity is not treated as the original root.
 
 ## Remote M1 Pattern
 
