@@ -330,6 +330,17 @@ class IntegrationCloseoutContractTest < Minitest::Test
                     "If current-integration readiness fails on refresh, stop even when the base and diff are unchanged."
   end
 
+  def test_ask_gate_sha_names_tie_back_to_earlier_resolved_trusted_facts
+    ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
+    ancestry_command = 'git merge-base --is-ancestor "${CURRENT_BASE_SHA}" "${EXACT_HEAD_SHA}"'
+    equivalence_note = "not an independent re-resolution"
+
+    assert_includes ask_gate, equivalence_note
+    assert_includes ask_gate, "`TRUSTED_BASE_SHA`"
+    assert_includes ask_gate, "`CURRENT_HEAD_SHA`"
+    assert_operator ask_gate.index(ancestry_command), :<, ask_gate.index(equivalence_note)
+  end
+
   def test_sibling_components_remain_outside_the_boundary
     refute_match(/^## Release Mode Preflight$/, @component)
     refute_match(/^### Accelerated RC Auto-Merge$/, @component)

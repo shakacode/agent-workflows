@@ -110,6 +110,25 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes skill, "`waiting-on-checks-or-review`"
   end
 
+  def test_standalone_walkthrough_never_self_resolves_current_integration_readiness
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+
+    phrases = [
+      "A standalone walkthrough not invoked by that gate",
+      "never resolves ancestry or runs `pr-ci-readiness`",
+      "it has no checklist result to consult",
+      "does not compute the checklist above itself",
+      "never resolve ancestry or",
+      "run `pr-ci-readiness` independently to justify skipping it"
+    ]
+    positions = phrases.map do |phrase|
+      position = skill.index(phrase)
+      assert position, "expected #{phrase.inspect}"
+      position
+    end
+    positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+  end
+
   def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component
     pr_batch = File.read(PR_BATCH)
 

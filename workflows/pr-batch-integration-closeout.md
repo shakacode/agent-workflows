@@ -1591,6 +1591,12 @@ git merge-base --is-ancestor "${CURRENT_BASE_SHA}" "${EXACT_HEAD_SHA}"
 Also require that exact-head `pr-ci-readiness` v2 has normalized successful
 state `READY`.
 
+`CURRENT_BASE_SHA` and `EXACT_HEAD_SHA` are a freshly re-resolved read of the
+same live base/head facts named `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA`
+earlier in this hosted-QA flow, not an independent re-resolution — reuse the
+already-fetched/verified values when they are still current, and re-fetch
+only when time has passed since they were last confirmed.
+
 This sequencing checklist neither defines an evidence schema nor replaces the
 later [Merge Assurance Gate](#merge-assurance-gate). Do not claim or consume its
 machine `current-integration-evidence` here. Missing, stale, mismatched,
