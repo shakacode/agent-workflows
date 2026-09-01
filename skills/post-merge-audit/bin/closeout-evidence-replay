@@ -806,7 +806,6 @@ module CloseoutEvidenceReplay
       # failing as malformed.
       return ["", match.end(0)] if direct_url_boundary
 
-      raw_label = raw_label.sub(/\s+(?:after|at|from|see|via)\z/i, "")
     end
     leading_symbols = raw_label[/\A[^\p{Alnum}]*/u]
     # `:` never decorates a prose label, so a leading run containing one opens an authority
@@ -962,6 +961,9 @@ module CloseoutEvidenceReplay
 
     metric_tokens = text_tokens(metric_name)
     return false if metric_tokens.empty?
+    # A purely numeric name (`123`, `3.14`, `1_2`) names nothing; the consumer seam owns which
+    # words are meaningful, but a name has to contain a word.
+    return false if metric_tokens.none? { |token| token.match?(/[a-z]/) }
     return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) ||
                     metric_name.match?(/\A(?:metric|metrics|na|nan|notapplicable)\z/i)
     return false if unresolved_metric_tokens?(metric_tokens)

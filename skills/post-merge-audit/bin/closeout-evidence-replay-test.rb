@@ -1415,6 +1415,61 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_rejects_metric_names_without_an_alphabetic_token
+    %w[123 3.14 1_2 42].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_keeps_accepting_metric_names_mixing_digits_and_letters
+    %w[p95_latency lcp 2xx_rate h2_stream_time].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_hosted_v1_accepts_two_word_labels_ending_in_a_connector
+    # Trimming a trailing connector used to reduce these to one word, which then failed the
+    # multi-token requirement. Removing that trim eliminated the false negatives outright.
+    ["HTTPS: report via", "HTTPS: link after", "HTTPS: TLS see",
+     "HTTPS: artifact from", "HTTPS: secure at"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+
+    # A connector after an authority-shaped token still fails closed.
+    ["HTTPS: example.test via", "HTTPS: 10.0.0.1:8080 see"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "UNKNOWN", run_replay(body).dig("hosted_qa_evidence", "verdict"), label
+    end
+  end
+
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
     # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
     # whole replay instead of returning a verdict.
