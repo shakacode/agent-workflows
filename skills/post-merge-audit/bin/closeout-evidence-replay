@@ -32,7 +32,7 @@ module CloseoutEvidenceReplay
   VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 P3 Must-Fix BLOCKING].freeze
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
   STRUCTURAL_COUNT_TOKENS = %w[chunk chunks file files module modules test tests].freeze
-  SIZE_METRIC_TOKENS = %w[asset assets bundle bundles byte bytes size sizes].freeze
+  SIZE_METRIC_TOKENS = %w[asset assets bundle bundles byte bytes shape shapes size sizes].freeze
   # Runtime-memory names are the only reason a terminal size/byte noun measures behavior rather
   # than build output, so they are the sole carve-out from the terminal-size rejection.
   MEMORY_METRIC_TOKENS = %w[heap memory ram resident rss].freeze
@@ -679,6 +679,7 @@ module CloseoutEvidenceReplay
 
   def unresolved_hosted_criterion_evidence?(evidence)
     return false if valid_https_url?(evidence)
+    return true if http_urls(evidence).any? { |url| !valid_https_url?(url) }
     return true if evidence.match?(URI_SCHEME)
 
     evidence.match?(HOSTED_CRITERION_UNRESOLVED_PLACEHOLDER)
@@ -768,22 +769,25 @@ module CloseoutEvidenceReplay
   def size_metric_shape?(tokens)
     return true if tokens.length == 1 && SIZE_METRIC_TOKENS.include?(tokens.first)
 
-    # A terminal size/byte noun names build-output shape whatever the prefix says, so reject it
-    # unless the name is a runtime-memory metric (`heap_size`, `resident_set_size`).
-    if %w[byte bytes size sizes].include?(tokens.last)
+    # A terminal size/shape noun names build output whatever the prefix says. Only byte/size nouns
+    # have a runtime-memory carve-out (`heap_size`, `resident_set_size`).
+    if SIZE_METRIC_TOKENS.include?(tokens.last)
+      return true unless %w[byte bytes size sizes].include?(tokens.last)
+
       return tokens.none? { |token| MEMORY_METRIC_TOKENS.include?(token) }
     end
 
     qualified_terminal_count?(tokens, SIZE_METRIC_TOKENS)
   end
 
-  # Terminal `*_count` over a `vocabulary` noun, looking through at most one bounded qualifier so
-  # `file_total_count` is rejected like `total_file_count` while `module_load_count` stays valid.
+  # Terminal `*_count` over a `vocabulary` noun, looking through consecutive bounded qualifiers so
+  # `file_total_overall_count` is rejected while `module_load_count` stays valid.
   def qualified_terminal_count?(tokens, vocabulary)
     return false unless tokens.length >= 2 && %w[count counts].include?(tokens.last)
-    return true if vocabulary.include?(tokens[-2])
 
-    tokens.length >= 3 && COUNT_QUALIFIER_TOKENS.include?(tokens[-2]) && vocabulary.include?(tokens[-3])
+    noun_index = tokens.length - 2
+    noun_index -= 1 while noun_index >= 0 && COUNT_QUALIFIER_TOKENS.include?(tokens[noun_index])
+    noun_index >= 0 && vocabulary.include?(tokens[noun_index])
   end
 
   def valid_repo_seam_source?(value)

@@ -211,6 +211,8 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "TBD",
       "proof unavailable",
       "http://evidence.example.test/run/sign-in-abc123",
+      "https:broken",
+      "https:",
       "https://bad host/run/sign-in-abc123"
     ]
 
@@ -1226,7 +1228,10 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_measured_metric_rejects_singular_and_plural_size_tokens
-    %w[asset assets bundle bundles byte bytes size sizes].flat_map { |name| [name, "#{name}_count"] }.each do |metric_name|
+    metric_names = %w[asset assets bundle bundles byte bytes shape shapes size sizes].flat_map do |name|
+      [name, "#{name}_count"]
+    end
+    metric_names.each do |metric_name|
       qa = run_replay(
         v2_marker(
           "performance_impact" => "measured_metric",
@@ -1254,7 +1259,10 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_measured_metric_rejects_terminal_size_nouns_regardless_of_prefix
-    %w[page_size response_size payload_size image_size cache_size viewportSize recordSizes thumbnail_bytes].each do |metric_name|
+    %w[
+      page_asset response_bundle dashboard_shape page_size response_size payload_size image_size
+      cache_size viewportSize recordSizes thumbnail_bytes
+    ].each do |metric_name|
       qa = run_replay(
         v2_marker(
           "performance_impact" => "measured_metric",
@@ -1281,11 +1289,11 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
-  def test_v2_measured_metric_looks_through_one_qualifier_before_a_structural_or_size_count
+  def test_v2_measured_metric_looks_through_qualifiers_before_a_structural_or_size_count
     %w[
       file_total_count chunk_total_count module_total_count test_total_count
       files_overall_count modulesAggregateCount tests_unique_counts assets_total_count
-      bundle_distinct_count bytesNumberCount
+      bundle_distinct_count bytesNumberCount file_total_overall_count assets_all_unique_count
     ].each do |metric_name|
       qa = run_replay(
         v2_marker(
