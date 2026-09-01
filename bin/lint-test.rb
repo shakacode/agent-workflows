@@ -15,6 +15,13 @@ class LintCommandTest < Minitest::Test
   WORKFLOW = File.join(ROOT, ".github/workflows/lint.yml")
   VALIDATE = File.join(ROOT, "bin/validate")
 
+  def test_missing_tool_message_points_to_lint_setup_guidance
+    message = LintRunner.new.send(:missing_tool_message, "yamllint")
+
+    assert_includes message, "Install yamllint 1.37.1"
+    assert_includes message, "CONTRIBUTING.md#lint-toolchain-setup"
+  end
+
   def test_repository_lint_command_is_the_portable_wrapper_target
     assert File.executable?(SCRIPT), "expected executable bin/lint"
     assert_includes File.read(WRAPPER), 'exec "$root/bin/lint" "$@"'
@@ -161,9 +168,25 @@ class LintCommandTest < Minitest::Test
   end
 
   def test_validation_and_contributor_docs_expose_the_lint_command
+    contributing = File.read(File.join(ROOT, "CONTRIBUTING.md"))
     assert_includes File.read(VALIDATE), "ruby bin/lint-test.rb"
-    assert_includes File.read(File.join(ROOT, "CONTRIBUTING.md")), ".agents/bin/lint"
+    # The backticked form pins the contributor instruction: "`.agents/bin/lint`"
+    # contains the substring "bin/lint" but not "`bin/lint`".
+    assert_includes contributing, "`bin/lint`"
+    assert_includes contributing, ".agents/bin/lint"
     assert_includes File.read(File.join(ROOT, ".agents/bin/README.md")), "`bin/lint`"
+  end
+
+  def test_contributor_docs_cover_every_pinned_linter
+    contributing = File.read(File.join(ROOT, "CONTRIBUTING.md"))
+
+    assert_includes contributing, "## Lint Toolchain Setup"
+    %w[rubocop shellcheck actionlint markdownlint-cli2 yamllint].each do |tool|
+      assert_includes contributing, "bin/lint --version #{tool}"
+    end
+    assert_includes contributing, 'go_bin="$(go env GOBIN)"'
+    assert_includes contributing, 'export PATH="${go_bin:-$(go env GOPATH)/bin}:$PATH"'
+    assert_includes contributing, "pipx install --force"
   end
 
   private

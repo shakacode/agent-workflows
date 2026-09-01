@@ -1,0 +1,4 @@
+# Blank issues stay enabled on purpose: agent-authored issues already carry
+# self-contained bodies, and the forms exist to make the required structure the
+# path of least resistance, not a hard wall.
+blank_issues_enabled: true

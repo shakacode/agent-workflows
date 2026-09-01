@@ -1,0 +1,26 @@
+{
+  "schema": "execution-provenance-v0",
+  "execution_provenance": {
+    "batch": "batch-001",
+    "lane": "lane-unbound",
+    "target": "OWNER/REPO#101",
+    "scenario_class": "implementation",
+    "role": "implementation",
+    "route_policy": "exact-route",
+    "requested": { "model": "gpt-5.6-sol", "effort": "high" },
+    "observed": { "model": "UNKNOWN", "effort": "UNKNOWN" },
+    "coordinator": { "model": "UNKNOWN", "effort": "UNKNOWN" },
+    "dispatcher": "codex",
+    "binding_source": "UNKNOWN",
+    "host": { "executable": "codex", "version": "UNKNOWN" },
+    "session_id": "session-unbound",
+    "thread_id": "UNKNOWN",
+    "started_at": "2026-08-11T10:00:00Z",
+    "ended_at": "2026-08-11T10:00:01Z",
+    "influenced_commits": [],
+    "attribution_confidence": "UNKNOWN",
+    "mismatch_reason": "Host route metadata was unavailable before editing.",
+    "recorded_authority": "UNKNOWN",
+    "disposition": "unbound-exact-route"
+  }
+}

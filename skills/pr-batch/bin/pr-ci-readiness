@@ -63,11 +63,23 @@ module PrCiReadiness
 
   # Current rows that count toward a full/advisory gate. Required cancellations
   # are reconciled separately so unrelated cancelled advisory noise stays out.
+  #
+  # `rows` here is raw `parse_rows` output, which only guarantees a JSON
+  # array -- individual elements may be non-Hash (parse_rows does not filter
+  # them). A non-object row is never a cancellation, so it is never rejected
+  # here; it passes through unchanged rather than crashing, so it still
+  # reaches PrCiReadiness.assess's invalid_row?/invalid_names classification
+  # instead of being silently dropped.
   def active_rows(rows)
-    rows.reject { |row| row["bucket"].to_s == "cancel" }
+    rows.reject { |row| row.is_a?(Hash) && row["bucket"].to_s == "cancel" }
   end
 
+  # A non-object row has no workflow/name to key off of. It cannot match (or
+  # be matched by) any real identity, so a distinct sentinel keeps it inert
+  # in identity comparisons without raising.
   def check_identity(row)
+    return [nil, nil] unless row.is_a?(Hash)
+
     [row["workflow"].to_s, row["name"].to_s]
   end
 
@@ -78,7 +90,7 @@ module PrCiReadiness
     gate_rows = required_used ? rows : current_rows + required_cancellations
     current_contexts = current_rows.map { |row| check_identity(row) }
     gate_rows.reject do |row|
-      row["bucket"].to_s == "cancel" && current_contexts.include?(check_identity(row))
+      row.is_a?(Hash) && row["bucket"].to_s == "cancel" && current_contexts.include?(check_identity(row))
     end
   end
 
@@ -90,8 +102,38 @@ module PrCiReadiness
     rows.select { |row| %w[cancel pending].include?(row["bucket"].to_s) }.map { |row| row["name"].to_s }
   end
 
-  def verdict_for(rows, failing, pending)
-    if rows.empty?
+  # The only bucket values `gh pr checks --json ...,bucket,...` is documented
+  # to emit. A row outside this set (a non-object entry, a missing bucket, or
+  # an unrecognized bucket such as a future gh CLI state this script does not
+  # yet know about) must fail closed instead of silently counting as passing.
+  RECOGNIZED_BUCKETS = %w[pass skipping fail pending cancel].freeze
+
+  def invalid_row?(row)
+    return true unless row.is_a?(Hash)
+
+    bucket = row["bucket"]
+    !(bucket.is_a?(String) && RECOGNIZED_BUCKETS.include?(bucket))
+  end
+
+  def invalid_descriptor(row)
+    return "row was not an object (#{row.class})" unless row.is_a?(Hash)
+
+    name = row["name"]
+    label = name.is_a?(String) && !name.empty? ? name : "unnamed check"
+    "#{label} (bucket: #{row['bucket'].inspect})"
+  end
+
+  def invalid_names(rows)
+    rows.select { |row| invalid_row?(row) }.map { |row| invalid_descriptor(row) }
+  end
+
+  # Invalid rows take priority over the empty-rows UNKNOWN case: an invalid
+  # row is evidence we have and could not understand, which is a stronger,
+  # fail-closed signal than having no evidence at all.
+  def verdict_for(rows, failing, pending, invalid = [])
+    if invalid.any?
+      "NOT_READY"
+    elsif rows.empty?
       "UNKNOWN"
     elsif failing.empty? && pending.empty?
       "READY"
@@ -180,7 +222,14 @@ module PrCiReadiness
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
     statuses_complete:, errors: {}
   )
+    # required_rows may still contain a non-Hash entry that survived
+    # readiness classification upstream (kept, not dropped, so it remains
+    # visible below in the required_status_check_rollup scope's own rows and
+    # is scored UNKNOWN there by evidence_row_state); it just contributes no
+    # producer identity here.
     required_identities = required_rows.filter_map do |row|
+      next unless row.is_a?(Hash)
+
       producer = row["workflow"].to_s.strip
       name = row["name"].to_s
       next if producer.empty? || producer == "UNKNOWN" || name.empty?
@@ -190,7 +239,12 @@ module PrCiReadiness
     dependabot_rows = actions_rows.select { |row| row["dependabot"] == true }
     github_actions_rows = actions_rows.reject { |row| row["dependabot"] == true }
     other_rows = (check_runs + statuses).reject do |row|
-      required_identities.include?([row["kind"].to_s, row["app_slug"].to_s.strip, row["name"].to_s]) ||
+      completed_cancelled_advisory =
+        row["kind"].to_s == "check_run" &&
+        row["status"].to_s == "completed" &&
+        row["conclusion"].to_s == "cancelled"
+      completed_cancelled_advisory ||
+        required_identities.include?([row["kind"].to_s, row["app_slug"].to_s.strip, row["name"].to_s]) ||
         row["app_slug"].to_s == "github-actions" ||
         row["dependabot"] == true
     end
@@ -219,29 +273,37 @@ module PrCiReadiness
     }
   end
 
-  # Build the normalized result hash from the captured check rows.
+  # Build the normalized result hash from the captured check rows. Invalid
+  # rows (non-object entries, or an unrecognized/missing bucket) are pulled
+  # out before readiness classification so they cannot masquerade as a
+  # recognized bucket, and are reported separately in "invalid".
   def assess(pr_number:, required_used:, rows:, required_cancellations: [])
-    rows = readiness_rows(rows, required_used:, required_cancellations:)
-    failing = failing_names(rows)
-    pending = pending_names(rows)
+    invalid = invalid_names(rows)
+    valid_rows = rows.reject { |row| invalid_row?(row) }
+    gated_rows = readiness_rows(valid_rows, required_used:, required_cancellations:)
+    failing = failing_names(gated_rows)
+    pending = pending_names(gated_rows)
 
     {
       "pr" => pr_number.to_i,
-      "verdict" => verdict_for(rows, failing, pending),
+      "verdict" => verdict_for(gated_rows, failing, pending, invalid),
       "required_used" => required_used,
       "failing" => failing,
-      "pending" => pending
+      "pending" => pending,
+      "invalid" => invalid
     }
   end
 
   def text_summary(result)
     failing = result["failing"]
     pending = result["pending"]
+    invalid = result.fetch("invalid", [])
     lines = [
       result["verdict"],
       "required_used: #{result['required_used']}",
       "failing: #{failing.empty? ? '(none)' : failing.join(', ')}",
-      "pending: #{pending.empty? ? '(none)' : pending.join(', ')}"
+      "pending: #{pending.empty? ? '(none)' : pending.join(', ')}",
+      "invalid: #{invalid.empty? ? '(none)' : invalid.join(', ')}"
     ]
     requested = result.fetch("requested_hosted", {})
     if requested_hosted_present?(requested)
@@ -288,6 +350,10 @@ module PrCiReadiness
     required and full check list is UNKNOWN/not-ready. An unavailable check-query
     capability is also UNKNOWN and cannot be overridden by requested hosted runs.
     The PR is READY only when no failing or pending checks remain.
+    A check row that is not an object, or whose bucket is not one of the
+    buckets `gh pr checks` is documented to emit (pass, skipping, fail,
+    pending, cancel), fails closed to NOT_READY instead of being treated as
+    passing; it is named in "invalid" so the result explains why.
     Current-head PENDING review drafts visible to the current authenticated
     viewer also block readiness. The viewer-scoped inventory is paginated;
     complete means pagination completed only in that scope. Other reviewers'
@@ -317,6 +383,7 @@ module PrCiReadiness
         "required_used": true | false,
         "failing": [ "check name", ... ],
         "pending": [ "check name", ... ],
+        "invalid": [ "check name (bucket: ...)", ... ],
         "viewer_pending_review_drafts": [ { "id": "PRR_...", "commit_oid": "..." }, ... ],
         "viewer_review_inventory": {
           "scope": "authenticated_viewer",
@@ -481,7 +548,14 @@ module PrCiReadiness
       required_query_known = required_fetch.fetch(:known_good)
       full_query_known = nil
       required_rows = PrCiReadiness.parse_rows(required_raw)
-      required_cancellations = required_rows.select { |row| row["bucket"].to_s == "cancel" }
+      # required_rows is raw parse_rows output and may contain non-Hash
+      # elements (e.g. a `null` entry in the gh CLI payload); parse_rows only
+      # guarantees a JSON array, not that every element is an object. Those
+      # rows are not cancellations, but they must still flow into
+      # PrCiReadiness.assess below so invalid_row?/invalid_names can classify
+      # and report them instead of this select raising before assess ever
+      # runs.
+      required_cancellations = required_rows.select { |row| row.is_a?(Hash) && row["bucket"].to_s == "cancel" }
       if PrCiReadiness.usable_checks?(required_raw)
         rows = required_rows
         required_used = true
@@ -683,9 +757,11 @@ module PrCiReadiness
       current_runs.sort_by! { |run| [run["workflow_id"], run["event"]] }
       current_runs.each do |run|
         dependabot = dependabot_attributed?(run)
-        rows << normalize_actions_row(run, "run", dependabot:)
+        head_branch = run["head_branch"].to_s
+        pull_request_numbers = Array(run["pull_requests"]).filter_map { |association| association["number"] }.sort
+        rows << normalize_actions_row(run, "run", dependabot:, head_branch:, pull_request_numbers:)
         fetch_actions_jobs(repo, run.fetch("id")).each do |job|
-          rows << normalize_actions_row(job, "job", dependabot:, head_sha:)
+          rows << normalize_actions_row(job, "job", dependabot:, head_sha:, head_branch:, pull_request_numbers:)
         end
       end
       [rows, true, nil, runs.map { |run| run.fetch("id") }]
@@ -958,7 +1034,14 @@ module PrCiReadiness
       raise Error, "#{context} was not bound to exact head #{head_sha} (found #{actual.empty? ? 'missing' : actual})"
     end
 
-    def normalize_actions_row(row, kind, dependabot:, head_sha: nil)
+    # `head_branch`/`pull_request_numbers` are passed explicitly by the run
+    # loop and reused for each of the run's job rows -- job payloads from the
+    # jobs endpoint carry neither field themselves, so without the explicit
+    # pass-through a job row's target identity would be unobservable in the
+    # emitted evidence. This is additive attribution for audit/replay only;
+    # `actions_run_targets_pr?` already owns the readiness-gating identity
+    # check upstream in `fetch_exact_head_actions`.
+    def normalize_actions_row(row, kind, dependabot:, head_sha: nil, head_branch: nil, pull_request_numbers: nil)
       {
         "kind" => kind,
         "id" => row["id"],
@@ -967,6 +1050,9 @@ module PrCiReadiness
         "conclusion" => row["conclusion"],
         "url" => row["html_url"].to_s,
         "head_sha" => head_sha || row["head_sha"].to_s,
+        "head_branch" => head_branch || row["head_branch"].to_s,
+        "pull_requests" => pull_request_numbers ||
+          Array(row["pull_requests"]).filter_map { |association| association["number"] }.sort,
         "actor" => row.dig("actor", "login").to_s,
         "triggering_actor" => row.dig("triggering_actor", "login").to_s,
         "dependabot" => dependabot
@@ -1316,6 +1402,7 @@ module PrCiReadiness
         check_required_cancellation,
         check_cancel_only,
         check_empty,
+        check_unrecognized_bucket,
         check_parse_helpers
       ].flatten
     end
@@ -1358,6 +1445,14 @@ module PrCiReadiness
     def check_empty
       out = PrCiReadiness.assess(pr_number: 1, required_used: false, rows: [])
       out["verdict"] == "UNKNOWN" ? [] : ["empty did not yield UNKNOWN"]
+    end
+
+    def check_unrecognized_bucket
+      out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
+                                   { "workflow" => "CI", "name" => "mystery", "bucket" => "future-state" }
+                                 ])
+      ok = out["verdict"] == "NOT_READY" && out["invalid"] == ['mystery (bucket: "future-state")']
+      ok ? [] : ["unrecognized bucket did not fail closed (mystery)"]
     end
 
     def check_parse_helpers
