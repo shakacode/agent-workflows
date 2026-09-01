@@ -724,7 +724,7 @@ module BatchPlanPreflight
     config_path = File.join(repo_root, ".agents", "agent-workflow.yml")
     return [[], []] unless File.file?(config_path)
 
-    config = YAML.safe_load(File.read(config_path, encoding: "UTF-8"), aliases: false)
+    config = YAML.safe_load(File.read(config_path, encoding: "UTF-8"), aliases: false) || {}
     return invalid_companion_path_conventions unless config.is_a?(Hash)
     return [[], []] unless config.key?("companion_path_conventions")
 

@@ -101,6 +101,20 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_comment_only_policy_preserves_existing_result
+    Dir.mktmpdir("batch-plan-empty-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), "# No repo policy configured.\n")
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+      assert_empty result.fetch("advisories")
+    end
+  end
+
   def test_companion_advisory_does_not_change_launch_or_validation_outcomes
     with_companion_repo do |root, fixture|
       input = companion_input(fixture, paths: [fixture.fetch("source_path")])
