@@ -472,7 +472,7 @@ module CompletedBatchPublicationPreflight
     return false unless produced_pr["type"] == "pull_request"
     return false unless target_from_url(lane["pr_url"].to_s) == produced_pr
 
-    target_rows.any? do |target|
+    target_rows.all? do |target|
       target["type"] == "issue" && target["host"].casecmp?(produced_pr.fetch("host")) &&
         target["repo"].casecmp?(produced_pr.fetch("repo"))
     end
@@ -658,7 +658,7 @@ module CompletedBatchPublicationPreflight
       raw_head_sha = row["head_sha"].to_s.downcase
       no_pr_evidence = canonical_no_pr_evidence(row["no_pr_evidence"], target)
       issue_resolved_by_pr = target["type"] == "issue" && raw_head_sha == "not_applicable" &&
-                             !row.key?("no_pr_evidence") && complementary_pr_target?(lane, lane_entries)
+                             !row.key?("no_pr_evidence") && complementary_pr_target?(target, lane, lane_entries)
       if target["type"] == "issue" && raw_head_sha == "not_applicable" &&
          (no_pr_evidence || issue_resolved_by_pr)
         head_sha = nil
@@ -690,7 +690,11 @@ module CompletedBatchPublicationPreflight
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil,
         "no_pr_evidence" => no_pr_evidence
       }
-      authenticated_target_completion = authenticated_target_completion?(lane, verified_target_facts)
+      authenticated_target_completion = authenticated_target_completion?(
+        lane,
+        verified_target_facts,
+        lane_entries:
+      )
       if lane&.fetch("terminal", nil) == "superseded" &&
          authenticated_terminal_completion?(verified_target_facts) &&
          !authenticated_later_typed_no_pr_issue_supersession?(lane, verified_target_facts)
@@ -714,11 +718,14 @@ module CompletedBatchPublicationPreflight
     [canonical_targets, authenticated_target_completion_keys]
   end
 
-  def complementary_pr_target?(lane, lane_entries)
+  def complementary_pr_target?(issue_target, lane, lane_entries)
     return false unless lane
 
     lane_entries.any? do |entry|
-      entry.fetch("lane").equal?(lane) && entry.dig("target", "type") == "pull_request"
+      target = entry.fetch("target")
+      entry.fetch("lane").equal?(lane) && target["type"] == "pull_request" &&
+        target["host"].casecmp?(issue_target.fetch("host")) &&
+        target["repo"].casecmp?(issue_target.fetch("repo"))
     end
   end
 
@@ -1064,14 +1071,26 @@ module CompletedBatchPublicationPreflight
     authenticated_target_completed_after_lane?(lane, target_snapshot)
   end
 
-  def authenticated_target_completion?(lane, target_snapshot)
+  def authenticated_target_completion?(lane, target_snapshot, lane_entries:)
     return false unless valid_terminal_lane?(lane)
 
     if lane["terminal"] == "done"
-      authenticated_terminal_completion?(target_snapshot) && lane["pr_state"] != target_snapshot["state"]
+      complementary_terminal_states?(lane, lane_entries) &&
+        authenticated_terminal_completion?(target_snapshot) && lane["pr_state"] != target_snapshot["state"]
     else
       authenticated_later_target_completion?(lane, target_snapshot)
     end
+  end
+
+  def complementary_terminal_states?(lane, lane_entries)
+    lane_targets = lane_entries.filter_map do |entry|
+      entry.fetch("target") if entry.fetch("lane").equal?(lane)
+    end
+    return false unless lane_targets.map { |target| target["type"] }.uniq.sort == %w[issue pull_request]
+
+    repos = lane_targets.map { |target| [target["host"].downcase, target["repo"].downcase] }.uniq
+    terminal_states = lane_targets.map { |target| target["type"] == "pull_request" ? "merged" : "closed" }.uniq
+    repos.one? && terminal_states.include?(lane["pr_state"])
   end
 
   def typed_no_pr_issue_supersession?(lane, target_snapshot)

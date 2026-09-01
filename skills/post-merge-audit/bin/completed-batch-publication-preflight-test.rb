@@ -1327,6 +1327,18 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_issue_targeted_lane_rejects_a_scalar_that_matches_neither_terminal_target
+    input = issue_with_pr_input(lane_pr_state: "open")
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 coordination target state is not closed"
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10049 coordination target state is not merged"
+  end
+
   def test_typed_lane_targets_resolve_to_their_declared_types
     issue_target = {
       "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
