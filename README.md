@@ -299,41 +299,9 @@ This project is available under the MIT License.
 
 ## Skill Inventory
 
-| Skill | Use |
-| --- | --- |
-| `address-review` | Fetch and triage GitHub PR review comments. |
-| `adversarial-pr-review` | Run a skeptical pre-merge or post-merge PR review. |
-| `autoreview` | Run a structured second-model local diff review. |
-| `benchmark-verification` | Verify performance-sensitive changes with benchmark evidence. |
-| `close-batch` | Recover a stale PR batch, route required walkthroughs or decisions, and archive only after canonical closeout. |
-| `close-session` | Close active work with verified handoff and archive readiness. |
-| `continue` | Resume an in-progress task with a structured checkpoint. |
-| `evaluate-issue` | Decide whether an issue or proposed fix is worth doing. |
-| `fix-flaky-tests` | Use when a test fails intermittently in CI — classify the intermittency, work from the real CI error, fix the root cause systemically, and verify with a green CI build rather than local runs. |
-| `manual-testing` | Verify changed behavior in a real running app or service. |
-| `pause` | Print restart-safe pause and resume prompts for copy/paste handoffs. |
-| `plan-issue-triage` | Produce a ready prompt for review-only issue triage. |
-| `plan-pr-batch` | Shape candidate issues or PRs before launching a batch. |
-| `plan-review` | Review implementation plans before coding or launching workers. |
-| `post-merge-audit` | Audit merged batch work or release-candidate risk. |
-| `pr-batch` | Run one or more issue, PR, or ad-hoc lanes through the canonical coordinated subagent workflow. |
-| `pr-monitoring` | Monitor opened PRs through checks, comments, conflicts, and handoff. |
-| `pr-walkthrough` | Explain a PR interactively, one conceptual change and rationale at a time. |
-| `qa-stress` | Run destructive QA stress campaigns against repo-owned targets. |
-| `replicate-ci` | Reproduce hosted-CI/local parity gaps. |
-| `run-ci` | Choose and run repo-local CI checks. |
-| `secure-github-actions` | Audit repository-based workflows and composite actions mechanically; enforce `docker://` digest immutability for manual container review. |
-| `spec` | Turn vague implementation intent into requirements, design, and tasks. |
-| `status` | Report tight progress (done/in-progress/blocked/next) without starting new work. |
-| `structural-review` | Use when a diff is correct but may still be making the codebase worse — file growth, scattered conditionals, thin abstractions, layer violations, or feature-flag branching debt. |
-| `task-observer` | Optionally capture sanitized observations for later skill or workflow improvement review. |
-| `tdd` | Drive test-first red-green-refactor loops for features and bug fixes. |
-| `triage` | Build a whole-surface issue/PR inventory and batch split. |
-| `type-design-review` | Review changed type surfaces for representable invalid states. |
-| `untrusted-contributor-intake` | Safely intake untrusted outside-contributor fork PRs. |
-| `update-changelog` | Classify merged PRs and update a repo changelog. |
-| `verify` | Run local verification before PR updates. |
-| `verify-pr-fix` | Reproduce a bug before and after a fix. |
+See the [Skill Guide](docs/skills.md) for a human-facing explanation of what
+each shipped skill does and when to use it. Agent-facing contracts remain in
+`skills/*/SKILL.md`.
 
 ## Trust Configuration
 

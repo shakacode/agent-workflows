@@ -21,6 +21,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   PLAN_ISSUE_TRIAGE = "skills/plan-issue-triage/SKILL.md"
   QA_STRESS = "skills/qa-stress/SKILL.md"
   README = "README.md"
+  SKILL_GUIDE = "docs/skills.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
   GMCC_V4 = "GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or " \
             "threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
@@ -384,9 +385,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes text, "HST-v1"
   end
 
-  def test_public_skill_inventory_lists_close_session
-    text = normalized(README)
-    assert_includes text,
-                    "| `close-session` | Close active work with verified handoff and archive readiness. |"
+  def test_public_skill_inventory_links_to_close_session_guide
+    assert_includes normalized(README), "[Skill Guide](docs/skills.md)"
+    assert_includes normalized(SKILL_GUIDE),
+                    "[`$close-session`](../skills/close-session/SKILL.md)"
   end
 end
