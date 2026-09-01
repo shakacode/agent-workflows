@@ -291,7 +291,7 @@ module BatchPlanPreflight
   def resolve_host_capacity(raw_capacity, lanes, backend)
     capacity_supplied = !raw_capacity.nil?
     if raw_capacity.nil?
-      host_ids = lanes.filter_map { |lane| lane["host_id"] if nonempty_identity?(lane["host_id"]) }.uniq
+      host_ids = lanes.filter_map { |lane| lane["host_id"] if valid_host_id?(lane["host_id"]) }.uniq
       fallback_host_id = host_ids.length == 1 ? host_ids.first : "#{backend || 'generic'}-fallback"
       raw_capacity = {
         "type" => "per-host-capacity-envelope",
@@ -352,8 +352,7 @@ module BatchPlanPreflight
 
   def valid_capacity_host?(host)
     return false unless host.is_a?(Hash) && host.keys.sort == CAPACITY_HOST_KEYS
-    return false unless host["id"].is_a?(String) && host["id"].match?(HOST_ID_PATTERN) &&
-                        !host["id"].casecmp?("UNKNOWN") && CAPACITY_SOURCES.include?(host["source"])
+    return false unless valid_host_id?(host["id"]) && CAPACITY_SOURCES.include?(host["source"])
     return false unless valid_capacity_slot_budget?(host["worker"])
     return false unless valid_capacity_slot_budget?(host["external_quota"])
 
@@ -367,6 +366,10 @@ module BatchPlanPreflight
       host.dig("external_quota", "limit") <= 1
   end
 
+  def valid_host_id?(host_id)
+    host_id.is_a?(String) && host_id.match?(HOST_ID_PATTERN) && !host_id.casecmp?("UNKNOWN")
+  end
+
   def valid_capacity_slot_budget?(budget)
     budget.is_a?(Hash) && budget.keys.sort == CAPACITY_SLOT_KEYS &&
       nonnegative_integer?(budget["limit"]) && nonnegative_integer?(budget["occupied"]) &&
@@ -378,7 +381,7 @@ module BatchPlanPreflight
   end
 
   def effective_lane_host_id(lane, capacity, infer_missing:)
-    return lane["host_id"] if nonempty_identity?(lane["host_id"])
+    return lane["host_id"] unless lane["host_id"].nil?
     return nil unless infer_missing
 
     hosts = capacity.fetch("hosts")

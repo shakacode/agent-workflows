@@ -2104,6 +2104,32 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.dig("launch", "eligible_lane_ids")
   end
 
+  def test_missing_capacity_rejects_agreed_invalid_host_ids_at_each_lane_path
+    { "uppercase" => "M5", "unknown" => "UNKNOWN" }.each do |label, invalid_host_id|
+      lanes = [
+        lane("lane-a", host_id: invalid_host_id),
+        lane("lane-b", host_id: invalid_host_id)
+      ]
+      input = input_for(lanes: lanes)
+      input.delete("host_capacity")
+
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, label
+      host_violations = result.fetch("violations").select do |item|
+        item.fetch("code") == "lane-host-capacity-unknown"
+      end
+      assert_equal(
+        ["$.plan.lanes[0].host_id", "$.plan.lanes[1].host_id"],
+        host_violations.map { |item| item.fetch("path") },
+        label
+      )
+      refute_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "host-capacity-envelope-invalid", label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+    end
+  end
+
   def test_unknown_external_api_support_blocks_implementation_but_allows_investigation
     implementation = lane("implementation")
     premise = external_premise(lane_ids: ["implementation"], support: "UNKNOWN")
