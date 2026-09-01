@@ -716,6 +716,14 @@ module PrMergeSubmit
       unless decision == "reuse-exact-head"
         raise Error, "merge-assurance receipt current integration is not reusable"
       end
+
+      queue_submission = pull_request["isMergeQueueEnabled"] == true &&
+                         pull_request["isInMergeQueue"] == false &&
+                         @merge_submission && @merge_submission.fetch("mode") != "direct"
+      if queue_submission
+        raise Error, "merge queue submission cannot consume merge-shaped current-integration reuse evidence; " \
+                     "fresh-integration-required"
+      end
       if method == "rebase"
         raise Error, "rebase submission cannot consume merge-shaped current-integration reuse evidence; " \
                      "fresh-integration-required"

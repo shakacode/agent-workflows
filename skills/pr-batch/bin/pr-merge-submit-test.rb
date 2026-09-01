@@ -277,6 +277,17 @@ class PrMergeSubmitTest < Minitest::Test
       end
       assert_includes error.message, "rebase"
       assert_includes error.message, "fresh-integration-required"
+
+      pull_request["isMergeQueueEnabled"] = true
+      pull_request["isInMergeQueue"] = false
+      runner.instance_variable_set(:@merge_submission, { "mode" => "merge_queue_only" })
+      %w[merge squash].each do |method|
+        queue_error = assert_raises(PrMergeSubmit::Error) do
+          runner.send(:validate_receipt_live_bindings!, pull_request, options.merge(method:))
+        end
+        assert_includes queue_error.message, "merge queue"
+        assert_includes queue_error.message, "fresh-integration-required"
+      end
     end
   end
 
