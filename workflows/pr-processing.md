@@ -1666,7 +1666,9 @@ valid; preserve the missing fact as `UNKNOWN` in the handoff.
 
 Emission is best-effort for the in-flight operation: a failed event write does
 not turn a successful claim, handoff, pause, or drain into a failed operation.
-No coordination backend (`n/a`): skip the event silently. Typed-event transport
+A `coordination_not_applicable` lane emits no typed event at all, so there is
+nothing to skip; a trusted `coordination_backend: n/a` under
+`coordination_required` is a pre-launch stop, not a silent skip. Typed-event transport
 is optional: when an active private backend does not advertise it or reports it
 unsupported, record `typed event transport: unavailable`, skip the emission,
 and continue without marking the event emission `UNKNOWN`. Only after the

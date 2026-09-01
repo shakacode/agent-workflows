@@ -760,7 +760,10 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_includes telemetry, "`claim.released`"
     assert_includes telemetry, "`phase.changed`"
     assert_includes telemetry, "best-effort"
-    assert_includes telemetry, "No coordination backend (`n/a`): skip the event silently."
+    assert_includes telemetry.gsub(/\s+/, " "),
+                    "A `coordination_not_applicable` lane emits no typed event at all, so there is nothing " \
+                    "to skip; a trusted `coordination_backend: n/a` under `coordination_required` is a " \
+                    "pre-launch stop, not a silent skip."
     assert_includes telemetry, "preserve the missing fact as `UNKNOWN`"
   end
 

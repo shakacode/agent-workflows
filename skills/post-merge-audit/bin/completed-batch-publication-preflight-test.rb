@@ -1762,6 +1762,8 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     )
 
     refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "trusted coordination applicability proof is missing, invalid, or tampered"
   end
 
   def test_blocked_results_never_repeat_a_blocker
