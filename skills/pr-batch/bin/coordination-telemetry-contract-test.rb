@@ -568,16 +568,18 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_embedded_restart_prompts_carry_the_applicability_gate
     prompt_rule =
-      "If this lane is `coordination_not_applicable`, skip every claim-preservation write and coordination " \
-      "check in this prompt, make no backend or public-fallback call, and go straight to the handoff reply."
+      "Re-run the applicability gate before the handoff rather than trusting a stored result. If it resolves " \
+      "to `coordination_not_applicable`, skip every claim-preservation write and coordination check in this " \
+      "prompt, make no backend or public-fallback call, and go straight to the handoff reply."
     recovery_rule =
-      "For `coordination_not_applicable`, bounded status recovery uses the local worktree, branch, HEAD SHA, " \
-      "uncommitted changes, and live GitHub PR/check state only; make no coordination or public-fallback call, " \
-      "and read every claim, heartbeat, holder, and fallback clause below as `coordination_required` only."
+      "Re-run the applicability gate before choosing this path: a resume that crosses a controller or session " \
+      "boundary, or that consumes a durable handoff, is `coordination_required`. Only when the gate resolves " \
+      "to `coordination_not_applicable` does bounded status recovery use the local worktree, branch, HEAD SHA, " \
+      "uncommitted changes, and live GitHub PR/check state only"
     new_chat_rule =
-      "Re-run the applicability gate before acting. Resuming in a replacement chat from a durable handoff is a " \
-      "controller/session boundary, so treat this lane as `coordination_required` unless the gate re-verifies " \
-      "that one accountable controller again owns the exact target set serially."
+      "Resuming in a replacement chat from a durable handoff is a controller/session boundary and a " \
+      "durable-handoff requirement, both of which are requiring conditions, so this lane is " \
+      "`coordination_required`. Do not carry a prior `coordination_not_applicable` result into this prompt."
 
     workflow = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
     pause_skill = read_repo_file(PAUSE_SKILL_PATH).gsub(/\s+/, " ")

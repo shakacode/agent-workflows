@@ -1030,7 +1030,13 @@ and is part of what the post-incident review needs to see.
 
 ### Coordination events and terminal state
 
-Record these against the original lane. A `coordination_not_applicable` lane
+This whole section is `coordination_required` only. A
+`coordination_not_applicable` revert is local: record the revert decision, its
+evidence, and its terminal state in the controller's own durable record, and run
+none of the `agent-coord` event or terminal-state commands below.
+
+For `coordination_required`, record these against the original lane. A
+`coordination_not_applicable` lane
 emits no typed event at all, so there is nothing to skip; a trusted
 `coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
 not a silent skip. An

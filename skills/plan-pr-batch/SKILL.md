@@ -200,8 +200,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      worker launch. Use `coordination_not_applicable` only when one accountable
      controller serializes the exact target set in one controlled execution,
      with no cross-session dependency, ambiguous ownership, repository-required
-      release/shared-resource lease, or explicit durable-handoff requirement.
-      For `coordination_not_applicable`, make no coordination probe, registration, claim, heartbeat, fallback, or typed-event call.
+     release/shared-resource lease, or explicit durable-handoff requirement.
+     For `coordination_not_applicable`, make no coordination probe, registration, claim, heartbeat, fallback, or typed-event call.
    - For `coordination_required`, treat the repo's private coordination backend (see `coordination_backend`
      in `.agents/agent-workflow.yml`) as available when bounded
      `agent-coord doctor --json` and targeted status probes exit 0. Resolve

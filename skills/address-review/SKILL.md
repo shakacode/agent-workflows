@@ -8,8 +8,10 @@ Fetch review comments from a GitHub PR in this repository, triage them, and crea
 
 Mutating address-review runs assume one active operator per target PR. The
 mutual-exclusion gate below decides that, not the backend configuration:
-classify `coordination_applicability` from trusted policy and verified topology
-first, then use the gate for `coordination_required`. Opting out of both a
+classify `coordination_applicability` from trusted repository policy, the
+operator-supplied execution plan, and verified topology first, then use the gate
+for `coordination_required`. An explicit operator durable-handoff request is
+itself a requiring condition. Opting out of both a
 coordination backend and public claim-comment fallback does not by itself
 establish a single-controller run, and never run concurrent address-review
 workers against the same PR without `coordination_required` ownership.
