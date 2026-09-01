@@ -1451,6 +1451,21 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     refute_includes qa.fetch("missing"), "visual_evidence.local_reference"
   end
 
+  def test_v2_retains_performance_field_names_inside_artifact_url_parameters
+    %w[source metric_name baseline_value candidate_value].each do |field_name|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence_destination" => "repo_artifact_store",
+          "visual_evidence" =>
+            "durable: before and after https://artifacts.example.test/build;#{field_name}=images/before-after.png"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), field_name
+      assert_empty qa.fetch("missing"), field_name
+    end
+  end
+
   def test_v2_not_applicable_performance_rejects_unmeasured_placeholder
     qa = run_replay(
       v2_marker(

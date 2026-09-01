@@ -41,8 +41,11 @@ module CloseoutEvidenceReplay
   COUNT_QUALIFIER_TOKENS = %w[total totals overall aggregate all unique distinct num number].freeze
   UNRESOLVED_METRIC_TOKENS = %w[missing unavailable unmeasured unknown placeholder tbd todo].freeze
   PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
-  # Keep URL extraction aligned with semicolon-delimited performance evidence fields.
-  HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*?(?=;\s*(?:#{PERFORMANCE_EVIDENCE_FIELD_NAMES.join('|')})\s*=|[\s<>()]|\z)/i
+  PERFORMANCE_EVIDENCE_FIELD_PATTERN = PERFORMANCE_EVIDENCE_FIELD_NAMES.map { |name| Regexp.escape(name) }.join("|")
+  HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*/i
+  # Keep performance-only URL stripping aligned with semicolon-delimited evidence fields without
+  # truncating field-like semicolon parameters in visual or interaction artifact URLs.
+  PERFORMANCE_HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*?(?=;\s*(?:#{PERFORMANCE_EVIDENCE_FIELD_PATTERN})\s*=|[\s<>()]|\z)/i
   LOCAL_MEDIA_EXTENSION = /\.(?:avi|avif|bmp|gif|heic|heif|ico|jpe?g|m4v|mov|mp4|png|svg|tiff?|webm|webp)\b/i
   MEASUREMENT_VALUE = %r{([-+]?\d+(?:\.\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)}i
   EPHEMERAL_ARTIFACT_SCHEME = /\b(?:about|blob|chrome-extension|data|file|filesystem|ftp|http|mediastream|moz-extension):/i
@@ -644,7 +647,7 @@ module CloseoutEvidenceReplay
   end
 
   def labeled_measurement_pair?(value, first_key, second_key)
-    non_url_text = without_https_urls(value)
+    non_url_text = without_performance_https_urls(value)
     first = labeled_measurements(non_url_text, first_key)
     second = labeled_measurements(non_url_text, second_key)
     return false unless first.length == 1 && second.length == 1
@@ -660,6 +663,10 @@ module CloseoutEvidenceReplay
 
   def without_https_urls(value)
     value.gsub(HTTPS_TOKEN, "")
+  end
+
+  def without_performance_https_urls(value)
+    value.gsub(PERFORMANCE_HTTPS_TOKEN, "")
   end
 
   def http_urls(value)
@@ -707,7 +714,7 @@ module CloseoutEvidenceReplay
   end
 
   def valid_bundle_hygiene?(value)
-    non_url_text = without_https_urls(value)
+    non_url_text = without_performance_https_urls(value)
     measurements = %w[baseline_value candidate_value].flat_map do |key|
       labeled_measurements(non_url_text, key)
     end
@@ -724,7 +731,7 @@ module CloseoutEvidenceReplay
   end
 
   def valid_measured_metric?(value)
-    non_url_text = without_https_urls(value)
+    non_url_text = without_performance_https_urls(value)
     names = non_url_text.scan(/(?:\A|[\s;])metric_name\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
     return false unless names.length == 1
 
