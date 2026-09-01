@@ -220,6 +220,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "https: example.test#run;",
       "https: //available",
       "HTTPS: ✅//available",
+      "https: enabled //host/path",
+      "https: !!!",
+      "https: ---",
       "https:",
       "https://bad host/run/sign-in-abc123"
     ]
@@ -832,7 +835,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     malformed_urls = [
       "https:broken", "https: broken", "https: available.example.test", "https: example.test artifact",
       "https: example.test:443;", "https: example.test?run=1;", "https: example.test#run;",
-      "https: //available", "HTTPS: ✅//available"
+      "https: //available", "HTTPS: ✅//available", "https: enabled //host/path", "https: !!!", "https: ---"
     ]
     malformed_urls.each do |malformed_url|
       qa = run_replay(
