@@ -151,6 +151,37 @@ class HeavyRootAdmissionTest < Minitest::Test
     end
   end
 
+  def test_bind_reports_process_group_permission_failure_as_blocked
+    Dir.mktmpdir("heavy-root-admission-bind-permission-test") do |state_dir|
+      token = "launch-permission-failure"
+      reserve = run_helper(
+        "reserve", "--state-dir", state_dir, "--host", "M5",
+        "--owner", "maker", "--lane", "issue-604-maker",
+        "--worktree", "/tmp/maker", "--command-class", "validator",
+        "--launch-token", token, "--ceiling", "1",
+        "--scan-command-json", scanner_command(state_dir), "--json"
+      )
+      assert_equal 0, reserve.fetch(:status), reserve.inspect
+
+      original_getpgid = Process.method(:getpgid)
+      pgid = Process.getpgrp
+      Process.define_singleton_method(:getpgid) { |_pid| raise Errno::EPERM, "Operation not permitted" }
+      status = nil
+      stdout, stderr = capture_io do
+        status = HeavyRootAdmission.main(
+          ["bind", "--state-dir", state_dir, "--host", "M5", "--launch-token", token,
+           "--pid", Process.pid.to_s, "--pgid", pgid.to_s, "--json"]
+        )
+      end
+
+      assert_equal 1, status
+      assert_empty stdout
+      assert_match(/BLOCKED:.*process group.*not permitted/i, stderr)
+    ensure
+      Process.define_singleton_method(:getpgid, original_getpgid) if original_getpgid
+    end
+  end
+
   def test_pid_reuse_does_not_keep_an_old_bound_reservation_live
     assert HeavyRootAdmission.reused_process_identity?("original process start", "new process start")
   end

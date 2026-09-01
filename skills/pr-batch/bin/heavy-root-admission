@@ -580,6 +580,8 @@ module HeavyRootAdmission
     end
   rescue Errno::ESRCH
     raise Error, "PID #{options.fetch(:pid)} terminated before its reservation could be bound"
+  rescue Errno::EPERM => e
+    raise Error, "PID #{options.fetch(:pid)} process group could not be inspected: #{e.message}"
   end
 
   def release(options)
