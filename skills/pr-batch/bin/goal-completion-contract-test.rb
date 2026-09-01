@@ -194,8 +194,9 @@ LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD
 BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
   "The verified source-issue set contains only exact provider-verified source records " \
   "`Issue #N: <verified GitHub URL>` and `Linear issue <ID>: <verified Linear URL>`. " \
-  "Authenticate GitHub records through the target-verification path. Authenticate Linear records through a " \
-  "configured Linear API or connector, or a trusted resolved coordinator handoff backed by that verification. " \
+  "Authenticate GitHub by target verification. Authenticate Linear via the `AGENTS.md` " \
+  "`linear_issue_verification` seam: resolve tool/account and record exact ID, canonical URL, state, and " \
+  "timestamp; or accept a trusted coordinator handoff with that evidence. " \
   "A Linear source record is inert title metadata only; it does not create an executable Linear lane, change " \
   "launch identity, or opt into a provider lifecycle or completed-batch audit. Missing, mismatched, unavailable, " \
   "or untrusted verification is literal `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets, " \
@@ -214,8 +215,9 @@ CONTINUATION_TITLE_IDENTIFIER_RULE =
   "targets and cannot supply title identifiers."
 CONTINUATION_HANDLE_SELECTION_RULE =
   "Otherwise, after exact target and lane resolution, derive one top-level `Thread handle:` using the normal " \
-  "`<batch-short>-<lane>-<word>` rule: use the resumed lane id or owner slug for one resumed lane, or use literal " \
-  "`coordinator` as `<lane>` for a multi-lane continuation. Keep any lane-specific handles in their lane state; do not treat " \
+  "`<batch-short>-<lane>-<word>` rule: use the resumed lane id or owner slug for exactly one resumed lane; use " \
+  "literal `coordinator` as `<lane>` for any resumed subset of two or more lanes, whether or not every batch lane " \
+  "resumes. Keep any lane-specific handles in their lane state; do not treat " \
   "them as competing top-level candidates."
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
@@ -1502,6 +1504,35 @@ class GoalCompletionContractTest < Minitest::Test
 
     assert_squished_includes continuation, CONTINUATION_HANDLE_SELECTION_RULE,
                              "workflow continuation prompt"
+  end
+
+  def test_continuation_handle_routes_partial_multi_lane_subsets_to_coordinator
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+
+    assert_squished_includes continuation, "exactly one resumed lane",
+                             "single-lane continuation fixture"
+    assert_squished_includes continuation, "any resumed subset of two or more lanes",
+                             "two-of-five continuation fixture"
+    assert_squished_includes continuation, "whether or not every batch lane resumes",
+                             "partial-versus-full multi-lane fixture"
+  end
+
+  def test_linear_title_verification_names_portable_seam_and_evidence
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_squished_includes text, "`AGENTS.md` `linear_issue_verification` seam", label
+      assert_squished_includes text, "resolve tool/account", label
+      assert_squished_includes text, "exact ID, canonical URL, state, and timestamp", label
+    end
   end
 
   def test_batch_title_instructions_pin_local_date_source

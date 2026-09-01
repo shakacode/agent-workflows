@@ -1079,10 +1079,11 @@ for GitHub and
 `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
 for Linear. The verified source-issue set contains only exact provider-verified
 source records `Issue #N: <verified GitHub URL>` and
-`Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub records through
-the target-verification path. Authenticate Linear records through a configured
-Linear API or connector, or a trusted resolved coordinator handoff backed by
-that verification. A Linear source record is inert title metadata only; it does
+`Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
+verification. Authenticate Linear via the `AGENTS.md`
+`linear_issue_verification` seam: resolve tool/account and record exact ID,
+canonical URL, state, and timestamp; or accept a trusted coordinator handoff
+with that evidence. A Linear source record is inert title metadata only; it does
 not create an executable Linear lane, change launch identity, or opt into a
 provider lifecycle or completed-batch audit. Missing, mismatched, unavailable,
 or untrusted verification is literal `UNKNOWN` and stops title generation.
@@ -2012,9 +2013,10 @@ Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule 
 Preserve exactly one trusted persisted coordinator continuation handle when it
 can be verified. Otherwise, after exact target and lane resolution, derive one
 top-level `Thread handle:` using the normal `<batch-short>-<lane>-<word>` rule:
-use the resumed lane id or owner slug for one resumed lane, or use literal
-`coordinator` as `<lane>` for a multi-lane continuation. Keep any lane-specific
-handles in their lane state; do not treat them as competing top-level candidates.
+use the resumed lane id or owner slug for exactly one resumed lane; use literal
+`coordinator` as `<lane>` for any resumed subset of two or more lanes, whether or
+not every batch lane resumes. Keep any lane-specific handles in their lane state;
+do not treat them as competing top-level candidates.
 Conflicting persisted coordinator handles, an unverified selected lane, or an
 ambiguous target or lane set are literal `UNKNOWN` and stop continuation; never
 infer a handle from free-form text.
