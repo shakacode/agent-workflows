@@ -2,13 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SAFE_TMP_PARENT="$(cd "$ROOT/.." && pwd)"
-SAFE_TMP_ROOT="$(mktemp -d "$SAFE_TMP_PARENT/install-agent-workflows-test.XXXXXX")"
+SAFE_TMP_ROOT=""
 FAKE_CODEX_DIR="$(mktemp -d)"
 TEST_SOURCE_ROOT=""
 cleanup() {
   rm -rf "$FAKE_CODEX_DIR"
-  rm -rf "$SAFE_TMP_ROOT"
   [[ -z "$TEST_SOURCE_ROOT" ]] || rm -rf "$TEST_SOURCE_ROOT"
 }
 trap cleanup EXIT
@@ -8434,9 +8432,13 @@ RUBY
 }
 
 main() {
-  TEST_SOURCE_ROOT="$(mktemp -d)"
-  new_source_repo "$TEST_SOURCE_ROOT"
-  ROOT="$TEST_SOURCE_ROOT"
+  local safe_tmp_parent
+  safe_tmp_parent="$(cd "$ROOT/.." && pwd)"
+  TEST_SOURCE_ROOT="$(mktemp -d "$safe_tmp_parent/install-agent-workflows-test.XXXXXX")"
+  mkdir -m 0700 "$TEST_SOURCE_ROOT/source" "$TEST_SOURCE_ROOT/runtime"
+  new_source_repo "$TEST_SOURCE_ROOT/source"
+  ROOT="$TEST_SOURCE_ROOT/source"
+  SAFE_TMP_ROOT="$TEST_SOURCE_ROOT/runtime"
 
   local tests=(
     test_metadata_commit_close_failure_after_exchange_preserves_committed_layout
