@@ -1613,16 +1613,18 @@ end
 
 def write_interaction_queue_artifact(repo, targets, directory: nil)
   contents = "#{JSON.generate(interaction_queue_artifact_payload(repo, targets))}\n"
+  file = nil
+  path = nil
   file = if directory
            Tempfile.create(["pr-security-preflight-interaction-queues-", ".json"], directory)
          else
            Tempfile.create(["pr-security-preflight-interaction-queues-", ".json"])
          end
+  path = file.path
   file.binmode
   file.write(contents)
   file.flush
   file.fsync
-  path = file.path
   file.close
 
   {
@@ -1633,6 +1635,24 @@ def write_interaction_queue_artifact(repo, targets, directory: nil)
     end
   }
 rescue SystemCallError => e
+  close_error = nil
+  begin
+    file.close if file && !file.closed?
+  rescue SystemCallError => error
+    close_error = error
+  end
+  close_detail = close_error ? "; close also failed: #{close_error.message}" : ""
+  if path
+    begin
+      File.unlink(path)
+    rescue Errno::ENOENT
+      nil
+    rescue SystemCallError => unlink_error
+      abort "Could not write interaction queue artifact: #{e.message}; " \
+            "incomplete artifact cleanup failed at #{path.inspect}: #{unlink_error.message}#{close_detail}"
+    end
+  end
+
   abort "Could not write interaction queue artifact: #{e.message}"
 end
 

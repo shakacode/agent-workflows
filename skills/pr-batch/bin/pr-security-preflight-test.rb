@@ -2623,6 +2623,60 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_failed_interaction_artifact_write_removes_the_incomplete_file
+    with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, _log_path, dir|
+      artifact_dir = File.join(dir, "caller-owned-artifacts")
+      FileUtils.mkdir_p(artifact_dir)
+      failure_preload = File.join(dir, "fail-interaction-artifact-write.rb")
+      File.write(failure_preload, <<~RUBY)
+        require "tempfile"
+
+        if File.expand_path($PROGRAM_NAME) == #{SCRIPT.inspect}
+          module FailingInteractionArtifactWrite
+            def write(contents)
+              super(contents.byteslice(0, 8))
+              flush
+              raise Errno::ENOSPC, "simulated artifact write failure"
+            end
+          end
+
+          module UnavailableInteractionArtifactStat
+            def exist?(path)
+              return false if File.basename(path).start_with?("pr-security-preflight-interaction-queues-")
+
+              super
+            end
+          end
+
+          File.singleton_class.prepend(UnavailableInteractionArtifactStat)
+
+          class << Tempfile
+            alias create_without_interaction_artifact_failure create
+
+            def create(...)
+              create_without_interaction_artifact_failure(...).tap do |file|
+                file.extend(FailingInteractionArtifactWrite)
+              end
+            end
+          end
+        end
+      RUBY
+
+      out, status = run_script(
+        env.merge("RUBYOPT" => "-r#{failure_preload}"),
+        "--repo", "owner/repo",
+        "--trust-config", trust_config_path,
+        "--interaction-artifact-dir", artifact_dir,
+        "123"
+      )
+
+      refute status.success?, out
+      assert_includes out, "Could not write interaction queue artifact"
+      assert_includes out, "simulated artifact write failure"
+      assert_empty Dir.children(artifact_dir), "failed writes must not strand an incomplete artifact"
+    end
+  end
+
   def test_empty_interaction_artifact_directory_is_rejected_before_any_scan
     with_fake_gh("overflow-interaction-queues") do |env, trust_config_path, log_path, dir|
       out, status = run_script(
