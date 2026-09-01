@@ -1291,25 +1291,20 @@ PRs; never derive it from the PR's own text.
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no
 required checks exist, ignores cancelled/superseded rows, and prints a `verdict`
 of `READY`, `NOT_READY`, or `UNKNOWN` plus the `failing`/`pending` check names
-(`required_used` records whether required checks gated the verdict). Treat
-`UNKNOWN` (an empty check list) as not ready and request hosted CI or maintainer
-status-check configuration before merge; skipped checks still need CI selector or
-maintainer-waiver evidence allowed by `AGENTS.md`. (As of #3844, `main` defines
-zero required status-check contexts, so the helper falls back to the full list;
-if required checks are later configured per #3844 option (a), it uses them.)
-When hosted CI was explicitly requested for the current head, pass each requested
-Actions run id or URL as `--requested-hosted-run <run-id-or-url>`; the helper
-then blocks only those requested current-head hosted runs. Once any hosted run
-is explicitly requested, all exact-head non-required GitHub Actions, Dependabot,
-and external-provider checks remain advisory—including failing and pending
-unselected checks—and appear in the v2 receipt as informational rows. When no usable
-required checks exist, the requested runs become the gate instead of the full
-advisory list, and their completed records carry the exact head SHA that merge
-assurance requires before accepting any non-gating scope. A repository that
-depends on hosted Markdown formatting should configure that check as required or
-explicitly select its run; required checks continue to gate. A stale requested
-run for an older head is `UNKNOWN`, not success.
-Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
+(`required_used` records whether required checks gated). An empty check list is
+`UNKNOWN`; request hosted CI or configure status checks. Skips need CI-selector
+or `AGENTS.md` waiver evidence. Configured required checks gate; without them,
+the helper uses its advisory list unless runs are selected below.
+For requested CI, pass current-head runs with
+`--requested-hosted-run <run-id-or-url>`. Required checks always gate; otherwise
+only selected runs gate. Unselected non-required checks—even failures or pending
+ones—are informational. Without required checks, selected runs replace the
+advisory list; completed rows must carry the exact head for merge assurance.
+Require or select relied-on hosted Markdown checks. Older-head runs are
+`UNKNOWN`.
+Current-head `PENDING` drafts visible to the authenticated viewer block. Here,
+`complete` covers only the paginated viewer-visible scope; other reviewers'
+drafts are unobservable. Incomplete or unavailable inventory is `UNKNOWN`.
 
 Avoid long-lived `gh ... --watch` commands in agent sessions. Avoid relying on
 `statusCheckRollup` alone when `gh pr checks` can answer the readiness question more
