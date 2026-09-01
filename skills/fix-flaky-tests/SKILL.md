@@ -80,9 +80,10 @@ into this workflow:
    open a second fix for the same flake.
 3. **Broken, not flaky, or deterministic parity gap.** Obtain exact hosted
    failure logs and history for the failure identity, then record the local
-   result separately. If the same exact failure occurs on every hosted run and
-   reproduces locally, it is an ordinary bug. If the same exact failure occurs
-   on every hosted run and the local reproduction is green, hand it to
+   result separately. If the same exact failure occurs on every equivalent
+   hosted invocation and reproduces locally, it is an ordinary bug. If the
+   same exact failure occurs on every equivalent hosted invocation and the
+   local reproduction is green, hand it to
    `replicate-ci` as a deterministic parity gap. Either Step 1 exit requires
    citations to the exact hosted determinism and the corresponding local
    reproduction evidence; the parity handoff must also name `replicate-ci`.
@@ -217,9 +218,10 @@ Local-green evidence is required only for a deterministic hosted/local parity
 gap:
 
 - **Deterministic hosted/local parity gap** — the hosted check has the same
-  exact failure on every run for the commit, while the local reproduction is
-  green. Use `replicate-ci`: the runner image, toolchain version, locale,
-  timezone, filesystem, or service topology may explain that difference.
+  exact failure on every equivalent hosted invocation for the commit, while the
+  local reproduction is green. Use `replicate-ci`: the runner image, toolchain
+  version, locale, timezone, filesystem, or service topology may explain that
+  difference.
 - **Deterministic hosted and local failure** — the same exact failure appears
   in both places. This is an ordinary bug, so take Step 1's broken-test exit.
 - **Intermittent hosted failure** — the same commit passes and fails across
