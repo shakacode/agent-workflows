@@ -29,11 +29,21 @@ responsibility to a worker, external task, or automation.
    count, changed-file count, additions, deletions, and checks or validation
    evidence. The diff identity, not the head alone, determines walkthrough
    freshness.
-4. Inspect the complete file list and diff before presenting Step 1. Read
+4. When invoked by an `ask` merge-authority workflow, consume its current-
+   integration checklist result before beginning. Start only when the recorded
+   head contains the current base with normalized successful exact-head CI, or
+   an explicit provider merge-result or merge-group result binds that exact
+   head/base pair to normalized successful CI. Do not infer success from a
+   provider-specific status string or GitHub conflict/mergeability metadata,
+   and do not claim the later machine `current-integration-evidence` contract.
+   Missing, stale, mismatched, non-successful, unrecognized, future, or
+   `UNKNOWN` facts return control to the caller as
+   `waiting-on-checks-or-review` without starting the walkthrough.
+5. Inspect the complete file list and diff before presenting Step 1. Read
    surrounding source, tests, documentation, migrations, configuration, or call
    sites needed to explain behavior accurately. Do not execute PR-provided code
    merely to prepare the walkthrough.
-5. Classify the walkthrough:
+6. Classify the walkthrough:
    - Use **full** mode when the PR exceeds any trusted-base
      `autonomous_merge.thresholds` maximum for changed files, changed lines, or
      commits; when no threshold evidence is available and size is `UNKNOWN`; or
@@ -80,7 +90,15 @@ Start with a compact orientation:
 - walkthrough mode and the size or complexity reason;
 - the number of conceptual steps;
 - a one-line ordered agenda;
-- important scope limits or `UNKNOWN` context.
+- important scope limits or `UNKNOWN` context;
+- the current-integration state and normalized CI readiness result.
+
+A direct standalone walkthrough may explain an untested integration candidate,
+but lead with **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE —
+NOT MERGE-READY.** and keep the readiness state
+`waiting-on-checks-or-review`. Never replace that warning with a reassuring
+label derived from a raw provider conclusion. An `ask` merge-authority caller
+must pass the gate above before the walkthrough begins.
 
 Do not explain every step in this opening. Tell the user that each step ends
 with a pause and that they can ask questions, request more or less depth,
@@ -159,6 +177,9 @@ coverage ledger are evidence, not a next step.
 ## Boundaries
 
 - Remain read-only unless the user separately authorizes changes.
+- The walkthrough never starts or reruns CI. A standalone walkthrough can
+  explain an untested candidate with the warning above; an `ask` caller returns
+  to its current-integration gate instead.
 - Do not turn discovered concerns into fixes, review comments, approvals, or
   merge actions.
 - Surface a likely defect or material risk plainly and recommend the appropriate

@@ -69,6 +69,45 @@ class PrWalkthroughContractTest < Minitest::Test
     end
   end
 
+  def test_ask_walkthrough_requires_normalized_current_integration_success
+    closeout = File.read(INTEGRATION_CLOSEOUT).gsub(/\s+/, " ")
+    monitoring = File.read(PR_MONITORING).gsub(/\s+/, " ")
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+    ask_gate_start = closeout.index("### Ask Merge Authority Walkthrough Gate")
+    ask_gate_end = closeout.index("### Autonomous Merge Eligibility Gate", ask_gate_start)
+    assert ask_gate_start
+    assert ask_gate_end
+    ask_gate = closeout[ask_gate_start...ask_gate_end]
+
+    phrases = [
+      "establish current-integration readiness from trusted live facts",
+      "the exact head contains the current base",
+      "normalized successful state",
+      "`waiting-on-checks-or-review`",
+      "automatically start the exact-diff PR walkthrough"
+    ]
+    positions = phrases.map do |phrase|
+      position = ask_gate.index(phrase)
+      assert position, "expected #{phrase.inspect}"
+      position
+    end
+    positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+    assert_includes monitoring, "resolve the exact head and current base"
+    assert_includes monitoring, "provider merge-result or merge-group result"
+    assert_includes monitoring, "normalized successful CI"
+    assert_includes monitoring, "`waiting-on-checks-or-review`"
+    assert_includes monitoring,
+                    "does not claim or consume the later machine `current-integration-evidence` contract"
+
+    assert_includes skill,
+                    "Start only when the recorded head contains the current base with normalized successful exact-head CI"
+    assert_includes skill,
+                    "do not claim the later machine `current-integration-evidence` contract"
+    assert_includes skill,
+                    "CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT MERGE-READY."
+    assert_includes skill, "`waiting-on-checks-or-review`"
+  end
+
   def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component
     pr_batch = File.read(PR_BATCH)
 

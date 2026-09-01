@@ -1543,6 +1543,11 @@ evidence for required status checks, GitHub Actions, Dependabot, and other
 checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
 must migrate to the scoped v2 result.
 
+Treat CI as successful only through the result contract's normalized successful
+state (`READY` for `pr-ci-readiness` v2). Provider-specific conclusions are
+inputs to that normalization, not portable gate values; a missing, stale,
+nonterminal, failed, unrecognized, future, or `UNKNOWN` value is not success.
+
 Then run the repo's merge ledger (see `merge_ledger` in
 `.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
 `--changelog-classification`
@@ -1575,6 +1580,29 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 
 ### Ask Merge Authority Walkthrough Gate
 
+Before entering this gate, establish current-integration readiness from trusted
+live facts. Resolve the exact head and current base, then require either:
+
+- the exact head contains the current base and exact-head CI is in its
+  normalized successful state; or
+- an explicit provider-produced merge-result or merge-group result is bound to
+  that exact head and current base, with CI in its normalized successful state.
+
+This is an early sequencing checklist, not a second evidence schema or a
+substitute for the later [Merge Assurance Gate](#merge-assurance-gate). Do not
+claim or consume its machine `current-integration-evidence` here. A missing,
+stale, mismatched, non-successful, unrecognized, future, or `UNKNOWN` fact keeps
+the target in `waiting-on-checks-or-review`; lead with
+**CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT
+MERGE-READY.** and do not start the walkthrough. GitHub's conflict or
+mergeability status is not CI evidence.
+
+In generated compact goals, `NCI?` is a runtime requirement to evaluate this
+normalized current-integration CI checklist now. It never asserts success. The
+adjacent `gate fail=>stop` and `ask iff same clean` clauses mean every missing,
+stale, mismatched, non-successful, unrecognized, future, or `UNKNOWN` result
+stays waiting and no walkthrough starts.
+
 When `merge_authority` is `ask` and every ordinary gate is clean,
 automatically start the exact-diff PR walkthrough before asking for merge
 approval. Use `$pr-walkthrough` when available; otherwise apply its read-only
@@ -1591,13 +1619,16 @@ Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
 
 After it completes or is skipped, refresh the diff identity and ordinary
-readiness. If the diff identity changed, invalidate the walkthrough and
-readiness evidence, then restart the walkthrough or stop. If an ordinary gate
-newly fails, stop. Ask one final merge decision only when the refreshed diff
-identity matches the recorded identity, ordinary readiness remains clean, and
-merge is allowed; a completed walkthrough must have explained that same diff
-identity. Walkthrough participation is not merge approval. Merge still requires
-the explicit authority decision.
+readiness. Also refresh the current base and the current-integration checklist
+above. If the diff identity changed, invalidate the walkthrough and readiness
+evidence, then restart the walkthrough or stop. A changed current base also
+invalidates the walkthrough unless the refreshed checklist passes for the same
+diff. If an ordinary gate newly fails, stop. Ask one final merge decision only
+when the refreshed diff identity matches the recorded identity, ordinary
+readiness remains clean, and merge is allowed; a completed walkthrough must have
+explained that same diff identity. Current-integration readiness is part of that
+refreshed ordinary readiness. Walkthrough participation is not merge approval.
+Merge still requires the explicit authority decision.
 
 ### Autonomous Merge Eligibility Gate
 

@@ -8,6 +8,9 @@ COMPONENT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 PRODUCTION_RELEASE_PATH = File.join(ROOT, "workflows/pr-production-release.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
+PLAN_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
+PR_MONITORING_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
+PR_WALKTHROUGH_PATH = File.join(ROOT, "skills/pr-walkthrough/SKILL.md")
 VALIDATE_WORKFLOW_PATH = File.join(ROOT, ".github/workflows/validate.yml")
 
 def route_after(text, heading)
@@ -42,6 +45,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     "Local Validation Gate",
     "Review Completion Gate",
     "Merge Readiness Gate",
+    "Ask Merge Authority Walkthrough Gate",
     "Autonomous Merge Eligibility Gate",
     "Merge Assurance Gate",
     "Exact-Head Merge Submission",
@@ -63,6 +67,9 @@ class IntegrationCloseoutContractTest < Minitest::Test
     @production_release = File.read(PRODUCTION_RELEASE_PATH, encoding: "UTF-8")
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
     @skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    @plan_skill = File.read(PLAN_SKILL_PATH, encoding: "UTF-8")
+    @pr_monitoring = File.read(PR_MONITORING_PATH, encoding: "UTF-8")
+    @pr_walkthrough = File.read(PR_WALKTHROUGH_PATH, encoding: "UTF-8")
     @validate_workflow = File.read(VALIDATE_WORKFLOW_PATH, encoding: "UTF-8")
   end
 
@@ -105,6 +112,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
       "Local Validation Gate",
       "Review Completion Gate",
       "Merge Readiness Gate",
+      "Ask Merge Authority Walkthrough Gate",
       "Autonomous Merge Eligibility Gate",
       "Merge Assurance Gate",
       "Exact-Head Merge Submission",
@@ -114,7 +122,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
       assert_match(/^\#{2,3} #{Regexp.escape(heading)}$/, @component, heading)
     end
 
-    assert_operator @component.bytesize, :<, 165_000
+    assert_operator @component.bytesize, :<, 167_000
     assert_operator @workflow.bytesize, :<, 185_000
     assert_operator @skill.bytesize, :<, 60_000
     assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 395_000
@@ -253,6 +261,54 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes @component, "autonomous-merge-evidence-unknown"
     assert_includes @component, "Conversation status: Ready for archiving."
     assert_includes @component, "Conversation status: Follow-ups remain"
+  end
+
+  def test_ask_walkthrough_waits_for_normalized_current_integration_success
+    ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
+    normalized_gate = ask_gate.gsub(/\s+/, " ")
+    normalized_monitoring = @pr_monitoring.gsub(/\s+/, " ")
+    normalized_walkthrough = @pr_walkthrough.gsub(/\s+/, " ")
+    prompt_gate = "NCI?"
+
+    positions = [
+      "Before entering this gate",
+      "establish current-integration readiness from trusted live facts",
+      "the exact head contains the current base",
+      "normalized successful state",
+      "`waiting-on-checks-or-review`",
+      "do not start the walkthrough",
+      "automatically start the exact-diff PR walkthrough"
+    ].map do |phrase|
+      position = normalized_gate.index(phrase)
+      assert position, "expected #{phrase.inspect}"
+      position
+    end
+    positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+
+    assert_includes ask_gate, "[Merge Assurance Gate](#merge-assurance-gate)"
+    assert_includes ask_gate, "provider-produced merge-result or merge-group result"
+    assert_includes normalized_gate,
+                    "Do not claim or consume its machine `current-integration-evidence` here."
+    assert_includes normalized_gate,
+                    "`NCI?` is a runtime requirement to evaluate this normalized current-integration CI checklist now"
+    assert_includes normalized_gate, "It never asserts success."
+    assert_includes normalized_gate,
+                    "every missing, stale, mismatched, non-successful, unrecognized, future, or `UNKNOWN` result stays waiting and no walkthrough starts"
+    refute_match(/\bPASSED\b/, ask_gate)
+    assert_includes normalized_monitoring, "Provider-specific status strings are inputs to normalization"
+    assert_includes normalized_walkthrough,
+                    "Do not infer success from a provider-specific status string or GitHub conflict/mergeability metadata"
+
+    {
+      "workflow goal prompt" => @workflow,
+      "pr-batch goal prompt" => @skill,
+      "plan-pr-batch goal prompt" => @plan_skill
+    }.each do |label, text|
+      assert_equal 1, text.scan(prompt_gate).length, label
+      assert_includes text,
+                      "Batch QA Lane:<owner/scope+evidence|none+rationale>", label
+      assert_includes text, "release+gates pass", label
+    end
   end
 
   def test_sibling_components_remain_outside_the_boundary
