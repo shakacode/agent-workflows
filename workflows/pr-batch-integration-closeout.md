@@ -844,10 +844,8 @@ The heartbeat targets the current thread rather than starting a standalone task,
 
 Pressure checks:
 
-- A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE.
-- An autonomously clearable blocked goal gets one deterministic state-change watcher when supported; unchanged evidence does not wake the parent. A bounded, deduplicated 15-minute-fast-window/backoff monitor is the fallback. Stop or pause either mode on unblocked, terminal, non-resumable, user-input, or budget state.
+- An autonomously clearable goal gets a deterministic watcher if supported; unchanged evidence does not wake the parent. The fallback is a bounded, deduplicated 15-minute-fast-window/backoff monitor. Stop or pause both modes on unblocked, terminal, non-resumable, user-input, or budget state.
 - A blocker that publishes an exact future reset time gets one same-thread heartbeat scheduled for that time, because neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that exact published time; use it as the single scheduled mechanism for that blocker and gate; do not start or retain either watcher mode for the same gate, and create or update its durable record before stopping or replacing any existing watcher so no wake is lost. Replay updates that one heartbeat instead of duplicating it, and a terminal state pauses or deletes it. An `UNKNOWN` retry time, a `blocked-user-input` blocker, or an unavailable scheduling capability creates no automation and keeps the exact manual resume instructions.
-- `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
 ## Integration, Review, And Merge Readiness
