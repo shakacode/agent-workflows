@@ -3031,6 +3031,53 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_rejects_hidden_index_flags_and_local_diff_overrides
+    Dir.mktmpdir("trusted-base-checkout-flags") do |repo_root|
+      tracked_path = File.join(repo_root, "tracked.txt")
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      File.write(tracked_path, "trusted\n")
+      git! "-C", repo_root, "add", "tracked.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "trusted"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      operations = TrustedBaseHighRiskOperations.new
+
+      git! "-C", repo_root, "update-index", "--skip-worktree", "tracked.txt"
+      File.write(tracked_path, "skip-worktree change\n")
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has index-hidden tracked entries", error
+      git! "-C", repo_root, "update-index", "--no-skip-worktree", "tracked.txt"
+      git! "-C", repo_root, "restore", "--worktree", "tracked.txt"
+
+      git! "-C", repo_root, "update-index", "--assume-unchanged", "tracked.txt"
+      File.write(tracked_path, "assume-unchanged change\n")
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has index-hidden tracked entries", error
+      git! "-C", repo_root, "update-index", "--no-assume-unchanged", "tracked.txt"
+      git! "-C", repo_root, "restore", "--worktree", "tracked.txt"
+
+      git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+      git! "-C", repo_root, "config", "--worktree", "core.fileMode", "false"
+      File.chmod(0o755, tracked_path)
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has tracked working-tree changes", error
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
+
   def test_git_object_ids_are_exactly_sha1_or_sha256_length
     assert_match GIT_OBJECT_ID_PATTERN, "a" * 40
     assert_match GIT_OBJECT_ID_PATTERN, "b" * 64

@@ -25,6 +25,16 @@ TRUSTED_GIT_FIXED_TEMP_ROOTS = %w[
   /tmp /private/tmp /var/tmp /private/var/tmp /var/folders /private/var/folders
 ].freeze
 GIT_OBJECT_ID_PATTERN = /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/
+TRUSTED_CHECKOUT_CONFIG_ARGS = %w[
+  -c core.fileMode=true
+  -c core.ignoreStat=false
+  -c core.fsmonitor=false
+  -c core.untrackedCache=false
+  -c core.preloadIndex=false
+  -c core.trustCtime=true
+  -c core.checkStat=default
+  -c diff.ignoreSubmodules=none
+].freeze
 
 def trusted_git_repository_root
   current = File.realpath(Dir.pwd)
@@ -1840,9 +1850,33 @@ class TrustedBaseHighRiskOperations
     [false, "PR merge result is not an ancestor of fetched trusted base: #{stderr.to_s.lines.first&.strip}"]
   end
 
+  def capture_checkout_git_probe(root, *args)
+    capture_trusted_git_probe(*TRUSTED_CHECKOUT_CONFIG_ARGS, "-C", root, *args)
+  end
+
+  def hidden_tracked_index_entries?(root)
+    stdout, stderr, status = capture_checkout_git_probe(root, "ls-files", "-v", "-z", "--")
+    unless status&.success?
+      return [nil, "trusted checkout index flags could not be verified: #{stderr.to_s.lines.first&.strip}"]
+    end
+
+    records = stdout.to_s.b.split("\0", -1)
+    terminated = records.length > 1 && records.pop.empty?
+    malformed = !terminated || records.any? do |record|
+      record.bytesize < 3 || record.getbyte(1) != 0x20
+    end
+    return [nil, "trusted checkout index flag probe returned malformed output"] if malformed
+
+    hidden = records.any? do |record|
+      tag = record.getbyte(0)
+      tag == "S".ord || tag.between?("a".ord, "z".ord)
+    end
+    [hidden, nil]
+  end
+
   def checkout_matches_fetched_base?(root, base_sha, policy_ref)
-    stdout, stderr, status = capture_trusted_git_probe(
-      "-C", root, "rev-parse", "--verify", "HEAD^{commit}"
+    stdout, stderr, status = capture_checkout_git_probe(
+      root, "rev-parse", "--verify", "HEAD^{commit}"
     )
     head_sha = stdout.to_s.strip
     unless status&.success? && head_sha.match?(GIT_OBJECT_ID_PATTERN)
@@ -1852,8 +1886,8 @@ class TrustedBaseHighRiskOperations
       return [false, "trusted checkout HEAD does not match freshly fetched trusted base"]
     end
 
-    ref_stdout, ref_stderr, ref_status = capture_trusted_git_probe(
-      "-C", root, "symbolic-ref", "--quiet", "HEAD"
+    ref_stdout, ref_stderr, ref_status = capture_checkout_git_probe(
+      root, "symbolic-ref", "--quiet", "HEAD"
     )
     if ref_status&.success?
       return [false, "trusted checkout branch does not match trusted-base policy ref"] unless ref_stdout.to_s.strip == policy_ref
@@ -1861,8 +1895,14 @@ class TrustedBaseHighRiskOperations
       return [false, "trusted checkout branch could not be resolved: #{ref_stderr.to_s.lines.first&.strip}"]
     end
 
-    _staged_stdout, staged_stderr, staged_status = capture_trusted_git_probe(
-      "-C", root, "diff", "--cached", "--quiet", "--no-ext-diff", "HEAD", "--"
+    hidden_entries, hidden_error = hidden_tracked_index_entries?(root)
+    return [false, hidden_error] if hidden_error
+    return [false, "trusted checkout has index-hidden tracked entries"] if hidden_entries
+
+    _staged_stdout, staged_stderr, staged_status = capture_checkout_git_probe(
+      root,
+      "diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv",
+      "--ignore-submodules=none", "HEAD", "--"
     )
     if staged_status.respond_to?(:exitstatus) && staged_status.exitstatus == 1
       return [false, "trusted checkout has staged tracked changes"]
@@ -1871,8 +1911,10 @@ class TrustedBaseHighRiskOperations
       return [false, "trusted checkout staged state could not be verified: #{staged_stderr.to_s.lines.first&.strip}"]
     end
 
-    _worktree_stdout, worktree_stderr, worktree_status = capture_trusted_git_probe(
-      "-C", root, "diff", "--quiet", "--no-ext-diff", "HEAD", "--"
+    _worktree_stdout, worktree_stderr, worktree_status = capture_checkout_git_probe(
+      root,
+      "diff", "--quiet", "--no-ext-diff", "--no-textconv",
+      "--ignore-submodules=none", "HEAD", "--"
     )
     if worktree_status.respond_to?(:exitstatus) && worktree_status.exitstatus == 1
       return [false, "trusted checkout has tracked working-tree changes"]
