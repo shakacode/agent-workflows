@@ -164,14 +164,6 @@ EXPECTED_OPERATIONAL_SIGNALS = {
     "type" => "help_requested",
     "required_fields" => %w[reason]
   },
-  "permission answer accepted" => {
-    "type" => "help_request.resolved",
-    "required_fields" => %w[evidence]
-  },
-  "permission answer declined" => {
-    "type" => "help_request.declined",
-    "required_fields" => %w[evidence]
-  },
   "model escalation request" => {
     "type" => "escalation_requested",
     "required_fields" => %w[from_route to_route evidence]
@@ -518,7 +510,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
     rows = parse_operational_signal_rows(telemetry)
 
     assert_equal EXPECTED_OPERATIONAL_SIGNALS, rows
-    assert_equal %w[error escalation_requested help_request.declined help_request.resolved help_requested human_intervention],
+    assert_equal %w[error escalation_requested help_requested human_intervention],
                  rows.values.map { |row| row.fetch("type") }.sort
 
     assert_includes telemetry, "`claim.acquired`"

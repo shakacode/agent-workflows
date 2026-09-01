@@ -1584,8 +1584,6 @@ target, branch, and status context. Required typed payload fields are:
 | Checkpoint | Typed event | Required fields |
 | ---------- | ----------- | --------------- |
 | help-needed pause | `help_requested` | `reason` |
-| permission answer accepted | `help_request.resolved` | `evidence` |
-| permission answer declined | `help_request.declined` | `evidence` |
 | model escalation request | `escalation_requested` | `from_route`, `to_route`, `evidence` |
 | human intervention | `human_intervention` | `kind` |
 | serious error | `error` | `severity`, `category`, `message` |
@@ -1593,9 +1591,7 @@ target, branch, and status context. Required typed payload fields are:
 Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. A `MODEL_ESCALATION_REQUEST` emits `escalation_requested` with
 the current and requested model/effort routes plus the evidence summary from
 the prose packet. Map intervention checkpoints deliberately:
-For each permission answer, `evidence` is the original
-`help_requested.event_id`; only the coordinator emits the answer, and then
-separately replays scope permissions. `takeover` -> `kind: takeover`; a
+`takeover` -> `kind: takeover`; a
 same-lane replacement or explicit supersede
 -> `kind: supersede`; a human-authored repair -> `kind: manual-fix`; and a
 coordinator cancellation drain -> `kind: drain`. A confirmed P0/P1 finding,
@@ -1625,7 +1621,7 @@ on the event. Public claim comments are not a typed event transport.
 Backends may auto-emit the lifecycle events `claim.acquired`, `claim.released`,
 and `phase.changed` from claim, release, and phase-transition operations. Do
 not duplicate those lifecycle events with explicit typed-signal writes; the
-operational signals above are additive. At batch closeout, use a read-only
+four operational signals above are additive. At batch closeout, use a read-only
 check after terminal releases only when the active backend advertises an
 `agent-coord`-compatible telemetry-completeness audit capability bound to the
 following process contract. Executable: `agent-coord`. Arguments, in order and

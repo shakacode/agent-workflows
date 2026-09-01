@@ -1070,10 +1070,8 @@ agent-coord record-event --type help_requested --reason permission \
 ```
 
 Do not invent event kinds, reasons, or lane states for this incident sequence.
-Its signal kinds are `help_requested`, `escalation_requested`, `error`, and
-`human_intervention`; the separate permission-answer lifecycle may record
-`help_request.resolved` or `help_request.declined` against the original request
-id. `human_intervention --kind` is exactly `takeover`,
+The typed kinds are exactly `help_requested`, `escalation_requested`, `error`,
+and `human_intervention`; `human_intervention --kind` is exactly `takeover`,
 `supersede`, `manual-fix`, or `drain`. Lane lifecycle states are exactly
 `planned`, `claimed`, `active`, `blocked`, `completed`, and terminal closeout
 values are exactly `done`, `abandoned`, `superseded`. Keep the two apart: the

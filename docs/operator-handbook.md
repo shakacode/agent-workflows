@@ -48,8 +48,6 @@ boundary; the prose handoff still carries the ask.
 | Signal | Raised when | Canonical rule |
 | --- | --- | --- |
 | `help_requested` | A lane pauses for required user input, carrying one reason. | [Operational Signal Events](coordination-backend.md#operational-signal-events) |
-| `help_request.resolved` | The coordinator records that the original request was answered; it replays scope permissions separately. | [Operational Signal Events](coordination-backend.md#operational-signal-events) |
-| `help_request.declined` | The coordinator records that the original request was declined. | [Operational Signal Events](coordination-backend.md#operational-signal-events) |
 | `escalation_requested` | A worker requests a stronger model route with evidence. Routine escalation is coordinator-decided; repeat escalation in a lane comes to you. | [Operational Signal Events](coordination-backend.md#operational-signal-events), [Worker Model Replacement And Escalation](../workflows/pr-processing.md#worker-model-replacement-and-escalation) |
 | `human_intervention` | A takeover, supersede, human-authored manual fix, or cancellation drain is recorded against the lane. | [Operational Signal Events](coordination-backend.md#operational-signal-events) |
 
