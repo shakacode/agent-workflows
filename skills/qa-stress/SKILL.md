@@ -159,7 +159,7 @@ Support these portable argument forms:
 | `--from <sha>` | Focus on changes from that SHA to the selected or current head ref; apply the trust gate to the head ref as for any PR, fork ref, or public branch. Use the base branch only as a comparison baseline when needed. |
 | `--from <sha> --to <ref>` | Focus on that explicit range. Validate both refs and apply the trust gate to `<ref>` as for any PR, fork ref, or public branch. |
 | `--features <list>` | Intersect scope with seam-defined feature tags. Unknown tags abort. |
-| `--tier quick|standard|deep|exhaustive` | Choose coverage and budget. |
+| `--tier quick\|standard\|deep\|exhaustive` | Choose coverage and budget. |
 | `--max-hours N` | Override wallclock cap within seam limits. |
 | `--no-fault` | Skip fault-injection phase. |
 | `--target <name>` | Limit to a seam-defined target app or demo. |
@@ -465,6 +465,14 @@ follow the Safety Rules hostile-payload wrapping requirement.
 - `metrics/`: raw load, heap, RSS, FD, browser, and diff artifacts.
 - `payloads/`: current-run synthetic canary seeds and inert hostile-payload
   fixtures, if written.
+
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. When no user action remains, use `Action needed: none.` and
+`Next: Archive this task.` When a report, rerun, cleanup, or other decision is
+required, keep `Action needed:` separate, name the smallest exact action, and
+state whether the user should reply here or start a new task. Do not imply that
+workspace deletion, archival, issue creation, labeling, or a rerun happened
+unless its separate approval and execution gates passed.
 
 Print a concise handoff with counts by severity and concern, top titles,
 workspace path, exercised features, wallclock used, and suggested rerun focus.

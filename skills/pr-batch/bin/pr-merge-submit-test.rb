@@ -18,10 +18,11 @@ class PrMergeSubmitTest < Minitest::Test
   HEAD_SHA = "a" * 40
   NUMERIC_SHA = "1" * 40
   MOVED_SHA = "b" * 40
+  BASE_SHA = Open3.capture2("git", "rev-parse", "HEAD", chdir: File.expand_path("../../..", __dir__)).first.strip
   HOST = "ghe.example:8443"
   ADVANCED_BASE_SHA = "d" * 40
   MERGE_COMMIT_SHA = "c" * 40
-  SAFE_TMP_PARENT = File.expand_path("../../..", __dir__)
+  SOURCE_REPO_POLICY = Object.new.freeze
 
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
   # not just against the hang it is meant to catch.
@@ -40,34 +41,929 @@ class PrMergeSubmitTest < Minitest::Test
     enqueue_timeout_unknown enqueue_timeout_merged
   ].freeze
   MUTATION_TIMEOUT_GH_SECONDS = "2"
+  GUARD_TIMEOUT_GH_SECONDS = "2"
   # The remaining timeout modes hang their only gh call, so a startup-induced
   # timeout is the same observable event as the hang under test. They keep the
   # tight deadline that makes their elapsed-time bounds meaningful.
   SOLE_CALL_TIMEOUT_GH_SECONDS = "0.1"
+  # metadata_timeout_descendant is a sole-call hang too, but unlike the group
+  # above its assertion cares what happens *inside* the hang: whether the stub
+  # reached its fork() before termination. A tight deadline there makes the
+  # test vacuous (#238) -- the stub is usually killed before it forks. 1s is
+  # ~10x the warm stub's measured max (0.101s), and the descendant deliberately
+  # ignores TERM, so termination also consumes a full 1s TERM grace before
+  # escalating to KILL -- leaving the total comfortably below the stub's
+  # deliberate 30s sleep.
+  DESCENDANT_TIMEOUT_GH_SECONDS = "1"
   NO_TIMEOUT_GH_SECONDS = "60"
   # Attempts allowed for a mutation-timeout scenario whose setup query raced.
   MUTATION_TIMEOUT_ATTEMPTS = 3
+  # Attempts allowed for the descendant-timeout scenario whose stub never
+  # reached its fork() before the deadline (an empty PID file: a precondition
+  # miss, per #230, not a product failure).
+  DESCENDANT_TIMEOUT_ATTEMPTS = 3
+  QUEUE_DISABLED_ERROR = "queue-disabled submission is unsupported by the trusted-base " \
+                         "merge_submission policy; configure mode: direct, configure an explicit " \
+                         "repository-owned guarded-direct exception, or enable the repository merge queue"
+  DIRECT_QUEUE_ERROR = "live repository merge queue is enabled but merge_submission mode is direct; " \
+                       "configure merge_submission.mode: merge_queue_only (or " \
+                       "merge_queue_or_guarded_direct) to opt into Merge Queue"
 
-  def test_open_queue_disabled_pr_fails_closed_before_direct_merge_mutation
-    result, log = run_cli(mode: "direct")
+  def test_queue_disabled_pr_without_merge_submission_uses_portable_direct_default
+    trusted_policy = nil
+    result, log, guard_log = run_cli(
+      mode: "direct",
+      merge_submission: nil,
+      trusted_policy_observer: ->(policy) { trusted_policy = policy }
+    )
 
-    assert_equal 2, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "direct merge is unsupported"
-    assert_includes result.fetch(:stderr), "merge queue"
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "direct", payload.fetch("submission")
+    assert_equal "squash", payload.fetch("method")
+    assert_equal false, payload.fetch("atomic_expected_base_oid")
+    assert_equal({ "base_branch" => "main" }, trusted_policy)
+    refute trusted_policy.key?("merge_submission")
+    refute_includes log, "enqueuePullRequest"
+    assert_includes log, "mergePullRequest"
+    assert_includes log, "expectedHeadOid="
+    assert_empty guard_log
+  end
+
+  def test_replays_the_receipt_bound_current_integration_candidate_before_submission
+    accepted, accepted_log, = run_cli(
+      mode: "current_integration_match",
+      receipt_mode: :reused_integration
+    )
+    rejected, rejected_log, = run_cli(
+      mode: "current_integration_mismatch",
+      receipt_mode: :reused_integration
+    )
+
+    assert accepted.fetch(:status).success?, accepted.fetch(:stderr)
+    assert_includes accepted_log, "mergePullRequest"
+    assert_equal 1, rejected.fetch(:status).exitstatus
+    assert_includes rejected.fetch(:stderr), "live current integration candidate no longer matches"
+    refute_includes rejected_log, "mergePullRequest"
+  end
+
+  def test_provider_candidate_oid_is_informational_when_tree_and_parents_match
+    result, log, = run_cli(
+      mode: "current_integration_regenerated_oid",
+      receipt_mode: :reused_integration
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_reused_integration_uses_independent_live_base_not_mutable_pr_base_ref_oid
+    accepted, accepted_log, = run_cli(
+      mode: "current_integration_match",
+      receipt_mode: :reused_integration
+    )
+    refreshed_provider_base, refreshed_provider_log, = run_cli(
+      mode: "current_integration_recorded_base_mismatch",
+      receipt_mode: :reused_integration
+    )
+    moved_live_base, moved_live_log, = run_cli(
+      mode: "current_integration_live_base_mismatch",
+      receipt_mode: :reused_integration
+    )
+
+    assert accepted.fetch(:status).success?, accepted.fetch(:stderr)
+    assert_includes accepted_log, "mergePullRequest"
+    assert refreshed_provider_base.fetch(:status).success?, refreshed_provider_base.fetch(:stderr)
+    assert_includes refreshed_provider_log, "mergePullRequest"
+    assert_includes moved_live_base.fetch(:stderr), "receipt base SHA mismatch"
+    refute_includes moved_live_log, "mergePullRequest"
+  end
+
+  def test_replays_a_trusted_local_merge_tree_candidate
+    Dir.mktmpdir("pr-merge-submit-local-integration") do |root|
+      run_git!(root, "init", "-q", "-b", "main")
+      File.write(File.join(root, "README.md"), "base\n")
+      run_git!(root, "add", ".")
+      run_git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base")
+      recorded_base = run_git!(root, "rev-parse", "HEAD").strip
+      run_git!(root, "switch", "-qc", "feature")
+      File.write(File.join(root, "feature.rb"), "feature\n")
+      run_git!(root, "add", ".")
+      run_git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "feature")
+      head = run_git!(root, "rev-parse", "HEAD").strip
+      run_git!(root, "switch", "-q", "main")
+      FileUtils.mkdir_p(File.join(root, "docs"))
+      File.write(File.join(root, "docs/guide.md"), "docs\n")
+      run_git!(root, "add", ".")
+      run_git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "docs")
+      current_base = run_git!(root, "rev-parse", "HEAD").strip
+      candidate = CurrentIntegrationEvidence.local_candidate(root, current_base, head)
+      integration = {
+        "contract" => "current-integration-evidence",
+        "version" => 1,
+        "repository" => "owner/repo",
+        "pr" => 42,
+        "recorded_base_sha" => recorded_base,
+        "head_sha" => head,
+        "current_base" => { "ref" => "main", "sha" => current_base },
+        "patch_identity" => "8" * 64,
+        "candidate" => candidate,
+        "base_delta" => { "paths" => ["docs/guide.md"] },
+        "reuse" => { "decision" => "reuse-exact-head", "reasons" => ["base-delta-reuse-safe"] },
+        "telemetry" => {
+          "validator_replays_avoided" => 1,
+          "review_replays_avoided" => 1,
+          "elapsed_seconds_saved" => nil
+        }
+      }
+      runner = PrMergeSubmit::Runner.new
+      runner.instance_variable_set(:@repo_root, root)
+
+      runner.send(:validate_current_integration_live!, {}, integration)
+      integration.fetch("candidate")["tree_oid"] = "f" * 40
+      error = assert_raises(PrMergeSubmit::Error) do
+        runner.send(:validate_current_integration_live!, {}, integration)
+      end
+      assert_includes error.message, "no longer matches"
+    end
+  end
+
+  def test_selected_hosted_ci_non_success_receipts_block_queue_and_guarded_direct
+    cases = %i[
+      selected_hosted_missing
+      selected_hosted_cancelled
+      selected_hosted_failed
+      selected_hosted_nonterminal
+    ]
+    routes = {
+      "queue" => { mode: "queue", merge_submission: SOURCE_REPO_POLICY },
+      "guarded-direct" => {
+        mode: "guard_success", merge_submission: guarded_direct_policy
+      }
+    }
+
+    unexpectedly_mutated = routes.each_with_object([]) do |(route, route_options), failures|
+      cases.each do |receipt_mode|
+        result, log, guard_log = run_cli(
+          **route_options, receipt_mode:
+        )
+        failures << "#{route}/#{receipt_mode}" if
+          result.fetch(:status).success? || !log.empty? || !guard_log.empty?
+      end
+    end
+
+    assert_empty unexpectedly_mutated
+  end
+
+  def test_selected_hosted_ci_success_receipt_replays_for_queue_and_guarded_direct
+    queue_result, queue_log = run_cli(
+      mode: "queue",
+      merge_submission: merge_queue_policy,
+      receipt_mode: :selected_hosted_success
+    )
+    guard_result, guard_log, guard_command_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      receipt_mode: :selected_hosted_success
+    )
+
+    assert queue_result.fetch(:status).success?, queue_result.fetch(:stderr)
+    assert_includes queue_log, "enqueuePullRequest"
+    assert guard_result.fetch(:status).success?, guard_result.fetch(:stderr)
+    refute_empty guard_log
+    refute_empty guard_command_log
+  end
+
+  def test_explicit_queue_only_policy_also_refuses_queue_disabled_submission
+    result, log, guard_log = run_cli(
+      mode: "direct",
+      merge_submission: { "mode" => "merge_queue_only" }
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal "Error: #{QUEUE_DISABLED_ERROR}\n", result.fetch(:stderr)
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_only_a_missing_trusted_base_policy_blob_uses_the_portable_default
+    missing_result, missing_log, = run_cli(
+      mode: "direct", merge_submission: nil, policy_fixture: :missing
+    )
+    assert missing_result.fetch(:status).success?, missing_result.fetch(:stderr)
+    assert_equal "direct", JSON.parse(missing_result.fetch(:stdout)).fetch("submission")
+    assert_includes missing_log, "mergePullRequest"
+
+    malformed_result, malformed_log, = run_cli(
+      mode: "direct", merge_submission: nil, policy_fixture: :malformed
+    )
+    assert_equal 1, malformed_result.fetch(:status).exitstatus
+    assert_includes malformed_result.fetch(:stderr),
+                    "Error: trusted-base merge-submission policy is invalid YAML:"
+    assert_empty malformed_log
+
+    invalid_base_result, invalid_base_log, = run_cli(
+      mode: "direct", merge_submission: nil, receipt_base_sha: "f" * 40
+    )
+    assert_equal 1, invalid_base_result.fetch(:status).exitstatus
+    assert_includes invalid_base_result.fetch(:stderr),
+                    "Error: trusted-base merge-submission policy is unavailable:"
+    assert_empty invalid_base_log
+  end
+
+  def test_direct_mode_rejects_a_queue_enabled_repository_before_mutation
+    result, log, guard_log = run_cli(
+      mode: "queue", merge_submission: { "mode" => "direct" }
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal "Error: #{DIRECT_QUEUE_ERROR}\n", result.fetch(:stderr)
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_direct_mode_rechecks_queue_control_immediately_before_mutation
+    result, log, = run_cli(mode: "direct_queue_race")
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_equal "Error: #{DIRECT_QUEUE_ERROR}\n", result.fetch(:stderr)
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
   end
 
+  def test_ambiguous_direct_transport_reconciles_only_an_exact_merge
+    merged_result, merged_log, = run_cli(mode: "direct_transport_merged")
+
+    assert merged_result.fetch(:status).success?, merged_result.fetch(:stderr)
+    merged_payload = JSON.parse(merged_result.fetch(:stdout))
+    assert_equal "already_merged", merged_payload.fetch("submission")
+    assert_equal "direct", merged_payload.fetch("attempted_submission")
+    assert_equal true, merged_payload.fetch("reconciled_after_failure")
+    assert_includes merged_log, "mergePullRequest"
+
+    unknown_result, unknown_log, = run_cli(mode: "direct_transport_unknown")
+    assert_equal 2, unknown_result.fetch(:status).exitstatus
+    assert_includes unknown_result.fetch(:stderr), "do not retry blindly"
+    assert_includes unknown_log, "mergePullRequest"
+  end
+
+  def test_direct_graphql_errors_reconcile_an_exact_merge
+    result, log, = run_cli(mode: "direct_graphql_error_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_unknown_reconciled_merge(
+      JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
+    )
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_direct_graphql_errors_pin_open_queue_configuration_failures
+    %w[direct_graphql_error_queue_enabled direct_graphql_error_in_queue].each do |mode|
+      result, log, = run_cli(mode:)
+
+      assert_equal 1, result.fetch(:status).exitstatus, mode
+      assert_equal "Error: #{DIRECT_QUEUE_ERROR}\n", result.fetch(:stderr), mode
+      assert_includes log, "mergePullRequest", mode
+    end
+  end
+
+  def test_direct_graphql_errors_with_unresolved_state_are_unknown
+    result, log, = run_cli(mode: "direct_graphql_error_unknown")
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "direct merge submission outcome could not be proven after GraphQL errors"
+    assert_includes result.fetch(:stderr), "do not retry blindly"
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_invalid_direct_merge_response_reconciles_an_exact_merge
+    result, log, = run_cli(mode: "direct_response_invalid_merged")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_unknown_reconciled_merge(
+      JSON.parse(result.fetch(:stdout)), attempted_submission: "direct"
+    )
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_invalid_direct_merge_response_with_unresolved_state_is_unknown
+    result, log, = run_cli(mode: "direct_response_invalid_unknown")
+
+    assert_equal 2, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "direct merge response validation outcome could not be proven"
+    assert_includes result.fetch(:stderr), "do not retry blindly"
+    assert_includes log, "mergePullRequest"
+  end
+
+  def test_guarded_direct_delegates_with_fixed_argv_and_reconciles_exact_merge
+    result, log, guard_log, _attacker_log, fixture_head = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      body: "Detailed merge body"
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "guarded_direct", payload.fetch("submission")
+    assert_equal "squash", payload.fetch("method")
+    assert_equal false, payload.fetch("atomic_expected_base_oid")
+    assert_equal true, payload.dig("non_atomic_base", "acknowledged")
+    assert_equal ".agents/bin/merge-pr-after-checks", payload.dig("guard", "path")
+    assert_match(/\A[0-9a-f]{64}\z/, payload.dig("guard", "sha256"))
+    assert_equal true, payload.fetch("reconciled_after_guard")
+    assert_equal MERGE_COMMIT_SHA, payload.fetch("merge_commit")
+    refute_includes log, "enqueuePullRequest"
+    refute_includes log, "mergePullRequest"
+    argv = guard_log.lines.map(&:chomp)
+    assert_equal [
+      "--repo", "owner/repo", "--host", HOST, "--pr", "42",
+      "--expected-head", fixture_head, "--expected-base", "main",
+      "--expected-base-sha", payload.dig("guard", "trusted_base_sha"),
+      "--method", "squash"
+    ], argv.first(14)
+    assert_equal "--merge-assurance-receipt", argv[14]
+    assert_equal File.absolute_path(argv[15]), argv[15]
+    assert_equal [
+      "--subject", "Fix the thing (#42)", "--body", "Detailed merge body"
+    ], argv.last(4)
+  end
+
+  def test_guard_executes_identity_bound_bytes_when_live_path_is_swapped_after_validation
+    result, log, guard_log, attacker_log, fixture_head = run_cli(
+      mode: "guard_path_swap",
+      merge_submission: guarded_direct_policy
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "guarded_direct", payload.fetch("submission")
+    assert_equal Digest::SHA256.hexdigest(fake_guard), payload.dig("guard", "sha256")
+    assert_equal ".agents/bin/merge-pr-after-checks", payload.dig("guard", "path")
+    assert_includes guard_log, "--expected-head\n#{fixture_head}"
+    assert_empty attacker_log
+    refute_includes log, "mergePullRequest"
+  end
+
+  def test_guard_timeout_and_interrupt_are_unknown_and_reconciled
+    timeout_result, timeout_log, = run_cli(
+      mode: "guard_timeout",
+      merge_submission: guarded_direct_policy,
+      guard_timeout_seconds: "0.1"
+    )
+
+    assert_equal 2, timeout_result.fetch(:status).exitstatus
+    assert_match(
+      /guarded-direct executable (?:timed out|process group did not exit after forced termination)/,
+      timeout_result.fetch(:stderr)
+    )
+    assert_includes timeout_result.fetch(:stderr), "do not retry blindly"
+    assert_equal(3, timeout_log.lines.count { |line| line.include?("number=42") })
+
+    interrupt_result, interrupt_log, interrupt_guard_log = run_cli(
+      mode: "guard_interrupt",
+      merge_submission: guarded_direct_policy,
+      interrupt_guard: true
+    )
+
+    assert_equal 2, interrupt_result.fetch(:status).exitstatus
+    assert_match(
+      /guarded-direct executable (?:was interrupted by SIGINT|process group did not exit after forced termination)/,
+      interrupt_result.fetch(:stderr)
+    )
+    assert_includes interrupt_result.fetch(:stderr), "do not retry blindly"
+    assert_equal(3, interrupt_log.lines.count { |line| line.include?("number=42") })
+    refute_empty interrupt_guard_log
+  end
+
+  def test_hichee_style_queue_disabled_master_replay_uses_guarded_direct
+    result, _log, guard_log, attacker_log, fixture_head = run_cli(
+      mode: "hichee_replay",
+      base: "master",
+      expected_base: "master",
+      repo: "shakacode/hichee",
+      merge_submission: guarded_direct_policy(
+        rationale: "HiChee owns a checks-and-head-validating direct squash wrapper."
+      ),
+      guard_fixture: :delegating
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "guarded_direct", payload.fetch("submission")
+    assert_equal "master", payload.fetch("expected_base")
+    assert_equal "shakacode/hichee", payload.fetch("repo")
+    assert_includes guard_log, "shakacode/hichee"
+    assert_includes guard_log, "master"
+    assert_includes guard_log, "delegated trusted-base dependency"
+    assert_includes guard_log, "\nHEAD\n#{payload.dig('guard', 'trusted_base_sha')}\n"
+    assert_includes guard_log, fixture_head
+    assert_empty attacker_log
+  end
+
+  def test_guarded_direct_never_executes_a_pr_head_secondary_dependency
+    result, _log, guard_log, attacker_log, fixture_head = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :delegating
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes guard_log, "delegated trusted-base dependency"
+    assert_includes guard_log, fixture_head
+    assert_empty attacker_log
+  end
+
+  def test_private_guard_git_head_cannot_read_pr_tree_bytes
+    result, _log, guard_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :delegating
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes guard_log, "delegated trusted-base dependency"
+    refute_includes guard_log, "PR-only dependency executed"
+  end
+
+  def test_guard_interpreter_ignores_checkout_controlled_path
+    result, _log, guard_log, attacker_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      interpreter_attack: true
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "/usr/bin/env ruby", payload.dig("guard", "interpreter", "requested")
+    assert_equal File.realpath(RbConfig.ruby), payload.dig("guard", "interpreter", "path")
+    assert_match(/\A[0-9a-f]{64}\z/, payload.dig("guard", "interpreter", "sha256"))
+    assert_empty attacker_log
+    refute_empty guard_log
+  end
+
+  def test_guard_environment_ignores_checkout_controlled_bash_env
+    result, _log, guard_log, attacker_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :bash_executable,
+      bash_env_attack: true
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_empty attacker_log
+    refute_empty guard_log
+  end
+
+  def test_guard_rejects_an_absolute_interpreter_inside_the_pr_checkout
+    result, _log, guard_log, attacker_log = run_cli(
+      mode: "guard_success",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :checkout_interpreter
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "interpreter must be outside the consumer repository"
+    assert_empty attacker_log
+    assert_empty guard_log
+  end
+
+  def test_guard_failure_ambiguous_state_and_head_movement_are_unknown
+    {
+      "guard_failure" => "guard failed",
+      "guard_failure_merged" => "guard failed",
+      "guard_ambiguous" => "not an exact terminal merge",
+      "guard_head_moved" => "PR head moved"
+    }.each do |mode, detail|
+      result, log, guard_log = run_cli(mode:, merge_submission: guarded_direct_policy)
+
+      assert_equal 2, result.fetch(:status).exitstatus, mode
+      assert_includes result.fetch(:stderr), detail, mode
+      assert_includes result.fetch(:stderr), "do not retry blindly", mode
+      refute_includes log, "enqueuePullRequest", mode
+      refute_empty guard_log, mode
+    end
+  end
+
+  def test_malformed_or_untrusted_base_guard_configuration_stops_before_github
+    cases = {
+      "unknown mode" => [{ "mode" => "unknown" }, :executable],
+      "missing guard" => [guarded_direct_policy, :missing],
+      "non-executable guard" => [guarded_direct_policy, :non_executable]
+    }
+    cases.each do |label, (seam, guard_fixture)|
+      result, log, guard_log = run_cli(
+        mode: "guard_ambiguous", merge_submission: seam, guard_fixture:
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, label
+      assert_includes result.fetch(:stderr), label.include?("mode") ? "mode is invalid" : "guarded-direct executable", label
+      assert_empty log, label
+      assert_empty guard_log, label
+    end
+  end
+
+  def test_live_guard_drift_stops_open_direct_submission_before_mutation
+    result, log, guard_log = run_cli(
+      mode: "guard_ambiguous",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :modified_after_commit
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "guarded-direct executable does not match the trusted-base blob"
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_guarded_direct_rejects_an_absolute_interpreter_in_the_checkout
+    result, log, guard_log = run_cli(
+      mode: "guard_ambiguous",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :launch_eacces
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr),
+                    "trusted-base guarded-direct interpreter must be outside the consumer repository"
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_guarded_direct_rejects_a_missing_absolute_interpreter
+    result, log, guard_log = run_cli(
+      mode: "guard_ambiguous",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :launch_enoent
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "trusted-base guarded-direct interpreter is unavailable"
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_private_repository_cleanup_failure_after_guard_launch_is_reconciled
+    runner = PrMergeSubmit::Runner.allocate
+    runner.define_singleton_method(:remove_private_guard_directory!) do |_directory|
+      raise Errno::EACCES, "cleanup denied"
+    end
+    successful_status = Object.new
+    successful_status.define_singleton_method(:success?) { true }
+
+    stdout, stderr, status = runner.send(
+      :cleanup_private_guard_directory!,
+      "/private/guard", ["guard stdout", "guard stderr", successful_status]
+    )
+
+    assert_equal "guard stdout", stdout
+    assert_includes stderr, "guard stderr"
+    assert_includes stderr, "private guarded-direct repository cleanup failed"
+    refute status.success?
+  end
+
+  def test_forced_termination_unknown_is_returned_for_exact_reconciliation
+    runner = PrMergeSubmit::Runner.allocate
+    runner.instance_variable_set(
+      :@merge_assurance_receipt,
+      { "bindings" => { "base" => { "sha" => BASE_SHA } } }
+    )
+    runner.define_singleton_method(:materialize_trusted_base_repository!) { |directory| directory }
+    runner.define_singleton_method(:guarded_direct_launch_command!) do |_bytes, executable|
+      [[executable], nil]
+    end
+    runner.define_singleton_method(:guard_timeout_seconds) { 0.1 }
+    runner.define_singleton_method(:run_process) do |*_args, **_kwargs|
+      raise PrMergeSubmit::UnknownOutcome,
+            "guarded-direct executable process group did not exit after forced termination; " \
+            "remote outcome is UNKNOWN"
+    end
+
+    _stdout, stderr, status = runner.send(
+      :run_guard,
+      { "method" => "squash", "trusted_bytes" => fake_guard, "identity" => {} },
+      {
+        repo: "owner/repo", host: HOST, pr: 42, expected_head: HEAD_SHA,
+        expected_base: "main", method: "squash",
+        merge_assurance_receipt: "/tmp/receipt.json", subject: nil, body: nil
+      }
+    )
+
+    assert_includes stderr, "process group did not exit after forced termination"
+    refute status.success?
+  end
+
+  def test_guarded_direct_ignores_unneeded_head_branch_metadata
+    [:missing, "bad..branch"].each do |head_ref_name|
+      result, _log, guard_log = run_cli(
+        mode: "guard_success",
+        merge_submission: guarded_direct_policy,
+        head_ref_name:
+      )
+
+      assert result.fetch(:status).success?, result.fetch(:stderr)
+      refute_empty guard_log
+    end
+  end
+
+  def test_guarded_direct_rejects_shebangless_text_before_spawn
+    runner = PrMergeSubmit::Runner.new
+
+    error = assert_raises(PrMergeSubmit::Error) do
+      runner.send(:guarded_direct_launch_command!, "echo attacker\n", "/tmp/guard")
+    end
+
+    assert_equal(
+      "trusted-base guarded-direct executable must have a supported explicit shebang",
+      error.message
+    )
+  end
+
+  def test_guarded_direct_rejects_all_shebangless_native_magic_prefixes
+    runner = PrMergeSubmit::Runner.new
+    [
+      "\x7FELF", "\xFE\xED\xFA\xCE", "\xCE\xFA\xED\xFE",
+      "\xCA\xFE\xBA\xBE", "MZ", "", "echo native\n"
+    ].each do |bytes|
+      assert_raises(PrMergeSubmit::Error) do
+        runner.send(:guarded_direct_launch_command!, "#{bytes}payload".b, "/tmp/guard")
+      end
+    end
+  end
+
+  def test_run_gh_ignores_checkout_controlled_path_shim
+    original_path = ENV.fetch("PATH")
+    runner = PrMergeSubmit::Runner.new
+
+    Dir.mktmpdir("pr-merge-submit-gh-shim") do |dir|
+      marker = File.join(dir, "gh-shim-ran")
+      File.write(
+        File.join(dir, "gh"),
+        "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'ran')\n"
+      )
+      FileUtils.chmod(0o755, File.join(dir, "gh"))
+      ENV["PATH"] = dir
+      statuses = [false, true].map do |mutation|
+        _stdout, _stderr, status = runner.send(
+          :run_gh, "--version", host: HOST, mutation:
+        )
+        status
+      end
+
+      assert statuses.all?(&:success?)
+      refute_path_exists marker
+    end
+  ensure
+    ENV["PATH"] = original_path
+  end
+
+  def test_run_gh_uses_closed_environment_with_only_supported_nonempty_tokens
+    original_values = {
+      "GH_CONFIG_DIR" => ENV["GH_CONFIG_DIR"],
+      "GH_DEBUG" => ENV["GH_DEBUG"],
+      "GH_REPO" => ENV["GH_REPO"],
+      "GIT_DIR" => ENV["GIT_DIR"],
+      "GH_TOKEN" => ENV["GH_TOKEN"],
+      "GITHUB_TOKEN" => ENV["GITHUB_TOKEN"]
+    }
+    Dir.mktmpdir("pr-merge-submit-gh-environment") do |dir|
+      capture = File.join(dir, "environment.json")
+      gh = File.join(dir, "trusted-gh")
+      File.write(
+        gh,
+        "#!#{RbConfig.ruby}\nrequire 'json'\nFile.write(#{capture.inspect}, JSON.generate(ENV.to_h))\n"
+      )
+      FileUtils.chmod(0o755, gh)
+      ENV.update(
+        "GH_CONFIG_DIR" => File.join(dir, "checkout-config"),
+        "GH_DEBUG" => "api",
+        "GH_REPO" => "attacker/repo",
+        "GIT_DIR" => File.join(dir, "attacker-git-dir"),
+        "GH_TOKEN" => "supported-token",
+        "GITHUB_TOKEN" => ""
+      )
+      runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => gh })
+
+      _stdout, stderr, status = runner.send(:run_gh, "--version", host: HOST)
+
+      assert status.success?, stderr
+      environment = JSON.parse(File.read(capture))
+      assert_equal "supported-token", environment["GH_TOKEN"]
+      refute environment.key?("GITHUB_TOKEN")
+      %w[GH_CONFIG_DIR GH_DEBUG GH_REPO GIT_DIR].each do |name|
+        refute environment.key?(name), name
+      end
+    end
+  ensure
+    original_values&.each do |name, value|
+      value ? ENV[name] = value : ENV.delete(name)
+    end
+  end
+
+  def test_git_capture_ignores_checkout_controlled_path_shim
+    runner = PrMergeSubmit::Runner.new
+
+    Dir.mktmpdir("pr-merge-submit-git-shim") do |dir|
+      marker = File.join(dir, "git-shim-ran")
+      File.write(
+        File.join(dir, "git"),
+        "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'ran')\n"
+      )
+      FileUtils.chmod(0o755, File.join(dir, "git"))
+      original_path = ENV.fetch("PATH")
+      ENV["PATH"] = dir
+      _stdout, _stderr, status = runner.send(:git_capture, "--version", chdir: dir)
+
+      assert status.success?
+      refute_path_exists marker
+    ensure
+      ENV["PATH"] = original_path
+    end
+  end
+
+  def test_first_git_capture_rejects_a_resolved_tool_inside_the_candidate_repository
+    Dir.mktmpdir("pr-merge-submit-repository-git") do |repo_root|
+      marker = File.join(repo_root, "git-ran")
+      git = File.join(repo_root, "git")
+      File.write(git, "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'ran')\n")
+      FileUtils.chmod(0o755, git)
+      runner = PrMergeSubmit::Runner.new(system_tools: { "git" => git })
+
+      error = assert_raises(PrMergeSubmit::Error) do
+        runner.send(:git_capture, "--version", chdir: repo_root)
+      end
+
+      assert_equal "git must resolve outside the consumer repository", error.message
+      refute_path_exists marker
+    end
+  end
+
+  def test_git_capture_ignores_ambient_git_injection_variables
+    repo_root = File.expand_path("../../..", __dir__)
+    runner = PrMergeSubmit::Runner.new
+    runner.instance_variable_set(:@repo_root, repo_root)
+    original_git_dir = ENV["GIT_DIR"]
+    ENV["GIT_DIR"] = File.join(repo_root, "checkout-controlled-git-dir")
+
+    stdout, stderr, status = runner.send(
+      :git_capture, "-C", repo_root, "rev-parse", "HEAD", chdir: repo_root
+    )
+
+    assert status.success?, stderr
+    assert_match(/\A[0-9a-f]{40}\n\z/, stdout)
+  ensure
+    original_git_dir ? ENV["GIT_DIR"] = original_git_dir : ENV.delete("GIT_DIR")
+  end
+
+  def test_missing_local_account_fails_with_deterministic_submitter_error
+    runner = PrMergeSubmit::Runner.new
+    original_getpwuid = Etc.method(:getpwuid)
+    Etc.singleton_class.define_method(:getpwuid) { |_uid| raise ArgumentError, "can't find user" }
+
+    error = assert_raises(PrMergeSubmit::Error) do
+      runner.send(:guarded_direct_environment, host: HOST, repo: "owner/repo")
+    end
+
+    assert_equal "local account identity is unavailable for uid #{Process.uid}", error.message
+  ensure
+    Etc.singleton_class.define_method(:getpwuid, original_getpwuid)
+  end
+
+  def test_git_and_gh_spawn_races_use_deterministic_submitter_errors
+    runner = PrMergeSubmit::Runner.new
+    runner.define_singleton_method(:resolve_system_tool!) { |name, **| "/usr/bin/#{name}" }
+
+    original_capture3 = Open3.method(:capture3)
+    Open3.singleton_class.define_method(:capture3) { |*| raise Errno::EACCES, "git disappeared" }
+    git_error = assert_raises(PrMergeSubmit::Error) do
+      runner.send(:git_capture, "--version", chdir: Dir.pwd)
+    end
+    assert_includes git_error.message, "git could not be launched after trusted resolution"
+    Open3.singleton_class.define_method(:capture3, original_capture3)
+
+    runner.define_singleton_method(:run_process) { |*_, **| raise Errno::ENOENT, "gh disappeared" }
+    gh_error = assert_raises(PrMergeSubmit::Error) do
+      runner.send(:run_gh, "--version", host: HOST)
+    end
+    assert_includes gh_error.message, "gh could not be launched after trusted resolution"
+  ensure
+    Open3.singleton_class.define_method(:capture3, original_capture3) if original_capture3
+  end
+
+  def test_unknown_guard_fixture_fails_closed
+    error = assert_raises(RuntimeError) do
+      run_cli(
+        mode: "guard_ambiguous",
+        merge_submission: guarded_direct_policy,
+        guard_fixture: :unknown
+      )
+    end
+
+    assert_equal "unknown guard fixture: :unknown", error.message
+  end
+
+  def test_guard_blob_oid_accepts_only_exact_sha1_or_sha256_lengths
+    runner = PrMergeSubmit::Runner.new
+
+    assert runner.send(:valid_git_blob_oid?, "a" * 40)
+    assert runner.send(:valid_git_blob_oid?, "b" * 64)
+    [0, 39, 41, 63, 65].each do |length|
+      refute runner.send(:valid_git_blob_oid?, "c" * length), length
+    end
+  end
+
+  def test_trusted_blob_returns_non_ascii_bytes_with_binary_encoding
+    runner = PrMergeSubmit::Runner.new
+    runner.instance_variable_set(:@repo_root, "/trusted/repo")
+    status = Object.new
+    status.define_singleton_method(:success?) { true }
+    trusted_bytes = "#!/bin/sh\n# snowman: \u2603\n"
+    runner.define_singleton_method(:git_capture) do |*_args, **_kwargs|
+      [trusted_bytes, "", status]
+    end
+
+    result = runner.send(:trusted_blob!, HEAD_SHA, ".agents/bin/guard", "test guard")
+
+    assert_equal trusted_bytes.b, result
+    assert_equal Encoding::BINARY, result.encoding
+  end
+
+  def test_trusted_base_merge_submission_rejects_closed_schema_violations
+    cases = [
+      { "mode" => "merge_queue_or_guarded_direct" },
+      guarded_direct_policy.tap do |seam|
+        seam["guarded_direct"]["non_atomic_base"]["acknowledged"] = false
+      end,
+      guarded_direct_policy(executable: ".agents/bin/merge-pr --force"),
+      guarded_direct_policy.tap do |seam|
+        seam["guarded_direct"]["shell"] = "bash -lc"
+      end
+    ]
+    cases.each do |seam|
+      result, log, guard_log = run_cli(
+        mode: "guard_ambiguous", merge_submission: seam
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, seam.inspect
+      assert_includes result.fetch(:stderr), "merge_submission", seam.inspect
+      assert_empty log, seam.inspect
+      assert_empty guard_log, seam.inspect
+    end
+  end
+
+  def test_non_string_merge_submission_keys_fail_closed_without_sort_exceptions
+    cases = [
+      guarded_direct_policy.merge(1 => "unexpected"),
+      guarded_direct_policy.tap { |seam| seam.fetch("guarded_direct")[1] = "unexpected" },
+      guarded_direct_policy.tap do |seam|
+        seam.dig("guarded_direct", "non_atomic_base")[1] = "unexpected"
+      end
+    ]
+
+    cases.each do |seam|
+      result, log, guard_log = run_cli(mode: "guard_ambiguous", merge_submission: seam)
+
+      assert_equal 1, result.fetch(:status).exitstatus, seam.inspect
+      assert_includes result.fetch(:stderr), "merge_submission", seam.inspect
+      refute_includes result.fetch(:stderr), "comparison of", seam.inspect
+      assert_empty log, seam.inspect
+      assert_empty guard_log, seam.inspect
+    end
+  end
+
+  def test_guarded_direct_requested_method_must_match_trusted_base_method
+    result, log, guard_log = run_cli(
+      mode: "guard_ambiguous",
+      merge_submission: guarded_direct_policy(method: "merge")
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr), "does not match trusted-base guarded-direct method"
+    assert_equal(1, log.lines.count { |line| line.include?("number=42") })
+    assert_empty guard_log
+  end
+
   def test_enabled_merge_queue_enqueues_the_same_head_without_a_direct_attempt
-    result, log = run_cli(mode: "queue")
+    result, log, guard_log = run_cli(
+      mode: "queue", merge_submission: guarded_direct_policy
+    )
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
     assert_equal "merge_queue", payload.fetch("submission")
+    assert_equal "squash", payload.fetch("direct_method_requested")
+    refute payload.key?("requested_method")
     assert_equal HEAD_SHA, payload.fetch("expected_head")
     assert_equal "main", payload.fetch("expected_base")
     assert_equal "MQE_1", payload.dig("merge_queue_entry", "id")
-    refute_includes log, "mergePullRequest"
+    assert_empty guard_log
     assert_includes log, "enqueuePullRequest"
     assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
     assert_includes log, "GH_HOST=#{HOST} api graphql"
@@ -75,46 +971,8 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "--auto"
   end
 
-  def test_submit_accepts_the_coordinator_established_git_and_gh_executables
-    result, log = run_cli(mode: "queue")
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    assert_includes log, "enqueuePullRequest"
-  end
-
-  def test_submit_replay_query_and_enqueue_children_ignore_hostile_environment
-    result, log = run_cli(mode: "queue", hostile_environment: true)
-
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    assert_includes log, "enqueuePullRequest"
-    assert result.fetch(:sentinel_markers).values.none?, result.fetch(:sentinel_markers).inspect
-    excluded = %w[
-      PATH RUBYOPT RUBYLIB RUBYGEMS_GEMDEPS GEM_HOME GEM_PATH BUNDLE_GEMFILE
-      GEMRC GEM_SPEC_CACHE BUNDLE_PATH BUNDLE_WITH RUBY_ENGINE RUBY_SENTINEL
-      LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH
-      DYLD_FRAMEWORK_PATH UNRELATED_SENTINEL
-    ]
-    result.fetch(:gh_environments).each do |environment|
-      assert_equal HOST, environment.fetch("GH_HOST")
-      assert_equal "allowed-token", environment.fetch("GH_TOKEN")
-      assert_equal "https://proxy.example", environment.fetch("HTTPS_PROXY")
-      assert_equal "C", environment.fetch("LC_ALL")
-      assert environment.fetch("GH_CONFIG_DIR").start_with?("/")
-      excluded.each { |key| refute environment.key?(key), key }
-    end
-    autonomous_environment = result.fetch(:autonomous_environment)
-    assert_equal HOST, autonomous_environment.fetch("GH_HOST")
-    assert_equal "allowed-token", autonomous_environment.fetch("GH_TOKEN")
-    assert_equal "https://proxy.example", autonomous_environment.fetch("HTTPS_PROXY")
-    assert_equal "C", autonomous_environment.fetch("LC_ALL")
-    assert autonomous_environment.fetch("GH_CONFIG_DIR").start_with?("/")
-    assert autonomous_environment.fetch("AUTONOMOUS_MERGE_GIT").start_with?("/")
-    assert autonomous_environment.fetch("AUTONOMOUS_MERGE_GH").start_with?("/")
-    excluded.each { |key| refute autonomous_environment.key?(key), key }
-  end
-
   def test_enqueue_graphql_failure_with_unresolved_state_is_unknown
-    result, log = run_cli(mode: "enqueue_graphql_error")
+    result, log = run_cli(mode: "enqueue_graphql_error", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "do not retry blindly"
@@ -150,7 +1008,7 @@ class PrMergeSubmitTest < Minitest::Test
   def test_repository_name_and_head_oid_are_sent_as_raw_strings
     result, log = run_cli(
       mode: "queue", repo: "owner/123", head: NUMERIC_SHA,
-      expected_head: NUMERIC_SHA
+      expected_head: NUMERIC_SHA, merge_submission: merge_queue_policy
     )
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
@@ -161,14 +1019,14 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_queue_response_without_entry_fails_closed
-    result, = run_cli(mode: "queue_missing_entry")
+    result, = run_cli(mode: "queue_missing_entry", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "outcome could not be proven"
   end
 
   def test_existing_exact_queue_entry_is_idempotent
-    result, log = run_cli(mode: "already_queued")
+    result, log = run_cli(mode: "already_queued", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
@@ -179,7 +1037,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_initial_queue_membership_with_a_merge_commit_is_not_exact_queue_proof
-    result, log = run_cli(mode: "already_queued_with_commit")
+    result, log = run_cli(mode: "already_queued_with_commit", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "lacks strict proof"
@@ -199,6 +1057,23 @@ class PrMergeSubmitTest < Minitest::Test
     refute payload.key?("method")
     refute_includes log, "mergePullRequest"
     refute_includes log, "enqueuePullRequest"
+  end
+
+  def test_existing_exact_merge_is_idempotent_when_the_live_guard_drifted
+    result, log, guard_log = run_cli(
+      mode: "already_merged",
+      merge_submission: guarded_direct_policy,
+      guard_fixture: :modified_after_commit
+    )
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    payload = JSON.parse(result.fetch(:stdout))
+    assert_equal "already_merged", payload.fetch("submission")
+    assert_equal true, payload.fetch("already_complete")
+    assert_equal(1, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
   end
 
   def test_existing_exact_merge_accepts_an_advanced_base_oid_before_old_base_guard
@@ -223,12 +1098,12 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
-  def test_base_advancement_never_qualifies_queued_states
+  def test_base_advancement_never_qualifies_open_queued_states
     {
       "enqueue_transport_queued_base_advanced" => "enqueuePullRequest",
       "queue_post_queued_base_advanced" => "enqueuePullRequest"
     }.each do |mode, attempted_mutation|
-      result, log = run_cli(mode:)
+      result, log = run_cli(mode:, merge_submission: merge_queue_policy)
 
       assert_equal 2, result.fetch(:status).exitstatus, mode
       assert_includes log, attempted_mutation, mode
@@ -237,7 +1112,10 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_initial_open_or_queued_base_advancement_stops_before_any_mutation
     %w[initial_open_base_advanced already_queued_base_advanced].each do |mode|
-      result, log = run_cli(mode:)
+      result, log = run_cli(
+        mode:,
+        merge_submission: queue_submission_mode?(mode) ? merge_queue_policy : SOURCE_REPO_POLICY
+      )
 
       refute result.fetch(:status).success?, mode
       assert_includes result.fetch(:stderr), "receipt base SHA mismatch", mode
@@ -247,7 +1125,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_enqueue_transport_failure_reconciles_an_exact_queue_entry
-    result, = run_cli(mode: "enqueue_transport_queued")
+    result, = run_cli(mode: "enqueue_transport_queued", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
@@ -256,7 +1134,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_enqueue_transport_failure_keeps_merge_provenance_unknown
-    result, = run_cli(mode: "enqueue_transport_merged")
+    result, = run_cli(mode: "enqueue_transport_merged", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_unknown_reconciled_merge(
@@ -265,7 +1143,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_enqueue_graphql_errors_keep_merge_provenance_unknown
-    result, = run_cli(mode: "enqueue_graphql_error_merged")
+    result, = run_cli(mode: "enqueue_graphql_error_merged", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_unknown_reconciled_merge(
@@ -274,7 +1152,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_valid_merge_proof_wins_when_queue_fields_coexist
-    result, = run_cli(mode: "enqueue_graphql_error_merged_queued")
+    result, = run_cli(mode: "enqueue_graphql_error_merged_queued", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
@@ -285,7 +1163,10 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_terminal_queue_fields_with_an_invalid_commit_prove_neither_outcome
     %w[UNKNOWN malformed].each do |merge_commit_oid|
-      result, = run_cli(mode: "enqueue_graphql_error_merged_queued", merge_commit_oid:)
+      result, = run_cli(
+        mode: "enqueue_graphql_error_merged_queued", merge_commit_oid:,
+        merge_submission: merge_queue_policy
+      )
 
       assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
       assert_includes result.fetch(:stderr), "outcome could not be proven", merge_commit_oid
@@ -297,7 +1178,7 @@ class PrMergeSubmitTest < Minitest::Test
       "enqueue_transport_queued_with_commit" => "enqueuePullRequest",
       "enqueue_graphql_error_queued_with_commit" => "enqueuePullRequest"
     }.each do |mode, attempted_mutation|
-      result, log = run_cli(mode:)
+      result, log = run_cli(mode:, merge_submission: merge_queue_policy)
 
       assert_equal 2, result.fetch(:status).exitstatus, mode
       assert_includes result.fetch(:stderr), "could not be proven", mode
@@ -306,14 +1187,14 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_successful_enqueue_response_preserves_queue_provenance_after_fast_merge
-    result, = run_cli(mode: "queue_fast_merged")
+    result, = run_cli(mode: "queue_fast_merged", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_reconciled_queue_merge(JSON.parse(result.fetch(:stdout)))
   end
 
   def test_fast_post_enqueue_merge_accepts_an_advanced_base_oid_before_old_base_guard
-    result, = run_cli(mode: "queue_fast_merged_base_advanced")
+    result, = run_cli(mode: "queue_fast_merged_base_advanced", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_reconciled_queue_merge(JSON.parse(result.fetch(:stdout)))
@@ -321,7 +1202,7 @@ class PrMergeSubmitTest < Minitest::Test
 
   def test_fast_post_enqueue_merge_requires_a_full_hex_merge_commit_oid
     ["", "malformed", "UNKNOWN"].each do |merge_commit_oid|
-      result, = run_cli(mode: "queue_fast_merged", merge_commit_oid:)
+      result, = run_cli(mode: "queue_fast_merged", merge_commit_oid:, merge_submission: merge_queue_policy)
 
       assert_equal 2, result.fetch(:status).exitstatus, merge_commit_oid
       assert_includes result.fetch(:stderr), "live membership could not be confirmed", merge_commit_oid
@@ -329,7 +1210,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_fast_post_enqueue_queue_with_a_merge_commit_is_not_exact_queue_proof
-    result, = run_cli(mode: "queue_post_queued_with_commit")
+    result, = run_cli(mode: "queue_post_queued_with_commit", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "live membership could not be confirmed"
@@ -349,16 +1230,53 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_timeout_kills_a_surviving_process_group_descendant
+    # An empty/missing PID file means the stub never reached its fork() before
+    # the deadline: a precondition miss (see DESCENDANT_TIMEOUT_GH_SECONDS),
+    # not a product failure, so retry it instead of reporting a misleading
+    # pass or orphan. A real orphan regression still fails, because there the
+    # stub does fork, records the descendant's pid, and the descendant
+    # survives termination. Mirrors
+    # stale-assignment-sweep-test.rb#test_timed_out_gh_call_terminates_its_process_group_with_no_orphan.
+    status = nil
+    stderr = nil
+    descendant_pid = nil
     started_at = nil
-    result, = run_cli(
-      mode: "metadata_timeout_descendant",
-      after_stub_warmup: -> { started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) }
-    )
+    DESCENDANT_TIMEOUT_ATTEMPTS.times do
+      started_at = nil
+      result, _log, _guard_log, _attacker_log, _fixture_head, descendant_pid = run_cli(
+        mode: "metadata_timeout_descendant",
+        after_stub_warmup: -> { started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC) }
+      )
+      status = result.fetch(:status)
+      stderr = result.fetch(:stderr)
+      break if descendant_pid
+    end
+
+    refute_nil descendant_pid,
+               "stub gh never recorded a spawned descendant pid in #{DESCENDANT_TIMEOUT_ATTEMPTS} " \
+               "attempts, so the process-group-descendant path was never exercised: #{stderr}"
 
     elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
-    assert_equal 1, result.fetch(:status).exitstatus
-    assert_includes result.fetch(:stderr), "timed out"
-    assert_operator elapsed, :<, 3
+    assert_equal 1, status.exitstatus
+    assert_includes stderr, "timed out"
+    # Both substrings come from the same literal on the :timed_out diagnostic
+    # path, so together they pin its exact shape without a clock. "timed out"
+    # is the stronger discriminator of the two: the :undead path raises
+    # UnknownOutcome before any diagnostic is built and warns a message
+    # containing neither substring, and the interrupt path emits
+    # "was terminated" without "timed out". Asserting both keeps the message
+    # from drifting into either neighbour.
+    assert_includes stderr, "was terminated"
+    # Loose sanity check, not the load-bearing assertion: well under the
+    # stub's deliberate 30s sleep (measured ~2.2-2.5s over 15 runs at load
+    # avg 11-14), so a pass still corroborates that termination was bounded
+    # rather than merely waiting out the sleep. The 30s stub / 10s bound gap
+    # (vs. the old 5s / 3.5s gap) makes this essentially load-insensitive; a
+    # genuine unbounded-termination regression now takes ~30s to surface
+    # instead of ~5s.
+    assert_operator elapsed, :<, 10
+    assert descendant_terminated?(descendant_pid),
+           "descendant #{descendant_pid} was orphaned instead of terminated with its process group"
   end
 
   def test_interrupt_is_forwarded_and_mutation_outcome_is_reconciled
@@ -431,7 +1349,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_non_object_enqueue_response_reconciles_an_exact_queue_entry
-    result, = run_cli(mode: "enqueue_non_object_response_queued")
+    result, = run_cli(mode: "enqueue_non_object_response_queued", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
@@ -448,7 +1366,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_post_enqueue_base_mismatch_reports_unknown_without_dequeue
-    result, log = run_cli(mode: "queue_base_race")
+    result, log = run_cli(mode: "queue_base_race", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "PR base moved"
@@ -457,7 +1375,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_post_enqueue_replacement_entry_is_not_dequeued
-    result, log = run_cli(mode: "queue_entry_replaced")
+    result, log = run_cli(mode: "queue_entry_replaced", merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "automatic queue cleanup is unsafe"
@@ -465,7 +1383,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_post_enqueue_exact_replacement_reports_the_live_queue_entry
-    result, log = run_cli(mode: "queue_entry_replaced_same_target")
+    result, log = run_cli(mode: "queue_entry_replaced_same_target", merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     payload = JSON.parse(result.fetch(:stdout))
@@ -499,7 +1417,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_authenticated_semantic_tracker_receipt_reaches_the_merge_mutation
-    result, log = run_cli(mode: "queue", receipt_mode: :semantic)
+    result, log = run_cli(mode: "queue", receipt_mode: :semantic, merge_submission: merge_queue_policy)
 
     assert result.fetch(:status).success?, result.fetch(:stderr)
     assert_includes log, "repos/owner/repo/issues/1"
@@ -532,24 +1450,6 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "enqueuePullRequest"
   end
 
-  def test_trusted_git_and_gh_flags_are_required_before_any_gh_call
-    cases = {
-      git: [false, true, "--trusted-git-executable is required"],
-      gh: [true, false, "--trusted-gh-executable is required"]
-    }
-    cases.each do |name, (include_git, include_gh, expected)|
-      result, log = run_cli(
-        mode: "direct",
-        include_trusted_git_executable: include_git,
-        include_trusted_gh_executable: include_gh
-      )
-
-      refute result.fetch(:status).success?, name
-      assert_includes result.fetch(:stderr), expected, name
-      assert_empty log, name
-    end
-  end
-
   def test_unavailable_autonomous_helper_result_stops_before_any_mutation
     result, log = run_cli(mode: "direct", receipt_mode: :autonomous_unavailable)
 
@@ -559,36 +1459,15 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "enqueuePullRequest"
   end
 
-  def test_submit_replays_autonomous_eligibility_and_rejects_mutated_receipt_evidence
-    result, log = run_cli(mode: "direct", receipt_mode: :autonomous_replay_mismatch)
-
-    refute result.fetch(:status).success?
-    assert_includes result.fetch(:stderr), "autonomous_result does not match trusted live replay"
-    refute_includes log, "mergePullRequest"
-    refute_includes log, "enqueuePullRequest"
-  end
-
-  def test_submit_binds_receipt_target_before_autonomous_replay
-    result, log = run_cli(mode: "direct", receipt_mode: :foreign_target)
-
-    refute result.fetch(:status).success?
-    assert_includes result.fetch(:stderr), "merge-assurance receipt host mismatch"
-    assert_empty result.fetch(:autonomous_environment)
-    assert_empty log
-  end
-
   def test_evidence_digest_and_envelope_binding_mismatches_stop_before_any_gh_call
     {
       digest_mismatch: "evidence digest mismatch",
-      binding_mismatch: "bindings do not match its evidence context",
-      authority_binding_mismatch: "bindings do not match its evidence context",
-      base_binding_mismatch: "bindings do not match its evidence context"
+      binding_mismatch: "bindings or accounting do not match"
     }.each do |receipt_mode, expected|
       result, log = run_cli(mode: "direct", receipt_mode:)
 
       refute result.fetch(:status).success?, receipt_mode
       assert_includes result.fetch(:stderr), expected, receipt_mode
-      assert_empty result.fetch(:autonomous_environment), receipt_mode
       assert_empty log, receipt_mode
     end
   end
@@ -618,7 +1497,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def test_live_base_sha_mismatch_stops_before_any_mutation
-    result, log = run_cli(mode: "direct", receipt_mode: :mismatched_base_sha)
+    result, log = run_cli(mode: "initial_open_base_advanced")
 
     refute result.fetch(:status).success?
     assert_includes result.fetch(:stderr), "receipt base SHA mismatch"
@@ -662,6 +1541,28 @@ class PrMergeSubmitTest < Minitest::Test
 
   private
 
+  def guarded_direct_policy(
+    executable: ".agents/bin/merge-pr-after-checks",
+    method: "squash",
+    rationale: "The repository guard revalidates policy immediately before direct squash."
+  )
+    {
+      "mode" => "merge_queue_or_guarded_direct",
+      "guarded_direct" => {
+        "executable" => executable,
+        "method" => method,
+        "non_atomic_base" => {
+          "acknowledged" => true,
+          "rationale" => rationale
+        }
+      }
+    }
+  end
+
+  def merge_queue_policy
+    { "mode" => "merge_queue_only" }
+  end
+
   def assert_reconciled_queue_merge(payload)
     assert_equal "merge_queue", payload.fetch("submission")
     assert_equal "repository_configured", payload.fetch("queue_method")
@@ -683,7 +1584,7 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def assert_retargeted_queue_entry_is_not_dequeued(mode)
-    result, log = run_cli(mode:)
+    result, log = run_cli(mode:, merge_submission: merge_queue_policy)
 
     assert_equal 2, result.fetch(:status).exitstatus
     assert_includes result.fetch(:stderr), "PR base moved"
@@ -707,7 +1608,7 @@ class PrMergeSubmitTest < Minitest::Test
   def run_mutation_timeout_cli(mode)
     result = nil
     MUTATION_TIMEOUT_ATTEMPTS.times do
-      result, = run_cli(mode:)
+      result, = run_cli(mode:, merge_submission: merge_queue_policy)
       break unless setup_query_timed_out?(result)
     end
 
@@ -732,6 +1633,7 @@ class PrMergeSubmitTest < Minitest::Test
     head: HEAD_SHA,
     expected_head: HEAD_SHA,
     base: "main",
+    expected_base: "main",
     url_host: HOST,
     include_expected_head: true,
     include_expected_base: true,
@@ -740,121 +1642,165 @@ class PrMergeSubmitTest < Minitest::Test
     include_merge_assurance_receipt: true,
     receipt_mode: :valid,
     after_stub_warmup: nil,
+    trusted_policy_observer: nil,
     merge_commit_oid: MERGE_COMMIT_SHA,
-    hostile_environment: false,
-    include_trusted_git_executable: true,
-    include_trusted_gh_executable: true
+    merge_submission: SOURCE_REPO_POLICY,
+    policy_fixture: :present,
+    receipt_base_sha: nil,
+    guard_fixture: :executable,
+    head_ref_name: "feature/test",
+    interpreter_attack: false,
+    bash_env_attack: false,
+    guard_timeout_seconds: nil,
+    interrupt_guard: false
   )
-    Dir.mktmpdir("pr-merge-submit-test", SAFE_TMP_PARENT) do |dir|
+    Dir.mktmpdir("pr-merge-submit-test") do |dir|
+      source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
+      if source_repo_policy
+        merge_submission = {
+          "mode" => queue_submission_mode?(mode) ? "merge_queue_only" : "direct"
+        }
+      end
+      repo_root, base_sha, fixture_head = if source_repo_policy
+                                            [File.expand_path("../../..", __dir__), BASE_SHA, HEAD_SHA]
+                                          else
+                                            prepare_consumer_repo(
+                                              dir, merge_submission:, policy_fixture:, guard_fixture:
+                                            )
+                                          end
+      if !source_repo_policy &&
+         (mode.start_with?("guard") || mode == "hichee_replay")
+        head = fixture_head
+        expected_head = fixture_head
+      end
+      trusted_policy_observer&.call(
+        YAML.safe_load(
+          run_git!(repo_root, "show", "#{base_sha}:.agents/agent-workflow.yml"),
+          permitted_classes: [], permitted_symbols: [], aliases: false
+        )
+      )
       log_path = File.join(dir, "gh.log")
+      guard_log_path = File.join(dir, "guard.log")
+      guard_marker_path = File.join(dir, "guard-called")
+      attacker_log_path = File.join(dir, "attacker-called")
+      descendant_pid_path = File.join(dir, "descendant.pid")
+      File.write(File.join(dir, "guard-mode"), mode)
+      File.write(
+        File.join(dir, "guard-live-path"),
+        File.join(repo_root, ".agents/bin/merge-pr-after-checks")
+      )
+      interpreter_attack_path = prepare_interpreter_attack(dir, attacker_log_path, guard_marker_path) if
+        interpreter_attack
+      bash_env_attack_path = prepare_bash_env_attack(dir, attacker_log_path) if bash_env_attack
       gh_path = File.join(dir, "gh")
       File.write(
         gh_path,
-        fake_gh(mode:, head:, base:, url_host:, repo:, merge_commit_oid:, log_path:)
+        fake_gh(
+          mode:, head:, base:, base_sha: receipt_base_sha || base_sha,
+          url_host:, repo:, merge_commit_oid:, head_ref_name:
+        )
       )
       FileUtils.chmod(0o755, gh_path)
-      git_path = File.join(dir, "trusted-git")
-      File.write(git_path, "#!#{RbConfig.ruby}\nexit 0\n")
-      FileUtils.chmod(0o755, git_path)
-      autonomous_result_path = File.join(dir, "merge-assurance-receipt.json.replayed.json")
-      autonomous_log_path = File.join(dir, "autonomous-replay.log")
-      submit_script, trusted_helper_provenance = prepare_submit_helper_layout(
-        dir, autonomous_result_path:, autonomous_log_path:
-      )
       warm_stub(dir, gh_path) if mode.include?("timeout")
       after_stub_warmup&.call
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       unless receipt_mode == :missing
         write_merge_assurance_receipt(
           receipt_path, mode: receipt_mode, repo:, head: expected_head,
-                        base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir,
-                        trusted_helper_provenance:
+                        base_ref: expected_base, base_sha: receipt_base_sha || base_sha,
+                        host: HOST, pr_number: 42, gh_dir: dir
         )
       end
-      repo_root = File.join(dir, "consumer")
-      FileUtils.mkdir_p(repo_root)
-      semantic_assessment = File.join(dir, "semantic-assessment.json")
-      File.write(semantic_assessment, "{}\n")
+      environment = cli_environment(
+        dir, log_path, mode,
+        guard_log_path:, guard_marker_path:, attacker_log_path:,
+        guard_live_path: File.join(repo_root, ".agents/bin/merge-pr-after-checks"),
+        interpreter_attack_path:, bash_env_attack_path:,
+        guard_timeout_seconds:, descendant_pid_path:
+      )
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
-        subject:, body:, include_merge_assurance_receipt:, receipt_path:,
-        script: submit_script, repo_root:, semantic_assessment:,
-        trusted_helper_provenance:,
-        trusted_git_executable: include_trusted_git_executable ? git_path : nil,
-        trusted_gh_executable: include_trusted_gh_executable ? gh_path : nil
+        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:
       )
-      invocation = arguments
-      sentinel_markers = {}
-      if hostile_environment
-        invocation, sentinel_markers = hostile_environment_launcher(dir, arguments)
-      end
-      stdout, stderr, status = Open3.capture3(
-        cli_environment(dir, mode),
-        *invocation
-      )
+      result = if interrupt_guard
+                 capture_with_interrupt(
+                   environment, arguments, chdir: repo_root, wait_path: guard_marker_path
+                 )
+               else
+                 stdout, stderr, status = Open3.capture3(environment, *arguments, chdir: repo_root)
+                 { stdout:, stderr:, status: }
+               end
       log = File.exist?(log_path) ? File.read(log_path) : ""
-      gh_environment_path = "#{log_path}.environments"
-      gh_environments = if File.exist?(gh_environment_path)
-                          File.readlines(gh_environment_path, chomp: true).map { |line| JSON.parse(line) }
-                        else
-                          []
-                        end
-      autonomous_environment = if File.exist?(autonomous_log_path)
-                                 JSON.parse(File.read(autonomous_log_path)).fetch("environment")
-                               else
-                                 {}
-                               end
-      [
-        {
-          stdout:, stderr:, status:, gh_environments:, autonomous_environment:,
-          sentinel_markers: sentinel_markers.transform_values { |path| File.exist?(path) }
-        },
-        log
-      ]
+      guard_log = File.exist?(guard_log_path) ? File.read(guard_log_path) : ""
+      attacker_log = File.exist?(attacker_log_path) ? File.read(attacker_log_path) : ""
+      descendant_pid = read_descendant_pid(descendant_pid_path)
+      [result, log, guard_log, attacker_log, fixture_head, descendant_pid]
     end
   end
 
-  def run_cli_with_interrupt(mode:, wait_for: "mergePullRequest", after_stub_warmup: nil)
-    Dir.mktmpdir("pr-merge-submit-interrupt-test", SAFE_TMP_PARENT) do |dir|
+  def queue_submission_mode?(mode)
+    mode == "already_queued" || mode == "already_queued_base_advanced" ||
+      mode == "already_queued_with_commit" || mode.start_with?("queue") ||
+      mode.start_with?("enqueue")
+  end
+
+  def capture_with_interrupt(environment, arguments, chdir:, wait_path:)
+    Open3.popen3(environment, *arguments, chdir:) do |stdin, stdout, stderr, wait_thread|
+      stdin.close
+      stdout_reader = Thread.new { stdout.read }
+      stderr_reader = Thread.new { stderr.read }
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 2
+      until File.exist?(wait_path)
+        raise "guard did not start before interrupt deadline" if
+          Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+        sleep 0.01
+      end
+      Process.kill("INT", wait_thread.pid)
+      {
+        stdout: stdout_reader.value,
+        stderr: stderr_reader.value,
+        status: wait_thread.value
+      }
+    end
+  end
+
+  def run_cli_with_interrupt(mode:, wait_for: "enqueuePullRequest", after_stub_warmup: nil)
+    Dir.mktmpdir("pr-merge-submit-interrupt-test") do |dir|
+      repo_root, base_sha, = prepare_consumer_repo(
+        dir,
+        merge_submission: { "mode" => "merge_queue_only" },
+        policy_fixture: :present,
+        guard_fixture: :executable
+      )
       log_path = File.join(dir, "gh.log")
       gh_path = File.join(dir, "gh")
       File.write(
         gh_path,
         fake_gh(
-          mode:, head: HEAD_SHA, base: "main", url_host: HOST, repo: "owner/repo",
-          log_path:
+          mode:, head: HEAD_SHA, base: "main", base_sha:,
+          url_host: HOST, repo: "owner/repo"
         )
       )
       FileUtils.chmod(0o755, gh_path)
-      git_path = File.join(dir, "trusted-git")
-      File.write(git_path, "#!#{RbConfig.ruby}\nexit 0\n")
-      FileUtils.chmod(0o755, git_path)
-      autonomous_result_path = File.join(dir, "merge-assurance-receipt.json.replayed.json")
-      autonomous_log_path = File.join(dir, "autonomous-replay.log")
-      submit_script, trusted_helper_provenance = prepare_submit_helper_layout(
-        dir, autonomous_result_path:, autonomous_log_path:
-      )
       warm_stub(dir, gh_path)
       after_stub_warmup&.call
       receipt_path = File.join(dir, "merge-assurance-receipt.json")
       write_merge_assurance_receipt(
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
-                      base_ref: "main", host: HOST, pr_number: 42, gh_dir: dir,
-                      trusted_helper_provenance:
+                      base_ref: "main", base_sha:, host: HOST, pr_number: 42, gh_dir: dir
       )
-      repo_root = File.join(dir, "consumer")
-      FileUtils.mkdir_p(repo_root)
-      semantic_assessment = File.join(dir, "semantic-assessment.json")
-      File.write(semantic_assessment, "{}\n")
       result = Open3.popen3(
-        cli_environment(dir, mode),
+        cli_environment(
+          dir, log_path, mode,
+          guard_log_path: File.join(dir, "guard.log"),
+          guard_marker_path: File.join(dir, "guard-called")
+        ),
         *cli_arguments(
           "owner/repo", HEAD_SHA, true, true,
-          include_merge_assurance_receipt: true, receipt_path:,
-          script: submit_script, repo_root:, semantic_assessment:,
-          trusted_helper_provenance:,
-          trusted_git_executable: git_path, trusted_gh_executable: gh_path
-        )
+          include_merge_assurance_receipt: true, receipt_path:, gh_path:
+        ),
+        chdir: repo_root
       ) do |stdin, stdout, stderr, wait_thread|
         stdin.close
         stdout_reader = Thread.new { stdout.read }
@@ -887,123 +1833,132 @@ class PrMergeSubmitTest < Minitest::Test
   # deadline in this file would otherwise have to out-wait.
   #
   # The warm-up call matches no request branch in the stub, so it changes no
-  # stub state. Clear its unconditional diagnostics so the scenario log records
+  # stub state, and its log goes to a throwaway path so GH_LOG still records
   # only the gh calls the run under test actually made.
   def warm_stub(dir, gh_path)
     system(
+      { "GH_LOG" => File.join(dir, "warmup.log") },
       gh_path, "--version", out: File::NULL, err: File::NULL
     )
-    log_path = File.join(dir, "gh.log")
-    FileUtils.rm_f([log_path, "#{log_path}.environments"])
   end
 
-  def cli_environment(dir, mode)
-    {
-      "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
+  # An empty/missing file means the mode's stub never reached the point where
+  # it records a descendant pid (e.g. the metadata_timeout_descendant stub was
+  # killed before its fork()) -- a precondition miss for the caller to retry,
+  # not a value to report as terminated. See #238.
+  def read_descendant_pid(path)
+    return nil unless File.exist?(path)
+
+    contents = File.read(path).strip
+    contents.empty? ? nil : Integer(contents)
+  end
+
+  # Poll until the pid is gone (ESRCH), mirroring
+  # stale-assignment-sweep-test.rb#child_terminated?. A short grace avoids a
+  # race with the descendant's own SIGKILL-driven teardown.
+  def descendant_terminated?(pid)
+    deadline = Time.now + 5
+    loop do
+      begin
+        Process.kill(0, pid)
+      rescue Errno::ESRCH
+        return true
+      rescue Errno::EPERM
+        return false
+      end
+      return false if Time.now >= deadline
+
+      sleep 0.05
+    end
+  end
+
+  def cli_environment(
+    dir, log_path, mode,
+    guard_log_path:, guard_marker_path:,
+    attacker_log_path: File.join(dir, "attacker-called"),
+    guard_live_path: "",
+    interpreter_attack_path: nil,
+    bash_env_attack_path: nil,
+    guard_timeout_seconds: nil,
+    descendant_pid_path: File.join(dir, "descendant.pid")
+  )
+    path = [interpreter_attack_path, dir, ENV.fetch("PATH")].compact.join(File::PATH_SEPARATOR)
+    environment = {
+      "PATH" => path,
+      "GH_LOG" => log_path,
+      "PR_TEST_MODE" => mode,
+      "PR_TEST_GUARD_LOG" => guard_log_path,
+      "PR_TEST_GUARD_MARKER" => guard_marker_path,
+      "PR_TEST_ATTACKER_MARKER" => attacker_log_path,
+      "PR_TEST_GUARD_LIVE_PATH" => guard_live_path,
+      "PR_TEST_DESCENDANT_PID_FILE" => descendant_pid_path,
       "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS" => gh_timeout_seconds_for(mode)
     }
+    environment["PR_MERGE_SUBMIT_GUARD_TIMEOUT_SECONDS"] = guard_timeout_seconds if guard_timeout_seconds
+    environment["BASH_ENV"] = bash_env_attack_path if bash_env_attack_path
+    environment
+  end
+
+  def prepare_interpreter_attack(dir, attacker_log_path, guard_marker_path)
+    attack_dir = File.join(dir, "checkout-controlled-bin")
+    FileUtils.mkdir_p(attack_dir)
+    attacker = File.join(attack_dir, "ruby")
+    File.write(
+      attacker,
+      <<~RUBY
+        #!#{RbConfig.ruby}
+        File.write(#{attacker_log_path.inspect}, "checkout-controlled interpreter executed\n")
+        File.write(#{guard_marker_path.inspect}, "called\n")
+      RUBY
+    )
+    FileUtils.chmod(0o755, attacker)
+    attack_dir
+  end
+
+  def prepare_bash_env_attack(dir, attacker_log_path)
+    attack_path = File.join(dir, "checkout-controlled-bash-env")
+    File.write(attack_path, "printf 'checkout-controlled BASH_ENV executed\\n' > #{attacker_log_path}\n")
+    attack_path
   end
 
   def gh_timeout_seconds_for(mode)
     return NO_TIMEOUT_GH_SECONDS unless mode.include?("timeout")
+    return GUARD_TIMEOUT_GH_SECONDS if mode == "guard_timeout"
     return MUTATION_TIMEOUT_GH_SECONDS if MUTATION_TIMEOUT_MODES.include?(mode)
+    return DESCENDANT_TIMEOUT_GH_SECONDS if mode == "metadata_timeout_descendant"
 
     SOLE_CALL_TIMEOUT_GH_SECONDS
   end
 
-  def hostile_environment_launcher(root, arguments)
-    poison_root = File.join(root, "poisoned-path")
-    FileUtils.mkdir_p(poison_root)
-    markers = %w[ruby git gh preload].to_h do |name|
-      [name, File.join(root, "poisoned-#{name}-ran")]
-    end
-    %w[ruby git gh].each do |name|
-      File.write(File.join(poison_root, name), <<~RUBY)
-        #!#{RbConfig.ruby}
-        File.write(#{markers.fetch(name).inspect}, "yes")
-        exit 99
-      RUBY
-      File.chmod(0o755, File.join(poison_root, name))
-    end
-    preload = File.join(root, "preload.rb")
-    File.write(preload, "File.write(#{markers.fetch('preload').inspect}, 'yes')\n")
-    gh_config_dir = File.join(root, "gh-config")
-    FileUtils.mkdir_p(gh_config_dir)
-    hostile = {
-      "PATH" => "#{poison_root}:#{ENV.fetch('PATH')}",
-      "GH_HOST" => "attacker.example",
-      "GH_TOKEN" => "allowed-token",
-      "GH_CONFIG_DIR" => gh_config_dir,
-      "HTTPS_PROXY" => "https://proxy.example",
-      "LC_ALL" => "C",
-      "RUBYOPT" => "-r#{preload}",
-      "RUBYLIB" => poison_root,
-      "RUBYGEMS_GEMDEPS" => "sentinel",
-      "GEM_HOME" => poison_root,
-      "GEM_PATH" => poison_root,
-      "GEMRC" => File.join(root, "gemrc"),
-      "GEM_SPEC_CACHE" => File.join(root, "gem-spec-cache"),
-      "BUNDLE_GEMFILE" => File.join(root, "Gemfile"),
-      "BUNDLE_PATH" => File.join(root, "bundle"),
-      "BUNDLE_WITH" => "sentinel",
-      "RUBY_ENGINE" => "sentinel",
-      "RUBY_SENTINEL" => "sentinel",
-      "LD_PRELOAD" => File.join(root, "preload.so"),
-      "LD_LIBRARY_PATH" => poison_root,
-      "DYLD_INSERT_LIBRARIES" => File.join(root, "preload.dylib"),
-      "DYLD_LIBRARY_PATH" => poison_root,
-      "DYLD_FRAMEWORK_PATH" => poison_root,
-      "UNRELATED_SENTINEL" => "must-not-pass"
-    }
-    environment_path = File.join(root, "late-environment.json")
-    arguments_path = File.join(root, "late-arguments.json")
-    launcher = File.join(root, "late-launcher.rb")
-    File.write(environment_path, JSON.generate(hostile))
-    File.write(arguments_path, JSON.generate(arguments))
-    File.write(launcher, <<~RUBY)
-      require "json"
-      ENV.update(JSON.parse(File.read(#{environment_path.inspect})))
-      command = JSON.parse(File.read(#{arguments_path.inspect}))
-      script = command.shift
-      ARGV.replace(command)
-      $0 = script
-      load script
-    RUBY
-    [[RbConfig.ruby, launcher], markers]
-  end
-
   def cli_arguments(
     repo, expected_head, include_expected_head, include_expected_base,
+    gh_path:,
+    expected_base: "main",
     subject: "Fix the thing (#42)", body: nil,
-    include_merge_assurance_receipt: true, receipt_path: nil, script: SCRIPT,
-    repo_root: nil, semantic_assessment: nil,
-    trusted_helper_provenance: "trusted-base:#{'b' * 40}",
-    trusted_git_executable: nil, trusted_gh_executable: nil
+    include_merge_assurance_receipt: true, receipt_path: nil
   )
+    runner = <<~RUBY
+      load #{SCRIPT.inspect}
+      test_environment = %w[GH_LOG PR_TEST_GUARD_MARKER PR_TEST_DESCENDANT_PID_FILE].to_h { |name| [name, ENV.fetch(name)] }
+      runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => #{gh_path.inspect} })
+      runner.define_singleton_method(:system_tool_test_environment) { test_environment }
+      exit runner.run(ARGV)
+    RUBY
     args = [
-      script, "42", "--repo", repo, "--host", HOST,
+      RbConfig.ruby, "-e", runner, "42", "--repo", repo, "--host", HOST,
       "--method", "squash", "--subject", subject
     ]
     args.concat(["--body", body]) unless body.nil?
     args.concat(["--expected-head", expected_head]) if include_expected_head
-    args.concat(["--expected-base", "main"]) if include_expected_base
+    args.concat(["--expected-base", expected_base]) if include_expected_base
     args.concat(["--merge-assurance-receipt", receipt_path]) if include_merge_assurance_receipt
-    args.concat(["--repo-root", repo_root]) if repo_root
-    args.concat(["--semantic-assessment", semantic_assessment]) if semantic_assessment
-    if trusted_helper_provenance
-      args.concat(["--trusted-helper-provenance", trusted_helper_provenance])
-    end
-    args.concat(["--trusted-git-executable", trusted_git_executable]) if trusted_git_executable
-    args.concat(["--trusted-gh-executable", trusted_gh_executable]) if trusted_gh_executable
     args
   end
 
   def write_merge_assurance_receipt(
-    path, mode:, repo:, head:, base_ref:, host:, pr_number:, gh_dir:,
-    trusted_helper_provenance:
+    path, mode:, repo:, head:, base_ref:, base_sha:, host:, pr_number:, gh_dir:
   )
     now = Time.now.utc
-    base_sha = mode == :mismatched_base_sha ? "c" * 40 : "b" * 40
     checked_at = (now - 1).iso8601
     scope = lambda do |name, rows|
       {
@@ -1040,13 +1995,15 @@ class PrMergeSubmitTest < Minitest::Test
       "verdict" => "autonomous-merge-eligible",
       "head_sha" => head,
       "policy_provenance" => "git:#{base_sha}",
-      "helper_provenance" => trusted_helper_provenance,
+      "helper_provenance" => "trusted-base:#{base_sha}",
       "helper_trust" => {
         "status" => "mechanically-verified",
         "manifest" => {
           "helper" => "skills/pr-batch/bin/autonomous-merge-eligibility",
+          "closeout-helper" => "skills/pr-batch/bin/autonomous-merge-closeout",
           "decision-library" => "skills/pr-batch/lib/autonomous_merge_decision.rb",
           "evidence-library" => "skills/pr-batch/lib/autonomous_merge_evidence.rb",
+          "integration-evidence-library" => "skills/pr-batch/lib/current_integration_evidence.rb",
           "policy-library" => "bin/agent_doctor/autonomous_merge_policy.rb",
           "policy-glob-library" => "bin/agent_doctor/autonomous_merge_policy_globs.rb",
           "policy-yaml-library" => "bin/agent_doctor/autonomous_merge_policy_yaml.rb",
@@ -1068,11 +2025,58 @@ class PrMergeSubmitTest < Minitest::Test
       "shadow_evidence_unknown" => [],
       "rollback_assessment" => "code-only-rollback-established",
       "human_decision_evidence" => { "status" => "none" },
+      "current_integration" => {
+        "contract" => "current-integration-evidence",
+        "version" => 1,
+        "repository" => repo,
+        "pr" => pr_number,
+        "recorded_base_sha" => base_sha,
+        "head_sha" => head,
+        "current_base" => { "ref" => base_ref, "sha" => base_sha },
+        "patch_identity" => nil,
+        "candidate" => nil,
+        "base_delta" => { "paths" => [] },
+        "reuse" => { "decision" => "base-unchanged", "reasons" => ["base-unchanged"] },
+        "telemetry" => {
+          "validator_replays_avoided" => 0,
+          "review_replays_avoided" => 0,
+          "elapsed_seconds_saved" => nil
+        }
+      },
       "evidence_failures" => []
     }
-    recomputed_autonomous_result = Marshal.load(Marshal.dump(autonomous_result))
+    if mode == :reused_integration
+      autonomous_result["current_integration"] = {
+        "contract" => "current-integration-evidence",
+        "version" => 1,
+        "repository" => repo,
+        "pr" => pr_number,
+        "recorded_base_sha" => "9" * 40,
+        "head_sha" => head,
+        "current_base" => { "ref" => base_ref, "sha" => base_sha },
+        "patch_identity" => "8" * 64,
+        "candidate" => {
+          "source" => "github-potential-merge-commit",
+          "oid" => "3" * 40,
+          "tree_oid" => "4" * 40,
+          "parents" => [base_sha, head]
+        },
+        "base_delta" => { "paths" => ["docs/guide.md"] },
+        "reuse" => { "decision" => "reuse-exact-head", "reasons" => ["base-delta-reuse-safe"] },
+        "telemetry" => {
+          "validator_replays_avoided" => 1,
+          "review_replays_avoided" => 1,
+          "elapsed_seconds_saved" => nil
+        }
+      }
+    end
     tracker = semantic_tracker(host:, repo:, pr_number:)
     semantic = mode.to_s.start_with?("semantic")
+    selected_hosted = mode.to_s.start_with?("selected_hosted")
+    selected_hosted_run = {
+      "provider" => "circleci",
+      "run_id" => "selected-workflow"
+    }
     context = {
       "contract" => "merge-assurance-context",
       "version" => 1,
@@ -1086,15 +2090,24 @@ class PrMergeSubmitTest < Minitest::Test
       "human_merge_decision" => nil,
       "walkthrough" => nil,
       "semantic_github_actions_change" => semantic,
+      "selected_hosted_runs" => selected_hosted ? [selected_hosted_run] : [],
       "operations" => semantic ? [tracker] : []
     }
+    selected_hosted_receipts = MergeAssurance.empty_selected_hosted_ci_receipts
+    if selected_hosted
+      selected_hosted_receipts["records"] = [{
+        **selected_hosted_run,
+        "repository" => repo,
+        "pr" => pr_number,
+        "head_sha" => head,
+        "selected_at" => checked_at,
+        "terminal_result" => "success"
+      }]
+    end
     receipt = with_fake_gh(gh_dir) do
       MergeAssurance.assess(
-        ci_result:,
-        autonomous_result:,
-        recomputed_autonomous_result: autonomous_result,
-        context:,
-        trusted_gh_executable: File.join(gh_dir, "gh"),
+        ci_result:, autonomous_result:, context:,
+        selected_hosted_ci_receipts: selected_hosted_receipts,
         now:
       )
     end
@@ -1107,22 +2120,10 @@ class PrMergeSubmitTest < Minitest::Test
     when :autonomous_unavailable
       receipt["evidence"]["autonomous_result"] = nil
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
-    when :autonomous_replay_mismatch
-      receipt.dig("evidence", "autonomous_result", "metrics")["changed_files"] = 30
-      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :digest_mismatch
       receipt["evidence_digest"] = "sha256:#{'0' * 64}"
     when :binding_mismatch
       receipt["bindings"]["diff_identity"] = "f" * 64
-    when :authority_binding_mismatch
-      receipt["bindings"]["authority"] = "explicit_approval"
-    when :base_binding_mismatch
-      receipt["bindings"]["base"] = receipt["bindings"]["base"].merge("sha" => "d" * 40)
-    when :foreign_target
-      receipt["bindings"]["host"] = "attacker.example"
-      receipt.dig("evidence", "context")["host"] = "attacker.example"
-      receipt.dig("evidence", "ci_result", "context")["host"] = "attacker.example"
-      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     when :stale
       receipt["issued_at"] = (now - 301).iso8601
     when :future
@@ -1143,51 +2144,27 @@ class PrMergeSubmitTest < Minitest::Test
         "evidence", "authenticated_tracker_reads", 0, "issue_metadata"
       )["title"] = "UNKNOWN"
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :selected_hosted_missing
+      receipt.dig("evidence", "selected_hosted_ci_receipts")["records"] = []
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
+    when :selected_hosted_cancelled, :selected_hosted_failed, :selected_hosted_nonterminal
+      receipt.dig(
+        "evidence", "selected_hosted_ci_receipts", "records", 0
+      )["terminal_result"] = mode.to_s.delete_prefix("selected_hosted_")
+      receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     end
     File.write(path, JSON.generate(receipt))
-    File.write("#{path}.replayed.json", JSON.generate(recomputed_autonomous_result))
   end
 
-  def prepare_submit_helper_layout(root, autonomous_result_path:, autonomous_log_path:)
-    pack_root = File.join(root, "runtime")
-    bin_dir = File.join(pack_root, "skills/pr-batch/bin")
-    lib_dir = File.join(pack_root, "skills/pr-batch/lib")
-    FileUtils.mkdir_p([bin_dir, lib_dir])
-    submit_script = File.join(bin_dir, "pr-merge-submit")
-    assurance_script = File.join(bin_dir, "merge-assurance")
-    FileUtils.cp(SCRIPT, submit_script)
-    FileUtils.cp(ASSURANCE_SCRIPT, assurance_script)
-    runtime_sources = AutonomousMergeRuntimeTrust.runtime_sources(
-      AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
-    ).each_with_object({}) do |(role, source), copied|
-      destination = File.join(pack_root, source.fetch(:tree_paths).first)
-      FileUtils.mkdir_p(File.dirname(destination))
-      FileUtils.cp(source.fetch(:path), destination)
-      copied[role] = source.merge(path: destination)
-    end
-    FileUtils.chmod(0o755, submit_script)
-    FileUtils.chmod(0o755, assurance_script)
-    autonomous_helper = runtime_sources.fetch("helper").fetch(:path)
-    File.write(autonomous_helper, <<~RUBY)
-      #!#{RbConfig.ruby}
-      require "json"
-      File.write(
-        #{autonomous_log_path.inspect},
-        JSON.generate(
-          "argv" => ARGV,
-          "environment" => ENV.to_h
-        )
-      )
-      STDOUT.write(File.read(#{autonomous_result_path.inspect}))
-    RUBY
-    FileUtils.chmod(0o755, autonomous_helper)
-    provenance =
-      "verified-installed-pack:#{AutonomousMergeRuntimeTrust.installed_pack_digest(runtime_sources)}"
-    [submit_script, provenance]
-  end
-
-  def with_fake_gh(_dir)
+  def with_fake_gh(dir)
+    original_path = ENV.fetch("PATH")
+    original_log = ENV["GH_LOG"]
+    ENV["PATH"] = "#{dir}:#{original_path}"
+    ENV["GH_LOG"] = File.join(dir, "receipt-gh.log")
     yield
+  ensure
+    ENV["PATH"] = original_path
+    original_log ? ENV["GH_LOG"] = original_log : ENV.delete("GH_LOG")
   end
 
   def semantic_tracker(host:, repo:, pr_number:)
@@ -1225,9 +2202,195 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
+  def prepare_consumer_repo(dir, merge_submission:, policy_fixture:, guard_fixture:)
+    root = File.join(dir, "consumer")
+    FileUtils.mkdir_p(File.join(root, ".agents/bin"))
+    policy = { "base_branch" => "main" }
+    policy["merge_submission"] = merge_submission unless merge_submission.nil?
+    policy_path = File.join(root, ".agents/agent-workflow.yml")
+    case policy_fixture
+    when :present
+      File.write(policy_path, policy.to_yaml)
+    when :malformed
+      File.write(policy_path, "merge_submission: [\n")
+    when :missing
+      nil
+    else
+      raise "unknown policy fixture: #{policy_fixture.inspect}"
+    end
+    File.write(File.join(root, "README.md"), "consumer fixture\n")
+
+    executable = merge_submission.dig("guarded_direct", "executable") if merge_submission.is_a?(Hash)
+    guard_path = File.join(root, executable.to_s)
+    if guard_fixture != :missing && executable.to_s.match?(%r{\A\.agents/bin/[A-Za-z0-9_.-]+\z})
+      guard_body = case guard_fixture
+                   when :executable, :non_executable, :modified_after_commit
+                     fake_guard
+                   when :bash_executable
+                     fake_bash_guard(dir)
+                   when :checkout_interpreter
+                     checkout_interpreter = File.join(root, "checkout-interpreter")
+                     File.write(checkout_interpreter, trusted_checkout_interpreter)
+                     FileUtils.chmod(0o755, checkout_interpreter)
+                     "#!#{checkout_interpreter}\n"
+                   when :delegating
+                     fake_delegating_guard
+                   when :launch_eacces
+                     blocked_interpreter = File.join(root, "non-executable-guard-interpreter")
+                     File.write(blocked_interpreter, "#!/bin/sh\nexit 0\n")
+                     File.chmod(0o644, blocked_interpreter)
+                     "#!#{blocked_interpreter}\n"
+                   when :launch_enoent
+                     "#!#{File.join(root, 'missing-guard-interpreter')}\n"
+                   else
+                     raise "unknown guard fixture: #{guard_fixture.inspect}"
+                   end
+      File.write(guard_path, guard_body)
+      FileUtils.chmod(guard_fixture == :non_executable ? 0o644 : 0o755, guard_path)
+    end
+
+    run_git!(root, "init", "-q")
+    if guard_fixture == :delegating
+      secondary_path = File.join(root, "script/merge_pr_after_checks")
+      FileUtils.mkdir_p(File.dirname(secondary_path))
+      File.write(secondary_path, trusted_base_secondary)
+      FileUtils.chmod(0o755, secondary_path)
+    end
+    run_git!(root, "add", "--all")
+    run_git!(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture")
+    base_sha = run_git!(root, "rev-parse", "HEAD").strip
+    File.open(guard_path, "a") { |file| file.write("# changed after trusted base\n") } if
+      guard_fixture == :modified_after_commit && File.file?(guard_path)
+    if guard_fixture == :delegating
+      File.write(File.join(root, "script/merge_pr_after_checks"), pr_head_secondary)
+      FileUtils.chmod(0o755, File.join(root, "script/merge_pr_after_checks"))
+      run_git!(root, "add", "--all")
+      run_git!(
+        root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-qm", "untrusted PR head"
+      )
+    elsif guard_fixture == :checkout_interpreter
+      File.write(File.join(root, "checkout-interpreter"), pr_head_checkout_interpreter)
+      FileUtils.chmod(0o755, File.join(root, "checkout-interpreter"))
+      run_git!(root, "add", "--all")
+      run_git!(
+        root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-qm", "untrusted interpreter replacement"
+      )
+    end
+    [root, base_sha, run_git!(root, "rev-parse", "HEAD").strip]
+  end
+
+  def run_git!(root, *args)
+    environment = {
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_CONFIG_PARAMETERS" => nil,
+      "GIT_CONFIG_COUNT" => "1",
+      "GIT_CONFIG_KEY_0" => "commit.gpgSign",
+      "GIT_CONFIG_VALUE_0" => "false"
+    }
+    stdout, stderr, status = Open3.capture3(environment, "git", *args, chdir: root)
+    raise "git fixture failed: #{stderr}" unless status.success?
+
+    stdout
+  end
+
+  def fake_guard
+    attacker_guard = <<~RUBY
+      #!#{RbConfig.ruby}
+      receipt = ARGV.fetch(ARGV.index("--merge-assurance-receipt") + 1)
+      test_root = File.dirname(receipt)
+      File.write(File.join(test_root, "attacker-called"), "attacker bytes executed\n")
+      File.write(File.join(test_root, "guard-called"), "called\n")
+    RUBY
+    <<~RUBY
+      #!/usr/bin/env ruby
+      receipt = ARGV.fetch(ARGV.index("--merge-assurance-receipt") + 1)
+      test_root = File.dirname(receipt)
+      mode = File.read(File.join(test_root, "guard-mode"))
+      if mode == "guard_path_swap"
+        live_path = File.read(File.join(test_root, "guard-live-path"))
+        File.write(live_path, #{attacker_guard.inspect})
+        File.chmod(0o755, live_path)
+      end
+      File.open(File.join(test_root, "guard.log"), "a") { |file| file.puts(ARGV.join("\n")) }
+      File.write(File.join(test_root, "guard-called"), "called\n")
+      sleep 5 if %w[guard_timeout guard_interrupt].include?(mode)
+      if %w[guard_failure guard_failure_merged].include?(mode)
+        warn "repository guard rejected direct submission"
+        exit 1
+      end
+      puts "guard output is not merge proof"
+    RUBY
+  end
+
+  def fake_delegating_guard
+    <<~RUBY
+      #!/usr/bin/env ruby
+      exec File.join(Dir.pwd, "script/merge_pr_after_checks"), *ARGV
+    RUBY
+  end
+
+  def fake_bash_guard(dir)
+    <<~BASH
+      #!/bin/bash
+      printf '%s\\n' "$@" >> #{File.join(dir, 'guard.log')}
+      printf 'called\\n' > #{File.join(dir, 'guard-called')}
+    BASH
+  end
+
+  def trusted_checkout_interpreter
+    <<~RUBY
+      #!#{RbConfig.ruby}
+      exec #{RbConfig.ruby.inspect}, *ARGV
+    RUBY
+  end
+
+  def pr_head_checkout_interpreter
+    <<~RUBY
+      #!#{RbConfig.ruby}
+      receipt = ARGV.fetch(ARGV.index("--merge-assurance-receipt") + 1)
+      test_root = File.dirname(receipt)
+      File.write(File.join(test_root, "attacker-called"), "PR interpreter executed\n")
+      File.write(File.join(test_root, "guard-called"), "called\n")
+    RUBY
+  end
+
+  def trusted_base_secondary
+    <<~RUBY
+      #!/usr/bin/env ruby
+      receipt = ARGV.fetch(ARGV.index("--merge-assurance-receipt") + 1)
+      test_root = File.dirname(receipt)
+      branch = `git rev-parse --abbrev-ref HEAD`.strip
+      head = `git rev-parse HEAD`.strip
+      head_dependency = `git show HEAD:script/merge_pr_after_checks`
+      File.open(File.join(test_root, "guard.log"), "a") do |file|
+        file.puts("delegated trusted-base dependency", branch, head, head_dependency, ARGV)
+      end
+      File.write(File.join(test_root, "guard-called"), "called\n")
+    RUBY
+  end
+
+  def pr_head_secondary
+    <<~RUBY
+      #!/usr/bin/env ruby
+      receipt = ARGV.fetch(ARGV.index("--merge-assurance-receipt") + 1)
+      test_root = File.dirname(receipt)
+      File.write(File.join(test_root, "attacker-called"), "PR-only dependency executed\n")
+      File.write(File.join(test_root, "guard-called"), "called\n")
+    RUBY
+  end
+
   def fake_gh(
-    mode:, head:, base:, url_host:, repo:, log_path:, merge_commit_oid: MERGE_COMMIT_SHA
+    mode:, head:, base:, base_sha:, url_host:, repo:, head_ref_name: "feature/test",
+    merge_commit_oid: MERGE_COMMIT_SHA
   )
+    head_ref_entry = if head_ref_name == :missing
+                       ""
+                     else
+                       %("headRefName" => #{head_ref_name.inspect},)
+                     end
     semantic_issue = semantic_issue_payload(
       host: HOST, repo: "owner/repo", pr_number: 42, head:
     )
@@ -1245,41 +2408,12 @@ class PrMergeSubmitTest < Minitest::Test
                         }
                       }
                     end
-    direct_base_oid = if %w[
-      direct_base_advanced direct_nonterminal_base_advanced
-    ].include?(mode)
-                        ADVANCED_BASE_SHA
-                      else
-                        "b" * 40
-                      end
-    direct_state = mode == "direct_nonterminal_base_advanced" ? "OPEN" : "MERGED"
-    direct_payload = {
-      "data" => {
-        "mergePullRequest" => {
-          "pullRequest" => {
-            "headRefOid" => head,
-            "baseRefName" => base,
-            "baseRefOid" => direct_base_oid,
-            "state" => direct_state,
-            "merged" => true,
-            "mergedAt" => "2026-07-20T15:00:00Z",
-            "url" => "https://#{url_host}/#{repo}/pull/42",
-            "mergeCommit" => { "oid" => merge_commit_oid }
-          }
-        }
-      }
-    }
     <<~RUBY
       #!#{RbConfig.ruby}
       require "json"
-      File.open(#{log_path.inspect}, "a") do |file|
+      File.open(ENV.fetch("GH_LOG"), "a") do |file|
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
       end
-      File.open(#{"#{log_path}.environments".inspect}, "a") do |file|
-        file.puts(JSON.generate(ENV.to_h))
-      end
-      warn "debug diagnostic" if #{mode.inspect} == "direct_with_stderr"
-
       if ARGV.include?("repos/owner/repo/issues/1")
         puts #{JSON.generate(semantic_issue).inspect}
         exit 0
@@ -1291,18 +2425,20 @@ class PrMergeSubmitTest < Minitest::Test
           sleep 5
         end
         if #{mode.inspect} == "metadata_timeout_descendant"
-          fork do
+          descendant_pid = fork do
             trap("TERM", "IGNORE")
-            sleep 5
+            sleep 30
             exit! 0
           end
-          sleep 5
+          File.write(ENV.fetch("PR_TEST_DESCENDANT_PID_FILE"), descendant_pid.to_s)
+          sleep 30
         end
         sleep 5 if #{mode.inspect} == "metadata_timeout"
-        query_count_path = #{"#{log_path}.queries".inspect}
+        query_count_path = ENV.fetch("GH_LOG") + ".queries"
         query_count = File.exist?(query_count_path) ? File.read(query_count_path).to_i : 0
         File.write(query_count_path, (query_count + 1).to_s)
         current_mode = #{mode.inspect}
+        guard_called = File.exist?(ENV.fetch("PR_TEST_GUARD_MARKER"))
         queue_enabled = case current_mode
                         when "queue", "queue_fast_merged", "queue_fast_merged_base_advanced",
                              "queue_missing_entry", "already_queued", "already_queued_base_advanced",
@@ -1319,7 +2455,8 @@ class PrMergeSubmitTest < Minitest::Test
                              "queue_post_queued_with_commit",
                              "enqueue_non_object_response_queued", "queue_base_race",
                              "queue_entry_replaced", "queue_entry_replaced_same_target" then true
-                        when "queue_race", "queue_race_merged", "queue_race_mixed_errors" then query_count.positive?
+                        when "direct_queue_race" then query_count.positive?
+                        when "direct_graphql_error_queue_enabled" then query_count >= 2
                         else false
                         end
         queued = case current_mode
@@ -1332,24 +2469,27 @@ class PrMergeSubmitTest < Minitest::Test
                       "enqueue_graphql_error_merged_queued",
                       "queue_entry_replaced_same_target",
                       "queue_post_queued_base_advanced",
-                      "queue_post_queued_with_commit",
-                      "direct_graphql_error_queued_with_commit" then query_count.positive?
-                 when "queue_race" then query_count > 1
+                      "queue_post_queued_with_commit" then query_count.positive?
                  when "queue_base_race", "enqueue_transport_base_race",
                       "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
+                 when "direct_graphql_error_in_queue" then query_count >= 2
                  else false
                  end
         merged_after_mutation = [
-          "direct_transport_merged", "direct_invalid_json_merged", "direct_graphql_error_merged",
-          "direct_incomplete_response_merged", "direct_non_object_response_merged",
-          "direct_timeout_merged", "direct_transport_merged_base_advanced",
           "enqueue_transport_merged", "enqueue_graphql_error_merged",
           "enqueue_graphql_error_merged_queued",
-          "enqueue_timeout_merged", "queue_fast_merged", "queue_fast_merged_base_advanced",
-          "queue_race_merged"
+          "enqueue_timeout_merged", "queue_fast_merged", "queue_fast_merged_base_advanced"
         ].include?(current_mode)
+        guarded_direct_merged = %w[
+          guard_success guard_path_swap hichee_replay guard_failure_merged
+        ].include?(current_mode) &&
+                                guard_called
+        direct_attempted = File.read(ENV.fetch("GH_LOG")).include?("mergePullRequest")
+        directly_merged = %w[
+          direct_transport_merged direct_graphql_error_merged direct_response_invalid_merged
+        ].include?(current_mode) && direct_attempted
         merged = ["already_merged", "already_merged_base_advanced"].include?(current_mode) ||
-                 (merged_after_mutation && query_count.positive?)
+                 (merged_after_mutation && query_count.positive?) || guarded_direct_merged || directly_merged
         base_race_modes = [
           "queue_base_race", "queue_entry_replaced", "enqueue_transport_base_race",
           "enqueue_graphql_error_base_race"
@@ -1363,19 +2503,26 @@ class PrMergeSubmitTest < Minitest::Test
           already_merged_base_advanced
           initial_open_base_advanced already_queued_base_advanced
           queue_fast_merged_base_advanced
-          queue_post_queued_base_advanced
-          direct_transport_merged_base_advanced direct_transport_open_base_advanced
-          enqueue_transport_queued_base_advanced direct_nonterminal_base_advanced
+          queue_post_queued_base_advanced enqueue_transport_queued_base_advanced
         ]
         initially_advanced_modes = %w[
           already_merged_base_advanced initial_open_base_advanced already_queued_base_advanced
         ]
-        live_base_oid = if base_advanced_modes.include?(current_mode) &&
+        live_base_oid = if current_mode == "current_integration_live_base_mismatch"
+                          #{ADVANCED_BASE_SHA.inspect}
+                        elsif base_advanced_modes.include?(current_mode) &&
                            (initially_advanced_modes.include?(current_mode) || query_count.positive?)
                           #{ADVANCED_BASE_SHA.inspect}
                         else
-                          #{('b' * 40).inspect}
+                          #{base_sha.inspect}
                         end
+        recorded_base_oid = if current_mode == "current_integration_recorded_base_mismatch"
+                              #{('7' * 40).inspect}
+                            elsif current_mode.start_with?("current_integration_")
+                              #{('9' * 40).inspect}
+                            else
+                              #{base_sha.inspect}
+                            end
         queue_entry = if queued
                         {
                           "id" => current_mode.start_with?("queue_entry_replaced") ? "MQE_2" : "MQE_1",
@@ -1387,11 +2534,17 @@ class PrMergeSubmitTest < Minitest::Test
         puts JSON.generate(
           "data" => {
             "repository" => {
+              "currentBaseRef" => { "target" => { "oid" => live_base_oid } },
               "pullRequest" => {
                 "id" => "PR_42",
-                "headRefOid" => #{head.inspect},
+                #{head_ref_entry}
+                "headRefOid" => if current_mode == "guard_head_moved" && guard_called
+                                  #{MOVED_SHA.inspect}
+                                else
+                                  #{head.inspect}
+                                end,
                 "baseRefName" => live_base,
-                "baseRefOid" => live_base_oid,
+                "baseRefOid" => recorded_base_oid,
                 "state" => merged ? "MERGED" : "OPEN",
                 "isDraft" => false,
                 "url" => "https://#{url_host}/#{repo}/pull/42",
@@ -1400,10 +2553,23 @@ class PrMergeSubmitTest < Minitest::Test
                 "mergeCommit" => if merged || %w[
                   already_queued_with_commit queue_post_queued_with_commit
                   enqueue_transport_queued_with_commit enqueue_graphql_error_queued_with_commit
-                  direct_graphql_error_queued_with_commit
                 ].include?(current_mode)
                                    { "oid" => #{merge_commit_oid.inspect} }
                                  end,
+                "potentialMergeCommit" => if current_mode.start_with?("current_integration_")
+                  {
+                    "oid" => current_mode == "current_integration_regenerated_oid" ?
+                      #{('6' * 40).inspect} : #{('3' * 40).inspect},
+                    "tree" => {
+                      "oid" => current_mode == "current_integration_mismatch" ?
+                        #{('5' * 40).inspect} : #{('4' * 40).inspect}
+                    },
+                    "parents" => {
+                      "totalCount" => 2,
+                      "nodes" => [{ "oid" => live_base_oid }, { "oid" => #{head.inspect} }]
+                    }
+                  }
+                end,
                 "isInMergeQueue" => queued,
                 "mergeQueueEntry" => queue_entry,
                 "isMergeQueueEnabled" => queue_enabled
@@ -1411,61 +2577,6 @@ class PrMergeSubmitTest < Minitest::Test
             }
           }
         )
-        exit 0
-      end
-
-      if ARGV.any? { |arg| arg.include?("mergePullRequest") }
-        case #{mode.inspect}
-        when "queue_race", "queue_race_merged"
-          puts JSON.generate("errors" => [{ "message" => "The merge strategy for main is set by the merge queue" }])
-          exit 1
-        when "queue_race_mixed_errors"
-          puts JSON.generate(
-            "errors" => [
-              { "message" => "The merge strategy for main is set by the merge queue" },
-              { "message" => "nested field resolution failed" }
-            ]
-          )
-          exit 1
-        when "direct_failure"
-          puts JSON.generate("errors" => [{ "message" => "permission denied" }])
-          exit 1
-        when "direct_transport_merged", "direct_transport_merged_base_advanced",
-             "direct_transport_open_base_advanced", "direct_transport_unknown"
-          warn "connection reset after request"
-          exit 1
-        when "direct_timeout_unknown", "direct_timeout_merged", "direct_interrupt_unknown"
-          sleep 5
-        when "direct_interrupt_exit_zero"
-          trap("INT") do
-            puts #{JSON.generate(direct_payload).inspect}
-            exit 0
-          end
-          sleep 5
-        when "direct_raw_queue_error"
-          warn "The merge strategy for main is set by the merge queue"
-          exit 1
-        when "direct_invalid_json_merged"
-          puts "truncated json"
-        when "direct_graphql_error_merged"
-          puts JSON.generate(
-            "data" => { "mergePullRequest" => { "pullRequest" => nil } },
-            "errors" => [{ "message" => "nested field resolution failed" }]
-          )
-          exit 1
-        when "direct_graphql_error_queued_with_commit"
-          puts JSON.generate(
-            "data" => { "mergePullRequest" => { "pullRequest" => nil } },
-            "errors" => [{ "message" => "nested field resolution failed" }]
-          )
-          exit 1
-        when "direct_incomplete_response_merged", "direct_incomplete_response_unknown"
-          puts JSON.generate("data" => { "mergePullRequest" => { "pullRequest" => nil } })
-        when "direct_non_object_response_merged"
-          puts JSON.generate([])
-        else
-          puts #{JSON.generate(direct_payload).inspect}
-        end
         exit 0
       end
 
@@ -1504,6 +2615,45 @@ class PrMergeSubmitTest < Minitest::Test
           exit 0
         end
         puts #{JSON.generate(queue_payload).inspect}
+        exit 0
+      end
+
+      if ARGV.any? { |arg| arg.include?("mergePullRequest") }
+        if ["direct_transport_merged", "direct_transport_unknown"].include?(#{mode.inspect})
+          warn "connection reset after direct merge request"
+          exit 1
+        end
+        if [
+          "direct_graphql_error_merged", "direct_graphql_error_queue_enabled",
+          "direct_graphql_error_in_queue", "direct_graphql_error_unknown"
+        ].include?(#{mode.inspect})
+          puts JSON.generate(
+            "data" => { "mergePullRequest" => { "pullRequest" => nil } },
+            "errors" => [{ "message" => "nested field resolution failed" }]
+          )
+          exit 1
+        end
+        response_head = if ["direct_response_invalid_merged", "direct_response_invalid_unknown"].include?(#{mode.inspect})
+                          #{MOVED_SHA.inspect}
+                        else
+                          #{head.inspect}
+                        end
+        puts JSON.generate(
+          "data" => {
+            "mergePullRequest" => {
+              "pullRequest" => {
+                "headRefOid" => response_head,
+                "baseRefName" => #{base.inspect},
+                "baseRefOid" => #{base_sha.inspect},
+                "state" => "MERGED",
+                "merged" => true,
+                "mergedAt" => "2026-07-20T15:00:00Z",
+                "url" => "https://#{url_host}/#{repo}/pull/42",
+                "mergeCommit" => { "oid" => #{merge_commit_oid.inspect} }
+              }
+            }
+          }
+        )
         exit 0
       end
 

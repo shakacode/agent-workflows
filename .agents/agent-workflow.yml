@@ -5,16 +5,31 @@ follow_up_prefix: "Follow-up:"
 review_gate: "independent code review for non-trivial workflow or helper changes"
 automation_reviewers: "claude-review (GitHub Action; in-flight and terminal state observable via the checks API) and coderabbitai (advisory; may fail on rate limits)"
 approval_exempt: "docs, workflow text, helper scripts, skill metadata, and validation fixtures when the change remains portable"
-# This source repo runs in single-operator mode; consumer repos pick their own
-# coordination backend in their local seam.
-coordination_backend: "n/a"
+trusted_actions:
+  - actions/cache
+  - actions/checkout
+  - actions/github-script
+  - actions/setup-node
+  - actions/setup-python
+  - anthropics/claude-code-action
+  - ruby/setup-ruby
+# This source repo uses the reviewed private agent-coord backend contract.
+# Consumer repos still select and validate their own backend in their local seam.
+coordination_backend: "agent-coord private backend"
+coordination_backend_contract:
+  version: 1
+  allowed_identifiers:
+    - "agent-coord private backend"
 agent_claimed_label: "agent-claimed"
 changelog: "CHANGELOG.md"
 benchmark_labels: "n/a"
 merge_ledger: "n/a"
 ci_parity_environment: "n/a"
 hosted_ci_trigger: "n/a"
+hosted_qa_gate: "n/a"
 ci_change_detector: "n/a"
+merge_submission:
+  mode: direct
 autonomous_merge:
   thresholds:
     max_changed_files: 29
@@ -34,6 +49,7 @@ autonomous_merge:
   policy_paths:
     - "skills/pr-batch/bin/autonomous-merge-*"
     - "skills/pr-batch/lib/autonomous_merge_*"
+    - "skills/pr-batch/lib/current_integration_*"
   safe_path_groups:
     documentation:
       include:

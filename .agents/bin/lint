@@ -2,4 +2,4 @@
 set -euo pipefail
 root="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 cd "$root"
-exec "$root/bin/validate" "$@"
+exec "$root/bin/lint" "$@"

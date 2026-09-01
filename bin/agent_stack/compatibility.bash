@@ -1,3 +1,5 @@
+# Shared globals are populated by options.bash after all modules are sourced.
+declare source_root compat_root replace_compat
 agent_stack_link_compat() {
   local name="$1"
   local source_path="$source_root/$name"

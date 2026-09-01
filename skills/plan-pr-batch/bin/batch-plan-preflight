@@ -1,14 +1,9 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require "base64"
 require "json"
 require "date"
 require "digest"
-require "openssl"
-require "rbconfig"
-require "tempfile"
-require "time"
 require "uri"
 
 module BatchPlanPreflight
@@ -23,6 +18,31 @@ module BatchPlanPreflight
     broad_runtime
   ].freeze
   QA_DISPOSITIONS = %w[required not-required].freeze
+  GITHUB_TARGET_TYPES = %w[github-issue github-pull-request].freeze
+  GITHUB_TARGET_KEYS = %w[
+    number
+    repository
+    stable_coordination_identity
+    type
+    version
+  ].freeze
+  DURABLE_AD_HOC_TARGET_KEYS = %w[
+    durable_authorization_ref
+    original_task_identity
+    override_name
+    repository
+    stable_coordination_identity
+    target
+    trusted_authorizer
+    type
+    version
+  ].freeze
+  OVERRIDE_NAME_PATTERN = /\A[a-z0-9][a-z0-9_.-]*\z/
+  GENERIC_INTENT_VALUES = %w[fix-it pr-batch publish-pr].freeze
+  AD_HOC_TARGET_PATTERN = /\Aadhoc:(\d{8})-([a-z0-9][a-z0-9_.-]*)\z/
+  REPOSITORY_SEGMENT_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
+  REPOSITORY_NAME_PATTERN = /\A[A-Za-z0-9._-]{1,100}\z/
+  PROVENANCE_IDENTITY_PATTERN = %r{\A[a-z][a-z0-9_.-]*:[A-Za-z0-9][A-Za-z0-9_.:@/-]*\z}
   EXTERNAL_SUPPORT = %w[supported unsupported UNKNOWN].freeze
   APPLICABILITY = %w[applicable not-applicable].freeze
   EDGE_TYPES = %w[edit validation_open merge_order].freeze
@@ -43,48 +63,39 @@ module BatchPlanPreflight
     state
     status
   ].freeze
-  LIFECYCLE_RECEIPT_KEYS = %w[
+  LIFECYCLE_STATE_KEYS = %w[
     batch_plan_id
-    completed_at
-    key_id
     lane_id
-    producer
-    receipt_ref
-    recorded_at
-    signature
     stage_dependency_plan_id
     state
+    state_ref
     type
     version
     wave
   ].freeze
-  LIFECYCLE_FUTURE_SKEW_SECONDS = 300
-  HELPER_PATH = File.realpath(__FILE__)
-  INSTALLATION_ROOT = File.expand_path("../../..", File.dirname(HELPER_PATH))
-  STAGE_DEPENDENCY_GATE_PATH = File.join(
-    INSTALLATION_ROOT,
-    "skills",
-    "pr-batch",
-    "bin",
-    "stage-dependency-gate"
-  )
-  STAGE_DEPENDENCY_REPLAY_POLL_SECONDS = 0.01
-  STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS = 0.25
-  STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS = 5
-  STAGE_DEPENDENCY_REPLAY_ENV = {
-    "LANG" => "C",
-    "LC_ALL" => "C",
-    "TZ" => "UTC"
-  }.freeze
-  WORKFLOW_CONTROL_TRUST_CONFIG_DIR = File.join(INSTALLATION_ROOT, ".agents")
-  WORKFLOW_CONTROL_TRUST_CONFIG_PATH = File.join(
-    WORKFLOW_CONTROL_TRUST_CONFIG_DIR,
-    "workflow-control-lifecycle-trust.json"
-  )
-  WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD =
-    "agent_workflow_control_lifecycle_trusted_key_id"
-  WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD =
-    "agent_workflow_control_lifecycle_trusted_public_key_pem"
+  LIFECYCLE_STATES = %w[planned claimed active blocked completed].freeze
+  EXPANSION_PATH_RESERVATION_KEYS = %w[
+    batch_plan_id
+    evidence_ref
+    lane_id
+    path
+    reason
+    stage_dependency_plan_id
+    type
+    version
+    wave
+  ].freeze
+  EXPANSION_RENAME_RESERVATION_KEYS = %w[
+    batch_plan_id
+    evidence_ref
+    lane_id
+    reason
+    rename
+    stage_dependency_plan_id
+    type
+    version
+    wave
+  ].freeze
   GATE_PERMISSIONS = %w[
     read_only_discovery
     branch_worktree_create
@@ -109,7 +120,7 @@ module BatchPlanPreflight
     item
   end
 
-  def result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: [])
+  def result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: [], advisories: [])
     {
       "type" => "batch-plan-preflight",
       "version" => 1,
@@ -119,7 +130,8 @@ module BatchPlanPreflight
         "held_lane_ids" => status == "accepted" ? held_lane_ids : [],
         "completed_lane_ids" => status == "accepted" ? completed_lane_ids : []
       },
-      "violations" => violations
+      "violations" => violations,
+      "advisories" => advisories
     }
   end
 
@@ -136,53 +148,70 @@ module BatchPlanPreflight
     lane_ids = lanes.map { |lane| lane["id"] }
     plan_violations = validate_plan(input["plan"])
     violations = plan_violations.dup
+    advisories = []
     violations.concat(validate_unknown_decisions(input["plan"]))
     plan_violation_codes = plan_violations.map { |item| item["code"] }
     lane_ids_valid = !plan_violation_codes.include?("lane-id-invalid-or-duplicate")
     changed_surfaces_valid = !plan_violation_codes.include?("changed-surfaces-invalid")
-    stage_dependency_violations = validate_stage_dependencies(
-      input["stage_dependency_plan"],
-      input["stage_dependency_gate"],
-      lane_ids
-    )
-    violations.concat(stage_dependency_violations)
-    return result("rejected", [], [], violations) unless stage_dependency_violations.empty?
-
-    replay_violations = validate_stage_dependency_replay(
-      input["stage_dependency_plan"],
-      input["stage_dependency_replay"],
-      input["stage_dependency_gate"],
-      lane_ids
-    )
-    violations.concat(replay_violations)
-    return result("rejected", [], [], violations) unless replay_violations.empty?
-
+    stage_dependency_plan = input["stage_dependency_plan"]
+    stage_dependency_plan_id = stage_dependency_plan["id"] if stage_dependency_plan.is_a?(Hash)
     completed_lane_ids = []
+    active_lane_ids = []
+    blocked_lane_ids = []
     if lane_ids_valid
-      lifecycle_violations, completed_lane_ids = validate_lane_lifecycle_receipts(
-        input["lane_lifecycle_receipts"],
+      lifecycle_violations, completed_lane_ids, active_lane_ids, blocked_lane_ids = validate_lane_lifecycle_states(
+        input["lane_lifecycle_states"],
         input["plan"],
-        input["stage_dependency_plan"]
+        stage_dependency_plan_id
       )
       violations.concat(lifecycle_violations)
     end
     file_touch_violations = validate_file_touch_maps(input["file_touch_map"], lane_ids)
     violations.concat(file_touch_violations)
     if file_touch_violations.empty? && lane_ids_valid
-      violations.concat(validate_collisions(
+      violations.concat(validate_launch_target_file_touch_provenance(
                           lanes,
-                          input["plan"]["serialization_groups"],
-                          input["file_touch_map"],
-                          input["stage_dependency_plan"],
-                          input["stage_dependency_gate"],
-                          completed_lane_ids
+                          input["file_touch_map"]
                         ))
+    end
+    reservation_violations, expansion_path_reservations =
+      if lane_ids_valid
+        validate_expansion_path_reservations(
+          input["expansion_path_reservations"],
+          input["plan"],
+          stage_dependency_plan_id,
+          input["file_touch_map"],
+          completed_lane_ids
+        )
+      else
+        [[], []]
+      end
+    violations.concat(reservation_violations)
+    violations.concat(validate_stage_dependencies(
+                        input["stage_dependency_plan"],
+                        input["stage_dependency_gate"],
+                        lane_ids
+                      ))
+    if file_touch_violations.empty? && reservation_violations.empty? && lane_ids_valid
+      effective_maps = effective_file_touch_maps(input["file_touch_map"], expansion_path_reservations)
+      collision_violations, collision_advisories =
+        validate_collisions(
+          lanes,
+          input["plan"]["serialization_groups"],
+          effective_maps,
+          input["stage_dependency_plan"],
+          input["stage_dependency_gate"],
+          completed_lane_ids,
+          expansion_path_reservations
+        )
+      violations.concat(collision_violations)
+      advisories = collision_advisories
       if changed_surfaces_valid
         violations.concat(validate_caps(
                             input["plan"]["backend"],
                             input["plan"]["active_wave"],
                             lanes,
-                            input["file_touch_map"]
+                            effective_maps
                           ))
       end
     end
@@ -198,12 +227,21 @@ module BatchPlanPreflight
           input["stage_dependency_gate"],
           input["plan"]["active_wave"],
           input["plan"]["serialization_groups"],
-          completed_lane_ids
+          completed_lane_ids,
+          active_lane_ids,
+          blocked_lane_ids
         )
       else
         [[], []]
       end
-    result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: completed_lane_ids.sort)
+    result(
+      status,
+      eligible_lane_ids,
+      held_lane_ids,
+      violations,
+      completed_lane_ids: completed_lane_ids.sort,
+      advisories: advisories
+    )
   end
 
   def validate_plan(plan)
@@ -232,7 +270,7 @@ module BatchPlanPreflight
         violations << violation(
           "inline-lane-lifecycle-forbidden",
           path,
-          "Lane lifecycle cannot be declared inline; provide a workflow-control lifecycle receipt.",
+          "Lane lifecycle cannot be declared inline; provide separate durable lane lifecycle state.",
           lane_ids: [lane["id"]].compact
         )
       end
@@ -240,6 +278,50 @@ module BatchPlanPreflight
              PURPOSES.include?(lane["purpose"])
         violations << violation("lane-record-invalid", path,
                                 "Lane requires id, wave, and purpose implementation or investigation.")
+      end
+      target = lane["target"]
+      if target.nil?
+        violations << violation(
+          "canonical-launch-target-required",
+          "#{path}.target",
+          "Ordinary launch requires a typed canonical GitHub issue or existing pull request target; " \
+          "only a complete trusted task-specific durable ad-hoc override may use an ad-hoc target.",
+          lane_ids: [lane["id"]].compact
+        )
+      elsif !target.is_a?(Hash)
+        violations << violation(
+          "canonical-launch-target-invalid",
+          "#{path}.target",
+          "Synthetic or bare target values are not launch identities; provide a typed canonical target record.",
+          lane_ids: [lane["id"]].compact
+        )
+      elsif GITHUB_TARGET_TYPES.include?(target["type"])
+        unless valid_github_launch_target?(target)
+          violations << violation(
+            "canonical-launch-target-invalid",
+            "#{path}.target",
+            "Canonical GitHub targets require the exact v1 issue or pull-request shape and matching " \
+            "repository-qualified stable coordination identity.",
+            lane_ids: [lane["id"]].compact
+          )
+        end
+      elsif target["type"] == "trusted-ad-hoc-override"
+        unless valid_durable_ad_hoc_launch_target?(target)
+          violations << violation(
+            "durable-ad-hoc-override-invalid",
+            "#{path}.target",
+            "Ad-hoc launch requires the exact v1 trusted task-specific durable override shape, durable " \
+            "authorization provenance, and matching repository-qualified stable coordination identity.",
+            lane_ids: [lane["id"]].compact
+          )
+        end
+      else
+        violations << violation(
+          "canonical-launch-target-invalid",
+          "#{path}.target",
+          "Target type must be github-issue, github-pull-request, or trusted-ad-hoc-override.",
+          lane_ids: [lane["id"]].compact
+        )
       end
       surfaces = lane["changed_surfaces"]
       unless surfaces.is_a?(Array) && surfaces.uniq.length == surfaces.length &&
@@ -266,135 +348,340 @@ module BatchPlanPreflight
                                 lane_ids: [lane["id"]])
       end
     end
+    valid_target_identities = plan.fetch("lanes").filter_map do |lane|
+      target = lane["target"]
+      launch_target_identity_key(target) if valid_launch_target?(target)
+    end
+    if valid_target_identities.uniq.length != valid_target_identities.length
+      violations << violation(
+        "canonical-launch-target-duplicate",
+        "$.plan.lanes",
+        "Each repository-qualified canonical launch identity may appear in at most one lane."
+      )
+    end
     violations
   end
 
-  def validate_lane_lifecycle_receipts(receipts, plan, stage_dependency_plan)
-    unless receipts.is_a?(Array)
+  def valid_launch_target?(target)
+    return false unless target.is_a?(Hash)
+
+    if GITHUB_TARGET_TYPES.include?(target["type"])
+      valid_github_launch_target?(target)
+    elsif target["type"] == "trusted-ad-hoc-override"
+      valid_durable_ad_hoc_launch_target?(target)
+    else
+      false
+    end
+  end
+
+  def launch_target_identity_key(target)
+    if GITHUB_TARGET_TYPES.include?(target["type"])
+      [target.fetch("repository").downcase, target.fetch("number")]
+    else
+      [target.fetch("repository").downcase, target.fetch("target")]
+    end
+  end
+
+  def valid_github_launch_target?(target)
+    return false unless target.keys.sort == GITHUB_TARGET_KEYS && target["version"] == 1
+    return false unless GITHUB_TARGET_TYPES.include?(target["type"])
+    return false unless canonical_repository?(target["repository"])
+    return false unless target["number"].is_a?(Integer) && target["number"].positive?
+
+    kind = target["type"] == "github-issue" ? "issue" : "pull-request"
+    target["stable_coordination_identity"] ==
+      "#{target.fetch('repository')}:#{kind}:#{target.fetch('number')}"
+  end
+
+  def valid_durable_ad_hoc_launch_target?(target)
+    return false unless target.keys.sort == DURABLE_AD_HOC_TARGET_KEYS && target["version"] == 1
+    return false unless target["type"] == "trusted-ad-hoc-override"
+    return false unless canonical_repository?(target["repository"])
+    return false unless valid_ad_hoc_target_identity?(target["target"])
+    return false unless target["stable_coordination_identity"] ==
+                        "#{target.fetch('repository')}:#{target.fetch('target')}"
+    return false unless target["override_name"].is_a?(String) &&
+                        target["override_name"].match?(OVERRIDE_NAME_PATTERN)
+    return false if target["override_name"].casecmp?("UNKNOWN") ||
+                    GENERIC_INTENT_VALUES.include?(target["override_name"].downcase)
+    return false unless %w[trusted_authorizer original_task_identity].all? do |field|
+      valid_provenance_identity?(target[field])
+    end
+
+    durable_authorization_ref?(target["durable_authorization_ref"], target["repository"])
+  end
+
+  def valid_provenance_identity?(value)
+    return false unless value.is_a?(String) && value.match?(PROVENANCE_IDENTITY_PATTERN)
+
+    component = value.split(":", 2).last
+    !component.casecmp?("UNKNOWN") && !GENERIC_INTENT_VALUES.include?(component.downcase)
+  end
+
+  def valid_ad_hoc_target_identity?(value)
+    match = AD_HOC_TARGET_PATTERN.match(value.to_s)
+    return false unless match
+    return false if match[2].casecmp?("UNKNOWN")
+
+    Date.strptime(match[1], "%Y%m%d").strftime("%Y%m%d") == match[1]
+  rescue Date::Error
+    false
+  end
+
+  def durable_authorization_ref?(value, repository)
+    return false unless durable_state_ref?(value)
+
+    parsed = URI.parse(value)
+    return false unless parsed.userinfo.nil? && parsed.query.nil?
+
+    parts = parsed.path.split("/").reject(&:empty?)
+
+    case parsed.scheme
+    when "https"
+      parsed.host == "github.com" && parsed.port == 443 &&
+        parsed.path == "/#{parts.join('/')}" && parts.length == 4 &&
+        %w[issues pull].include?(parts[2]) && parts[3].match?(/\A[1-9]\d*\z/) &&
+        "#{parts[0]}/#{parts[1]}".casecmp?(repository)
+    when "issue"
+      issue_target = issue_evidence_target(value)
+      issue_target&.first&.casecmp?(repository)
+    when "plan-state"
+      parsed.port.nil? && canonical_durable_ref_id?(parsed.host) &&
+        canonical_plan_state_path?(parsed.path)
+    when "batch"
+      parsed.port.nil? && canonical_durable_ref_id?(parsed.host) && parsed.path.to_s.empty?
+    else
+      false
+    end
+  rescue URI::InvalidURIError
+    false
+  end
+
+  def canonical_durable_ref_id?(value)
+    value.is_a?(String) && value.match?(/\A[a-zA-Z0-9][a-zA-Z0-9._-]*\z/) &&
+      !value.casecmp?("UNKNOWN")
+  end
+
+  def canonical_plan_state_path?(value)
+    return false unless value.match?(%r{\A/[^/\s]+(?:/[^/\s]+)*\z}) && !value.include?("%")
+
+    value.split("/").reject(&:empty?).none? do |part|
+      %w[. ..].include?(part) || part.casecmp?("UNKNOWN")
+    end
+  end
+
+  def canonical_repository?(value)
+    return false unless nonempty_identity?(value)
+
+    owner, repository, extra = value.split("/", -1)
+    return false unless owner && repository && !extra
+
+    owner.match?(REPOSITORY_SEGMENT_PATTERN) &&
+      repository.match?(REPOSITORY_NAME_PATTERN) &&
+      !%w[. ..].include?(repository) &&
+      !owner.casecmp?("UNKNOWN") &&
+      !repository.casecmp?("UNKNOWN")
+  end
+
+  def validate_lane_lifecycle_states(states, plan, stage_dependency_plan_id)
+    unless states.is_a?(Array)
       return [
         [violation(
-          "lane-lifecycle-receipts-array-required",
-          "$.lane_lifecycle_receipts",
-          "Provide the workflow-control lifecycle receipt collection, even when empty."
+          "lane-lifecycle-states-array-required",
+          "$.lane_lifecycle_states",
+          "Provide the separate durable lane lifecycle state collection, even when empty."
         )],
+        [],
+        [],
         []
       ]
     end
 
     lanes_by_id = plan.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
     completed_lane_ids = []
+    active_lane_ids = []
+    blocked_lane_ids = []
     violations = []
-    receipts.each_with_index do |receipt, index|
-      path = "$.lane_lifecycle_receipts[#{index}]"
-      unless valid_lane_lifecycle_receipt?(
-        receipt,
+    seen_lane_ids = []
+    states.each_with_index do |state, index|
+      path = "$.lane_lifecycle_states[#{index}]"
+      unless valid_lane_lifecycle_state?(
+        state,
         plan["id"],
-        stage_dependency_plan["id"],
+        stage_dependency_plan_id,
         lanes_by_id
       )
         violations << violation(
-          "lane-lifecycle-receipt-invalid",
+          "lane-lifecycle-state-invalid",
           path,
-          "Require the exact workflow-control receipt with canonical durable-state reference, " \
-          "matching identities, terminal state, and completed-at/recorded-at chronology."
+          "Require an ordinary durable lane state with matching plan, dependency-plan, lane, and wave identities."
         )
         next
       end
 
-      completed_lane_ids << receipt["lane_id"]
+      seen_lane_ids << state["lane_id"]
+      completed_lane_ids << state["lane_id"] if state["state"] == "completed"
+      active_lane_ids << state["lane_id"] if state["state"] == "active"
+      blocked_lane_ids << state["lane_id"] if state["state"] == "blocked"
     end
-    if completed_lane_ids.uniq.length != completed_lane_ids.length
+    if seen_lane_ids.uniq.length != seen_lane_ids.length
       violations << violation(
-        "lane-lifecycle-receipt-duplicate",
-        "$.lane_lifecycle_receipts",
-        "Provide at most one completed lifecycle receipt per lane."
+        "lane-lifecycle-state-duplicate",
+        "$.lane_lifecycle_states",
+        "Provide at most one durable lifecycle state per lane."
       )
     end
-    [violations, completed_lane_ids.uniq]
+    [violations, completed_lane_ids.uniq, active_lane_ids.uniq, blocked_lane_ids.uniq]
   end
 
-  def valid_lane_lifecycle_receipt?(receipt, batch_plan_id, stage_dependency_plan_id, lanes_by_id)
-    return false unless receipt.is_a?(Hash) && receipt.keys.sort == LIFECYCLE_RECEIPT_KEYS
-    return false unless receipt["type"] == "workflow-control-lane-lifecycle-receipt" &&
-                        receipt["version"] == 1 &&
-                        receipt["producer"] == "pr-batch-workflow-control"
-    return false unless receipt["batch_plan_id"] == batch_plan_id &&
-                        receipt["stage_dependency_plan_id"] == stage_dependency_plan_id
+  def valid_lane_lifecycle_state?(state, batch_plan_id, stage_dependency_plan_id, lanes_by_id)
+    return false unless state.is_a?(Hash) && state.keys.sort == LIFECYCLE_STATE_KEYS
+    return false unless state["type"] == "lane-lifecycle-state" && state["version"] == 1
+    return false unless state["batch_plan_id"] == batch_plan_id &&
+                        state["stage_dependency_plan_id"] == stage_dependency_plan_id
 
-    lane = lanes_by_id[receipt["lane_id"]]
-    return false unless lane && receipt["wave"] == lane["wave"] && receipt["state"] == "completed"
-    return false unless utc_timestamp?(receipt["completed_at"]) && utc_timestamp?(receipt["recorded_at"])
-    return false unless Time.iso8601(receipt["completed_at"]) <= Time.iso8601(receipt["recorded_at"])
-    return false unless Time.iso8601(receipt["recorded_at"]) <= Time.now.utc + LIFECYCLE_FUTURE_SKEW_SECONDS
-    return false unless receipt["receipt_ref"] == workflow_control_receipt_ref(receipt)
+    lane = lanes_by_id[state["lane_id"]]
+    return false unless lane && state["wave"] == lane["wave"] && LIFECYCLE_STATES.include?(state["state"])
 
-    workflow_control_receipt_signature_verified?(receipt)
+    durable_state_ref?(state["state_ref"])
   end
 
-  def workflow_control_receipt_ref(receipt)
-    "workflow-control-state://#{receipt['batch_plan_id']}/stage-dependency-plans/" \
-      "#{receipt['stage_dependency_plan_id']}/waves/#{receipt['wave']}/lanes/" \
-      "#{receipt['lane_id']}/#{receipt['state']}"
-  end
+  def durable_state_ref?(value)
+    return false unless nonempty_identity?(value)
 
-  def utc_timestamp?(value)
-    value.is_a?(String) &&
-      value.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/) &&
-      Time.iso8601(value).utc.iso8601 == value
-  rescue ArgumentError
+    parsed = URI.parse(value)
+    !parsed.scheme.to_s.empty? && !parsed.host.to_s.empty?
+  rescue URI::InvalidURIError
     false
   end
 
-  def workflow_control_receipt_signature_verified?(receipt)
-    trust_anchor = workflow_control_trust_anchor
-    return false unless trust_anchor &&
-                        nonempty_identity?(receipt["key_id"]) &&
-                        receipt["key_id"] == trust_anchor[WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD]
+  def validate_expansion_path_reservations(reservations, plan, stage_dependency_plan_id, maps,
+                                           completed_lane_ids)
+    return [[], []] if reservations.nil?
+    unless reservations.is_a?(Array)
+      return [[violation(
+        "expansion-path-reservations-invalid",
+        "$.expansion_path_reservations",
+        "When present, expansion path reservations must be an array of typed durable records."
+      )], []]
+    end
 
-    public_key = OpenSSL::PKey.read(
-      trust_anchor.fetch(WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD)
-    )
-    return false unless public_key.is_a?(OpenSSL::PKey::RSA) && !public_key.private?
+    lanes_by_id = plan.fetch("lanes").to_h { |lane| [lane["id"], lane] }
+    valid_reservations = []
+    violations = []
+    reservations.each_with_index do |reservation, index|
+      path = "$.expansion_path_reservations[#{index}]"
+      unless valid_expansion_path_reservation?(
+        reservation,
+        plan["id"],
+        stage_dependency_plan_id,
+        lanes_by_id
+      )
+        violations << violation(
+          "expansion-path-reservations-invalid",
+          path,
+          "Require the exact v1 shape with matching batch, dependency-plan, lane, and wave identities; " \
+          "one canonical path or a distinct canonical old/new rename pair; a known reason; and a durable " \
+          "evidence reference."
+        )
+        next
+      end
 
-    signature = Base64.strict_decode64(receipt["signature"])
-    payload = JSON.generate(canonicalize(receipt.reject { |key, _value| key == "signature" }))
-    public_key.verify(OpenSSL::Digest.new("SHA256"), signature, payload)
-  rescue ArgumentError, TypeError, OpenSSL::PKey::PKeyError
-    false
+      lane_id = reservation.fetch("lane_id")
+      reflected_map = maps.is_a?(Hash) && maps[lane_id].is_a?(Hash) ? maps[lane_id] : {}
+      if completed_lane_ids.include?(lane_id) || reservation_reflected?(reservation, reflected_map)
+        violations << violation(
+          "expansion-path-reservation-stale",
+          path,
+          "Remove a reservation when its lane completes or its verified file-touch map reflects the path or rename.",
+          lane_ids: [lane_id]
+        )
+        next
+      end
+      valid_reservations << reservation
+    end
+
+    reservation_keys = valid_reservations.map { |reservation| expansion_reservation_identity(reservation) }
+    if reservation_keys.uniq.length != reservation_keys.length
+      violations << violation(
+        "expansion-path-reservation-duplicate",
+        "$.expansion_path_reservations",
+        "Provide at most one active reservation for each lane and canonical path or rename pair."
+      )
+    end
+    [violations, valid_reservations]
   end
 
-  def workflow_control_trust_anchor
-    helper_uid = File.stat(HELPER_PATH).uid
-    root_stat = File.lstat(INSTALLATION_ROOT)
-    config_dir_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_DIR)
-    config_stat = File.lstat(WORKFLOW_CONTROL_TRUST_CONFIG_PATH)
-    return unless root_stat.directory? &&
-                  root_stat.uid == helper_uid &&
-                  (root_stat.mode & 0o022).zero? &&
-                  config_dir_stat.directory? &&
-                  config_dir_stat.uid == helper_uid &&
-                  (config_dir_stat.mode & 0o022).zero? &&
-                  config_stat.file? &&
-                  config_stat.uid == helper_uid &&
-                  (config_stat.mode & 0o022).zero?
+  def valid_expansion_path_reservation?(reservation, batch_plan_id, stage_dependency_plan_id, lanes_by_id)
+    return false unless reservation.is_a?(Hash) && reservation["version"] == 1
 
-    record = JSON.parse(File.read(WORKFLOW_CONTROL_TRUST_CONFIG_PATH, encoding: "UTF-8"))
-    expected_keys = [
-      WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD,
-      WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD,
-      "type",
-      "version"
-    ].sort
-    return unless record.is_a?(Hash) &&
-                  record.keys.sort == expected_keys &&
-                  record["type"] == "agent-workflow-control-lifecycle-trust-anchor" &&
-                  record["version"] == 1 &&
-                  nonempty_identity?(record[WORKFLOW_CONTROL_TRUST_KEY_ID_FIELD]) &&
-                  nonempty_identity?(record[WORKFLOW_CONTROL_TRUST_PUBLIC_KEY_FIELD])
+    shape_valid = case reservation["type"]
+                  when "expansion-path-reservation"
+                    valid_expansion_path_reservation_shape?(reservation)
+                  when "expansion-rename-reservation"
+                    valid_expansion_rename_reservation_shape?(reservation)
+                  else
+                    false
+                  end
+    return false unless shape_valid
+    return false unless reservation["batch_plan_id"] == batch_plan_id &&
+                        reservation["stage_dependency_plan_id"] == stage_dependency_plan_id
 
-    record
-  rescue JSON::ParserError, SystemCallError
-    nil
+    lane = lanes_by_id[reservation["lane_id"]]
+    return false unless lane && reservation["wave"] == lane["wave"]
+    return false unless known_single_line_text?(reservation["reason"])
+
+    durable_state_ref?(reservation["evidence_ref"])
+  end
+
+  def valid_expansion_path_reservation_shape?(reservation)
+    reservation.keys.sort == EXPANSION_PATH_RESERVATION_KEYS &&
+      canonical_repository_relative_path?(reservation["path"])
+  end
+
+  def valid_expansion_rename_reservation_shape?(reservation)
+    rename = reservation["rename"]
+    reservation.keys.sort == EXPANSION_RENAME_RESERVATION_KEYS &&
+      rename.is_a?(Hash) && rename.keys.sort == %w[new old] &&
+      canonical_repository_relative_path?(rename["old"]) &&
+      canonical_repository_relative_path?(rename["new"]) &&
+      rename["old"] != rename["new"]
+  end
+
+  def expansion_reservation_identity(reservation)
+    if reservation["type"] == "expansion-rename-reservation"
+      [reservation["lane_id"], reservation["type"], reservation.dig("rename", "old"),
+       reservation.dig("rename", "new")]
+    else
+      [reservation["lane_id"], reservation["type"], reservation["path"]]
+    end
+  end
+
+  def reservation_reflected?(reservation, map)
+    return false unless valid_file_touch_map_shape?(map) && map["source"] == "verified"
+
+    if reservation["type"] == "expansion-rename-reservation"
+      Array(map["renames"]).include?(reservation["rename"])
+    else
+      Array(map["paths"]).include?(reservation["path"])
+    end
+  end
+
+  def effective_file_touch_maps(maps, reservations)
+    effective = maps.to_h do |lane_id, map|
+      [lane_id, map.merge("paths" => map.fetch("paths").dup, "renames" => map.fetch("renames").map(&:dup))]
+    end
+    reservations.each do |reservation|
+      map = effective.fetch(reservation.fetch("lane_id"))
+      if reservation["type"] == "expansion-rename-reservation"
+        rename = reservation.fetch("rename")
+        map.fetch("paths").concat(rename.values)
+        map.fetch("renames") << rename.dup
+      else
+        map.fetch("paths") << reservation.fetch("path")
+      end
+    end
+    effective
   end
 
   def canonicalize(value)
@@ -482,9 +769,70 @@ module BatchPlanPreflight
     map["source"].is_a?(String) && !map["source"].strip.empty?
   end
 
+  def validate_launch_target_file_touch_provenance(lanes, maps)
+    lanes.filter_map do |lane|
+      target = lane["target"]
+      next unless valid_launch_target?(target)
+
+      map = maps[lane["id"]]
+      matches =
+        if map.is_a?(Hash) && map["source"] == "verified"
+          verified_pr_map_matches_target?(map, target)
+        elsif target["type"] == "github-pull-request"
+          false
+        else
+          planned_path_evidence_matches_target?(map, target)
+        end
+      next if matches
+
+      violation(
+        "launch-target-file-touch-provenance-mismatch",
+        "$.file_touch_map.#{lane['id']}",
+        "Verified PR maps require the target repository and, for PR-origin targets, exact target PR; " \
+        "issue and trusted ad-hoc targets without an implementation PR require durable planned-path evidence.",
+        lane_ids: [lane["id"]].compact
+      )
+    end
+  end
+
+  def verified_pr_map_matches_target?(map, target)
+    return false unless valid_file_touch_map_shape?(map) && map["source"] == "verified"
+    return false unless map["repo"].casecmp?(target["repository"])
+
+    target["type"] != "github-pull-request" || map["pr"] == target["number"]
+  end
+
+  def planned_path_evidence_matches_target?(map, target)
+    return false unless valid_planned_path_evidence_shape?(map)
+    return true unless map["source_kind"] == "issue"
+    return false unless target["type"] == "github-issue"
+
+    issue_evidence_target(map["evidence_ref"]) ==
+      [target.fetch("repository").downcase, target.fetch("number")]
+  end
+
+  def issue_evidence_target(value)
+    parsed = URI.parse(value)
+    return nil unless parsed.userinfo.nil? && parsed.query.nil?
+
+    parts = parsed.path.split("/").reject(&:empty?)
+    if parsed.scheme == "issue" && parsed.port.nil? &&
+       parsed.path == "/#{parts.join('/')}" && parts.length == 2 &&
+       parts[1].match?(/\A[1-9]\d*\z/) && canonical_repository?("#{parsed.host}/#{parts[0]}")
+      ["#{parsed.host}/#{parts[0]}".downcase, Integer(parts[1], 10)]
+    elsif parsed.scheme == "https" && parsed.host == "github.com" && parsed.port == 443 &&
+          parsed.path == "/#{parts.join('/')}" && parts.length == 4 &&
+          parts[2] == "issues" && parts[3].match?(/\A[1-9]\d*\z/) &&
+          canonical_repository?("#{parts[0]}/#{parts[1]}")
+      ["#{parts[0]}/#{parts[1]}".downcase, Integer(parts[3], 10)]
+    end
+  rescue URI::InvalidURIError
+    nil
+  end
+
   def valid_planned_path_evidence_shape?(map)
     expected_keys = %w[evidence_ref paths renames source_kind type version]
-    return false unless map.keys.sort == expected_keys
+    return false unless map.is_a?(Hash) && map.keys.sort == expected_keys
     return false unless map["type"] == "planned-path-evidence" && map["version"] == 1
     return false unless PLANNED_PATH_SOURCE_KINDS.include?(map["source_kind"])
     return false unless durable_evidence_ref?(map["evidence_ref"], map["source_kind"])
@@ -512,13 +860,12 @@ module BatchPlanPreflight
 
   def durable_evidence_ref?(value, source_kind)
     return false unless nonempty_identity?(value)
+    return !issue_evidence_target(value).nil? if source_kind == "issue"
 
     parsed = URI.parse(value)
     return false if parsed.host.to_s.empty?
-    return true if PLANNED_PATH_REF_SCHEMES.fetch(source_kind, []).include?(parsed.scheme)
 
-    source_kind == "issue" && parsed.scheme == "https" &&
-      parsed.host == "github.com" && parsed.path.match?(%r{/issues/\d+\z})
+    PLANNED_PATH_REF_SCHEMES.fetch(source_kind, []).include?(parsed.scheme)
   rescue URI::InvalidURIError
     false
   end
@@ -593,308 +940,6 @@ module BatchPlanPreflight
     violations
   end
 
-  def validate_stage_dependency_replay(plan, replay, supplied_gate, lane_ids)
-    unless replay.is_a?(Hash)
-      code = replay.nil? ? "stage-dependency-replay-missing" : "stage-dependency-replay-invalid"
-      return [violation(
-        code,
-        "$.stage_dependency_replay",
-        "Provide the exact stage-dependency-gate v1 input for deterministic replay."
-      )]
-    end
-    unless replay.keys.sort == %w[contract edges lanes version] &&
-           replay["contract"] == "stage-dependency-gate" &&
-           replay["version"] == 1 &&
-           replay["lanes"].is_a?(Array) &&
-           replay["edges"].is_a?(Array)
-      return [violation(
-        "stage-dependency-replay-invalid",
-        "$.stage_dependency_replay",
-        "Replay must contain exactly contract, version, lanes, and edges for stage-dependency-gate v1."
-      )]
-    end
-    if nested_unknown?(replay)
-      return [violation(
-        "stage-dependency-replay-unknown",
-        "$.stage_dependency_replay",
-        "Replay facts must not contain UNKNOWN."
-      )]
-    end
-
-    helper_path, helper_error = resolved_stage_dependency_gate
-    return [helper_error] if helper_error
-
-    recomputed_gate, replay_error = run_stage_dependency_replay(helper_path, plan, replay)
-    return [replay_error] if replay_error
-    unless complete_stage_dependency_gate?(recomputed_gate, plan, lane_ids)
-      return [violation(
-        "stage-dependency-replay-output-invalid",
-        "$.stage_dependency_replay",
-        "The fixed stage-dependency-gate helper did not return a complete valid result."
-      )]
-    end
-    return [] if recomputed_gate == supplied_gate
-
-    [violation(
-      "stage-dependency-replay-mismatch",
-      "$.stage_dependency_gate",
-      "Supplied stage_dependency_gate must exactly equal the deterministic replay result."
-    )]
-  end
-
-  def resolved_stage_dependency_gate
-    helper_uid = File.stat(HELPER_PATH).uid
-    directories = [
-      INSTALLATION_ROOT,
-      File.join(INSTALLATION_ROOT, "skills"),
-      File.join(INSTALLATION_ROOT, "skills", "pr-batch"),
-      File.join(INSTALLATION_ROOT, "skills", "pr-batch", "bin")
-    ]
-    resolved_directories = directories.map { |path| File.realpath(path) }
-    directory_chain = resolved_directories.flat_map do |path|
-      ancestors = []
-      loop do
-        ancestors << path
-        break if path == File.dirname(path)
-
-        path = File.dirname(path)
-      end
-      ancestors
-    end.uniq
-    safe_directories = directory_chain.all? do |path|
-      stat = File.lstat(path)
-      stat.directory? && [0, helper_uid].include?(stat.uid) && (stat.mode & 0o022).zero?
-    end
-    helper_stat = File.lstat(STAGE_DEPENDENCY_GATE_PATH)
-    safe_helper = helper_stat.file? &&
-                  helper_stat.uid == helper_uid &&
-                  (helper_stat.mode & 0o022).zero? &&
-                  (helper_stat.mode & 0o111).positive?
-    return [STAGE_DEPENDENCY_GATE_PATH, nil] if safe_directories && safe_helper
-
-    [nil, violation(
-      "stage-dependency-helper-unsafe",
-      "$.stage_dependency_replay",
-      "The fixed sibling stage-dependency-gate helper or its pack path is unsafe."
-    )]
-  rescue Errno::ENOENT, Errno::ENOTDIR
-    [nil, violation(
-      "stage-dependency-helper-missing",
-      "$.stage_dependency_replay",
-      "The fixed sibling stage-dependency-gate helper is missing."
-    )]
-  rescue SystemCallError
-    [nil, violation(
-      "stage-dependency-helper-unsafe",
-      "$.stage_dependency_replay",
-      "The fixed sibling stage-dependency-gate helper could not be safely resolved."
-    )]
-  end
-
-  def run_stage_dependency_replay(helper_path, plan, replay)
-    Tempfile.create(["stage-dependency-plan", ".json"]) do |plan_file|
-      plan_file.chmod(0o600)
-      plan_file.write(JSON.generate(plan))
-      plan_file.flush
-      Tempfile.create(["stage-dependency-replay", ".json"]) do |replay_file|
-        replay_file.chmod(0o600)
-        replay_file.write(JSON.generate(replay))
-        replay_file.flush
-        Tempfile.create("stage-dependency-replay-stdout") do |stdout_file|
-          Tempfile.create("stage-dependency-replay-stderr") do |stderr_file|
-            pid = Process.spawn(
-              STAGE_DEPENDENCY_REPLAY_ENV,
-              RbConfig.ruby,
-              helper_path,
-              "--trusted-plan",
-              plan_file.path,
-              "--trusted-plan-id",
-              plan.fetch("id"),
-              in: replay_file.path,
-              out: stdout_file.path,
-              err: stderr_file.path,
-              pgroup: true,
-              unsetenv_others: true
-            )
-            status = wait_for_stage_dependency_gate(pid)
-            if status == :timeout
-              return [nil, violation(
-                "stage-dependency-replay-timeout",
-                "$.stage_dependency_replay",
-                "The fixed stage-dependency-gate helper exceeded the bounded replay timeout."
-              )]
-            end
-            unless status.success?
-              return [nil, violation(
-                "stage-dependency-replay-execution-failed",
-                "$.stage_dependency_replay",
-                "The fixed stage-dependency-gate helper exited unsuccessfully."
-              )]
-            end
-
-            stdout_file.rewind
-            return [JSON.parse(stdout_file.read), nil]
-          end
-        end
-      end
-    end
-  rescue JSON::ParserError, TypeError, ArgumentError
-    [nil, violation(
-      "stage-dependency-replay-output-invalid",
-      "$.stage_dependency_replay",
-      "The fixed stage-dependency-gate helper returned invalid JSON."
-    )]
-  rescue SystemCallError
-    [nil, violation(
-      "stage-dependency-replay-execution-failed",
-      "$.stage_dependency_replay",
-      "The fixed stage-dependency-gate helper could not be executed."
-    )]
-  end
-
-  def wait_for_stage_dependency_gate(pid)
-    deadline = monotonic_time + STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS
-    loop do
-      waited = Process.waitpid2(pid, Process::WNOHANG)
-      return waited.last if waited
-      break if monotonic_time >= deadline
-
-      sleep STAGE_DEPENDENCY_REPLAY_POLL_SECONDS
-    end
-
-    terminate_stage_dependency_process_group(pid)
-    :timeout
-  rescue Errno::ECHILD
-    :timeout
-  end
-
-  def terminate_stage_dependency_process_group(pid)
-    signal_stage_dependency_process_group("TERM", pid)
-    sleep_until_stage_dependency_deadline(
-      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
-    )
-    signal_stage_dependency_process_group("KILL", pid)
-
-    wait_for_stage_dependency_child(
-      pid,
-      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
-    )
-    wait_for_stage_dependency_process_group_exit(
-      pid,
-      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
-    )
-  end
-
-  def signal_stage_dependency_process_group(signal, pid)
-    Process.kill(signal, -pid)
-  rescue Errno::ESRCH
-    nil
-  end
-
-  def wait_for_stage_dependency_child(pid, deadline)
-    while monotonic_time < deadline
-      waited = Process.waitpid2(pid, Process::WNOHANG)
-      return waited.last if waited
-
-      sleep STAGE_DEPENDENCY_REPLAY_POLL_SECONDS
-    end
-    nil
-  rescue Errno::ECHILD
-    nil
-  end
-
-  def stage_dependency_process_group_alive?(pid)
-    Process.kill(0, -pid)
-    true
-  rescue Errno::ESRCH
-    false
-  rescue Errno::EPERM
-    true
-  end
-
-  def wait_for_stage_dependency_process_group_exit(pid, deadline)
-    while monotonic_time < deadline
-      return true unless stage_dependency_process_group_alive?(pid)
-
-      sleep STAGE_DEPENDENCY_REPLAY_POLL_SECONDS
-    end
-    !stage_dependency_process_group_alive?(pid)
-  end
-
-  def sleep_until_stage_dependency_deadline(deadline)
-    loop do
-      remaining = deadline - monotonic_time
-      return if remaining <= 0
-
-      sleep [STAGE_DEPENDENCY_REPLAY_POLL_SECONDS, remaining].min
-    end
-  end
-
-  def monotonic_time
-    Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  end
-
-  def complete_stage_dependency_gate?(gate, plan, lane_ids)
-    expected_keys = %w[
-      checker_verdict
-      contract
-      critical_path
-      downstream_requirements
-      lanes
-      status
-      trusted_plan_binding
-      trusted_plan_id
-      version
-    ]
-    return false unless gate.is_a?(Hash) && gate.keys.sort == expected_keys
-    return false if nested_unknown?(gate)
-    return false unless validate_stage_dependencies(plan, gate, lane_ids).empty?
-
-    checker_verdict = gate["checker_verdict"]
-    critical_path = gate["critical_path"]
-    downstream = gate["downstream_requirements"]
-    checker_verdict.is_a?(Hash) &&
-      checker_verdict.keys.sort == %w[blockers status] &&
-      %w[blocked eligible].include?(checker_verdict["status"]) &&
-      checker_verdict["blockers"].is_a?(Array) &&
-      valid_critical_path?(critical_path) &&
-      downstream == {
-        "final_combined_tip_validation" => "required-via-repo-seam",
-        "preserved_gates" => %w[exact_head_ci independent_review unresolved_threads merge_readiness]
-      }
-  end
-
-  def valid_critical_path?(critical_path)
-    return false unless critical_path.is_a?(Hash)
-
-    expected_keys = %w[assignments edge_count lane_ids tie_breaker]
-    expected_keys << "reason" if critical_path.key?("reason")
-    critical_path.keys.sort == expected_keys.sort &&
-      critical_path["lane_ids"].is_a?(Array) &&
-      critical_path["edge_count"].is_a?(Integer) &&
-      critical_path["edge_count"] >= 0 &&
-      critical_path["tie_breaker"] == "maximum-dependency-hops-then-lexicographic-lane-id-sequence" &&
-      critical_path["assignments"].is_a?(Array) &&
-      critical_path["assignments"].all? do |assignment|
-        assignment.is_a?(Hash) &&
-          assignment.keys.sort == %w[checker lane_id maker] &&
-          assignment.values.all? { |value| nonempty_identity?(value) }
-      end
-  end
-
-  def nested_unknown?(value)
-    case value
-    when Hash
-      value.any? { |key, nested| nested_unknown?(key) || nested_unknown?(nested) }
-    when Array
-      value.any? { |nested| nested_unknown?(nested) }
-    when String
-      value.strip.casecmp?("UNKNOWN")
-    else
-      false
-    end
-  end
-
   def stage_dependency_plan_binding(plan)
     immutable_edges = plan.fetch("edges").map do |edge|
       edge.slice("id", "from", "to", "type")
@@ -921,35 +966,41 @@ module BatchPlanPreflight
       permissions.values.all? { |value| [true, false].include?(value) }
   end
 
-  def validate_collisions(lanes, groups, maps, dependency_plan, gate, completed_lane_ids)
+  def validate_collisions(lanes, groups, maps, _dependency_plan, _gate, _completed_lane_ids, reservations)
     lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
     lane_ids = lanes_by_id.keys.sort
-    gate_lanes = Array(gate.is_a?(Hash) ? gate["lanes"] : nil).filter_map do |lane|
-      [lane["id"], lane] if lane.is_a?(Hash)
-    end.to_h
-    collisions = []
+    violations = []
+    advisories = []
     lane_ids.combination(2) do |left_id, right_id|
       collision_paths = colliding_paths(maps.fetch(left_id), maps.fetch(right_id))
       next if collision_paths.empty?
       next if lanes_by_id.fetch(left_id)["wave"] != lanes_by_id.fetch(right_id)["wave"]
-      next if serialized_by_group?(lanes_by_id.fetch(left_id), lanes_by_id.fetch(right_id), groups)
-      next if serialized_by_edit_edge?(
-        left_id,
-        right_id,
-        dependency_plan.fetch("edges"),
-        gate_lanes,
-        completed_lane_ids
-      )
 
-      collisions << violation(
-        "unsafe-concurrent-edit",
+      reservation_collision = collision_paths.any? do |path|
+        reservations.any? do |reservation|
+          [left_id, right_id].include?(reservation["lane_id"]) && reservation_collides_with_path?(reservation, path)
+        end
+      end
+      advisories << violation(
+        "file-overlap-advisory",
         "$.file_touch_map",
-        "Same-wave lanes share changed path(s) without max-1 serialization or a typed edit edge: " \
+        "Same-wave lanes share changed path(s); treat this as integration care, not a launch dependency: " \
         "#{collision_paths.sort.join(', ')}.",
         lane_ids: [left_id, right_id]
       )
+      if reservation_collision
+        next if serialized_by_group?(lanes_by_id.fetch(left_id), lanes_by_id.fetch(right_id), groups)
+
+        violations << violation(
+          "unsafe-concurrent-edit",
+          "$.file_touch_map",
+          "Same-wave lanes share active expansion reservation path(s) without max-1 serialization: " \
+          "#{collision_paths.sort.join(', ')}.",
+          lane_ids: [left_id, right_id]
+        )
+      end
     end
-    collisions
+    [violations, advisories]
   end
 
   def colliding_paths(left_map, right_map)
@@ -965,6 +1016,14 @@ module BatchPlanPreflight
     paths.uniq
   end
 
+  def reservation_collides_with_path?(reservation, path)
+    return reservation["path"] == path unless reservation["type"] == "expansion-rename-reservation"
+
+    reservation.fetch("rename").values.any? do |endpoint|
+      path == endpoint || path.start_with?("#{endpoint}/")
+    end
+  end
+
   def serialized_by_group?(left, right, groups)
     group_id = left["serialization_group"]
     return false unless group_id.is_a?(String) && group_id == right["serialization_group"]
@@ -974,26 +1033,19 @@ module BatchPlanPreflight
     end
   end
 
-  def serialized_by_edit_edge?(left_id, right_id, edges, gate_lanes, completed_lane_ids)
-    edit_edge = edges.any? do |edge|
-      edge.is_a?(Hash) && edge["type"] == "edit" &&
-        [[left_id, right_id], [right_id, left_id]].include?([edge["from"], edge["to"]])
-    end
-    return false unless edit_edge
-    return true if completed_lane_ids.include?(left_id) || completed_lane_ids.include?(right_id)
-
-    [left_id, right_id].any? do |lane_id|
-      gate_lanes.dig(lane_id, "permissions", "patch_edit") != true
-    end
-  end
-
-  def launch_partition(lanes, gate, active_wave, serialization_groups, completed_lane_ids)
+  def launch_partition(lanes, gate, active_wave, serialization_groups, completed_lane_ids, active_lane_ids,
+                       blocked_lane_ids)
     gate_lanes = gate.fetch("lanes").to_h { |lane| [lane.fetch("id"), lane] }
     eligible = []
     held = []
     lanes.each do |lane|
       lane_id = lane.fetch("id")
-      next if completed_lane_ids.include?(lane_id)
+      next if completed_lane_ids.include?(lane_id) || active_lane_ids.include?(lane_id)
+
+      if blocked_lane_ids.include?(lane_id)
+        held << lane_id
+        next
+      end
 
       gate_lane = gate_lanes.fetch(lane_id)
       if lane["wave"] != active_wave
@@ -1019,8 +1071,12 @@ module BatchPlanPreflight
       group_lane_ids = eligible.select do |lane_id|
         lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
       end.sort
-      held.concat(group_lane_ids.drop(1))
-      eligible -= group_lane_ids.drop(1)
+      group_occupied = (active_lane_ids + blocked_lane_ids).any? do |lane_id|
+        lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
+      end
+      held_group_lane_ids = group_occupied ? group_lane_ids : group_lane_ids.drop(1)
+      held.concat(held_group_lane_ids)
+      eligible -= held_group_lane_ids
     end
     [eligible.sort, held.sort]
   end
@@ -1134,6 +1190,10 @@ module BatchPlanPreflight
 
   def nonempty_identity?(value)
     value.is_a?(String) && !value.strip.empty? && value != "UNKNOWN"
+  end
+
+  def known_single_line_text?(value)
+    nonempty_identity?(value) && !value.match?(/[\r\n\0]/)
   end
 
   def iso_date?(value)

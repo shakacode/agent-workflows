@@ -16,6 +16,13 @@ backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 
 # Instructions
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the canonical resolution and evidence-preservation rules in the loaded
+`workflows/pr-processing.md`. Apply the guide to review replies, checkpoint
+comments, and deferred issue bodies, while preserving every required marker,
+state row, section, and audit detail in `references/templates.md`.
+
 ## Maintainer Attention Contract
 
 Apply the Maintainer Attention Contract from `AGENTS.md` for all broad
@@ -242,6 +249,11 @@ For full-PR scans (plain PR number or PR URL with no specific review/comment anc
 
 - The summary marker is a PR issue comment whose body starts with `<!-- address-review-summary -->` on its very first line. Requiring `startswith` (not `contains`) means a human comment that quotes or embeds the marker in prose is not mistaken for a checkpoint and cannot silently advance the cutoff.
 - Legacy summary comments where the marker appears after a blank line, heading, or byte-order mark are ignored by this rule. If the cutoff appears to miss an older checkpoint, use `check all reviews`; new summary checkpoints created by this workflow always place the marker on the first line.
+- Checkpoint readability contract: keep the marker first, then show a concise
+  human header/status. Put the full itemized audit trail under a closed GitHub
+  `<details>` block with a `<summary>` (never `<details open>`), so the detail
+  remains durable but is collapsed by default. Keep any source-state marker
+  structurally complete for its parser.
 - If the user explicitly said `check all reviews`, ignore the cutoff and scan the full PR history.
 - If the input is a specific review URL or specific issue-comment URL, fetch that exact target even if it predates the latest summary comment.
 

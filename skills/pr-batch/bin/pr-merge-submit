@@ -6,12 +6,20 @@
 # integrity-bound eligible merge-assurance receipt before mutation.
 
 require "json"
+require "digest"
+require "etc"
+require "fileutils"
+require "open3"
 require "optparse"
+require "rbconfig"
 require "tempfile"
+require "tmpdir"
 require "time"
 require "uri"
+require "yaml"
 
 load File.expand_path("merge-assurance", __dir__) unless defined?(MergeAssurance)
+require_relative "../lib/current_integration_evidence"
 
 module PrMergeSubmit
   class Error < StandardError; end
@@ -25,6 +33,32 @@ module PrMergeSubmit
 
   GRAPHQL_FEATURE_HEADER = "GraphQL-Features: merge_queue"
   METHODS = %w[merge rebase squash].freeze
+  POLICY_CONFIG = ".agents/agent-workflow.yml"
+  MERGE_SUBMISSION_MODES = %w[direct merge_queue_only merge_queue_or_guarded_direct].freeze
+  MERGE_SUBMISSION_KEYS = %w[mode guarded_direct].freeze
+  GUARDED_DIRECT_KEYS = %w[executable method non_atomic_base].freeze
+  NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
+  GUARDED_DIRECT_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
+  GIT_BLOB_OID = /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/
+  ENV_INTERPRETER = "/usr/bin/env"
+  ENV_PROGRAM = /\A[A-Za-z0-9][A-Za-z0-9_.+-]*\z/
+  TRUSTED_INTERPRETER_DIRS = [
+    File.dirname(RbConfig.ruby),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin"
+  ].uniq.freeze
+  SYSTEM_TOOL_DIRS = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin"
+  ].freeze
 
   module_function
 
@@ -49,8 +83,9 @@ module PrMergeSubmit
 
   class Runner
     PR_QUERY = <<~GRAPHQL
-      query($owner: String!, $name: String!, $number: Int!) {
+      query($owner: String!, $name: String!, $number: Int!, $qualifiedBase: String!) {
         repository(owner: $owner, name: $name) {
+          currentBaseRef: ref(qualifiedName: $qualifiedBase) { target { oid } }
           pullRequest(number: $number) {
             id
             headRefOid
@@ -62,6 +97,11 @@ module PrMergeSubmit
             merged
             mergedAt
             mergeCommit { oid }
+            potentialMergeCommit {
+              oid
+              tree { oid }
+              parents(first: 3) { totalCount nodes { oid } }
+            }
             isInMergeQueue
             isMergeQueueEnabled
             mergeQueueEntry {
@@ -91,6 +131,39 @@ module PrMergeSubmit
       }
     GRAPHQL
 
+    MERGE_MUTATION = <<~GRAPHQL
+      mutation(
+        $pullRequestId: ID!,
+        $expectedHeadOid: GitObjectID!,
+        $mergeMethod: PullRequestMergeMethod!,
+        $commitHeadline: String,
+        $commitBody: String
+      ) {
+        mergePullRequest(input: {
+          pullRequestId: $pullRequestId,
+          expectedHeadOid: $expectedHeadOid,
+          mergeMethod: $mergeMethod,
+          commitHeadline: $commitHeadline,
+          commitBody: $commitBody
+        }) {
+          pullRequest {
+            headRefOid
+            baseRefName
+            baseRefOid
+            state
+            merged
+            mergedAt
+            url
+            mergeCommit { oid }
+          }
+        }
+      }
+    GRAPHQL
+
+    def initialize(system_tools: {})
+      @system_tools = system_tools
+    end
+
     def run(argv)
       @pending_signal = nil
       @cancellation_signal = nil
@@ -103,8 +176,8 @@ module PrMergeSubmit
       return print_help if options[:help]
 
       validate_options!(options)
-      @trusted_gh_executable = options.fetch(:trusted_gh_executable)
       @merge_assurance_receipt = load_merge_assurance_receipt!(options)
+      @merge_submission = load_merge_submission_policy!
       pull_request = fetch_pr(options)
       result = if exact_merge?(pull_request, options)
                  already_merged_result(pull_request, options)
@@ -132,16 +205,12 @@ module PrMergeSubmit
       options = {
         method: nil, subject: nil, body: nil, repo: nil, host: nil,
         expected_head: nil, expected_base: nil, merge_assurance_receipt: nil,
-        repo_root: nil, semantic_assessment: nil, trusted_helper_provenance: nil,
-        trusted_git_executable: nil, trusted_gh_executable: nil,
         help: false, pr: nil
       }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
-                      "--merge-assurance-receipt FILE --repo-root PATH " \
-                      "--semantic-assessment FILE --trusted-helper-provenance PROVENANCE " \
-                      "--trusted-git-executable ABS --trusted-gh-executable ABS [options]"
+                      "--merge-assurance-receipt FILE [options]"
         opts.on("--repo REPO", "GitHub repository in OWNER/REPO form") { |value| options[:repo] = value }
         opts.on("--host HOST", "Exact GitHub hostname, with an optional port") { |value| options[:host] = value }
         opts.on("--expected-head SHA", "Exact PR head SHA already cleared by readiness gates") do |value|
@@ -153,30 +222,11 @@ module PrMergeSubmit
         opts.on("--merge-assurance-receipt FILE", "Fresh eligible merge-assurance receipt") do |value|
           options[:merge_assurance_receipt] = value
         end
-        opts.on("--repo-root PATH", "Repository containing the exact trusted base") do |value|
-          options[:repo_root] = value
-        end
-        opts.on("--semantic-assessment FILE", "External coordinator-owned semantic assessment") do |value|
-          options[:semantic_assessment] = value
-        end
-        opts.on("--trusted-helper-provenance PROVENANCE", "Coordinator-established runtime identity") do |value|
-          options[:trusted_helper_provenance] = value
-        end
-        opts.on("--trusted-git-executable ABS", "Coordinator-established absolute git executable") do |value|
-          options[:trusted_git_executable] = value
-        end
-        opts.on("--trusted-gh-executable ABS", "Coordinator-established absolute gh executable") do |value|
-          options[:trusted_gh_executable] = value
-        end
-        opts.on("--method METHOD", METHODS, "Requested method; merge queue configuration controls the actual method") do |value|
+        opts.on("--method METHOD", METHODS, "Direct method; merge queue configuration controls queued merges") do |value|
           options[:method] = value
         end
-        opts.on("--subject SUBJECT", "Legacy direct-merge subject; unused for queue submission") do |value|
-          options[:subject] = value
-        end
-        opts.on("--body BODY", "Legacy direct-merge body; unused for queue submission") do |value|
-          options[:body] = value
-        end
+        opts.on("--subject SUBJECT", "Direct merge commit subject") { |value| options[:subject] = value }
+        opts.on("--body BODY", "Direct merge commit body") { |value| options[:body] = value }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
       end
       remaining = parser.parse(argv)
@@ -194,13 +244,13 @@ module PrMergeSubmit
 
         #{usage_parser}
 
-        The helper observes an exact terminal merge without mutation, preserves
-        exact existing queue membership, and uses enqueuePullRequest only when
-        GitHub reports the base is queue-controlled. An open PR whose base has no
-        merge queue fails closed because GitHub exposes no atomic expected-base
-        OID for direct merge. The helper never enables auto-merge. It reconciles
-        ambiguous enqueue responses against live exact-head state; exit 2 means
-        the outcome remains UNKNOWN and must not be retried blindly.
+        The portable default uses an expected-head-bound mergePullRequest mutation
+        for a queue-disabled base. Merge Queue is used only when the trusted-base
+        merge_submission seam explicitly selects merge_queue_only or
+        merge_queue_or_guarded_direct. The guarded-direct mode may delegate to one
+        repository-owned executable guard under .agents/bin. The helper never
+        enables auto-merge or a merge queue. Exit 2 means a mutation outcome remains
+        UNKNOWN and must not be retried blindly.
       HELP
       0
     end
@@ -209,17 +259,10 @@ module PrMergeSubmit
       OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
-                      "--merge-assurance-receipt FILE --repo-root PATH " \
-                      "--semantic-assessment FILE --trusted-helper-provenance PROVENANCE " \
-                      "--trusted-git-executable ABS --trusted-gh-executable ABS [options]"
-        opts.separator "        --subject SUBJECT  Legacy direct-merge subject; unused for queue submission"
-        opts.separator "        --body BODY        Legacy direct-merge body; unused for queue submission"
-        opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v1 receipt"
-        opts.separator "        --repo-root PATH  Repository containing the exact trusted base"
-        opts.separator "        --semantic-assessment FILE  External coordinator-owned assessment"
-        opts.separator "        --trusted-helper-provenance PROVENANCE  Expected runtime identity"
-        opts.separator "        --trusted-git-executable ABS  Trusted absolute git executable"
-        opts.separator "        --trusted-gh-executable ABS  Trusted absolute gh executable"
+                      "--merge-assurance-receipt FILE [options]"
+        opts.separator "        --subject SUBJECT  Direct merge commit subject"
+        opts.separator "        --body BODY        Direct merge commit body"
+        opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v2 receipt"
       end
     end
 
@@ -237,26 +280,6 @@ module PrMergeSubmit
       end
       raise Error, "--method is required" unless METHODS.include?(options[:method])
       raise Error, "--merge-assurance-receipt is required" if options[:merge_assurance_receipt].to_s.empty?
-      raise Error, "--repo-root is required" if options[:repo_root].to_s.empty?
-      if options[:semantic_assessment].to_s.empty?
-        raise Error, "--semantic-assessment is required"
-      end
-      if options[:trusted_helper_provenance].to_s.empty?
-        raise Error, "--trusted-helper-provenance is required"
-      end
-      raise Error, "--trusted-git-executable is required" if options[:trusted_git_executable].to_s.empty?
-      raise Error, "--trusted-gh-executable is required" if options[:trusted_gh_executable].to_s.empty?
-
-      begin
-        options[:trusted_git_executable] = MergeAssurance.trusted_executable_path(
-          options[:trusted_git_executable], "--trusted-git-executable"
-        )
-        options[:trusted_gh_executable] = MergeAssurance.trusted_executable_path(
-          options[:trusted_gh_executable], "--trusted-gh-executable"
-        )
-      rescue MergeAssurance::Error => e
-        raise Error, e.message
-      end
 
       reject_leading_at!(options, :subject)
       reject_leading_at!(options, :body)
@@ -267,10 +290,11 @@ module PrMergeSubmit
       freshness issued_at verdict version
     ].freeze
     RECEIPT_BINDING_KEYS = %w[
-      authority base diff_identity head_sha host pr repo
+      authority base current_integration diff_identity head_sha host pr repo
     ].freeze
     RECEIPT_EVIDENCE_KEYS = %w[
       authenticated_tracker_reads autonomous_result ci_result context
+      selected_hosted_ci_receipts
     ].freeze
     AUTHENTICATED_TRACKER_READ_KEYS = %w[
       checked_at contract diff_identity head_sha host issue issue_metadata
@@ -285,10 +309,10 @@ module PrMergeSubmit
       receipt = PrMergeSubmit.parse_json!(raw, "merge-assurance receipt")
       unless receipt.keys.sort == RECEIPT_KEYS.sort &&
              receipt["contract"] == "merge-assurance-receipt" &&
-             receipt["version"] == 1 &&
+             receipt["version"] == 2 &&
              receipt["eligible"] == true &&
              receipt["verdict"] == "ELIGIBLE"
-        raise Error, "merge-assurance receipt is not an eligible v1 receipt"
+        raise Error, "merge-assurance receipt is not an eligible v2 receipt"
       end
       unless receipt["bindings"].is_a?(Hash) &&
              receipt["bindings"].keys.sort == RECEIPT_BINDING_KEYS.sort
@@ -301,23 +325,12 @@ module PrMergeSubmit
       evidence = receipt["evidence"]
       now = Time.now.utc
       validate_receipt_evidence!(receipt, evidence)
-      validate_receipt_evidence_bindings!(receipt, evidence, options)
-      validate_receipt_option_bindings!(receipt, options)
       validate_receipt_freshness!(receipt, now)
-      recomputed_autonomous_result = MergeAssurance.replay_autonomous_result(
-        repo_root: options[:repo_root],
-        semantic_assessment: options[:semantic_assessment],
-        trusted_helper_provenance: options[:trusted_helper_provenance],
-        trusted_git_executable: options[:trusted_git_executable],
-        trusted_gh_executable: options[:trusted_gh_executable],
-        context: evidence["context"]
-      )
       reassessed = MergeAssurance.assess(
         ci_result: evidence["ci_result"],
         autonomous_result: evidence["autonomous_result"],
-        recomputed_autonomous_result:,
         context: evidence["context"],
-        trusted_gh_executable: options[:trusted_gh_executable],
+        selected_hosted_ci_receipts: evidence["selected_hosted_ci_receipts"],
         now:
       )
       unless reassessed["eligible"] == true
@@ -337,17 +350,17 @@ module PrMergeSubmit
         raise Error, "merge-assurance receipt freshness contract is malformed"
       end
 
+      validate_receipt_option_bindings!(receipt, options)
       receipt
     rescue Errno::ENOENT, Errno::EACCES => e
       raise Error, "merge-assurance receipt is unavailable: #{e.message}"
-    rescue MergeAssurance::Error => e
-      raise Error, e.message
     end
 
     def validate_receipt_evidence!(receipt, evidence)
       unless evidence.is_a?(Hash) && evidence.keys.sort == RECEIPT_EVIDENCE_KEYS.sort &&
              evidence["context"].is_a?(Hash) &&
-             evidence["authenticated_tracker_reads"].is_a?(Array)
+             evidence["authenticated_tracker_reads"].is_a?(Array) &&
+             evidence["selected_hosted_ci_receipts"].is_a?(Hash)
         raise Error, "merge-assurance receipt evidence is malformed"
       end
       if MergeAssurance.contains_unknown?(evidence["authenticated_tracker_reads"])
@@ -371,22 +384,6 @@ module PrMergeSubmit
         context:,
         issued_at: receipt["issued_at"]
       )
-    end
-
-    def validate_receipt_evidence_bindings!(receipt, evidence, options)
-      context = evidence.fetch("context")
-      expected = context.slice(
-        "authority", "base", "diff_identity", "head_sha", "host", "pr", "repo"
-      )
-      unless receipt.fetch("bindings") == expected
-        raise Error, "merge-assurance receipt bindings do not match its evidence context"
-      end
-
-      provenance = options[:trusted_helper_provenance]
-                   .to_s[/\Atrusted-base:([0-9a-f]{40})\z/, 1]
-      return if provenance.nil? || provenance == context.dig("base", "sha")
-
-      raise Error, "merge-assurance receipt base SHA does not match trusted helper provenance"
     end
 
     def validate_authenticated_tracker_read!(read, tracker:, context:, issued_at:)
@@ -463,6 +460,237 @@ module PrMergeSubmit
         bindings.dig("base", "ref") == options[:expected_base]
     end
 
+    def load_merge_submission_policy!
+      base_sha = @merge_assurance_receipt.dig("bindings", "base", "sha").to_s
+      @repo_root = trusted_repo_root!
+      raw = trusted_blob!(
+        base_sha, POLICY_CONFIG, "trusted-base merge-submission policy", allow_missing: true
+      )
+      return { "mode" => "direct", "source" => "portable_default" } if raw.nil?
+
+      config = YAML.safe_load(
+        raw, permitted_classes: [], permitted_symbols: [], aliases: false
+      ) || {}
+      raise Error, "trusted-base policy is not a mapping" unless config.is_a?(Hash)
+
+      seam = config["merge_submission"]
+      return { "mode" => "direct", "source" => "portable_default" } if seam.nil?
+
+      validate_merge_submission_mapping!(seam)
+      if %w[direct merge_queue_only].include?(seam["mode"])
+        return { "mode" => seam["mode"], "source" => "trusted_base" }
+      end
+
+      guarded_direct = seam.fetch("guarded_direct")
+      guard_identity, trusted_guard_bytes = load_trusted_guard_identity!(
+        base_sha, guarded_direct.fetch("executable")
+      )
+      {
+        "mode" => seam["mode"],
+        "source" => "trusted_base",
+        "guarded_direct" => {
+          "executable" => guarded_direct.fetch("executable"),
+          "method" => guarded_direct.fetch("method"),
+          "non_atomic_base" => guarded_direct.fetch("non_atomic_base").dup,
+          "identity" => guard_identity,
+          "trusted_bytes" => trusted_guard_bytes
+        }
+      }
+    rescue Psych::Exception => e
+      raise Error, "trusted-base merge-submission policy is invalid YAML: #{e.message.lines.first.to_s.strip}"
+    end
+
+    def validate_merge_submission_mapping!(seam)
+      raise Error, "merge_submission must be a mapping" unless seam.is_a?(Hash)
+
+      mode = seam["mode"]
+      raise Error, "merge_submission.mode is invalid" unless MERGE_SUBMISSION_MODES.include?(mode)
+
+      expected_keys = %w[direct merge_queue_only].include?(mode) ? ["mode"] : MERGE_SUBMISSION_KEYS
+      unless exact_string_keys?(seam, expected_keys)
+        raise Error, "merge_submission keys must be exactly: #{expected_keys.sort.join(', ')}"
+      end
+      return if %w[direct merge_queue_only].include?(mode)
+
+      guarded_direct = seam["guarded_direct"]
+      unless exact_string_keys?(guarded_direct, GUARDED_DIRECT_KEYS)
+        raise Error, "merge_submission.guarded_direct keys must be exactly: #{GUARDED_DIRECT_KEYS.sort.join(', ')}"
+      end
+
+      executable = guarded_direct["executable"]
+      unless valid_guard_executable?(executable)
+        raise Error, "merge_submission.guarded_direct.executable must name one repository-root-relative file under .agents/bin"
+      end
+      unless METHODS.include?(guarded_direct["method"])
+        raise Error, "merge_submission.guarded_direct.method must be merge, rebase, or squash"
+      end
+
+      acknowledgement = guarded_direct["non_atomic_base"]
+      unless exact_string_keys?(acknowledgement, NON_ATOMIC_BASE_KEYS)
+        raise Error, "merge_submission.guarded_direct.non_atomic_base keys must be exactly: " \
+                     "#{NON_ATOMIC_BASE_KEYS.sort.join(', ')}"
+      end
+      unless acknowledgement["acknowledged"] == true
+        raise Error, "merge_submission.guarded_direct.non_atomic_base.acknowledged must be true"
+      end
+
+      rationale = acknowledgement["rationale"]
+      return if valid_non_atomic_rationale?(rationale)
+
+      raise Error, "merge_submission.guarded_direct.non_atomic_base.rationale must be nonempty, resolved single-line prose"
+    end
+
+    def valid_guard_executable?(value)
+      value.is_a?(String) && value.match?(GUARDED_DIRECT_EXECUTABLE) &&
+        !%w[. ..].include?(File.basename(value))
+    end
+
+    def exact_string_keys?(mapping, expected_keys)
+      mapping.is_a?(Hash) && mapping.keys.all?(String) && mapping.keys.sort == expected_keys.sort
+    end
+
+    def valid_non_atomic_rationale?(value)
+      return false unless value.is_a?(String)
+
+      rationale = value.strip
+      !rationale.empty? && rationale.length <= 500 &&
+        !rationale.match?(/[[:cntrl:]]/) &&
+        !rationale.casecmp?("UNKNOWN") &&
+        !rationale.match?(/<[^>]+>/)
+    end
+
+    def trusted_repo_root!
+      stdout, stderr, status = git_capture("rev-parse", "--show-toplevel", chdir: Dir.pwd)
+      raise Error, "could not resolve consumer repository root: #{failure_output(stdout, stderr)}" unless status.success?
+
+      root = File.realpath(stdout.strip)
+      raise Error, "consumer repository root is not a directory" unless File.directory?(root)
+
+      root
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "could not resolve consumer repository root: #{e.message}"
+    end
+
+    def trusted_blob!(base_sha, relative_path, context, allow_missing: false)
+      stdout, stderr, status = git_capture(
+        "-C", @repo_root, "cat-file", "blob", "#{base_sha}:#{relative_path}", chdir: @repo_root
+      )
+      unless status.success?
+        return nil if allow_missing && trusted_path_absent?(base_sha, relative_path)
+
+        raise Error, "#{context} is unavailable: #{failure_output(stdout, stderr)}"
+      end
+
+      stdout.b
+    end
+
+    def trusted_path_absent?(base_sha, relative_path)
+      _stdout, _stderr, commit_status = git_capture(
+        "-C", @repo_root, "cat-file", "-e", "#{base_sha}^{commit}", chdir: @repo_root
+      )
+      return false unless commit_status.success?
+
+      stdout, _stderr, tree_status = git_capture(
+        "-C", @repo_root, "ls-tree", base_sha, "--", relative_path, chdir: @repo_root
+      )
+      tree_status.success? && stdout.empty?
+    end
+
+    def load_trusted_guard_identity!(base_sha, relative_path)
+      trusted_bytes = trusted_blob!(base_sha, relative_path, "trusted-base guarded-direct executable")
+      stdout, stderr, status = git_capture(
+        "-C", @repo_root, "ls-tree", base_sha, "--", relative_path, chdir: @repo_root
+      )
+      raise Error, "trusted-base guarded-direct executable metadata is unavailable: #{failure_output(stdout, stderr)}" unless status.success?
+
+      match = stdout.match(/\A(?<mode>\d{6}) blob (?<oid>[0-9a-f]+)\t(?<path>[^\r\n]+)\n?\z/)
+      unless match && valid_git_blob_oid?(match[:oid]) &&
+             match[:mode] == "100755" && match[:path] == relative_path
+        raise Error, "trusted-base guarded-direct executable must be one executable regular file"
+      end
+
+      identity = {
+        "path" => relative_path,
+        "trusted_base_sha" => base_sha,
+        "blob_oid" => match[:oid],
+        "sha256" => Digest::SHA256.hexdigest(trusted_bytes)
+      }
+      [identity, trusted_bytes]
+    end
+
+    def validate_live_guard!(relative_path, trusted_bytes)
+      live_path = File.join(@repo_root, relative_path)
+      %w[.agents .agents/bin].each do |component|
+        stat = File.lstat(File.join(@repo_root, component))
+        raise Error, "guarded-direct executable path contains a symlink" if stat.symlink?
+        raise Error, "guarded-direct executable parent is not a directory" unless stat.directory?
+      end
+      stat = File.lstat(live_path)
+      if stat.symlink? || !stat.file? || !File.executable?(live_path) || File.realpath(live_path) != live_path
+        raise Error, "guarded-direct executable is missing, unsafe, or not executable: #{relative_path}"
+      end
+      unless File.binread(live_path) == trusted_bytes
+        raise Error, "guarded-direct executable does not match the trusted-base blob: #{relative_path}"
+      end
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "guarded-direct executable is unavailable: #{relative_path}: #{e.message}"
+    end
+
+    def valid_git_blob_oid?(value)
+      value.is_a?(String) && value.match?(GIT_BLOB_OID)
+    end
+
+    def git_capture(*args, chdir:)
+      account = local_account!
+      environment = {
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => File::NULL,
+        "GIT_NO_REPLACE_OBJECTS" => "1",
+        "GIT_OPTIONAL_LOCKS" => "0",
+        "GIT_TERMINAL_PROMPT" => "0"
+      }
+      executable = resolve_system_tool!("git", outside_root: chdir)
+      Open3.capture3(environment, executable, *args, chdir:, unsetenv_others: true)
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "git could not be launched after trusted resolution: #{e.message}"
+    end
+
+    def resolve_system_tool!(name, outside_root:)
+      candidate = @system_tools[name]
+      candidate ||= SYSTEM_TOOL_DIRS
+                    .map { |directory| File.join(directory, name) }
+                    .find { |path| File.file?(path) && File.executable?(path) }
+      raise Error, "#{name} is not installed in an approved system tool directory" unless candidate
+
+      realpath = File.realpath(candidate)
+      repository_root = File.realpath(outside_root)
+      repository_prefix = "#{repository_root}#{File::SEPARATOR}"
+      if realpath == repository_root || realpath.start_with?(repository_prefix)
+        raise Error, "#{name} must resolve outside the consumer repository"
+      end
+
+      stat = File.stat(realpath)
+      unless stat.file? && File.executable?(realpath)
+        raise Error, "#{name} is not an executable regular file"
+      end
+
+      realpath
+    rescue Errno::ENOENT
+      raise Error, "#{name} is not installed in an approved system tool directory"
+    rescue Errno::EACCES
+      raise Error, "#{name} in the approved system tool directories is inaccessible"
+    end
+
+    def local_account!
+      Etc.getpwuid(Process.uid)
+    rescue ArgumentError
+      raise Error, "local account identity is unavailable for uid #{Process.uid}"
+    end
+
     def validate_receipt_live_bindings!(pull_request, options)
       bindings = @merge_assurance_receipt.fetch("bindings")
       unless pull_request["headRefOid"].to_s.casecmp?(bindings["head_sha"])
@@ -471,11 +699,64 @@ module PrMergeSubmit
       unless pull_request["baseRefName"] == bindings.dig("base", "ref")
         raise Error, "PR base moved: receipt binds #{bindings.dig('base', 'ref')}, found #{pull_request['baseRefName']}"
       end
-      unless pull_request["baseRefOid"].to_s.casecmp?(bindings.dig("base", "sha").to_s)
-        raise Error, "merge-assurance receipt base SHA mismatch: expected " \
-                     "#{bindings.dig('base', 'sha')}, found #{pull_request['baseRefOid']}"
-      end
+
+      validate_receipt_base_sha!(pull_request)
+      validate_current_integration_live!(pull_request, bindings.fetch("current_integration"))
       validate_receipt_option_bindings!(@merge_assurance_receipt, options)
+    end
+
+    def validate_current_integration_live!(pull_request, integration)
+      decision = integration.dig("reuse", "decision")
+      return if decision == "base-unchanged"
+
+      unless decision == "reuse-exact-head"
+        raise Error, "merge-assurance receipt current integration is not reusable"
+      end
+
+      expected = integration.fetch("candidate")
+      actual = if expected["source"] == "github-potential-merge-commit"
+                 normalize_live_integration_candidate!(pull_request["potentialMergeCommit"])
+               else
+                 CurrentIntegrationEvidence.local_candidate(
+                   @repo_root,
+                   integration.dig("current_base", "sha"),
+                   integration.fetch("head_sha")
+                 )
+               end
+      return if same_current_integration_candidate?(actual, expected)
+
+      raise Error, "live current integration candidate no longer matches the merge-assurance receipt"
+    rescue CurrentIntegrationEvidence::Error, KeyError, TypeError => e
+      raise Error, "live current integration candidate is unavailable: #{e.message}"
+    end
+
+    def same_current_integration_candidate?(actual, expected)
+      # GitHub may regenerate the synthetic commit object while preserving the
+      # integration consequence. The tree and ordered parents are the replayed
+      # semantic identity; the receipt-retained provider OID is provenance.
+      actual["source"] == expected["source"] &&
+        actual["tree_oid"] == expected["tree_oid"] &&
+        actual["parents"] == expected["parents"]
+    end
+
+    def normalize_live_integration_candidate!(candidate)
+      unless candidate.is_a?(Hash) && candidate.dig("parents", "totalCount") == 2
+        raise Error, "GitHub current integration candidate is missing or malformed"
+      end
+
+      normalized = {
+        "source" => "github-potential-merge-commit",
+        "oid" => candidate["oid"],
+        "tree_oid" => candidate.dig("tree", "oid"),
+        "parents" => Array(candidate.dig("parents", "nodes")).map { |parent| parent["oid"] }
+      }
+      unless normalized["oid"].to_s.match?(GIT_BLOB_OID) &&
+             normalized["tree_oid"].to_s.match?(GIT_BLOB_OID) &&
+             normalized["parents"].all? { |parent| parent.to_s.match?(GIT_BLOB_OID) }
+        raise Error, "GitHub current integration candidate is missing or malformed"
+      end
+
+      normalized
     end
 
     # gh treats a field value beginning with "@" as a file path to read, so a
@@ -507,6 +788,7 @@ module PrMergeSubmit
         "-f", "owner=#{owner}",
         "-f", "name=#{name}",
         "-F", "number=#{options[:pr]}",
+        "-f", "qualifiedBase=refs/heads/#{options[:expected_base]}",
         host: options[:host]
       )
       raise Error, "could not fetch PR metadata: #{failure_output(stdout, stderr)}" unless status.success?
@@ -515,16 +797,22 @@ module PrMergeSubmit
       errors = payload["errors"]
       raise Error, "PR merge-queue query returned errors: #{JSON.generate(errors)}" unless Array(errors).empty?
 
-      pull_request = payload.dig("data", "repository", "pullRequest")
+      repository = payload.dig("data", "repository")
+      pull_request = repository["pullRequest"] if repository.is_a?(Hash)
       raise Error, "PR merge-queue query returned no pull request" unless pull_request.is_a?(Hash)
 
+      pull_request["currentBaseRefOid"] = repository.dig("currentBaseRef", "target", "oid")
       validate_url_host!(pull_request["url"], options[:host])
 
       pull_request
     end
 
     def submit(pull_request, options)
+      mode = @merge_submission.fetch("mode")
       if pull_request["isInMergeQueue"] == true
+        if mode == "direct"
+          raise Error, direct_queue_configuration_error
+        end
         return existing_queue_result(pull_request, options) if exact_queue?(pull_request, options)
 
         raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof"
@@ -533,13 +821,29 @@ module PrMergeSubmit
         raise UnknownOutcome, "PR merge-queue membership is inconsistent or UNKNOWN"
       end
 
-      return enqueue_result(pull_request, options) if pull_request["isMergeQueueEnabled"] == true
+      if pull_request["isMergeQueueEnabled"] == true
+        raise Error, direct_queue_configuration_error if mode == "direct"
+
+        return enqueue_result(pull_request, options)
+      end
       unless pull_request["isMergeQueueEnabled"] == false
         raise Error, "PR merge-queue state is missing or UNKNOWN"
       end
 
-      raise UnknownOutcome, "direct merge is unsupported because GitHub has no atomic expected-base OID; " \
-                            "configure the base branch to use a merge queue"
+      if mode == "merge_queue_only"
+        raise Error, "queue-disabled submission is unsupported by the trusted-base merge_submission " \
+                     "policy; configure mode: direct, configure an explicit repository-owned guarded-direct " \
+                     "exception, or enable the repository merge queue"
+      end
+
+      return guarded_direct_result(options) if mode == "merge_queue_or_guarded_direct"
+
+      direct_merge_result(options)
+    end
+
+    def direct_queue_configuration_error
+      "live repository merge queue is enabled but merge_submission mode is direct; configure " \
+        "merge_submission.mode: merge_queue_only (or merge_queue_or_guarded_direct) to opt into Merge Queue"
     end
 
     def validate_pr!(pull_request, options, require_open: true)
@@ -559,10 +863,416 @@ module PrMergeSubmit
     end
 
     def validate_receipt_base_sha!(pull_request)
-      expected = @merge_assurance_receipt.dig("bindings", "base", "sha")
-      return if pull_request["baseRefOid"].to_s.casecmp?(expected.to_s)
+      expected_current = @merge_assurance_receipt.dig("bindings", "base", "sha")
+      return if pull_request["currentBaseRefOid"].to_s.casecmp?(expected_current.to_s)
 
-      raise Error, "merge-assurance receipt base SHA mismatch: expected #{expected}, found #{pull_request['baseRefOid']}"
+      raise Error, "merge-assurance receipt base SHA mismatch: expected " \
+                   "#{expected_current}, found #{pull_request['currentBaseRefOid']}"
+    end
+
+    def direct_merge_result(options)
+      # Re-read immediately before mutation so the receipt-bound base and exact
+      # head are checked at the narrowest practical point. GitHub's direct merge
+      # mutation binds the expected head OID but has no expected-base OID field.
+      refreshed = fetch_pr(options)
+      validate_receipt_live_bindings!(refreshed, options)
+      validate_pr!(refreshed, options)
+      if refreshed["isInMergeQueue"] == true || refreshed["isMergeQueueEnabled"] == true
+        raise Error, direct_queue_configuration_error
+      end
+      unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil? &&
+             refreshed["isMergeQueueEnabled"] == false
+        raise Error, "PR merge-queue state became missing, inconsistent, or UNKNOWN before direct submission"
+      end
+
+      stdout, stderr, status = run_gh(
+        *direct_merge_args(refreshed, options), host: options[:host], mutation: true
+      )
+      diagnostics = failure_output(stdout, stderr)
+      unless status.success?
+        errors = PrMergeSubmit.graphql_errors(stdout)
+        return reconcile_direct_graphql_errors!(options, errors) if errors
+
+        return reconcile_mutation_outcome!(
+          options, "direct merge submission", diagnostics, route: :direct
+        )
+      end
+
+      payload = begin
+        PrMergeSubmit.parse_json!(stdout, "direct merge")
+      rescue Error => e
+        return reconcile_mutation_outcome!(
+          options, "direct merge", failure_output(e.message, stderr), route: :direct
+        )
+      end
+      errors = Array(payload["errors"])
+      return reconcile_direct_graphql_errors!(options, errors) if errors.any?
+
+      merged_pull_request = payload.dig("data", "mergePullRequest", "pullRequest")
+      begin
+        validate_merged_pr!(merged_pull_request, options)
+      rescue Error => e
+        return reconcile_mutation_outcome!(
+          options, "direct merge response validation", failure_output(e.message, stderr), route: :direct
+        )
+      end
+      direct_result(merged_pull_request, options, stderr)
+    end
+
+    def direct_merge_args(pull_request, options)
+      args = [
+        "api", "graphql",
+        "-H", GRAPHQL_FEATURE_HEADER,
+        "-f", "query=#{MERGE_MUTATION}",
+        "-f", "pullRequestId=#{pull_request.fetch('id')}",
+        "-f", "expectedHeadOid=#{options[:expected_head]}",
+        "-f", "mergeMethod=#{options[:method].upcase}"
+      ]
+      args.concat(["-f", "commitHeadline=#{options[:subject]}"]) if options[:subject]
+      args.concat(["-f", "commitBody=#{options[:body]}"]) if options[:body]
+      args
+    end
+
+    def validate_merged_pr!(pull_request, options)
+      raise Error, "direct merge submission returned no pull request" unless pull_request.is_a?(Hash)
+
+      validate_url_host!(pull_request["url"], options[:host])
+      expected_url = "https://#{options[:host]}/#{options[:repo]}/pull/#{options[:pr]}"
+      raise Error, "direct merge response PR URL mismatch" unless pull_request["url"] == expected_url
+      raise Error, "direct merge response did not report MERGED state" unless pull_request["state"] == "MERGED"
+      raise Error, "direct merge did not report a merged PR" unless pull_request["merged"] == true
+      unless valid_merge_commit_oid?(pull_request.dig("mergeCommit", "oid"))
+        raise Error, "direct merge did not report a merge commit"
+      end
+      unless pull_request["baseRefName"] == options[:expected_base]
+        raise Error, "PR base moved during direct merge: expected #{options[:expected_base]}, " \
+                     "found #{pull_request['baseRefName']}"
+      end
+      return if pull_request["headRefOid"].to_s.casecmp?(options[:expected_head])
+
+      raise Error, "PR head moved during direct merge: expected #{options[:expected_head]}, " \
+                   "found #{pull_request['headRefOid']}"
+    end
+
+    def direct_result(pull_request, options, diagnostics)
+      {
+        "pr" => options[:pr].to_i,
+        "repo" => options[:repo],
+        "url" => pull_request["url"],
+        "expected_head" => options[:expected_head],
+        "expected_base" => options[:expected_base],
+        "submission" => "direct",
+        "method" => options[:method],
+        "atomic_expected_base_oid" => false,
+        "merged_at" => pull_request["mergedAt"],
+        "merge_commit" => pull_request.dig("mergeCommit", "oid"),
+        "diagnostics" => diagnostics.strip
+      }.reject { |_key, value| value.nil? || value == "" }
+    end
+
+    def guarded_direct_result(options)
+      policy = @merge_submission.fetch("guarded_direct")
+      unless options[:method] == policy["method"]
+        raise Error, "--method #{options[:method]} does not match trusted-base guarded-direct method #{policy['method']}"
+      end
+
+      # Narrow the acknowledged non-atomic-base window immediately before the
+      # repository guard. A queue enabled in the meantime remains canonical.
+      refreshed = fetch_pr(options)
+      validate_receipt_live_bindings!(refreshed, options)
+      validate_pr!(refreshed, options)
+      if refreshed["isInMergeQueue"] == true
+        return existing_queue_result(refreshed, options) if exact_queue?(refreshed, options)
+
+        raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof before guarded-direct submission"
+      end
+      unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil?
+        raise UnknownOutcome, "PR merge-queue membership became inconsistent or UNKNOWN before guarded-direct submission"
+      end
+      return enqueue_result(refreshed, options) if refreshed["isMergeQueueEnabled"] == true
+      unless refreshed["isMergeQueueEnabled"] == false
+        raise UnknownOutcome, "PR merge-queue state became missing or UNKNOWN before guarded-direct submission"
+      end
+
+      validate_live_guard!(policy.fetch("executable"), policy.fetch("trusted_bytes"))
+      guard_stdout, guard_stderr, guard_status = run_guard(policy, options)
+      diagnostics = failure_output(guard_stdout, guard_stderr)
+      reconciled = fetch_pr_for_reconciliation!(options, "guarded-direct submission outcome")
+      unless guard_status.success?
+        state_detail = if exact_merge?(reconciled, options)
+                         "live state appears merged but the guard failed"
+                       else
+                         "live state does not prove the authorized merge"
+                       end
+        raise UnknownOutcome, "guarded-direct submission is UNKNOWN after reconciliation (guard failed; " \
+                              "#{state_detail}); do not retry blindly#{diagnostics.empty? ? '' : ": #{diagnostics}"}"
+      end
+      unless exact_merge?(reconciled, options)
+        detail = begin
+          validate_pr!(reconciled, options, require_open: false)
+          "live PR is not an exact terminal merge of the authorized head"
+        rescue Error => e
+          e.message
+        end
+        raise UnknownOutcome, "guarded-direct submission is UNKNOWN after reconciliation (guard exited successfully; #{detail}); " \
+                              "do not retry blindly#{diagnostics.empty? ? '' : ": #{diagnostics}"}"
+      end
+
+      {
+        "pr" => options[:pr].to_i,
+        "repo" => options[:repo],
+        "url" => reconciled["url"],
+        "expected_head" => options[:expected_head],
+        "expected_base" => options[:expected_base],
+        "submission" => "guarded_direct",
+        "method" => policy["method"],
+        "guard" => policy["identity"],
+        "non_atomic_base" => policy["non_atomic_base"],
+        "atomic_expected_base_oid" => false,
+        "merged_at" => reconciled["mergedAt"],
+        "merge_commit" => reconciled.dig("mergeCommit", "oid"),
+        "reconciled_after_guard" => true
+      }
+    end
+
+    def run_guard(policy, options)
+      args = [
+        "--repo", options[:repo],
+        "--host", options[:host],
+        "--pr", options[:pr].to_s,
+        "--expected-head", options[:expected_head],
+        "--expected-base", options[:expected_base],
+        "--expected-base-sha", @merge_assurance_receipt.dig("bindings", "base", "sha"),
+        "--method", policy.fetch("method"),
+        "--merge-assurance-receipt", File.expand_path(options[:merge_assurance_receipt])
+      ]
+      args.concat(["--subject", options[:subject]]) if options[:subject]
+      args.concat(["--body", options[:body]]) if options[:body]
+      directory = Dir.mktmpdir("pr-merge-submit-guard")
+      guard_result = nil
+      begin
+        File.chmod(0o700, directory)
+        repository_root = materialize_trusted_base_repository!(directory)
+        executable = File.join(directory, "identity-bound-guard")
+        File.open(executable, File::WRONLY | File::CREAT | File::EXCL, 0o700) do |file|
+          file.binmode
+          file.write(policy.fetch("trusted_bytes"))
+          file.flush
+          file.fsync
+        end
+        launch_command, interpreter_identity = guarded_direct_launch_command!(
+          policy.fetch("trusted_bytes"), executable
+        )
+        policy.fetch("identity")["interpreter"] = interpreter_identity if interpreter_identity
+        begin
+          guard_result = run_process(
+            guarded_direct_environment(options),
+            *launch_command, *args,
+            timeout_seconds: guard_timeout_seconds,
+            mutation: true,
+            process_label: "guarded-direct executable",
+            chdir: repository_root,
+            unsetenv_others: true,
+            launch_eacces_message: "private materialized guarded-direct executable launch was denied (EACCES); " \
+                                   "the temporary filesystem may be mounted noexec",
+            launch_enoent_message: "private materialized guarded-direct executable launch failed (ENOENT); " \
+                                   "its absolute shebang interpreter may be missing"
+          )
+        rescue UnknownOutcome => e
+          guard_result = ["", e.message, FailedStatus.new]
+        end
+      ensure
+        guard_result = cleanup_private_guard_directory!(directory, guard_result)
+      end
+      guard_result
+    end
+
+    def guarded_direct_environment(options)
+      account = local_account!
+      environment = {
+        "GH_HOST" => options[:host],
+        "GH_REPO" => options[:repo],
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => TRUSTED_INTERPRETER_DIRS.join(File::PATH_SEPARATOR)
+      }
+      %w[GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN].each do |name|
+        value = ENV[name]
+        environment[name] = value if value && !value.empty?
+      end
+      environment
+    end
+
+    def guarded_direct_launch_command!(trusted_bytes, executable)
+      shebang = trusted_bytes.lines.first
+      unless shebang&.start_with?("#!")
+        raise Error, "trusted-base guarded-direct executable must have a supported explicit shebang"
+      end
+
+      match = shebang.match(%r{\A#!(?<interpreter>/\S+?)(?:[ \t]+(?<argument>\S+))?\r?\n?\z})
+      raise Error, "trusted-base guarded-direct executable has an unsupported shebang" unless match
+
+      interpreter = match[:interpreter]
+      argument = match[:argument]
+      if interpreter == ENV_INTERPRETER
+        unless argument&.match?(ENV_PROGRAM)
+          raise Error, "trusted-base guarded-direct /usr/bin/env shebang must name one fixed program"
+        end
+
+        interpreter = resolve_env_interpreter!(argument)
+        [[interpreter.fetch("path"), executable], interpreter]
+      else
+        identity = resolve_absolute_interpreter!(interpreter)
+        [[identity.fetch("path"), *[argument].compact, executable], identity]
+      end
+    end
+
+    def resolve_env_interpreter!(program)
+      if program == File.basename(RbConfig.ruby)
+        return resolve_absolute_interpreter!(RbConfig.ruby, requested: "#{ENV_INTERPRETER} #{program}")
+      end
+
+      candidate = TRUSTED_INTERPRETER_DIRS
+                  .map { |directory| File.join(directory, program) }
+                  .find { |path| File.file?(path) && File.executable?(path) }
+      raise Error, "trusted-base guarded-direct interpreter is unavailable: #{program}" unless candidate
+
+      resolve_absolute_interpreter!(candidate, requested: "#{ENV_INTERPRETER} #{program}")
+    end
+
+    def resolve_absolute_interpreter!(path, requested: path)
+      realpath = File.realpath(path)
+      repository_prefix = "#{@repo_root}#{File::SEPARATOR}"
+      if realpath == @repo_root || realpath.start_with?(repository_prefix)
+        raise Error, "trusted-base guarded-direct interpreter must be outside the consumer repository"
+      end
+
+      File.open(realpath, "rb") do |file|
+        stat = file.stat
+        unless stat.file? && File.executable?(realpath)
+          raise Error, "trusted-base guarded-direct interpreter is not an executable regular file: #{path}"
+        end
+
+        digest = Digest::SHA256.new
+        digest << file.read(1_048_576) until file.eof?
+        return {
+          "requested" => requested,
+          "path" => realpath,
+          "device" => stat.dev,
+          "inode" => stat.ino,
+          "size" => stat.size,
+          "sha256" => digest.hexdigest
+        }
+      end
+    rescue Errno::ENOENT
+      raise Error, "trusted-base guarded-direct interpreter is unavailable: #{path}"
+    rescue Errno::EACCES
+      raise Error, "trusted-base guarded-direct interpreter is inaccessible: #{path}"
+    end
+
+    def cleanup_private_guard_directory!(directory, guard_result)
+      remove_private_guard_directory!(directory)
+      guard_result
+    rescue StandardError => e
+      message = "private guarded-direct repository cleanup failed: #{e.message}"
+      raise Error, message if guard_result.nil?
+
+      stdout, stderr, = guard_result
+      [stdout, failure_output(stderr, message), FailedStatus.new]
+    end
+
+    def remove_private_guard_directory!(directory)
+      FileUtils.remove_entry(directory)
+    end
+
+    def materialize_trusted_base_repository!(directory)
+      base_sha = @merge_assurance_receipt.dig("bindings", "base", "sha")
+      _stdout, stderr, commit_status = git_capture(
+        "-C", @repo_root, "cat-file", "-e", "#{base_sha}^{commit}", chdir: @repo_root
+      )
+      unless commit_status.success?
+        raise Error, "guarded-direct private repository commit is unavailable: #{base_sha}: " \
+                     "#{failure_output('', stderr)}"
+      end
+
+      repository_root = File.join(directory, "trusted-base-repository")
+      stdout, stderr, clone_status = git_capture(
+        "clone", "--shared", "--no-checkout", "--quiet", "--", @repo_root, repository_root,
+        chdir: @repo_root
+      )
+      unless clone_status.success?
+        raise Error, "could not create guarded-direct private repository: #{failure_output(stdout, stderr)}"
+      end
+
+      preserve_origin_remote!(repository_root)
+      private_git!(
+        repository_root, "update-ref", "--no-deref", "HEAD", base_sha,
+        context: "bind guarded-direct private HEAD to trusted base"
+      )
+      private_git!(
+        repository_root, "read-tree", "--reset", "-u", base_sha,
+        context: "populate guarded-direct trusted-base repository"
+      )
+      verify_private_repository!(repository_root, base_sha)
+      repository_root
+    end
+
+    def preserve_origin_remote!(repository_root)
+      stdout, _stderr, status = git_capture(
+        "-C", @repo_root, "remote", "get-url", "origin", chdir: @repo_root
+      )
+      origin_urls = stdout.lines(chomp: true)
+      if status.success? && origin_urls.one? && !origin_urls.first.empty? &&
+         !origin_urls.first.match?(/[[:cntrl:]]/)
+        private_git!(
+          repository_root, "remote", "set-url", "origin", origin_urls.first,
+          context: "preserve guarded-direct origin remote"
+        )
+      else
+        private_git!(
+          repository_root, "remote", "remove", "origin",
+          context: "remove guarded-direct local clone origin"
+        )
+      end
+    end
+
+    def private_git!(repository_root, *args, context:)
+      stdout, stderr, status = git_capture("-C", repository_root, *args, chdir: repository_root)
+      return stdout if status.success?
+
+      raise Error, "#{context} failed: #{failure_output(stdout, stderr)}"
+    end
+
+    def verify_private_repository!(repository_root, base_sha)
+      actual_head = private_git!(
+        repository_root, "rev-parse", "HEAD", context: "verify guarded-direct private head"
+      ).strip
+      base_tree = private_git!(
+        repository_root, "rev-parse", "#{base_sha}^{tree}",
+        context: "verify guarded-direct trusted-base tree"
+      ).strip
+      materialized_tree = private_git!(
+        repository_root, "write-tree", context: "verify guarded-direct materialized tree"
+      ).strip
+      _stdout, _stderr, clean_status = git_capture(
+        "-C", repository_root, "diff-files", "--quiet", chdir: repository_root
+      )
+      untracked = private_git!(
+        repository_root, "ls-files", "--others", "--exclude-standard",
+        context: "verify guarded-direct private untracked files"
+      )
+      ignored = private_git!(
+        repository_root, "ls-files", "--others", "--ignored", "--exclude-standard",
+        context: "verify guarded-direct private ignored files"
+      )
+      unless actual_head.casecmp?(base_sha) &&
+             materialized_tree.casecmp?(base_tree) &&
+             clean_status.success? &&
+             untracked.empty? &&
+             ignored.empty?
+        raise Error, "guarded-direct private repository identity or trusted-base contents did not verify"
+      end
     end
 
     def already_merged_result(pull_request, options)
@@ -606,7 +1316,8 @@ module PrMergeSubmit
         return reconcile_mutation_outcome!(
           options,
           "merge-queue submission",
-          failure_output(stdout, stderr)
+          failure_output(stdout, stderr),
+          route: :merge_queue
         )
       end
 
@@ -616,7 +1327,8 @@ module PrMergeSubmit
         return reconcile_mutation_outcome!(
           options,
           "merge-queue submission",
-          failure_output(e.message, stderr)
+          failure_output(e.message, stderr),
+          route: :merge_queue
         )
       end
       errors = payload["errors"]
@@ -629,7 +1341,8 @@ module PrMergeSubmit
         return reconcile_mutation_outcome!(
           options,
           "merge-queue submission",
-          "response contained no queue entry"
+          "response contained no queue entry",
+          route: :merge_queue
         )
       end
 
@@ -673,20 +1386,24 @@ module PrMergeSubmit
       result
     end
 
-    def reconcile_mutation_outcome!(options, context, diagnostics)
+    def reconcile_mutation_outcome!(options, context, diagnostics, route: :merge_queue)
       pull_request = fetch_pr_for_reconciliation!(options, "#{context} outcome")
       if exact_merge?(pull_request, options)
         return already_merged_result(pull_request, options).merge(
           "reconciled_after_failure" => true,
-          "attempted_submission" => "merge_queue",
+          "attempted_submission" => route.to_s,
           "diagnostics" => diagnostics
         )
       end
       if exact_queue?(pull_request, options)
+        if route == :direct
+          raise UnknownOutcome, "direct merge submission outcome is UNKNOWN because the PR is now in the merge " \
+                                "queue; do not retry blindly"
+        end
         return existing_queue_result(pull_request, options, reconciled: true)
       end
 
-      reject_mismatched_queue!(pull_request, options)
+      reject_mismatched_queue!(pull_request, options) if route == :merge_queue
 
       raise UnknownOutcome, "#{context} outcome could not be proven after an ambiguous response; do not retry blindly: #{diagnostics}"
     end
@@ -694,7 +1411,9 @@ module PrMergeSubmit
     def reconcile_enqueue_graphql_errors!(options, errors)
       diagnostics = JSON.generate(errors)
       pull_request = fetch_pr_for_reconciliation!(options, "merge-queue submission returned errors")
-      return existing_queue_result(pull_request, options, reconciled: true) if exact_queue?(pull_request, options)
+      if exact_queue?(pull_request, options)
+        return existing_queue_result(pull_request, options, reconciled: true)
+      end
 
       if exact_merge?(pull_request, options)
         return already_merged_result(pull_request, options).merge(
@@ -706,6 +1425,26 @@ module PrMergeSubmit
 
       reject_mismatched_queue!(pull_request, options)
       raise UnknownOutcome, "merge-queue submission outcome could not be proven after GraphQL errors; " \
+                            "do not retry blindly: #{diagnostics}"
+    end
+
+    def reconcile_direct_graphql_errors!(options, errors)
+      diagnostics = JSON.generate(errors)
+      pull_request = fetch_pr_for_reconciliation!(options, "direct merge GraphQL error outcome")
+      if exact_merge?(pull_request, options)
+        return already_merged_result(pull_request, options).merge(
+          "reconciled_after_failure" => true,
+          "attempted_submission" => "direct",
+          "diagnostics" => diagnostics
+        )
+      end
+
+      if pull_request["state"] == "OPEN" &&
+         (pull_request["isMergeQueueEnabled"] == true || pull_request["isInMergeQueue"] == true)
+        raise Error, direct_queue_configuration_error
+      end
+
+      raise UnknownOutcome, "direct merge submission outcome could not be proven after GraphQL errors; " \
                             "do not retry blindly: #{diagnostics}"
     end
 
@@ -739,8 +1478,12 @@ module PrMergeSubmit
     def exact_target?(pull_request, options)
       pull_request["baseRefName"] == options[:expected_base] &&
         pull_request["headRefOid"].to_s.casecmp?(options[:expected_head]) &&
-        (!@merge_assurance_receipt ||
-          pull_request["baseRefOid"].to_s.casecmp?(@merge_assurance_receipt.dig("bindings", "base", "sha").to_s))
+        (!@merge_assurance_receipt || receipt_live_base_matches?(pull_request))
+    end
+
+    def receipt_live_base_matches?(pull_request)
+      current = @merge_assurance_receipt.dig("bindings", "base", "sha")
+      pull_request["currentBaseRefOid"].to_s.casecmp?(current.to_s)
     end
 
     def reject_mismatched_queue!(pull_request, options)
@@ -758,15 +1501,52 @@ module PrMergeSubmit
     end
 
     def run_gh(*args, host:, mutation: false)
+      account = local_account!
+      environment = {
+        "GH_HOST" => host,
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+        "GH_PROMPT_DISABLED" => "1",
+        "GIT_TERMINAL_PROMPT" => "0"
+      }
+      %w[GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN].each do |name|
+        value = ENV[name]
+        environment[name] = value if value && !value.empty?
+      end
+      environment.merge!(system_tool_test_environment)
+      executable = resolve_system_tool!("gh", outside_root: Dir.pwd)
+      run_process(
+        environment, executable, *args,
+        timeout_seconds: gh_timeout_seconds,
+        mutation:,
+        process_label: "gh",
+        chdir: Dir.pwd,
+        unsetenv_others: true
+      )
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "gh could not be launched after trusted resolution: #{e.message}"
+    end
+
+    def system_tool_test_environment
+      {}
+    end
+
+    def run_process(
+      environment, command, *args,
+      timeout_seconds:, mutation:, process_label:, chdir:,
+      unsetenv_others: false,
+      launch_eacces_message: nil, launch_enoent_message: nil
+    )
       validate_receipt_freshness!(@merge_assurance_receipt) if mutation && @merge_assurance_receipt
-      timeout_seconds = gh_timeout_seconds
       if @cancellation_signal && (mutation || !@mutation_attempted)
         cancellation_signal = @cancellation_signal
         @mutation_attempted ||= mutation
         @pending_signal = nil
         return [
           "",
-          "gh request was cancelled by SIG#{cancellation_signal} before it started",
+          "#{process_label} was cancelled by SIG#{cancellation_signal} before it started",
           FailedStatus.new
         ]
       end
@@ -776,13 +1556,20 @@ module PrMergeSubmit
       stdout_file = Tempfile.new("pr-merge-submit-stdout")
       stderr_file = Tempfile.new("pr-merge-submit-stderr")
       interrupted_signal = nil
-      pid = Process.spawn(
-        MergeAssurance.trusted_gh_environment(host),
-        @trusted_gh_executable,
-        *args,
-        out: stdout_file.path, err: stderr_file.path, pgroup: true,
-        unsetenv_others: true
-      )
+      pid = begin
+        Process.spawn(
+          environment, command, *args,
+          out: stdout_file.path, err: stderr_file.path, pgroup: true, chdir:, unsetenv_others:
+        )
+      rescue Errno::EACCES
+        raise if launch_eacces_message.nil?
+
+        raise Error, launch_eacces_message
+      rescue Errno::ENOENT
+        raise if launch_enoent_message.nil?
+
+        raise Error, launch_enoent_message
+      end
       deadline = monotonic_time + timeout_seconds
       status = nil
       timed_out = false
@@ -814,19 +1601,18 @@ module PrMergeSubmit
       stdout = read_capture(stdout_file)
       stderr = read_capture(stderr_file)
       unless termination_complete
-        raise UnknownOutcome, "gh process group did not exit after forced termination; remote outcome is UNKNOWN"
+        raise UnknownOutcome, "#{process_label} process group did not exit after forced termination; " \
+                              "remote outcome is UNKNOWN"
       end
 
       diagnostic = if interrupted_signal
-                     "gh request was interrupted by SIG#{interrupted_signal} and its process group was terminated"
+                     "#{process_label} was interrupted by SIG#{interrupted_signal} and its process group was terminated"
                    elsif timed_out
-                     "gh request timed out after #{timeout_seconds} seconds and its process group was terminated"
+                     "#{process_label} timed out after #{timeout_seconds} seconds and its process group was terminated"
                    end
       stderr = failure_output(stderr, diagnostic) if diagnostic
       status = FailedStatus.new if interrupted_signal || timed_out
       [stdout, stderr, status || FailedStatus.new]
-    rescue Errno::ENOENT
-      raise Error, "trusted gh executable is unavailable"
     ensure
       stdout_file&.close!
       stderr_file&.close!
@@ -839,6 +1625,15 @@ module PrMergeSubmit
       value
     rescue ArgumentError
       raise Error, "PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS must be a positive finite number"
+    end
+
+    def guard_timeout_seconds
+      value = Float(ENV.fetch("PR_MERGE_SUBMIT_GUARD_TIMEOUT_SECONDS", "300"))
+      raise ArgumentError unless value.positive? && value.finite?
+
+      value
+    rescue ArgumentError
+      raise Error, "PR_MERGE_SUBMIT_GUARD_TIMEOUT_SECONDS must be a positive finite number"
     end
 
     def install_signal_handlers

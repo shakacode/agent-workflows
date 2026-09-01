@@ -1,0 +1,65 @@
+{
+  "name": "descendant-inclusive and unattributed reconciliation",
+  "window": {"from":"2026-08-04T00:00:00Z","to":"2026-08-05T00:00:00Z"},
+  "threads": [
+    {"id":"root","rollout":"root.jsonl","model_provider":"openai","model":"root-model","reasoning_effort":"high"},
+    {"id":"lane-a","rollout":"lane-a.jsonl","model_provider":"openai","model":"lane-model","reasoning_effort":"medium"},
+    {"id":"worker-a","rollout":"worker-a.jsonl","model_provider":"openai","model":"worker-model","reasoning_effort":"medium"},
+    {"id":"unnamed-a","rollout":"unnamed-a.jsonl","model_provider":"openai","model":"worker-model","reasoning_effort":"low"},
+    {"id":"lane-b","rollout":"lane-b.jsonl","model_provider":"openai","model":"lane-model","reasoning_effort":"medium"},
+    {"id":"unattributed-root","rollout":"unattributed-root.jsonl","model_provider":"openai","model":"utility-model","reasoning_effort":"low"}
+  ],
+  "edges": [
+    ["root","lane-a","completed"],
+    ["lane-a","worker-a","completed"],
+    ["lane-a","unnamed-a","completed"],
+    ["root","lane-b","completed"],
+    ["root","unattributed-root","completed"]
+  ],
+  "manifest": {
+    "schema":"batch-usage-manifest-v1",
+    "batch_id":"batch-descendants",
+    "coordinator":{"id":"coordinator","root_thread_id":"root","requested_route":{"host":"codex","model":"requested-root","effort":"xhigh"}},
+    "lanes":[
+      {"id":"lane-a","root_thread_id":"lane-a","requested_route":{"host":"codex","model":"requested-lane","effort":"high"},"workers":[{"id":"worker-a","thread_id":"worker-a","requested_route":{"host":"codex","model":"requested-worker","effort":"high"}}]},
+      {"id":"lane-b","root_thread_id":"lane-b","requested_route":{"host":"codex","model":"requested-lane","effort":"high"},"workers":[]}
+    ]
+  },
+  "rate_card": {
+    "schema": "batch-usage-rate-card-v1",
+    "source": "https://example.invalid/rate-card/2026-08-04",
+    "effective_date": "2026-08-04",
+    "model_mappings": [
+      {"host":"codex","model":"root-model","input_credits_per_million":1,"output_credits_per_million":2},
+      {"host":"codex","model":"lane-model","input_credits_per_million":1,"output_credits_per_million":2},
+      {"host":"codex","model":"worker-model","input_credits_per_million":1,"output_credits_per_million":2},
+      {"host":"codex","model":"utility-model","input_credits_per_million":1,"output_credits_per_million":2}
+    ]
+  },
+  "rollouts": {
+    "root.jsonl":[
+      {"timestamp":"2026-08-04T00:00:00Z","type":"session_meta","payload":{"id":"root","session_id":"root"}},
+      {"timestamp":"2026-08-04T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":8,"cached_input_tokens":3,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":10},"last_token_usage":{"input_tokens":8,"cached_input_tokens":3,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":10}}}}
+    ],
+    "lane-a.jsonl":[
+      {"timestamp":"2026-08-04T00:00:00Z","type":"session_meta","payload":{"id":"lane-a","session_id":"lane-a"}},
+      {"timestamp":"2026-08-04T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":16,"cached_input_tokens":6,"output_tokens":4,"reasoning_output_tokens":2,"total_tokens":20},"last_token_usage":{"input_tokens":16,"cached_input_tokens":6,"output_tokens":4,"reasoning_output_tokens":2,"total_tokens":20}}}}
+    ],
+    "worker-a.jsonl":[
+      {"timestamp":"2026-08-04T00:00:00Z","type":"session_meta","payload":{"id":"worker-a","session_id":"worker-a"}},
+      {"timestamp":"2026-08-04T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":24,"cached_input_tokens":9,"output_tokens":6,"reasoning_output_tokens":3,"total_tokens":30},"last_token_usage":{"input_tokens":24,"cached_input_tokens":9,"output_tokens":6,"reasoning_output_tokens":3,"total_tokens":30}}}}
+    ],
+    "unnamed-a.jsonl":[
+      {"timestamp":"2026-08-04T00:00:00Z","type":"session_meta","payload":{"id":"unnamed-a","session_id":"unnamed-a"}},
+      {"timestamp":"2026-08-04T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":32,"cached_input_tokens":12,"output_tokens":8,"reasoning_output_tokens":4,"total_tokens":40},"last_token_usage":{"input_tokens":32,"cached_input_tokens":12,"output_tokens":8,"reasoning_output_tokens":4,"total_tokens":40}}}}
+    ],
+    "lane-b.jsonl":[
+      {"timestamp":"2026-08-04T00:00:00Z","type":"session_meta","payload":{"id":"lane-b","session_id":"lane-b"}},
+      {"timestamp":"2026-08-04T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":5,"cached_input_tokens":2,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":7},"last_token_usage":{"input_tokens":5,"cached_input_tokens":2,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":7}}}}
+    ],
+    "unattributed-root.jsonl":[
+      {"timestamp":"2026-08-04T00:00:00Z","type":"session_meta","payload":{"id":"unattributed-root","session_id":"unattributed-root"}},
+      {"timestamp":"2026-08-04T00:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":4,"cached_input_tokens":1,"output_tokens":1,"reasoning_output_tokens":1,"total_tokens":5},"last_token_usage":{"input_tokens":4,"cached_input_tokens":1,"output_tokens":1,"reasoning_output_tokens":1,"total_tokens":5}}}}
+    ]
+  }
+}

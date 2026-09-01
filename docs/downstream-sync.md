@@ -175,6 +175,40 @@ Policy-fleet mode stages only `.agents/agent-workflow.yml`, and only changes
 the key(s) explicitly declared by the selected fleet. It does not use presets
 or the broad scaffold reconciliation path.
 
+### Read-Only GitHub Actions Audit Fleets
+
+`security_audit_fleets` is a separate, read-only inventory. It clones only the
+registered base branch into a temporary directory, runs the
+`secure-github-actions` parser-backed gate, and emits a head-bound JSON report.
+After cloning, it requires `refs/remotes/origin/<base>` to exist and match
+`HEAD`; a same-named tag or any ref mismatch is `UNKNOWN`, never clean evidence.
+It never changes a consumer checkout, pushes a branch, opens a PR, chooses a
+`trusted_actions` entry, or enables Dependabot. `UNKNOWN` clone, head, or scan
+state is non-clean and exits nonzero.
+
+The initial narrow fleet contains Shakapacker so maintainers can replay the
+known rollout blockers without widening rollout authority:
+
+```bash
+bin/push-downstream \
+  --security-audit-fleet secure-github-actions \
+  --only shakapacker
+```
+
+`--apply` is rejected in this mode. A missing `trusted_actions` key is the
+closed empty allowlist; it trusts no external GitHub action. Omitting or
+deleting the key is not an opt-out. Generic sync and direct seam-doctor checks
+stop on an unremediated consumer before mutation.
+
+Each report records the intended next boundary. `gate_activation` describes the
+ordered adoption boundary: land the source-pack gate atomically with targeted
+remediation and validation for the selected consumer, then activate that
+consumer's normal validation. It is not a runtime switch that makes missing
+policy permissive. Maintainer review for each allowlisted action and an explicit
+repository decision about Dependabot remain part of the targeted remediation.
+Expanding the fleet or mutating any consumer remains a separate coordinator
+decision.
+
 Seed a repo-local trust config locally:
 
 ```bash
@@ -196,6 +230,7 @@ wrappers before relying on them for real validation.
 | `--presets FILE` | Preset path (default `seam-presets.yml`). |
 | `--root DIR` | Reconcile one checkout instead of the registry; no network. |
 | `--policy-fleet NAME` | Run a named policy-only fleet; updates only that fleet's explicitly registered policy keys. |
+| `--security-audit-fleet NAME` | Run a named read-only GitHub Actions audit fleet; never accepts `--apply`. |
 | `--only a,b` | Restrict to named repos (selects even if `enabled: false`). |
 | `--all` | Include repos marked `enabled: false`. |
 | `--apply` | Perform writes; in registry mode, push branches and open PRs. |
