@@ -43,9 +43,11 @@ module CloseoutEvidenceReplay
   # structural or size count as a runtime measurement.
   COUNT_QUALIFIER_TOKENS = %w[total totals overall aggregate all unique distinct num number].freeze
   UNRESOLVED_METRIC_TOKENS = %w[missing unavailable unmeasured unknown placeholder tbd todo].freeze
-  UNRESOLVED_METRIC_EXACT_TOKENS = %w[none unset pending].freeze
+  UNRESOLVED_METRIC_EXACT_TOKENS = %w[nil none null pending undefined unset].freeze
   PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
   PERFORMANCE_EVIDENCE_FIELD_PATTERN = PERFORMANCE_EVIDENCE_FIELD_NAMES.map { |name| Regexp.escape(name) }.join("|")
+  # This is intentionally closed: prose is the narrow exception to fail-closed malformed HTTPS
+  # detection. Extend it only with replay coverage for a concrete, legitimate status label.
   HTTPS_PROSE_LABEL_STATUSES = %w[available disabled enabled enforced failed ok only optional passed required supported].freeze
   HTTPS_PROSE_LABEL_STATUS_PATTERN = HTTPS_PROSE_LABEL_STATUSES.map { |status| Regexp.escape(status) }.join("|")
   HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*/i
@@ -762,10 +764,10 @@ module CloseoutEvidenceReplay
     end
     return true if byte_units
 
-    names = non_url_text.scan(/(?:\A|[\s;])metric_name\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
-    return false unless names.length == 1
+    metric_name = extract_single_metric_name(non_url_text)
+    return false unless metric_name
 
-    bundle_hygiene_shape?(text_tokens(names.first.first))
+    bundle_hygiene_shape?(text_tokens(metric_name))
   end
 
   def bundle_hygiene_shape?(tokens)
@@ -776,10 +778,9 @@ module CloseoutEvidenceReplay
 
   def valid_measured_metric?(value)
     non_url_text = without_performance_https_urls(value)
-    names = non_url_text.scan(/(?:\A|[\s;])metric_name\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
-    return false unless names.length == 1
+    metric_name = extract_single_metric_name(non_url_text)
+    return false unless metric_name
 
-    metric_name = names.first.first.strip
     metric_tokens = text_tokens(metric_name)
     return false if metric_tokens.empty?
     return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) || metric_name.match?(/\A(?:metric|metrics|na|notapplicable)\z/i)
@@ -798,6 +799,11 @@ module CloseoutEvidenceReplay
     return false if byte_valued && !memory_metric
 
     true
+  end
+
+  def extract_single_metric_name(non_url_text)
+    names = non_url_text.scan(/(?:\A|[\s;])metric_name\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
+    names.length == 1 ? names.first.first.strip : nil
   end
 
   def unresolved_metric_tokens?(tokens)
