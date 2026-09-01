@@ -31,6 +31,8 @@ module HostTaskLaunch
     record = load_or_create_fence(fence_path, immutable)
     return invalid_input if record == :mismatch
 
+    record.delete("latest")
+
     unless native_capable?(input)
       persist_fence(fence_path, record)
       return copy_paste_result(record)
@@ -53,7 +55,6 @@ module HostTaskLaunch
     if operation == "begin-create" && publication.fetch("ready") && lane["transition"] != "create-attempted"
       lane["transition"] = "create-attempted"
     end
-    record["latest"] = operation == "bind-task" ? "task identity bound" : "launch prepared"
     persist_fence(fence_path, record)
 
     {
@@ -196,7 +197,6 @@ module HostTaskLaunch
       "task" => { "id" => "UNKNOWN", "url" => "UNKNOWN", "provisional_id" => "UNKNOWN" },
       "branch" => "UNKNOWN",
       "pr" => "UNKNOWN",
-      "latest" => "launch prepared",
       "blocker" => nil,
       "human_input_needed" => "no",
       "reconciliation_due" => "no"
@@ -366,6 +366,7 @@ module HostTaskLaunch
     lane.fetch("task")["url"] = task_identity.fetch("task_url") if task_identity.key?("task_url")
     lane["state"] = "active"
     lane["transition"] = "task-bound"
+    lane["latest"] = "task identity bound"
   end
 
   def update_lane!(lane, update)
@@ -485,7 +486,7 @@ module HostTaskLaunch
   end
 
   def render_control_tower(record)
-    lines = ["<!-- agent-launcher-run-record:v1 -->", "Task launch: #{plain(record.dig('lanes', 0, 'state'))} / #{plain(record.dig('lanes', 0, 'outcome'))}", ""]
+    lines = ["<!-- agent-launcher-run-record:v1 -->", "Task launch: #{plain(control_tower_headline(record))}", ""]
     record.fetch("lanes").each do |lane|
       work_item = lane.fetch("helper_evidence").fetch("work_item")
       lines.concat([
@@ -526,6 +527,15 @@ module HostTaskLaunch
                    "</details>"
                  ])
     lines.join("\n")
+  end
+
+  def control_tower_headline(record)
+    lanes = record.fetch("lanes")
+    lifecycle_counts = lanes.each_with_object(Hash.new(0)) do |lane, counts|
+      counts["#{lane.fetch('state')}/#{lane.fetch('outcome')}"] += 1
+    end
+    lifecycles = lifecycle_counts.sort.map { |lifecycle, count| "#{lifecycle}=#{count}" }.join(", ")
+    "#{lanes.length} #{lanes.length == 1 ? 'lane' : 'lanes'}; #{lifecycles}"
   end
 
   def copy_paste_result(record)

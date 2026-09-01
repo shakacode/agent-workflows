@@ -288,6 +288,8 @@ class HostTaskLaunchTest < Minitest::Test
       assert_equal "task-1", result.dig("record", "lanes", 0, "task", "id")
       assert_equal "provisional-1", result.dig("record", "lanes", 0, "task", "provisional_id")
       assert_equal requested_title, result.dig("record", "lanes", 0, "task_title")
+      assert_equal "task identity bound", result.dig("record", "lanes", 0, "latest")
+      refute result.fetch("record").key?("latest")
       assert_equal 1, rendered.scan("<!-- agent-launcher-run-record:v1 -->").length
       refute_includes rendered, "<!-- agent-run-record:v1 -->"
       assert_includes rendered, "- Task title: `\u005bhostile\u005d(javascript:alert(1)) <script>`"
@@ -378,6 +380,7 @@ class HostTaskLaunchTest < Minitest::Test
       result = invoke(input)
       assert_equal "launch-pending", result.dig("record", "lanes", 0, "state")
       assert_equal "blocked", result.dig("record", "lanes", 1, "state")
+      assert_includes result.fetch("control_tower"), "Task launch: 2 lanes; blocked/pending=1, launch-pending/pending=1"
       assert_includes result.fetch("control_tower"), "&lt;blocked&gt;"
 
       input["lane_id"] = "missing"
