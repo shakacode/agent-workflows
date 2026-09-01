@@ -1043,6 +1043,25 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
+    # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
+    # whole replay instead of returning a verdict.
+    {
+      'HTTPS: enabled " ok;' => "SATISFIED",
+      "HTTPS: enabled ` ok;" => "SATISFIED",
+      "HTTPS: enabled ( ok;" => "SATISFIED",
+      "HTTPS: enabled ? ok;" => "SATISFIED",
+      "HTTPS: enabled [ ok;" => "UNKNOWN"
+    }.each do |label, expected|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal expected, hosted.fetch("verdict"), label
+    end
+  end
+
   def test_hosted_v1_still_rejects_scheme_and_bracketed_authority_https_labels
     # The prose exemption for a trailing-colon label must not admit an opaque scheme, and the
     # decorative leading-symbol strip must not erase a bracketed authority.

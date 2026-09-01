@@ -800,7 +800,10 @@ module CloseoutEvidenceReplay
     tokens.each_with_index.any? do |token, index|
       square_bracketed = token.start_with?("[")
       token = normalized_https_prose_token(token)
-      authority = token.split(/[?#]/, 2).first
+      # A token that is nothing but a delimiter splits to an empty list, so coerce before the
+      # shape tests. An empty authority carries no host evidence; a lone `[` still fails closed
+      # through square_bracketed below.
+      authority = token.split(/[?#]/, 2).first.to_s
       next false if authority.include?(".") && HTTPS_PROSE_ABBREVIATIONS.include?(authority.downcase)
       next false if authority.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
 
