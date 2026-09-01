@@ -84,7 +84,7 @@ into this workflow:
    invocation parameters and selected or known pre-run hosted environment
    identity—event, inputs, matrix, runner image, toolchain, and configuration
    selection—not runtime behavior or outcomes. If equivalence is unverifiable,
-   record `UNKNOWN` and do not take either exit.
+   record `UNKNOWN` and do not classify or route the failure.
    If the same exact failure occurs on every equivalent hosted invocation and
    reproduces locally, it is an ordinary bug. If the same exact failure occurs
    on every equivalent hosted invocation and the local reproduction is green,
@@ -133,9 +133,10 @@ gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,
 
 A run's `conclusion` is the aggregate result across every job in that run,
 not the specific job identified by the failure. Key candidate runs off that
-job's own result instead — `gh run view <RUN_ID> --json jobs` and match by
-job name — so an unrelated job's failure or pass is never substituted for
-the failing job's own history.
+job's own result instead — `gh run view <RUN_ID> --attempt <N> --json jobs`
+and match by job name — so an unrelated job's failure or pass is never
+substituted for the failing job's own history, and a retried run's earlier
+attempt is not silently dropped to the latest one.
 
 For any other provider, resolve the log-fetch and replay commands from the
 repository seam described above rather than assuming a provider CLI exists.

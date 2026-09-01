@@ -37,9 +37,10 @@ reproduction explains the failure.
    history.
    A run's `conclusion` is also the aggregate result across every job in that
    run, not the specific job named in the failure identity. Key candidate
-   runs off that job's own result instead—`gh run view <RUN_ID> --json jobs`
-   and match by job name—so an unrelated job's failure or pass is never
-   substituted for the failure identity's own history.
+   runs off that job's own result instead—`gh run view <RUN_ID> --attempt <N>
+   --json jobs` and match by job name—so an unrelated job's failure or pass
+   is never substituted for the failure identity's own history, and a
+   retried run's earlier attempt is not silently dropped to the latest one.
    An equivalent hosted invocation has matching controlled
    invocation parameters and selected or known pre-run hosted environment
    identity—event, inputs, matrix, runner image, toolchain, and configuration
