@@ -354,7 +354,10 @@ module HeavyRootAdmission
   end
 
   def process_start_identity(pid)
-    stdout, _stderr, status = Open3.capture3("ps", "-o", "lstart=", "-p", pid.to_s)
+    stdout, _stderr, status = Open3.capture3(
+      { "LC_ALL" => "C", "LANG" => "C" },
+      "ps", "-o", "lstart=", "-p", pid.to_s
+    )
     return unless status.success?
 
     identity = stdout.strip

@@ -159,6 +159,19 @@ class HeavyRootAdmissionTest < Minitest::Test
     refute HeavyRootAdmission.reused_process_identity?("original process start", "original process start")
   end
 
+  def test_process_start_identity_is_stable_across_caller_locales
+    original_lc_all = ENV.fetch("LC_ALL", nil)
+    ENV["LC_ALL"] = "C"
+    c_identity = HeavyRootAdmission.process_start_identity(Process.pid)
+    ENV["LC_ALL"] = "definitely-not-an-installed-locale"
+    other_identity = HeavyRootAdmission.process_start_identity(Process.pid)
+
+    refute_empty c_identity
+    assert_equal c_identity, other_identity
+  ensure
+    ENV["LC_ALL"] = original_lc_all
+  end
+
   def test_reused_pid_still_preserves_a_live_original_process_group
     mismatched_identity = "not #{HeavyRootAdmission.process_start_identity(Process.pid)}"
 
