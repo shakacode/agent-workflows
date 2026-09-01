@@ -239,6 +239,71 @@ class AgentRunRecordTest < Minitest::Test
     end
   end
 
+  def test_title_only_issue_hashes_null_body_as_empty_utf8_at_all_three_boundaries
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "title-only-identity.json")
+      empty_digest = Digest::SHA256.hexdigest("")
+      gh = File.join(directory, "bin/gh")
+      File.write(gh, <<~SH)
+        #!/bin/sh
+        case "$*" in
+          "repo view --json nameWithOwner")
+            printf '%s\n' '{"nameWithOwner":"shakacode/agent-workflows"}'
+            ;;
+          "issue view 560 --repo shakacode/agent-workflows --json number,title,body,url")
+            printf '%s\n' '{"number":560,"title":"Title only","body":null,"url":"https://github.com/shakacode/agent-workflows/issues/560"}'
+            ;;
+          "issue view 560 --repo shakacode/agent-workflows --json body,url")
+            printf '%s\n' '{"body":null,"url":"https://github.com/shakacode/agent-workflows/issues/560"}'
+            ;;
+          *) exit 91 ;;
+        esac
+      SH
+      FileUtils.chmod(0o755, gh)
+
+      selected_json, selected_error, selected_status = Open3.capture3(
+        environment,
+        RbConfig.ruby,
+        HELPER,
+        "prepare",
+        *launch_timestamp_arguments(empty_digest),
+        "--issue", "560",
+        "--runner", "Codex",
+        "--machine", "M5",
+        "--repo-root", repo,
+        "--identity-file", identity_file,
+        "--format", "json"
+      )
+      assert selected_status.success?, selected_error
+
+      launched_json, launched_error, launched_status = Open3.capture3(
+        environment,
+        RbConfig.ruby,
+        HELPER,
+        "verify-launch",
+        "--complete-batch-plan",
+        stdin_data: selected_json
+      )
+      assert launched_status.success?, launched_error
+
+      started_json, started_error, started_status = Open3.capture3(
+        environment,
+        RbConfig.ruby,
+        HELPER,
+        "mark-worker-started",
+        "--repo-root", repo,
+        "--pack-root", repo,
+        stdin_data: launched_json
+      )
+      assert started_status.success?, started_error
+
+      started = JSON.parse(started_json)
+      assert_equal empty_digest, started.dig("prompt_source", "digest_at_selection")
+      assert_equal empty_digest, started.dig("prompt_source", "digest_at_launch")
+      assert_equal empty_digest, started.dig("prompt_source", "digest_observed_by_worker")
+    end
+  end
+
   def test_prepare_rejects_source_drift_since_real_selection_without_creating_identity
     with_fake_launch_environment do |directory, repo, gh_log, environment|
       identity_file = File.join(directory, "drift-before-prepare.json")

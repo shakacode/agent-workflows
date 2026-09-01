@@ -63,7 +63,8 @@ COMMON_GUIDANCE_PHRASES = [
 
 LAUNCHER_RECORD_FIELDS = [
   "Run ID: <immutable unique per-execution run_id>",
-  "Record destination: <exact selected issue or pull-request work-item URL, or existing durable plan/backend destination for a wholly non-GitHub trusted-ad-hoc run>",
+  "Record destination: <exact issue or pull-request work-item URL authorized for every lane, or existing durable plan/backend destination authorized for every lane>",
+  "Batch Plan binding: <SHA-256 of exact delivered UTF-8 plan bytes, or immutable reference plus exact revision/content digest>",
   "Prompt created at: <timestamp>",
   "Model at prompt creation: <observed value or UNKNOWN>",
   "Workflow at prompt creation: <version or UNKNOWN>",
@@ -117,7 +118,8 @@ def extract_markdown_section(text, heading, label)
   abort_with_failure("#{label} is missing #{heading}") unless heading_match
 
   body_start = heading_match.end(0)
-  next_heading = text.match(/^###\s+/, body_start)
+  heading_level = heading[/\A#+/].length
+  next_heading = text.match(/^#{Regexp.escape('#' * heading_level)}\s+/, body_start)
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
 end
@@ -142,19 +144,19 @@ end
 plan_skill = read_repo_file("skills/plan-pr-batch/SKILL.md")
 pr_batch_skill = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill = read_repo_file("skills/triage/SKILL.md")
-workflow = read_repo_file("workflows/pr-processing.md")
+prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
 source_checkout = ENV[SOURCE_CHECKOUT_ENV] == "1"
 
-workflow_handoff = extract_markdown_section(
-  workflow,
-  "### Plan To Goal Handoff",
-  "workflow"
+prompt_intake_handoff = extract_markdown_section(
+  prompt_intake,
+  "## Plan To Goal Handoff",
+  "prompt intake"
 )
 
 prompts = {
   "plan-pr-batch" => extract_heading_prompt(plan_skill, "## Goal Prompt for pr-batch", "plan-pr-batch"),
   "pr-batch" => extract_heading_prompt(pr_batch_skill, "## Goal Prompt Template", "pr-batch"),
-  "workflow" => extract_first_prompt(workflow_handoff.split(/^### /, 2).first, "workflow Plan To Goal Handoff")
+  "prompt intake" => extract_first_prompt(prompt_intake_handoff, "prompt intake Plan To Goal Handoff")
 }
 
 unless prompts.values.uniq.length == 1
@@ -170,7 +172,7 @@ end
   "skills/plan-pr-batch/SKILL.md" => plan_skill,
   "skills/pr-batch/SKILL.md" => pr_batch_skill,
   "skills/triage/SKILL.md" => triage_skill,
-  "workflows/pr-processing.md" => workflow
+  "workflows/pr-batch-intake.md" => prompt_intake
 }.each do |path, text|
   require_phrases(text, COMMON_GUIDANCE_PHRASES, path)
 end
@@ -178,28 +180,41 @@ end
 # Keep this example of ad hoc coordination diagnosis out of human-facing
 # prompt guidance; it was never a canonical prompt field.
 reject_phrases(
-  [plan_skill, pr_batch_skill, triage_skill, workflow].join("\n"),
+  [plan_skill, pr_batch_skill, triage_skill, prompt_intake].join("\n"),
   ["split-brain"],
   "readable-prompt guidance"
 )
 
-launcher_record_router = extract_markdown_section(
-  workflow,
-  "### Launcher Run Record",
-  "workflow"
+launcher_record = extract_markdown_section(
+  prompt_intake,
+  "## Launcher Run Record",
+  "prompt intake"
 )
 require_phrases(
-  launcher_record_router,
+  launcher_record,
   [
-    "canonical [agent-run-record v1 contract](../docs/github-task-prompts-and-run-records.md#launcher-composition-boundary)",
-    "[`agent-run-record` CLI](../skills/pr-batch/bin/agent-run-record)",
-    "supplies only GitHub source and digest evidence",
-    "launcher separately owns the outer destination, run identity, retry key, replay tuple, cheap launch timestamp, and worker handoff",
-    "never inject those values through the helper",
-    "A `trusted-ad-hoc-override` lane bypasses the helper",
-    "Persist helper output at every boundary; nonzero stops"
+    "field by field",
+    "does not block launch",
+    "collapsed `<details>`",
+    "one entry for every planned target lane",
+    "without replacing earlier values",
+    "Reruns append a new collapsed record",
+    "coordinator directly appends the cheap lane launch timestamp and digest",
+    "existing immutable replay identity",
+    "exactly matching `run_id`, replay identity, and `batch_plan_binding`",
+    "not the deterministic launch token",
+    "Do not add these fields to the human-authored prompt",
+    "successful `pr-security-preflight` snapshot",
+    "do not put the digest inside the bytes it hashes",
+    "sole writer for that record",
+    "workers return bound observation payloads",
+    "Never put a private `plan-state://` or `batch://` identity in a public run record",
+    "do not invent another snapshot, byte encoding, or record schema",
+    "not applicable — trusted-ad-hoc-override",
+    "`auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`",
+    "machine-only `merge_authority: none`"
   ],
-  "launcher run-record router"
+  "launcher run record"
 )
 
 if source_checkout

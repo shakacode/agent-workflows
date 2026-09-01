@@ -593,7 +593,11 @@ module AgentRunRecord
 
                 response.fetch("body")
               end
-    canonical_body_digest(content, "prompt source content")
+    canonical_body_digest(
+      content,
+      "prompt source content",
+      null_as_empty: %w[issue-body pull-request-body].include?(source.fetch("kind"))
+    )
   rescue KeyError => e
     raise ContractError, "invalid prompt source response: #{e.message}"
   end
@@ -601,7 +605,7 @@ module AgentRunRecord
   def resolve_prompt_source(options, repository, work_item)
     case options.fetch("prompt_source_kind")
     when "issue-body", "pull-request-body"
-      digest = canonical_body_digest(work_item.fetch("body"), "work-item body")
+      digest = canonical_body_digest(work_item.fetch("body"), "work-item body", null_as_empty: true)
       verify_selection_digest!(digest, options.fetch("prompt_digest_at_selection"))
       {
         "kind" => options.fetch("prompt_source_kind"),
@@ -678,7 +682,8 @@ module AgentRunRecord
     raise ContractError, "invalid maintainer comment URL: #{e.message}"
   end
 
-  def canonical_body_digest(content, path)
+  def canonical_body_digest(content, path, null_as_empty: false)
+    content = "" if null_as_empty && content.nil?
     raise ContractError, "#{path} must be a string" unless content.is_a?(String)
 
     Digest::SHA256.hexdigest(content.encode(Encoding::UTF_8))

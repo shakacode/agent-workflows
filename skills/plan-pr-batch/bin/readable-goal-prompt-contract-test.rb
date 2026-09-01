@@ -14,6 +14,9 @@ EXPECTED_PROMPT = <<~TEXT
   Merge authority: <auto|ask>
   Human available after: <optional time; omit this line when not supplied>
 TEXT
+MULTI_TARGET_INSTRUCTION = <<~TEXT
+  Instruction: Use PR-batch to execute every target in the accompanying Batch Plan against the repository's configured base branch; Work item identifies this batch's durable coordination anchor, not its sole target.
+TEXT
 
 def read_repo_file(path)
   File.read(File.join(REPO_ROOT, path), encoding: "UTF-8")
@@ -38,7 +41,8 @@ def extract_markdown_section(text, heading)
   raise "missing #{heading}" unless heading_match
 
   body_start = heading_match.end(0)
-  next_heading = text.match(/^###\s+/, body_start)
+  heading_level = heading[/\A#+/].length
+  next_heading = text.match(/^#{Regexp.escape('#' * heading_level)}\s+/, body_start)
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
 end
@@ -48,16 +52,17 @@ class ReadableGoalPromptContractTest < Minitest::Test
     @plan_skill = read_repo_file("skills/plan-pr-batch/SKILL.md")
     @pr_batch_skill = read_repo_file("skills/pr-batch/SKILL.md")
     @workflow = read_repo_file("workflows/pr-processing.md")
+    @prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
     @triage_skill = read_repo_file("skills/triage/SKILL.md")
     @source_docs = read_repo_file("docs/pr-batch-skills.md")
     @run_record_docs = read_repo_file("docs/github-task-prompts-and-run-records.md")
     @batch_plan_preflight = read_repo_file("skills/plan-pr-batch/bin/batch-plan-preflight")
 
-    workflow_handoff = extract_markdown_section(@workflow, "### Plan To Goal Handoff")
+    prompt_intake_handoff = extract_markdown_section(@prompt_intake, "## Plan To Goal Handoff")
     @prompts = {
       "plan-pr-batch" => extract_prompt(@plan_skill, "## Goal Prompt for pr-batch"),
       "pr-batch" => extract_prompt(@pr_batch_skill, "## Goal Prompt Template"),
-      "workflow" => workflow_handoff.split("### ", 2).first.then { |text| extract_prompt("## Prompt\n\n#{text}", "## Prompt") }
+      "prompt intake" => extract_prompt("## Prompt\n\n#{prompt_intake_handoff}", "## Prompt")
     }
   end
 
@@ -67,6 +72,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "skills/plan-pr-batch/SKILL.md" => @plan_skill,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill,
+      "workflows/pr-batch-intake.md" => @prompt_intake,
       "docs/pr-batch-skills.md" => @source_docs
     }
     GoalPromptDriftContract.check_host_caps!(surfaces)
@@ -88,12 +94,13 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "workflows/pr-processing.md" => @workflow,
       "skills/plan-pr-batch/SKILL.md" => @plan_skill,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/triage/SKILL.md" => @triage_skill
+      "skills/triage/SKILL.md" => @triage_skill,
+      "workflows/pr-batch-intake.md" => @prompt_intake
     }
     GoalPromptDriftContract.check_security_pins!(surfaces:, batch_plan_preflight: @batch_plan_preflight)
 
     mutated = surfaces.transform_values(&:dup)
-    mutated.fetch("skills/pr-batch/SKILL.md").sub!(
+    mutated.fetch("workflows/pr-batch-intake.md").sub!(
       "When search finds no canonical issue or existing PR",
       "When no canonical issue or existing PR is found"
     )
@@ -121,7 +128,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
   end
 
   def test_generation_rules_make_one_trusted_source_authoritative
-    [@plan_skill, @pr_batch_skill, @workflow, @triage_skill].each do |text|
+    [@plan_skill, @pr_batch_skill, @prompt_intake, @triage_skill].each do |text|
       normalized = text.gsub(/\s+/, " ")
       assert_includes normalized, "Fix issue #123 using $pr-batch with merge authority ask."
       assert_includes normalized, "accepted canonical issue or pull-request body"
@@ -130,6 +137,53 @@ class ReadableGoalPromptContractTest < Minitest::Test
       assert_includes normalized, "same readable prompt vocabulary for every host"
       assert_includes normalized, "outside the human-authored prompt"
     end
+  end
+
+  def test_machine_none_renders_as_human_ask_without_changing_durable_authority
+    normalized = @plan_skill.gsub(/\s+/, " ")
+    assert_includes normalized,
+                    "An explicitly selected machine `merge_authority: none` renders as human " \
+                    "`Merge authority: ask` because the worker has no merge authority and must obtain " \
+                    "explicit human authority before merge."
+    assert_includes normalized,
+                    "This rendering does not change the durable machine value from `none` to `ask`."
+  end
+
+  def test_multi_target_inline_plan_binds_every_target_to_the_coordination_anchor
+    [@plan_skill, @pr_batch_skill, @prompt_intake].each do |text|
+      normalized = text.gsub(/\s+/, " ")
+      assert_includes normalized,
+                      "For a multi-target launch, keep `Work item` singular and set it to the " \
+                      "durable coordination anchor and record destination for this batch."
+      assert_includes normalized,
+                      "The accompanying Batch Plan, whether delivered inline or by exact durable reference, " \
+                      "is authoritative for scope and enumerates every target with its exact source and provenance."
+      assert_includes normalized,
+                      "Before prompt creation, retain the exact accepted plan and its `batch_plan_binding` " \
+                      "in machine launch state."
+      assert_includes normalized, MULTI_TARGET_INSTRUCTION.strip
+      assert_includes normalized,
+                      "Do not enumerate every target URL in the human prompt or add another prompt field."
+    end
+  end
+
+  def test_single_target_prompt_stays_direct_without_multi_target_duplication
+    @prompts.each do |label, prompt|
+      assert_equal EXPECTED_PROMPT, prompt, "#{label} changed the single-target prompt"
+      assert_equal 1, prompt.scan(/^Work item:/).length, "#{label} duplicated Work item"
+      assert_equal 1, prompt.scan(/^Instruction:/).length, "#{label} duplicated Instruction"
+      refute_includes prompt, "every target", "#{label} leaked multi-target scope into the single-target prompt"
+      refute_includes prompt, "coordination anchor", "#{label} leaked multi-target anchor prose"
+    end
+  end
+
+  def test_timestamped_batch_title_is_durable_metadata_not_a_human_prompt_field
+    normalized = @pr_batch_skill.gsub(/\s+/, " ")
+    assert_includes normalized,
+                    "Keep the timestamped `Batch title:` in durable Batch Plan and task metadata only."
+    assert_includes normalized,
+                    "The readable human prompt uses `Task name:` and must not regain `Batch title:`."
+    refute_includes normalized, "**Batch title**: for pasteable batch prompts"
   end
 
   def test_source_docs_preserve_complete_handoff_and_digest_integrity
@@ -142,27 +196,31 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "deliberately reselected as a new run and the security preflight is rerun",
       "one compact collapsed run record with one entry per target lane",
       "directly appends `Launched at` plus `Prompt digest at launch`",
-      "verifies both identity and digest before it interprets the source",
+      "successful security-preflight source URL, `body` field, and SHA-256 snapshot",
+      "verifies identity and digest before it interprets the source",
+      "`batch_plan_binding`",
+      "workers never race GitHub read-modify-write updates",
+      "split the trust boundaries into separate runs",
       "complete Batch Plan for that coordinator group or an exact durable plan-state reference",
       "multi-target group remains one coordinator launch with one target per worker lane"
     ].each { |phrase| assert_includes normalized, phrase }
   end
 
   def test_launcher_record_owns_launch_provenance_and_append_only_observations
+    launcher_record = extract_markdown_section(@prompt_intake, "## Launcher Run Record")
     launcher_contract = @run_record_docs[/^## Launcher composition boundary\n.*?(?=^## )/m]
     compact_record = @run_record_docs[/^## Compact record\n.*?(?=^## )/m]
     refute_nil launcher_contract
     refute_nil compact_record
 
     [
-      "<!-- agent-launcher-run-record:v1 -->",
-      "Run ID:",
-      "Launch retry key:",
-      "Record destination:",
-      "Prompt created at:",
-      "Model at prompt creation:",
-      "Workflow at prompt creation",
-      "Later workflow observations:",
+      "Run ID: <immutable unique per-execution run_id>",
+      "Record destination: <exact issue or pull-request work-item URL authorized for every lane, or existing durable plan/backend destination authorized for every lane>",
+      "Batch Plan binding: <SHA-256 of exact delivered UTF-8 plan bytes, or immutable reference plus exact revision/content digest>",
+      "Prompt created at: <timestamp>",
+      "Model at prompt creation: <observed value or UNKNOWN>",
+      "Workflow at prompt creation: <version or UNKNOWN>",
+      "Later workflow observations: <timestamped append-only entries or none>",
       "Target lanes:",
       "Lane:",
       "Target:",
@@ -176,25 +234,46 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "Prompt digest observed by worker:",
       "Model observed by worker:",
       "Workflow observed at worker start"
-    ].each { |field| assert_includes compact_record, field }
-
-    normalized = launcher_contract.gsub(/\s+/, " ")
-    assert_includes normalized, "one unique entry per planned lane"
-    assert_includes normalized, "never substitutes for `run_id`"
-    assert_includes normalized, "never independently published"
-    assert_includes normalized, "does not inject outer identity, destination, or replay values into the helper"
-    assert_includes normalized, "not applicable — trusted-ad-hoc-override"
-    assert_includes normalized, "No outer dynamic value may create a Markdown link, HTML element, or active URI"
-
-    [@pr_batch_skill, @workflow].each do |surface|
-      heading = surface.equal?(@workflow) ? "### Launcher Run Record" : "## Launcher Run Record"
-      router = surface[/^#{Regexp.escape(heading)}\n.*?(?=^(?:##|###) |\z)/m]
-      refute_nil router
-      assert_includes router, "docs/github-task-prompts-and-run-records.md"
-      assert_includes router, "agent-run-record"
-      assert_match(/source and\s+digest evidence/m, router)
-      assert_match(/never inject.*through the helper/m, router)
-      assert_match(/trusted-ad-hoc-override.*bypass|bypass.*trusted-ad-hoc-override/m, router)
+    ].each do |field|
+      assert_includes launcher_record, field
+      assert_includes compact_record, field
     end
+
+    intake = launcher_record.gsub(/\s+/, " ")
+    [
+      "field by field",
+      "does not block launch",
+      "collapsed `<details>`",
+      "one entry for every planned target lane",
+      "without replacing earlier values",
+      "Reruns append a new collapsed record",
+      "coordinator directly appends the cheap lane launch timestamp and digest",
+      "existing immutable replay identity",
+      "exactly matching `run_id`, replay identity, and `batch_plan_binding`",
+      "not the deterministic launch token",
+      "Do not add these fields to the human-authored prompt",
+      "successful `pr-security-preflight` snapshot",
+      "do not put the digest inside the bytes it hashes",
+      "sole writer for that record",
+      "workers return bound observation payloads",
+      "Never put a private `plan-state://` or `batch://` identity in a public run record",
+      "do not invent another snapshot, byte encoding, or record schema",
+      "not applicable — trusted-ad-hoc-override",
+      "exact GitHub API `body` string",
+      "without Unicode normalization, Markdown rendering, whitespace trimming, or newline insertion or removal",
+      "When GitHub returns `body: null` for a title-only issue or pull request",
+      "Retain that SHA-256 digest in the selection, launch, and worker fields",
+      "verifies both the replay identity and observed digest before it interprets the source",
+      "`auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`",
+      "machine-only `merge_authority: none`"
+    ].each { |phrase| assert_includes intake, phrase }
+
+    contract = launcher_contract.gsub(/\s+/, " ")
+    assert_includes contract, "one unique entry per planned lane"
+    assert_includes contract, "never substitutes for `run_id`"
+    assert_includes contract, "never independently published"
+    assert_includes contract, "does not inject outer identity, destination, or replay values into the helper"
+    assert_includes contract, "not applicable — trusted-ad-hoc-override"
+    assert_includes contract, "No outer dynamic value may create a Markdown link, HTML element, or active URI"
   end
 end

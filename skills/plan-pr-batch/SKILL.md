@@ -129,36 +129,14 @@ Plan a PR batch
 
 ## Workflow
 
-### Canonical Launch Target Gate
+### Prompt Intake
 
-Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target.
-Pass the repository-qualified canonical issue/PR identity unchanged through planning, plan preflight, dispatch, coordination claims, the Lane Card, and final handoff.
-A direct prompt without either target must stop before branch creation, editing, implementation or coordination mutation, or worker dispatch and route to planning/reconciliation.
-Planning/reconciliation searches the repository for the exact existing issue or PR and reuses that identity, so equivalent prompt wording cannot create independently claimable synthetic lanes.
-When search finds no canonical issue or existing PR, create the canonical issue with explicit planning-time issue-creation authority, or ask for that authority; do not create a branch, edit, or dispatch until the persisted issue identity is rebound into the plan and preflight passes.
-
-The only exception is a named, trusted, task-specific durable ad-hoc override.
-Generic instructions, `$pr-batch` invocation, fix-it intent, or PR-publication authority do not create this override.
-Record its override name, trusted authorizer, durable authorization reference, original task identity, and repository-qualified stable coordination identity in the Batch Plan, plan/preflight input, Lane Card, and final handoff.
-All override fields must be explicit, trusted, task-matched, durable, and non-`UNKNOWN`. Use `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` as the stable coordination identity and preserve it unchanged in durable evidence; coordination derives the backend-safe raw pair of lowercase repository plus exact `adhoc:<yyyymmdd>-<short-slug>` target token. Fail closed to planning/reconciliation when any override evidence is missing or inferred. An existing PR is sufficient and never requires a retroactive issue.
-A labeled authorizer or task identity whose complete value component is `UNKNOWN` is incomplete and also fails closed.
-Complete labeled component values `fix-it`, `pr-batch`, and `publish-pr` are generic intent and fail closed in either provenance field, even when the override name is task-specific.
-The exact override names `fix-it`, `pr-batch`, and `publish-pr` are likewise generic and invalid.
-For this override field only, `durable_authorization_ref` must use `issue://OWNER/REPO/N`, `plan-state://<id>/<path>`, `batch://<id>`, or `https://github.com/OWNER/REPO/{issues|pull}/N`; any other scheme or chat-local reference fails closed.
-Parseable `issue://` and GitHub HTTPS authorization references must match `target.repository` case-insensitively; opaque `plan-state://` and `batch://` references remain trusted without invented repository parsing.
-Parseable authorization refs reject userinfo and query; GitHub HTTPS requires port 443, `issue://` requires the exact canonical authority/path shape, and fragments remain permitted.
-Every typed target repository has exactly two ASCII components separated by `/`: the owner matches `[A-Za-z0-9][A-Za-z0-9._-]*`; the repository name contains 1-100 characters from `[A-Za-z0-9._-]` but is not exactly `.` or `..`; neither component is exactly `UNKNOWN`; parseable authorization-reference `N` values are positive decimals matching `[1-9][0-9]*`.
-
-Every preflight lane carries one exact `target` v1 record. GitHub targets use
-`type`, `version`, `repository`, positive `number`, and a matching
-`stable_coordination_identity`; their types are `github-issue` and
-`github-pull-request`, with identities `OWNER/REPO:issue:N` and
-`OWNER/REPO:pull-request:N`. The sole ad-hoc form uses type
-`trusted-ad-hoc-override`, `repository`, `target: adhoc:<yyyymmdd>-<short-slug>`, matching stable
-identity, a lowercase slug `override_name`, labeled `kind:value` authorizer and
-task identities, and the durable reference. Missing,
-malformed, unknown, or duplicate identities make `batch-plan-preflight` reject
-the whole launch before dispatch.
+Load the canonical
+[PR-Batch Prompt Intake](../../workflows/pr-batch-intake.md) component before
+interpreting targets or shaping lanes. It alone defines canonical target v1,
+durable override provenance, trust handoff, short-invocation expansion,
+duplicate handling, and the verified facts this planner consumes. Planning may
+add scope, dependency, route, and capacity facts, but must not redefine intake.
 
 1. Intake
    - Before reading GitHub targets or shaping the batch, record future
@@ -193,10 +171,13 @@ the whole launch before dispatch.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
    - If the user wants a ready `$pr-batch` goal and has not specified merge
      authority, ask whether the normal human prompt should use `ask` or `auto`.
-     Map those values to machine `ask` and
-     `auto_merge_when_gates_pass`. Preserve an explicitly selected machine-only
-     `merge_authority: none` in durable state outside the normal human prompt.
-     Do not leave the human field unresolved. Explain that `ask` automatically
+     Map those values to machine `ask` and `auto_merge_when_gates_pass`.
+     An explicitly selected machine `merge_authority: none` renders as human
+     `Merge authority: ask` because the worker has no merge authority and must
+     obtain explicit human authority before merge. This rendering does not
+     change the durable machine value from `none` to `ask`. Preserve `none` in
+     durable state outside the normal human prompt. Do not leave the human field
+     unresolved. Explain that `ask` automatically
      walks through the exact-diff PR one conceptual change at a time before its
      one final merge decision.
    - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list. Treat an unbound direct prompt as planning/reconciliation input only; do not turn it into an implementation lane unless the complete durable ad-hoc override record is already present in trusted input.
@@ -590,8 +571,8 @@ the whole launch before dispatch.
      `plan-state://` or `batch://` durable authorization reference; do not invent
      another source record.
    - Follow the canonical
-     [Plan To Goal Handoff](../../workflows/pr-processing.md#plan-to-goal-handoff)
-     and [Launcher Run Record](../../workflows/pr-processing.md#launcher-run-record)
+     [Plan To Goal Handoff](../../workflows/pr-batch-intake.md#plan-to-goal-handoff)
+     and [Launcher Run Record](../../workflows/pr-batch-intake.md#launcher-run-record)
      for source selection, one provenance sequence per target lane, cheap launch
      and worker timestamps, digest gates, directional model/workflow
      observations, and append-only rerun history. Do not wait for a telemetry
@@ -705,7 +686,9 @@ prompt. The canonical lifecycle rules live in
 - `copy-paste` — deliver the exact generated goal prompt together with the
   complete Batch Plan for that coordinator group, or an exact durable
   plan-state reference that the new coordinator can resolve before preflight
-  or dispatch. This is the portable default and the fallback whenever a richer
+  or dispatch, plus the exact `batch_plan_binding` from the canonical Launcher
+  Run Record. The coordinator reverifies that immutable binding before
+  preflight, every dispatch, and worker start. This is the portable default and the fallback whenever a richer
   mode is unavailable.
 - `same-thread` — continue in the current chat as the batch coordinator. This is
   the same-chat self-launch described above, and it takes the lifecycle
@@ -729,7 +712,8 @@ group; for a multi-target group, the plan or reference is what preserves every
 target, lane, dependency, and ownership assignment.
 
 A created task receives the exact generated goal prompt and complete Batch Plan
-or exact durable plan-state reference in the same initial handoff, the saved
+or exact durable plan-state reference in the same initial handoff, plus its
+exact `batch_plan_binding`, the saved
 repository project, the host's normal isolated-worktree default for Git
 repositories unless the user explicitly requests the saved checkout, and the
 user's configured default model/effort unless the user explicitly requests an
@@ -779,8 +763,8 @@ not synthesize or restate it. `Fix issue #123
 using $pr-batch with merge authority ask.` is a valid one-line shortcut when
 repository context resolves the target.
 
-Follow the canonical [Plan To Goal Handoff](../../workflows/pr-processing.md#plan-to-goal-handoff)
-and [Launcher Run Record](../../workflows/pr-processing.md#launcher-run-record)
+Follow the canonical [Plan To Goal Handoff](../../workflows/pr-batch-intake.md#plan-to-goal-handoff)
+and [Launcher Run Record](../../workflows/pr-batch-intake.md#launcher-run-record)
 for source selection, one provenance sequence per target lane, cheap launch and
 worker timestamps, digest gates, directional model/workflow observations, and
 append-only rerun history. Do not wait for a telemetry aggregator.
@@ -795,6 +779,20 @@ The resolved canonical workflow owns launcher provenance, telemetry, recurring
 wake translation, and manifest grammar. Keep those machine contracts out of the
 generated prompt and do not restate them here.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
+
+For a multi-target launch, keep `Work item` singular and set it to the durable
+coordination anchor and record destination for this batch. The accompanying
+Batch Plan, whether delivered inline or by exact durable reference, is
+authoritative for scope and enumerates every target with its exact source and
+provenance. Before prompt creation, retain the exact accepted plan and its
+`batch_plan_binding` in machine launch state. Replace the normal `Instruction`
+line with this exact line:
+
+> Instruction: Use PR-batch to execute every target in the accompanying Batch Plan against the repository's configured base branch; Work item identifies this batch's durable coordination anchor, not its sole target.
+
+Do not enumerate every target URL in the human prompt or add another prompt
+field. Keep each target URL and its provenance in the Batch Plan. Single-target
+launches use the normal prompt unchanged.
 
 Outside the prompt, preserve this merge-planning contract in durable state:
 Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.

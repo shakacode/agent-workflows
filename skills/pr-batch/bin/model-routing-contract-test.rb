@@ -1091,7 +1091,7 @@ class ModelRoutingContractTest < Minitest::Test
 
   def test_goal_prompts_keep_directional_observations_in_the_launcher_record
     prompts = {
-      "workflow" => extract_prompt(read_repo_file("workflows/pr-processing.md"), "### Plan To Goal Handoff"),
+      "prompt intake" => extract_prompt(read_repo_file("workflows/pr-batch-intake.md"), "## Plan To Goal Handoff"),
       "pr-batch" => extract_prompt(read_repo_file("skills/pr-batch/SKILL.md"), "## Goal Prompt Template"),
       "plan-pr-batch" => extract_prompt(read_repo_file("skills/plan-pr-batch/SKILL.md"), "## Goal Prompt for pr-batch")
     }
@@ -1106,6 +1106,8 @@ class ModelRoutingContractTest < Minitest::Test
       refute_includes prompt, "exact-policy", label
     end
 
+    prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
+    intake_record = extract_markdown_section(prompt_intake, "## Launcher Run Record")
     run_record_docs = read_repo_file("docs/github-task-prompts-and-run-records.md")
     compact_record = run_record_docs[/^## Compact record\n.*?(?=^## )/m]
     launcher_contract = run_record_docs[/^## Launcher composition boundary\n.*?(?=^## )/m]
@@ -1120,10 +1122,28 @@ class ModelRoutingContractTest < Minitest::Test
     assert_includes compact_record, "Launched at:"
     assert_includes compact_record, "Run ID:"
     assert_includes compact_record, "Record destination:"
+    assert_includes compact_record, "Batch Plan binding:"
     assert_includes compact_record, "Replay identity:"
     assert_includes normalized(launcher_contract), "one unique entry per planned lane"
     assert_includes launcher_contract, "never substitutes for `run_id`"
     assert_includes run_record_docs, "field-granular `UNKNOWN`"
+
+    assert_includes intake_record, "Model at prompt creation: <observed value or UNKNOWN>"
+    assert_includes intake_record, "Model observed by worker: <observed value or UNKNOWN>"
+    assert_includes intake_record, "Workflow at prompt creation: <version or UNKNOWN>"
+    assert_includes intake_record, "Workflow observed at worker start: <version or UNKNOWN>"
+    assert_includes intake_record, "Later workflow observations: <timestamped append-only entries or none>"
+    assert_includes intake_record, "Launched at: <timestamp or pending>"
+    assert_includes intake_record, "Run ID: <immutable unique per-execution run_id>"
+    assert_includes intake_record,
+                    "Record destination: <exact issue or pull-request work-item URL authorized for every lane, or existing durable plan/backend destination authorized for every lane>"
+    assert_includes intake_record,
+                    "Batch Plan binding: <SHA-256 of exact delivered UTF-8 plan bytes, or immutable reference plus exact revision/content digest>"
+    assert_includes intake_record,
+                    "Replay identity: <existing lane_id, dispatcher, instance_id, and launch token>"
+    assert_includes normalized(intake_record), "one entry for every planned target lane"
+    assert_includes intake_record, "field by field"
+    assert_includes intake_record, "does not block launch"
   end
 
   def test_dispatcher_helper_is_portable_unsigned_and_preserves_dispatcher_fencing
@@ -1411,13 +1431,12 @@ class ModelRoutingContractTest < Minitest::Test
     ].each { |phrase| assert_includes guide, phrase }
     assert_includes workflow, "MODEL_ESCALATION_REQUEST"
     assert_includes workflow, "old and replacement instances must not overlap"
-    assert_includes workflow, "stop and reconcile"
+    assert_includes workflow, "ownership is reconciled"
   end
 
   def test_lane_cards_separate_preference_from_optional_observation
     %w[
-      workflows/pr-processing.md
-      skills/pr-batch/SKILL.md
+      workflows/pr-batch-worker-execution.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|
