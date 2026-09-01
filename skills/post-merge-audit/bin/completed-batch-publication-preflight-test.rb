@@ -184,6 +184,26 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input
   end
 
+  def duplicate_spelling_no_pr_input
+    input = no_pr_input
+    original_number = 10_036
+    target = input.fetch("expected_targets").find { |row| row.fetch("number") == original_number }
+    target["number"] = 5
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == [original_number.to_s] }
+    lane["targets"] = ["5", "issue:5"]
+    lane.delete("issue_url")
+    lane["evidence_url"] = "https://github.com/shakacode/hichee/issues/5"
+    snapshot = input.fetch("target_snapshots").find { |row| row.dig("target", "number") == original_number }
+    snapshot.fetch("target")["number"] = 5
+    snapshot["source"] = "https://github.com/shakacode/hichee/issues/5"
+    snapshot.dig("no_pr_evidence", "target")["number"] = 5
+    snapshot["no_pr_evidence"]["url"] = "https://github.com/shakacode/hichee/issues/5"
+    qa = input.fetch("qa_evidence").find { |row| row.dig("target", "number") == original_number }
+    qa.fetch("target")["number"] = 5
+    input
+  end
+
   def issue_projection_proof(source:, target:, head_sha: "ef30745eccc6e1fdae34c1b770edbc9650800e51")
     {
       "contract" => "github-issue-result-pr-projection",
@@ -1237,6 +1257,64 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       result = assess_input(input, target_verifier: verifier)
 
       refute result.fetch("eligible"), label
+    end
+  end
+
+  def test_mixed_issue_rejects_satisfied_sha_qa_instead_of_required_not_applicable_disposition
+    input = mixed_issue_and_pr_lane_input
+    issue_qa = input.fetch("qa_evidence").find { |row| row.dig("target", "type") == "issue" }
+    issue_qa["evidence"] = qa_v2_evidence(
+      head_sha: "ef30745eccc6e1fdae34c1b770edbc9650800e51",
+      user_visible_ui_change: "no"
+    )
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:130 QA evidence contradicts mixed-target issue disposition"
+  end
+
+  def test_direct_url_only_lane_preserves_legacy_batch_repo_compatibility
+    [nil, "acme/legacy-batch-repo"].each do |batch_repo|
+      input = issue_to_result_pr_input(raw_target: "pr:10299")
+      lane = input.dig("coordination_status", "batches", 0, "lanes", 0)
+      lane.delete("targets")
+      batch = input.dig("coordination_status", "batches", 0)
+      batch_repo ? batch["repo"] = batch_repo : batch.delete("repo")
+
+      result = assess_input(input)
+
+      assert result.fetch("eligible"), "#{batch_repo.inspect}: #{result.fetch('blockers').join(', ')}"
+    end
+  end
+
+  def test_duplicate_bare_and_typed_spellings_fail_as_one_ambiguous_lane_target
+    input = duplicate_spelling_no_pr_input
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "coordination lane hc-b-10036 contains duplicate or ambiguous target aliases"
+    refute_includes result.fetch("blockers"),
+                    "coordination lane hc-b-10036 target is absent or ambiguous"
+    refute_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:5 appears in multiple coordination lanes"
+  end
+
+  def test_mixed_lane_accepts_scalar_terminal_state_from_either_declared_target_type
+    %w[closed merged].each do |scalar_state|
+      input = mixed_issue_and_pr_lane_input
+      input.dig("coordination_status", "batches", 0, "lanes", 0)["pr_state"] = scalar_state
+
+      result = assess_input(input)
+
+      assert result.fetch("eligible"), "#{scalar_state}: #{result.fetch('blockers').join(', ')}"
+      coordination_states = result.dig("snapshot", "coordination", "lanes").map do |lane|
+        lane.fetch("coordination_target_state")
+      end
+      assert_equal [scalar_state, scalar_state], coordination_states
     end
   end
 

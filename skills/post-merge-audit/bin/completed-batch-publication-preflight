@@ -158,6 +158,7 @@ module CompletedBatchPublicationPreflight
       snapshots,
       qa_entries,
       blockers,
+      lane_entries:,
       waiver_verifier:
     )
     snapshot = {
@@ -455,13 +456,16 @@ module CompletedBatchPublicationPreflight
       else
         seen_names[name.downcase] = true
       end
+      target_blocker_count = blockers.length
       targets = targets_for_lane(
         lane,
         batch_repo,
         expected_targets,
+        blockers:,
+        lane_name: name,
         target_projection_verifier: cached_projection_verifier
       )
-      if targets.empty?
+      if targets.empty? && blockers.length == target_blocker_count
         blockers << "coordination lane #{name || 'UNKNOWN'} target is absent or ambiguous"
       end
       target_states = targets.map do |resolved|
@@ -493,7 +497,14 @@ module CompletedBatchPublicationPreflight
     [entries, entries.map { |entry| entry.fetch("target") }]
   end
 
-  def targets_for_lane(lane, batch_repo, expected_targets, target_projection_verifier: nil)
+  def targets_for_lane(
+    lane,
+    batch_repo,
+    expected_targets,
+    blockers: nil,
+    lane_name: nil,
+    target_projection_verifier: nil
+  )
     url_targets = %w[pr_url issue_url target_url].filter_map do |field|
       value = lane[field]
       next if value.nil?
@@ -510,8 +521,6 @@ module CompletedBatchPublicationPreflight
     return [] if url_targets.length > 1
 
     unless lane.key?("targets")
-      return [] if url_targets.any? { |target| !target["repo"].casecmp?(batch_repo) }
-
       return url_targets.map { |target| { "target" => target, "target_projection" => nil } }
     end
 
@@ -531,6 +540,11 @@ module CompletedBatchPublicationPreflight
 
         candidates.first
       end
+      unless target_rows.uniq { |target| target_key(target) }.length == target_rows.length
+        blockers&.<< "coordination lane #{lane_name || 'UNKNOWN'} contains duplicate or ambiguous target aliases"
+        return []
+      end
+
       return target_rows.map { |target| { "target" => target, "target_projection" => nil } }
     end
 
@@ -848,7 +862,8 @@ module CompletedBatchPublicationPreflight
     [canonical_targets, authenticated_later_target_keys]
   end
 
-  def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, waiver_verifier:)
+  def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, lane_entries:, waiver_verifier:)
+    lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
     expected_targets.map do |target|
       key = target_key(target)
       row = qa_entries[key]
@@ -856,6 +871,8 @@ module CompletedBatchPublicationPreflight
       no_pr = canonical_no_pr_evidence(snapshots.dig(key, "no_pr_evidence"), target)
       head_sha = raw_head_sha.match?(SHA_PATTERN) ? raw_head_sha : nil
       no_pr_disposition = target["type"] == "issue" && raw_head_sha == "not_applicable" && no_pr
+      mixed_target_issue_disposition = target["type"] == "issue" &&
+                                       lanes_by_target.dig(key, "authenticated_per_target_terminal_reconciliation")
       head_sha = nil if no_pr_disposition
       unless row
         blockers << "#{target_label(target)} QA evidence is absent"
@@ -891,6 +908,9 @@ module CompletedBatchPublicationPreflight
       end
       if no_pr_disposition && !valid_no_pr_qa_disposition?(qa)
         blockers << "#{target_label(target)} QA evidence contradicts typed no-PR disposition"
+      end
+      if mixed_target_issue_disposition && !valid_no_pr_qa_disposition?(qa)
+        blockers << "#{target_label(target)} QA evidence contradicts mixed-target issue disposition"
       end
       unless %w[SATISFIED NOT_APPLICABLE WAIVED].include?(verdict)
         blockers << "#{target_label(target)} QA disposition is #{status || verdict}"
