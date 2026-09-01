@@ -854,7 +854,9 @@ module CloseoutEvidenceReplay
       return link_text.empty? || !authority_shaped_https_label?(link_text)
     end
 
-    raw_label.match?(/\A\p{Alnum}[\p{Alnum}_-]*:?\z/u)
+    # Normalize after the Markdown branch, not before: stripping `[` off a link opener would
+    # leave `artifact](` and lose the branch that handles it.
+    normalized_https_prose_token(raw_label).match?(/\A\p{Alnum}[\p{Alnum}_-]*:?\z/u)
   end
 
   def authority_shaped_https_label?(label)
@@ -1056,6 +1058,10 @@ module CloseoutEvidenceReplay
     source.match?(%r{\A[A-Za-z0-9][A-Za-z0-9._:#@/-]*\z})
   end
 
+  # Segments on separators and case transitions. A concatenated all-caps compound (`FILECOUNT`)
+  # has neither and stays one token, so vocabulary classification does not see it; separating it
+  # would take a word list rather than a rule. Explicitly out of scope: the contract validates
+  # evidence shape, and the metric vocabulary is the consumer seam's to define.
   def text_tokens(value)
     value
       .gsub(/([A-Z]+)([A-Z][a-z])/, '\\1 \\2')

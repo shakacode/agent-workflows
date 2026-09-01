@@ -1393,6 +1393,28 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_hosted_v1_accepts_wrapped_connectors_before_a_direct_url
+    ["HTTPS: **artifact** https://evidence.example.test/sign-in-abc123",
+     "HTTPS: `artifact` https://evidence.example.test/sign-in-abc123",
+     "HTTPS: _artifact_ https://evidence.example.test/sign-in-abc123",
+     "HTTPS: (artifact) https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), evidence
+      assert_empty hosted.fetch("missing"), evidence
+    end
+
+    # Unwrapping reveals the shape; it does not excuse it.
+    ["HTTPS: **example.test** https://evidence.example.test/sign-in-abc123",
+     "HTTPS: `10.0.0.1:8080` https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "UNKNOWN", run_replay(body).dig("hosted_qa_evidence", "verdict"), evidence
+    end
+  end
+
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
     # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
     # whole replay instead of returning a verdict.
