@@ -14,6 +14,7 @@ module CloseoutEvidenceReplay
 
   VALID_QA_STATUSES = %w[satisfied blocked waived in_progress unknown not_applicable].freeze
   VALID_QA_REQUIRED = %w[yes no].freeze
+  VALID_HOSTED_QA_STATUSES = %w[satisfied waived].freeze
   VALID_RELEASE_BLOCKING = %w[clear blocked waived not_applicable].freeze
   VALID_PROCESS_GAP_DISPOSITIONS = [
     "script", "schema", "checklist+replay", "park", "not applicable", "not_applicable"
@@ -41,6 +42,10 @@ module CloseoutEvidenceReplay
   MEASUREMENT_VALUE = %r{([-+]?\d+(?:\.\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)}i
   EPHEMERAL_ARTIFACT_SCHEME = /\b(?:about|blob|chrome-extension|data|file|filesystem|ftp|http|mediastream|moz-extension):/i
   UNRESOLVED_PLACEHOLDER = %r{\b(?:missing|unavailable|unmeasured|unknown|not[ _](?:available|measured))\b|n/a}i
+  HOSTED_CRITERION_UNRESOLVED_PLACEHOLDER = %r{
+    \b(?:missing|unavailable|unmeasured|unknown|tbd|not[ _](?:available|measured))\b|n/a
+  }ix
+  URI_SCHEME = %r{\A[A-Za-z][A-Za-z0-9+.-]*://}
 
   def run(argv)
     options, parser = parse_options(argv)
@@ -80,7 +85,8 @@ module CloseoutEvidenceReplay
     parser = OptionParser.new do |opts|
       opts.banner = "Usage: closeout-evidence-replay [--expected-head-sha SHA] [--require-priority-dispositions] [--require-visual-evidence-v2] <path|->"
       opts.separator ""
-      opts.separator "Parse `qa-evidence v1|v2` and `priority-finding-dispositions v1` markers from"
+      opts.separator "Parse `qa-evidence v1|v2`, `hosted-qa-evidence v1`, and"
+      opts.separator "`priority-finding-dispositions v1` markers from"
       opts.separator "a PR body, issue comment, handoff, or stdin and emit replay JSON."
       opts.separator ""
       opts.on("--expected-head-sha SHA", "Require QA and priority evidence for this full final-head SHA") do |sha|
@@ -136,14 +142,27 @@ module CloseoutEvidenceReplay
       expected_head_sha:,
       required: require_priority_dispositions
     )
+    hosted_markers = marker_bodies(text, "hosted-qa-evidence v1")
+    hosted_qa = if hosted_markers.empty?
+                  hosted_qa_not_applicable("hosted-qa-evidence v1 marker missing")
+                else
+                  replay_hosted_qa_markers(hosted_markers, expected_head_sha:)
+                end
     {
-      "overall_verdict" => overall_verdict([qa, priority]),
+      "overall_verdict" => overall_verdict([qa, hosted_qa, priority]),
       "qa_evidence" => qa,
+      "hosted_qa_evidence" => hosted_qa,
       "priority_finding_dispositions" => priority
     }
   end
 
   def marker_bodies(text, name)
+    if name == "hosted-qa-evidence v1"
+      return text.scan(
+        /<!--\s*#{Regexp.escape(name)}(?=\s|-->)\s*(.*?)^[ \t]*-->[ \t]*\r?$/m
+      ).map(&:first)
+    end
+
     text.scan(/<!--\s*#{Regexp.escape(name)}(?=\s|-->)\s*(.*?)-->/m).map(&:first)
   end
 
@@ -171,6 +190,123 @@ module CloseoutEvidenceReplay
 
     markers = current_head_markers(markers, expected_head_sha) if expected_head_sha
     aggregate_marker_results(markers.map { |marker| replay_priority(marker, expected_head_sha:, required:) })
+  end
+
+  def replay_hosted_qa_markers(markers, expected_head_sha: nil)
+    return hosted_qa_marker_count_unknown(markers.length) unless markers.length == 1
+
+    aggregate_marker_results(
+      markers.map { |marker| replay_hosted_qa(marker, expected_head_sha:) }
+    )
+  end
+
+  def replay_hosted_qa(marker, expected_head_sha: nil)
+    fields, duplicate_keys = parse_fields(marker)
+    criteria, criterion_errors = parse_hosted_qa_criteria(marker)
+    errors = duplicate_keys.map { |key| "duplicate scalar key: #{key}" }
+    errors.concat(hosted_qa_line_errors(marker))
+    errors.concat(criterion_errors)
+    status = fields.fetch("status", "")
+    head_sha = fields.fetch("head_sha", "").downcase
+    deployed_head_sha = fields.fetch("deployed_head_sha", "").downcase
+    expected_fields = if status == "waived"
+                        %w[status head_sha target maintainer_waiver]
+                      else
+                        %w[status head_sha deployed_head_sha deployment_id deployment_url target]
+                      end
+    errors << "scalar keys must be exactly #{expected_fields.sort.join(', ')}" unless
+      fields.keys.sort == expected_fields.sort
+    missing = missing_fields(fields, expected_fields)
+    missing << "status" unless status.empty? || VALID_HOSTED_QA_STATUSES.include?(status)
+    missing << "head_sha" unless full_head_sha?(head_sha)
+    missing << "head_sha" if expected_head_sha && head_sha != expected_head_sha
+    missing << "target" unless fields.fetch("target", "").match?(/\A[A-Za-z0-9][A-Za-z0-9._:-]*\z/)
+    if status == "waived"
+      missing << "criterion" unless criteria.empty?
+      missing << "maintainer_waiver" unless valid_https_url?(fields.fetch("maintainer_waiver", ""))
+    else
+      missing << "deployed_head_sha" unless full_head_sha?(deployed_head_sha)
+      missing << "deployed_head_sha" unless head_sha.empty? || deployed_head_sha == head_sha
+      missing << "deployment_id" unless fields.fetch("deployment_id", "").match?(/\A[A-Za-z0-9][A-Za-z0-9._:-]*\z/)
+      missing << "deployment_url" unless immutable_deployment_url?(fields.fetch("deployment_url", ""))
+      missing << "criterion" if criteria.empty?
+      duplicate_ids = criteria.group_by { |row| row.fetch("id", "") }.select { |_id, rows| rows.length > 1 }.keys
+      duplicate_ids.each { |id| errors << "duplicate criterion id: #{id}" }
+      criteria.each_with_index do |row, index|
+        missing << "criterion[#{index}].id" unless row.fetch("id", "").match?(/\A[a-z0-9][a-z0-9._-]*\z/)
+        missing << "criterion[#{index}].status" unless row.fetch("status", "") == "passed"
+        evidence = row.fetch("evidence", "")
+        missing << "criterion[#{index}].evidence" if evidence.empty? || unresolved_hosted_criterion_evidence?(evidence)
+      end
+    end
+    missing.uniq!
+    fields["head_sha"] = head_sha if full_head_sha?(head_sha)
+    fields["deployed_head_sha"] = deployed_head_sha if full_head_sha?(deployed_head_sha)
+
+    verdict = if errors.any? || missing.any?
+                "UNKNOWN"
+              elsif status == "waived"
+                "WAIVED"
+              else
+                "SATISFIED"
+              end
+    result = {
+      "verdict" => verdict,
+      "marker_version" => 1,
+      "fields" => fields,
+      "criteria" => criteria,
+      "missing" => missing,
+      "errors" => errors
+    }
+    result["expected_head_sha"] = expected_head_sha if expected_head_sha
+    result
+  end
+
+  def parse_hosted_qa_criteria(marker)
+    criteria = []
+    errors = []
+    marker.each_line do |line|
+      next unless line.strip.start_with?("criterion:")
+
+      row = {}
+      duplicate_keys = []
+      line.split(":", 2).last.to_s.split("|").each do |part|
+        key, value = part.split("=", 2)
+        unless value
+          errors << "criterion[#{criteria.length}] is malformed"
+          next
+        end
+        normalized_key = key.strip.downcase
+        if row.key?(normalized_key)
+          duplicate_keys << normalized_key
+        else
+          row[normalized_key] = value.strip
+        end
+      end
+      unknown_keys = row.keys - %w[id status evidence]
+      errors.concat(duplicate_keys.uniq.map { |key| "criterion[#{criteria.length}].duplicate key: #{key}" })
+      errors.concat(unknown_keys.map { |key| "criterion[#{criteria.length}].unknown key: #{key}" })
+      errors << "criterion[#{criteria.length}] keys must be exactly evidence, id, status" unless
+        row.keys.sort == %w[evidence id status]
+      evidence = row.fetch("evidence", "")
+      if evidence.include?("<!--") || evidence.include?("-->")
+        errors << "criterion[#{criteria.length}].evidence contains an HTML comment delimiter"
+      end
+      criteria << row
+    end
+    [criteria, errors]
+  end
+
+  def hosted_qa_line_errors(marker)
+    errors = []
+    marker.each_line.with_index do |line, index|
+      stripped = line.strip
+      next if stripped.empty? || stripped.start_with?("criterion:")
+      next if stripped.match?(/\A[a-z_]+: \S.*\z/)
+
+      errors << "malformed marker line #{index + 1}"
+    end
+    errors
   end
 
   def current_head_markers(markers, expected_head_sha)
@@ -361,7 +497,7 @@ module CloseoutEvidenceReplay
     reason = fields.fetch("visual_evidence_blocked_reason", "")
     if destination == "human_attachment_pending"
       missing << "visual_evidence_blocked_reason" unless valid_visual_blocked_reason?(reason)
-    elsif !reason.empty?
+    elsif fields.key?("visual_evidence_blocked_reason")
       missing << "visual_evidence_blocked_reason.unexpected"
     end
   end
@@ -543,6 +679,19 @@ module CloseoutEvidenceReplay
 
   def valid_https_url?(value)
     !parse_https_url(value).nil?
+  end
+
+  def unresolved_hosted_criterion_evidence?(evidence)
+    return false if valid_https_url?(evidence)
+    return true if evidence.match?(URI_SCHEME)
+
+    evidence.match?(HOSTED_CRITERION_UNRESOLVED_PLACEHOLDER)
+  end
+
+  def immutable_deployment_url?(value)
+    uri = parse_https_url(value)
+    uri && uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil? &&
+      uri.path && !uri.path.empty?
   end
 
   def parse_https_url(value)
@@ -736,7 +885,7 @@ module CloseoutEvidenceReplay
     fields = {}
     duplicate_keys = []
     marker.each_line do |line|
-      next if line.strip.start_with?("finding:")
+      next if line.strip.start_with?("finding:", "criterion:")
 
       key, value = line.split(":", 2)
       next if value.nil?
@@ -807,6 +956,30 @@ module CloseoutEvidenceReplay
       "missing" => [],
       "errors" => [],
       "reason" => reason
+    }
+  end
+
+  def hosted_qa_not_applicable(reason)
+    {
+      "verdict" => "NOT_APPLICABLE",
+      "marker_version" => 1,
+      "fields" => { "status" => "not_applicable" },
+      "criteria" => [],
+      "missing" => [],
+      "errors" => [],
+      "reason" => reason
+    }
+  end
+
+  def hosted_qa_marker_count_unknown(marker_count)
+    {
+      "verdict" => "UNKNOWN",
+      "marker_version" => 1,
+      "fields" => {},
+      "criteria" => [],
+      "missing" => ["exactly one hosted-qa-evidence v1 marker is required"],
+      "errors" => [],
+      "marker_count" => marker_count
     }
   end
 
