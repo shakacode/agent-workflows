@@ -1212,6 +1212,88 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_rejects_metric_names_ending_in_an_unresolved_sentinel
+    # A terminal sentinel self-declares the measurement unresolved at any name length; the
+    # two-token bound only ever governed sentinels in non-terminal position.
+    %w[
+      checkout_latency_unknown
+      page_load_time_missing
+      api_call_duration_tbd
+      render_time_placeholder
+      checkout_flow_step_unavailable
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_keeps_accepting_domain_names_with_a_non_terminal_sentinel
+    %w[missing_translation_count todo_sync_latency unknown_device_render_time].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_hosted_v1_accepts_decimal_measurements_in_https_prose_labels
+    ["HTTPS: uptime 99.9%;", "HTTPS: p95 2.4s;", "HTTPS: ratio 1.5x;", "HTTPS: score 99.9;"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+
+    # A measurement shape allows one decimal group and no alphabetic TLD, so hostnames and
+    # dotted-quad addresses stay authority-shaped.
+    ["HTTPS: host 10.0.co;", "HTTPS: at 192.168.1.1;", "HTTPS: x 1.2.3.4;", "HTTPS: y a.co;"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "UNKNOWN", run_replay(body).dig("hosted_qa_evidence", "verdict"), label
+    end
+  end
+
+  def test_https_label_classification_never_raises_on_arbitrary_prose
+    # The lone-delimiter NoMethodError reached the CLI as a stack trace rather than a verdict.
+    # This walks random punctuation/word combinations to catch that class of defect directly,
+    # rather than waiting for a reviewer to name the next shape. Seeded for reproducibility.
+    random = Random.new(20_260_901)
+    pieces = %w[
+      TLS 1.3 enabled ( ) [ ] { } " ' ` * _ : ; , . / \\ ? # @ % - + = ! ~ | < >
+      example.test 99.9% HTTP/2 [::1] a/b ../c 2.4s e.g.
+    ]
+
+    2_000.times do
+      label = Array.new(random.rand(1..6)) { pieces.sample(random: random) }.join(" ")
+      value = "durable: before HTTPS: #{label} after https://github.com/example/repo/pull/123#visual"
+
+      CloseoutEvidenceReplay.malformed_https_reference?(value)
+      CloseoutEvidenceReplay.disallowed_durable_reference?(value)
+      CloseoutEvidenceReplay.http_urls(value)
+      CloseoutEvidenceReplay.without_schema_slash_labels(value)
+    end
+  end
+
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
     # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
     # whole replay instead of returning a verdict.
