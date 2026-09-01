@@ -46,8 +46,8 @@ module CloseoutEvidenceReplay
   UNRESOLVED_METRIC_EXACT_TOKENS = %w[nil none null pending undefined unset].freeze
   PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
   PERFORMANCE_EVIDENCE_FIELD_PATTERN = PERFORMANCE_EVIDENCE_FIELD_NAMES.map { |name| Regexp.escape(name) }.join("|")
-  # Status words are the single-token prose exception. Other prose labels must be multi-token and
-  # non-authority-shaped so malformed HTTPS references continue to fail closed.
+  # Status words are the unbounded single-token prose exception. Other prose labels must be
+  # punctuation-bounded or multi-token and non-authority-shaped so malformed HTTPS fails closed.
   HTTPS_PROSE_LABEL_STATUSES = %w[available disabled enabled enforced failed ok only optional passed required supported].freeze
   HTTPS_PROSE_LABEL_STATUS_PATTERN = HTTPS_PROSE_LABEL_STATUSES.map { |status| Regexp.escape(status) }.join("|")
   HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*/i
@@ -716,14 +716,18 @@ module CloseoutEvidenceReplay
       /\A(?:[1-5]\d{2}\s+)?(?:#{HTTPS_PROSE_LABEL_STATUS_PATTERN})(?=\s|[,;]|\.(?:\s|\z)|\z)/i
     )
 
+    punctuation_bounded = label.match?(/[;,]|\.(?=\s|\z)/)
     prose_label = label.split(/[;,]|\.(?=\s|\z)/, 2).first.strip
     return false if prose_label.match?(%r{[/\\]})
-    return false if prose_label.match?(
-      /\A(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,63}(?::[^\s?#]+)?(?:[?#]\S*)?\z/i
-    )
-    return false if text_tokens(prose_label).length < 2
+    return false if authority_shaped_https_label?(prose_label)
+    return false if text_tokens(prose_label).length < 2 && !punctuation_bounded
 
     true
+  end
+
+  def authority_shaped_https_label?(label)
+    authority = label.split(/[?#]/, 2).first
+    !authority.match?(/\s/) && (authority.include?(".") || authority.include?(":") || authority.start_with?("["))
   end
 
   def unresolved_hosted_criterion_evidence?(evidence)
