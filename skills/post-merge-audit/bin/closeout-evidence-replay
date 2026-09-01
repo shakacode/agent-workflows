@@ -976,11 +976,45 @@ module CloseoutEvidenceReplay
     normalized_host = uri.host.downcase
     return if normalized_host == "private-user-images.githubusercontent.com"
     return if normalized_host == "localhost" || normalized_host.end_with?(".localhost")
-    return if normalized_host.match?(/\A127(?:\.\d{1,3}){3}\z/) || normalized_host == "0.0.0.0"
+    return if loopback_or_unspecified_host?(normalized_host)
 
     uri
   rescue URI::Error
     nil
+  end
+
+  # Dotted-quad `127.0.0.1` is only one spelling. `inet_aton` also accepts short, decimal, hex, and
+  # octal forms — `127.1`, `2130706433`, `0x7f000001`, `0177.0.0.1`, `0` — which resolve to the same
+  # loopback or unspecified address, so rejecting only the dotted-quad leaves the intent unmet.
+  def loopback_or_unspecified_host?(host)
+    address = inet_aton_value(host)
+    return false unless address
+
+    address >> 24 == 127 || address.zero?
+  end
+
+  # Nil unless the host is entirely numeric in one of the inet_aton forms; a registrable domain
+  # always carries a non-numeric label, so this cannot capture one.
+  def inet_aton_value(host)
+    parts = host.split(".", -1)
+    return if parts.empty? || parts.length > 4
+
+    values = parts.map { |part| inet_aton_part(part) }
+    return if values.any?(&:nil?)
+
+    last = values.pop
+    return if last >= 1 << (8 * (4 - values.length))
+    return if values.any? { |value| value > 255 }
+
+    values.each_with_index.sum { |value, index| value << (8 * (3 - index)) } + last
+  end
+
+  def inet_aton_part(part)
+    case part
+    when /\A0[xX][0-9a-fA-F]+\z/ then Integer(part, 16)
+    when /\A0[0-7]*\z/ then Integer(part, 8)
+    when /\A[1-9]\d*\z/ then Integer(part, 10)
+    end
   end
 
   def negated_or_passing_failure_claim?(value)

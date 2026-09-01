@@ -1613,6 +1613,42 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     refute_nil data.dig("qa_evidence", "verdict")
   end
 
+  def test_durable_urls_reject_every_loopback_spelling
+    # Dotted-quad is one spelling; inet_aton also accepts short, decimal, hex, and octal forms
+    # that resolve to the same loopback address, and rejecting only the dotted-quad left the
+    # existing intent unmet.
+    %w[
+      https://127.0.0.1/x https://127.1/x https://127.000.000.1/x https://2130706433/x
+      https://0x7f000001/x https://0177.0.0.1/x https://0x7f.1/x https://0/x https://0.0.0.0/x
+      https://localhost/x https://a.localhost/x
+    ].each do |url|
+      refute CloseoutEvidenceReplay.valid_https_url?(url), "loopback accepted: #{url}"
+    end
+  end
+
+  def test_durable_urls_keep_accepting_public_addresses
+    # The numeric-host rule must not swallow ordinary public addresses adjacent to 127/8.
+    %w[
+      https://203.0.113.5/x https://8.8.8.8/x https://126.0.0.1/x https://128.0.0.1/x
+      https://1.2.3.4/x https://github.com/e/r/pull/1
+    ].each do |url|
+      assert CloseoutEvidenceReplay.valid_https_url?(url), "public address rejected: #{url}"
+    end
+  end
+
+  def test_durable_github_hosts_reject_lookalikes
+    %w[
+      https://github.com.evil.test/e/r https://github.com@evil.test/e/r
+      https://evil.test/github.com https://notgithub.com/e/r https://github.com.x/e/r
+      https://private-user-images.githubusercontent.com/1/a.png
+    ].each do |url|
+      refute CloseoutEvidenceReplay.github_url?(url), "lookalike accepted: #{url}"
+    end
+
+    assert CloseoutEvidenceReplay.github_url?("https://GitHub.CoM/e/r/pull/1")
+    assert CloseoutEvidenceReplay.github_url?("https://user-images.githubusercontent.com/1/a.png")
+  end
+
   def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
     # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
     # whole replay instead of returning a verdict.
