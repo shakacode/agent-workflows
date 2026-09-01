@@ -1815,6 +1815,28 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_host_capacity_counts_only_the_active_launch_wave
+    lanes = [
+      lane("active", wave: "wave-a", host_id: "m5", uses_external_quota: true),
+      lane("inactive-a", wave: "wave-b", host_id: "m5", uses_external_quota: true),
+      lane("inactive-b", wave: "wave-b", host_id: "m5")
+    ]
+    capacity = capacity_envelope(
+      host_capacity(id: "m5", worker_limit: 1, external_quota_limit: 1)
+    )
+
+    result, stderr, status = evaluate(
+      input_for(lanes: lanes, active_wave: "wave-a", capacity: capacity)
+    )
+
+    assert status.success?, stderr
+    assert_equal ["active"], result.dig("launch", "eligible_lane_ids")
+    assert_equal %w[inactive-a inactive-b], result.dig("launch", "held_lane_ids")
+    assert_equal "inactive-wave", result.dig("launch", "held_reasons", "inactive-a")
+    assert_equal "inactive-wave", result.dig("launch", "held_reasons", "inactive-b")
+    assert_equal 1, result.dig("capacity", "admitted_worker_slots")
+  end
+
   def test_worker_heavy_root_and_external_quota_budgets_remain_independent
     lanes = [
       lane("ordinary", host_id: "m5"),
@@ -1832,6 +1854,34 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_equal ["quota-b"], result.dig("launch", "held_lane_ids")
     assert_equal "external-quota-full", result.dig("launch", "held_reasons", "quota-b")
     assert_equal "heavy-root-admission/v1", result.dig("capacity", "hosts", 0, "heavy_root", "admission")
+  end
+
+  def test_simultaneous_worker_and_external_quota_overcommit_reports_both_violations
+    lanes = [lane("quota-active", host_id: "m5", uses_external_quota: true)]
+    capacity = capacity_envelope(
+      host_capacity(
+        id: "m5",
+        worker_limit: 1,
+        worker_occupied: 1,
+        external_quota_limit: 1,
+        external_quota_occupied: 1
+      )
+    )
+    lifecycle_states = [lane_lifecycle_state(lane_id: "quota-active", state: "active")]
+
+    result, _stderr, status = evaluate(
+      input_for(lanes: lanes, lifecycle_states: lifecycle_states, capacity: capacity)
+    )
+
+    refute status.success?
+    capacity_violations = result.fetch("violations").select do |item|
+      item.fetch("code").start_with?("host-") && item.fetch("code").end_with?("-overcommitted")
+    end
+    assert_equal(
+      %w[host-external-quota-overcommitted host-worker-capacity-overcommitted],
+      capacity_violations.map { |item| item.fetch("code") }.sort
+    )
+    assert(capacity_violations.all? { |item| item.fetch("lane_ids") == ["quota-active"] })
   end
 
   def test_capacity_envelope_and_lane_host_assignment_fail_closed

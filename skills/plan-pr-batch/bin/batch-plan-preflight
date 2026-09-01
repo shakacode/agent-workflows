@@ -368,7 +368,7 @@ module BatchPlanPreflight
   def validate_host_capacity_occupancy(capacity, lanes, active_lane_ids, blocked_lane_ids)
     occupied_lane_ids = active_lane_ids + blocked_lane_ids
     lanes_by_id = lanes.to_h { |lane| [lane["id"], lane] }
-    capacity.fetch("hosts").filter_map do |host|
+    capacity.fetch("hosts").flat_map do |host|
       host_id = host.fetch("id")
       lifecycle_lanes = occupied_lane_ids.filter_map do |lane_id|
         lane = lanes_by_id[lane_id]
@@ -378,21 +378,24 @@ module BatchPlanPreflight
       quota_total = host.dig("external_quota", "occupied") + lifecycle_lanes.count do |lane_id|
         lanes_by_id.fetch(lane_id)["uses_external_quota"] == true
       end
+      violations = []
       if worker_total > host.dig("worker", "limit")
-        violation(
+        violations << violation(
           "host-worker-capacity-overcommitted",
           "$.host_capacity.hosts",
           "Host #{host_id} has more occupied or lifecycle-held worker slots than its declared budget.",
           lane_ids: lifecycle_lanes.sort
         )
-      elsif quota_total > host.dig("external_quota", "limit")
-        violation(
+      end
+      if quota_total > host.dig("external_quota", "limit")
+        violations << violation(
           "host-external-quota-overcommitted",
           "$.host_capacity.hosts",
           "Host #{host_id} has more occupied external-quota slots than its declared budget.",
           lane_ids: lifecycle_lanes.sort
         )
       end
+      violations
     end
   end
 
