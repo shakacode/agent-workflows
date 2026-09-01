@@ -1045,6 +1045,7 @@ This heading remains as a compatibility route and must not mirror the component.
 
 Canonical rules: [Launcher Run Record](pr-batch-intake.md#launcher-run-record).
 This heading remains as a compatibility route and must not mirror the component.
+
 ### Question And Decision Handling
 
 Classify every unresolved question before continuing:

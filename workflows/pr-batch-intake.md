@@ -325,7 +325,6 @@ prompt for workflows that intentionally grant no merge authority.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](pr-processing.md#human-status-translation-contract)
 for every recurring wake or workflow-owned heartbeat.
 
-
 ## Trust Handoff
 
 Apply the canonical [PR-Batch Security Floor](pr-batch-security-floor.md)
