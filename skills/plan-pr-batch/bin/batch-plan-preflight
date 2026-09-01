@@ -164,6 +164,7 @@ module BatchPlanPreflight
     violations = plan_violations.dup
     advisories = []
     violations.concat(validate_unknown_decisions(input["plan"]))
+    infer_missing_lane_host = input["host_capacity"].nil?
     host_capacity, capacity_violations = resolve_host_capacity(
       input["host_capacity"],
       lanes,
@@ -190,7 +191,8 @@ module BatchPlanPreflight
                           host_capacity,
                           lanes,
                           active_lane_ids,
-                          blocked_lane_ids
+                          blocked_lane_ids,
+                          infer_missing_lane_host
                         ))
     end
     file_touch_violations = validate_file_touch_maps(input["file_touch_map"], lane_ids)
@@ -257,7 +259,8 @@ module BatchPlanPreflight
           gate_held_lane_ids,
           active_lane_ids,
           blocked_lane_ids,
-          input["plan"]["active_wave"]
+          input["plan"]["active_wave"],
+          infer_missing_lane_host
         )
       else
         [[], [], {}, host_capacity ? capacity_decision_for_rejection(host_capacity) : empty_capacity_decision]
@@ -303,7 +306,7 @@ module BatchPlanPreflight
 
     host_ids = raw_capacity.fetch("hosts").map { |host| host.fetch("id") }
     lane_violations = lanes.filter_map.with_index do |lane, index|
-      host_id = capacity_supplied ? lane["host_id"] : effective_lane_host_id(lane, raw_capacity)
+      host_id = effective_lane_host_id(lane, raw_capacity, infer_missing: !capacity_supplied)
       unless host_ids.include?(host_id)
         next violation(
           "lane-host-capacity-unknown",
@@ -363,21 +366,25 @@ module BatchPlanPreflight
     value.is_a?(Integer) && value >= 0
   end
 
-  def effective_lane_host_id(lane, capacity)
+  def effective_lane_host_id(lane, capacity, infer_missing:)
     return lane["host_id"] if nonempty_identity?(lane["host_id"])
+    return nil unless infer_missing
 
     hosts = capacity.fetch("hosts")
     hosts.one? ? hosts.first.fetch("id") : nil
   end
 
-  def validate_host_capacity_occupancy(capacity, lanes, active_lane_ids, blocked_lane_ids)
+  def validate_host_capacity_occupancy(capacity, lanes, active_lane_ids, blocked_lane_ids,
+                                       infer_missing_lane_host)
     occupied_lane_ids = active_lane_ids + blocked_lane_ids
     lanes_by_id = lanes.to_h { |lane| [lane["id"], lane] }
     capacity.fetch("hosts").flat_map do |host|
       host_id = host.fetch("id")
       lifecycle_lanes = occupied_lane_ids.filter_map do |lane_id|
         lane = lanes_by_id[lane_id]
-        lane_id if lane && effective_lane_host_id(lane, capacity) == host_id
+        lane_id if lane && effective_lane_host_id(
+          lane, capacity, infer_missing: infer_missing_lane_host
+        ) == host_id
       end
       quota_lifecycle_lanes = lifecycle_lanes.select do |lane_id|
         lanes_by_id.fetch(lane_id)["uses_external_quota"] == true
@@ -1243,7 +1250,7 @@ module BatchPlanPreflight
   end
 
   def apply_host_capacity(lanes, capacity, ready_lane_ids, gate_held_lane_ids, active_lane_ids,
-                          blocked_lane_ids, active_wave)
+                          blocked_lane_ids, active_wave, infer_missing_lane_host)
     lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
     lifecycle_occupied_ids = active_lane_ids + blocked_lane_ids
     admitted = []
@@ -1252,7 +1259,9 @@ module BatchPlanPreflight
     host_decisions = capacity.fetch("hosts").sort_by { |host| host.fetch("id") }.map do |host|
       host_id = host.fetch("id")
       lifecycle_host_lane_ids = lifecycle_occupied_ids.select do |lane_id|
-        effective_lane_host_id(lanes_by_id.fetch(lane_id), capacity) == host_id
+        effective_lane_host_id(
+          lanes_by_id.fetch(lane_id), capacity, infer_missing: infer_missing_lane_host
+        ) == host_id
       end
       available_worker_slots = host.dig("worker", "limit") - host.dig("worker", "occupied") -
                                lifecycle_host_lane_ids.length
@@ -1264,7 +1273,9 @@ module BatchPlanPreflight
       admitted_for_host = []
       admitted_quota_count = 0
       ready_for_host = ready_lane_ids.select do |lane_id|
-        effective_lane_host_id(lanes_by_id.fetch(lane_id), capacity) == host_id
+        effective_lane_host_id(
+          lanes_by_id.fetch(lane_id), capacity, infer_missing: infer_missing_lane_host
+        ) == host_id
       end.sort
       ready_for_host.each do |lane_id|
         lane = lanes_by_id.fetch(lane_id)
@@ -1283,7 +1294,9 @@ module BatchPlanPreflight
 
       gate_held_for_host = gate_held_lane_ids.select do |lane_id|
         lane = lanes_by_id[lane_id]
-        lane && lane["wave"] == active_wave && effective_lane_host_id(lane, capacity) == host_id
+        lane && lane["wave"] == active_wave && effective_lane_host_id(
+          lane, capacity, infer_missing: infer_missing_lane_host
+        ) == host_id
       end
       next_lane_reason = if admitted_for_host.length >= available_worker_slots
                            "worker-budget-full"
@@ -1344,9 +1357,17 @@ module BatchPlanPreflight
         {
           "id" => host.fetch("id"),
           "source" => host.fetch("source"),
-          "worker" => host.fetch("worker"),
+          "worker" => host.fetch("worker").merge(
+            "lifecycle_occupied" => 0,
+            "available" => 0,
+            "admitted" => 0
+          ),
           "heavy_root" => host.fetch("heavy_root"),
-          "external_quota" => host.fetch("external_quota"),
+          "external_quota" => host.fetch("external_quota").merge(
+            "lifecycle_occupied" => 0,
+            "available" => 0,
+            "admitted" => 0
+          ),
           "next_lane_reason" => "preflight-rejected"
         }
       end

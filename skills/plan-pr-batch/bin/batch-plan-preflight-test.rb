@@ -1944,6 +1944,52 @@ class BatchPlanPreflightTest < Minitest::Test
     assert_empty result.dig("launch", "eligible_lane_ids")
   end
 
+  def test_explicit_envelope_does_not_infer_missing_lifecycle_lane_host_occupancy
+    %w[active blocked].each do |lifecycle_state|
+      lanes = [lane("quota-lifecycle", host_id: nil, uses_external_quota: true)]
+      capacity = capacity_envelope(
+        host_capacity(
+          worker_limit: 1,
+          worker_occupied: 1,
+          external_quota_limit: 1,
+          external_quota_occupied: 1
+        )
+      )
+      lifecycle_states = [
+        lane_lifecycle_state(lane_id: "quota-lifecycle", state: lifecycle_state)
+      ]
+
+      result, _stderr, status = evaluate(
+        input_for(lanes: lanes, lifecycle_states: lifecycle_states, capacity: capacity)
+      )
+
+      refute status.success?, lifecycle_state
+      codes = result.fetch("violations").map { |item| item.fetch("code") }
+      assert_includes codes, "lane-host-capacity-unknown", lifecycle_state
+      refute_includes codes, "host-worker-capacity-overcommitted", lifecycle_state
+      refute_includes codes, "host-external-quota-overcommitted", lifecycle_state
+    end
+  end
+
+  def test_rejected_capacity_decision_preserves_uniform_slot_budget_shape
+    accepted_result, accepted_stderr, accepted_status = evaluate(input_for)
+    assert accepted_status.success?, accepted_stderr
+
+    rejected_input = input_for
+    rejected_input.fetch("plan")["backend"] = "invalid"
+    rejected_result, _stderr, rejected_status = evaluate(rejected_input)
+
+    refute rejected_status.success?
+    accepted_host = accepted_result.dig("capacity", "hosts", 0)
+    rejected_host = rejected_result.dig("capacity", "hosts", 0)
+    %w[worker external_quota].each do |budget|
+      assert_equal accepted_host.fetch(budget).keys.sort, rejected_host.fetch(budget).keys.sort, budget
+      assert_equal 0, rejected_host.dig(budget, "lifecycle_occupied"), budget
+      assert_equal 0, rejected_host.dig(budget, "available"), budget
+      assert_equal 0, rejected_host.dig(budget, "admitted"), budget
+    end
+  end
+
   def test_explicit_fallback_source_rejects_arbitrary_capacity_limits
     cases = {
       "all limits" => host_capacity(
