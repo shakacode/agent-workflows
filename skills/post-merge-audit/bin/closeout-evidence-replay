@@ -610,7 +610,7 @@ module CloseoutEvidenceReplay
   def without_schema_slash_labels(value)
     value
       .gsub(%r{\b(?:before/after|baseline/candidate|pass/fail|on/off|yes/no)\b}i, "")
-      .gsub(%r{\b[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\b}, "")
+      .gsub(%r{\b[A-Z][A-Z0-9_-]*/\d+(?:\.\d+)*\b}, "")
   end
 
   def failed_visual_artifact_claim?(value)
