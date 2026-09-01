@@ -19,6 +19,7 @@ require "tempfile"
 require "time"
 require "uri"
 require "yaml"
+require_relative "../lib/current_integration_evidence"
 
 module MergeAssurance
   class Error < StandardError; end
@@ -982,25 +983,8 @@ module MergeAssurance
     [accounting, semantic_tracker]
   end
 
-  # A semantic GitHub Actions change is not always in the repository's own
-  # `.github/`. Generated templates (for example `sim/template/.github/`) ship
-  # workflows to downstream repositories, and those are higher blast radius than
-  # a repo-local workflow, not lower. Accept the directory anywhere in a
-  # canonical repository-relative path while still requiring a file below it.
   def semantic_tracker_workflow_path?(path)
-    return false unless path.is_a?(String)
-
-    components = path.split("/", -1)
-    return false if components.empty? || path.start_with?("/") || path.include?("\\") || path.include?("\0")
-
-    # Fail closed for any scheme- or drive-like prefix. This intentionally also
-    # rejects repository-relative first components containing a colon.
-    return false if path.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
-    return false if components.any? { |component| component.empty? || %w[. ..].include?(component) }
-
-    components.each_cons(3).any? do |first, second, _file|
-      first == ".github" && %w[workflows actions].include?(second)
-    end
+    CurrentIntegrationEvidence.github_actions_path?(path)
   end
 
   def validate_semantic_tracker(tracker, context, failures)
