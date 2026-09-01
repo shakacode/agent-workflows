@@ -1363,6 +1363,27 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_issue_url_and_produced_pr_url_are_complementary_lane_targets
+    issue_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
+    }
+    pr_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 156
+    }
+
+    targets = CompletedBatchPublicationPreflight.targets_for_lane(
+      {
+        "targets" => ["issue:130"],
+        "issue_url" => "https://github.com/shakacode/hichee/issues/130",
+        "pr_url" => "https://github.com/shakacode/hichee/pull/156"
+      },
+      "shakacode/hichee",
+      [issue_target, pr_target]
+    )
+
+    assert_equal [issue_target, pr_target], targets
+  end
+
   def test_produced_pr_is_not_treated_as_complementary_to_multiple_issue_targets
     first_issue = {
       "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130

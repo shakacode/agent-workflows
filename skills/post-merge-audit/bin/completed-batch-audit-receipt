@@ -1105,10 +1105,11 @@ module CompletedBatchAuditReceipt
     return false unless snapshot_row["verification_source"].nil?
 
     label = "#{target.fetch('repo')}#issue:#{target.fetch('number')}"
+    source_label = "#{source_pr.fetch('repo')}#pull_request:#{source_pr.fetch('number')}"
     expected = [
-      "coordination lane #{lane.fetch('name')} target is absent or ambiguous",
-      "#{label} is absent from resolved coordination scope",
-      "#{label} target state/head is not authenticated or fresh"
+      "#{source_label} is outside the trusted batch target manifest",
+      "#{label} target state/head is not authenticated or fresh",
+      "#{source_label} coordination target state is not merged"
     ]
     blockers.sort == expected.sort
   rescue KeyError, TypeError, ArgumentError

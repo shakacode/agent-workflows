@@ -433,7 +433,11 @@ module CompletedBatchPublicationPreflight
       target
     end
     url_targets.uniq! { |target| target_key(target) }
-    return [] if url_targets.length > 1
+    if url_targets.length > 1
+      issue_targets = url_targets.select { |target| target["type"] == "issue" }
+      pr_targets = url_targets.select { |target| target["type"] == "pull_request" }
+      return [] unless complementary_pr_url?(lane, pr_targets, issue_targets)
+    end
 
     raw_targets = lane["targets"]
     target_rows = []

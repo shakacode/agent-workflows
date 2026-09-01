@@ -206,9 +206,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     targets = [accepted_deferral_target]
     preflight = accepted_deferral_publication_preflight(targets.first)
     assert_equal [
-      "coordination lane ror-d-issue-4731 target is absent or ambiguous",
-      "shakacode/react_on_rails#issue:4731 is absent from resolved coordination scope",
-      "shakacode/react_on_rails#issue:4731 target state/head is not authenticated or fresh"
+      "shakacode/react_on_rails#pull_request:4918 is outside the trusted batch target manifest",
+      "shakacode/react_on_rails#issue:4731 target state/head is not authenticated or fresh",
+      "shakacode/react_on_rails#pull_request:4918 coordination target state is not merged"
     ], preflight.fetch("blockers")
 
     with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
