@@ -215,6 +215,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "https: broken",
       "https: available.example.test",
       "https: //available",
+      "HTTPS: ✅//available",
       "https:",
       "https://bad host/run/sign-in-abc123"
     ]
@@ -815,7 +816,10 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_rejects_malformed_https_reference_beside_a_valid_url
-    ["https:broken", "https: broken", "https: available.example.test", "https: //available"].each do |malformed_url|
+    malformed_urls = [
+      "https:broken", "https: broken", "https: available.example.test", "https: //available", "HTTPS: ✅//available"
+    ]
+    malformed_urls.each do |malformed_url|
       qa = run_replay(
         v2_marker(
           "visual_evidence" =>
@@ -1149,6 +1153,11 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=bin/perf-report; metric_name=NOTAPPLICABLE; baseline_value=1ms; candidate_value=2ms",
       "repo_seam: source=bin/perf-report; metric_name=metric; baseline_value=1x; candidate_value=2x",
       "repo_seam: source=bin/perf-report; metric_name=metrics; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=none; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=unset; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=pending; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=count; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=counts; baseline_value=1x; candidate_value=2x",
       "repo_seam: source=bin/perf-report; metric_name=---; baseline_value=1ms; candidate_value=2ms",
       "repo_seam: source=bin/perf-report; metric_name=測定; baseline_value=1ms; candidate_value=2ms"
     ]

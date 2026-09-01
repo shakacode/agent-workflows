@@ -43,6 +43,7 @@ module CloseoutEvidenceReplay
   # structural or size count as a runtime measurement.
   COUNT_QUALIFIER_TOKENS = %w[total totals overall aggregate all unique distinct num number].freeze
   UNRESOLVED_METRIC_TOKENS = %w[missing unavailable unmeasured unknown placeholder tbd todo].freeze
+  UNRESOLVED_METRIC_EXACT_TOKENS = %w[none unset pending].freeze
   PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
   PERFORMANCE_EVIDENCE_FIELD_PATTERN = PERFORMANCE_EVIDENCE_FIELD_NAMES.map { |name| Regexp.escape(name) }.join("|")
   HTTPS_PROSE_LABEL_STATUSES = %w[available disabled enabled enforced failed ok only optional passed required supported].freeze
@@ -705,7 +706,8 @@ module CloseoutEvidenceReplay
     return false unless suffix&.match?(/\A\s+/)
 
     raw_label = suffix.lstrip
-    return false if raw_label.match?(%r{\A[/\\]})
+    leading_symbols = raw_label[/\A[^\p{Alnum}]*/u]
+    return false if leading_symbols.match?(%r{[/\\]})
 
     label = raw_label.sub(/\A[^\p{Alnum}]+/u, "")
     label.match?(
@@ -802,6 +804,7 @@ module CloseoutEvidenceReplay
     # The short-name bound limits false positives for longer consumer domain names; semantic
     # placeholder classification beyond that boundary requires a separate product contract.
     tokens == %w[n a] ||
+      (tokens.length == 1 && UNRESOLVED_METRIC_EXACT_TOKENS.include?(tokens.first)) ||
       (tokens.length <= 2 && tokens.any? { |token| UNRESOLVED_METRIC_TOKENS.include?(token) }) ||
       tokens.each_cons(2).any? { |first, second| first == "not" && %w[applicable available measured].include?(second) }
   end
@@ -812,7 +815,7 @@ module CloseoutEvidenceReplay
   end
 
   def qualifier_only_terminal_count?(tokens)
-    tokens.length >= 2 && %w[count counts].include?(tokens.last) &&
+    !tokens.empty? && %w[count counts].include?(tokens.last) &&
       tokens[0...-1].all? { |token| COUNT_QUALIFIER_TOKENS.include?(token) }
   end
 
