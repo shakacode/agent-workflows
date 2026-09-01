@@ -1627,11 +1627,12 @@ Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
 
 After it completes or is skipped, refresh the diff identity, ordinary
-readiness, current base, and checklist above. If the diff changes, invalidate
-the walkthrough and readiness evidence; restart or stop. A changed base also
-invalidates the walkthrough unless the checklist still passes for the same
-diff. Stop if the checklist above no longer passes for the current head/base,
-even without a base change. Stop if any ordinary gate newly fails. Ask one final
+readiness, current base, and checklist above. A changed base is a changed
+diff identity: if the diff changes, invalidate the walkthrough and readiness
+evidence and restart or stop, even when the checklist above still passes for
+the same head — do not reuse a walkthrough whose comparison base moved. Stop
+if the checklist above no longer passes for the current head/base, even
+without a base change. Stop if any ordinary gate newly fails. Ask one final
 merge decision only when the refreshed diff matches the recorded identity,
 ordinary readiness is clean, and merge is allowed; a completed walkthrough must
 cover that diff. Walkthrough participation is not merge approval. Merge still

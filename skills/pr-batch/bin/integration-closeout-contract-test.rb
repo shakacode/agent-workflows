@@ -369,6 +369,17 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_operator behind_base_position, :<, ci_banner_position
   end
 
+  def test_ask_gate_treats_a_changed_base_as_a_changed_diff_identity
+    ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
+    normalized_gate = ask_gate.gsub(/\s+/, " ")
+
+    assert_includes normalized_gate, "A changed base is a changed diff identity"
+    assert_includes normalized_gate,
+                    "even when the checklist above still passes for the same head — do not reuse a walkthrough whose comparison base moved"
+    # No carve-out that lets a passing checklist excuse reusing a stale-base walkthrough.
+    refute_match(/invalidates the walkthrough unless the checklist/, normalized_gate)
+  end
+
   def test_sibling_components_remain_outside_the_boundary
     refute_match(/^## Release Mode Preflight$/, @component)
     refute_match(/^### Accelerated RC Auto-Merge$/, @component)
