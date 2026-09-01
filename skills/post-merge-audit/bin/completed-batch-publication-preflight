@@ -97,7 +97,7 @@ module CompletedBatchPublicationPreflight
     qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
 
     validate_batch_terminal(batch, blockers) unless no_backend
-    canonical_targets, authenticated_target_completion_keys = canonical_target_snapshots(
+    canonical_targets, authenticated_target_completion_keys, issue_resolved_by_pr_keys = canonical_target_snapshots(
       expected_targets,
       snapshots,
       lane_entries,
@@ -113,6 +113,7 @@ module CompletedBatchPublicationPreflight
       expected_targets,
       snapshots,
       qa_entries,
+      issue_resolved_by_pr_keys,
       blockers,
       waiver_verifier:
     )
@@ -633,6 +634,7 @@ module CompletedBatchPublicationPreflight
   def canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers, target_verifier:)
     lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
     authenticated_target_completion_keys = {}
+    issue_resolved_by_pr_keys = {}
     canonical_targets = expected_targets.map do |target|
       key = target_key(target)
       row = snapshots[key]
@@ -658,6 +660,7 @@ module CompletedBatchPublicationPreflight
       no_pr_evidence = canonical_no_pr_evidence(row["no_pr_evidence"], target)
       issue_resolved_by_pr = target["type"] == "issue" && raw_head_sha == "not_applicable" &&
                              !row.key?("no_pr_evidence") && complementary_pr_target?(target, lane, lane_entries)
+      issue_resolved_by_pr_keys[key] = true if issue_resolved_by_pr
       if target["type"] == "issue" && raw_head_sha == "not_applicable" &&
          (no_pr_evidence || issue_resolved_by_pr)
         head_sha = nil
@@ -714,15 +717,13 @@ module CompletedBatchPublicationPreflight
       authenticated_target_completion_keys[key] = true if authenticated_target_completion
       snapshot
     end
-    [canonical_targets, authenticated_target_completion_keys]
+    [canonical_targets, authenticated_target_completion_keys, issue_resolved_by_pr_keys]
   end
 
   def complementary_pr_target?(issue_target, lane, lane_entries)
     return false unless lane
 
-    lane_targets = lane_entries.filter_map do |entry|
-      entry.fetch("target") if entry.fetch("lane").equal?(lane)
-    end
+    lane_targets = lane_targets_for(lane, lane_entries)
     return false unless lane_targets.length == 2 && lane_targets.include?(issue_target)
 
     produced_pr = lane_targets.find { |target| target["type"] == "pull_request" }
@@ -730,15 +731,30 @@ module CompletedBatchPublicationPreflight
       produced_pr["repo"].casecmp?(issue_target.fetch("repo"))
   end
 
-  def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, waiver_verifier:)
+  def lane_targets_for(lane, lane_entries)
+    lane_entries.filter_map do |entry|
+      entry.fetch("target") if entry.fetch("lane").equal?(lane)
+    end
+  end
+
+  def canonical_qa_snapshots(
+    expected_targets,
+    snapshots,
+    qa_entries,
+    issue_resolved_by_pr_keys,
+    blockers,
+    waiver_verifier:
+  )
     expected_targets.map do |target|
       key = target_key(target)
       row = qa_entries[key]
       raw_head_sha = snapshots.dig(key, "head_sha").to_s.downcase
       no_pr = canonical_no_pr_evidence(snapshots.dig(key, "no_pr_evidence"), target)
+      issue_resolved_by_pr = issue_resolved_by_pr_keys[key] == true
       head_sha = raw_head_sha.match?(SHA_PATTERN) ? raw_head_sha : nil
-      no_pr_disposition = target["type"] == "issue" && raw_head_sha == "not_applicable" && no_pr
-      head_sha = nil if no_pr_disposition
+      headless_issue_disposition = target["type"] == "issue" && raw_head_sha == "not_applicable" &&
+                                   (no_pr || issue_resolved_by_pr)
+      head_sha = nil if headless_issue_disposition
       unless row
         blockers << "#{target_label(target)} QA evidence is absent"
         next({ "target" => target, "head_sha" => head_sha, "verdict" => "UNKNOWN", "status" => nil,
@@ -771,8 +787,9 @@ module CompletedBatchPublicationPreflight
         verdict = "UNKNOWN"
         status = nil
       end
-      if no_pr_disposition && !valid_no_pr_qa_disposition?(qa)
-        blockers << "#{target_label(target)} QA evidence contradicts typed no-PR disposition"
+      if headless_issue_disposition && !valid_headless_issue_qa_disposition?(qa)
+        disposition = issue_resolved_by_pr ? "issue-resolved-by-PR" : "typed no-PR"
+        blockers << "#{target_label(target)} QA evidence contradicts #{disposition} disposition"
       end
       unless %w[SATISFIED NOT_APPLICABLE WAIVED].include?(verdict)
         blockers << "#{target_label(target)} QA disposition is #{status || verdict}"
@@ -801,7 +818,7 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def valid_no_pr_qa_disposition?(replayed_qa)
+  def valid_headless_issue_qa_disposition?(replayed_qa)
     fields = replayed_qa.fetch("fields")
     replayed_qa.fetch("verdict") == "NOT_APPLICABLE" &&
       fields.fetch("required", nil) == "no" &&
@@ -1090,9 +1107,7 @@ module CompletedBatchPublicationPreflight
   end
 
   def complementary_terminal_states?(lane, lane_entries)
-    lane_targets = lane_entries.filter_map do |entry|
-      entry.fetch("target") if entry.fetch("lane").equal?(lane)
-    end
+    lane_targets = lane_targets_for(lane, lane_entries)
     return false unless lane_targets.length == 2 &&
                         lane_targets.map { |target| target["type"] }.sort == %w[issue pull_request]
 

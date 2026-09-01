@@ -1429,6 +1429,33 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                     "shakacode/hichee#pull_request:10049 coordination terminal evidence is absent"
   end
 
+  def test_issue_resolved_by_pr_rejects_qa_bound_to_an_unrelated_head
+    input = issue_with_pr_input
+    issue_qa = input.fetch("qa_evidence").find { |row| row.dig("target", "type") == "issue" }
+    issue_qa["evidence"] = qa_v2_evidence(head_sha: "b" * 40, user_visible_ui_change: "no")
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 QA evidence contradicts issue-resolved-by-PR disposition"
+  end
+
+  def test_issue_resolved_by_pr_rejects_a_malformed_not_applicable_qa_marker
+    input = issue_with_pr_input
+    issue_qa = input.fetch("qa_evidence").find { |row| row.dig("target", "type") == "issue" }
+    issue_qa["evidence"] = issue_qa.fetch("evidence").sub(
+      "release_blocking: not_applicable",
+      "release_blocking: clear"
+    )
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 QA evidence contradicts issue-resolved-by-PR disposition"
+  end
+
   def test_no_pr_issue_rejects_head_bound_satisfied_qa
     input = no_pr_input
     fabricated_head = "a" * 40
