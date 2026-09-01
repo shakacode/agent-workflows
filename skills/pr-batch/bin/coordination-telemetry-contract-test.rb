@@ -572,10 +572,11 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "to `coordination_not_applicable`, skip every claim-preservation write and coordination check in this " \
       "prompt, make no backend or public-fallback call, and go straight to the handoff reply."
     recovery_rule =
-      "Re-run the applicability gate before choosing this path: a resume that crosses a controller or session " \
-      "boundary, or that consumes a durable handoff, is `coordination_required`. Only when the gate resolves " \
-      "to `coordination_not_applicable` does bounded status recovery use the local worktree, branch, HEAD SHA, " \
-      "uncommitted changes, and live GitHub PR/check state only"
+      "Re-run the applicability gate before choosing this path, including after a same-thread agent-runner " \
+      "relaunch: a resume that crosses a controller or session boundary, or that consumes a durable handoff a " \
+      "different actor could also be acting on, is `coordination_required`. A relaunch of the same controller " \
+      "over the same exact target set, with no other actor able to mutate it, may re-verify as " \
+      "`coordination_not_applicable`; a replacement actor or an unresolved surviving holder may not."
     new_chat_rule =
       "Resuming in a replacement chat from a durable handoff is a controller/session boundary and a " \
       "durable-handoff requirement, both of which are requiring conditions, so this lane is " \

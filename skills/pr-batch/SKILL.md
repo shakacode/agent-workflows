@@ -582,11 +582,14 @@ Classify every unresolved question before continuing:
 - **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine batches, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. A worker handoff should include the question/comment URL as that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note inside the PR description's `Agent details` disclosure so later review across merged PRs can surface these items quickly.
 
-For a private-backend blocking stop, emit `help_requested` alongside the prose
+For a `coordination_required` private-backend blocking stop, emit
+`help_requested` alongside the prose
 handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
 When a worker verifies a P0/P1 finding, confirmed regression, or required
-revert, emit `error` with `severity`, `category`, and `message`. Backend `n/a`
-skips these signals. Typed-event transport is optional: when an active private
+revert, emit `error` with `severity`, `category`, and `message`. Both signals are
+`coordination_required` only: a `coordination_not_applicable` batch emits
+neither and makes no backend call, and a trusted `coordination_backend: n/a`
+under `coordination_required` is a pre-launch stop, not a silent skip. Typed-event transport is optional: when an active private
 backend does not advertise it or reports it unsupported, record
 `typed event transport: unavailable`, skip the emission, and continue without
 marking the event emission `UNKNOWN`. Only after the transport is advertised

@@ -1905,9 +1905,14 @@ saved handoff instead of assuming the old worker will resume. The first resume
 or replacement action is bounded status recovery: re-check the worktree, branch,
 HEAD SHA, uncommitted changes, current PR/check state, and either private
 claim/heartbeat state or active public `codex-claim` fallback comments before
-continuing. Re-run the applicability gate before choosing this path: a resume that crosses
-a controller or session boundary, or that consumes a durable handoff, is
-`coordination_required`. Only when the gate resolves to
+continuing. Re-run the applicability gate before choosing this path, including
+after a same-thread agent-runner relaunch: a resume that crosses
+a controller or session boundary, or that consumes a durable handoff a different
+actor could also be acting on, is
+`coordination_required`. A relaunch of the same controller over the same exact
+target set, with no other actor able to mutate it, may re-verify as
+`coordination_not_applicable`; a replacement actor or an unresolved surviving
+holder may not. Only when the gate resolves to
 `coordination_not_applicable` does bounded status recovery use the
 local worktree, branch, HEAD SHA, uncommitted changes, and live GitHub PR/check
 state only; it then makes no coordination or public-fallback call, and every claim,
