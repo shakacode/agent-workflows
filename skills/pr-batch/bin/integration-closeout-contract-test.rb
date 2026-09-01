@@ -255,6 +255,23 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes @component, "Conversation status: Follow-ups remain"
   end
 
+  def test_component_owns_the_token_budget_closeout_contract
+    handoff = route_after(@component, "Batch Handoff Format")
+    closeout = route_after(@component, "Coordinator Closeout Lane")
+    normalized_closeout = closeout.gsub(/\s+/, " ")
+
+    assert_includes handoff, "batch-usage-receipt-v2"
+    refute_includes handoff, "batch-usage-receipt-v1"
+    assert_includes handoff, "`budget-exhausted`: token-budget hard stop; always `NOT COMPLETE`"
+    assert_includes closeout, "`batch-token-budget closeout`"
+    assert_includes normalized_closeout,
+                    "aggregate, coordinator, and every lane: allocated, consumed, currently reserved, " \
+                    "cumulatively released, unattributed, and overshoot totals"
+    assert_includes normalized_closeout,
+                    "Active reservations, unattributed usage, stale or `UNKNOWN` telemetry, " \
+                    "and unresolved approval or hard-stop checkpoints block closeout"
+  end
+
   def test_sibling_components_remain_outside_the_boundary
     refute_match(/^## Release Mode Preflight$/, @component)
     refute_match(/^### Accelerated RC Auto-Merge$/, @component)

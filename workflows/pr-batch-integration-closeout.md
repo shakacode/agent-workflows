@@ -687,29 +687,20 @@ decision is still accurate after review changes.
 
 <!-- Canonical batch handoff copy. `.agents/skills/pr-batch/SKILL.md` should point here instead of duplicating this section. -->
 
-> **A handoff is a comment, not a new issue.** Per `AGENTS.md` → _Tracking Issues
-> And Handoffs_: record the handoff below on the relevant parent tracking issue
-> (or the coordination backend if one is in use), or in the batch's own PR
-> comment/description when there is no parent umbrella. Never spawn a standalone
-> handoff or audit issue. A downstream production/release owner selects and
-> updates any release ledger through the resolved component's **Release Mode Preflight**,
-> reached through the
-> [Production And Release Compatibility Route](pr-processing.md#production-and-release-compatibility-route);
-> ordinary PR closeout neither locates nor mutates release trackers.
+> **A handoff is a comment, not a new issue.** Record it on the parent tracking
+> issue, coordination backend, or batch PR when no umbrella exists. Never create
+> a standalone handoff/audit issue. Release-ledger selection and updates belong
+> to the downstream
+> [Production And Release Compatibility Route](pr-processing.md#production-and-release-compatibility-route),
+> never ordinary PR closeout.
 
 Split batch handoffs into two sections:
 
-- **Immediate maintainer attention**: true blockers and questions only, such as
-  unsafe implementation ambiguity, a failed check that needs an explicit waiver,
-  unresolved `DISCUSS` feedback, or a merge/release-mode conflict.
-- **FYI / decisions made**: no-PR rationales, non-blocking decisions, hosted CI
-  requested because the coordinator was unsure at readiness time, validation
-  evidence, QA Evidence blocks that include `Tested at`, the QA required
-  decision and rationale, QA lane status, review churn notes, autonomous nit
-  outcomes, confidence notes, decision-point counts per PR, already-answered
-  questions, a per-PR merge-ledger table or JSON artifact path, the compact
-  `batch-usage-receipt-v1` total or durable artifact reference described in
-  [Batch Usage Receipt v1](../docs/batch-usage-receipt.md), and the shadow-only
+- **Immediate maintainer attention**: blockers and unanswered decisions only.
+- **FYI / decisions made**: non-blocking decisions, validation and QA Evidence,
+  review churn, confidence/decision counts, merge-ledger evidence, the compact
+  `batch-usage-receipt-v2` total or durable artifact reference described in
+  [Batch Usage Receipts v1 And v2](../docs/batch-usage-receipt.md), and the shadow-only
   `coordinator-narration-volume v1` marker defined by the
   [Coordinator Output Contract](pr-processing.md#coordinator-output-contract). Preserve
   structured `UNKNOWN` when supported host evidence is missing; usage and
@@ -739,6 +730,8 @@ Every target must use one explicit final state:
 - `autonomous-merge-evidence-unknown`: ordinary readiness may be clean, but
   autonomous eligibility evidence is missing, malformed, ambiguous, stale, or
   not bound to the exact current head.
+- `budget-exhausted`: token-budget hard stop; always `NOT COMPLETE`. Include the
+  exact work/branch/head/gates/cutoff checkpoint and scoped resume conditions.
 - `no-pr-evidence`: no PR was created; link the evidence-backed issue/PR
   comment and disposition. For a durably overridden ad-hoc target, record the
   evidence, rationale, complete override provenance, original task identity,
@@ -774,7 +767,11 @@ marked `blocked`, release-audit `in_progress`, or `unknown`, or still `UNKNOWN`;
 a QA lane whose only `UNKNOWN` is private coordination claim/heartbeat state may
 use the documented fallback evidence.
 
-End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them.
+End the batch-level final message with exactly `Conversation status: Ready for
+archiving.` or `Conversation status: Follow-ups remain — <each exact action or
+blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane).
+Without one, the handoff is incomplete. Lane workers do not own batch archive
+readiness and never emit this line; planning chats use their own archive rule.
 
 ### Goal Mode Completion Contract
 
@@ -1019,8 +1016,14 @@ The closeout lane is:
     adapter result and carry its known, `UNKNOWN`, or `unavailable` value in the
     durable handoff. Telemetry is directional and never substitutes for or
     blocks correctness, review, QA, merge, audit, or archive readiness. The
-    adapter owns capability detection, bounded invocation, and recovery; this
-    component does not reproduce that protocol.
+   adapter owns capability detection, bounded invocation, and recovery; this
+   component does not reproduce that protocol.
+   For a budget-enabled batch, always run `batch-token-budget closeout` after
+   releases and reconciliations. Carry aggregate, coordinator, and every lane:
+   allocated, consumed, currently reserved, cumulatively released,
+   unattributed, and overshoot totals. Active reservations, unattributed usage,
+   stale or `UNKNOWN` telemetry, and unresolved approval or hard-stop
+   checkpoints block closeout.
 13. Once every batch target has a final state, the batch coordinator must run
     its completed-batch audit before its final handoff. Each completed-batch
     audit is owned by its batch coordinator. A parent orchestration agent only
@@ -1040,7 +1043,7 @@ The closeout lane is:
     do not emit a complete receipt while it is blocked or reuse a prior
     snapshot after any lane, target head/state, or QA evidence changes.
     During this terminal closeout, generate the metadata-only
-    `batch-usage-receipt-v1` from the resolved pr-batch
+    `batch-usage-receipt-v2` from the resolved pr-batch
     `bin/batch-usage-receipt` helper when supported Codex rollout JSONL and
     `state_5.sqlite` evidence are available. Save the JSON to the repository's
     ordinary durable artifact store when one exists, and include either its
