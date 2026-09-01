@@ -164,6 +164,20 @@ module AgentWorkflowsStatus
     { "superpowers" => AgentWorkflowsDeliveryState.superpowers_state(host, target) }
   end
 
+  # Expected verified-installed-pack digests recorded by the installer. Reported so a
+  # coordinator can read installation state instead of the helper being evaluated.
+  def runtime_manifest_digests(metadata)
+    digests = metadata["managed_runtime_manifest_digests"]
+    return nil unless digests.is_a?(Hash) && !digests.empty?
+    return nil unless digests.all? do |name, digest|
+      valid_name = name.is_a?(String) && name.match?(/\A[a-z0-9][a-z0-9-]*\z/)
+      valid_digest = digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/)
+      valid_name && valid_digest
+    end
+
+    digests
+  end
+
   def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
     payload = {
       "status" => status,
@@ -179,7 +193,8 @@ module AgentWorkflowsStatus
       "guidance" => delivery_state&.fetch("guidance", nil),
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
       "native" => delivery_state&.fetch("native", nil),
-      "flat" => delivery_state&.fetch("flat", nil)
+      "flat" => delivery_state&.fetch("flat", nil),
+      "runtime_manifest_digests" => runtime_manifest_digests(metadata)
     }
     payload["superpowers"] = delivery_state.fetch("superpowers") if delivery_state&.key?("superpowers")
     payload

@@ -34,6 +34,8 @@ Installed paths:
   <target>/bin/upgrade-agent-workflows
   <target>/lib/agent-workflows/secure_github_actions_scanner.rb (plugin-companion mode only)
   <target>/.agent-workflows-install.json
+    Flat copy installs record managed_runtime_manifest_digests["autonomous-merge"],
+    the expected verified-installed-pack digest for the autonomous-merge runtime.
 USAGE
 }
 
@@ -274,7 +276,17 @@ read_installed_metadata_value() {
           !valid_name || !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/i)
         end
       end
-      if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints
+      invalid_runtime_digests = if metadata.key?("managed_runtime_manifest_digests")
+                                  digests = metadata["managed_runtime_manifest_digests"]
+                                  !digests.is_a?(Hash) || digests.any? do |name, digest|
+                                    !name.is_a?(String) || !name.match?(/\A[a-z0-9][a-z0-9-]*\z/) ||
+                                      !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/)
+                                  end
+                                else
+                                  false
+                                end
+      if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints ||
+         invalid_runtime_digests
         puts "corrupt"
         exit
       end
@@ -1912,6 +1924,23 @@ prepare_metadata() {
                        else
                          {}
                        end
+    runtime_manifest_digests = if mode == "copy" && delivery_mode == "flat"
+                                 trust_library = File.join(
+                                   source, "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb"
+                                 )
+                                 unless File.file?(trust_library) && !File.symlink?(trust_library)
+                                   abort "missing autonomous-merge runtime trust library while preparing install metadata: #{trust_library}"
+                                 end
+
+                                 load trust_library
+                                 begin
+                                   { "autonomous-merge" => AutonomousMergeRuntimeTrust.default_installed_pack_digest }
+                                 rescue SystemCallError => e
+                                   abort "incomplete autonomous-merge runtime while preparing install metadata: #{e.message}"
+                                 end
+                               else
+                                 {}
+                               end
     root_fingerprints = if mode == "copy"
                           name = "THIRD_PARTY-NOTICES.md"
                           root_file = File.join(source, name)
@@ -1935,7 +1964,8 @@ prepare_metadata() {
       "installed_at" => installed_at,
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints,
-      "managed_pack_root_copy_fingerprints" => root_fingerprints
+      "managed_pack_root_copy_fingerprints" => root_fingerprints,
+      "managed_runtime_manifest_digests" => runtime_manifest_digests
     }
     serialized_metadata = JSON.pretty_generate(metadata) + "\n"
     abort unless File.const_defined?(:NOFOLLOW)

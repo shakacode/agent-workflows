@@ -4585,6 +4585,109 @@ test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
     fail "installer and delivery-state directory fingerprints drifted"
 }
 
+test_copy_metadata_records_autonomous_merge_runtime_manifest_digest() {
+  local tmp source target recorded recomputed consumer output
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  consumer="$tmp/consumer"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+
+  recorded="$(jq -r '.managed_runtime_manifest_digests["autonomous-merge"]' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" =~ ^[0-9a-f]{64}$ ]] || \
+    fail "installer metadata omitted the autonomous-merge runtime manifest digest: $recorded"
+
+  recomputed="$(ruby -e '
+    load ARGV.fetch(0)
+    puts AutonomousMergeRuntimeTrust.default_installed_pack_digest
+  ' "$target/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb")"
+  [[ "$recorded" = "$recomputed" ]] || \
+    fail "recorded runtime manifest digest does not match the installed runtime: $recorded vs $recomputed"
+
+  mkdir -p "$consumer"
+  git -C "$consumer" init --quiet
+  git -C "$consumer" config user.email "agent-workflows-test@example.com"
+  git -C "$consumer" config user.name "Agent Workflows Test"
+  printf 'consumer\n' > "$consumer/README.md"
+  git -C "$consumer" add .
+  git -C "$consumer" commit --quiet -m "initial"
+
+  output="$(printf '{}' | "$target/skills/pr-batch/bin/autonomous-merge-eligibility" \
+    --repo-root "$consumer" --trusted-base HEAD \
+    --trusted-helper-provenance "verified-installed-pack:$recorded")"
+  ruby -rjson -e '
+    payload = JSON.parse(ARGV.fetch(0))
+    trust = payload.fetch("helper_trust")
+    abort payload.inspect unless trust.fetch("status") == "mechanically-verified"
+    abort payload.inspect unless payload.fetch("helper_provenance") == ARGV.fetch(1)
+  ' "$output" "verified-installed-pack:$recorded" || \
+    fail "recorded installation digest did not satisfy installed-pack helper trust"
+}
+
+test_symlink_metadata_omits_runtime_manifest_digests() {
+  local tmp source target recorded
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode symlink --delivery-mode flat >"$tmp/install.out"
+
+  recorded="$(jq -r '.managed_runtime_manifest_digests | length' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" = "0" ]] || \
+    fail "symlink install recorded runtime manifest digests: $recorded"
+}
+
+test_invalid_runtime_manifest_digest_entry_fails_before_managed_mutation() {
+  local tmp target metadata pristine variant output status metadata_before target_paths_before
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  metadata="$target/.agent-workflows-install.json"
+  pristine="$tmp/pristine-metadata.json"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy --delivery-mode flat >/dev/null
+  cp "$metadata" "$pristine"
+
+  for variant in scalar null_digest short_digest nonhex_digest empty_name nested_name; do
+    cp "$pristine" "$metadata"
+    ruby -rjson -e '
+      path, variant = ARGV
+      value = JSON.parse(File.read(path))
+      digests = value.fetch("managed_runtime_manifest_digests")
+      case variant
+      when "scalar" then value["managed_runtime_manifest_digests"] = "corrupt"
+      when "null_digest" then digests["autonomous-merge"] = nil
+      when "short_digest" then digests["autonomous-merge"] = "abc123"
+      when "nonhex_digest" then digests["autonomous-merge"] = "g" * 64
+      when "empty_name" then digests[""] = "a" * 64
+      when "nested_name" then digests["nested/name"] = "a" * 64
+      else abort variant
+      end
+      File.write(path, JSON.pretty_generate(value) + "\n")
+    ' "$metadata" "$variant"
+    metadata_before="$(shasum "$metadata")"
+    target_paths_before="$(find "$target" -print | LC_ALL=C sort)"
+
+    set +e
+    output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode copy 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -eq 65 ]] || fail "$variant runtime digest exited $status: $output"
+    assert_contains "$output" "CORRUPT_INSTALL_METADATA"
+    [[ "$metadata_before" = "$(shasum "$metadata")" ]] || fail "$variant runtime digest rewrote metadata"
+    [[ "$target_paths_before" = "$(find "$target" -print | LC_ALL=C sort)" ]] || \
+      fail "$variant runtime digest changed the target tree"
+  done
+}
+
 test_installation_docs_describe_managed_coordination_doc_fingerprints() {
   local docs changelog
   docs="$(cat "$ROOT/docs/installation-and-upgrades.md")"
@@ -4597,6 +4700,8 @@ test_installation_docs_describe_managed_coordination_doc_fingerprints() {
   assert_contains "$docs" '<target>/bin/validate-execution-provenance'
   assert_contains "$docs" 'managed_skill_copy_fingerprints'
   assert_contains "$docs" 'managed_pack_doc_copy_fingerprints'
+  assert_contains "$docs" 'managed_runtime_manifest_digests'
+  assert_contains "$docs" 'verified-installed-pack:'
   assert_contains "$docs" 'including every installed'
   assert_contains "$docs" '<target>/docs/solutions/*'
   assert_contains "$docs" 'installer refuses to'
@@ -8652,6 +8757,9 @@ main() {
     test_upgrade_rolls_back_when_consumer_seam_fails
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_upgrade_validates_consumer_root_after_install
+    test_copy_metadata_records_autonomous_merge_runtime_manifest_digest
+    test_symlink_metadata_omits_runtime_manifest_digests
+    test_invalid_runtime_manifest_digest_entry_fails_before_managed_mutation
   )
 
   local test_name

@@ -1664,7 +1664,29 @@ For an independently verified installed pack, use
 `verified-installed-pack:<64-lowercase-sha256>` instead, after binding
 `TRUSTED_PR_BATCH_SKILL_DIR` to the independently verified pack directory.
 The expected digest is trusted coordinator or installation
-state, not output learned from the helper being evaluated. The evaluator
+state, not output learned from the helper being evaluated. A flat copy install
+records that expected digest while installing, so read it from installation
+state:
+
+```bash
+INSTALLED_RUNTIME_DIGEST="$(
+  jq -r '.managed_runtime_manifest_digests["autonomous-merge"] // empty' \
+    "${TRUSTED_AGENT_HOME}/.agent-workflows-install.json"
+)"
+[ -n "${INSTALLED_RUNTIME_DIGEST}" ] || {
+  echo "UNKNOWN: this install records no autonomous-merge runtime digest" >&2
+  exit 1
+}
+```
+
+Bind `TRUSTED_AGENT_HOME` to the agent home outside the evaluated repository,
+and `TRUSTED_PR_BATCH_SKILL_DIR` to that same home's `skills/pr-batch`. Never
+read the digest from the evaluated repository, and never derive it by running
+the helper being authenticated. Symlink and plugin-companion installs record no
+digest, and installs predating the key omit it; both cases stay `UNKNOWN` and
+must use a trusted-base materialization or reach the human-approval path
+deliberately. Keep the shipped calibration decision, because a non-default
+`--calibration-decision` changes the manifest the recorded digest describes. The evaluator
 mechanically recomputes a length-framed manifest over the executing evaluator
 and closeout helpers, decision/evidence/policy/trust libraries (including
 `autonomous_merge_runtime_trust.rb`), and selected calibration decision.

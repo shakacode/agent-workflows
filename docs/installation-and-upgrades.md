@@ -465,6 +465,29 @@ the original installed content or move personal content to a distinct path
 before retrying. The status and upgrade helpers use the metadata so they can run
 from either the source clone or the installed host.
 
+Flat copy installs additionally record `managed_runtime_manifest_digests`. The
+installer computes each entry from the source pack while it installs, so the
+expected value is installation state rather than output learned from the
+installed helper it authenticates. The `autonomous-merge` entry is the
+length-framed runtime manifest digest that
+`skills/pr-batch/bin/autonomous-merge-eligibility` recomputes over its own
+runtime closure and the shipped calibration decision. Supply it as the
+`verified-installed-pack:<64-hex-digest>` trusted-helper provenance claim when
+running that gate from an installed pack:
+
+```bash
+agent-workflows-status --host claude --json |
+  jq -r '.runtime_manifest_digests["autonomous-merge"]'
+```
+
+Reading the value straight out of `<target>/.agent-workflows-install.json` is
+equivalent. Symlink installs and plugin-companion installs record no runtime
+manifest digests, because neither installs the complete flat runtime closure the
+digest describes; use a trusted-base materialization there. Installs made before
+this key existed omit it, and the gate keeps failing closed until the pack is
+reinstalled or upgraded. Passing a non-default `--calibration-decision` changes
+the manifest, so the recorded digest no longer applies.
+
 ## Status Checks
 
 For the full three-repository contributor stack, start with

@@ -1153,6 +1153,51 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
   end
 
+  def test_unsupplied_and_unrecognized_provenance_report_distinct_causes
+    Dir.mktmpdir("autonomous-merge-provenance-cause-test") do |root|
+      base_sha = initialize_trusted_base(root, policy_yaml: nil)
+      calibration_path = write_calibration(root)
+      input = JSON.generate(evidence(base_sha:, files: files(1)))
+
+      missing = invoke(root:, calibration_path:, stdin_data: input, helper_provenance: nil)
+      unrecognized = invoke(
+        root:,
+        calibration_path:,
+        stdin_data: input,
+        helper_provenance: "verified-installed-pack:not-a-digest"
+      )
+
+      missing_failure = missing.fetch("evidence_failures").first
+      unrecognized_failure = unrecognized.fetch("evidence_failures").first
+
+      refute_equal missing_failure, unrecognized_failure
+      assert_includes missing_failure, "was not supplied"
+      assert_includes missing_failure, "trusted-base:<40-hex-sha>"
+      assert_includes missing_failure, "verified-installed-pack:<64-hex-digest>"
+      assert_includes unrecognized_failure, "is not a recognized form"
+    end
+  end
+
+  def test_help_documents_accepted_trusted_helper_provenance_forms
+    stdout, stderr, status = Open3.capture3("ruby", SCRIPT, "--help")
+
+    assert status.success?, stderr
+    assert_includes stdout, "trusted-base:<40-hex-sha>"
+    assert_includes stdout, "verified-installed-pack:<64-hex-digest>"
+    assert_includes stdout, "managed_runtime_manifest_digests"
+  end
+
+  def test_installed_pack_digest_matches_recorded_installation_state_computation
+    calibration_path = File.join(FIXTURE_DIR, "autonomous-merge-reviewed-heads-calibration.json")
+    sources = AutonomousMergeRuntimeTrust.runtime_sources(calibration_path)
+
+    assert_equal(
+      AutonomousMergeRuntimeTrust.installed_pack_digest(sources),
+      AutonomousMergeRuntimeTrust.default_installed_pack_digest
+    )
+    assert_match(/\A[0-9a-f]{64}\z/, AutonomousMergeRuntimeTrust.default_installed_pack_digest)
+  end
+
   def test_runtime_trust_authenticates_closeout_renderer_for_base_and_installed_pack
     trusted_base = evaluate { |base_sha| evidence(base_sha:, files: files(1)) }
 
