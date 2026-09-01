@@ -226,6 +226,41 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_batch_status_keeps_help_request_visibility_without_a_registration_record
+    request_id = "request-without-registration"
+    coordination = {
+      "batches" => [],
+      "events" => [{
+        "event_id" => request_id,
+        "batch_id" => "aw-b",
+        "lane" => "review",
+        "type" => "help_requested",
+        "reason" => "permission",
+        "at" => "2026-08-23T05:48:18Z"
+      }],
+      "section_notes" => { "batches" => "batch not found" }
+    }
+
+    with_fake_batch_commands(coordination:, target_coordination: {}) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--batch-id", "aw-b",
+        "--now", "2026-08-23T10:00:00Z",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      lifecycle = payload.fetch("help_request_lifecycles").fetch("aw-b")
+      assert_empty payload.fetch("items")
+      assert_equal "blocked-user-input", lifecycle.fetch("status")
+      assert_equal request_id, lifecycle.fetch("blocking_request_id")
+      assert_includes payload.fetch("unknowns"), "batch aw-b: exact registration not found"
+    end
+  end
+
   def test_wrong_shaped_batch_json_degrades_to_unknown
     with_fake_batch_commands(coordination: [], target_coordination: {}) do |env|
       stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, SCRIPT, "--batch-id", "aw-b", "--json")
