@@ -1608,9 +1608,9 @@ passes. This gate applies only when `merge_authority` is
 eligibility and neither value grants the missing human judgment.
 
 Resolve the trusted current base SHA and fetch it. Execute the read-only
-evaluator from a trusted-base materialization or verified installed Agent
-Workflows pack. A repo-local fallback is usable only after materializing every
-runtime source from the trusted base; never execute evaluator, calibration decision, or library code
+evaluator from a trusted-base materialization or verified installed Agent Workflows pack.
+A repo-local fallback is usable only after materializing every runtime source
+from the trusted base; never execute evaluator, calibration decision, or library code
 modified by the PR head. Resolve the source-pack or installed `.agents` layout
 at that commit, fail closed if either complete runtime set is absent, and
 materialize it outside the evaluated checkout:
