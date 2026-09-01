@@ -1321,6 +1321,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
       assert_empty qa.fetch("missing"), metric_name
     end
+
+    %w[bundle_heap_size asset_ram_bytes].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=100MB; candidate_value=90MB"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
   end
 
   def test_v2_measured_metric_looks_through_qualifiers_before_a_structural_or_size_count

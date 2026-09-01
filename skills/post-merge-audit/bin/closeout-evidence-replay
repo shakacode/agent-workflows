@@ -787,13 +787,15 @@ module CloseoutEvidenceReplay
     end
 
     byte_valued = measurement_units.any? { |unit| unit.match?(/\A(?:[kmgt]i?)?b(?:ytes?)?\z/i) }
-    memory_metric = metric_tokens.any? { |token| MEMORY_METRIC_TOKENS.include?(token) }
+    memory_metric = runtime_memory_metric?(metric_tokens)
     return false if byte_valued && !memory_metric
 
     true
   end
 
   def unresolved_metric_tokens?(tokens)
+    # The short-name bound limits false positives for longer consumer domain names; semantic
+    # placeholder classification beyond that boundary requires a separate product contract.
     tokens == %w[n a] ||
       (tokens.length <= 2 && tokens.any? { |token| UNRESOLVED_METRIC_TOKENS.include?(token) }) ||
       tokens.each_cons(2).any? { |first, second| first == "not" && %w[applicable available measured].include?(second) }
@@ -816,10 +818,15 @@ module CloseoutEvidenceReplay
     if SIZE_METRIC_TOKENS.include?(tokens.last)
       return true unless %w[byte bytes size sizes].include?(tokens.last)
 
-      return tokens.none? { |token| MEMORY_METRIC_TOKENS.include?(token) }
+      return !runtime_memory_metric?(tokens)
     end
 
     qualified_terminal_count?(tokens, SIZE_METRIC_TOKENS)
+  end
+
+  def runtime_memory_metric?(tokens)
+    MEMORY_METRIC_TOKENS.include?(tokens.first) &&
+      tokens[1...-1].none? { |token| BUNDLE_HYGIENE_SHAPE_TOKENS.include?(token) }
   end
 
   # Terminal `*_count` over a `vocabulary` noun, looking through consecutive bounded qualifiers so
