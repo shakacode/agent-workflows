@@ -115,12 +115,14 @@ Restart" before editing, pushing, polling, or starting any new target.
 If this lane is `coordination_not_applicable`, recover from local and GitHub
 state only and make no coordination or public-fallback call.
 
-Re-check the worktree, branch, HEAD SHA, uncommitted changes, current PR/check
-state, and private claim or active public `codex-claim` fallback comments. If
-the claim holder changed, cancellation or reassignment is present, ownership is
-UNKNOWN, or the saved handoff names a different stable agent/thread id, stop
-and report the conflict for coordinator reconciliation. Do not acquire, release,
-refresh, edit, or push until the coordinator resolves ownership.
+Re-check the worktree, branch, HEAD SHA, uncommitted changes, and current
+PR/check state. The rest of this paragraph applies only to
+`coordination_required`: re-check the private claim or active public
+`codex-claim` fallback comments, and if the claim holder changed, cancellation
+or reassignment is present, ownership is UNKNOWN, or the saved handoff names a
+different stable agent/thread id, stop and report the conflict for coordinator
+reconciliation. Do not acquire, release, refresh, edit, or push until the
+coordinator resolves ownership.
 
 Pasted restart handoff:
 <PASTE_RESTART_HANDOFF_HERE>

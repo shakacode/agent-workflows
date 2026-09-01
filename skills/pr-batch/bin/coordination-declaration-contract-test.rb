@@ -59,9 +59,13 @@ COORDINATION_DECLARATION_RULE = "Batch Coordination Declaration: every `coordina
                                 "`coordination: registered <batch-id>` only when this batch actually registered " \
                                 "with the coordination backend, and quote the exact backend batch id. Otherwise " \
                                 "use `coordination: unavailable #{EM_DASH} <reason>` with an exact nonempty " \
-                                "reason, such as a repo seam that sets `coordination_backend: n/a`, an " \
-                                "unreachable or degraded backend, or a deliberately uncoordinated " \
-                                "single-operator run. A missing `coordination:` line, an empty or `UNKNOWN` " \
+                                "reason for a run that was `coordination_required` and could not keep durable " \
+                                "coordination, such as an unreachable or degraded backend or a refused " \
+                                "registration. A trusted `coordination_backend: n/a` under " \
+                                "`coordination_required` is a pre-launch stop, not an unavailable declaration, " \
+                                "and a deliberately uncoordinated single-controller run is " \
+                                "`coordination_not_applicable` and carries no declaration at all. " \
+                                "A missing `coordination:` line, an empty or `UNKNOWN` " \
                                 "batch id, an empty or `UNKNOWN` reason, or both forms at once is a hard " \
                                 "blocker: report NOT COMPLETE instead of a clean handoff. Silence is not an " \
                                 "accepted value; a batch " \
@@ -653,6 +657,20 @@ class CoordinationDeclarationContractTest < Minitest::Test
     end
 
     assert_empty missing.keys, "surfaces missing the coordination-applicability declaration rule"
+  end
+
+  def test_no_surface_offers_a_not_applicable_reason_for_an_unavailable_declaration
+    stale = [
+      "a repo seam that sets `coordination_backend: n/a`",
+      "a deliberately uncoordinated single-operator run"
+    ]
+    offending = REQUIRED_SURFACES.select do |_label, path|
+      text = normalize_prose(read_repo_file(path))
+      stale.any? { |reason| text.include?(reason) }
+    end
+
+    assert_empty offending.keys,
+                 "an unavailable declaration must never be offered for work that is not `coordination_required`"
   end
 
   def test_mechanical_declaration_validation_is_scoped_to_required_coordination

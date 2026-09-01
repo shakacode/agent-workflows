@@ -614,11 +614,13 @@ Replacement carryover must acquire and preserve ownership for both
 `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER` before any branch or non-claim GitHub mutation;
 a conflict, refusal, timeout, or `UNKNOWN` on either target blocks mutations on
 both.
-Read-only fetches in Steps 3-4 may run before this gate. Follow the repo's
-`coordination_backend` seam and the vocabulary in
-`docs/coordination-backend.md`: use the selected private backend when available,
-use public claim comments only when the seam allows them, and treat `n/a` as a
-single-operator workflow.
+Read-only fetches in Steps 3-4 may run before this gate. Apply the trusted
+applicability result first, then follow the repo's `coordination_backend` seam
+and the vocabulary in `docs/coordination-backend.md`: for
+`coordination_required`, use the selected private backend when available and
+public claim comments only when the seam allows them, and treat a trusted `n/a`
+seam as a pre-launch stop rather than permission to proceed uncoordinated. A
+seam value of `n/a` never establishes `coordination_not_applicable` on its own.
 
 Before any coordination command, establish exactly one trusted
 `coordination_applicability` outcome from trusted parent or repository policy

@@ -26,10 +26,16 @@ repeat:
    independent in-scope steps while an external command, check, review, or agent is pending. Stop
    after completing the objective.
 
-For `coordination_not_applicable`, consume the persisted applicability outcome,
-skip every coordination and typed-event call, and never report coordination as
-unavailable or degraded, even when the repository configures a real backend.
-Recover the lane from durable local state instead.
+Re-run the applicability gate before consuming a persisted
+`coordination_not_applicable` outcome whenever the resume crosses a controller
+or session boundary, relies on durable handoff or crash recovery, or changes the
+target set or topology. Each of those is itself a requiring condition, so the
+persisted outcome is stale evidence there, not authority.
+
+When the gate still resolves to `coordination_not_applicable`, consume that
+outcome, skip every coordination and typed-event call, and never report
+coordination as unavailable or degraded, even when the repository configures a
+real backend. Recover the lane from durable local state instead.
 
 For a resumed `coordination_required` PR-batch lane, complete bounded ownership
 recovery before any

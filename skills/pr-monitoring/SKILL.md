@@ -85,6 +85,12 @@ other named blockers. Persist an unchanged heartbeat without waking the parent;
 resume once with a compact delta when that fingerprint changes, then rebuild
 both cohorts and rerun security, origin, coordination applicability (plus
 required coordination state), conflict, review, readiness, and exact-head gates.
+The probe cannot observe applicability: a new session, added operator, durable-
+handoff requirement, or repository lease changes the outcome without changing PR
+evidence, so the fingerprint never fires on it. Applicability stays
+controller-owned: whoever changes the execution plan or topology re-enters the
+gate and re-scopes or stops the monitor, and a watcher wake never renews a stale
+`coordination_not_applicable` decision on its own.
 Reuse the stable monitor identity across
 restarts and suppress stale or duplicate probes. If deterministic watching is
 unsupported, use the canonical bounded fast-window/backoff fallback with finite
@@ -234,9 +240,13 @@ handoff must carry exactly one `coordination:` line, and no such handoff is
 complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
 with the coordination backend, and quote the exact backend batch id. Otherwise
-use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
-a repo seam that sets `coordination_backend: n/a`, an unreachable or degraded
-backend, or a deliberately uncoordinated single-operator run. A missing
+use `coordination: unavailable — <reason>` with an exact nonempty reason for a
+run that was `coordination_required` and could not keep durable coordination,
+such as an unreachable or degraded backend or a refused registration. A trusted
+`coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
+not an unavailable declaration, and a deliberately uncoordinated
+single-controller run is `coordination_not_applicable` and carries no
+declaration at all. A missing
 `coordination:` line, an empty or `UNKNOWN` batch id, an empty or `UNKNOWN`
 reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.

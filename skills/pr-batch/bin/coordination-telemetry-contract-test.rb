@@ -571,25 +571,35 @@ class CoordinationTelemetryContractTest < Minitest::Test
       "alongside the restart/block handoff."
     continue_rule =
       "For a resumed `coordination_required` PR-batch lane, complete bounded ownership recovery before any write."
-    no_call_rule =
+    pause_no_call_rule =
       "For `coordination_not_applicable`, consume the persisted applicability outcome, skip every coordination " \
       "and typed-event call, and never report coordination as unavailable or degraded, even when the repository " \
       "configures a real backend."
+    continue_regate_rule =
+      "Re-run the applicability gate before consuming a persisted `coordination_not_applicable` outcome whenever " \
+      "the resume crosses a controller or session boundary, relies on durable handoff or crash recovery, or " \
+      "changes the target set or topology."
+    continue_no_call_rule =
+      "When the gate still resolves to `coordination_not_applicable`, consume that outcome, skip every " \
+      "coordination and typed-event call, and never report coordination as unavailable or degraded, even when " \
+      "the repository configures a real backend."
 
     pause = read_repo_file(PAUSE_SKILL_PATH).gsub(/\s+/, " ")
     continue = read_repo_file(CONTINUE_SKILL_PATH).gsub(/\s+/, " ")
 
     assert_includes pause, pause_rule
-    assert_includes pause, no_call_rule
+    assert_includes pause, pause_no_call_rule
     assert_includes continue, continue_rule
-    assert_includes continue, no_call_rule
+    assert_includes continue, continue_regate_rule
+    assert_includes continue, continue_no_call_rule
   end
 
   def test_coordination_backend_documents_the_trusted_applicability_matrix
     section = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Coordination Applicability").gsub(/\s+/, " ")
 
     [
-      "trusted repository policy plus controller-owned verified topology",
+      "trusted repository policy, the operator-supplied execution plan, and controller-owned verified topology",
+      "an explicit operator durable-handoff request is itself a requiring condition",
       "ordinary serialized one-agent one-target work",
       "serialized multi-target work under one accountable controller",
       "concurrent same-machine work",
