@@ -767,11 +767,7 @@ marked `blocked`, release-audit `in_progress`, or `unknown`, or still `UNKNOWN`;
 a QA lane whose only `UNKNOWN` is private coordination claim/heartbeat state may
 use the documented fallback evidence.
 
-End the batch-level final message with exactly `Conversation status: Ready for
-archiving.` or `Conversation status: Follow-ups remain — <each exact action or
-blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane).
-Without one, the handoff is incomplete. Lane workers do not own batch archive
-readiness and never emit this line; planning chats use their own archive rule.
+End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them.
 
 ### Goal Mode Completion Contract
 

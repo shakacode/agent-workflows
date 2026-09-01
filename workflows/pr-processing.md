@@ -1244,7 +1244,7 @@ Canonical rules: [Human-First PR Description Contract](pr-batch-integration-clos
 
 ### Batch Handoff Format
 
-Canonical rules: [Batch Handoff Format](pr-batch-integration-closeout.md#batch-handoff-format). This heading remains as a compatibility route and must not mirror the component.
+Canonical rules: [Batch Handoff Format](pr-batch-integration-closeout.md#batch-handoff-format). This heading remains as a compatibility route and must not mirror the component. A lane-level worker handoff never carries an archive-readiness status line; only the batch-level final message owns that decision.
 
 ### Goal Mode Completion Contract
 
