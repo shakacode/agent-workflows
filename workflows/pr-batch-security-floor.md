@@ -116,31 +116,33 @@ overflow count. On overflow, preserve the helper's restricted temporary JSON
 artifact path, `sha256:` digest, and entry count; inspect the complete actor/URL
 queues from that artifact when triaging, but do not paste the full artifact into
 prompts or handoffs.
-A durable `adhoc:` override has no public GitHub
-target to scan; it still receives a `security-floor v1` result with preflight
-`n/a` and its complete trusted provenance embedded. Skipping preflight is never
-override authority.
+A durable `adhoc:` override has no public GitHub target to scan; it still
+receives a `security-floor v1` result with preflight `n/a` and its complete
+trusted provenance embedded. Skipping preflight is never override authority.
 
-One narrow post-gate resolution applies to a `high-risk-files` finding caused
-only by the detector's broad protected-parent match. After exact-head validation
-and configured review are complete, reuse the already-parsed trusted-base policy
-and complete exact-head file inventory; do not reconstruct policy or introduce a
-second test-path list. Because the helper reports one flat risky-path list,
-reapply all three `high_risk_files` predicates from the same trusted helper
-bytes and record `root-prefix`, `nested-script-dir`, and `exact-filename`
-matches per path. Do not copy or paraphrase those predicates into a second
-classifier. A `root-prefix` or `nested-script-dir` match may qualify for this
-resolution, including a `nested-script-dir`-only match. An `exact-filename`
-match never qualifies as a broad protected-parent-only match. Resolve the broad
-finding only when every changed path is included by `safe_path_groups.tests`
-and none is excluded, including every current and previous path supplied for a
-rename or copy. A production helper, mixed diff, excluded test,
-`human_review_paths` match, or `policy_paths` match keeps its own applicable
-stop. Malformed, incomplete, stale, contradictory, or
-`UNKNOWN` policy, file, validation, or review evidence remains `UNKNOWN` and
-fails closed. This resolution clears only the `high-risk-files` protected-parent
-stop after the ordinary gates; it never clears another preflight finding,
-security-floor invariant, configured review gate, or autonomous-merge gate.
+One narrow integration-closeout resolution applies to a `high-risk-files`
+finding caused only by the detector's broad protected-parent match. Apply it
+only after exact-head validation and configured review are complete and
+`skills/pr-batch/bin/autonomous-merge-eligibility` has parsed the trusted-base
+`AutonomousMergePolicy` for the same base and head, including complete
+`safe_path_groups.tests` and exact-head file evidence. Otherwise the finding
+remains blocked; do not reconstruct policy or introduce a second test-path list.
+At the initial scan, bind the canonical helper path and `sha256:` digest of the
+exact `pr-security-preflight` bytes that produced the flat risky-path list. At
+resolution, require that digest to be unchanged, then reapply all three
+`high_risk_files` predicates from those bound helper bytes and record
+`root-prefix`, `nested-script-dir`, and `exact-filename` matches per path. Do not
+copy or paraphrase those predicates into a second classifier. A `root-prefix`
+or `nested-script-dir` match may qualify, including a `nested-script-dir`-only
+match; an `exact-filename` match never qualifies as broad protected-parent-only.
+Resolve only when every current and previous path is included and not excluded
+by `safe_path_groups.tests`. A production helper, mixed diff, excluded test,
+`human_review_paths` match, or `policy_paths` match keeps its own stop. Malformed,
+incomplete, stale, changed-digest, contradictory, or `UNKNOWN` policy, helper,
+file, validation, or review evidence remains `UNKNOWN` and fails closed. This
+clears only the `high-risk-files` protected-parent stop after the ordinary gates;
+it never clears another preflight finding, security-floor invariant, configured
+review gate, or autonomous-merge gate.
 
 ## Security-Floor Result
 
@@ -149,7 +151,8 @@ Return one `security-floor v1` result per lane with:
 - canonical target and the trusted-base identity required at this stage;
 - evaluated lifecycle stage or consequential action;
 - preflight outcome, exact invocation, resolved trust-config provenance, every
-  reported finding, and acknowledged exact-target findings, or `n/a`;
+  reported finding, bound helper path and `sha256:` digest, and acknowledged
+  exact-target findings, or `n/a`;
 - untrusted and metadata-only comment/review queues: bounded inline actor/URL
   entries plus the complete overflow artifact path, digest, and count when
   present, or explicit empty queues;
@@ -161,9 +164,9 @@ Return one `security-floor v1` result per lane with:
 - exact head/base evidence binding required at the current stage;
 - for a protected-parent safe-test decision, both the original broad
   protected-parent match and the safe-test-only resolution, with the per-path
-  trusted-helper predicate matches, exact head, trusted policy provenance,
-  complete path inventory, and any independent blocking path or evidence reason
-  preserved;
+  trusted-helper predicate matches and digest, exact base/head, trusted
+  `AutonomousMergePolicy` provenance, complete path inventory, and any
+  independent blocking path or evidence reason preserved;
 - consequential-action authority; and
 - `PASS`, `BLOCKED`, or `UNKNOWN`, plus the precise affected-lane reason.
 

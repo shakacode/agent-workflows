@@ -113,27 +113,37 @@ class SecurityFloorContractTest < Minitest::Test
     normalized_floor = @floor.gsub(/\s+/, " ")
 
     assert_includes normalized_floor,
-                    "After exact-head validation and configured review are complete"
+                    "One narrow integration-closeout resolution applies"
     assert_includes normalized_floor,
-                    "reuse the already-parsed trusted-base policy and complete exact-head file inventory"
+                    "`skills/pr-batch/bin/autonomous-merge-eligibility` has parsed the trusted-base `AutonomousMergePolicy`"
     assert_includes normalized_floor,
-                    "reapply all three `high_risk_files` predicates from the same trusted helper bytes"
+                    "including complete `safe_path_groups.tests` and exact-head file evidence"
+    assert_includes normalized_floor,
+                    "bind the canonical helper path and `sha256:` digest of the exact `pr-security-preflight` bytes"
+    assert_includes normalized_floor,
+                    "require that digest to be unchanged"
+    assert_includes normalized_floor,
+                    "reapply all three `high_risk_files` predicates from those bound helper bytes"
     assert_includes normalized_floor,
                     "record `root-prefix`, `nested-script-dir`, and `exact-filename` matches per path"
     assert_includes normalized_floor,
-                    "`root-prefix` or `nested-script-dir` match may qualify for this resolution"
+                    "`root-prefix` or `nested-script-dir` match may qualify"
     assert_includes normalized_floor,
                     "including a `nested-script-dir`-only match"
     assert_includes normalized_floor,
-                    "`exact-filename` match never qualifies as a broad protected-parent-only match"
+                    "`exact-filename` match never qualifies as broad protected-parent-only"
     assert_includes normalized_floor,
-                    "every changed path is included by `safe_path_groups.tests` and none is excluded"
+                    "every current and previous path is included and not excluded by `safe_path_groups.tests`"
     assert_includes normalized_floor,
                     "production helper, mixed diff, excluded test, `human_review_paths` match, or `policy_paths` match"
     assert_includes normalized_floor,
-                    "Malformed, incomplete, stale, contradictory, or `UNKNOWN` policy, file, validation, or review evidence"
+                    "Malformed, incomplete, stale, changed-digest, contradictory, or `UNKNOWN` policy, helper"
+    assert_includes normalized_floor,
+                    "reported finding, bound helper path and `sha256:` digest"
     assert_includes normalized_floor,
                     "both the original broad protected-parent match and the safe-test-only resolution"
+    assert_includes normalized_floor,
+                    "trusted-helper predicate matches and digest, exact base/head, trusted `AutonomousMergePolicy` provenance"
     assert_includes normalized_floor,
                     "clears only the `high-risk-files` protected-parent stop"
   end
