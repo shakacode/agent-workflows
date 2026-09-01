@@ -1,0 +1,9 @@
+HTTP/2 403
+date: Tue, 01 Sep 2026 10:00:00 GMT
+retry-after: 30
+x-github-request-id: C0DE:PRIMARY-BOTH
+x-ratelimit-resource: core
+x-ratelimit-limit: 5000
+x-ratelimit-used: 5000
+x-ratelimit-remaining: 0
+x-ratelimit-reset: 1788260400

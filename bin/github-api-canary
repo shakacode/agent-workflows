@@ -1,0 +1,313 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require "tempfile"
+require "time"
+
+module GitHubApiCanary
+  CONTRACT = "github-api-canary"
+  VERSION = 1
+  MAX_HEADERS_BYTES = 65_536
+  DEFAULT_TIMEOUT_SECONDS = 30.0
+  MAX_TIMEOUT_SECONDS = 300.0
+  SAFE_REQUEST_ID = /\A[A-Za-z0-9:_-]{1,128}\z/
+  SAFE_RESOURCE = /\A[A-Za-z0-9_.-]{1,64}\z/
+  SAFE_ENDPOINT = %r{\A/(?!rate_limit(?:\?|\z))[A-Za-z0-9._~!$&'()*+,;=:@%/?-]{1,1024}\z}
+
+  class InputError < StandardError; end
+  class TransportError < StandardError; end
+  class RequestTimeout < StandardError; end
+
+  module_function
+
+  def parse_options(arguments)
+    options = { endpoint: "/user", timeout: DEFAULT_TIMEOUT_SECONDS }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: github-api-canary [--endpoint PATH | --headers-file PATH]"
+      opts.on("--endpoint PATH", "Representative GitHub REST endpoint (default: /user)") do |endpoint|
+        options[:endpoint] = endpoint
+        options[:endpoint_explicit] = true
+      end
+      opts.on("--headers-file PATH", "Parse an already captured representative response") do |path|
+        options[:headers_file] = path
+      end
+      opts.on(
+        "--reported-rate-limit-remaining NUMBER",
+        Integer,
+        "Compare already captured GET /rate_limit telemetry without making another request"
+      ) do |remaining|
+        options[:reported_rate_limit_remaining] = remaining
+      end
+      opts.on("--timeout SECONDS", Float, "One-request deadline (default: 30 seconds)") do |seconds|
+        options[:timeout] = seconds
+      end
+    end
+    parser.parse!(arguments)
+    raise InputError, "unexpected arguments" unless arguments.empty?
+    if options[:headers_file] && options[:endpoint_explicit]
+      raise InputError, "--endpoint and --headers-file are mutually exclusive"
+    end
+    raise InputError, "endpoint is invalid" unless options.fetch(:endpoint).match?(SAFE_ENDPOINT)
+    if options[:reported_rate_limit_remaining]&.negative?
+      raise InputError, "reported rate-limit remaining is malformed"
+    end
+    unless options.fetch(:timeout).positive? && options.fetch(:timeout) <= MAX_TIMEOUT_SECONDS
+      raise InputError, "timeout is malformed"
+    end
+
+    options
+  rescue OptionParser::ParseError
+    raise InputError, "invalid options"
+  end
+
+  def read_headers(path)
+    raise InputError, "headers input is unavailable" unless File.file?(path)
+    raise InputError, "headers input exceeds the size limit" if File.size(path) > MAX_HEADERS_BYTES
+
+    File.binread(path, MAX_HEADERS_BYTES + 1)
+  rescue SystemCallError
+    raise InputError, "headers input is unavailable"
+  end
+
+  def parse_response(raw)
+    block = raw.split(/\r?\n\r?\n/, 2).first.to_s
+    lines = block.lines.map { |line| line.delete_suffix("\n").delete_suffix("\r") }
+    status_line = lines.shift.to_s
+    match = status_line.match(%r{\AHTTP/\S+\s+(\d{3})(?:\s|\z)})
+    raise InputError, "response status is malformed" unless match
+
+    headers = {}
+    lines.each do |line|
+      key, value = line.split(":", 2)
+      next unless value
+
+      normalized_key = key.strip.downcase
+      normalized_value = value.strip
+      headers[normalized_key] = normalized_value
+    end
+
+    [Integer(match[1], 10), headers]
+  end
+
+  def optional_integer(headers, name)
+    value = headers[name]
+    return nil unless value
+    raise InputError, "#{name} is malformed" unless value.match?(/\A\d+\z/)
+
+    Integer(value, 10)
+  end
+
+  def optional_safe_value(headers, name, pattern)
+    value = headers[name]
+    return nil unless value
+    raise InputError, "#{name} is malformed" unless value.match?(pattern)
+
+    value
+  end
+
+  def reset_at(headers)
+    epoch = optional_integer(headers, "x-ratelimit-reset")
+    return nil unless epoch
+
+    Time.at(epoch).utc.iso8601
+  rescue RangeError, SystemCallError
+    raise InputError, "x-ratelimit-reset is malformed"
+  end
+
+  def retry_after_at(headers)
+    value = headers["retry-after"]
+    return nil unless value
+
+    retry_time = if value.match?(/\A\d+\z/)
+                   response_time = headers["date"] ? Time.httpdate(headers.fetch("date")) : Time.now.utc
+                   response_time + Integer(value, 10)
+                 else
+                   Time.httpdate(value)
+                 end
+    retry_time.utc.iso8601
+  rescue ArgumentError, RangeError
+    raise InputError, "retry-after is malformed"
+  end
+
+  def retry_decision(primary_rate_limited:, reset:, retry_after:)
+    if primary_rate_limited && reset && retry_after
+      later = [Time.iso8601(reset), Time.iso8601(retry_after)].max.utc.iso8601
+      [later, "retry-after+x-ratelimit-reset"]
+    elsif retry_after
+      [retry_after, "retry-after"]
+    elsif primary_rate_limited && reset
+      [reset, "x-ratelimit-reset"]
+    else
+      [nil, nil]
+    end
+  end
+
+  def record(http_status, headers, source:, reported_rate_limit_remaining: nil)
+    remaining = optional_integer(headers, "x-ratelimit-remaining")
+    reset = reset_at(headers)
+    primary_rate_limited = [403, 429].include?(http_status) && !remaining.nil? && remaining.zero?
+    possible_secondary_rate_limited = [403, 429].include?(http_status) && !primary_rate_limited
+    denied_or_authentication_unknown = [401, 404].include?(http_status) || headers.key?("x-github-sso")
+    retry_after = retry_after_at(headers)
+    retry_at, retry_evidence = retry_decision(
+      primary_rate_limited: primary_rate_limited,
+      reset: reset,
+      retry_after: retry_after
+    )
+
+    {
+      "contract" => CONTRACT,
+      "version" => VERSION,
+      "source" => source,
+      "status" => if primary_rate_limited
+                    "primary-rate-limited"
+                  elsif denied_or_authentication_unknown
+                    "denied-authentication-unknown"
+                  elsif possible_secondary_rate_limited
+                    "possible-secondary-rate-limited"
+                  elsif (200..399).cover?(http_status)
+                    "healthy"
+                  else
+                    "unexpected-http-status"
+                  end,
+      "http_status" => http_status,
+      "request_id" => optional_safe_value(headers, "x-github-request-id", SAFE_REQUEST_ID),
+      "rate_limit_resource" => optional_safe_value(headers, "x-ratelimit-resource", SAFE_RESOURCE),
+      "limit" => optional_integer(headers, "x-ratelimit-limit"),
+      "used" => optional_integer(headers, "x-ratelimit-used"),
+      "remaining" => remaining,
+      "reset_at" => reset,
+      "retry_at" => retry_at,
+      "retry_evidence" => retry_evidence,
+      "reported_rate_limit_remaining" => reported_rate_limit_remaining,
+      "rate_limit_telemetry_inconsistent" => !remaining.nil? && !reported_rate_limit_remaining.nil? &&
+        reported_rate_limit_remaining != remaining
+    }
+  end
+
+  def wait_for_process(pid, timeout)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    loop do
+      waited = Process.waitpid2(pid, Process::WNOHANG)
+      return waited.fetch(1) if waited
+      raise RequestTimeout if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.05
+    end
+  end
+
+  def process_group_alive?(pid)
+    Process.kill(0, -pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
+  end
+
+  def terminate_process_group(pid)
+    Process.kill("TERM", -pid)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5
+    root_reaped = false
+    while process_group_alive?(pid) && Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      root_reaped ||= !Process.waitpid2(pid, Process::WNOHANG).nil?
+      sleep 0.05
+    end
+    Process.kill("KILL", -pid) if process_group_alive?(pid)
+    Process.waitpid(pid) unless root_reaped
+  rescue Errno::ECHILD, Errno::ESRCH
+    nil
+  end
+
+  def request(endpoint, timeout:)
+    executable = ENV.fetch("GITHUB_API_CANARY_GH", "gh")
+    raise InputError, "GitHub CLI executable is unavailable" if executable.empty?
+
+    stdout = nil
+    process_status = nil
+    Tempfile.create("github-api-canary-stdout") do |stdout_file|
+      Tempfile.create("github-api-canary-stderr") do |stderr_file|
+        pid = Process.spawn(
+          executable,
+          "api",
+          "--include",
+          "--silent",
+          "--method",
+          "GET",
+          endpoint,
+          out: stdout_file,
+          err: stderr_file,
+          pgroup: true
+        )
+        begin
+          process_status = wait_for_process(pid, timeout)
+        rescue RequestTimeout
+          terminate_process_group(pid)
+          raise TransportError, "representative request timed out"
+        end
+        stdout_file.flush
+        stdout_file.rewind
+        stdout = stdout_file.read(MAX_HEADERS_BYTES + 1)
+      end
+    end
+    raise InputError, "response headers exceed the size limit" if stdout.bytesize > MAX_HEADERS_BYTES
+    unless process_status.success? || stdout.match?(%r{^HTTP/\S+\s+\d{3}(?:\s|$)})
+      raise TransportError, "representative request failed before an HTTP response"
+    end
+
+    [stdout, process_status]
+  rescue SystemCallError
+    raise TransportError, "representative request could not be started"
+  end
+
+  def failure_record(source:, status:)
+    {
+      "contract" => CONTRACT,
+      "version" => VERSION,
+      "source" => source,
+      "status" => status,
+      "http_status" => nil,
+      "request_id" => nil,
+      "rate_limit_resource" => nil,
+      "limit" => nil,
+      "used" => nil,
+      "remaining" => nil,
+      "reset_at" => nil,
+      "retry_at" => nil,
+      "retry_evidence" => nil,
+      "reported_rate_limit_remaining" => nil,
+      "rate_limit_telemetry_inconsistent" => false
+    }
+  end
+
+  def run(arguments)
+    options = parse_options(arguments)
+    raw, source = if options[:headers_file]
+                    [read_headers(options.fetch(:headers_file)), "supplied-headers"]
+                  else
+                    response, = request(options.fetch(:endpoint), timeout: options.fetch(:timeout))
+                    [response, "live-request"]
+                  end
+    http_status, headers = parse_response(raw)
+    puts JSON.generate(
+      record(
+        http_status,
+        headers,
+        source: source,
+        reported_rate_limit_remaining: options[:reported_rate_limit_remaining]
+      )
+    )
+    0
+  rescue TransportError
+    puts JSON.generate(failure_record(source: "live-request", status: "transport-failure"))
+    3
+  rescue InputError
+    failure_source = source || (options&.key?(:headers_file) ? "supplied-headers" : "input")
+    puts JSON.generate(failure_record(source: failure_source, status: "malformed-response"))
+    2
+  end
+end
+
+exit GitHubApiCanary.run(ARGV) if $PROGRAM_NAME == __FILE__

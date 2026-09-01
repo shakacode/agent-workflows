@@ -435,6 +435,7 @@ The installer writes:
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflow-writing-style`
+- `<target>/bin/github-api-canary`
 - `<target>/bin/validate-execution-provenance`
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`

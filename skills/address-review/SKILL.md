@@ -601,7 +601,17 @@ Use `-F pr=...` intentionally here: `gh api graphql` needs a JSON integer for `$
 **Error handling:**
 
 - If the API returns 404, the PR/comment doesn't exist - inform the user
-- If the API returns 403, check authentication with `gh auth status`
+- A 403 alone does not prove invalid authentication. Parse already captured
+  representative response headers with `github-api-canary --headers-file PATH`
+  (source checkout: `bin/github-api-canary`); only make its default one-shot
+  `/user` request when the failed operation did not preserve representative
+  headers. Do not use `gh auth status` as invalid-credential proof while that
+  representative core bucket is exhausted.
+- Honor `Retry-After` or `X-RateLimit-Reset`; when `remaining=0`, do not retry
+  before the canary's exact `retry_at`.
+- A conflicting `GET /rate_limit` snapshot is an inconsistency, not restoration.
+  Keep required review, exact-head, security, and merge evidence blocked or
+  `UNKNOWN` until the representative API evidence is available.
 - If the response is empty after cutoff filtering, inform the user no new review comments were found since the last summary comment and mention `check all reviews`
 - If the response is empty without a cutoff, inform the user no review comments were found
 
@@ -1011,7 +1021,11 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
 
 # Known Limitations
 
-- Rate limiting: GitHub API has rate limits; if you hit them, wait a few minutes
+- Rate limiting: use already captured representative headers or the one-shot
+  `github-api-canary`; honor its `retry_at` without retrying or polling before
+  reset. A 403 alone does not prove invalid authentication. Honor `Retry-After`
+  or `X-RateLimit-Reset`; a conflicting `GET /rate_limit` snapshot is an
+  inconsistency, not restoration.
 - Private repos: Requires appropriate `gh` authentication scope
 - GraphQL inner pagination: In both the `fetch-pr-review-data` helper and the specific-review GraphQL query, the `comments(first:100)` inside each review thread is hardcoded. Threads with >100 comments (rare) will have older comments truncated. The outer `reviewThreads` pagination is handled by `--paginate`.
 - The `fetch-pr-review-data` helper covers the full-PR scan path only; specific `#issuecomment-...` / `#pullrequestreview-...` targets still use the direct `gh api` one-liners above.

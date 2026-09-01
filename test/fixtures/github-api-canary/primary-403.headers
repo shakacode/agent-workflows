@@ -1,0 +1,10 @@
+HTTP/2 403
+date: Tue, 01 Sep 2026 10:00:00 GMT
+x-github-request-id: C0DE:PRIMARY
+x-ratelimit-resource: core
+x-ratelimit-limit: 5000
+x-ratelimit-used: 5000
+x-ratelimit-remaining: 0
+x-ratelimit-reset: 1788260400
+
+{"message":"API rate limit exceeded for redacted user."}
