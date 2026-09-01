@@ -1352,8 +1352,12 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "configured-review-receipt-artifact-snapshot-moved", moved.dig("blockers", 0, "code")
   end
 
-  def test_not_applicable_replay_ignores_check_churn
-    initial = live_snapshot("checks" => [check(name: "validate")])
+  def test_not_applicable_replay_ignores_review_evidence_churn
+    initial = live_snapshot(
+      "checks" => [check(name: "validate")],
+      "artifacts" => [artifact],
+      "threads" => [thread(id: "T1")]
+    )
     policy_source = JSON.generate("n/a")
     receipt = ConfiguredReviewGate.evaluate(
       policy: "n/a", policy_source:, snapshot: initial,
@@ -1362,6 +1366,9 @@ class ConfiguredReviewGateTest < Minitest::Test
     replay_snapshot = Marshal.load(Marshal.dump(initial))
     replay_snapshot["collected_at"] = (NOW + 20).iso8601
     replay_snapshot.dig("checks", 0)["completed_at"] = (NOW + 10).iso8601
+    replay_snapshot["artifacts"] << artifact(id: "2")
+    replay_snapshot.dig("threads", 0)["resolved"] = true
+    replay_snapshot["complete"] = false
 
     replay = ConfiguredReviewGate.replay(
       receipt:, policy: "n/a", policy_source:, snapshot: replay_snapshot,
@@ -1919,6 +1926,72 @@ class ConfiguredReviewGateTest < Minitest::Test
     assert_equal "READY", result.fetch("verdict")
     assert_equal [30, 30], sleeps
     assert_equal "codex-fallback", result.dig("receipt", "policy", "override", "reviewer_id")
+  end
+
+  def test_live_evaluator_waits_for_other_primaries_before_using_authorized_fallback
+    fallback_policy = policy
+    fallback_policy["reviewers"] << {
+      "id" => "codex-primary",
+      "check_name" => "codex-primary-review",
+      "producer" => trusted_producer.slice("app_slug", "workflow_path", "event"),
+      "artifact" => {
+        "actors" => ["codex-reviewer"],
+        "kinds" => ["pull_request_review"]
+      }
+    }
+    fallback_policy["fallback"] = {
+      "mode" => "named_attested_check",
+      "triggers" => ["rate_limited"],
+      "reviewer" => {
+        "id" => "gemini-fallback",
+        "check_name" => "gemini-review",
+        "producer" => trusted_producer.slice("app_slug", "workflow_path", "event"),
+        "artifact" => {
+          "actors" => ["gemini-reviewer"],
+          "kinds" => ["pull_request_review"]
+        }
+      }
+    }
+    limited_primary = check(
+      conclusion: "failure", producer_failure: provider_failure("rate_limited")
+    )
+    ready = live_snapshot(
+      "checks" => [
+        limited_primary,
+        check(name: "codex-primary-review"),
+        check(name: "gemini-review")
+      ],
+      "artifacts" => [
+        artifact(actor: "codex-reviewer"),
+        artifact(id: "2", actor: "gemini-reviewer")
+      ]
+    )
+    cases = {
+      "pending" => [limited_primary, check(name: "codex-primary-review", status: "queued", conclusion: nil)],
+      "missing" => [limited_primary]
+    }
+    cases.each do |label, initial_checks|
+      current = NOW
+      sleeps = []
+      initial = live_snapshot("checks" => initial_checks)
+      result = ConfiguredReviewGate::LiveEvaluator.new(
+        client: FakeClient.new([initial, ready, Marshal.load(Marshal.dump(ready))]),
+        policy: fallback_policy,
+        policy_source: JSON.generate(fallback_policy),
+        expected_base_sha: BASE_SHA,
+        wait_seconds: 90,
+        poll_seconds: 30,
+        clock: -> { current },
+        sleeper: lambda { |seconds|
+          sleeps << seconds
+          current += seconds
+        }
+      ).run
+
+      assert_equal "READY", result.fetch("verdict"), label
+      assert_equal [30, 30], sleeps, label
+      assert_equal "gemini-fallback", result.dig("receipt", "policy", "override", "reviewer_id"), label
+    end
   end
 
   def test_live_evaluator_waits_for_queued_authorized_fallback_to_succeed

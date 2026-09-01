@@ -513,12 +513,29 @@ module ConfiguredReviewGate
         configured-review-fallback-missing configured-review-fallback-pending
       ]
       return false if codes.any? { |code| pending_fallback.include?(code) }
+      return false if waitable_primary_blockers_can_unlock_fallback?(codes)
 
       terminal = BLOCKER_TRIGGER.keys - ["configured-review-missing"]
       codes.any? do |code|
         normalized = code.sub("configured-review-fallback-", "configured-review-")
         terminal.include?(normalized)
       end
+    end
+
+    def waitable_primary_blockers_can_unlock_fallback?(codes)
+      fallback = @policy.is_a?(Hash) ? @policy["fallback"] : nil
+      return false unless fallback.is_a?(Hash) && fallback["mode"] == "named_attested_check"
+
+      primary_codes = codes.reject { |code| code.start_with?("configured-review-fallback-") }
+      waitable = %w[configured-review-missing configured-review-pending]
+      return false unless primary_codes.any? { |code| waitable.include?(code) }
+
+      terminal = BLOCKER_TRIGGER.keys - ["configured-review-missing"]
+      terminal_primary_codes = primary_codes.select { |code| terminal.include?(code) }
+      return false if terminal_primary_codes.empty?
+
+      allowed = Array(fallback["triggers"])
+      terminal_primary_codes.all? { |code| allowed.include?(BLOCKER_TRIGGER.fetch(code)) }
     end
   end
 
@@ -869,7 +886,9 @@ module ConfiguredReviewGate
 
   def semantic_snapshot_digest(snapshot, policy: nil)
     semantic = snapshot.reject { |key, _value| key == "collected_at" }
-    unless policy.nil?
+    if not_applicable_policy?(policy)
+      %w[checks artifacts threads complete].each { |key| semantic.delete(key) }
+    elsif !policy.nil?
       relevant_check_names = policy_relevant_check_names(policy)
       semantic["checks"] = Array(semantic["checks"]).select do |check|
         check.is_a?(Hash) && relevant_check_names.include?(check["name"])
@@ -879,13 +898,17 @@ module ConfiguredReviewGate
   end
 
   def policy_relevant_check_names(policy)
-    return [] if policy == "n/a" || policy.is_a?(Hash) && policy["not_applicable"] == true
+    return [] if not_applicable_policy?(policy)
     return [] unless policy.is_a?(Hash)
 
     reviewers = Array(policy["reviewers"])
     fallback_reviewer = policy.dig("fallback", "reviewer")
     reviewers += [fallback_reviewer] if fallback_reviewer.is_a?(Hash)
     reviewers.filter_map { |reviewer| reviewer["check_name"] if reviewer.is_a?(Hash) }.uniq
+  end
+
+  def not_applicable_policy?(policy)
+    policy == "n/a" || (policy.is_a?(Hash) && policy["not_applicable"] == true)
   end
 
   def validated_receipt_base_sha!(receipt)
