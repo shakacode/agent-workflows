@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "date"
 require "fileutils"
 require "json"
 require "open3"
@@ -15,6 +16,7 @@ class LintCommandTest < Minitest::Test
   WRAPPER = File.join(ROOT, ".agents/bin/lint")
   WORKFLOW = File.join(ROOT, ".github/workflows/lint.yml")
   VALIDATE = File.join(ROOT, "bin/validate")
+  YAML_TIMESTAMP_CLASSES = [Date, Time].freeze
 
   def test_missing_tool_message_points_to_lint_setup_guidance
     message = LintRunner.new.send(:missing_tool_message, "yamllint")
@@ -177,6 +179,17 @@ class LintCommandTest < Minitest::Test
     assert_includes File.read(VALIDATE), "ruby bin/repository-security-policy-test.rb"
   end
 
+  def test_ci_checkout_contract_matches_policy_aliases_and_yaml_features
+    case_variant = File.read(WORKFLOW).sub("actions/checkout@", "Actions/Checkout@")
+    assert_lint_workflow_checkout_contract(case_variant)
+
+    anchored = File.read(WORKFLOW).sub(
+      "      - name: Checkout repository",
+      "      - &checkout\n        name: Checkout repository"
+    ).sub("      - name: Set up Ruby", "      - *checkout\n      - name: Set up Ruby")
+    assert_lint_workflow_checkout_contract(anchored)
+  end
+
   def test_validation_and_contributor_docs_expose_the_lint_command
     contributing = File.read(File.join(ROOT, "CONTRIBUTING.md"))
     assert_includes File.read(VALIDATE), "ruby bin/lint-test.rb"
@@ -202,11 +215,15 @@ class LintCommandTest < Minitest::Test
   private
 
   def assert_lint_workflow_checkout_contract(workflow)
-    steps = YAML.safe_load(workflow).dig("jobs", "lint", "steps")
+    steps = YAML.safe_load(
+      workflow,
+      permitted_classes: YAML_TIMESTAMP_CLASSES,
+      aliases: true
+    ).dig("jobs", "lint", "steps")
     # RepositorySecurityPolicyTest owns immutable action-reference validation;
     # this contract owns checkout ordering and credential persistence.
     checkout_index = steps.index do |step|
-      step["uses"].is_a?(String) && step["uses"].start_with?("actions/checkout@")
+      checkout_action_reference?(step["uses"])
     end
     lint_index = steps.index { |step| step["run"] == "bin/lint" }
 
@@ -214,6 +231,13 @@ class LintCommandTest < Minitest::Test
     refute_nil lint_index, "expected the lint workflow to run the canonical lint command"
     assert_operator checkout_index, :<, lint_index
     assert_equal false, steps.fetch(checkout_index).dig("with", "persist-credentials")
+  end
+
+  def checkout_action_reference?(reference)
+    return false unless reference.is_a?(String)
+
+    identity, separator, action_ref = reference.partition("@")
+    separator == "@" && !action_ref.empty? && identity.casecmp?("actions/checkout")
   end
 
   def install_fake_linters(directory)
