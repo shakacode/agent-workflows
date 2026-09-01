@@ -38,6 +38,24 @@ ACKNOWLEDGEABLE_RISKS = Set.new(
     untrusted-participants
   ]
 ).freeze
+HIGH_RISK_ROOT_PATTERN = %r{\A(\.github/|\.agents/|\.claude/|bin/|script/|scripts/)}
+HIGH_RISK_NESTED_SCRIPT_DIR_PATTERN = %r{/(bin|script|scripts)/}
+HIGH_RISK_EXACT_FILENAMES = Set.new(
+  %w[
+    .npmrc
+    .pnpmfile.cjs
+    .yarnrc.yml
+    .lefthook.yml
+    AGENTS.md
+    CLAUDE.md
+    Gemfile
+    Gemfile.lock
+    Rakefile
+    package.json
+    package-scripts.yml
+    pnpm-lock.yaml
+  ]
+).freeze
 
 def parse_acknowledged_risk(spec)
   number_text, risk_text = spec.to_s.split(":", 2)
@@ -1062,28 +1080,14 @@ def changed_files(repo, pr_number)
   run_gh("pr", "diff", pr_number.to_s, "--repo", repo, "--name-only").lines.map(&:strip).reject(&:empty?)
 end
 
-def high_risk_files(files)
-  high_risk_roots = %r{\A(\.github/|\.agents/|\.claude/|bin/|script/|scripts/)}
-  nested_script_dirs = %r{/(bin|script|scripts)/}
-  high_risk_exact = %w[
-    .npmrc
-    .pnpmfile.cjs
-    .yarnrc.yml
-    .lefthook.yml
-    AGENTS.md
-    CLAUDE.md
-    Gemfile
-    Gemfile.lock
-    Rakefile
-    package.json
-    package-scripts.yml
-    pnpm-lock.yaml
-  ]
+def high_risk_file_findings(files)
+  files.filter_map do |path|
+    matches = []
+    matches << "root-prefix" if path.match?(HIGH_RISK_ROOT_PATTERN)
+    matches << "nested-script-dir" if path.match?(HIGH_RISK_NESTED_SCRIPT_DIR_PATTERN)
+    matches << "exact-filename" if HIGH_RISK_EXACT_FILENAMES.include?(path)
 
-  files.select do |path|
-    path.match?(high_risk_roots) ||
-      path.match?(nested_script_dirs) ||
-      high_risk_exact.include?(path)
+    { path:, matches: } unless matches.empty?
   end
 end
 
@@ -1487,6 +1491,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     include_pull_comments: target_is_pr,
     trust_config:
   )
+  risky_file_findings = high_risk_file_findings(files)
 
   {
     files:,
@@ -1501,7 +1506,8 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
       team_cache:,
       canonical_bot_cache:
     ),
-    risky_files: high_risk_files(files),
+    risky_files: risky_file_findings.map { |finding| finding.fetch(:path) },
+    risky_file_findings:,
     suspicious: suspicious_findings.fetch(:suspicious),
     suspicious_warnings: suspicious_findings.fetch(:suspicious_warnings),
     target:,
@@ -1761,8 +1767,10 @@ def print_file_findings(result)
 
   if result.fetch(:risky_files).empty?
     puts "  High-risk changed files: none"
+    puts "  High-risk predicate matches: none"
   else
     puts "  High-risk changed files: #{result.fetch(:risky_files).join(', ')}"
+    puts "  High-risk predicate matches: #{JSON.generate(result.fetch(:risky_file_findings))}"
   end
 end
 

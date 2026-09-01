@@ -123,11 +123,11 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_floor,
                     "bind the canonical helper path and `sha256:` digest of the exact `pr-security-preflight` bytes"
     assert_includes normalized_floor,
+                    "preserve its emitted predicate matches with the flat risky-path list"
+    assert_includes normalized_floor,
                     "require that digest unchanged"
     assert_includes normalized_floor,
-                    "reapply all three `high_risk_files` predicates from those bound bytes"
-    assert_includes normalized_floor,
-                    "record `root-prefix`, `nested-script-dir`, and `exact-filename` matches per path"
+                    "exact-head rerun; use only its emitted `root-prefix`, `nested-script-dir`, and `exact-filename` matches per path"
     assert_includes normalized_floor,
                     "Root-prefix or nested-script-dir may qualify"
     assert_includes normalized_floor,

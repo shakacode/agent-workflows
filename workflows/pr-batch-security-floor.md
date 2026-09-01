@@ -127,9 +127,9 @@ from `skills/pr-batch/bin/autonomous-merge-eligibility` after it parses the
 trusted-base `AutonomousMergePolicy` for the same base/head from complete policy,
 semantic, and file evidence. Otherwise remain blocked; never reconstruct policy
 or add another test-path list. At the initial scan, bind the canonical helper
-path and `sha256:` digest of the exact `pr-security-preflight` bytes that produced
-the flat risky-path list. At resolution, require that digest unchanged; reapply
-all three `high_risk_files` predicates from those bound bytes and record
+path and `sha256:` digest of the exact `pr-security-preflight` bytes and preserve
+its emitted predicate matches with the flat risky-path list. At resolution,
+require that digest unchanged and an exact-head rerun; use only its emitted
 `root-prefix`, `nested-script-dir`, and `exact-filename` matches per path. Never
 copy them into a second classifier. Root-prefix or nested-script-dir may qualify,
 including a `nested-script-dir`-only match; exact-filename never qualifies as broad
