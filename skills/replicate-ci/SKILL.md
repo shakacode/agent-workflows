@@ -130,8 +130,7 @@ Then recommend the next smallest action:
 - Hosted failure:
 - Local green evidence:
 - Parity environment:
-- Reproduction result: <OUTCOME> | N/A — `fix-flaky-tests` handoff for
-  equivalent hosted intermittency
+- Reproduction result: <OUTCOME> | N/A — `fix-flaky-tests` handoff for equivalent hosted intermittency
 - Environment delta:
 - Likely cause:
 - Next action:
