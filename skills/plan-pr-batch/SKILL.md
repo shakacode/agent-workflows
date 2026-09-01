@@ -171,10 +171,15 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
    - Accept `none`, `ask`, the editable alias `auto`, and the compatible
      canonical value `auto_merge_when_gates_pass`. Immediately after resolving
-     the visible value, normalize `auto` to `auto_merge_when_gates_pass`; only
-     that canonical value may cross worker-prompt or durable-evidence
-     boundaries. A missing value, an unresolved placeholder, or any other value
-     is invalid and fails closed before worker launch.
+     the visible value, normalize only `auto` to
+     `auto_merge_when_gates_pass`; preserve `none`, `ask`, and an
+     already-canonical `auto_merge_when_gates_pass` unchanged. Before
+     constructing any worker prompts, manifests, handoffs, merge-assurance
+     contexts or receipts, audits, helper inputs, or other durable evidence,
+     reject unnormalized `auto`; preserve `none`, `ask`, and an
+     already-canonical `auto_merge_when_gates_pass` unchanged. A missing value,
+     an unresolved placeholder, or any other value is invalid and fails closed
+     before worker launch.
      If prompt-generation mode has no supplied authority, emit the editable
      `merge_authority: <none|ask|auto>` placeholder instead of starting another
      planning round; the executor must resolve it before launch. Explain that

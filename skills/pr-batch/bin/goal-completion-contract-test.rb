@@ -196,11 +196,15 @@ EDITABLE_CONTROL_BLOCK = [
   MERGE_AUTHORITY_CONTROL_LINE
 ].join("\n").freeze
 MERGE_AUTHORITY_NORMALIZATION_RULE =
-  "Immediately after resolving the visible value, normalize `auto` to `auto_merge_when_gates_pass`"
+  "Immediately after resolving the visible value, normalize only `auto` to " \
+  "`auto_merge_when_gates_pass`; preserve `none`, `ask`, and an already-canonical " \
+  "`auto_merge_when_gates_pass` unchanged."
 MERGE_AUTHORITY_FAIL_CLOSED_RULE =
   "an unresolved placeholder, or any other value is invalid"
 MERGE_AUTHORITY_DURABLE_RULE =
-  "worker prompts, manifests, handoffs, merge-assurance contexts or receipts, audits, helper inputs"
+  "Before constructing any worker prompts, manifests, handoffs, merge-assurance contexts or receipts, " \
+  "audits, helper inputs, or other durable evidence, reject unnormalized `auto`; preserve `none`, `ask`, " \
+  "and an already-canonical `auto_merge_when_gates_pass` unchanged."
 PROMPT_GENERATION_AUTHORITY_EXCEPTION =
   "In prompt-generation mode only, no supplied authority emits the editable " \
   "`merge_authority: <none|ask|auto>` placeholder; the executor must resolve it before worker launch."
@@ -1446,9 +1450,8 @@ class GoalCompletionContractTest < Minitest::Test
                              "Accept `none`, `ask`, the editable alias `auto`, and the compatible " \
                              "canonical value `auto_merge_when_gates_pass`",
                              "skills/plan-pr-batch/SKILL.md"
-    assert_squished_includes @prompt_intake,
-                             "preserve the other canonical values unchanged",
-                             "workflows/pr-batch-intake.md"
+    assert_squished_includes @plan_pr_batch_skill, MERGE_AUTHORITY_NORMALIZATION_RULE,
+                             "skills/plan-pr-batch/SKILL.md"
     assert_squished_includes @prompt_intake, PROMPT_GENERATION_AUTHORITY_EXCEPTION,
                              "workflows/pr-batch-intake.md"
     assert_text_includes @pr_batch_skill, "canonical PR-Batch Prompt Intake",
@@ -1458,11 +1461,8 @@ class GoalCompletionContractTest < Minitest::Test
 
     assert_squished_includes @prompt_intake, MERGE_AUTHORITY_DURABLE_RULE,
                              "workflows/pr-batch-intake.md"
-    assert_squished_includes @prompt_intake,
-                             "Before constructing any worker prompts, manifests, handoffs, " \
-                             "merge-assurance contexts or receipts, audits, helper inputs, or other durable evidence, " \
-                             "require the canonical value `auto_merge_when_gates_pass`.",
-                             "workflows/pr-batch-intake.md"
+    assert_squished_includes @plan_pr_batch_skill, MERGE_AUTHORITY_DURABLE_RULE,
+                             "skills/plan-pr-batch/SKILL.md"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       assert_equal 1, prompt.scan(/^#{Regexp.escape(MERGE_AUTHORITY_CONTROL_LINE)}$/).length

@@ -59,17 +59,19 @@ wording. Before branch creation, editing, or dispatch, every bounded status and 
 
 At the human-editable input boundary, accept `none`, `ask`, `auto`, and the
 compatible canonical value `auto_merge_when_gates_pass`. Immediately after
-resolving the visible value, normalize `auto` to
-`auto_merge_when_gates_pass` and preserve the other canonical values unchanged.
+resolving the visible value, normalize only `auto` to
+`auto_merge_when_gates_pass`; preserve `none`, `ask`, and an already-canonical
+`auto_merge_when_gates_pass` unchanged.
 A missing value, an unresolved placeholder, or any other value is invalid and
 fails closed before plan preflight, dispatcher selection, or worker launch.
 
 The short alias exists only in editable prompt input. Before constructing any
-worker prompts, manifests, handoffs, merge-assurance contexts or
-receipts, audits, helper inputs, or other durable evidence, require the
-canonical value `auto_merge_when_gates_pass`. Never persist `auto`, and never
-infer a default from an omitted or unresolved field. In prompt-generation mode
-only, no supplied authority emits the editable
+worker prompts, manifests, handoffs, merge-assurance contexts or receipts,
+audits, helper inputs, or other durable evidence, reject unnormalized `auto`;
+preserve `none`, `ask`, and an already-canonical
+`auto_merge_when_gates_pass` unchanged. Never persist `auto`, and never infer a
+default from an omitted or unresolved field. In prompt-generation mode only,
+no supplied authority emits the editable
 `merge_authority: <none|ask|auto>` placeholder; the executor must resolve it
 before worker launch.
 
