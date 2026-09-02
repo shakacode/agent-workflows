@@ -24,6 +24,8 @@ class LintRunner
   def run
     Dir.chdir(ROOT)
     files = tracked_files
+    return 1 unless check_metrics_baseline
+
     commands(files).each do |tool, arguments|
       check_version!(tool)
       puts "== #{tool} #{VERSIONS.fetch(tool)} =="
@@ -34,6 +36,12 @@ class LintRunner
   end
 
   private
+
+  def check_metrics_baseline
+    check_version!("rubocop")
+    puts "== rubocop metrics baseline =="
+    system(File.join(ROOT, "bin/rubocop-metrics-baseline"), "check")
+  end
 
   def tracked_files
     stdout, stderr, status = Open3.capture3("git", "ls-files", "-z", "--")

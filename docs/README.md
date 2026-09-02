@@ -80,6 +80,7 @@ useful technical references, but are secondary to the user journeys above.
 | Signed-launch rollout incident and prevention controls | [Postmortem: Unsupported Signed-Launch Enforcement](postmortems/2026-08-06-unsupported-signed-launch-enforcement.md) |
 | Machine-readable review output | [Review Finding Schema](review-finding-schema.md) |
 | Privacy-safe batch usage telemetry | [Batch Usage Receipt v1](batch-usage-receipt.md) |
+| Default RuboCop metrics debt and ratchet maintenance | [RuboCop Metrics Baseline](rubocop-metrics.md) |
 | Host-text architecture decision | [ADR 0001: Identical Skill Text Across Hosts](adr/0001-identical-skill-text-across-hosts.md) |
 | Compound Engineering architecture decision | [ADR 0002: Compose Compound Engineering Inside Agent Workflows](adr/0002-compose-compound-engineering-inside-agent-workflows.md) |
 | Autonomous merge eligibility decision | [ADR 0003: Smarter Autonomous Merge Gates](adr/0003-smarter-autonomous-merge-gates.md) |

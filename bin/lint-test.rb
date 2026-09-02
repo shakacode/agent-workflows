@@ -10,7 +10,63 @@ require "tmpdir"
 require "yaml"
 load File.expand_path("lint", __dir__)
 
+module LintCommandTestSupport
+  FAKE_LINTER_SOURCE = <<~'RUBY'
+    #!/usr/bin/env ruby
+    require "json"
+
+    tool = File.basename($PROGRAM_NAME)
+    versions = {
+      "rubocop" => "1.87.0", "shellcheck" => "0.11.0", "actionlint" => "1.7.12",
+      "markdownlint-cli2" => "0.23.2", "yamllint" => "1.37.1"
+    }
+    if ARGV.include?("--version") || ARGV.include?("-version")
+      version = versions.fetch(tool)
+      case tool
+      when "shellcheck"
+        puts "ShellCheck - shell script analysis tool"
+        puts "version: #{version}"
+      when "markdownlint-cli2"
+        puts "markdownlint-cli2 v#{version}"
+      when "yamllint"
+        puts "yamllint #{version}"
+      else
+        puts version
+      end
+      exit
+    end
+
+    File.open(ENV.fetch("LINT_TEST_LOG"), "a") { |file| file.puts(JSON.generate([tool, *ARGV])) }
+    if tool == "rubocop" && ARGV.include?("--format")
+      empty_result = { "metadata" => { "rubocop_version" => versions.fetch(tool) }, "files" => [] }
+      puts ENV.fetch("LINT_TEST_RUBOCOP_RESULT", JSON.generate(empty_result))
+    end
+  RUBY
+
+  def install_fake_linters(directory)
+    %w[rubocop shellcheck actionlint markdownlint-cli2 yamllint].each do |tool|
+      path = File.join(directory, tool)
+      File.write(path, FAKE_LINTER_SOURCE)
+      FileUtils.chmod(0o755, path)
+    end
+  end
+
+  def rubocop_commands(commands)
+    commands.select { |command| command.first == "rubocop" }.map { |command| command.drop(1) }
+  end
+
+  def increased_metrics_result
+    { "metadata" => { "rubocop_version" => "1.87.0" }, "files" => [{
+      "path" => "new.rb", "offenses" => [{
+        "cop_name" => "Metrics/MethodLength", "message" => "Method has too many lines. [12/10]"
+      }]
+    }] }
+  end
+end
+
 class LintCommandTest < Minitest::Test
+  include LintCommandTestSupport
+
   ROOT = File.expand_path("..", __dir__)
   SCRIPT = File.join(ROOT, "bin/lint")
   WRAPPER = File.join(ROOT, ".agents/bin/lint")
@@ -62,14 +118,36 @@ class LintCommandTest < Minitest::Test
       commands = File.readlines(log, chomp: true).map { |line| JSON.parse(line) }
       by_tool = commands.to_h { |command| [command.first, command.drop(1)] }
       assert_equal %w[actionlint markdownlint-cli2 rubocop shellcheck yamllint], by_tool.keys.sort
-      assert_includes by_tool.fetch("rubocop"), "_#{File.read(File.join(ROOT, '.rubocop-version')).strip}_"
-      assert_includes by_tool.fetch("rubocop"), "bin/lint"
-      refute_includes by_tool.fetch("rubocop"), "README.md"
+      rubocop_commands = rubocop_commands(commands)
+      assert_equal 2, rubocop_commands.length
+      metrics_command = rubocop_commands.find { |command| command.include?("--only") }
+      regular_command = rubocop_commands.find { |command| !command.include?("--only") }
+      refute_nil metrics_command
+      assert(metrics_command.any? { |argument| argument.include?("Metrics/MethodLength") })
+      assert_includes regular_command, "_#{File.read(File.join(ROOT, '.rubocop-version')).strip}_"
+      assert_includes regular_command, "bin/lint"
+      refute_includes regular_command, "README.md"
       assert_includes by_tool.fetch("shellcheck"), ".agents/bin/lint"
       assert_includes by_tool.fetch("markdownlint-cli2"), "README.md"
       assert_includes by_tool.fetch("yamllint"), ".github/workflows/validate.yml"
       assert_includes by_tool.fetch("yamllint"), "--strict"
       assert_includes by_tool.fetch("actionlint"), ".github/workflows/validate.yml"
+    end
+  end
+
+  def test_stops_when_the_metrics_baseline_increases
+    Dir.mktmpdir("lint-command-test") do |directory|
+      log = File.join(directory, "commands.jsonl")
+      install_fake_linters(directory)
+      environment = { "PATH" => "#{directory}:#{ENV.fetch('PATH')}",
+                      "LINT_TEST_LOG" => log,
+                      "LINT_TEST_RUBOCOP_RESULT" => JSON.generate(increased_metrics_result) }
+
+      stdout, stderr, status = Open3.capture3(environment, SCRIPT)
+
+      refute status.success?, stdout
+      assert_includes stderr, "new.rb Metrics/MethodLength value #1: 0 -> 12"
+      assert_equal 1, File.readlines(log).length
     end
   end
 
@@ -256,45 +334,5 @@ class LintCommandTest < Minitest::Test
 
     identity, separator, action_ref = reference.partition("@")
     separator == "@" && !action_ref.empty? && identity.casecmp?("actions/checkout")
-  end
-
-  def install_fake_linters(directory)
-    source = <<~'RUBY'
-      #!/usr/bin/env ruby
-      require "json"
-
-      tool = File.basename($PROGRAM_NAME)
-      versions = {
-        "rubocop" => "1.87.0",
-        "shellcheck" => "0.11.0",
-        "actionlint" => "1.7.12",
-        "markdownlint-cli2" => "0.23.2",
-        "yamllint" => "1.37.1"
-      }
-      if ARGV.include?("--version") || ARGV.include?("-version")
-        version = versions.fetch(tool)
-        case tool
-        when "shellcheck"
-          puts "ShellCheck - shell script analysis tool"
-          puts "version: #{version}"
-        when "markdownlint-cli2"
-          puts "markdownlint-cli2 v#{version}"
-        when "yamllint"
-          puts "yamllint #{version}"
-        else
-          puts version
-        end
-        exit
-      end
-
-      File.open(ENV.fetch("LINT_TEST_LOG"), "a") do |file|
-        file.puts(JSON.generate([tool, *ARGV]))
-      end
-    RUBY
-    %w[rubocop shellcheck actionlint markdownlint-cli2 yamllint].each do |tool|
-      path = File.join(directory, tool)
-      File.write(path, source)
-      FileUtils.chmod(0o755, path)
-    end
   end
 end
