@@ -437,8 +437,16 @@ jq -e --arg id "${STAGE_DEPENDENCY_PLAN_ID}" \
   || { echo "plan id mismatch: UNKNOWN"; exit 1; }
 
 jq '.edges[]' "${STAGE_DEPENDENCY_PLAN_PATH}"
+
+# `coordination_required` only. A `coordination_not_applicable` revert reads the
+# controller-owned local live state instead and runs no coordination command.
 agent-coord status --batch-id "${BATCH_ID}" --json
 ```
+
+Apply the applicability gate before this discovery, not after it. For
+`coordination_not_applicable`, the immutable plan file and the controller's own
+durable live record supply the edge states; make no coordination call, and do
+not treat an absent backend as missing scope.
 
 **Do not filter to `merge_order`.** `stage-dependency-plan` v1 has three edge
 types — `edit`, `validation_open`, `merge_order` — and per
