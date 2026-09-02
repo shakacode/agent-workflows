@@ -371,6 +371,38 @@ module HeavyRootAdmission
     nil
   end
 
+  def process_zombie?(pid)
+    stdout, _stderr, status = Open3.capture3(
+      { "LC_ALL" => "C", "LANG" => "C" },
+      "ps", "-o", "stat=", "-p", pid.to_s
+    )
+    return false unless status.success?
+
+    stdout.split.any? { |state| state.start_with?("Z") }
+  rescue Errno::ENOENT
+    false
+  end
+
+  def process_group_live?(pgid)
+    stdout, _stderr, status = Open3.capture3(
+      { "LC_ALL" => "C", "LANG" => "C" },
+      "ps", "-ax", "-o", "pid=", "-o", "pgid=", "-o", "stat="
+    )
+    return false unless status.success?
+
+    stdout.each_line.any? do |line|
+      _pid, group_id, stat = line.split(/\s+/, 3)
+      next false unless group_id && Integer(group_id, 10) == pgid
+
+      stat = stat.to_s.strip
+      !stat.start_with?("Z")
+    rescue ArgumentError, TypeError
+      false
+    end
+  rescue Errno::ENOENT
+    false
+  end
+
   def reused_process_identity?(expected, current)
     expected && current && current != expected
   end
@@ -379,12 +411,13 @@ module HeavyRootAdmission
     if expected_pid_start_identity
       current_identity = process_start_identity(pid)
       if reused_process_identity?(expected_pid_start_identity, current_identity)
-        return process_target_live?(-pgid)
+        return process_group_live?(pgid)
       end
+      return process_group_live?(pgid) if process_zombie?(pid)
       return true if current_identity == expected_pid_start_identity
     end
 
-    process_target_live?(pid) || process_target_live?(-pgid)
+    (process_target_live?(pid) && !process_zombie?(pid)) || process_group_live?(pgid)
   end
 
   def parse_command_argv(command_json, option_name)

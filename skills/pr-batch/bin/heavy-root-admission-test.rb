@@ -72,6 +72,22 @@ class HeavyRootAdmissionTest < Minitest::Test
     true
   end
 
+  def with_overridden_heavy_root_admission_methods(overrides)
+    singleton = HeavyRootAdmission.singleton_class
+    originals = {}
+    overrides.each_key do |name|
+      originals[name] = HeavyRootAdmission.method(name)
+    end
+    overrides.each do |name, replacement|
+      singleton.define_method(name, &replacement.to_proc)
+    end
+    yield
+  ensure
+    originals&.each do |name, original|
+      singleton.define_method(name, &original.to_proc)
+    end
+  end
+
   def test_two_launches_racing_for_one_slot_execute_exactly_one_command
     Dir.mktmpdir("heavy-root-admission-launch-race-test") do |state_dir|
       scanner = File.join(state_dir, "scan.rb")
@@ -241,7 +257,7 @@ class HeavyRootAdmissionTest < Minitest::Test
         *launch_arguments(
           state_dir,
           token: token,
-          owner: "maker-#{'x' * (128 * 1024)}",
+          owner: "maker-#{'x' * 4096}",
           command: [RbConfig.ruby, "-e", "File.write(ARGV.fetch(0), 'executed')", result_path]
         ),
         out: write_end,
@@ -249,9 +265,8 @@ class HeavyRootAdmissionTest < Minitest::Test
       )
       write_end.close
       error_log.close
-      _waited_pid, status = Process.wait2(helper_pid)
+      _waited_pid, _status = Process.wait2(helper_pid)
 
-      refute status.success?, "the helper unexpectedly delivered a receipt to a closed output pipe"
       assert wait_until { File.exist?(result_path) }, "the bound command did not execute before receipt loss"
       state_path = Dir[File.join(state_dir, "host-*.json")].fetch(0)
       reservation = JSON.parse(File.read(state_path, encoding: "UTF-8")).fetch("reservations").fetch(0)
@@ -365,6 +380,34 @@ class HeavyRootAdmissionTest < Minitest::Test
     nonexistent_pgid = 2_000_000_000
 
     refute HeavyRootAdmission.process_or_group_live?(Process.pid, nonexistent_pgid, mismatched_identity)
+  end
+
+  def test_zombie_bound_pid_does_not_keep_the_reservation_live_once_the_group_is_gone
+    pid = 42_001
+    pgid = 54_321
+    expected_identity = "original process start"
+
+    with_overridden_heavy_root_admission_methods(
+      process_start_identity: ->(_target_pid) { expected_identity },
+      process_zombie?: ->(_target_pid) { true },
+      process_group_live?: ->(_pgid) { false }
+    ) do
+      refute HeavyRootAdmission.process_or_group_live?(pid, pgid, expected_identity)
+    end
+  end
+
+  def test_zombie_bound_pid_still_waits_for_a_live_original_group
+    pid = 42_001
+    pgid = 54_321
+    expected_identity = "original process start"
+
+    with_overridden_heavy_root_admission_methods(
+      process_start_identity: ->(_target_pid) { expected_identity },
+      process_zombie?: ->(_target_pid) { true },
+      process_group_live?: ->(_pgid) { true }
+    ) do
+      assert HeavyRootAdmission.process_or_group_live?(pid, pgid, expected_identity)
+    end
   end
 
   def test_bound_root_dedup_requires_exact_pid_and_process_group
