@@ -107,10 +107,15 @@ Each review writes a separate `review-finding-v0` JSON artifact. The helper
 loads it and calls `ValidateReviewFindings.validate_document`; do not define a
 second finding format or translate findings into a private severity system.
 Set each existing finding `target` to the exact task identity plus the reviewed
-head SHA. A foreign identity or head fails closed.
+head SHA. When a canonical review receipt is present, bind its committed target
+to the round's exact base and head too. A foreign identity or range fails closed.
 The round record classifies normalized finding ids as addressed, open, or new
 consequential breakage. The current `open_findings` artifact must match the
 open records in the latest round exactly.
+An open finding keeps its source, title, body, and location when carried
+forward. Severity may only increase, and consequential classification may only
+change from false to true; reusing its id for a different observation or
+downgrading it fails closed.
 Reviewer-level `deferred` and `waived_by_maintainer` dispositions remain open
 inside this loop. Only the coordinator's evidence-backed cap adjudication can
 defer or waive them for task completion.

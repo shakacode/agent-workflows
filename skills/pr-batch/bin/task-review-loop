@@ -248,7 +248,7 @@ module TaskReviewLoop
     return [nil, "#{label}-digest-mismatch"] unless reference["digest"] == digest
 
     [bytes, nil]
-  rescue SystemCallError
+  rescue SystemCallError, ArgumentError
     [nil, "#{label}-unreadable"]
   end
 
@@ -265,9 +265,24 @@ module TaskReviewLoop
     [nil, "#{label}-invalid"]
   end
 
-  def findings_bound?(document, identity, head_sha)
+  def findings_bound?(document, identity, head_sha, base_sha)
     expected_target = identity.merge("head_sha" => head_sha)
-    document.fetch("review_findings").all? { |finding| finding["target"] == expected_target }
+    return false unless document.fetch("review_findings").all? { |finding| finding["target"] == expected_target }
+
+    receipt = document["review_receipt"]
+    return true unless receipt
+
+    target = receipt["target"]
+    target.is_a?(Hash) && target["kind"] == "committed" &&
+      target["base_sha"] == base_sha && target["head_sha"] == head_sha
+  end
+
+  def finding_lineage_valid?(prior, current)
+    stable_keys = %w[id source title body location]
+    severity_order = %w[P0 P1 P2 P3 INFO]
+    stable_keys.all? { |key| prior[key] == current[key] } &&
+      severity_order.index(current["severity"]) <= severity_order.index(prior["severity"]) &&
+      (prior["consequential"] != true || current["consequential"] == true)
   end
 
   def validate_cap_adjudication(adjudication, open_ids)
@@ -310,7 +325,12 @@ module TaskReviewLoop
     return [artifact_error] if artifact_error
 
     errors = []
-    errors << "open-findings-foreign" unless findings_bound?(document, identity, round["head_sha"])
+    errors << "open-findings-foreign" unless findings_bound?(
+      document,
+      identity,
+      round["head_sha"],
+      round["base_sha"]
+    )
     prior_document, = load_findings(round["review_findings"], "review-findings")
     if prior_document
       prior_open_records = prior_document.fetch("review_findings").select do |finding|
@@ -385,8 +405,9 @@ module TaskReviewLoop
     if package.is_a?(Hash)
       errors << "reviewer-not-independent" unless independent?(package["implementer_id"], package["reviewer_id"])
       errors << "review-package-truncated" unless package.dig("exact_diff", "truncated") == false
-      _diff, diff_error = load_artifact(package["exact_diff"], "exact-diff")
+      diff, diff_error = load_artifact(package["exact_diff"], "exact-diff")
       errors << diff_error if diff_error
+      errors << "exact-diff-empty" if diff && diff.strip.empty?
       prior_round = input["review_state"] == "complete" ? rounds[-2] : rounds[-1]
       expected_prior_digest = prior_round&.[]("digest")
       unless package["prior_round_digest"] == expected_prior_digest
@@ -451,6 +472,7 @@ module TaskReviewLoop
 
       prior_finding_ids = []
       prior_open_ids = []
+      prior_findings_by_id = {}
       rounds.each_with_index do |review_round, index|
         errors << "review-round-digest-mismatch" unless valid_record_digest?(review_round)
         findings_document, findings_error = load_findings(review_round["review_findings"], "review-findings")
@@ -460,7 +482,7 @@ module TaskReviewLoop
         end
 
         findings = findings_document.fetch("review_findings")
-        unless findings_bound?(findings_document, identity, review_round["head_sha"])
+        unless findings_bound?(findings_document, identity, review_round["head_sha"], review_round["base_sha"])
           errors << "review-findings-foreign"
         end
         derived_open_ids = findings.filter_map do |finding|
@@ -481,11 +503,19 @@ module TaskReviewLoop
         errors << "new-consequential-finding-not-new" unless (declared_new & prior_finding_ids).empty?
         unless index.zero?
           errors << "prior-open-finding-outcome-mismatch" unless (prior_open_ids - findings.map { |finding| finding["id"] }).empty?
+          prior_open_ids.each do |finding_id|
+            current = findings.find { |finding| finding["id"] == finding_id }
+            prior = prior_findings_by_id[finding_id]
+            unless current && prior && finding_lineage_valid?(prior, current)
+              errors << "prior-open-finding-lineage-mismatch"
+            end
+          end
           novel_ids = findings.map { |finding| finding["id"] } - prior_finding_ids
           errors << "unrelated-new-finding" unless novel_ids.sort == declared_new.sort
         end
         prior_finding_ids = findings.map { |finding| finding["id"] }
         prior_open_ids = derived_open_ids
+        prior_findings_by_id = findings.to_h { |finding| [finding["id"], finding] }
       end
     end
 
@@ -504,7 +534,12 @@ module TaskReviewLoop
       open_document, open_error = load_findings(input["open_findings"], "open-findings")
       errors << open_error if open_error
       if open_document && input["open_findings"].is_a?(Hash)
-        errors << "open-findings-foreign" unless findings_bound?(open_document, identity, expected_head)
+        errors << "open-findings-foreign" unless findings_bound?(
+          open_document,
+          identity,
+          expected_head,
+          round&.[]("base_sha")
+        )
         open_records = open_document.fetch("review_findings")
         actual_open_ids = open_records.map { |finding| finding["id"] }
         errors << "open-finding-ids-mismatch" unless input["open_findings"]["ids"] == actual_open_ids

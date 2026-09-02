@@ -3442,6 +3442,20 @@ pack_doc_destination_owned() {
   fi
 }
 
+pack_helper_destination_owned() {
+  local helper_name="$1"
+  local destination="$2"
+  local source_path="$repo_root/bin/$helper_name"
+
+  if [[ "$mode" = "copy" ]]; then
+    recorded_revision_managed_file_matches "bin/$helper_name" "$destination" ||
+      { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
+      managed_file_symlink_matches_recorded_source "bin/$helper_name" "$destination"
+  else
+    managed_file_symlink_matches_recorded_source "bin/$helper_name" "$destination"
+  fi
+}
+
 recorded_copy_fingerprint_matches() {
   local field="$1"
   local entry_name="$2"
@@ -3559,6 +3573,11 @@ verify_install_destinations() {
         echo "Refusing to replace non-file path: $destination" >&2
         exit 1
       fi
+      if [[ "$helper" = "validate-review-findings" && ( -e "$destination" || -L "$destination" ) ]] &&
+         ! pack_helper_destination_owned "$helper" "$destination"; then
+        echo "Refusing to replace unowned pack helper: $destination" >&2
+        exit 1
+      fi
     done
   else
     for destination in "$target/bin" "$target/skills"; do
@@ -3603,6 +3622,11 @@ verify_install_destinations() {
       destination="$target/bin/$helper"
       if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
         echo "Refusing to replace non-symlink path: $destination" >&2
+        exit 1
+      fi
+      if [[ "$helper" = "validate-review-findings" && -L "$destination" ]] &&
+         ! pack_helper_destination_owned "$helper" "$destination"; then
+        echo "Refusing to replace unowned pack helper: $destination" >&2
         exit 1
       fi
     done

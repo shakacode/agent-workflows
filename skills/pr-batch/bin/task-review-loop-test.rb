@@ -116,6 +116,27 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_flat_install_refuses_a_newly_colliding_personal_finding_validator
+    Dir.mktmpdir("task-review-loop-install") do |directory|
+      target = File.join(directory, "agent-home")
+      validator = File.join(target, "bin/validate-review-findings")
+      FileUtils.mkdir_p(File.dirname(validator))
+      File.write(validator, "personal validator\n")
+
+      _stdout, stderr, status = Open3.capture3(
+        INSTALLER,
+        "--host", "codex",
+        "--target", target,
+        "--mode", "copy",
+        "--delivery-mode", "flat"
+      )
+
+      refute status.success?
+      assert_includes stderr, "Refusing to replace unowned pack helper"
+      assert_equal "personal validator\n", File.read(validator)
+    end
+  end
+
   def test_missing_canonical_finding_validator_fails_closed_without_a_load_error
     Dir.mktmpdir("task-review-loop-pinned") do |directory|
       helper = File.join(directory, ".agents/skills/pr-batch/bin/task-review-loop")
@@ -149,6 +170,39 @@ class TaskReviewLoopTest < Minitest::Test
 
       assert_equal "blocked", output.fetch("status")
       assert_equal ["input-schema-invalid"], output.fetch("reasons")
+    end
+  end
+
+  def test_whitespace_only_exact_diff_is_rejected_as_empty
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      path = input.dig("review_package", "exact_diff", "path")
+      File.binwrite(path, " \n\t")
+      input = rebind_package(input, "exact_diff" => artifact(path).merge("truncated" => false))
+
+      output, = evaluate(input)
+
+      assert_equal "blocked", output.fetch("status")
+      assert_equal ["exact-diff-empty"], output.fetch("reasons")
+    end
+  end
+
+  def test_invalid_artifact_path_reduces_to_blocked_instead_of_crashing
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = rebind_package(
+        clean_review_input(directory),
+        "exact_diff" => {
+          "path" => "bad\0path",
+          "digest" => "sha256:#{'1' * 64}",
+          "byte_count" => 1,
+          "truncated" => false
+        }
+      )
+
+      output, = evaluate(input)
+
+      assert_equal "blocked", output.fetch("status")
+      assert_equal ["exact-diff-unreadable"], output.fetch("reasons")
     end
   end
 
@@ -423,6 +477,71 @@ class TaskReviewLoopTest < Minitest::Test
       assert_equal "fix_required", output.fetch("status")
       refute output.fetch("dependent_task_permitted")
       assert_equal ["open-findings-require-fix"], output.fetch("reasons")
+    end
+  end
+
+  def test_re_review_cannot_reuse_an_open_finding_id_for_different_content
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = consequential_breakage_input(directory)
+      replacement = finding("finding-1", disposition: "accepted_fixed")
+      replacement["title"] = "Different observation"
+      replacement["body"] = "This is not the original finding."
+      path = write_findings(directory, "finding-id-collision.json", [replacement])
+      reference = artifact(path)
+      rounds = input.fetch("rounds").dup
+      rounds[-1] = with_digest(
+        rounds.last.merge(
+          "review_findings" => reference,
+          "addressed_finding_ids" => ["finding-1"],
+          "open_finding_ids" => [],
+          "new_consequential_finding_ids" => []
+        ).reject { |key, _value| key == "digest" }
+      )
+      package = with_digest(
+        input.fetch("review_package").merge("prior_round_digest" => rounds.first.fetch("digest"))
+             .reject { |key, _value| key == "digest" }
+      )
+      rounds[-1] = with_digest(
+        rounds.last.merge("package_digest" => package.fetch("digest")).reject { |key, _value| key == "digest" }
+      )
+      empty_path = write_findings(directory, "empty-open-findings.json", [])
+
+      output, = evaluate(
+        input.merge(
+          "review_package" => package,
+          "rounds" => rounds,
+          "open_findings" => artifact(empty_path).merge("ids" => []),
+          "finding_controls" => []
+        )
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "prior-open-finding-lineage-mismatch"
+    end
+  end
+
+  def test_review_receipt_must_bind_the_round_base_and_head
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      document = {
+        "schema" => "review-finding-v0",
+        "review_receipt" => review_receipt(head_sha: OTHER_HEAD_SHA),
+        "review_findings" => []
+      }
+      path = File.join(directory, "foreign-receipt.json")
+      File.write(path, JSON.generate(document))
+      reference = artifact(path)
+      round = with_digest(
+        input.fetch("rounds").first.merge("review_findings" => reference)
+             .reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(
+        input.merge("rounds" => [round], "open_findings" => reference.merge("ids" => []))
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-findings-foreign"
     end
   end
 
@@ -988,7 +1107,16 @@ class TaskReviewLoopTest < Minitest::Test
   end
 
   def cap_with_p0(input, directory)
-    p0 = finding("finding-2", severity: "P0")
+    p0 = finding(
+      "finding-2",
+      severity: "P0",
+      consequential: true,
+      independent_validation: {
+        "status" => "confirmed",
+        "validator" => "reviewer-b",
+        "evidence" => ["fix-diff://finding-2"]
+      }
+    )
     path = write_findings(directory, "cap-p0-findings.json", [p0])
     reference = artifact(path)
     rounds = input.fetch("rounds").dup
@@ -1041,6 +1169,26 @@ class TaskReviewLoopTest < Minitest::Test
     }
     record["independent_validation"] = independent_validation if independent_validation
     record
+  end
+
+  def review_receipt(head_sha: HEAD_SHA, base_sha: BASE_SHA)
+    {
+      "source" => "adversarial-pr-review",
+      "target" => {
+        "kind" => "committed",
+        "base_ref" => "origin/main",
+        "base_sha" => base_sha,
+        "head_sha" => head_sha
+      },
+      "provenance" => { "engine" => "test", "invocation" => "test" },
+      "risk_lenses" => [{ "name" => "correctness", "status" => "applied", "reason" => "test" }],
+      "coverage" => {
+        "status" => "complete",
+        "included_paths" => ["lib/task-review.rb"],
+        "excluded_paths" => [],
+        "limitations" => []
+      }
+    }
   end
 
   def rebind_package(input, changes)
