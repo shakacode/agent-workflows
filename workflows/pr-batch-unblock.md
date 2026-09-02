@@ -27,7 +27,7 @@ Unblock:
 Rules:
 
 - One numbered entry per exact blocker in the same normalized blocker union rendered in the `Conversation status` line. Never drop a blocker, never add one that is missing from that union, and never merge two blockers into one entry.
-- Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order. Mark every entry whose position differs from its status-line position with `(reordered)` after the owner tag, so a skimming operator reads the divergence as deliberate rather than as a mismatch.
+- Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order. Mark the entry you promoted ahead of status-line order with `(reordered)` after the owner tag, so a skimming operator reads the deliberate promotion rather than a mismatch.
 - `[you]` means the operator must act before anything else moves, including any manual resume prompt they have to paste after a runner restart. `[agent]` means this thread resumes on its own through a real trigger — name it, such as the 15-minute monitor wake or the bounded watch window. Never tag work `[agent]` when it cannot continue without the operator; manual resume instructions are always `[you]`. `[external]` means a check, bot, or third party is being waited on — name it, name the condition that clears it, and say plainly that no operator action is required.
 - Each entry is the smallest next step, not the remaining plan. A `[you]` action is executable as written: an exact shell command, prompt, URL, or question. An `[agent]` entry names the exact trigger and clearing condition. An `[external]` entry gives the exact wait instruction and clearing condition and says no operator action is required.
 - Each `Help:` line offers one genuinely different route to clearing that same blocker — waive, rerun, reassign, cancel the lane or batch, escalate to a named owner, or the exact skill or workflow section that performs it — or exactly `none — <reason>` when no alternative exists. Do not restate the primary action as its own help.
@@ -37,14 +37,13 @@ Rules:
 
 Worked example. The status line renders PR #124 first, but answering PR #123 with
 `migrate` forces a re-push that restarts PR #124's checks, so the operator-owned
-entry leads instead. Both positions differ from the status-line order, so both
-entries carry `(reordered)`:
+entry leads instead. Only the promoted entry carries `(reordered)`:
 
 ```text
 Unblock:
 1. [you] (reordered) Answer the storage-format question on PR #123 — https://github.com/OWNER/REPO/pull/123#discussion_r1 — reply `keep` or `migrate`
    Help: reply `defer` to record it as an accepted-deferral against PR #123 and keep that lane open on its existing PR; the question moves to a follow-up instead of blocking this batch.
-2. [external] (reordered) Wait for hosted CI `build` on PR #124 — it clears when the queued run finishes; no action needed from you
+2. [external] Wait for hosted CI `build` on PR #124 — it clears when the queued run finishes; no action needed from you
    Help: if it is still queued at the next monitor wake, cancel, wait for cancellation to complete, and retrigger with `gh run cancel --repo OWNER/REPO <run-id>` then `gh run watch --repo OWNER/REPO <run-id>` then `gh run rerun --repo OWNER/REPO <run-id>`; do not add `--exit-status` because cancellation is the expected conclusion, and `--failed` does not apply while a run is queued.
 Conversation status: Follow-ups remain — PR #124 (pending): hosted CI `build`; PR #123 (open): answer storage-format question.
 ```
