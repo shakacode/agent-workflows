@@ -44,9 +44,6 @@ module AgentRunRecord
   # stat followed by a name-based read leaves a window in which the checked file can be
   # swapped for a symlink, so `O_NOFOLLOW` refuses a symlink in `open` itself.
   IDENTITY_READ_FLAGS = File::RDONLY | (File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : 0)
-  IDENTITY_SYMLINK_ERRORS = %i[ELOOP EMLINK]
-                            .filter_map { |name| Errno.const_get(name) if Errno.const_defined?(name) }
-                            .uniq.freeze
 
   module_function
 
@@ -972,7 +969,8 @@ module AgentRunRecord
     end
     object!(identity, "launch identity")
     identity
-  rescue *IDENTITY_SYMLINK_ERRORS
+  rescue Errno::ELOOP, Errno::EMLINK
+    # O_NOFOLLOW reports a symlink at the identity path as ELOOP (EMLINK on some BSDs).
     raise ContractError, "#{error_prefix}: launch identity must be a regular file"
   rescue JSON::ParserError, SystemCallError => e
     raise ContractError, "#{error_prefix}: #{e.message}"
