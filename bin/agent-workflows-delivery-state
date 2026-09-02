@@ -652,8 +652,12 @@ module AgentWorkflowsDeliveryState
   def managed_bin_directory_conflict(path)
     return "a symlink" if File.symlink?(path)
     return nil unless File.exist?(path)
+    return "not a directory" unless File.directory?(path)
 
-    File.directory?(path) ? nil : "not a directory"
+    # Ruby's file predicates swallow EACCES and answer false, so a directory
+    # without read and search permission would silently make everything beneath
+    # it look absent rather than unreadable.
+    File.readable?(path) && File.executable?(path) ? nil : "not readable"
   end
 
   def managed_bin_ancestor_conflict(bin_root, name)

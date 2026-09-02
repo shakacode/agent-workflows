@@ -2301,6 +2301,30 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_unreadable_managed_bin_root_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      bin_root = File.join(target, "bin")
+      skip "unreadable-directory probe requires an unprivileged user" if Process.euid.zero?
+
+      # Without search permission every predicate below this directory answers
+      # false, which would otherwise read as an install with nothing present.
+      FileUtils.chmod(0o600, bin_root)
+
+      begin
+        payload, status, output = check_managed_bin(target, source)
+
+        refute status.success?, output
+        assert_equal "ambiguous", payload.dig("bin", "state")
+        assert_equal [bin_root], payload.dig("bin", "blocking")
+        assert_includes payload.fetch("reason"), "not readable"
+      ensure
+        FileUtils.chmod(0o755, bin_root)
+      end
+    end
+  end
+
   def test_plain_file_managed_bin_root_blocks_the_delivery_check
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)

@@ -481,8 +481,10 @@ already equals the current source, and the report says the same. A managed docto
 fingerprint: matching the current source is not enough there, because the
 marker still attests the recorded contents. Because `rsync --delete` owns the whole `<target>/bin/agent_doctor` tree,
 an unrecorded entry there is reported as well, matching the refusal the
-installer's ownership marker already raises; the two ownership markers
-themselves are never recorded and never block. A missing top-level helper stays
+installer's ownership marker already raises. The two ownership markers are
+never recorded as managed copies, so they are never reported as unexpected
+entries, but a marker that is corrupted or replaced by a symlink or a directory
+does block, because the installer refuses that install. A missing top-level helper stays
 non-blocking because the installer simply rewrites it, but a missing module
 inside a partly populated `<target>/bin/agent_doctor` is reported: the
 installer's ownership marker verifies that tree as a whole and refuses an
