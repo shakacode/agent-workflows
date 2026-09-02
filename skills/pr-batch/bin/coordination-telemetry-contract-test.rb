@@ -137,7 +137,7 @@ REGISTRATION_BOUNDED_FRAGMENTS = [
   "does not block worker launch"
 ].freeze
 TERMINAL_CLOSEOUT_MISMATCH_RECOVERY_RULE =
-  "If terminal closeout does not match exactly one lane in batch <id> because the claim/release " \
+  "If `terminal closeout does not match exactly one lane in batch <id>` because the claim/release " \
   "target string differs from the registered manifest lane, immediately route to the ordinary " \
   "claim-only release fallback/recovery and re-register or retry with the exact same string."
 REGISTRATION_NO_SHELL_MARKER = "without shell evaluation"
