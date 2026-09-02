@@ -493,7 +493,12 @@ digests entirely on `CHECK_FAILED`, and for a target reached through a symlinked
 ancestor, since `O_NOFOLLOW` guards only the final path component and a
 redirected home could otherwise supply the expected value. Point `--target` at
 the real agent home; a symlinked home still reports version and upgrade state
-normally, it just publishes no digest. Reading the file directly with `jq`, `cat`,
+normally, it just publishes no digest. These guards assume the agent home itself
+is trusted: nothing this helper can do survives an attacker who rewrites the home
+or its ancestry while a batch runs, because the coordinator goes on to execute
+the pack's helpers from that same path. Bind the pack directory once, outside the
+evaluated repository, before launching any gate, as the closeout workflow
+requires. Reading the file directly with `jq`, `cat`,
 or any ordinary tool follows a planted symlink and can hand the gate an expected
 digest chosen by whoever planted it, which is exactly the trust the claim is
 supposed to carry. Do not put the helper in a pipeline under `set -o pipefail`
