@@ -282,8 +282,8 @@ class IntegrationCloseoutContractTest < Minitest::Test
     normalized_gate = ask_gate.gsub(/\s+/, " ")
     normalized_monitoring = @pr_monitoring.gsub(/\s+/, " ")
     normalized_walkthrough = @pr_walkthrough.gsub(/\s+/, " ")
-    prompt_gate = "- ask:I=head>=base+V=READY;I?$pr-walkthrough(large|complex=full):wait;" \
-                  "refresh;chg=>redo/stop;ordinary|I fail=>stop;ask iff same clean"
+    prompt_gate = "- ask:A=head>=base;V=READY;A?(V?$pr-walkthrough(large|complex=full):wait):int;" \
+                  "refresh;chg=>redo/stop;ordinary|!A|!V=>stop;ask iff same clean"
     ancestry_command = 'git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
 
     positions = [
@@ -390,8 +390,9 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes normalized_gate, "No banner when both pass."
     assert_includes ask_gate, 'git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}"'
     assert_includes normalized_gate,
-                    "re-run the ancestry command immediately before starting the walkthrough"
-    assert_operator normalized_gate.index("re-run the ancestry command immediately before starting"), :<,
+                    "Immediately before starting the walkthrough, re-fetch and re-resolve the live base"
+    assert_includes normalized_gate, "into a fresh `TRUSTED_BASE_SHA`, then re-run the ancestry check"
+    assert_operator normalized_gate.index("Immediately before starting the walkthrough, re-fetch"), :<,
                     normalized_gate.index("automatically start the exact-diff PR walkthrough")
 
     behind_base_position = normalized_gate.index("PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY.")

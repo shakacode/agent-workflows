@@ -32,9 +32,12 @@ base and that exact-head CI has the readiness contract's normalized successful
 state (`READY` for `pr-ci-readiness` v2). Raw provider conclusions are not
 portable success values. Unknown or future values fail closed.
 
-If either condition is missing, stale, non-reusable, mismatched, or not
-successful, keep the target in `waiting-on-checks-or-review` and do not start an
-ask-authority walkthrough, leading with the current-integration warning instead.
+A proven-behind ancestry result routes to `pr-batch-integration-closeout.md`'s
+Integration And PR Publication step 3 for base reconciliation instead of
+waiting — that state never clears through polling. If CI alone is missing,
+stale, non-reusable, mismatched, or not successful, keep the target in
+`waiting-on-checks-or-review` and do not start an ask-authority walkthrough,
+leading with the current-integration warning instead.
 A standalone read-only walkthrough may still explain the diff, but it never
 evaluates this checklist itself, so it reports current-integration readiness as
 not evaluated (`UNKNOWN`) rather than reusing that warning or any merge
