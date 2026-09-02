@@ -81,7 +81,7 @@ class HelpRequestLifecycleTest < Minitest::Test
       }
     )
 
-    result, stderr, status = run_lifecycle(input: input.path)
+    result, stderr, status = run_lifecycle(input: input.path, lane: "review")
 
     assert_predicate status, :success?, stderr
     request = result.fetch("requests").find do |item|
@@ -90,6 +90,28 @@ class HelpRequestLifecycleTest < Minitest::Test
     assert_equal "resolved", request.fetch("state")
     assert_equal "resolution-1", request.fetch("resolution_event_id")
     refute_equal "20260823T054818.000000Z-help4846", result["blocking_request_id"]
+  ensure
+    input&.close!
+  end
+
+  def test_resolution_event_only_requires_the_documented_request_id_evidence
+    input = replay_with(
+      {
+        "event_id" => "resolution-1",
+        "type" => "help_request.resolved",
+        "at" => "2026-08-23T05:50:00Z",
+        "evidence" => "20260823T054818.000000Z-help4846"
+      }
+    )
+
+    result, stderr, status = run_lifecycle(input: input.path, lane: "review")
+
+    assert_predicate status, :success?, stderr
+    request = result.fetch("requests").find do |item|
+      item.fetch("request_id") == "20260823T054818.000000Z-help4846"
+    end
+    assert_equal "resolved", request.fetch("state")
+    assert_equal "resolution-1", request.fetch("resolution_event_id")
   ensure
     input&.close!
   end

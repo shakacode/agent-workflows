@@ -377,7 +377,7 @@ items = requests.map do |request|
   heartbeat = holder && heartbeats.find { |candidate| candidate.is_a?(Hash) && candidate["agent_id"] == holder }
   batch_id = request[:batch_id] || present_string(claim["batch_id"])
   lane = request[:lane] || present_string(claim["lane"])
-  lifecycle = nil
+  lifecycle = { "status" => UNKNOWN, "error" => "batch id unavailable for target-scoped replay" }
   if batch_id
     unless batch_payloads.key?(batch_id)
       batch_payload, batch_error = run_json(
@@ -408,8 +408,8 @@ items = requests.map do |request|
                 else
                   { "status" => UNKNOWN, "error" => "lane unavailable for target-scoped replay" }
                 end
-    unknowns << "help-request lifecycle: #{lifecycle['error']}" if lifecycle["status"] == UNKNOWN
   end
+  unknowns << "help-request lifecycle: #{lifecycle['error']}" if lifecycle["status"] == UNKNOWN
   record = holder ? (heartbeat || claim) : {}
   runner = runner_for(record)
   machine_id = present_string(record["machine_id"]) || UNKNOWN
@@ -444,7 +444,7 @@ items = requests.map do |request|
     "codex_deep_link" => deep_link,
     "codex_deep_link_machine_id" => deep_link == UNKNOWN ? UNKNOWN : machine_id,
     "heartbeat" => heartbeat || UNKNOWN,
-    "help_request_lifecycle" => lifecycle || UNKNOWN,
+    "help_request_lifecycle" => lifecycle,
     "github_state" => github&.fetch("state", UNKNOWN) || UNKNOWN,
     "unknowns" => unknowns
   }

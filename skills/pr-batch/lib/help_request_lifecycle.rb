@@ -22,7 +22,6 @@ module HelpRequestLifecycle
     terminal_events = []
 
     events = ordered_events(payload.fetch("events"))
-    events = events.select { |event| event["lane"] == lane } if lane
     events.each do |event|
       event_id = required_string(event, "event_id")
 
@@ -38,7 +37,13 @@ module HelpRequestLifecycle
       end
     end
 
-    request_rows = requests.values.sort_by { |request| [request.fetch("requested_at"), request.fetch("request_id")] }
+    request_rows = requests.values
+    request_rows = request_rows.select { |request| request["lane"] == lane } if lane
+    request_rows.sort_by! { |request| [request.fetch("requested_at"), request.fetch("request_id")] }
+    if lane
+      request_ids = request_rows.to_h { |request| [request.fetch("request_id"), true] }
+      prohibited_transitions.select! { |transition| request_ids.key?(transition.fetch("request_id")) }
+    end
     request_rows.each { |request| add_age!(request, now) }
     blocking_request = request_rows.find { |request| blocking_permission_request?(request) }
     overdue = blocking_request && blocking_request.fetch("age_seconds") >= max_open_seconds
@@ -109,9 +114,6 @@ module HelpRequestLifecycle
     request_id = required_string(event, "evidence")
     request = requests[request_id]
     raise InputError, "resolution #{resolution_event_id} references unknown request #{request_id}" unless request
-    unless request.fetch("scope_key") == request_scope_key(event)
-      raise InputError, "resolution #{resolution_event_id} does not match request #{request_id} lane"
-    end
 
     resolved_state = RESOLUTION_TYPES.fetch(event.fetch("type"))
     return if request["state"] == resolved_state

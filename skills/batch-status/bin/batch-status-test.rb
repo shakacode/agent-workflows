@@ -45,6 +45,9 @@ class BatchStatusTest < Minitest::Test
       assert_equal "019feb28-f6a7-7e53-992e-09fa93633f10", row.fetch("thread_id")
       assert_equal "codex://threads/019feb28-f6a7-7e53-992e-09fa93633f10", row.fetch("codex_deep_link")
       assert_equal "kona", row.fetch("codex_deep_link_machine_id")
+      lifecycle = row.fetch("help_request_lifecycle")
+      assert_equal "UNKNOWN", lifecycle.fetch("status")
+      assert_includes lifecycle.fetch("error"), "batch id unavailable"
     end
   end
 
