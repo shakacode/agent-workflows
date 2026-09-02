@@ -115,6 +115,10 @@ echo "== execution provenance schema =="
 ruby bin/validate-execution-provenance-test.rb
 ruby bin/validate-execution-provenance
 
+echo "== routing doc links =="
+ruby bin/validate-doc-links-test.rb
+ruby bin/validate-doc-links
+
 echo "== installer and stack suites (contain source-revision tests) =="
 if ((skipped_cleanliness_dependent_suites)); then
   echo "SKIP: installer and stack suites that contain source-revision tests (skills/ working tree is dirty)" >&2
@@ -153,6 +157,7 @@ bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
 ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/batch-status/bin/batch-status-test.rb
+ruby skills/pr-batch/bin/target-membership-guard-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
 ruby skills/pr-batch/bin/security-floor-contract-test.rb
 ruby skills/pr-batch/bin/writing-style-contract-test.rb
