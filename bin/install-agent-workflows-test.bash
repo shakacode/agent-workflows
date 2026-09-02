@@ -423,6 +423,56 @@ test_status_and_installer_agree_on_doctor_marker_states() {
   done
 }
 
+test_installed_status_does_not_execute_a_modified_doctor_module() {
+  local tmp source target sentinel output status module_path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  sentinel="$tmp/executed"
+  module_path="$target/bin/agent_doctor/install_ownership.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+
+  # The helper verifies the doctor tree using this module, so a syntactically
+  # valid edit must be reported rather than run by the check that audits it.
+  printf '\nFile.write(%s, "executed\\n")\n' "\"$sentinel\"" >> "$module_path"
+
+  set +e
+  output="$("$target/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 3 ]] || fail "installed status exited $status for a modified ownership module: $output"
+  assert_contains "$output" "$module_path"
+  [[ ! -e "$sentinel" ]] || fail "the integrity check executed the module it was verifying"
+}
+
+test_stack_owned_doctor_tree_restores_a_missing_module() {
+  local tmp source target output status module_path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  module_path="$target/bin/agent_doctor/renderer.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  rm -f "$target/bin/agent_doctor/.agent-workflows-managed"
+  printf 'agent-stack-module-v1:agent_doctor\n' > "$target/bin/agent_doctor/.agent-stack-managed"
+  rm -f "$module_path"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "status blocked a stack-owned tree the installer accepts: $output"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  assert_file "$module_path"
+}
+
 test_installed_status_reports_a_removed_doctor_module_it_depends_on() {
   local tmp source target output status module_name module_path
   tmp="$(mktemp -d)"
@@ -9143,6 +9193,8 @@ main() {
     test_claude_host_install_uses_claude_home_when_target_is_omitted
     test_companion_upgrade_accepts_a_changed_doctor_module
     test_status_and_installer_agree_on_doctor_marker_states
+    test_installed_status_does_not_execute_a_modified_doctor_module
+    test_stack_owned_doctor_tree_restores_a_missing_module
     test_installed_status_reports_a_removed_doctor_module_it_depends_on
     test_fresh_copy_install_reports_up_to_date_from_recorded_fingerprints
     test_copy_install_refuses_a_mode_only_managed_doctor_module_change

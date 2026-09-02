@@ -2227,6 +2227,41 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_stack_owned_tree_restores_a_missing_doctor_module
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # No workflows marker, a valid stack marker: the installer accepts this
+      # tree on the marker line alone and rsync restores the missing module.
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "agent-stack-module-v1:agent_doctor\n")
+      FileUtils.rm_f(File.join(doctor_root, "renderer.rb"))
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+      assert_includes payload.dig("bin", "missing"), "agent_doctor/renderer.rb"
+    end
+  end
+
+  def test_missing_module_still_blocks_a_workflows_attested_tree
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      deleted = File.join(doctor_root, "renderer.rb")
+      FileUtils.rm_f(deleted)
+      # A stack marker that does not carry the module line earns nothing.
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "not the stack module line\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_includes payload.dig("bin", "blocking"), deleted
+    end
+  end
+
   def test_valid_doctor_ownership_marker_stays_compatible
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)

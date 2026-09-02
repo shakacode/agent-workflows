@@ -17,6 +17,7 @@ module AgentWorkflowsDeliveryState
   MANAGED_DOCTOR_MARKER = ".agent-workflows-managed"
   MANAGED_DOCTOR_STACK_MARKER = ".agent-stack-managed"
   MANAGED_DOCTOR_STACK_MARKER_LINE = "agent-stack-module-v1:agent_doctor"
+  MANAGED_DOCTOR_OWNERSHIP_MODULE = "agent_doctor/install_ownership.rb"
   # Top-level helpers land through `install -m 0755` whatever the source mode.
   MANAGED_HELPER_INSTALL_MODE = 0o755
 
@@ -697,14 +698,14 @@ module AgentWorkflowsDeliveryState
   # is what separates the installer's own post-rsync verification, which rewrites
   # the marker over the new bytes, from a module hand-copied to newer source
   # content whose marker still attests the recorded contents.
-  def managed_doctor_tree_attested?(bin_root)
+  def managed_doctor_tree_attested?(bin_root, fingerprints)
     doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
     return false unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
 
     marker = File.join(doctor_root, MANAGED_DOCTOR_MARKER)
     return false if File.symlink?(marker) || !File.file?(marker)
 
-    ownership = doctor_install_ownership
+    ownership = doctor_install_ownership(bin_root, fingerprints)
     return false unless ownership
 
     ownership.verify(doctor_root, marker)
@@ -744,14 +745,39 @@ module AgentWorkflowsDeliveryState
   # shape or no longer attests the tree. Report the same conflict, but only when
   # nothing else already names one, so the marker never adds noise to a conflict
   # that is already reported against the file that caused it.
-  # install_ownership.rb is itself a fingerprinted managed copy, so requiring it
-  # eagerly would raise before the inventory could report it missing or broken.
-  # When it cannot load, the inventory has already named that file.
-  def doctor_install_ownership
+  # install_ownership.rb is itself a fingerprinted managed copy, so it is both
+  # the tool this check verifies with and one of the artifacts it verifies.
+  # Requiring it eagerly would raise before the inventory could report it, and
+  # requiring a modified copy would execute it. Check its own recorded
+  # fingerprint first; when that fails the inventory names it as unowned.
+  #
+  # This narrows, and cannot close, executing unaudited managed code: this
+  # script is a fingerprinted copy too, and the host loads it before any
+  # verification runs. Auditing from outside the installed tree is the only
+  # thing that would close it.
+  def doctor_install_ownership(bin_root, fingerprints)
+    loaded = File.join(__dir__, MANAGED_DOCTOR_OWNERSHIP_MODULE)
+    # Guard only when the module `require_relative` would load is the same file
+    # the map records, which is the case when this script is the installed copy.
+    # Compare identity rather than paths: a target reached through a symlinked
+    # ancestor, such as macOS /var, spells the same file two ways.
+    if same_file?(loaded, File.join(bin_root, MANAGED_DOCTOR_OWNERSHIP_MODULE))
+      digest = fingerprints[MANAGED_DOCTOR_OWNERSHIP_MODULE]
+      return nil unless digest.is_a?(String) && managed_path_fingerprint(loaded) == digest.downcase
+    end
+
     require_relative "agent_doctor/install_ownership"
     AgentDoctor::InstallOwnership
   rescue LoadError, SyntaxError, StandardError
     nil
+  end
+
+  def same_file?(left, right)
+    left_stat = File.stat(left)
+    right_stat = File.stat(right)
+    left_stat.dev == right_stat.dev && left_stat.ino == right_stat.ino
+  rescue SystemCallError
+    false
   end
 
   def managed_doctor_marker_conflict(bin_root, source, fingerprints)
@@ -771,7 +797,7 @@ module AgentWorkflowsDeliveryState
     return marker if managed_marker_shape_conflict?(marker)
     return stack_marker if managed_marker_shape_conflict?(stack_marker)
 
-    ownership = doctor_install_ownership
+    ownership = doctor_install_ownership(bin_root, fingerprints)
     return doctor_root unless ownership
 
     return ownership.verify(doctor_root, marker) ? nil : marker if File.file?(marker)
@@ -791,6 +817,18 @@ module AgentWorkflowsDeliveryState
 
   def empty_managed_directory?(path)
     File.directory?(path) && !File.symlink?(path) && Dir.empty?(path)
+  rescue SystemCallError
+    false
+  end
+
+  def stack_owned_managed_doctor_tree?(doctor_root)
+    marker = File.join(doctor_root, MANAGED_DOCTOR_MARKER)
+    return false if File.symlink?(marker) || File.exist?(marker)
+
+    stack_marker = File.join(doctor_root, MANAGED_DOCTOR_STACK_MARKER)
+    return false if File.symlink?(stack_marker) || !File.file?(stack_marker)
+
+    File.readlines(stack_marker, chomp: true).include?(MANAGED_DOCTOR_STACK_MARKER_LINE)
   rescue SystemCallError
     false
   end
@@ -816,6 +854,9 @@ module AgentWorkflowsDeliveryState
     doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
     return [] unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
     return [] if Dir.empty?(doctor_root)
+    # A stack-owned tree is accepted on its marker line alone and restored by
+    # rsync, so a missing module there is not the unrestorable case.
+    return [] if stack_owned_managed_doctor_tree?(doctor_root)
 
     names.map { |name| File.join(bin_root, name) }
   rescue SystemCallError
@@ -898,7 +939,7 @@ module AgentWorkflowsDeliveryState
       }
     end
 
-    doctor_attested = manages_doctor_tree && managed_doctor_tree_attested?(bin_root)
+    doctor_attested = manages_doctor_tree && managed_doctor_tree_attested?(bin_root, fingerprints)
     present = []
     missing = []
     unowned_paths = []
