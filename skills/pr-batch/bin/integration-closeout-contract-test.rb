@@ -366,12 +366,14 @@ class IntegrationCloseoutContractTest < Minitest::Test
 
     assert_includes normalized_gate, "PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY."
     assert_includes normalized_gate, "Trust ancestry's exit `1` only on a full, non-shallow checkout"
-    assert_includes normalized_gate, "a shallow graph or any other nonzero exit is `UNKNOWN`, not proven behind-base"
     assert_includes normalized_gate,
-                    "When ancestry is proven behind, lead with **PR IS BEHIND THE CURRENT BASE"
+                    "any other nonzero exit is `UNKNOWN` per the missing-facts rule above, regardless of CI"
+    assert_includes normalized_gate, "Emit a banner only on failure: proven-behind ancestry"
+    assert_includes normalized_gate, "leads with **PR IS BEHIND THE CURRENT BASE"
     assert_includes normalized_gate, "adding **AND CI FAILED** if CI `verdict` also fails"
-    assert_includes normalized_gate, "Otherwise lead with **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED"
+    assert_includes normalized_gate, "clean ancestry with CI `verdict` not `READY` leads with"
     assert_includes normalized_gate, "CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT MERGE-READY."
+    assert_includes normalized_gate, "No banner when both pass."
 
     behind_base_position = normalized_gate.index("PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY.")
     ci_banner_position = normalized_gate.index("CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE")

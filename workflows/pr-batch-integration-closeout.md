@@ -1581,8 +1581,8 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 ### Ask Merge Authority Walkthrough Gate
 
 Before entering this gate, establish current-integration readiness from trusted
-live facts. Resolve the exact head and current base. Require that the exact head
-contains the current base by requiring this command to exit zero:
+live facts: require that the exact head contains the current base by
+requiring this command to exit zero:
 
 ```bash
 git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"
@@ -1591,7 +1591,7 @@ git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"
 Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh here; do not
 introduce a second, differently-named pair for the identical base/head facts.
 
-Also require the exact-head `pr-ci-readiness` v2 normalized successful state:
+Require the exact-head `pr-ci-readiness` v2 normalized successful state:
 its aggregate `verdict` equal to `READY`, not an individual scope's `state` —
 a scope can report `state: READY` while the top-level `verdict` is
 `NOT_READY` or `UNKNOWN`.
@@ -1602,12 +1602,12 @@ machine `current-integration-evidence` here. Missing, stale, mismatched,
 non-successful, unrecognized, future, or `UNKNOWN` facts keep the target in
 `waiting-on-checks-or-review` and do not start the walkthrough. Trust
 ancestry's exit `1` only on a full, non-shallow checkout; a shallow graph or
-any other nonzero exit is `UNKNOWN`, not proven behind-base. When ancestry is
-proven behind, lead with **PR IS BEHIND THE CURRENT BASE — NOT
-MERGE-READY.**, adding **AND CI FAILED** if CI `verdict` also fails.
-Otherwise lead with **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED
-SUCCESSFUL STATE — NOT MERGE-READY.** GitHub's conflict or mergeability
-status is not CI evidence.
+any other nonzero exit is `UNKNOWN` per the missing-facts rule above,
+regardless of CI. Emit a banner only on failure: proven-behind ancestry
+leads with **PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY.**, adding
+**AND CI FAILED** if CI `verdict` also fails; clean ancestry with CI
+`verdict` not `READY` leads with **CURRENT-INTEGRATION CI IS NOT IN A
+NORMALIZED SUCCESSFUL STATE — NOT MERGE-READY.** No banner when both pass.
 
 Compact goals encode that checklist inline as `head>=base+CI=READY`; every
 other result waits without a walkthrough.
