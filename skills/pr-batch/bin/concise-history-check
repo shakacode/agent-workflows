@@ -31,6 +31,8 @@ module ConciseHistoryCheck
   ].freeze
   PR_ONLY_COMMIT_ARTIFACTS = ([AGENT_DETAILS_OPEN] + PR_EVIDENCE_ARTIFACTS).freeze
   TERMINAL_REPLAY_VERDICTS = %w[SATISFIED WAIVED NOT_APPLICABLE].freeze
+  TRAILER_LINE = /\A(?<token>[A-Za-z0-9][A-Za-z0-9-]*):[ \t]+\S/
+  FENCE_OPEN = /\A {0,3}(?<fence>`{3,}|~{3,})/
 
   def run(argv)
     options = parse_options(argv)
@@ -103,7 +105,7 @@ module ConciseHistoryCheck
                     end
     message_lines = commit_message.lines.map(&:strip)
     subject = message_lines.first.to_s
-    rationale = message_lines.drop(1).reject do |line|
+    rationale = without_terminal_metadata_trailers(message_lines).drop(1).reject do |line|
       line.empty? || options[:issue_linkage].include?(line) ||
         options[:provenance_trailers].any? { |name| line.match?(/\A#{Regexp.escape(name)}:[ \t]+\S/) }
     end
@@ -142,6 +144,20 @@ module ConciseHistoryCheck
     }
   end
 
+  def without_terminal_metadata_trailers(message_lines)
+    trailer_start = message_lines.length
+    index = message_lines.rindex { |line| !line.empty? }
+    while index&.positive?
+      trailer = message_lines[index].match(TRAILER_LINE)
+      break unless trailer
+      break if trailer[:token].casecmp?("Reason")
+
+      trailer_start = index
+      index -= 1
+    end
+    message_lines.take(trailer_start)
+  end
+
   def diff_stats(diff)
     {
       "files" => diff.lines.count { |line| line.start_with?("diff --git ") },
@@ -152,13 +168,16 @@ module ConciseHistoryCheck
 
   def agent_details(pr_body)
     errors = []
-    errors << "PR body must contain exactly one canonical Agent details disclosure" unless pr_body.scan(AGENT_DETAILS_OPEN).length == 1
+    structural_body = structural_markdown(pr_body)
+    unless structural_body.scan(AGENT_DETAILS_OPEN).length == 1
+      errors << "PR body must contain exactly one canonical Agent details disclosure"
+    end
     return [nil, errors] unless errors.empty?
 
-    start = pr_body.index(AGENT_DETAILS_OPEN)
+    start = structural_body.index(AGENT_DETAILS_OPEN)
     depth = 0
     finish = nil
-    pr_body.to_enum(:scan, %r{</?details(?:\s[^>]*)?>}).each do
+    structural_body.to_enum(:scan, %r{</?details(?:\s[^>]*)?>}).each do
       tag = Regexp.last_match
       next if tag.begin(0) < start
 
@@ -171,6 +190,44 @@ module ConciseHistoryCheck
     return [nil, errors << "Agent details disclosure must close after it opens"] unless finish
 
     [pr_body[start...finish], errors]
+  end
+
+  def structural_markdown(markdown)
+    fence = nil
+    in_comment = false
+    markdown.each_line.map do |line|
+      if fence
+        closing_fence = /\A {0,3}#{Regexp.escape(fence[0])}{#{fence.length},}[ \t]*(?:\r?\n)?\z/
+        fence = nil if line.match?(closing_fence)
+        line.gsub(/[^\r\n]/, " ")
+      elsif !in_comment && (opening = line.match(FENCE_OPEN))
+        fence = opening[:fence]
+        line.gsub(/[^\r\n]/, " ")
+      else
+        characters = line.chars
+        index = 0
+        while index < characters.length
+          marker_length = if in_comment && characters[index, 3].join == "-->"
+                            in_comment = false
+                            3
+                          elsif !in_comment && characters[index, 4].join == "<!--"
+                            in_comment = true
+                            4
+                          elsif in_comment
+                            1
+                          else
+                            index += 1
+                            next
+                          end
+          marker_length.times do |offset|
+            position = index + offset
+            characters[position] = " " unless characters[position].match?(/[\r\n]/)
+          end
+          index += marker_length
+        end
+        characters.join
+      end
+    end.join
   end
 
   def missing_pr_artifacts(pr_body, disclosure)

@@ -162,6 +162,50 @@ class ConciseHistoryCheckTest < Minitest::Test
     end
   end
 
+  def test_agent_details_ignores_closing_tag_inside_fenced_code
+    Tempfile.create("fenced-closing-details-tag") do |file|
+      pr_body = File.read(fixture("pr-body.md"), encoding: "UTF-8")
+      fenced_example = <<~MARKDOWN
+        ```text
+        </details>
+        ```
+
+        ### QA Evidence
+      MARKDOWN
+      file.write(pr_body.sub("### QA Evidence", fenced_example))
+      file.flush
+
+      stdout, stderr, status = run_check(pr_body: file.path)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "PASS", result.fetch("status")
+      assert_equal "SATISFIED", result.dig("pr_evidence", "replay_verdict")
+    end
+  end
+
+  def test_agent_details_ignores_closing_tag_inside_html_comment
+    Tempfile.create("commented-closing-details-tag") do |file|
+      pr_body = File.read(fixture("pr-body.md"), encoding: "UTF-8")
+      commented_example = <<~MARKDOWN
+        <!-- parser example:
+        </details>
+        -->
+
+        ### QA Evidence
+      MARKDOWN
+      file.write(pr_body.sub("### QA Evidence", commented_example))
+      file.flush
+
+      stdout, stderr, status = run_check(pr_body: file.path)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "PASS", result.fetch("status")
+      assert_equal "SATISFIED", result.dig("pr_evidence", "replay_verdict")
+    end
+  end
+
   def test_labeled_prose_counts_as_durable_rationale
     Tempfile.create("labeled-rationale") do |file|
       file.write(<<~MESSAGE)
@@ -182,6 +226,28 @@ class ConciseHistoryCheckTest < Minitest::Test
       result = JSON.parse(stdout)
       assert_equal "PASS", result.fetch("status")
       assert_equal true, result.dig("commit_history", "durable_rationale")
+    end
+  end
+
+  def test_metadata_only_terminal_trailers_do_not_count_as_durable_rationale
+    Tempfile.create("metadata-only-rationale") do |file|
+      file.write(<<~MESSAGE)
+        Keep small-diff history concise
+
+        Fixes #318
+
+        Signed-off-by: Fixture Reviewer <fixture-reviewer@example.com>
+        Co-Authored-By: Fixture Agent <fixture-agent@example.com>
+        Agent-Session: fixture-session-318
+      MESSAGE
+      file.flush
+
+      stdout, _stderr, status = run_check(commit_message: file.path)
+
+      refute status.success?
+      result = JSON.parse(stdout)
+      assert_equal false, result.dig("commit_history", "durable_rationale")
+      assert_includes result.fetch("errors"), "commit message durable rationale is missing"
     end
   end
 
