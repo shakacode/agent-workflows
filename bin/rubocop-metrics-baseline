@@ -51,6 +51,7 @@ module RubocopMetrics
         "_#{version}_",
         "--only", COPS.join(","),
         "--format", "json",
+        "--ignore-disable-comments",
         "--force-exclusion",
         *tracked_ruby_files
       ]

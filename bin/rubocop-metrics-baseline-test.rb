@@ -146,6 +146,7 @@ class RubocopMetricsRefreshTest < Minitest::Test
       arguments = JSON.parse(File.readlines(log, chomp: true).first)
       assert_equal "_1.87.0_", arguments.first
       assert_equal COPS.join(","), arguments.fetch(arguments.index("--only") + 1)
+      assert_includes arguments, "--ignore-disable-comments"
       assert_includes arguments, "example.rb"
     end
   end
