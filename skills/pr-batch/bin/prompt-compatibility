@@ -18,11 +18,44 @@ SUPPORTED_PROMPT_HOSTS = (SUPPORTED_HOSTS + ["portable"]).freeze
 SUPPORTED_MODES = %w[goal direct batch].freeze
 SKILL_NAMES = %w[pr-batch pr-walkthrough].freeze
 SKILLS_ROOT = File.expand_path("../..", __dir__)
-# Keep review triage fail-closed for partial installs that contain pr-batch but
-# resolve address-review from another managed skill root.
-KNOWN_SKILL_NAMES = Dir.children(SKILLS_ROOT).select do |name|
-  File.file?(File.join(SKILLS_ROOT, name, "SKILL.md"))
-end.append("address-review").uniq.freeze
+# Keep the pack-wide skill-name set stable so partial installs do not change
+# cross-host skill detection.
+KNOWN_SKILL_NAMES = %w[
+  address-review
+  adversarial-pr-review
+  autoreview
+  batch-status
+  benchmark-verification
+  close-batch
+  close-session
+  continue
+  evaluate-issue
+  fix-flaky-tests
+  manual-testing
+  pause
+  plan-issue-triage
+  plan-pr-batch
+  plan-review
+  post-merge-audit
+  pr-batch
+  pr-monitoring
+  pr-walkthrough
+  qa-stress
+  replicate-ci
+  run-ci
+  secure-github-actions
+  spec
+  status
+  structural-review
+  task-observer
+  tdd
+  triage
+  type-design-review
+  untrusted-contributor-intake
+  update-changelog
+  verify
+  verify-pr-fix
+].freeze
 PROTECTED_LABELS = %w[
   Objective Target Targets Scope Dependencies Permissions Safety QA Review merge_authority
 ].freeze
@@ -35,6 +68,7 @@ CLAUDE_RUNTIME_MECHANICS = [
   /\bisolation:[ \t]*['"]worktree['"]/
 ].freeze
 CODEX_RUNTIME_MECHANICS = [
+  /\b(?:interrupt_agent|list_agents)\b/,
   /\b(?:spawn_agent|send_message|followup_task|wait_agent)\b/,
   /\bsandbox_permissions["'`]?[ \t]*:[ \t]*["'`]?(?:require_escalated|use_default)\b["'`]?/
 ].freeze
@@ -84,6 +118,10 @@ def headers_for(host, mode, route, ending)
     "Preferred route: #{route}",
     "Route requirement: advisory"
   ].join(ending) + ending
+end
+
+def max_batch_wave_capacity(prompt_host)
+  prompt_host == "codex" ? 10 : 5
 end
 
 def skill_mechanics(text, sigil, names = KNOWN_SKILL_NAMES)
@@ -226,6 +264,13 @@ def batch_target_error(prompt, prompt_host)
 
   expected_target = prompt_host == "portable" ? "generic" : prompt_host
   return "contradictory-batch-size-target" if targets.any? && targets.first != expected_target
+
+  wave_line = prompt.lines.find { |line| line.match?(BATCH_TARGET_LIKE) }
+  if wave_line
+    wave_match = wave_line.chomp.match(%r{\ABatch size target: (codex|claude|generic);wave: (\d+)/(\d+)\z})
+    return "invalid-batch-size-target" unless wave_match
+    return "invalid-batch-size-target" if wave_match[2].to_i > max_batch_wave_capacity(expected_target)
+  end
 
   nil
 end

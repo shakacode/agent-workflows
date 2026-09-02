@@ -28,6 +28,29 @@ class PromptCompatibilityTest < Minitest::Test
     [JSON.parse(stdout), stderr, status, stdout]
   end
 
+  def run_helper_with_skill_root(prompt, active_host:, skill_names:)
+    script = <<~RUBY
+      module PartialSkillRoot
+        SKILL_NAMES = #{skill_names.inspect}
+
+        def children(path)
+          path = File.expand_path(path)
+          names = super(path)
+          return names unless path.end_with?("/skills")
+
+          names.select { |name| SKILL_NAMES.include?(name) }
+        end
+      end
+
+      Dir.singleton_class.prepend(PartialSkillRoot)
+      ARGV.replace(["--active-host", #{active_host.inspect}])
+      load #{HELPER.inspect}
+    RUBY
+
+    stdout, stderr, status = Open3.capture3("ruby", "-e", script, stdin_data: prompt)
+    [JSON.parse(stdout), stderr, status, stdout]
+  end
+
   def assert_decision(result, expected)
     assert_equal expected, result.fetch("decision")
     assert_includes DECISIONS, result.fetch("decision")
@@ -92,6 +115,18 @@ class PromptCompatibilityTest < Minitest::Test
     assert_equal expected, result.fetch("converted_prompt")
     assert_equal "Opus 5/high", result.fetch("preferred_route")
     assert_preserved_payload prompt, expected
+  end
+
+  def test_cross_host_conversion_rejects_oversized_claude_waves
+    prompt = fixture("codex-to-claude.txt")
+             .sub("Batch size target: codex;wave: 1/1", "Batch size target: codex;wave: 10/10")
+
+    result, stderr, status = run_helper(prompt, active_host: "claude")
+
+    refute status.success?
+    assert_empty stderr
+    assert_equal "unsafe-conversion", result.fetch("error")
+    refute result.key?("decision")
   end
 
   def test_converted_prompt_requires_a_new_run_before_it_can_execute
@@ -207,6 +242,21 @@ class PromptCompatibilityTest < Minitest::Test
     assert_decision result, "conversion-required"
     assert_equal prompt.sub("Prompt host: codex", "Prompt host: claude"), result.fetch("converted_prompt")
     assert_equal false, result.fetch("execute_allowed")
+  end
+
+  def test_partial_installs_still_reject_missing_pack_skill_names
+    prompt = "#{fixture('claude-to-codex.txt')}Run /verify before closeout.\n"
+
+    result, stderr, status = run_helper_with_skill_root(
+      prompt,
+      active_host: "codex",
+      skill_names: %w[pr-batch address-review]
+    )
+
+    refute status.success?
+    assert_empty stderr
+    assert_equal "unsupported-host-mechanic", result.fetch("error")
+    refute result.key?("decision")
   end
 
   def test_malformed_header_like_text_cannot_hide_behind_legacy_detection
@@ -370,6 +420,8 @@ class PromptCompatibilityTest < Minitest::Test
       ["#{fixture('claude-to-codex.txt')}Run /pr-review-toolkit:review-pr before closeout.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Use /loop to monitor CI.\n", "codex"],
       ["#{fixture('codex-to-claude.txt')}Call spawn_agent with sandbox_permissions: use_default.\n", "claude"],
+      ["#{fixture('codex-to-claude.txt')}Use interrupt_agent to coordinate workers.\n", "claude"],
+      ["#{fixture('codex-to-claude.txt')}Use list_agents to confirm worker state.\n", "claude"],
       ["#{fixture('claude-to-codex.txt')}Set \"sandbox_permissions\": \"require_escalated\".\n", "codex"],
       ["#{fixture('codex-to-claude.txt')}Set `sandbox_permissions`: `require_escalated`.\n", "claude"]
     ]
