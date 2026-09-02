@@ -1240,8 +1240,9 @@ git commit -m "feat: install agent workflows Ruby library atomically"
 **Files:**
 
 - Delete: migrated doctor and CLI files under `bin/agent_doctor/`.
-- Retain: `bin/agent_doctor/autonomous_merge_policy*.rb` for Task 2 of the
-  later domain-extraction plan.
+- Retain: `bin/agent_doctor/autonomous_merge_policy*.rb` and
+  `bin/agent_doctor/hosted_qa_policy.rb` for Task 2 of the later
+  domain-extraction plan.
 - Modify: every remaining `require_relative` reference returned by the discovery command below.
 - Modify: installer ownership and migration tests that refer to the old directory.
 - Modify: `README.md`, `docs/installation-and-upgrades.md`.
@@ -1249,8 +1250,8 @@ git commit -m "feat: install agent workflows Ruby library atomically"
 **Interfaces:**
 
 - Consumes: canonical doctor library and installed layouts from Tasks 3-5.
-- Produces: one doctor implementation tree with no runtime fallback; the three
-  autonomous-merge policy files remain temporarily for domain-extraction Task 2,
+- Produces: one doctor implementation tree with no runtime fallback; the four
+  explicitly deferred policy files remain temporarily for domain-extraction Task 2,
   where the seam and existing merge callers move atomically.
 
 - [ ] **Step 1: Prove all remaining callers before deletion**
@@ -1415,8 +1416,8 @@ The foundation is complete only when:
 - the built gem and source-pack install both run the doctor from canonical library code;
 - copy, symlink, flat, plugin-companion, and stack-sync layouts pass;
 - the exact-head macOS packaging-smoke job passes and records its receipt;
-- only the three explicitly deferred autonomous-merge policy files remain under
-  `bin/agent_doctor`, with their atomic caller/provenance cutover and removal
+- only the four explicitly deferred policy files remain under `bin/agent_doctor`,
+  with their atomic caller/provenance cutover and removal
   owned by Task 2 of the domain-extraction plan;
 - Ruby 3.3 and 3.4.6 validation pass;
 - the committed pre-work baseline and separate evidence-only closeout under

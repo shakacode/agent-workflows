@@ -1942,7 +1942,10 @@ with separate `capture-decision` and `finalize-decision` jobs. Exact dispatch
 selectors name the source-evaluation run/artifact ID/service digest, the
 decision-object URL, the expected deciding principal, and, only for
 `authorization-stale`, the authorization producer run/artifact ID/service
-digest. `capture-decision` proves those selectors through the GitHub API,
+digest. For `authorization-stale`, `capture-decision` and `finalize-decision`
+each re-check the live canonical UTC clock against `expires_at` immediately
+before writing their outputs; equality or a past value fails closed.
+`capture-decision` proves those selectors through the GitHub API,
 downloads each artifact into a separate fresh directory, verifies its bytes and
 schema, runs the writer with only those verified paths plus the `RUNNER_TEMP`
 decision-object record and the fetched approver allowlist, and uploads the single
@@ -1988,7 +1991,10 @@ from that immutable `main` evidence. A decision object edited, deleted, or
 rescinded after `finalize-decision` fails closed at this terminal acceptance
 boundary instead of being accepted from the committed snapshot alone. Loss, mismatch, or an unmerged PR leaves the
 state `ADOPTED_PENDING_RELEASE_AUTHORIZATION`; temporary files and Actions
-artifacts never complete the negative path.
+artifacts never complete the negative path. This plan intentionally does not
+define a serialized candidate-supersession path for a rescinded candidate; that
+recovery would require a separately reviewed state-machine/schema revision and
+fresh approval.
 
 - [ ] **Step 7: Publish binaries only after authorization**
 
