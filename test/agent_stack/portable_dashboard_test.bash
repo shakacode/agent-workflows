@@ -1,3 +1,5 @@
+source "$ROOT/bin/agent_stack/dashboard.bash"
+
 test_portable_dashboard_sync_installs_component_command() {
   local temporary install_dir command_source
   temporary="$(make_tmp_dir)"
@@ -47,6 +49,70 @@ test_portable_dashboard_prerequisites_fail_before_install_mutation() {
     fail "runtime preflight failure partially installed commands"
   [[ ! -e "$temporary/src/agent-coordination-dashboard/node_modules" ]] ||
     fail "runtime preflight failure installed dashboard dependencies"
+}
+
+test_portable_dashboard_rebuilds_nested_locked_esbuild_with_preflighted_node() {
+  local temporary selected_bin stale_bin npm_bin command_source
+  temporary="$(make_tmp_dir)"
+  source_root="$temporary/src"
+  agent_coord_install_dir="$temporary/local-bin"
+  selected_bin="$temporary/selected-bin"
+  stale_bin="$temporary/stale-bin"
+  npm_bin="$temporary/fake-npm"
+  command_source="$source_root/agent-coordination-dashboard/bin/agent-coordination-dashboard.js"
+  mkdir -p "$(dirname "$command_source")" "$selected_bin" "$stale_bin" "$agent_coord_install_dir"
+
+  cat > "$source_root/agent-coordination-dashboard/package.json" <<'JSON'
+{"bin":{"agent-coordination-dashboard":"bin/agent-coordination-dashboard.js"},"engines":{"node":">=22.12.0"}}
+JSON
+  cat > "$source_root/agent-coordination-dashboard/package-lock.json" <<'JSON'
+{"packages":{"packages/app/node_modules/esbuild":{"version":"1.2.3"}}}
+JSON
+  cat > "$command_source" <<'JS'
+#!/usr/bin/env node
+JS
+  ln -s "$(node -p 'process.execPath')" "$selected_bin/node"
+  cat > "$stale_bin/node" <<'BASH'
+#!/bin/bash
+[[ "${1:-}" = --identity ]] && { echo stale; exit; }
+echo v18.0.0
+BASH
+  cat > "$npm_bin" <<'JS'
+#!/usr/bin/env node
+const fs = require("node:fs");
+const path = require("node:path");
+const args = process.argv.slice(2);
+if (args[0] === "--version") {
+  process.stdout.write("10.0.0\n");
+  process.exit(0);
+}
+if (process.env.PATH.split(":")[0] !== process.env.EXPECTED_NODE_DIR) {
+  throw new Error("npm used the wrong Node.js binary");
+}
+const esbuild = path.join(process.cwd(), "packages/app/node_modules/esbuild");
+if (args[0] === "ci") {
+  fs.mkdirSync(esbuild, { recursive: true });
+  fs.writeFileSync(path.join(esbuild, "package.json"), '{"version":"1.2.3"}\n');
+} else if (args.join(" ") === "rebuild esbuild --ignore-scripts=false") {
+  fs.writeFileSync(path.join(esbuild, "rebuilt-marker"), "rebuilt\n");
+} else if (args.join(" ") !== "run build --ignore-scripts") {
+  process.exit(1);
+}
+JS
+  chmod +x "$command_source" "$stale_bin/node" "$npm_bin"
+
+  (
+    export PATH="$stale_bin:$PATH"
+    export NODE_BIN="$selected_bin/node"
+    export NPM_BIN="$npm_bin"
+    export EXPECTED_NODE_DIR="$selected_bin"
+    agent_stack_preflight_dashboard_install
+    agent_stack_install_dashboard
+  )
+
+  assert_file "$source_root/agent-coordination-dashboard/packages/app/node_modules/esbuild/rebuilt-marker"
+  [[ "$(readlink "$agent_coord_install_dir/agent-coordination-dashboard")" = "$command_source" ]] ||
+    fail "nested-esbuild install did not expose the dashboard command"
 }
 
 test_portable_dashboard_refuses_unmanaged_command_before_dependency_install() {
