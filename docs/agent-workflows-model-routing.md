@@ -489,6 +489,7 @@ Generate the compact PR-description section from the complete set of validated
 ```bash
 skills/pr-batch/bin/pr-route-provenance render --receipt path/to/receipt.json
 skills/pr-batch/bin/pr-route-provenance apply --repo OWNER/REPO --pr NUMBER \
+  --expected-target CANONICAL_TARGET \
   --receipt path/to/receipt.json
 ```
 
@@ -506,7 +507,8 @@ outside the PR prose block.
 `agent-workflows-route-provenance` managed section while preserving all other
 text, inserts a missing section inside the canonical `Agent details`
 disclosure when present, refuses malformed or duplicate markers, and re-reads
-the PR to confirm the exact result. Run it with the complete receipt set
+the PR to confirm the exact result. `--expected-target` must exactly match the
+accepted lane target and every receipt. Run it with the complete receipt set
 whenever contributing commits or execution waves change. A receipt with no
 observed binding must use the schema's `unbound-exact-route` mismatch and
 literal `UNKNOWN` tuple. An

@@ -85,8 +85,9 @@ CI. The integration owner, not the implementation worker, performs this phase:
 
 After PR creation and each contributing commit or execution-wave change, run
 `skills/pr-batch/bin/pr-route-provenance apply` with the complete validated
-receipt set. It freshly reads the PR body, preserves text outside its one
-bounded managed section, rejects duplicate markers, and verifies exact
+receipt set and accepted canonical target. It freshly reads the PR body,
+preserves text outside its one bounded managed section, rejects duplicate
+markers, and verifies exact
 readback. Keep large ledgers outside PR prose. Missing observation is an
 `UNKNOWN` mismatch, never a satisfied route; requested-route prose is not an
 input.

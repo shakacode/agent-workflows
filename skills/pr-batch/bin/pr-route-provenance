@@ -65,8 +65,16 @@ module PrRouteProvenance
 
   module_function
 
-  def apply(documents, github:)
-    section = render(documents)
+  def apply(documents, github:, expected_target:)
+    receipts = validated_receipts(documents)
+    unless expected_target.is_a?(String) && !expected_target.empty? && expected_target != "UNKNOWN"
+      raise Error, "expected canonical target must be a known non-empty string"
+    end
+    unless receipts.first.fetch("target") == expected_target
+      raise Error, "receipts target does not match the expected canonical target"
+    end
+
+    section = render_receipts(receipts)
     current_body = github.read_pr_body
     expected_body = apply_to_body(current_body, section)
     changed = expected_body != current_body
@@ -79,7 +87,11 @@ module PrRouteProvenance
   end
 
   def render(documents)
-    receipts = validated_receipts(documents).sort_by { |receipt| receipt_sort_key(receipt) }
+    render_receipts(validated_receipts(documents))
+  end
+
+  def render_receipts(receipts)
+    receipts = receipts.sort_by { |receipt| receipt_sort_key(receipt) }
     rows = wave_rows(receipts)
     commits = commit_rows(receipts)
 
@@ -215,7 +227,11 @@ module PrRouteProvenance
 
   def route_row(receipt, wave)
     disposition = receipt.fetch("disposition")
-    match_label = disposition == "bound-exact-match" ? "Match" : "Mismatch"
+    match_label = case disposition
+                  when "bound-exact-match" then "Match"
+                  when "unbound-exact-route" then "UNKNOWN"
+                  else "Mismatch"
+                  end
     details = [
       "#{match_label} — #{code(disposition)} / #{code(MEASUREMENT_DISPOSITIONS.fetch(disposition))}",
       "reason: #{display(receipt.fetch('mismatch_reason'))}",
@@ -278,11 +294,14 @@ if $PROGRAM_NAME == __FILE__
   paths = []
   repo = nil
   pr = nil
+  expected_target = nil
   parser = OptionParser.new do |options|
-    options.banner = "Usage: pr-route-provenance <render|apply> --receipt PATH [--receipt PATH ...] [--repo OWNER/REPO --pr N]"
+    options.banner = "Usage: pr-route-provenance <render|apply> --receipt PATH [--receipt PATH ...] " \
+                     "[--repo OWNER/REPO --pr N --expected-target TARGET]"
     options.on("--receipt PATH", "Validated execution-provenance-v0 JSON receipt") { |path| paths << path }
     options.on("--repo OWNER/REPO", "Repository containing the pull request") { |value| repo = value }
     options.on("--pr NUMBER", Integer, "Pull request number") { |value| pr = value }
+    options.on("--expected-target TARGET", "Accepted canonical target from lane state") { |value| expected_target = value }
   end
 
   begin
@@ -296,16 +315,19 @@ if $PROGRAM_NAME == __FILE__
     else
       raise OptionParser::MissingArgument, "--repo is required for apply" unless repo
       raise OptionParser::MissingArgument, "--pr is required for apply" unless pr
+      raise OptionParser::MissingArgument, "--expected-target is required for apply" unless expected_target
 
       result = PrRouteProvenance.apply(
         documents,
-        github: PrRouteProvenance::GitHubClient.new(repo:, pr_number: pr)
+        github: PrRouteProvenance::GitHubClient.new(repo:, pr_number: pr),
+        expected_target:
       )
       puts JSON.pretty_generate(
         "status" => "applied",
         "changed" => result.fetch("changed"),
         "repo" => repo,
         "pr" => pr,
+        "target" => expected_target,
         "managed_section_count" => result.fetch("body").scan(PrRouteProvenance::START_MARKER).length
       )
     end

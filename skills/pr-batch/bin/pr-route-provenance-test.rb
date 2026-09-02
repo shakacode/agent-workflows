@@ -60,6 +60,7 @@ class PrRouteProvenanceTest < Minitest::Test
     assert_equal 1, section.scan(PrRouteProvenance::END_MARKER).length
     assert_includes section, "Generated from 5 validated `execution-provenance-v0` receipts"
     assert_match(%r{Wave 1.*`lane-unbound`.*`gpt-5\.6-sol/high`.*`UNKNOWN/UNKNOWN`.*`unbound-exact-route`.*`proceed-unmeasured`}, section)
+    assert_match(/Wave 1.*\| UNKNOWN — `unbound-exact-route`/, section)
     assert_match(%r{Wave 2.*`lane-substituted`.*`claude-opus/high`.*`gpt-5\.6-sol/high`.*`silent-substitution`.*`proceed-unmeasured`}, section)
     assert_match(/Wave 3.*`lane-inherited`.*`coordinator-pair-inheritance`.*`proceed-unmeasured`/, section)
     assert_match(/Wave 4.*`lane-fallback`.*`authorized-fallback`.*`proceed-as-fallback`/, section)
@@ -134,10 +135,12 @@ class PrRouteProvenanceTest < Minitest::Test
 
   def test_apply_reads_fresh_body_updates_it_and_verifies_exact_readback
     github = FakeGitHub.new("Human prose.")
+    document = fixture("bound-exact-match-valid")
 
     result = PrRouteProvenance.apply(
-      [fixture("bound-exact-match-valid")],
-      github: github
+      [document],
+      github: github,
+      expected_target: document.dig("execution_provenance", "target")
     )
 
     assert result.fetch("changed")
@@ -148,18 +151,24 @@ class PrRouteProvenanceTest < Minitest::Test
 
     mismatch = FakeGitHub.new("Human prose.", readback: "Concurrent replacement")
     error = assert_raises(PrRouteProvenance::Error) do
-      PrRouteProvenance.apply([fixture("bound-exact-match-valid")], github: mismatch)
+      PrRouteProvenance.apply(
+        [document],
+        github: mismatch,
+        expected_target: document.dig("execution_provenance", "target")
+      )
     end
     assert_includes error.message, "readback did not match"
   end
 
   def test_apply_is_idempotent_and_still_verifies_readback
-    section = PrRouteProvenance.render([fixture("bound-exact-match-valid")])
+    document = fixture("bound-exact-match-valid")
+    section = PrRouteProvenance.render([document])
     github = FakeGitHub.new("Human prose.\n\n#{section}")
 
     result = PrRouteProvenance.apply(
-      [fixture("bound-exact-match-valid")],
-      github: github
+      [document],
+      github: github,
+      expected_target: document.dig("execution_provenance", "target")
     )
 
     refute result.fetch("changed")
@@ -195,7 +204,12 @@ class PrRouteProvenanceTest < Minitest::Test
         "FAKE_GH_LOG" => log_path
       ) do
         client = PrRouteProvenance::GitHubClient.new(repo: "acme/widgets", pr_number: 42)
-        result = PrRouteProvenance.apply([fixture("bound-exact-match-valid")], github: client)
+        document = fixture("bound-exact-match-valid")
+        result = PrRouteProvenance.apply(
+          [document],
+          github: client,
+          expected_target: document.dig("execution_provenance", "target")
+        )
 
         assert result.fetch("changed")
       end
@@ -236,6 +250,23 @@ class PrRouteProvenanceTest < Minitest::Test
       PrRouteProvenance.render([first, second])
     end
     assert_includes error.message, "one batch and target"
+  end
+
+  def test_refuses_to_apply_receipts_outside_the_expected_canonical_target
+    document = fixture("bound-exact-match-valid")
+    github = FakeGitHub.new("Human prose.")
+
+    error = assert_raises(PrRouteProvenance::Error) do
+      PrRouteProvenance.apply(
+        [document],
+        github: github,
+        expected_target: "https://github.com/shakacode/agent-workflows/issues/334"
+      )
+    end
+
+    assert_includes error.message, "does not match the expected canonical target"
+    assert_equal 0, github.reads
+    assert_empty github.updates
   end
 
   def test_keeps_large_wave_ledgers_outside_the_pr_prose_block
