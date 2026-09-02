@@ -350,23 +350,7 @@ omit the queue summary and note that queue state is unavailable.
    If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`
    resolves the spec tasks into exact GitHub targets before running.
 
-Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected; or not applicable — trusted-ad-hoc-override>
-exact GitHub API `body` string
-without Unicode normalization, Markdown rendering, whitespace trimming, or newline insertion or removal
-If the selection and launch digests differ, that dispatch stops
-deliberately reselected as a new run and the security preflight is rerun
-one compact collapsed run record with one entry per target lane
-directly appends `Launched at` plus `Prompt digest at launch`
-successful security-preflight source URL, `body` field, and SHA-256 snapshot
-When GitHub returns `body: null` for a title-only issue or pull request
-treat its canonical source bytes as the empty UTF-8 string
-verifies identity and digest before it interprets the source
-`batch_plan_binding`
-workers never race GitHub read-modify-write updates
-split the trust boundaries into separate runs
-   exact immutable plan-state reference plus its exact `batch_plan_binding`
-   multi-target group remains one coordinator launch with one target per worker lane
-   existing handoff envelope outside the frozen Batch Plan; do not add the launch digest to the frozen plan or change its binding
+Prompt digest at selection is the SHA-256 of the canonical source bytes fetched when selected; when the run comes from a trusted ad-hoc override, use `not applicable — trusted-ad-hoc-override`. Use the exact GitHub API `body` string without Unicode normalization, Markdown rendering, whitespace trimming, or newline insertion or removal. If the selection and launch digests differ, that dispatch stops; deliberately reselected as a new run and the security preflight is rerun. Keep one compact collapsed run record with one entry per target lane; it directly appends `Launched at` plus `Prompt digest at launch`. Capture the successful security-preflight source URL, `body` field, and SHA-256 snapshot. When GitHub returns `body: null` for a title-only issue or pull request, treat its canonical source bytes as the empty UTF-8 string. It verifies identity and digest before it interprets the source. Record `batch_plan_binding`, workers never race GitHub read-modify-write updates, and split the trust boundaries into separate runs. Preserve the exact immutable plan-state reference plus its exact `batch_plan_binding`, the multi-target group remains one coordinator launch with one target per worker lane, and keep any existing handoff envelope outside the frozen Batch Plan; do not add the launch digest to the frozen plan or change its binding.
 
 ## Direct `$pr-batch` Flow
 
