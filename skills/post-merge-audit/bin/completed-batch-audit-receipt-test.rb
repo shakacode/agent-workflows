@@ -400,6 +400,91 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
            "an issue-URL retry ref must not skip the operation/error/retry evidence check"
   end
 
+  def blocked_finding(fingerprint:)
+    {
+      "affected_prs" => [377],
+      "fingerprint" => fingerprint,
+      "kind" => "finding",
+      "outcome" => "blocked",
+      "owner" => "audit coordinator",
+      "operation" => "gh issue create",
+      "error" => "HTTP 403",
+      "retry" => "refresh authentication and retry issue creation"
+    }
+  end
+
+  def test_follow_up_finding_fingerprint_rejects_the_outstanding_ref_separator
+    issue_url = "https://github.com/acme/widgets/issues/380"
+    comma_fingerprint = assert_raises(CompletedBatchAuditReceipt::Error) do
+      CompletedBatchAuditReceipt.build_follow_up_handoff(
+        follow_up_handoff_input(
+          findings: [
+            blocked_finding(fingerprint: "pr-377:retry needed, see log"),
+            tracked_finding(fingerprint: "pr-377:tracked", issue_url:)
+          ]
+        )
+      )
+    end
+
+    assert_equal "follow-up finding fingerprint is invalid", comma_fingerprint.message
+
+    handoff = CompletedBatchAuditReceipt.build_follow_up_handoff(
+      follow_up_handoff_input(
+        findings: [
+          blocked_finding(fingerprint: "pr-377:retry needed see log"),
+          tracked_finding(fingerprint: "pr-377:tracked", issue_url:)
+        ]
+      )
+    )
+
+    assert_equal "blocked", handoff.fetch("audit_status")
+    assert_equal "OUTSTANDING #{issue_url}, pr-377:retry needed see log", handoff.fetch("findings")
+    assert CompletedBatchAuditReceipt.marker_state(receipt_marker_from_handoff(handoff)),
+           "generated findings must replay through the same validator that gates publication"
+  end
+
+  def test_follow_up_handoff_cli_reports_its_own_failure_schema
+    Dir.mktmpdir("post-merge-audit-follow-up-failure") do |directory|
+      input_path = File.join(directory, "input.json")
+      File.write(
+        input_path,
+        JSON.generate(follow_up_handoff_input(findings: []).reject { |key, _| key == "merge_authority" }),
+        encoding: "UTF-8"
+      )
+      stdout, _stderr, status = Open3.capture3(SCRIPT, "handoff", "--handoff-json", input_path)
+
+      refute_predicate status, :success?
+      failure = JSON.parse(stdout)
+
+      assert_equal "post-merge-audit-follow-up-handoff", failure.fetch("contract")
+      assert_equal "invalid", failure.fetch("handoff_status")
+      assert_equal ["follow-up handoff input fields are invalid"], failure.fetch("errors")
+      %w[well_formed ready blockers final_status chat_reference].each do |marker_replay_field|
+        refute_includes failure.keys, marker_replay_field,
+                        "handoff must not borrow the marker-replay failure schema"
+      end
+    end
+
+    _stdout, _stderr, missing_argument = Open3.capture3(SCRIPT, "handoff")
+
+    assert_equal 64, missing_argument.exitstatus
+  end
+
+  def test_issue_url_parsing_has_one_canonical_source_for_repository_and_authority
+    ported_issue_url = "https://ghe.example.com:8443/acme/widgets/issues/376"
+    handoff = CompletedBatchAuditReceipt.build_follow_up_handoff(
+      follow_up_handoff_input(
+        findings: [tracked_finding(fingerprint: "pr-377:tracked", issue_url: ported_issue_url)]
+      )
+    )
+
+    assert_includes handoff.fetch("prompt"), "Repository: acme/widgets"
+    assert_equal ported_issue_url, CompletedBatchAuditReceipt.exact_issue_url(ported_issue_url)
+    assert_nil CompletedBatchAuditReceipt.exact_issue_url("https://GitHub.com/acme/widgets/issues/380"),
+               "the repository lookup must not accept URLs the canonical validator rejects"
+    assert_nil CompletedBatchAuditReceipt.exact_issue_url("https://github.com/acme/wid gets/issues/380")
+  end
+
   def accepted_deferral_target
     {
       "host" => "github.com",
