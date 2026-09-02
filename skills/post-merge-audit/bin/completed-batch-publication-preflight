@@ -76,6 +76,10 @@ module CompletedBatchPublicationPreflight
       blockers << "coordination applicability is missing, invalid, or contradictory"
       return blocked_result(blockers)
     end
+    # Stop on the cheap envelope, backend, batch-id, and target checks before paying for the proof
+    # chain: a digest, canonicalization, two URL checks, and a target-set revalidation.
+    return blocked_result(blockers) unless blockers.empty?
+
     applicability_proof = validated_applicability_proof(
       trusted_applicability,
       expected_digest: trusted_applicability_digest,
@@ -90,7 +94,6 @@ module CompletedBatchPublicationPreflight
       blockers << "coordination applicability contradicts trusted proof"
       return blocked_result(blockers)
     end
-    return blocked_result(blockers) unless blockers.empty?
 
     coordination_not_applicable = applicability == "coordination_not_applicable"
     coordination_required = applicability == "coordination_required"

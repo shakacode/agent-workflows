@@ -165,7 +165,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   below; a missing or `n/a` backend, command failure, or contradictory
   applicability remains fail-closed. Missing, `UNKNOWN`, or unproved
   applicability blocks scope reduction. Only the `coordination_required` branch
-  may use the following batch discovery or advisory public-claim rules.
+  may enter the following discovery state machine or use advisory public claims.
 - When the current visible chat, active goal, restart handoff, or immediately
   preceding batch closeout names exactly one just-run batch, default to it. If
   the visible value is an exact coordination batch id, verify it through

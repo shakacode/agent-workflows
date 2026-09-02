@@ -30,7 +30,12 @@ Re-run the applicability gate before consuming a persisted
 `coordination_not_applicable` outcome whenever the resume crosses a controller
 or session boundary, relies on durable handoff or crash recovery, or changes the
 target set or topology. Each of those is itself a requiring condition, so the
-persisted outcome is stale evidence there, not authority.
+persisted outcome is stale evidence there, not authority. A replacement actor or
+a replacement chat resuming from a durable handoff does not re-verify: it is
+`coordination_required`, per the restart prompts in
+`docs/agent-runner-restarts.md`. Only a relaunch of the same controller over the
+same exact target set, with no other actor able to mutate it, can re-verify as
+`coordination_not_applicable`.
 
 When the gate still resolves to `coordination_not_applicable`, consume that
 outcome, skip every coordination and typed-event call, and never report

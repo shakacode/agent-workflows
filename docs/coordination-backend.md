@@ -36,6 +36,12 @@ operating details unless they need an exact command snippet.
 
 ## Coordination Applicability
 
+The decision rule itself is canonical in
+[workflows/pr-processing.md -> Coordination Applicability Gate](../workflows/pr-processing.md#coordination-applicability-gate),
+including the single-internal-maker carve-out and the enforcement boundary. This
+section is the vocabulary summary plus the completed-batch proof contract; when
+the two disagree, the gate wins and this summary is the copy to correct.
+
 Before any backend probe or runtime coordination declaration, record exactly
 one `coordination_applicability` outcome: `coordination_not_applicable` or
 `coordination_required`. Derive it only from trusted repository policy, the
@@ -50,8 +56,8 @@ every mutation is serial in one controlled execution. It requires no
 cross-session dependency, ambiguous ownership, repository-required release or
 shared-resource lease, or durable-handoff requirement. A configured real
 backend does not change that outcome. Make no coordination probe,
-registration, claim, heartbeat, fallback, typed coordination event, or
-coordination footer. Completed-batch publication instead accepts and binds the
+registration, claim, heartbeat, fallback, typed operational event, or
+`coordination:` declaration line. Completed-batch publication instead accepts and binds the
 typed single-controller proof described by the post-merge workflow.
 
 For completed-batch publication, persist the applicability decision separately

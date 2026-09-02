@@ -40,6 +40,15 @@ class PostMergeAuditPolicyTest < Minitest::Test
     "When an actual batch/run is in scope, including an uncoordinated serialized batch classified " \
     "`coordination_not_applicable`, use the applicability gate below."
   AMBIGUOUS_NO_COORDINATED_BATCH_SCOPE = "no coordinated batch/run in scope"
+  # This closes each applicability paragraph. It is duplicated in-file, so pin the count per surface:
+  # the two copies drifted apart once already.
+  REQUIRED_REQUIRED_ONLY_DISCOVERY_RULE =
+    "may enter the following discovery state machine or use advisory public claims."
+  REQUIRED_ONLY_DISCOVERY_COUNTS = {
+    "skills/post-merge-audit/SKILL.md" => 1,
+    "workflows/post-merge-audit.md" => 2,
+    "workflows/pr-batch-integration-closeout.md" => 1
+  }.freeze
   REQUIRED_VERIFIED_WORKED_SCOPE_SOURCES =
     "A worked-issue scope verified from either the authenticated single-controller proof or required coordination " \
     "state is a verified batch subset."
@@ -314,6 +323,15 @@ class PostMergeAuditPolicyTest < Minitest::Test
       assert_operator audit_surface.index(REQUIRED_WORKED_SCOPE_APPLICABILITY_GATE), :<,
                       audit_surface.index("agent-coord doctor --json"),
                       "#{relative_path} must authenticate applicability before its first audit-scope command"
+    end
+  end
+
+  def test_every_applicability_paragraph_closes_with_the_same_required_only_rule
+    REQUIRED_ONLY_DISCOVERY_COUNTS.each do |relative_path, expected|
+      normalized = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_equal expected, normalized.scan(REQUIRED_REQUIRED_ONLY_DISCOVERY_RULE).length,
+                   "#{relative_path} must close every applicability paragraph with the same rule"
     end
   end
 

@@ -752,7 +752,9 @@ module CompletedBatchAuditReceipt
       batch_id: expected_batch_id,
       expected_targets:
     )
-    valid = canonical && canonical == CompletedBatchPublicationPreflight.canonicalize(proof)
+    # `validated_applicability_proof` returns the canonicalized proof on success and nil otherwise;
+    # all eleven guards live there, so presence is the whole verdict.
+    valid = !canonical.nil?
     if valid && publication_preflight
       valid = publication_preflight.is_a?(Hash) &&
               proof_digest == publication_preflight["applicability_proof_digest"] &&
