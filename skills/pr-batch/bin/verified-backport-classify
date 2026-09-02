@@ -7,9 +7,19 @@ require_relative "../lib/verified_backport"
 begin
   input = case ARGV.length
           when 0
-            $stdin.read
+            begin
+              $stdin.read
+            rescue EncodingError, SystemCallError => e
+              warn "verified-backport-classify: unable to read input from standard input: #{e.class}: #{e.message}"
+              exit 66
+            end
           when 1
-            File.read(ARGV.fetch(0), encoding: "UTF-8")
+            begin
+              File.read(ARGV.fetch(0), encoding: "UTF-8")
+            rescue EncodingError, SystemCallError => e
+              warn "verified-backport-classify: unable to read input file #{ARGV.fetch(0)}: #{e.class}: #{e.message}"
+              exit 66
+            end
           else
             warn "usage: verified-backport-classify [input.json]"
             exit 64
@@ -17,6 +27,6 @@ begin
 
   evidence = JSON.parse(input.to_s)
   puts JSON.generate(VerifiedBackport.classify(evidence))
-rescue JSON::ParserError, EncodingError, SystemCallError
+rescue JSON::ParserError, EncodingError
   puts JSON.generate(VerifiedBackport.classify(nil))
 end

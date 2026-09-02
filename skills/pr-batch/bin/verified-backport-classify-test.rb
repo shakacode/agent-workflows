@@ -4,6 +4,7 @@
 require "json"
 require "minitest/autorun"
 require "open3"
+require "tmpdir"
 
 PINNED_JSON_SCHEMER_VERSION = ENV["JSON_SCHEMER_VERSION"]
 gem "json_schemer", PINNED_JSON_SCHEMER_VERSION if PINNED_JSON_SCHEMER_VERSION
@@ -60,6 +61,18 @@ class VerifiedBackportClassifyTest < Minitest::Test
     assert_equal "", stdout
     assert_equal 64, status.exitstatus
     assert_match(/usage: verified-backport-classify \[input\.json\]/, stderr)
+  end
+
+  def test_missing_input_file_reports_a_distinct_usage_error
+    Dir.mktmpdir do |dir|
+      missing_path = File.join(dir, "missing-input.json")
+      stdout, stderr, status = Open3.capture3("ruby", HELPER, missing_path)
+
+      refute status.success?
+      assert_equal "", stdout
+      assert_equal 66, status.exitstatus
+      assert_match(/unable to read input file/, stderr)
+    end
   end
 
   def test_schema_invalid_evidence_cannot_enter_the_fast_path
