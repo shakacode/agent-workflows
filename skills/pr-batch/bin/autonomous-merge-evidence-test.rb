@@ -38,6 +38,27 @@ class AutonomousMergeEvidenceTest < Minitest::Test
     end
   end
 
+  def test_gh_api_rejects_lone_surrogates_decoded_from_json
+    payloads = [
+      %q({"metadata":{"key":"\udcff"}}),
+      %q({"metadata":{"\udcff":"value"}})
+    ]
+
+    payloads.each do |payload|
+      with_gh_payload(payload) do
+        error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+          AutonomousMergeEvidence.gh_api("repos/example/repo/pulls/7")
+        end
+
+        assert_equal(
+          "malformed or invalid GitHub evidence: invalid Unicode scalar data in response for " \
+          "repos/example/repo/pulls/7",
+          error.message
+        )
+      end
+    end
+  end
+
   def test_collects_every_page_and_rechecks_exact_head_and_base
     calls = []
     api = lambda do |path|

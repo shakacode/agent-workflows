@@ -132,9 +132,30 @@ module AutonomousMergeEvidence
       raise CollectionError, "malformed or invalid GitHub evidence: invalid UTF-8 response for #{path}"
     end
 
-    JSON.parse(payload)
+    parsed = JSON.parse(payload)
+    unless decoded_json_strings_valid?(parsed)
+      raise CollectionError,
+            "malformed or invalid GitHub evidence: invalid Unicode scalar data in response for #{path}"
+    end
+
+    parsed
   rescue Errno::ENOENT
     raise CollectionError, "GitHub CLI is unavailable"
+  end
+
+  def decoded_json_strings_valid?(value)
+    case value
+    when String
+      value.valid_encoding?
+    when Array
+      value.all? { |item| decoded_json_strings_valid?(item) }
+    when Hash
+      value.all? do |key, item|
+        decoded_json_strings_valid?(key) && decoded_json_strings_valid?(item)
+      end
+    else
+      true
+    end
   end
 
   def normalize_file(file)

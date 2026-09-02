@@ -42,6 +42,24 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
     end
   end
 
+  def test_github_snapshot_rejects_lone_surrogate_decoded_from_candidate_oid
+    payload = github_payload(metadata: "metadata", candidate_oid: "candidate-placeholder")
+    payload.sub!("candidate-placeholder", '\udcff')
+
+    with_github_payload(payload) do
+      error = assert_raises(CurrentIntegrationEvidence::Error) do
+        CurrentIntegrationEvidence.github_snapshot(
+          repo: "example/repo", pr_number: 7, base_ref: "main"
+        )
+      end
+
+      assert_equal(
+        "GitHub current-integration response contains invalid Unicode scalar data",
+        error.message
+      )
+    end
+  end
+
   def test_disjoint_safe_base_delta_reuses_exact_head_evidence
     with_repository(base_delta_path: "docs/guide.md") do |fixture|
       result = collect(fixture)
@@ -411,7 +429,18 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
 
   private
 
-  def github_payload(metadata:)
+  def github_payload(metadata:, candidate_oid: nil)
+    candidate = if candidate_oid
+                  {
+                    "oid" => candidate_oid,
+                    "tree" => { "oid" => "c" * 40 },
+                    "parents" => {
+                      "totalCount" => 2,
+                      "nodes" => [{ "oid" => "b" * 40 }, { "oid" => "a" * 40 }]
+                    }
+                  }
+                end
+
     JSON.generate(
       "metadata" => metadata,
       "data" => {
@@ -419,7 +448,7 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
           "pullRequest" => {
             "headRefOid" => "a" * 40,
             "baseRefName" => "main",
-            "potentialMergeCommit" => nil
+            "potentialMergeCommit" => candidate
           },
           "ref" => { "target" => { "oid" => "b" * 40 } }
         }
