@@ -859,6 +859,99 @@ RUBY
   fi
 }
 
+write_incidental_stderr_injection() {
+  local path="$1"
+  cat > "$path" <<'RUBY'
+# Mimic a tool manager that greets every Ruby process on stderr. The installer
+# must keep such noise out of the delivery-state helper's structured stdout.
+warn "mise WARN  no version is set for shim: ruby"
+RUBY
+}
+
+test_delivery_state_conflict_survives_incidental_helper_stderr() {
+  local tmp target injection output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  injection="$tmp/incidental-stderr.rb"
+  write_incidental_stderr_injection "$injection"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  printf '\npersonal recorded-skill edit\n' >> "$target/skills/pr-batch/SKILL.md"
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "blocked delivery state unexpectedly installed"
+  assert_not_contains "$output" "JSON::ParserError"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "mise WARN"
+  grep -qxF 'personal recorded-skill edit' "$target/skills/pr-batch/SKILL.md" || \
+    fail "blocked repeat install changed the modified recorded skill"
+}
+
+test_companion_migration_survives_incidental_helper_stderr() {
+  local tmp target injection output status skill
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  injection="$tmp/incidental-stderr.rb"
+  write_incidental_stderr_injection "$injection"
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode flat >"$tmp/flat.out"
+  write_native_scw_state codex "$target"
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex \
+    --target "$target" --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "incidental helper stderr blocked a valid migration: $output"
+  assert_not_contains "$output" "JSON::ParserError"
+  ruby -rjson -e 'abort unless JSON.parse(File.read(ARGV.fetch(0))).fetch("delivery_mode") == "plugin-companion"' \
+    "$target/.agent-workflows-install.json"
+  [[ ! -e "$target/.agent-workflows-migration-staging" ]] || fail "staging receipt was not removed"
+  for skill in "$ROOT"/skills/*; do
+    [[ -d "$skill" ]] || continue
+    [[ ! -e "$target/skills/$(basename "$skill")" ]] || \
+      fail "companion migration left installer-managed flat skills behind"
+  done
+}
+
+test_unparseable_delivery_state_failure_names_the_boundary() {
+  local tmp target injection output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  injection="$tmp/unparseable-delivery-state.rb"
+  cat > "$injection" <<'RUBY'
+# Silence the delivery-state helper's structured channel while it still exits
+# nonzero and warns on stderr, so the installer must fail closed on a response
+# it cannot parse.
+if ARGV.first == "check" && ARGV.include?("--json")
+  warn "mise WARN  no version is set for shim: ruby"
+  STDOUT.reopen(File::NULL)
+end
+RUBY
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/first.out"
+  printf '\npersonal recorded-skill edit\n' >> "$target/skills/pr-batch/SKILL.md"
+
+  set +e
+  output="$(RUBYOPT="-r$injection" "$ROOT/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "unparseable delivery state unexpectedly installed"
+  assert_not_contains "$output" "JSON::ParserError"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  assert_contains "$output" "did not return a parseable JSON response"
+  grep -qxF 'personal recorded-skill edit' "$target/skills/pr-batch/SKILL.md" || \
+    fail "unparseable delivery state changed the modified recorded skill"
+}
+
 test_failed_partial_rollback_preserves_receipt_for_retry() {
   local tmp target injection output status receipt staging retry_output retry_status
   tmp="$(mktemp -d)"
@@ -8628,6 +8721,9 @@ main() {
     test_staging_race_blocks_installer_and_preserves_flat_tree
     test_final_verification_race_rolls_back_before_metadata_commit
     test_staging_json_extraction_failure_uses_receipt_to_roll_back
+    test_delivery_state_conflict_survives_incidental_helper_stderr
+    test_companion_migration_survives_incidental_helper_stderr
+    test_unparseable_delivery_state_failure_names_the_boundary
     test_failed_partial_rollback_preserves_receipt_for_retry
     test_recovery_normalization_failure_releases_install_lock
     test_crash_receipt_recovers_flat_staging_before_new_install
