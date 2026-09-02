@@ -56,6 +56,10 @@ module ValidateDocLinks
     path_part, _, anchor = target.partition("#")
     linked = path_part.empty? ? relative : normalize(File.join(File.dirname(relative), path_part))
 
+    if linked.nil?
+      return ["#{relative}:#{line}: link target escapes repository: #{path_part}"]
+    end
+
     if !path_part.empty? && !File.file?(File.join(root, linked))
       return ["#{relative}:#{line}: link target not found: #{path_part}"]
     end
@@ -74,7 +78,10 @@ module ValidateDocLinks
     path.split("/").each do |segment|
       case segment
       when ".", "" then next
-      when ".." then parts.pop
+      when ".."
+        return nil if parts.empty?
+
+        parts.pop
       else parts << segment
       end
     end
@@ -167,7 +174,11 @@ module ValidateDocLinks
     text.each_line.with_index(1) do |line, number|
       match = FENCE_PATTERN.match(line)
       if fence
-        fence = nil if match && match[1][0] == fence[0] && match[1].length >= fence.length
+        closes_fence = match &&
+                       match[1][0] == fence[0] &&
+                       match[1].length >= fence.length &&
+                       match.post_match.match?(/\A[ \t]*(?:\r?\n)?\z/)
+        fence = nil if closes_fence
         next
       end
       if match

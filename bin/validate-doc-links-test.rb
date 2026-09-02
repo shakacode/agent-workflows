@@ -166,6 +166,19 @@ class ValidateDocLinksTest < Minitest::Test
     assert_equal [], ValidateDocLinks.links(text)
   end
 
+  def test_fence_with_info_string_does_not_close_an_open_fence
+    text = <<~MARKDOWN
+      ```markdown
+      ```ruby
+      [Fake](missing.md)
+      ```
+
+      [Real](real.md)
+    MARKDOWN
+
+    assert_equal [["real.md", 6]], ValidateDocLinks.links(text)
+  end
+
   def test_fenced_code_inside_the_checked_document_is_skipped
     with_doc_root do |root|
       write(root, DOC, <<~MARKDOWN)
@@ -195,6 +208,18 @@ class ValidateDocLinksTest < Minitest::Test
       write(root, DOC, "# Operator Handbook\n\n[Dir](../workflows)\n")
 
       assert_equal ["#{DOC}:3: link target not found: ../workflows"], validate(root)
+    end
+  end
+
+  def test_link_cannot_traverse_above_repository_root
+    with_doc_root do |root|
+      write(root, DOC, "# Operator Handbook\n\n[Outside](../../README.md)\n")
+      write(root, "README.md", "# Repository\n")
+
+      assert_equal(
+        ["#{DOC}:3: link target escapes repository: ../../README.md"],
+        validate(root)
+      )
     end
   end
 
