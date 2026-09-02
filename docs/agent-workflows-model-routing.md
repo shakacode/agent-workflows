@@ -481,6 +481,36 @@ unless an independent risk, scope, evidence, or authority gate blocks it. It
 must not be reported as having run the original requested route, and its results
 must not be used as route-measurement evidence for that route.
 
+### Managed PR Route Provenance
+
+Generate the compact PR-description section from the complete set of validated
+`execution-provenance-v0` receipts with:
+
+```bash
+skills/pr-batch/bin/pr-route-provenance render --receipt path/to/receipt.json
+skills/pr-batch/bin/pr-route-provenance apply --repo OWNER/REPO --pr NUMBER \
+  --receipt path/to/receipt.json
+```
+
+The helper orders receipts by their durable timestamps and identity fields, so
+later implementation, review, QA, integration, correction, or replacement
+executions appear as later waves without inventing a wave type that the closed
+receipt schema does not contain. Each wave shows requested and observed tuples,
+the validated disposition and route-measurement result, binding source,
+mismatch reason or fallback authority, and attribution confidence. The commit
+table maps influenced commits back to those receipt waves. It is bounded; when
+the receipt ledger is large, the complete receipts remain the durable ledger
+outside the PR prose block.
+
+`apply` reads the current PR description, replaces zero or one
+`agent-workflows-route-provenance` managed section while preserving all other
+text, refuses malformed or duplicate markers, and re-reads the PR to confirm
+the exact result. Run it with the complete receipt set whenever contributing
+commits or execution waves change. A receipt with no observed binding must use
+the schema's `unbound-exact-route` mismatch and literal `UNKNOWN` tuple. An
+invalid receipt that labels such a route `bound-exact-match` is rejected rather
+than rendered as satisfied. Requested-route prose is never an input fallback.
+
 ### Evidence Status
 
 No measured route recommendation is published yet. Both conservative profiles
