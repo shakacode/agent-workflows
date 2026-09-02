@@ -11,6 +11,7 @@ HEADER_NAMES = ["Prompt host", "Prompt mode", "Preferred route", "Route requirem
 RESERVED_HEADER_LIKE =
   /^[ \t]*(?:Prompt[ \t._-]+(?:host|mode)|Preferred[ \t._-]+route|Route[ \t._-]+requirement)[ \t]*(?::+|=)/i
 CANONICAL_HEADER = /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): [^\r\n]*\r?\n?\z/
+BATCH_TARGET_LIKE = /^[ \t]*Batch[ \t._-]+size[ \t._-]+target[ \t]*(?::|=)/i
 SUPPORTED_HOSTS = %w[codex claude].freeze
 SUPPORTED_PROMPT_HOSTS = (SUPPORTED_HOSTS + ["portable"]).freeze
 SUPPORTED_MODES = %w[goal direct batch].freeze
@@ -19,14 +20,15 @@ SKILLS_ROOT = File.expand_path("../..", __dir__)
 KNOWN_SKILL_NAMES = Dir.children(SKILLS_ROOT).select do |name|
   File.file?(File.join(SKILLS_ROOT, name, "SKILL.md"))
 end.append("address-review").uniq.freeze
-HOST_COMMANDS = %w[goal simplify].freeze
 PROTECTED_LABELS = %w[
   Objective Target Targets Scope Dependencies Permissions Safety QA Review merge_authority
 ].freeze
 PROTECTED_PREFIXES = ["Work item:", "Safety gates:", "Merge authority:"].freeze
-UNSUPPORTED_RUNTIME_MECHANICS = [
+CLAUDE_RUNTIME_MECHANICS = [
   /\bClaude (?:Agent|Workflow)\b/,
-  /\bisolation:[ \t]*['"]worktree['"]/,
+  /\bisolation:[ \t]*['"]worktree['"]/
+].freeze
+CODEX_RUNTIME_MECHANICS = [
   /\b(?:spawn_agent|send_message|followup_task|wait_agent)\b/,
   /\bsandbox_permissions:[ \t]*(?:require_escalated|use_default)\b/
 ].freeze
@@ -85,9 +87,8 @@ def skill_mechanics(text, sigil, names = KNOWN_SKILL_NAMES)
 end
 
 def special_host_mechanic?(text)
-  text.match?(%r{(?<![[:alnum:]_/$])(?:\$|/)scw:[[:alnum:]-]+\b}) || HOST_COMMANDS.any? do |name|
-    text.match?(%r{(?<![[:alnum:]_/$])/#{Regexp.escape(name)}\b})
-  end
+  text.match?(%r{(?<![[:alnum:]_/$])(?:\$|/)scw:[[:alnum:]-]+\b}) ||
+    text.match?(%r{(?<![[:alnum:]_/$])/(?:goal|simplify)\b})
 end
 
 def protected_line?(line)
@@ -95,8 +96,26 @@ def protected_line?(line)
     PROTECTED_PREFIXES.any? { |prefix| line.start_with?(prefix) }
 end
 
-def unsupported_runtime_mechanic?(text)
-  UNSUPPORTED_RUNTIME_MECHANICS.any? { |pattern| text.match?(pattern) }
+def runtime_mechanic?(text, patterns)
+  patterns.any? { |pattern| text.match?(pattern) }
+end
+
+def unsupported_conversion_runtime_mechanic?(text)
+  special_host_mechanic?(text) ||
+    runtime_mechanic?(text, CLAUDE_RUNTIME_MECHANICS + CODEX_RUNTIME_MECHANICS)
+end
+
+def unsupported_for_prompt_host?(text, prompt_host)
+  return true if text.match?(%r{(?<![[:alnum:]_/$])(?:\$|/)scw:[[:alnum:]-]+\b})
+  return true if text.match?(%r{(?<![[:alnum:]_/$])/goal\b})
+
+  case prompt_host
+  when "codex"
+    runtime_mechanic?(text, CLAUDE_RUNTIME_MECHANICS)
+  when "claude"
+    text.match?(%r{(?<![[:alnum:]_/$])/simplify\b}) ||
+      runtime_mechanic?(text, CODEX_RUNTIME_MECHANICS)
+  end
 end
 
 def rewritable_mechanic_line?(line, sigil)
@@ -158,12 +177,12 @@ def converted_prompt_compatible?(prompt, target_host)
   body = header_text.lines.drop(4).join
   wrong_sigil = target_host == "codex" ? "/" : "$"
   return false if skill_mechanics(body, wrong_sigil).any?
-  return false if special_host_mechanic?(body) || unsupported_runtime_mechanic?(body)
+  return false if unsupported_for_prompt_host?(body, target_host)
 
   named_mechanics = skill_mechanics(body, "/") + skill_mechanics(body, "$")
   return false if (named_mechanics - SKILL_NAMES).any?
 
-  declarations = prompt.scan(/^Batch size target(?=[ \t]*:)/).length
+  declarations = prompt.lines.count { |line| line.match?(BATCH_TARGET_LIKE) }
   targets = prompt.scan(/^Batch size target: (codex|claude);/).flatten
   declarations == targets.length && targets.length <= 1 && (targets.empty? || targets.first == target_host)
 end
@@ -177,7 +196,7 @@ end
 def validate_cross_host_mechanics(body, prompt_host, active_host)
   source_sigil = prompt_host == "codex" ? "$" : "/"
   unsupported_skills = skill_mechanics(body, source_sigil) - SKILL_NAMES
-  if unsupported_skills.any? || special_host_mechanic?(body) || unsupported_runtime_mechanic?(body)
+  if unsupported_skills.any? || unsupported_conversion_runtime_mechanic?(body)
     emit_error("unsupported-host-mechanic", active_host)
   end
   protected_mechanic = body.lines.any? do |line|
@@ -191,12 +210,13 @@ def validate_cross_host_mechanics(body, prompt_host, active_host)
   emit_error("unsupported-host-mechanic", active_host) if unsupported_supported_mechanic
 end
 
-options = { active_host: "unknown" }
+options = { active_hosts: [] }
 OptionParser.new do |parser|
-  parser.on("--active-host HOST") { |host| options[:active_host] = host }
+  parser.on("--active-host HOST") { |host| options.fetch(:active_hosts) << host }
 end.parse!
 
-active_host = options.fetch(:active_host)
+active_hosts = options.fetch(:active_hosts)
+active_host = active_hosts.one? ? active_hosts.first : "ambiguous"
 emit_error("ambiguous-active-host", active_host) unless SUPPORTED_HOSTS.include?(active_host)
 
 raw_prompt = $stdin.binmode.read
@@ -247,7 +267,7 @@ if complete_headers
 
   if prompt_host == "portable" &&
      (skill_mechanics(body, "/").any? || skill_mechanics(body, "$").any? ||
-       special_host_mechanic?(body) || unsupported_runtime_mechanic?(body))
+       unsupported_conversion_runtime_mechanic?(body))
     emit_error("unsupported-host-mechanic", active_host)
   end
 
@@ -256,12 +276,15 @@ if complete_headers
                   when "claude" then skill_mechanics(body, "$").any?
                   end
   emit_error("contradictory-host-mechanic", active_host) if contradictory
+  if prompt_host != "portable" && unsupported_for_prompt_host?(body, prompt_host)
+    emit_error("unsupported-host-mechanic", active_host)
+  end
 
   if prompt_host != "portable" && prompt_host != active_host
     validate_cross_host_mechanics(body, prompt_host, active_host)
   end
 
-  batch_target_declarations = prompt.scan(/^Batch size target(?=[ \t]*:)/).length
+  batch_target_declarations = prompt.lines.count { |line| line.match?(BATCH_TARGET_LIKE) }
   batch_targets = prompt.scan(/^Batch size target: (codex|claude|generic);/).flatten
   if batch_targets.length != batch_target_declarations
     emit_error("invalid-batch-size-target", active_host)
@@ -307,6 +330,8 @@ if complete_headers
     )
   end
 elsif prompt.match?(LEGACY_CODEX)
+  legacy_body = prompt.sub(GOAL_WRAPPER, "")
+  emit_error("unsupported-host-mechanic", active_host) if unsupported_for_prompt_host?(legacy_body, "codex")
   result = if active_host == "codex"
              decision_result(
                "compatible",
@@ -317,7 +342,7 @@ elsif prompt.match?(LEGACY_CODEX)
                prompt:
              )
            else
-             validate_cross_host_mechanics(prompt.sub(GOAL_WRAPPER, ""), "codex", active_host)
+             validate_cross_host_mechanics(legacy_body, "codex", active_host)
              converted_prompt = verified_conversion(
                prompt, "codex", "legacy-goal", active_host, "default", active_host
              )

@@ -18,10 +18,10 @@ class PromptCompatibilityTest < Minitest::Test
   end
 
   def run_helper(prompt, active_host:)
+    host_arguments = Array(active_host).flat_map { |host| ["--active-host", host] }
     stdout, stderr, status = Open3.capture3(
       HELPER,
-      "--active-host",
-      active_host,
+      *host_arguments,
       stdin_data: prompt
     )
     [JSON.parse(stdout), stderr, status, stdout]
@@ -159,6 +159,19 @@ class PromptCompatibilityTest < Minitest::Test
     assert_equal true, result.fetch("stop_required")
   end
 
+  def test_conflicting_active_host_flags_fail_closed
+    result, stderr, status, stdout = run_helper(
+      fixture("active-host-codex.txt"), active_host: %w[codex claude]
+    )
+
+    refute status.success?
+    assert_empty stderr
+    assert_equal "ambiguous-active-host", result.fetch("error")
+    assert_equal "ambiguous", result.fetch("active_host")
+    refute result.key?("decision")
+    refute_includes stdout, "Keep this prompt byte-stable"
+  end
+
   def test_partial_or_non_advisory_metadata_fails_closed_before_host_inference
     prompts = [
       fixture("active-host-codex.txt").sub("Route requirement: advisory\n", ""),
@@ -210,16 +223,22 @@ class PromptCompatibilityTest < Minitest::Test
 
   def test_malformed_batch_size_target_fails_closed_instead_of_partial_conversion
     marker = "MALFORMED_BATCH_TARGET_MUST_NOT_BE_ECHOED"
-    prompt = fixture("codex-to-claude.txt")
-             .sub("Batch size target: codex;wave: 1/1", "Batch size target: codex wave: 1/1") + marker
+    prompts = [
+      fixture("codex-to-claude.txt")
+        .sub("Batch size target: codex;wave: 1/1", "Batch size target: codex wave: 1/1"),
+      fixture("codex-to-claude.txt")
+        .sub("Batch size target: codex;wave: 1/1", "Batch size target = codex;wave: 1/1")
+    ]
 
-    result, stderr, status, stdout = run_helper(prompt, active_host: "claude")
+    prompts.each do |prompt|
+      result, stderr, status, stdout = run_helper(prompt + marker, active_host: "claude")
 
-    refute status.success?
-    assert_empty stderr
-    assert_equal "invalid-batch-size-target", result.fetch("error")
-    refute result.key?("decision")
-    refute_includes stdout, marker
+      refute status.success?
+      assert_empty stderr
+      assert_equal "invalid-batch-size-target", result.fetch("error")
+      refute result.key?("decision")
+      refute_includes stdout, marker
+    end
   end
 
   def test_goal_mode_is_rejected_for_non_codex_prompt_hosts
@@ -283,6 +302,26 @@ class PromptCompatibilityTest < Minitest::Test
       ["#{fixture('codex-to-claude.txt')}Use $scw:pr-batch for this route.\n", "claude"],
       ["#{fixture('claude-to-codex.txt')}Use Claude Agent with isolation: 'worktree'.\n", "codex"],
       ["#{fixture('codex-to-claude.txt')}Call spawn_agent with sandbox_permissions: use_default.\n", "claude"]
+    ]
+
+    prompts.each do |prompt, active_host|
+      result, stderr, status = run_helper(prompt, active_host:)
+
+      refute status.success?
+      assert_empty stderr
+      assert_equal "unsupported-host-mechanic", result.fetch("error")
+      refute result.key?("decision")
+    end
+  end
+
+  def test_same_host_and_legacy_prompts_reject_other_host_mechanics
+    claude_prompt = fixture("active-host-codex.txt")
+                    .sub("Prompt host: codex", "Prompt host: claude")
+                    .sub("Use $pr-batch", "Use /pr-batch")
+    prompts = [
+      ["#{fixture('active-host-codex.txt')}Use Claude Agent with isolation: 'worktree'.\n", "codex"],
+      ["#{claude_prompt}Run /simplify before mutation.\n", "claude"],
+      ["#{fixture('legacy-goal.txt')}Use Claude Workflow with isolation: 'worktree'.\n", "codex"]
     ]
 
     prompts.each do |prompt, active_host|

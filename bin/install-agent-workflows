@@ -3576,12 +3576,11 @@ verify_install_destinations() {
         exit 1
       fi
     done
-    for destination in "$target/docs"; do
-      if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
-        echo "Refusing to replace non-directory path: $destination" >&2
-        exit 1
-      fi
-    done
+    destination="$target/docs"
+    if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
+      echo "Refusing to replace non-directory path: $destination" >&2
+      exit 1
+    fi
     for doc_directory in "${pack_doc_directories[@]}"; do
       destination="$target/docs/$doc_directory"
       if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
