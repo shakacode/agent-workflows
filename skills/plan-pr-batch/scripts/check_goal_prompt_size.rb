@@ -129,11 +129,11 @@ STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_orde
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
 STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/excl/owners;" \
                               "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
-                              "live=<ref>;" \
+                              "live=<ref|i>;" \
                               "ft=refs/paths/create/delete/rename/companions/collisions/owner/serial/UNKNOWN"
 TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/excl/owners; " \
                                      "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
-                                     "live=<ref>; " \
+                                     "live=<ref|i>; " \
                                      "ft=refs/paths/create/delete/rename/companions/collisions/owner/serial/UNKNOWN."
 GOAL_MODE_COMPACT_CONTRACT = "GMCC-v5:CI@head/configured-reviewers " \
                              "pending|missing|untriaged|failed|threads open|UNKNOWN=>" \

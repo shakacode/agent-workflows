@@ -427,6 +427,24 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_unrelated_root_merge_keys_do_not_block_preflight
+    Dir.mktmpdir("batch-plan-unrelated-root-merge") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)
+  defaults: &defaults
+    base_branch: main
+  <<: *defaults
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+      assert_empty result.fetch("advisories")
+    end
+  end
+
   def test_malformed_declared_companion_policy_fails_closed
     Dir.mktmpdir("batch-plan-malformed-companion-policy") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))

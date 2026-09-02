@@ -302,7 +302,7 @@ precise blocker.
    and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle` It must include this exact self-contained completion line:
    `- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.`
    Each prompt must also include this exact compact scope line:
-   `Scope: titles/deps/excl/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<ref>; ft=refs/paths/create/delete/rename/companions/collisions/owner/serial/UNKNOWN.`
+   `Scope: titles/deps/excl/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<ref|i>; ft=refs/paths/create/delete/rename/companions/collisions/owner/serial/UNKNOWN.`
    Each prompt must include these exact compact launch lines:
    ``Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop``
    ``PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security``

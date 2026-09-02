@@ -761,18 +761,69 @@ module BatchPlanPreflight
       root = document.root
       next [] unless root.is_a?(Psych::Nodes::Mapping)
 
-      return [:invalid, nil] if root.children.each_slice(2).any? do |key, _value|
-        key.is_a?(Psych::Nodes::Scalar) && key.value == "<<"
+      root_pairs = root.children.each_slice(2).to_a
+      companion_values = root_pairs.filter_map do |key, value|
+        value if companion_policy_key_node?(key)
       end
 
-      root.children.each_slice(2).filter_map do |key, value|
-        value if key.is_a?(Psych::Nodes::Scalar) && key.value == "companion_path_conventions"
+      if companion_values.empty? && root_pairs.any? { |key, _value| merge_key_node?(key) }
+        anchors = companion_policy_anchor_map(root)
+        return [:invalid, nil] if companion_policy_mapping_has_companion_key?(root, anchors)
       end
+
+      companion_values
     end
     return [:absent, nil] if matching_values.empty?
     return [:invalid, nil] unless documents.one? && matching_values.one?
 
     [:present, matching_values.first]
+  end
+
+  def companion_policy_key_node?(node)
+    node.is_a?(Psych::Nodes::Scalar) && node.value == "companion_path_conventions"
+  end
+
+  def merge_key_node?(node)
+    node.is_a?(Psych::Nodes::Scalar) && node.value == "<<"
+  end
+
+  def companion_policy_anchor_map(node, anchors = {})
+    case node
+    when Psych::Nodes::Mapping, Psych::Nodes::Sequence
+      anchors[node.anchor] = node if node.anchor
+      node.children.each { |child| companion_policy_anchor_map(child, anchors) }
+    end
+    anchors
+  end
+
+  def companion_policy_mapping_has_companion_key?(mapping, anchors, seen = {})
+    return false unless mapping.is_a?(Psych::Nodes::Mapping)
+
+    anchor = mapping.anchor
+    return false if anchor && seen[anchor]
+
+    seen = seen.merge(anchor => true) if anchor
+
+    pairs = mapping.children.each_slice(2).to_a
+    return true if pairs.any? { |key, _value| companion_policy_key_node?(key) }
+
+    pairs.any? do |key, value|
+      merge_key_node?(key) && companion_policy_merge_value_has_companion_key?(value, anchors, seen)
+    end
+  end
+
+  def companion_policy_merge_value_has_companion_key?(value, anchors, seen)
+    case value
+    when Psych::Nodes::Alias
+      merged = anchors[value.anchor]
+      merged && companion_policy_mapping_has_companion_key?(merged, anchors, seen)
+    when Psych::Nodes::Sequence
+      value.children.any? { |child| companion_policy_merge_value_has_companion_key?(child, anchors, seen) }
+    when Psych::Nodes::Mapping
+      companion_policy_mapping_has_companion_key?(value, anchors, seen)
+    else
+      false
+    end
   end
 
   def companion_policy_fragment_node(yaml)
