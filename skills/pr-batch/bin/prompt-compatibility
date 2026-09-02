@@ -66,6 +66,7 @@ PROTECTED_PREFIXES = ["Work item:", "Safety gates:", "Merge authority:"].freeze
 CLAUDE_RUNTIME_MECHANICS = [
   %r{(?<![[:alnum:]_/$])/(?:code-review|loop|resume)\b},
   %r{(?<![[:alnum:]_/$])claude\s+--(?:resume|continue)\b}i,
+  %r{(?<![[:alnum:]_/$])/plugin\b},
   %r{(?<![[:alnum:]_/$])/pr-review-toolkit:review-pr\b},
   /\bClaude (?:Agent|Workflow)\b/,
   /(?:\b(?:Agent|Workflow)\b|`(?:Agent|Workflow)`|(?:\*\*|\*|__|_)(?:Agent|Workflow)(?:\*\*|\*|__|_))\s+(?:tool|subagents?|workers?)\b/,

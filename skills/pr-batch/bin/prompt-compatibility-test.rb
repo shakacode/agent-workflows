@@ -464,6 +464,8 @@ class PromptCompatibilityTest < Minitest::Test
       ["#{fixture('claude-to-codex.txt')}Use /resume to continue the named session.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}claude --resume batch-name\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}claude --continue\n", "codex"],
+      ["#{fixture('claude-to-codex.txt')}Use /plugin install scw@agent-workflows.\n", "codex"],
+      ["#{fixture('claude-to-codex.txt')}Use /plugin marketplace add shakacode/agent-workflows.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}isolation: worktree\n", "codex"],
       [markdown_agent_prompt, "codex"],
       ["#{fixture('claude-to-codex.txt')}Dispatch each lane with the Agent tool.\n", "codex"],
