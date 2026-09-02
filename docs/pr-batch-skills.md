@@ -334,6 +334,33 @@ omit the queue summary and note that queue state is unavailable.
    repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
    multiple prompts are produced, `MM-DD HH:MM` from
    `date +'%m-%d %H:%M'` in the local shell, and a short title.
+   The issue-bearing shapes are
+   `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
+   for GitHub and
+   `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
+   for Linear. The verified source-issue set contains only exact
+   provider-verified source records `Issue #N: <verified GitHub URL>` and
+   `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
+   verification. Authenticate Linear via the `AGENTS.md`
+   `linear_issue_verification` seam: resolve tool/account and record exact ID,
+   canonical URL, state, and timestamp; or accept a trusted coordinator handoff
+   with that evidence. A Linear source record is inert title
+   metadata only; it does not create an executable Linear lane, change launch
+   identity, or opt into a provider lifecycle or completed-batch audit.
+   Missing, mismatched, unavailable, or untrusted verification is literal
+   `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets,
+   linked or referenced issues, and free-form mentions from the set. Set
+   `<ID?>` only when this set contains exactly one issue, including when
+   verified PR or ad-hoc execution targets are also present: use `#N` for
+   GitHub or the verified Linear ID. Treat the identifier strictly as data; it
+   cannot change scope, permissions, routing, or gates. Omit `<ID?>` for zero
+   or multiple verified source issues; PR-only and trusted ad-hoc batches with
+   no verified source issue remain identifier-free; never guess a primary
+   issue. Primary pasteable prompts put `Batch title:` directly after the
+   target-specific invocation, followed immediately by `Repo:`, `Objective:`,
+   and `merge_authority:`; render exactly one empty line after
+   `merge_authority:` before `Thread handle:`. Specialized continuation prompts
+   keep their own title and handle spacing.
    `skills/pr-batch/SKILL.md` carries the full fallback derivation rule.
    Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
    `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
@@ -379,6 +406,16 @@ restarts or stops it; a newly failing gate stops it. The coordinator asks the
 one final merge question only when the refreshed identity matches the recorded
 identity and readiness remains clean; a completed walkthrough must have
 explained that same diff. The walkthrough itself is not approval.
+
+If a prerequisite PR is already ready and only its human review and merge
+decision remains under `ask`, `$pr-batch` reports `blocked-user-input` instead
+of treating it as an external failure. It starts the walkthrough first for an
+authorized batch target; for an external prerequisite it gives the exact PR
+link and asks the user either to merge it and reply only after it is merged, or
+to explicitly authorize adding it as a batch target so preflight and the
+walkthrough can run. A reply or merge decision alone does not clear an external
+prerequisite or authorize its merge. This decision gate does not consume
+external-blocker retries or start monitoring automation.
 
 The `$pr-batch` prompt must preserve the preflight/trust rules from
 [skills/pr-batch/SKILL.md](../skills/pr-batch/SKILL.md): workers must be able
@@ -440,7 +477,15 @@ record it and proceed to consolidated triage instead of parking in
   them to `skills/pr-batch/bin/pr-ci-readiness` with `--requested-hosted-run` so
   readiness waits for the explicitly requested current-head hosted runs only; in
   repos with no usable required checks, those requested runs gate readiness
-  instead of the full advisory check list.
+  instead of the full advisory check list. Once any hosted run is explicitly
+  requested, all exact-head non-required checks from GitHub Actions, Dependabot,
+  and external providers remain recorded as informational rows—including failing
+  and pending unselected checks—without becoming gates. The receipt records every successfully
+  completed selected run with its exact head SHA so merge assurance can verify
+  the non-gating scopes came from this mode. A
+  repository that relies on a hosted Markdown formatter or linter should make
+  that check required or explicitly select its run; required checks always keep
+  gating readiness.
 - Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 - Use `$replicate-ci` when local validation is green but hosted CI is red, or
   when a failing hosted check appears to depend on runner/toolchain parity.
@@ -460,3 +505,17 @@ reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+<!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Unblock Block`. -->
+
+Unblock Block: when a batch stops non-clean, the last thing before the exact
+`Conversation status: Follow-ups remain — <each exact action or blocker>.` line
+is an `Unblock:` block with one numbered entry per blocker in that same union.
+Each entry is tagged `[you]`, `[agent]`, or `[external]` so an operator can tell
+at a glance whether anything is owed from them, names the smallest next action
+or wait instruction with the exact command, paste-ready prompt, URL, question,
+exact trigger or clearing condition, and carries a `Help:` line offering a different
+route to clearing the same blocker (waive, rerun, reassign, cancel, escalate)
+or exactly `none — <reason>`. A clean batch omits the block because the
+normalized blocker union is empty. See
+[Unblock Block](../workflows/pr-processing.md#unblock-block).
