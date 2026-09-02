@@ -47,8 +47,13 @@ ci_change_detector: "n/a"
 # `**` component crosses zero or more path components; `*`, `?`, and bracket
 # classes stay within one component.
 # ADR 0003 is the source of truth for these copied portable defaults. File,
-# line, and commit maxima are enforced; max_reviewed_heads is shadow-only until
-# a checked calibration artifact explicitly graduates it to enforcement.
+# reviewable-line, and commit maxima are enforced against reviewable metrics;
+# raw total changed lines stay fail-closed as a backstop, and max_reviewed_heads
+# is shadow-only until a checked calibration artifact explicitly graduates it to
+# enforcement.
+# Portable generated_paths defaults ship for lockfiles. Consumer generated_paths
+# are added to the portable defaults; a consumer can never remove a portable
+# generated default.
 # Portable safe_path_groups defaults ship for documentation and tests. Consumer
 # include and exclude patterns are added to the portable sets; a consumer can
 # never remove a portable exclude. Omit safe_path_groups entirely to take the
@@ -59,6 +64,7 @@ ci_change_detector: "n/a"
 #   thresholds:
 #     max_changed_files: 29
 #     max_changed_lines: 999
+#     max_total_changed_lines: 20000
 #     max_commits: 9
 #     max_reviewed_heads: 3
 #   human_review_paths:

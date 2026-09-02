@@ -1746,14 +1746,19 @@ are closed:
 
 Common persistent-data, infrastructure/delivery, irreversible/external,
 compatibility, security/auth/privacy, and architectural/product categories
-always apply. Portable numeric maxima are 29 changed files, 999 added plus
-deleted lines, 9 commits, and 3 distinct submitted-review head SHAs; the next
-value triggers. All files and lines count, including generated files and
-lockfiles. Safe documentation, strengthening-tests, and
-formatting/comment-only classifications are conjunctive reporting evidence;
-they never subtract hard, path, size, churn, rollback, or maintainer-concern
-gates. `generated_paths` is reporting-only. The checked calibration decision's
-reviewed-head maximum must equal the portable calibrated default; a
+always apply. Portable numeric maxima are 29 changed files, 999 reviewable
+added plus deleted lines, 20,000 raw total changed lines, 9 commits, and 3
+distinct submitted-review head SHAs; the next value triggers on the reviewable
+gates, while the raw total backstop stays fail-closed. All raw files and lines
+count for the backstop, including generated files and lockfiles. Safe
+documentation, strengthening-tests, and formatting/comment-only
+classifications are conjunctive reporting evidence; they never subtract hard,
+path, churn, rollback, or maintainer-concern gates. `generated_paths`
+discount reviewable size gates while the raw total backstop remains
+fail-closed; `reviewable_changed_lines` keeps the generated overlap counted
+when a human-review path also matches. The raw backstop gate is
+`total-changed-lines-limit`. The checked calibration decision's reviewed-head
+maximum must equal the portable calibrated default; a
 trusted-base seam may then tighten it or relax it with the required rationale,
 and that effective trusted-base value controls both shadow and enforced
 comparisons.

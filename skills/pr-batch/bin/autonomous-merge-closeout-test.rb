@@ -28,6 +28,7 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     public-compatibility
     reviewed-heads-limit
     security-auth-privacy
+    total-changed-lines-limit
   ].freeze
   EXPECTED_SUMMARY_REASON = {
     "architectural-product-judgment" => "requires architectural or product judgment",
@@ -40,6 +41,7 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     "persistent-data-storage" => "changes persistent data or storage behavior",
     "public-compatibility" => "changes a public compatibility contract",
     "reviewed-heads-limit" => "reviewed-head limit",
+    "total-changed-lines-limit" => "raw changed-line backstop",
     "security-auth-privacy" => "changes security, authentication, privacy, or a trust boundary"
   }.freeze
 
@@ -866,6 +868,8 @@ class AutonomousMergeCloseoutTest < Minitest::Test
       "metrics" => {
         "changed_files" => 1,
         "changed_lines" => 2,
+        "reviewable_changed_files" => 1,
+        "reviewable_changed_lines" => 2,
         "commits" => 1,
         "reviewed_heads" => 0
       },

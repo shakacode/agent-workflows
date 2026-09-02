@@ -28,6 +28,7 @@ module AutonomousMergeDecision
     public-compatibility
     reviewed-heads-limit
     security-auth-privacy
+    total-changed-lines-limit
   ].freeze
 
   module_function
