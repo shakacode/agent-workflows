@@ -11,6 +11,7 @@ require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflows-delivery-state", __dir__)
 load SCRIPT
+require_relative "agent_doctor/install_ownership"
 
 class AgentWorkflowsDeliveryStateTest < Minitest::Test
   def setup
@@ -1728,18 +1729,37 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
-  def test_managed_bin_copy_matching_the_current_source_stays_compatible
+  def test_managed_bin_helper_matching_the_current_source_stays_compatible
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)
       managed_bin_metadata(target, source, fingerprints)
-      moved = "policy library v2\n"
-      File.write(File.join(source, "bin/agent_doctor/autonomous_merge_policy.rb"), moved)
-      File.write(File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb"), moved)
+      moved = "status helper v2\n"
+      File.write(File.join(source, "bin/agent-workflows-status"), moved)
+      File.write(File.join(target, "bin/agent-workflows-status"), moved)
 
       payload, status, output = check_managed_bin(target, source)
 
       assert status.success?, output
       assert_equal "present", payload.dig("bin", "state")
+    end
+  end
+
+  def test_doctor_module_matching_only_the_current_source_still_blocks
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      # Hand-copying newer source content over an installed module leaves the
+      # ownership marker attesting the recorded contents, so the installer
+      # refuses the upgrade however current the file looks.
+      moved = "policy library v2\n"
+      module_path = File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb")
+      File.write(File.join(source, "bin/agent_doctor/autonomous_merge_policy.rb"), moved)
+      File.write(module_path, moved)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [module_path], payload.dig("bin", "blocking")
     end
   end
 
@@ -1827,7 +1847,11 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       source, target, fingerprints = managed_bin_fixture(tmp)
       managed_bin_metadata(target, source, fingerprints)
       File.write(File.join(target, "bin/personal-helper"), "unrelated\n")
-      File.write(File.join(target, "bin/agent_doctor/.agent-workflows-managed"), "marker\n")
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
 
       payload, status, output = check_managed_bin(target, source)
 
@@ -1890,9 +1914,14 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       nested = write_managed_bin_copy(target, source, "agent_doctor/nested/module.rb" => "nested\n")
       fingerprints = managed_bin_fixture_fingerprints(target, source).merge(nested)
       managed_bin_metadata(target, source, fingerprints)
-      %w[.agent-workflows-managed .agent-stack-managed].each do |marker|
-        File.write(File.join(target, "bin/agent_doctor", marker), "marker\n")
-      end
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # Both markers are excluded from the managed inventory. The workflows
+      # marker is additionally verified, so it carries its real attestation.
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "agent-stack-module-v1:agent_doctor\n")
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
 
       payload, status, output = check_managed_bin(target, source)
 
@@ -1970,6 +1999,88 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert_equal [tampered, deleted].sort, bin.fetch("blocking")
       assert_includes bin.fetch("paths"), tampered
       assert_includes bin.fetch("missing"), "agent_doctor/renderer.rb"
+    end
+  end
+
+  def test_symlinked_doctor_ownership_marker_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      marker = File.join(target, "bin/agent_doctor/.agent-workflows-managed")
+      File.symlink(File.join(source, "bin/agent-workflows-status"), marker)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [marker], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_corrupt_doctor_ownership_marker_blocks_an_otherwise_clean_install
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      marker = File.join(target, "bin/agent_doctor/.agent-workflows-managed")
+      File.write(marker, "agent-workflows-doctor-v1:#{'0' * 64}\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [marker], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_valid_doctor_ownership_marker_stays_compatible
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_marker_conflict_never_masks_a_named_conflict
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      intruder = File.join(target, "bin/agent_doctor/intruder.rb")
+      File.write(intruder, "foreign\n")
+      File.write(File.join(target, "bin/agent_doctor/.agent-workflows-managed"), "stale\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      # The intruder is what a reader must act on; the stale marker follows from
+      # it and must not add a second path to chase.
+      assert_equal [intruder], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_unreadable_doctor_root_blocks_without_raising
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      FileUtils.chmod(0o000, doctor_root)
+
+      begin
+        payload, status, output = check_managed_bin(target, source)
+
+        refute status.success?, output
+        assert_equal [doctor_root], payload.dig("bin", "blocking")
+        assert_includes payload.fetch("reason"), "cannot be read"
+        refute_includes output, "Errno::EACCES"
+      ensure
+        FileUtils.chmod(0o755, doctor_root)
+      end
     end
   end
 

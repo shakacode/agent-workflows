@@ -8,6 +8,7 @@ require "find"
 require "open3"
 require "optparse"
 require "tmpdir"
+require_relative "agent_doctor/install_ownership"
 require_relative "agent_doctor/timeout_budget"
 
 module AgentWorkflowsDeliveryState
@@ -15,6 +16,7 @@ module AgentWorkflowsDeliveryState
   MANAGED_BIN_COPY_FINGERPRINTS = "managed_bin_copy_fingerprints"
   MANAGED_DOCTOR_SUBDIRECTORY = "agent_doctor"
   MANAGED_DOCTOR_OWNERSHIP_MARKERS = %w[.agent-workflows-managed .agent-stack-managed].freeze
+  MANAGED_DOCTOR_MARKER = ".agent-workflows-managed"
 
   module_function
 
@@ -666,10 +668,34 @@ module AgentWorkflowsDeliveryState
     actual = managed_path_fingerprint(path)
     return false unless actual
     return true if actual == digest.downcase
+    # The doctor tree gets no current-source fallback. Its ownership marker
+    # still attests the recorded contents, so a module hand-copied to newer
+    # source content is refused by the installer however new it looks here.
+    return false if name.include?("/") || name == MANAGED_DOCTOR_SUBDIRECTORY
 
-    # A copy that already matches the current source is what the installer would
-    # write anyway, so it stays owned across a source that moved forward.
+    # A helper that already matches the current source is what the installer
+    # would write anyway, so it stays owned across a source that moved forward.
     actual == managed_path_fingerprint(File.join(source, "bin", name))
+  end
+
+  # The installer refuses an install whose doctor ownership marker is the wrong
+  # shape or no longer attests the tree. Report the same conflict, but only when
+  # nothing else already names one, so the marker never adds noise to a conflict
+  # that is already reported against the file that caused it.
+  def managed_doctor_marker_conflict(bin_root, fingerprints)
+    return nil unless fingerprints.keys.any? { |name| name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/") }
+
+    doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
+    return nil unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+
+    marker = File.join(doctor_root, MANAGED_DOCTOR_MARKER)
+    return marker if File.symlink?(marker)
+    return nil unless File.exist?(marker)
+    return marker unless File.file?(marker)
+
+    AgentDoctor::InstallOwnership.verify(doctor_root, marker) ? nil : marker
+  rescue SystemCallError
+    doctor_root
   end
 
   # The installer's ownership marker only tolerates a doctor tree it can verify
@@ -691,6 +717,9 @@ module AgentWorkflowsDeliveryState
     return [] if Dir.empty?(doctor_root)
 
     names.map { |name| File.join(bin_root, name) }
+  rescue SystemCallError
+    # An unreadable tree is reported through the root conflict instead.
+    []
   end
 
   # rsync --delete owns the whole managed doctor tree, and the installer's
@@ -705,20 +734,25 @@ module AgentWorkflowsDeliveryState
     return [] unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
 
     unexpected = []
-    Find.find(doctor_root) do |entry|
-      next if entry == doctor_root
+    begin
+      Find.find(doctor_root) do |entry|
+        next if entry == doctor_root
 
-      relative = entry.delete_prefix("#{doctor_root}/")
-      next if MANAGED_DOCTOR_OWNERSHIP_MARKERS.include?(relative)
+        relative = entry.delete_prefix("#{doctor_root}/")
+        next if MANAGED_DOCTOR_OWNERSHIP_MARKERS.include?(relative)
 
-      if File.directory?(entry) && !File.symlink?(entry)
-        next if recorded.include?(relative) || recorded.any? { |name| name.start_with?("#{relative}/") }
+        if File.directory?(entry) && !File.symlink?(entry)
+          next if recorded.include?(relative) || recorded.any? { |name| name.start_with?("#{relative}/") }
 
-        unexpected << entry
-        Find.prune
-      elsif !recorded.include?(relative)
-        unexpected << entry
+          unexpected << entry
+          Find.prune
+        elsif !recorded.include?(relative)
+          unexpected << entry
+        end
       end
+    rescue SystemCallError
+      # An unreadable tree is reported through the root conflict instead.
+      return []
     end
     unexpected
   end
@@ -751,6 +785,17 @@ module AgentWorkflowsDeliveryState
       }
     end
 
+    doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
+    if File.directory?(doctor_root) && !File.symlink?(doctor_root) &&
+       !(File.readable?(doctor_root) && File.executable?(doctor_root))
+      return {
+        "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [doctor_root],
+        "reason" => "managed doctor root cannot be read: #{doctor_root}",
+        "guidance" => "Restore read and search permission on the listed directory, or move it aside so the " \
+                      "installer reinstalls the tree, then rerun."
+      }
+    end
+
     present = []
     missing = []
     unowned_paths = []
@@ -771,6 +816,9 @@ module AgentWorkflowsDeliveryState
     end
     unowned = (unowned_paths + unexpected_managed_doctor_entries(bin_root, fingerprints)).uniq.sort
     unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort
+    if unowned.empty? && unrestorable.empty? && (marker = managed_doctor_marker_conflict(bin_root, fingerprints))
+      unowned = [marker]
+    end
     blocking = (unowned + unrestorable).uniq.sort
 
     state = if blocking.any?
@@ -784,7 +832,9 @@ module AgentWorkflowsDeliveryState
     return payload if blocking.empty?
 
     clauses = []
-    clauses << "refusing to replace modified, ambiguous, or unowned managed bin paths: #{unowned.join(', ')}" if unowned.any?
+    if unowned.any?
+      clauses << "refusing to replace modified, ambiguous, or unowned managed bin paths: #{unowned.join(', ')}"
+    end
     if unrestorable.any?
       clauses << "the installer cannot restore missing managed doctor modules in place: #{unrestorable.join(', ')}"
     end

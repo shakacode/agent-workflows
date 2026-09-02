@@ -473,7 +473,12 @@ as `CHECK_FAILED` with the offending paths under `bin.blocking` instead of
 well as the file content, and the managed `<target>/bin/agent_doctor` directory
 itself is recorded with its mode, so a permission-only change is reported too.
 This matches the ownership marker the installer verifies over that tree, which
-also hashes exact modes. Because `rsync --delete` owns the whole `<target>/bin/agent_doctor` tree,
+also hashes exact modes; that marker is itself checked, so an install whose
+doctor tree is otherwise unchanged but whose marker is missing its attestation,
+corrupted, or replaced by a symlink is reported rather than left to fail at the
+next install. A managed doctor module is owned only by its recorded
+fingerprint: matching the current source is not enough there, because the
+marker still attests the recorded contents. Because `rsync --delete` owns the whole `<target>/bin/agent_doctor` tree,
 an unrecorded entry there is reported as well, matching the refusal the
 installer's ownership marker already raises; the two ownership markers
 themselves are never recorded and never block. A missing top-level helper stays
