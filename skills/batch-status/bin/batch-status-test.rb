@@ -206,7 +206,7 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
-  def test_target_status_uses_a_lane_filtered_batch_lifecycle_for_the_batch_map
+  def test_target_status_leaves_batch_lifecycles_empty_for_target_probes
     request_id = "20260823T054818.000000Z-help4846"
     target_coordination = {
       "claims" => [{
@@ -246,13 +246,11 @@ class BatchStatusTest < Minitest::Test
       payload = JSON.parse(stdout)
       row = payload.fetch("items").first
       lifecycle = row.fetch("help_request_lifecycle")
-      batch_lifecycle = payload.fetch("help_request_lifecycles").fetch("aw-help")
 
       assert_equal "aw-help", row.fetch("batch_id")
       assert_equal "review", row.fetch("lane")
       assert_equal "clear", lifecycle.fetch("status")
-      assert_equal "clear", batch_lifecycle.fetch("status")
-      assert_empty batch_lifecycle.fetch("requests")
+      assert_empty payload.fetch("help_request_lifecycles")
     end
   end
 

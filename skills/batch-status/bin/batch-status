@@ -413,7 +413,6 @@ items = requests.map do |request|
                     max_open_seconds: options.fetch(:help_request_max_open_seconds),
                     lane: lane
                   )
-                  help_request_lifecycles[batch_id] ||= lane_help_request_lifecycles[lane_cache_key]
                 else
                   { "status" => UNKNOWN, "error" => "lane unavailable for target-scoped replay" }
                 end
