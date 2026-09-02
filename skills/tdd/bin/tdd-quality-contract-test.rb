@@ -63,6 +63,9 @@ class TddQualityContractTest < Minitest::Test
     assert_path_exists REFERENCE_PATH
     assert_includes skill, "[Writing Good Tests](references/writing-good-tests.md)"
     assert_includes workflow, "[Writing Good Tests](../skills/tdd/references/writing-good-tests.md)"
+    [skill, workflow].each do |entrypoint|
+      assert_includes entrypoint, "Before writing or changing tests, mocks, or test helpers, apply"
+    end
     assert_equal skill[skill.index("## Core Loop")..], workflow[workflow.index("## Core Loop")..]
     assert_includes validation, "ruby skills/tdd/bin/tdd-quality-contract-test.rb"
 
