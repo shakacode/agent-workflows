@@ -161,6 +161,31 @@ class ConfiguredEvidenceUploadTest < Minitest::Test
     end
   end
 
+  def test_successful_wrapper_cannot_leave_a_background_process_running
+    with_repo do |root|
+      write_policy(root, configured: true)
+      marker = File.join(root, "background-child-survived")
+      write_wrapper(root, <<~RUBY)
+        #!/usr/bin/env ruby
+        fork do
+          sleep 0.5
+          File.write(#{marker.inspect}, "survived")
+        end
+        puts #{ATTACHMENT_URL.inspect}
+      RUBY
+      base_sha = commit!(root, "configure backgrounding evidence uploader")
+      artifact = write_artifact(root)
+
+      stdout, stderr, status = run_upload(root, base_sha, artifact, timeout: 0.1)
+      sleep 0.6
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "configured uploader timed out"
+      refute_path_exists marker
+    end
+  end
+
   private
 
   def with_repo
