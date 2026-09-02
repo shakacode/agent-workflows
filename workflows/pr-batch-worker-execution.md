@@ -1,8 +1,8 @@
 # PR-Batch Worker Execution
 
 This component owns bounded implementation for an accepted lane.
-Load after prompt intake, planning, dependency preflight, and dispatch, before
-creating the lane worktree or editing files.
+Load after prompt intake, planning, dependency preflight, and dispatcher
+selection, before implementation dispatch, lane-worktree creation, or editing.
 
 ## Boundary
 
@@ -21,16 +21,18 @@ own base integration, conflict resolution, final validation, PR publication,
 review convergence, hosted CI, readiness, merge, production, promotion, or
 release.
 
-After handoff, run the [Task Review Loop](pr-batch-task-review.md); it owns task
-review and fix rounds.
+Before implementation dispatch, use the [Task Review Loop](pr-batch-task-review.md)
+to create the task brief consumed here. Return after the committed handoff for
+its task review and fix rounds.
 
 ## Input Contract
 
 Consume one lane record with known values for:
 
 - the exact accepted target and stable coordination identity;
-- lane id, goal, non-goals, supported diagnosis, invariants, acceptance
-  criteria, required verification, stop conditions, and owned paths;
+- the accepted task brief with its exact identity and digest, lane goal,
+  non-goals, supported diagnosis, invariants, acceptance criteria, required
+  verification, stop conditions, and owned paths;
 - repository root, accepted base commit, worktree path, and branch name;
 - the latest dependency-gate permission for the requested action;
 - focused verification commands or their repository discovery seam;

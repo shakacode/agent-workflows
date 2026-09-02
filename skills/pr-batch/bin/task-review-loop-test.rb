@@ -15,6 +15,7 @@ FIXTURES = File.expand_path("../fixtures/task-review-loop-replays.json", __dir__
 SCHEMA = File.expand_path("../../../docs/schemas/task-review-loop-v1.schema.json", __dir__)
 NOTICES = File.expand_path("../../../THIRD_PARTY-NOTICES.md", __dir__)
 VALIDATE = File.expand_path("../../../bin/validate", __dir__)
+INSTALLER = File.expand_path("../../../bin/install-agent-workflows", __dir__)
 BASE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 HEAD_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 FIX_HEAD_SHA = "cccccccccccccccccccccccccccccccccccccccc"
@@ -62,6 +63,31 @@ class TaskReviewLoopTest < Minitest::Test
     validation = File.read(VALIDATE, encoding: "UTF-8")
 
     assert_equal 1, validation.scan("ruby skills/pr-batch/bin/task-review-loop-test.rb").length
+  end
+
+  def test_flat_install_ships_the_schema_and_canonical_finding_validator
+    Dir.mktmpdir("task-review-loop-install") do |directory|
+      target = File.join(directory, "agent-home")
+      Dir.mkdir(target)
+      _stdout, stderr, status = Open3.capture3(
+        INSTALLER,
+        "--host", "codex",
+        "--target", target,
+        "--mode", "copy",
+        "--delivery-mode", "flat"
+      )
+
+      assert status.success?, stderr
+      assert File.file?(File.join(target, "docs/schemas/task-review-loop-v1.schema.json"))
+      assert File.executable?(File.join(target, "bin/validate-review-findings"))
+
+      stdout, helper_stderr, helper_status = Open3.capture3(
+        File.join(target, "skills/pr-batch/bin/task-review-loop"),
+        stdin_data: "{}"
+      )
+      assert helper_status.success?, helper_stderr
+      assert_equal "blocked", JSON.parse(stdout).fetch("status")
+    end
   end
 
   def test_reducer_rejects_fields_outside_the_closed_contract
@@ -148,6 +174,24 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_pending_replacement_package_uses_fenced_transition_evidence
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = replacement_input(directory)
+      initial_round = input.fetch("rounds").first
+      input = input.merge(
+        "review_state" => "pending",
+        "rounds" => [initial_round],
+        "open_findings" => initial_round.fetch("review_findings").merge("ids" => ["finding-1"]),
+        "finding_controls" => [{ "finding_id" => "finding-1", "load_bearing" => false, "cap_piercing" => false }],
+        "replacement_evidence" => [replacement_record]
+      )
+      output, = evaluate(input)
+
+      assert_equal "review_eligible", output.fetch("status")
+      assert_equal ["exact-review-package-current"], output.fetch("reasons")
+    end
+  end
+
   def test_addressed_finding_with_consequential_fix_breakage_requires_another_fix
     replay = replay_case("addressed-finding-with-consequential-breakage")
 
@@ -209,6 +253,23 @@ class TaskReviewLoopTest < Minitest::Test
       assert_equal replay.fetch("expected"), output.slice(*replay.fetch("expected").keys)
       assert_equal "blocked", sixth_output.fetch("status")
       assert_includes sixth_output.fetch("reasons"), "round-cap-exceeded"
+    end
+  end
+
+  def test_pending_package_after_round_five_cannot_start_a_sixth_fix_round
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = cap_input(directory)
+      package = with_digest(
+        input.fetch("review_package").merge(
+          "prior_round_digest" => input.fetch("rounds").last.fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+      output, = evaluate(
+        input.merge("review_state" => "pending", "review_package" => package, "cap_adjudication" => nil)
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "round-cap-reached"
     end
   end
 
@@ -330,6 +391,30 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_every_completed_round_chains_from_the_task_base_and_prior_head
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = consequential_breakage_input(directory)
+      rounds = input.fetch("rounds").dup
+      rounds[0] = with_digest(
+        rounds.fetch(0).merge("base_sha" => OTHER_HEAD_SHA).reject { |key, _value| key == "digest" }
+      )
+      package = with_digest(
+        input.fetch("review_package").merge("prior_round_digest" => rounds.fetch(0).fetch("digest"))
+             .reject { |key, _value| key == "digest" }
+      )
+      rounds[1] = with_digest(
+        rounds.fetch(1).merge(
+          "prior_round_digest" => rounds.fetch(0).fetch("digest"),
+          "package_digest" => package.fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+      output, = evaluate(input.merge("review_package" => package, "rounds" => rounds))
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-round-base-chain-mismatch"
+    end
+  end
+
   def test_re_review_package_is_scoped_to_the_fix_diff
     Dir.mktmpdir("task-review-loop") do |directory|
       input = rebind_package(consequential_breakage_input(directory), "scope" => "task")
@@ -375,6 +460,63 @@ class TaskReviewLoopTest < Minitest::Test
 
       assert_equal "blocked", output.fetch("status")
       assert_includes output.fetch("reasons"), "open-findings-round-mismatch"
+    end
+  end
+
+  def test_re_review_cannot_omit_a_previously_open_finding
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = consequential_breakage_input(directory)
+      empty_path = write_findings(directory, "empty-re-review.json", [])
+      empty_reference = artifact(empty_path)
+      rounds = input.fetch("rounds").dup
+      rounds[-1] = with_digest(
+        rounds.last.merge(
+          "review_findings" => empty_reference,
+          "addressed_finding_ids" => [],
+          "open_finding_ids" => [],
+          "new_consequential_finding_ids" => []
+        ).reject { |key, _value| key == "digest" }
+      )
+      output, = evaluate(
+        input.merge("rounds" => rounds, "open_findings" => empty_reference.merge("ids" => []), "finding_controls" => [])
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "prior-open-finding-outcome-mismatch"
+    end
+  end
+
+  def test_re_review_rejects_unrelated_new_non_consequential_findings
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = consequential_breakage_input(directory)
+      unrelated = finding("unrelated-p2")
+      round_path = write_findings(
+        directory,
+        "unrelated-round-findings.json",
+        [finding("finding-1", disposition: "accepted_fixed"), unrelated]
+      )
+      open_path = write_findings(directory, "unrelated-open-findings.json", [unrelated])
+      rounds = input.fetch("rounds").dup
+      rounds[-1] = with_digest(
+        rounds.last.merge(
+          "review_findings" => artifact(round_path),
+          "addressed_finding_ids" => ["finding-1"],
+          "open_finding_ids" => ["unrelated-p2"],
+          "new_consequential_finding_ids" => []
+        ).reject { |key, _value| key == "digest" }
+      )
+      output, = evaluate(
+        input.merge(
+          "rounds" => rounds,
+          "open_findings" => artifact(open_path).merge("ids" => ["unrelated-p2"]),
+          "finding_controls" => [
+            { "finding_id" => "unrelated-p2", "load_bearing" => false, "cap_piercing" => false }
+          ]
+        )
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "unrelated-new-finding"
     end
   end
 
@@ -671,7 +813,15 @@ class TaskReviewLoopTest < Minitest::Test
 
   def cap_input(directory)
     input = consequential_breakage_input(directory)
-    open_finding = finding("finding-2")
+    open_finding = finding(
+      "finding-2",
+      consequential: true,
+      independent_validation: {
+        "status" => "confirmed",
+        "validator" => "reviewer-b",
+        "evidence" => ["fix-diff://finding-2"]
+      }
+    )
     findings_path = write_findings(directory, "cap-open-findings.json", [open_finding])
     findings_artifact = artifact(findings_path)
     round_one_path = write_findings(
@@ -685,7 +835,7 @@ class TaskReviewLoopTest < Minitest::Test
         "review_findings" => artifact(round_one_path),
         "addressed_finding_ids" => ["finding-1"],
         "open_finding_ids" => ["finding-2"],
-        "new_consequential_finding_ids" => []
+        "new_consequential_finding_ids" => ["finding-2"]
       ).reject { |key, _value| key == "digest" }
     )
     (2..4).each do |number|
@@ -693,7 +843,7 @@ class TaskReviewLoopTest < Minitest::Test
         "number" => number,
         "kind" => "fix_re_review",
         "package_digest" => "sha256:#{number.to_s * 64}",
-        "base_sha" => HEAD_SHA,
+        "base_sha" => FIX_HEAD_SHA,
         "head_sha" => FIX_HEAD_SHA,
         "implementer_id" => "implementer-a",
         "reviewer_id" => "reviewer-b",

@@ -320,6 +320,9 @@ module TaskReviewLoop
     if !input["cap_adjudication"].nil? && (!round.is_a?(Hash) || round["number"] != 5)
       errors << "cap-adjudication-premature"
     end
+    if input["review_state"] == "pending" && round.is_a?(Hash) && round["number"] == 5
+      errors << "round-cap-reached"
+    end
     errors.concat(validate_pending_open_findings(input, round, identity)) if input["review_state"] == "pending"
 
     if !rounds.is_a?(Array) || rounds.length > 6 || rounds.each_with_index.any? do |entry, index|
@@ -384,11 +387,26 @@ module TaskReviewLoop
       errors << "initial-implementer-mismatch" unless same_actor?(
         report["initial_implementer_id"], rounds.first["implementer_id"]
       )
-      errors << "current-implementer-mismatch" unless same_actor?(
-        report["current_implementer_id"], rounds.last["implementer_id"]
-      )
+      if input["review_state"] == "complete"
+        errors << "current-implementer-mismatch" unless same_actor?(
+          report["current_implementer_id"], rounds.last["implementer_id"]
+        )
+      elsif package.is_a?(Hash) && !same_actor?(rounds.last["implementer_id"], package["implementer_id"])
+        evidence = input.fetch("replacement_evidence", []).find do |record|
+          replacement_evidence_valid?(
+            record,
+            rounds.last["number"] + 1,
+            rounds.last["implementer_id"],
+            package["implementer_id"]
+          )
+        end
+        errors << "worker-replacement-evidence-required" unless evidence
+      end
+      errors << "prior-round-digest-mismatch" unless rounds.first["prior_round_digest"].nil?
+      errors << "review-round-base-chain-mismatch" unless rounds.first["base_sha"] == report["base_sha"]
       rounds.each_cons(2) do |prior_round, current_round|
         errors << "prior-round-digest-mismatch" unless current_round["prior_round_digest"] == prior_round["digest"]
+        errors << "review-round-base-chain-mismatch" unless current_round["base_sha"] == prior_round["head_sha"]
         next if same_actor?(prior_round["implementer_id"], current_round["implementer_id"])
 
         evidence = input.fetch("replacement_evidence", []).find do |record|
@@ -411,7 +429,8 @@ module TaskReviewLoop
       end
 
       prior_finding_ids = []
-      rounds.each do |review_round|
+      prior_open_ids = []
+      rounds.each_with_index do |review_round, index|
         errors << "review-round-digest-mismatch" unless valid_record_digest?(review_round)
         findings_document, findings_error = load_findings(review_round["review_findings"], "review-findings")
         if findings_error
@@ -439,7 +458,13 @@ module TaskReviewLoop
         declared_new = review_round["new_consequential_finding_ids"]
         errors << "new-consequential-finding-invalid" unless (declared_new - consequential_ids).empty?
         errors << "new-consequential-finding-not-new" unless (declared_new & prior_finding_ids).empty?
+        unless index.zero?
+          errors << "prior-open-finding-outcome-mismatch" unless (prior_open_ids - findings.map { |finding| finding["id"] }).empty?
+          novel_ids = findings.map { |finding| finding["id"] } - prior_finding_ids
+          errors << "unrelated-new-finding" unless novel_ids.sort == declared_new.sort
+        end
         prior_finding_ids = findings.map { |finding| finding["id"] }
+        prior_open_ids = derived_open_ids
       end
     end
 

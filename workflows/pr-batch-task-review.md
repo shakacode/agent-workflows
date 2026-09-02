@@ -1,8 +1,8 @@
 # PR-Batch Task Review Loop
 
 This component owns the task-local information and review loop for one accepted
-`pr-batch` lane. Load it after the worker emits a committed implementation-head
-handoff.
+`pr-batch` lane. Load its brief phase before implementation dispatch, then
+return after the worker emits a committed implementation-head handoff.
 
 ## Boundary
 
@@ -56,7 +56,8 @@ name the failed record or invariant and do not contain free-form text.
 
 ## Task Brief
 
-Create one `task_brief` before dispatch. Bind its identity to the exact batch,
+Create one `task_brief` before implementation dispatch and pass it to worker
+execution as the only task-requirements source. Bind its identity to the exact batch,
 lane, plan id and digest, and task id. Put the complete task requirements only
 in `requirements`. Add only relevant global constraints, established
 interfaces, and resolved ambiguity.

@@ -50,7 +50,12 @@ class WorkerExecutionContractTest < Minitest::Test
     assert_includes @component, "It emits a committed implementation head and replayable evidence."
     assert_includes @component, "worker-execution-handoff v1"
     assert_equal 1, @component.scan("[Task Review Loop](pr-batch-task-review.md)").length
-    assert_includes squish(@component), "it owns task review and fix rounds"
+    review_route = squish(@component)
+    assert_includes review_route, "Before implementation dispatch"
+    assert_includes review_route, "create the task brief"
+    assert_includes review_route, "after the committed handoff"
+    assert_includes review_route, "task review and fix rounds"
+    assert_includes review_route, "the accepted task brief with its exact identity and digest"
     refute_includes @component, "cap_adjudication"
   end
 
