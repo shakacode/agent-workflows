@@ -21,6 +21,15 @@ BASE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 HEAD_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 FIX_HEAD_SHA = "cccccccccccccccccccccccccccccccccccccccc"
 OTHER_HEAD_SHA = "dddddddddddddddddddddddddddddddddddddddd"
+CAP_HEAD_SHAS = %w[
+  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  cccccccccccccccccccccccccccccccccccccccc
+  dddddddddddddddddddddddddddddddddddddddd
+  eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  ffffffffffffffffffffffffffffffffffffffff
+  9999999999999999999999999999999999999999
+].freeze
+REPO_ROOT = File.expand_path("../../..", __dir__)
 TASK_IDENTITY = {
   "batch_id" => "aw-medium-wave11-20260901",
   "lane_id" => "issue-392-task-review",
@@ -137,6 +146,45 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_flat_copy_upgrade_from_a_non_git_source_uses_the_recorded_helper_fingerprint
+    Dir.mktmpdir("task-review-loop-install") do |directory|
+      source = File.join(directory, "source")
+      target = File.join(directory, "agent-home")
+      Dir.mkdir(source)
+      Dir.mkdir(target)
+      _stdout, copy_stderr, copy_status = Open3.capture3(
+        "rsync", "-a", "--exclude", ".git", "#{REPO_ROOT}/", "#{source}/"
+      )
+      assert copy_status.success?, copy_stderr
+
+      installer = File.join(source, "bin/install-agent-workflows")
+      validator = File.join(source, "bin/validate-review-findings")
+      _stdout, stderr, status = Open3.capture3(
+        installer,
+        "--host", "codex",
+        "--target", target,
+        "--mode", "copy",
+        "--delivery-mode", "flat"
+      )
+      assert status.success?, stderr
+
+      File.open(validator, "a") { |file| file.write("\n# non-git helper v2\n") }
+      _stdout, stderr, status = Open3.capture3(
+        installer,
+        "--host", "codex",
+        "--target", target,
+        "--mode", "copy",
+        "--delivery-mode", "flat"
+      )
+
+      assert status.success?, stderr
+      assert_equal File.binread(validator), File.binread(File.join(target, "bin/validate-review-findings"))
+      metadata = JSON.parse(File.read(File.join(target, ".agent-workflows-install.json"), encoding: "UTF-8"))
+      assert_equal Digest::SHA256.file(validator).hexdigest,
+                   metadata.fetch("managed_pack_helper_copy_fingerprints").fetch("validate-review-findings")
+    end
+  end
+
   def test_missing_canonical_finding_validator_fails_closed_without_a_load_error
     Dir.mktmpdir("task-review-loop-pinned") do |directory|
       helper = File.join(directory, ".agents/skills/pr-batch/bin/task-review-loop")
@@ -232,6 +280,76 @@ class TaskReviewLoopTest < Minitest::Test
       output, = evaluate(input)
 
       assert_equal replay.fetch("expected"), output.slice(*replay.fetch("expected").keys)
+    end
+  end
+
+  def test_pending_initial_reviewer_cannot_be_a_replaced_implementer
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      report = with_digest(
+        input.fetch("worker_report").merge("current_implementer_id" => "implementer-c")
+             .reject { |key, _value| key == "digest" }
+      )
+      package = with_digest(
+        input.fetch("review_package").merge(
+          "worker_report_digest" => report.fetch("digest"),
+          "implementer_id" => "implementer-c",
+          "reviewer_id" => "implementer-a"
+        ).reject { |key, _value| key == "digest" }
+      )
+      output, = evaluate(
+        input.merge(
+          "worker_report" => report,
+          "review_package" => package,
+          "review_state" => "pending",
+          "rounds" => [],
+          "open_findings" => nil
+        )
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "reviewer-not-independent"
+    end
+  end
+
+  def test_exact_diff_range_must_change_the_head
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      report = with_digest(
+        input.fetch("worker_report").merge("base_sha" => HEAD_SHA).reject { |key, _value| key == "digest" }
+      )
+      package = with_digest(
+        input.fetch("review_package").merge(
+          "worker_report_digest" => report.fetch("digest"),
+          "base_sha" => HEAD_SHA
+        ).reject { |key, _value| key == "digest" }
+      )
+      output, = evaluate(
+        input.merge(
+          "worker_report" => report,
+          "review_package" => package,
+          "review_state" => "pending",
+          "rounds" => [],
+          "open_findings" => nil
+        )
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-package-empty-range"
+    end
+  end
+
+  def test_completed_review_round_range_must_change_the_head
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      rounds = input.fetch("rounds").dup
+      rounds[0] = with_digest(
+        rounds[0].merge("base_sha" => HEAD_SHA).reject { |key, _value| key == "digest" }
+      )
+      output, = evaluate(input.merge("rounds" => rounds))
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-round-empty-range"
     end
   end
 
@@ -418,6 +536,24 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_unknown_sentinel_variants_cannot_supply_cap_evidence
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = cap_input(directory)
+      adjudication = input.fetch("cap_adjudication").merge(
+        "findings" => [{
+          "finding_id" => "finding-2",
+          "disposition" => "deferred",
+          "evidence" => ["\u00a0unknown\u00a0"],
+          "tracking_ref" => "issue://shakacode/agent-workflows/999"
+        }]
+      )
+      output, = evaluate(input.merge("cap_adjudication" => adjudication))
+
+      assert_equal "blocked", output.fetch("status")
+      assert_equal ["input-schema-invalid"], output.fetch("reasons")
+    end
+  end
+
   def test_every_round_requires_a_reviewer_independent_from_its_implementer
     replay = replay_case("reviewer-independence")
 
@@ -517,6 +653,108 @@ class TaskReviewLoopTest < Minitest::Test
 
       assert_equal "blocked", output.fetch("status")
       assert_includes output.fetch("reasons"), "prior-open-finding-lineage-mismatch"
+    end
+  end
+
+  def test_re_review_cannot_recycle_an_addressed_finding_id
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = consequential_breakage_input(directory)
+      rounds = input.fetch("rounds").dup
+      prior_document = JSON.parse(File.read(rounds[1].dig("review_findings", "path")))
+      prior_breakage = prior_document.fetch("review_findings").find { |finding| finding["id"] == "finding-2" }
+      addressed_breakage = Marshal.load(Marshal.dump(prior_breakage))
+      addressed_breakage["target"] = addressed_breakage.fetch("target").merge("head_sha" => OTHER_HEAD_SHA)
+      addressed_breakage["disposition"] = "accepted_fixed"
+      recycled = finding("finding-1", head_sha: OTHER_HEAD_SHA)
+      recycled["title"] = "Different observation"
+      recycled["body"] = "This id was already addressed in the prior round."
+      round_path = write_findings(directory, "recycled-addressed-id.json", [addressed_breakage, recycled])
+      open_path = write_findings(directory, "recycled-addressed-open.json", [recycled])
+      report = with_digest(
+        input.fetch("worker_report").merge(
+          "head_sha" => OTHER_HEAD_SHA,
+          "commits" => [HEAD_SHA, FIX_HEAD_SHA, OTHER_HEAD_SHA]
+        ).reject { |key, _value| key == "digest" }
+      )
+      package = with_digest(
+        input.fetch("review_package").merge(
+          "worker_report_digest" => report.fetch("digest"),
+          "base_sha" => FIX_HEAD_SHA,
+          "head_sha" => OTHER_HEAD_SHA,
+          "expected_current_head_sha" => OTHER_HEAD_SHA,
+          "commit_list" => [OTHER_HEAD_SHA],
+          "prior_round_digest" => rounds[1].fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+      rounds << with_digest(
+        "number" => 2,
+        "kind" => "fix_re_review",
+        "package_digest" => package.fetch("digest"),
+        "base_sha" => FIX_HEAD_SHA,
+        "head_sha" => OTHER_HEAD_SHA,
+        "implementer_id" => "implementer-a",
+        "reviewer_id" => "reviewer-b",
+        "prior_round_digest" => rounds[1].fetch("digest"),
+        "review_findings" => artifact(round_path),
+        "addressed_finding_ids" => ["finding-2"],
+        "open_finding_ids" => ["finding-1"],
+        "new_consequential_finding_ids" => []
+      )
+
+      output, = evaluate(
+        input.merge(
+          "expected_current_head_sha" => OTHER_HEAD_SHA,
+          "worker_report" => report,
+          "review_package" => package,
+          "rounds" => rounds,
+          "open_findings" => artifact(open_path).merge("ids" => ["finding-1"]),
+          "finding_controls" => [{
+            "finding_id" => "finding-1",
+            "load_bearing" => false,
+            "cap_piercing" => false
+          }]
+        )
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "finding-id-reused"
+    end
+  end
+
+  def test_consequential_new_breakage_must_remain_open_for_a_later_fix_round
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = consequential_breakage_input(directory)
+      rounds = input.fetch("rounds").dup
+      records = JSON.parse(File.read(rounds[1].dig("review_findings", "path"))).fetch("review_findings")
+      records.find { |finding| finding["id"] == "finding-2" }["disposition"] = "accepted_fixed"
+      path = write_findings(directory, "premature-consequential-fix.json", records)
+      rounds[1] = with_digest(
+        rounds[1].merge(
+          "review_findings" => artifact(path),
+          "addressed_finding_ids" => %w[finding-1 finding-2],
+          "open_finding_ids" => []
+        ).reject { |key, _value| key == "digest" }
+      )
+      package = with_digest(
+        input.fetch("review_package").merge("prior_round_digest" => rounds[0].fetch("digest"))
+             .reject { |key, _value| key == "digest" }
+      )
+      rounds[1] = with_digest(
+        rounds[1].merge("package_digest" => package.fetch("digest")).reject { |key, _value| key == "digest" }
+      )
+      empty_path = write_findings(directory, "premature-consequential-open.json", [])
+
+      output, = evaluate(
+        input.merge(
+          "review_package" => package,
+          "rounds" => rounds,
+          "open_findings" => artifact(empty_path).merge("ids" => []),
+          "finding_controls" => []
+        )
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "new-consequential-finding-not-open"
     end
   end
 
@@ -1034,8 +1272,6 @@ class TaskReviewLoopTest < Minitest::Test
         "evidence" => ["fix-diff://finding-2"]
       }
     )
-    findings_path = write_findings(directory, "cap-open-findings.json", [open_finding])
-    findings_artifact = artifact(findings_path)
     round_one_path = write_findings(
       directory,
       "cap-round-1-findings.json",
@@ -1051,24 +1287,58 @@ class TaskReviewLoopTest < Minitest::Test
       ).reject { |key, _value| key == "digest" }
     )
     (2..4).each do |number|
+      round_finding = finding(
+        "finding-2",
+        consequential: true,
+        independent_validation: {
+          "status" => "confirmed",
+          "validator" => "reviewer-b",
+          "evidence" => ["fix-diff://finding-2"]
+        },
+        head_sha: CAP_HEAD_SHAS.fetch(number)
+      )
+      round_findings_path = write_findings(directory, "cap-round-#{number}-findings.json", [round_finding])
       rounds << with_digest(
         "number" => number,
         "kind" => "fix_re_review",
         "package_digest" => "sha256:#{number.to_s * 64}",
-        "base_sha" => FIX_HEAD_SHA,
-        "head_sha" => FIX_HEAD_SHA,
+        "base_sha" => CAP_HEAD_SHAS.fetch(number - 1),
+        "head_sha" => CAP_HEAD_SHAS.fetch(number),
         "implementer_id" => "implementer-a",
         "reviewer_id" => "reviewer-b",
         "prior_round_digest" => rounds.last.fetch("digest"),
-        "review_findings" => findings_artifact,
+        "review_findings" => artifact(round_findings_path),
         "addressed_finding_ids" => [],
         "open_finding_ids" => ["finding-2"],
         "new_consequential_finding_ids" => []
       )
     end
+    final_head = CAP_HEAD_SHAS.fetch(5)
+    final_finding = finding(
+      "finding-2",
+      consequential: true,
+      independent_validation: {
+        "status" => "confirmed",
+        "validator" => "reviewer-b",
+        "evidence" => ["fix-diff://finding-2"]
+      },
+      head_sha: final_head
+    )
+    final_findings_path = write_findings(directory, "cap-round-5-findings.json", [final_finding])
+    final_findings_artifact = artifact(final_findings_path)
+    report = with_digest(
+      input.fetch("worker_report").merge(
+        "head_sha" => final_head,
+        "commits" => CAP_HEAD_SHAS
+      ).reject { |key, _value| key == "digest" }
+    )
     package = with_digest(
       input.fetch("review_package").merge(
-        "base_sha" => FIX_HEAD_SHA,
+        "worker_report_digest" => report.fetch("digest"),
+        "base_sha" => CAP_HEAD_SHAS.fetch(4),
+        "head_sha" => final_head,
+        "expected_current_head_sha" => final_head,
+        "commit_list" => [final_head],
         "prior_round_digest" => rounds.last.fetch("digest")
       )
            .reject { |key, _value| key == "digest" }
@@ -1077,21 +1347,23 @@ class TaskReviewLoopTest < Minitest::Test
       "number" => 5,
       "kind" => "fix_re_review",
       "package_digest" => package.fetch("digest"),
-      "base_sha" => FIX_HEAD_SHA,
-      "head_sha" => FIX_HEAD_SHA,
+      "base_sha" => CAP_HEAD_SHAS.fetch(4),
+      "head_sha" => final_head,
       "implementer_id" => "implementer-a",
       "reviewer_id" => "reviewer-b",
       "prior_round_digest" => rounds.last.fetch("digest"),
-      "review_findings" => findings_artifact,
+      "review_findings" => final_findings_artifact,
       "addressed_finding_ids" => [],
       "open_finding_ids" => ["finding-2"],
       "new_consequential_finding_ids" => []
     )
 
     input.merge(
+      "expected_current_head_sha" => final_head,
+      "worker_report" => report,
       "review_package" => package,
       "rounds" => rounds,
-      "open_findings" => findings_artifact.merge("ids" => ["finding-2"]),
+      "open_findings" => final_findings_artifact.merge("ids" => ["finding-2"]),
       "finding_controls" => [{ "finding_id" => "finding-2", "load_bearing" => false, "cap_piercing" => false }],
       "cap_adjudication" => {
         "round" => 5,
@@ -1115,7 +1387,8 @@ class TaskReviewLoopTest < Minitest::Test
         "status" => "confirmed",
         "validator" => "reviewer-b",
         "evidence" => ["fix-diff://finding-2"]
-      }
+      },
+      head_sha: input.fetch("expected_current_head_sha")
     )
     path = write_findings(directory, "cap-p0-findings.json", [p0])
     reference = artifact(path)

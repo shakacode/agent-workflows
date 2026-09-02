@@ -98,8 +98,10 @@ round's digest. Never use `HEAD~1` as a substitute for the accepted task or fix
 base.
 
 The helper rejects an unreadable, empty, stale, truncated, digest-mismatched,
-foreign-task, wrong-scope, or incorrectly chained package. A pending valid
-package reduces to `review_eligible`.
+foreign-task, wrong-scope, or incorrectly chained package. Base and head must
+be distinct in the package and every completed round; a nonempty artifact
+cannot make an empty Git range reviewable. A pending valid package reduces to
+`review_eligible`.
 
 ## Review Findings And Independence
 
@@ -114,8 +116,9 @@ consequential breakage. The current `open_findings` artifact must match the
 open records in the latest round exactly.
 An open finding keeps its source, title, body, and location when carried
 forward. Severity may only increase, and consequential classification may only
-change from false to true; reusing its id for a different observation or
-downgrading it fails closed.
+change from false to true. Once addressed, its id is retired for the task;
+reusing that id or downgrading a carried finding fails closed. Consequential
+breakage first found in a fix diff remains open until a later fix round.
 Reviewer-level `deferred` and `waived_by_maintainer` dispositions remain open
 inside this loop. Only the coordinator's evidence-backed cap adjudication can
 defer or waive them for task completion.

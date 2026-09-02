@@ -95,7 +95,10 @@ module TaskReviewLoop
   end
 
   def non_empty_string?(value)
-    value.is_a?(String) && !value.strip.empty? && value.strip != "UNKNOWN"
+    return false unless value.is_a?(String)
+
+    normalized = value.unicode_normalize(:nfkc).gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
+    !normalized.empty? && normalized.downcase(:fold) != "unknown"
   end
 
   def string_array?(value, allow_empty: true)
@@ -239,7 +242,7 @@ module TaskReviewLoop
     return [nil, "#{label}-reference-invalid"] unless reference.is_a?(Hash)
 
     path = reference["path"]
-    return [nil, "#{label}-path-invalid"] unless path.is_a?(String) && !path.strip.empty? && path != "UNKNOWN"
+    return [nil, "#{label}-path-invalid"] unless non_empty_string?(path)
 
     bytes = File.binread(path)
     return [nil, "#{label}-byte-count-mismatch"] unless reference["byte_count"] == bytes.bytesize
@@ -404,6 +407,7 @@ module TaskReviewLoop
     errors << "review-package-base-sha-invalid" unless package.is_a?(Hash) && full_sha?(package["base_sha"])
     if package.is_a?(Hash)
       errors << "reviewer-not-independent" unless independent?(package["implementer_id"], package["reviewer_id"])
+      errors << "review-package-empty-range" if package["base_sha"] == package["head_sha"]
       errors << "review-package-truncated" unless package.dig("exact_diff", "truncated") == false
       diff, diff_error = load_artifact(package["exact_diff"], "exact-diff")
       errors << diff_error if diff_error
@@ -423,6 +427,18 @@ module TaskReviewLoop
       report["current_implementer_id"], package["implementer_id"]
     )
       errors << "current-implementer-mismatch"
+    end
+
+    if report.is_a?(Hash) && package.is_a?(Hash)
+      known_implementers = [report["initial_implementer_id"], report["current_implementer_id"], package["implementer_id"]]
+      known_implementers.concat(rounds.filter_map { |entry| entry["implementer_id"] if entry.is_a?(Hash) })
+      known_reviewers = [package["reviewer_id"]]
+      known_reviewers.concat(rounds.filter_map { |entry| entry["reviewer_id"] if entry.is_a?(Hash) })
+      if known_reviewers.compact.any? do |reviewer|
+        known_implementers.compact.any? { |implementer| same_actor?(reviewer, implementer) }
+      end
+        errors << "reviewer-not-independent"
+      end
     end
 
     if rounds.is_a?(Array) && !rounds.empty? && report.is_a?(Hash)
@@ -462,19 +478,13 @@ module TaskReviewLoop
         errors << "worker-replacement-evidence-required" unless evidence
       end
 
-      implementers = [report["initial_implementer_id"], report["current_implementer_id"], package&.[]("implementer_id")]
-      implementers.concat(rounds.filter_map { |entry| entry["implementer_id"] if entry.is_a?(Hash) })
-      reviewers = [package&.[]("reviewer_id")]
-      reviewers.concat(rounds.filter_map { |entry| entry["reviewer_id"] if entry.is_a?(Hash) })
-      if reviewers.compact.any? { |reviewer| implementers.compact.any? { |implementer| same_actor?(reviewer, implementer) } }
-        errors << "reviewer-not-independent"
-      end
-
       prior_finding_ids = []
       prior_open_ids = []
       prior_findings_by_id = {}
+      retired_finding_ids = []
       rounds.each_with_index do |review_round, index|
         errors << "review-round-digest-mismatch" unless valid_record_digest?(review_round)
+        errors << "review-round-empty-range" if review_round["base_sha"] == review_round["head_sha"]
         findings_document, findings_error = load_findings(review_round["review_findings"], "review-findings")
         if findings_error
           errors << findings_error
@@ -491,6 +501,7 @@ module TaskReviewLoop
         derived_addressed_ids = findings.filter_map do |finding|
           finding["id"] unless OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
         end
+        errors << "finding-id-reused" unless (findings.map { |finding| finding["id"] } & retired_finding_ids).empty?
         unless review_round["open_finding_ids"] == derived_open_ids &&
                review_round["addressed_finding_ids"] == derived_addressed_ids
           errors << "round-finding-outcome-mismatch"
@@ -500,6 +511,7 @@ module TaskReviewLoop
         end
         declared_new = review_round["new_consequential_finding_ids"]
         errors << "new-consequential-finding-invalid" unless (declared_new - consequential_ids).empty?
+        errors << "new-consequential-finding-not-open" unless (declared_new - derived_open_ids).empty?
         errors << "new-consequential-finding-not-new" unless (declared_new & prior_finding_ids).empty?
         unless index.zero?
           errors << "prior-open-finding-outcome-mismatch" unless (prior_open_ids - findings.map { |finding| finding["id"] }).empty?
@@ -516,6 +528,7 @@ module TaskReviewLoop
         prior_finding_ids = findings.map { |finding| finding["id"] }
         prior_open_ids = derived_open_ids
         prior_findings_by_id = findings.to_h { |finding| [finding["id"], finding] }
+        retired_finding_ids |= derived_addressed_ids
       end
     end
 
