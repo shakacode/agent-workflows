@@ -1384,6 +1384,30 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal [issue_target, pr_target], targets
   end
 
+  def test_explicit_complementary_target_identity_is_order_independent
+    issue_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
+    }
+    pr_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 156
+    }
+    lane = {
+      "issue_url" => "https://github.com/shakacode/hichee/issues/130",
+      "pr_url" => "https://github.com/shakacode/hichee/pull/156"
+    }
+
+    [%w[issue:130 pr:156], %w[pr:156 issue:130]].each do |spelling|
+      targets = CompletedBatchPublicationPreflight.targets_for_lane(
+        lane.merge("targets" => spelling),
+        "shakacode/hichee",
+        [issue_target, pr_target]
+      )
+
+      assert_equal [issue_target, pr_target].sort_by { |target| target.fetch("type") },
+                   targets.sort_by { |target| target.fetch("type") }, spelling.inspect
+    end
+  end
+
   def test_produced_pr_is_not_treated_as_complementary_to_multiple_issue_targets
     first_issue = {
       "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130

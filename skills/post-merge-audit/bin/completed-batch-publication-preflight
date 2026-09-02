@@ -463,7 +463,7 @@ module CompletedBatchPublicationPreflight
       raw_keys = target_rows.map { |target| target_key(target) }
       url_keys = url_targets.map { |target| target_key(target) }
       additional_url_targets = url_targets.reject { |target| raw_keys.include?(target_key(target)) }
-      unless url_keys == raw_keys || complementary_pr_url?(lane, additional_url_targets, target_rows)
+      unless url_keys.sort == raw_keys.sort || complementary_pr_url?(lane, additional_url_targets, target_rows)
         return []
       end
     end
