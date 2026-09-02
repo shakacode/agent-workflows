@@ -776,10 +776,12 @@ module BatchPlanPreflight
     starts = lines.each_index.select { |index| companion_policy_key_line?(lines[index]) }
     return [:absent, nil] if starts.empty?
     return [:invalid, nil] unless starts.one?
+    return [:invalid, nil] if lines.any? { |line| yaml_document_boundary_line?(line) }
 
     finish = ((starts.first + 1)...lines.length).find do |index|
       line = lines[index]
-      !line.strip.empty? && !line.lstrip.start_with?("#") && line.match?(/\A\S/)
+      !line.strip.empty? && !line.lstrip.start_with?("#") &&
+        line.match?(/\A\S/) && !line.match?(/\A-\s/)
     end
     fragment = lines[starts.first...(finish || lines.length)].join
     state, node = companion_policy_node_from_stream(Psych.parse_stream(fragment))
@@ -790,6 +792,10 @@ module BatchPlanPreflight
 
   def companion_policy_key_line?(line)
     line.b.match?(/\A(?:companion_path_conventions|["']companion_path_conventions["'])\s*:/)
+  end
+
+  def yaml_document_boundary_line?(line)
+    line.b.match?(/\A(?:---|\.\.\.)(?:[ \t]*(?:#.*)?)?\r?\n?\z/)
   end
 
   def companion_conventions_from_node(node)
@@ -827,12 +833,12 @@ module BatchPlanPreflight
   def valid_companion_path_convention?(convention)
     return false unless convention.is_a?(Hash) && convention.keys.sort == %w[companion_glob source_glob]
 
-    source = companion_template_tokens(convention["source_glob"])
+    source = companion_template_tokens(convention["source_glob"], single_named_per_segment: true)
     companion = companion_template_tokens(convention["companion_glob"])
     source && companion && source == companion
   end
 
-  def companion_template_tokens(template)
+  def companion_template_tokens(template, single_named_per_segment: false)
     return nil unless canonical_repository_relative_path?(template)
 
     tokens = { "globstars" => 0, "stars" => 0, "named" => [] }
@@ -846,6 +852,8 @@ module BatchPlanPreflight
         return nil if segment.include?("}{")
 
         names = segment.scan(/\{([a-z][a-z0-9_]*)\}/).flatten
+        return nil if single_named_per_segment && names.length > 1
+
         remainder = segment.gsub(/\{[a-z][a-z0-9_]*\}/, "")
         return nil if remainder.include?("*") || remainder.match?(/[{}]/)
 
@@ -863,19 +871,32 @@ module BatchPlanPreflight
   def companion_source_regexp(source_glob)
     globstar_index = -1
     star_index = -1
-    segments = source_glob.split("/").map do |segment|
+    expression = String.new
+    suppress_separator = false
+    segments = source_glob.split("/")
+    segments.each_with_index do |segment, index|
+      expression << "/" unless index.zero? || suppress_separator
+      suppress_separator = false
+
+      if segment == "**" && index < segments.length - 1
+        globstar_index += 1
+        expression << "(?:(?<globstar_#{globstar_index}>.+?)/)?"
+        suppress_separator = true
+        next
+      end
+
       case segment
       when "**"
         globstar_index += 1
-        "(?<globstar_#{globstar_index}>.+?)"
+        expression << "(?<globstar_#{globstar_index}>.+?)"
       when "*"
         star_index += 1
-        "(?<star_#{star_index}>[^/]+)"
+        expression << "(?<star_#{star_index}>[^/]+)"
       else
-        companion_source_segment_regexp(segment)
+        expression << companion_source_segment_regexp(segment)
       end
     end
-    Regexp.new("\\A#{segments.join('/')}\\z")
+    Regexp.new("\\A#{expression}\\z")
   end
 
   def companion_source_segment_regexp(segment)
@@ -894,7 +915,7 @@ module BatchPlanPreflight
     star_index = 0
     segments = companion_glob.split("/").flat_map do |segment|
       if segment == "**"
-        captured = captures.fetch("globstar_#{globstar_index}").split("/")
+        captured = captures.fetch("globstar_#{globstar_index}").to_s.split("/")
         globstar_index += 1
         captured
       elsif segment == "*"

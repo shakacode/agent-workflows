@@ -199,6 +199,46 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_repeated_delimiter_named_placeholders_are_rejected_as_ambiguous
+    Dir.mktmpdir("batch-plan-delimited-companion") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions:
+          - source_glob: lib/{first}-{second}.rb
+            companion_glob: sig/{first}/{second}.rbs
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_globstar_matches_zero_directories
+    fixture = {
+      "repository" => "owner/repo",
+      "issue" => 461,
+      "lane_id" => "lane-direct-root",
+      "source_glob" => "lib/**/{name}.rb",
+      "companion_glob" => "sig/**/{name}.rbs",
+      "source_path" => "lib/task.rb",
+      "companion_path" => "sig/task.rbs"
+    }
+    with_companion_fixture(fixture) do |root|
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      advisory = result.fetch("advisories").find { |item| item["code"] == "companion-path-omitted" }
+      refute_nil advisory
+      assert_equal fixture.fetch("companion_path"), advisory.fetch("companion_path")
+    end
+  end
+
   def test_shared_policy_dates_do_not_block_preflight
     Dir.mktmpdir("batch-plan-date-policy") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
@@ -268,6 +308,26 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_unrelated_malformed_policy_preserves_unindented_companion_sequence
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        base_branch: [
+        companion_path_conventions:
+        - source_glob: #{fixture.fetch('source_glob')}
+          companion_glob: #{fixture.fetch('companion_glob')}
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
   def test_malformed_declared_companion_policy_fails_closed
     Dir.mktmpdir("batch-plan-malformed-companion-policy") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
@@ -329,6 +389,23 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_policy_fallback_rejects_document_boundary
+    Dir.mktmpdir("batch-plan-fallback-multi-document-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        base_branch: [
+        ---
+        companion_path_conventions: []
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
   def test_unreadable_shared_policy_does_not_block_preflight
     Dir.mktmpdir("batch-plan-unreadable-companion") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
@@ -355,6 +432,10 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def with_companion_repo
     fixture = JSON.parse(File.read(COMPANION_PATH_REPLAY_FIXTURE))
+    with_companion_fixture(fixture) { |root| yield root, fixture }
+  end
+
+  def with_companion_fixture(fixture)
     Dir.mktmpdir("batch-plan-companion") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
       File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
@@ -366,7 +447,7 @@ class BatchPlanPreflightTest < Minitest::Test
         FileUtils.mkdir_p(File.dirname(File.join(root, path)))
         File.write(File.join(root, path), "fixture\n")
       end
-      yield root, fixture
+      yield root
     end
   end
 
