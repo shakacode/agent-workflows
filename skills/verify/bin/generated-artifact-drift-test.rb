@@ -39,6 +39,23 @@ class GeneratedArtifactDriftTest < Minitest::Test
     end
   end
 
+  def test_changed_source_with_missing_declared_golden_test_fails_precisely
+    with_policy("generated_artifacts" => [valid_declaration]) do |root|
+      stdout, stderr, status = run_helper(
+        root,
+        "--changed-file", "templates/widget.tt",
+        "--changed-file", "spec/fixture.rb"
+      )
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, 'source "templates/widget.tt" changed'
+      assert_includes stderr,
+                      'generated_artifacts[0].golden_test "spec/golden/widget_spec.rb" is not an existing repository file'
+      assert_includes stderr, "Restore it or update the declaration before verification can pass."
+    end
+  end
+
   def test_changed_source_without_changed_mirror_requires_acknowledgment
     with_policy(
       "generated_artifacts" => [
@@ -49,6 +66,7 @@ class GeneratedArtifactDriftTest < Minitest::Test
         }
       ]
     ) do |root|
+      write_file(root, "spec/golden/widget_spec.rb")
       stdout, stderr, status = run_helper(root, "--changed-file", "templates/widget.tt")
 
       assert status.success?, stderr
@@ -70,6 +88,7 @@ class GeneratedArtifactDriftTest < Minitest::Test
         }
       ]
     ) do |root|
+      write_file(root, "spec/golden/widget_spec.rb")
       stdout, stderr, status = run_helper(
         root,
         "--changed-file", "templates/widget.tt",
@@ -235,6 +254,12 @@ class GeneratedArtifactDriftTest < Minitest::Test
     raise "git fixture failed: #{stderr}" unless status.success?
 
     stdout
+  end
+
+  def write_file(root, path, content = "test\n")
+    absolute_path = File.join(root, path)
+    FileUtils.mkdir_p(File.dirname(absolute_path))
+    File.write(absolute_path, content)
   end
 
   def valid_declaration

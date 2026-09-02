@@ -25,7 +25,8 @@ module GeneratedArtifactDrift
     end
     parser.parse!(argv)
 
-    policy_path = File.join(File.expand_path(options.fetch(:root)), ".agents", "agent-workflow.yml")
+    root = File.expand_path(options.fetch(:root))
+    policy_path = File.join(root, ".agents", "agent-workflow.yml")
     yaml = File.read(policy_path, encoding: "UTF-8")
     config = YAML.safe_load(yaml, aliases: false) || {}
     return 0 unless config.is_a?(Hash) && config.key?("generated_artifacts")
@@ -56,6 +57,13 @@ module GeneratedArtifactDrift
         failures << "FAIL generated-artifact drift gate: source #{declaration['source'].inspect} changed, but " \
                     "generated_artifacts[#{index}].golden_test is not declared. " \
                     "Add the repo-owned golden test path before verification can pass."
+        next
+      end
+      golden_test = declaration.fetch("golden_test")
+      unless File.file?(File.join(root, golden_test))
+        failures << "FAIL generated-artifact drift gate: source #{declaration['source'].inspect} changed, but " \
+                    "generated_artifacts[#{index}].golden_test #{golden_test.inspect} is not an existing " \
+                    "repository file beneath --root. Restore it or update the declaration before verification can pass."
         next
       end
       next unless (declaration.fetch("mirrors") & changed_files).empty?
