@@ -652,7 +652,8 @@ query, HTTPS requires port 443, `issue://` requires the exact canonical
 authority/path shape, and fragments remain permitted; other source kinds prove
 durability only and do not invent target identity.
 When repo policy defines `companion_path_conventions`, the preflight resolves
-each deterministic `source_glob -> companion_glob` pair against declared paths.
+each deterministic `source_glob -> companion_glob` pair against declared paths
+and active path or rename reservations.
 If the companion exists but the lane neither lists nor actively reserves it,
 record the nonfatal `companion-path-omitted` advisory in the Batch Plan
 file-touch evidence and compact goal `Scope`. Never add the path automatically.

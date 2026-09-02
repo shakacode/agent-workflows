@@ -104,6 +104,22 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_reserved_source_path_produces_companion_advisory
+    with_companion_repo do |root, fixture|
+      reservation = expansion_path_reservation(
+        lane_id: fixture.fetch("lane_id"),
+        path: fixture.fetch("source_path")
+      )
+      input = companion_input(fixture, paths: ["README.md"], reservations: [reservation])
+
+      result, stderr, status = evaluate(input, chdir: root)
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
   def test_repo_without_companion_conventions_preserves_existing_result
     Dir.mktmpdir("batch-plan-no-companion-config") do |root|
       result, stderr, status = evaluate(input_for, chdir: root)
@@ -163,6 +179,48 @@ class BatchPlanPreflightTest < Minitest::Test
       assert_equal "rejected", result.fetch("status")
       assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                       "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_adjacent_named_placeholders_are_rejected_as_ambiguous
+    Dir.mktmpdir("batch-plan-ambiguous-companion") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions:
+          - source_glob: lib/{first}{second}.rb
+            companion_glob: sig/{first}/{second}.rbs
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_unreadable_companion_policy_rejects_without_backtrace
+    Dir.mktmpdir("batch-plan-unreadable-companion") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      policy = File.join(root, ".agents", "agent-workflow.yml")
+      File.write(policy, "companion_path_conventions: []\n")
+      File.chmod(0o000, policy)
+      skip "filesystem does not enforce unreadable mode" if File.readable?(policy)
+
+      stdout, stderr, status = Open3.capture3(
+        RbConfig.ruby,
+        HELPER,
+        stdin_data: JSON.generate(input_for),
+        chdir: root
+      )
+
+      refute status.success?
+      assert_empty stderr
+      result = JSON.parse(stdout)
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    ensure
+      File.chmod(0o644, policy) if policy && File.exist?(policy)
     end
   end
 

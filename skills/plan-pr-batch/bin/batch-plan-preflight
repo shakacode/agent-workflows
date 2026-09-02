@@ -210,7 +210,6 @@ module BatchPlanPreflight
         )
       violations.concat(collision_violations)
       advisories = collision_advisories + companion_path_advisories(
-        input["file_touch_map"],
         effective_maps,
         companion_conventions,
         repo_root:
@@ -693,12 +692,12 @@ module BatchPlanPreflight
     effective
   end
 
-  def companion_path_advisories(declared_maps, effective_maps, conventions, repo_root:)
+  def companion_path_advisories(effective_maps, conventions, repo_root:)
     return [] if conventions.empty?
 
-    declared_maps.flat_map do |lane_id, map|
-      effective_paths = effective_maps.fetch(lane_id).fetch("paths")
-      map.fetch("paths").flat_map do |source_path|
+    effective_maps.flat_map do |lane_id, map|
+      effective_paths = map.fetch("paths")
+      effective_paths.flat_map do |source_path|
         conventions.filter_map do |convention|
           captures = match_companion_source(convention.fetch("source_glob"), source_path)
           next unless captures
@@ -746,7 +745,7 @@ module BatchPlanPreflight
                                                      end
 
     [[], conventions]
-  rescue Psych::Exception
+  rescue Psych::Exception, SystemCallError
     invalid_companion_path_conventions
   end
 
@@ -778,6 +777,8 @@ module BatchPlanPreflight
       when "*"
         tokens["stars"] += 1
       else
+        return nil if segment.include?("}{")
+
         names = segment.scan(/\{([a-z][a-z0-9_]*)\}/).flatten
         remainder = segment.gsub(/\{[a-z][a-z0-9_]*\}/, "")
         return nil if remainder.include?("*") || remainder.match?(/[{}]/)

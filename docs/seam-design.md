@@ -116,13 +116,14 @@ Templates are canonical repository-relative paths. A complete segment `**`
 captures one or more path segments, `*` captures one segment, and a named
 placeholder such as `{name}` captures text within one segment. Each pair must
 use the same `**`, `*`, and named placeholder tokens so the companion path is
-deterministic.
+deterministic. Adjacent named placeholders in one segment are invalid because
+they have no deterministic capture boundary; separate them with literal text.
 
-When a planned source path matches and the resolved companion exists,
+When a declared or actively reserved source path matches and the resolved companion exists,
 `batch-plan-preflight` emits `companion-path-omitted` unless that lane lists or
 actively reserves the companion. The advisory does not add the path or change
 collision, reservation, or eligibility results. An invalid configured pair
-rejects preflight instead of being ignored.
+or unreadable policy rejects preflight instead of being ignored.
 
 Each `companion-path-omitted` advisory includes `source_path` and
 `companion_path` fields naming the mapped pair.

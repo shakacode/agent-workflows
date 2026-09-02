@@ -501,7 +501,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      permitted;
      other source kinds prove durability only and do not invent target identity.
      When repo policy defines `companion_path_conventions`, resolve each
-     deterministic `source_glob -> companion_glob` pair against declared paths.
+     deterministic `source_glob -> companion_glob` pair against declared paths
+     and active path or rename reservations.
      If the companion exists but the lane neither lists nor actively reserves
      it, record the nonfatal `companion-path-omitted` advisory in the Batch Plan
      and compact goal `Scope`. Never add the path automatically. Invalid pairs
