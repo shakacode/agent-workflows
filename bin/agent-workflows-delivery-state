@@ -31,12 +31,16 @@ module AgentWorkflowsDeliveryState
   def doctor_timeout_budget(target)
     # Unreadable metadata leaves nothing to verify against; it must not take
     # this query, and the unrelated reporting that depends on it, down with it.
-    fingerprints = begin
-      recorded = recorded_bin_copy_fingerprints(read_metadata(target))
-      recorded.is_a?(Hash) ? recorded : {}
+    recorded = begin
+      recorded_bin_copy_fingerprints(read_metadata(target))
     rescue JSON::ParserError, SystemCallError
-      {}
+      :unrecorded
     end
+    # A map that exists but cannot be trusted is not permission to load: only
+    # an absent one leaves nothing to verify against.
+    return nil if recorded == :invalid
+
+    fingerprints = recorded.is_a?(Hash) ? recorded : {}
     return nil unless safe_to_load_managed_module?(File.join(target, "bin"), fingerprints, MANAGED_DOCTOR_TIMEOUT_MODULE)
 
     require_relative "agent_doctor/timeout_budget"
@@ -679,6 +683,10 @@ module AgentWorkflowsDeliveryState
   # The bin root and every managed subdirectory below it must be a real
   # directory. A symlink or a plain file there hides every entry beneath it, so
   # it has to block rather than let those entries read as merely missing.
+  def readable_directory?(path)
+    File.readable?(path) && File.executable?(path)
+  end
+
   def managed_bin_directory_conflict(path)
     return "a symlink" if File.symlink?(path)
     return nil unless File.exist?(path)
@@ -687,7 +695,7 @@ module AgentWorkflowsDeliveryState
     # Ruby's file predicates swallow EACCES and answer false, so a directory
     # without read and search permission would silently make everything beneath
     # it look absent rather than unreadable.
-    File.readable?(path) && File.executable?(path) ? nil : "not readable"
+    readable_directory?(path) ? nil : "not readable"
   end
 
   def managed_bin_ancestor_conflict(bin_root, name)
@@ -814,7 +822,7 @@ module AgentWorkflowsDeliveryState
     false
   end
 
-  def managed_doctor_marker_conflict(bin_root, source, fingerprints)
+  def managed_doctor_marker_conflict(bin_root, source, fingerprints, attested: false)
     return nil unless fingerprints.keys.any? { |name| doctor_tree_entry?(name) }
 
     doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
@@ -830,6 +838,9 @@ module AgentWorkflowsDeliveryState
     # fallback for a tree agent-stack owns.
     return marker if managed_marker_shape_conflict?(marker)
     return stack_marker if managed_marker_shape_conflict?(stack_marker)
+    # Both shapes are sound and attestation already established the tree is
+    # covered, so skip re-verifying the whole tree a second time per call.
+    return nil if attested
 
     ownership = doctor_install_ownership(bin_root, fingerprints)
     return doctor_root unless ownership
@@ -881,7 +892,8 @@ module AgentWorkflowsDeliveryState
     # This also keeps the installer's own post-rsync verification passing on an
     # upgrade that drops a module, where the metadata is deliberately stale.
     names = missing.select do |name|
-      name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/") && File.file?(File.join(source, "bin", name))
+      # The source may still ship the entry as a directory, which File.file? misses.
+      name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/") && File.exist?(File.join(source, "bin", name))
     end
     return [] if names.empty?
 
@@ -968,7 +980,7 @@ module AgentWorkflowsDeliveryState
     doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
     manages_doctor_tree = fingerprints.keys.any? { |name| doctor_tree_entry?(name) }
     if manages_doctor_tree && File.directory?(doctor_root) && !File.symlink?(doctor_root) &&
-       !(File.readable?(doctor_root) && File.executable?(doctor_root))
+       !readable_directory?(doctor_root)
       return {
         "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [doctor_root],
         "reason" => "managed doctor root cannot be read: #{doctor_root}",
@@ -1005,11 +1017,13 @@ module AgentWorkflowsDeliveryState
 
       unowned_paths << path unless managed_bin_copy_owned?(path:, source:, name:, digest:, doctor_attested:)
     end
-    unexpected = stack_owned ? [] : unexpected_managed_doctor_entries(bin_root, fingerprints)
+    # An attested tree is the one the marker now covers, which after an upgrade is
+    # the tree the installer just wrote, additions included.
+    unexpected = stack_owned || doctor_attested ? [] : unexpected_managed_doctor_entries(bin_root, fingerprints)
     unowned = (unowned_paths + unexpected).uniq.sort
     unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort
     if unowned.empty? && unrestorable.empty? &&
-       (marker = managed_doctor_marker_conflict(bin_root, source, fingerprints))
+       (marker = managed_doctor_marker_conflict(bin_root, source, fingerprints, attested: doctor_attested))
       unowned = [marker]
     end
     blocking = (unowned + unrestorable).uniq.sort

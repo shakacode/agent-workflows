@@ -2337,6 +2337,61 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_attested_tree_accepts_entries_the_source_added
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # What an upgrade leaves behind: a module the new source adds, copied in,
+      # with the marker rewritten over the resulting tree, while the recorded
+      # map still describes the previous revision.
+      File.write(File.join(doctor_root, "added.rb"), "added upstream\n")
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_unattested_tree_still_reports_entries_the_source_added
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      added = File.join(target, "bin/agent_doctor/added.rb")
+      File.write(added, "added by hand\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_includes payload.dig("bin", "blocking"), added
+    end
+  end
+
+  def test_missing_recorded_doctor_subdirectory_blocks
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      nested = write_managed_bin_copy(target, source, "agent_doctor/nested/module.rb" => "nested\n")
+      recorded = fingerprints.merge(nested).merge(
+        "agent_doctor/nested" => managed_path_fingerprint(File.join(target, "bin/agent_doctor/nested"))
+      )
+      managed_bin_metadata(target, source, recorded)
+      removed = File.join(target, "bin/agent_doctor/nested")
+      FileUtils.rm_rf(removed)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      # The source still ships the directory, so the installer cannot restore
+      # it in place any more than it can a missing module.
+      assert_includes payload.dig("bin", "blocking"), removed
+    end
+  end
+
   def test_stack_owned_tree_that_moved_forward_stays_compatible
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)

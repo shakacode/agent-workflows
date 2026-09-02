@@ -1941,6 +1941,10 @@ prepare_metadata() {
                            entries[name] = managed_file_fingerprint.call(helper, 0o755)
                          end
                          doctor_root = File.join(source, "bin", "agent_doctor")
+                         unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+                           abort "missing pack doctor directory while preparing install metadata: #{doctor_root}"
+                         end
+
                          # The install chmods the destination root to the source
                          # root mode, and rsync -a preserves modes below it.
                          entries["agent_doctor"] = managed_directory_fingerprint.call(doctor_root)
