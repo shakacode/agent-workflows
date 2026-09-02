@@ -413,11 +413,41 @@ precise blocker.
    `ready-human-review-required` carries the exact current head SHA, every triggered gate, rollback status, and the exact durable human decision needed.
    `autonomous-merge-evidence-unknown` carries the exact current head SHA, evidence failure, trusted-base policy provenance, and repair action.
    `UNKNOWN` is not `human-approval-required` and cannot be cleared by risk approval.
-
-   Put one deterministic `Task name:` in each prompt. It identifies the
-   repository, work item, and purpose without timestamps, runner state, or
-   coordination diagnostics. Keep group and lane identifiers in durable machine
-   state outside the human prompt.
+   The portable `dispatcher-capability-preflight` helper prefers the requested dispatcher and requires explicit dispatch authority for another dispatcher. Each viable candidate includes a stable prospective `instance_id` allocated or reserved by its dispatcher before launch, only for replay/fencing; the helper neither launches nor creates a worker. Replay identity is `lane_id`, dispatcher, `instance_id`, and launch token; route preference, observed host fields, and `candidate_index` are metadata and never trigger replacement.
+   Persist `launch-pending` before worker launch; after spawn, persist ordinary `active` state before Goal-mode resume, and replay the same token while pending or emit no new launch while active.
+   Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
+   Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
+   Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
+   A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
+   When host observations become available, reconcile registration field by field. Before requiring reconciliation, detect advertised registration update/upsert/reconciliation capability. An unadvertised or unsupported create-only backend records each affected field `UNKNOWN`. An advertised update uses the bounded safe executable-plus-opaque-argv contract; failure records affected fields `UNKNOWN` without wedging. Every advertised registration invocation resolves a backend-advertised safe executable plus ordered opaque argv without shell evaluation and runs with a finite hard deadline in its own process group; timeout or whole-group `TERM` then `KILL` records best-effort field-granular `UNKNOWN`, names reconciliation, and does not block worker launch.
+   For Codex prompts, keep the
+   prompt under the `$plan-pr-batch` Codex 4 000-character limit with at least
+   300 characters of headroom, including the Codex invocation line; split route
+   groups before overflow when the unsplit prompt breaches that floor. For
+   Claude/generic prompts, measure the actual prompt,
+   keep it under 8 000 characters, and split or compact it when too large rather
+   than applying the Codex split threshold. Put the exact
+   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block after the
+   target-specific invocation line(s), resolving it through canonical
+   [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection).
+   This entrypoint consumes the verified title facts unchanged and does not
+   mirror the selection or trust contract.
+   Use `Thread handle:` as the first worker-specific line:
+   `Thread handle: <batch-short>-<lane>-<word>`, deriving `<batch-short>` from
+   the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
+   suffix, `<lane>` from the lane id or owner slug, and `<word>` as a short
+   coordinator-chosen session word. Then add the compact
+   `Lane Card: claim/PR-open/block/cancel/final; preferred model/effort; observed host/model/effort/UNKNOWN; holder/branch/PR/phase/URLs/UNKNOWN`
+   line so workers emit the canonical Lane Card after a successful claim, on
+   blocked/cancelled state, and in final handoff. The actor that opens or
+   updates the PR emits the PR-open Lane Card when the PR is opened. The
+   canonical card carries preferred model/effort, observed host/model/effort,
+   execution-envelope receipt, claim holder and `dashboard_url` from backend
+   metadata, plus `pr_url` from backend metadata or verified GitHub PR state,
+   with `UNKNOWN` when unavailable.
+GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+HST-v1
+   `GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 6. Assign queued-but-not-started work to the matching inbox queue when the
    backend supports queue state. A queue entry is advisory assignment only; each
    worker must still acquire a coordination claim before editing.
@@ -476,6 +506,12 @@ Return:
   revision, or an equivalent existing content binding, at selection, launch,
   and worker start. Missing, mutable, changed, or `UNKNOWN` binding stops; do
   not invent a source snapshot.
+  - Target: <repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+    Original: <prompt|n/a>; ovr: <n/a|name/authorizer/ref/task>
+    Goal: one-line outcome.
+    Notes: scope/branch/dependency.
+    Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
+  - Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.
   Report idle slots or the remaining backlog/next wave separately.
 - One durable planning-chat lifecycle record covering every generated group:
   While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
@@ -508,6 +544,11 @@ Return:
   would exceed the per-batch caps; report the overflow as the next wave.
 - Do not apply the Codex 10/8 cap to Claude or generic prompts; use the
   host-aware target chosen for each generated prompt.
+  Each generated prompt must include `Batch size target: <codex|claude|generic>; wave:`.
+  `merge_authority:<none|ask|auto_merge_when_gates_pass>`
+  `Coordinator model/effort preference: <model/class>/<effort>.`
+  `Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.`
+  Keep at least 300 characters of headroom when shaping Codex prompts.
 - Do not route `needs-customer-feedback` issues into implementation groups
   without customer evidence or explicit maintainer approval.
 - Do not use public issue comments as capacity or queue state when the repo seam

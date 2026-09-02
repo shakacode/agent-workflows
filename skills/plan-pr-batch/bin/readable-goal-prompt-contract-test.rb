@@ -7,12 +7,88 @@ require_relative "../scripts/check_goal_prompt_drift"
 REPO_ROOT = File.expand_path("../../..", __dir__)
 TEXT_FENCE = "```text\n"
 EXPECTED_PROMPT = <<~TEXT
-  Repository: OWNER/REPO
-  Work item: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
-  Task name: <repository, work item, and purpose>
-  Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
-  Merge authority: <auto|ask>
-  Human available after: <optional time; omit this line when not supplied>
+  Use $pr-batch to complete this batch with subagents.
+
+  Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+
+  Thread handle: <batch-short>-<lane>-<word>
+  Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
+  Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
+  PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
+  Repo:OWNER/REPO
+  Objective:...
+  merge_authority:<none|ask|auto_merge_when_gates_pass>
+  Batch size target: <codex|claude|generic>;wave: <cap/items>
+  Coordinator model/effort preference: <model/class>/<effort>.
+  Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+  Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
+  Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
+  Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
+  - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
+  GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+  HST-v1
+  Batch QA Lane:<owner/scope+evidence|none+rationale>
+  Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
+  Items:
+  - Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+    Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
+    Goal:outcome
+    Notes:scope/deps
+    Done:req auth+PR/no-PR evidence|no-fix rationale
+  Execution rules:
+  Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
+  - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+  - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
+  - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
+  Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
+  Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
+  - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+  Apply Batch QA Lane;include QA Evidence
+  merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
+  - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+  Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
+TEXT
+GENERIC_PROMPT_BODY = <<~TEXT
+  Use $pr-batch to complete this batch with subagents.
+
+  Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+
+  Thread handle: <batch-short>-<lane>-<word>
+  Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
+  Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
+  PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
+  Repo:OWNER/REPO
+  Objective:...
+  merge_authority:<none|ask|auto_merge_when_gates_pass>
+  Batch size target: <codex|claude|generic>;wave: <cap/items>
+  Coordinator model/effort preference: <model/class>/<effort>.
+  Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+  Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
+  Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
+  Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
+  - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
+  GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+  HST-v1
+  Batch QA Lane:<owner/scope+evidence|none+rationale>
+  Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
+  Items:
+  - Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+    Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
+    Goal:outcome
+    Notes:scope/deps
+    Done:req auth+PR/no-PR evidence|no-fix rationale
+  Execution rules:
+  Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
+  - Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+  - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
+  - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
+  Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
+  Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
+  - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+  Apply Batch QA Lane;include QA Evidence
+  merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
+  - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+  Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 TEXT
 MULTI_TARGET_INSTRUCTION = <<~TEXT
   Instruction: Use PR-batch to execute every target in the accompanying Batch Plan against the repository's configured base branch; Work item identifies this batch's durable coordination anchor, not its sole target.
@@ -58,11 +134,11 @@ class ReadableGoalPromptContractTest < Minitest::Test
     @batch_plan_preflight = read_repo_file("skills/plan-pr-batch/bin/batch-plan-preflight")
 
     prompt_intake_handoff = extract_markdown_section(@prompt_intake, "## Plan To Goal Handoff")
-    @prompts = {
+    @generated_prompts = {
       "plan-pr-batch" => extract_prompt(@plan_skill, "## Goal Prompt for pr-batch"),
-      "pr-batch" => extract_prompt(@pr_batch_skill, "## Goal Prompt Template"),
-      "prompt intake" => extract_prompt("## Prompt\n\n#{prompt_intake_handoff}", "## Prompt")
+      "pr-batch" => extract_prompt(@pr_batch_skill, "## Goal Prompt Template")
     }
+    @prompt_intake_prompt = extract_prompt("## Prompt\n\n#{prompt_intake_handoff}", "## Prompt")
   end
 
   def test_source_host_cap_drift_rejects_an_in_memory_mutation
@@ -169,18 +245,27 @@ class ReadableGoalPromptContractTest < Minitest::Test
   end
 
   def test_all_canonical_surfaces_share_one_readable_prompt
-    assert_equal 1, @prompts.values.uniq.length
-    assert_equal EXPECTED_PROMPT, @prompts.values.first
+    assert_equal 1, @generated_prompts.values.uniq.length
+    assert_equal EXPECTED_PROMPT, @generated_prompts.values.first
+    assert_equal GENERIC_PROMPT_BODY, @generated_prompts.values.first
+    assert_equal <<~TEXT.strip, @prompt_intake_prompt.strip
+      Repository: OWNER/REPO
+      Work item: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
+      Task name: <repository, work item, and purpose>
+      Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
+      Merge authority: <auto|ask>
+      Human available after: <optional time; omit this line when not supplied>
+    TEXT
 
-    @prompts.each do |label, prompt|
+    @generated_prompts.each do |label, prompt|
       [
-        "Digest", "digest", "Selected", "Timestamp", "timestamp", "Observed", "observed",
-        "Workflow", "workflow", "Coordination", "coordination", "Lane Card", "Manifest",
-        "Dispatch", "Scope", "ft=", "GMCC-v4"
+        "Repository:", "Work item:", "Task name:",
+        "Instruction: Use PR-batch to complete this work item against the repository's configured base branch.",
+        "Merge authority: <auto|ask>",
+        "Human available after:"
       ].each do |legacy_fragment|
         refute_includes prompt, legacy_fragment, "#{label} leaked #{legacy_fragment}"
       end
-      refute_includes prompt, "none", "#{label} leaked machine-only merge authority"
     end
   end
 
@@ -268,12 +353,12 @@ class ReadableGoalPromptContractTest < Minitest::Test
   end
 
   def test_single_target_prompt_stays_direct_without_multi_target_duplication
-    @prompts.each do |label, prompt|
+    @generated_prompts.each do |label, prompt|
       assert_equal EXPECTED_PROMPT, prompt, "#{label} changed the single-target prompt"
-      assert_equal 1, prompt.scan(/^Work item:/).length, "#{label} duplicated Work item"
-      assert_equal 1, prompt.scan(/^Instruction:/).length, "#{label} duplicated Instruction"
-      refute_includes prompt, "every target", "#{label} leaked multi-target scope into the single-target prompt"
-      refute_includes prompt, "coordination anchor", "#{label} leaked multi-target anchor prose"
+      assert_equal 1, prompt.scan(/^Batch title:/).length, "#{label} duplicated Batch title"
+      assert_equal 1, prompt.scan(/^Thread handle:/).length, "#{label} duplicated Thread handle"
+      refute_includes prompt, "Task name:", "#{label} leaked Task name into the generated prompt"
+      refute_includes prompt, "Work item:", "#{label} leaked Work item into the generated prompt"
     end
   end
 

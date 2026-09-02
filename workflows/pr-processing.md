@@ -9,7 +9,7 @@ $pr-batch
 Run an agent batch
 Run a Codex batch
 Run a Claude batch
-```
+```goal
 
 For assistants without skill support, follow the high-concurrency batch launch rules below before using the rest of this workflow.
 
@@ -614,6 +614,7 @@ path evidence stay serial discovery lanes until their real paths are known.
 
 - `codex`: up to 10 independent items, or 8 when any lane touches shared/risky files,
   workflow/build/dependency/release surfaces, or needs substantial QA.
+  Split Codex prompts when the remaining prompt budget leaves less than 300 characters of headroom.
 - `claude`: up to 5 independent items, or 3 under the same risky/shared conditions,
   because in-process Claude Code subagents share more of the current runner's
   context, permission, and rate budget.
@@ -1063,10 +1064,84 @@ This heading remains as a compatibility route and must not mirror the component.
 Canonical rules: [Plan To Goal Handoff](pr-batch-intake.md#plan-to-goal-handoff).
 This heading remains as a compatibility route and must not mirror the component.
 
-### Launcher Run Record
+#### Launcher Run Record
 
 Canonical rules: [Launcher Run Record](pr-batch-intake.md#launcher-run-record).
 This heading remains as a compatibility route and must not mirror the component.
+The `$pr-batch` skill links to this canonical `Coordination:` paragraph instead
+of duplicating it.
+
+Keep the expanded Batch Plan file-touch key as shown here; the compact goal
+`Scope` line carries the corresponding refs, paths, collision state, and
+owner/serial decision without repeating the expanded map:
+
+> Target ids: repository-qualified PR/Issue #N or durably overridden ad-hoc `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` plus its complete override record
+
+The Batch Plan always records `Planning-pass model/effort assessment:` with the
+verified-scope classification, requested recommendation, concise evidence,
+field-granular host-observed host/model/effort, comparison disposition, and any
+independent review route or `none`. Keep it separate from the future
+`Coordinator model/effort preference:` and outside the compact goal prompt.
+The Lane Card `route` field carries preferred model/effort and observed
+host/model/effort/UNKNOWN separately.
+
+## Goal Prompt for pr-batch
+
+Use this goal prompt shape. Resolve the title block through canonical
+[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
+and consume its verified intake facts unchanged. This compatibility workflow
+preserves the exact prompt template below without redefining prefix,
+identifier, trust, time, or spacing selection.
+Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
+from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
+lane id or owner slug in the file-touch map, and `<word>` from a short
+coordinator-chosen session word. The coordinator records the handle before
+dispatch; workers copy it unchanged.
+
+`GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+
+```text
+Use $pr-batch to complete this batch with subagents.
+
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+
+Thread handle: <batch-short>-<lane>-<word>
+Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
+Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
+PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
+Repo:OWNER/REPO
+Objective:...
+merge_authority:<none|ask|auto_merge_when_gates_pass>
+Batch size target: <codex|claude|generic>;wave: <cap/items>
+Coordinator model/effort preference: <model/class>/<effort>.
+Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
+Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
+Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
+- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
+GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+HST-v1
+Batch QA Lane:<owner/scope+evidence|none+rationale>
+Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
+Items:
+- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+  Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
+  Goal:outcome
+  Notes:scope/deps
+  Done:req auth+PR/no-PR evidence|no-fix rationale
+Execution rules:
+Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
+- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
+- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
+Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
+Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
+- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+Apply Batch QA Lane;include QA Evidence
+merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
+- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
+```
 
 ### Question And Decision Handling
 
@@ -2061,17 +2136,8 @@ target list for each batch:
 
 Before filling this continuation-only `Batch title:` line, run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`. Resolve `<PROJECT>`
-from the optional `repo_prefix` in `.agents/agent-workflow.yml` when present;
-its value must be 1-6 uppercase ASCII letters or digits. If `repo_prefix` is
-absent, derive `<PROJECT>` deterministically from the repository name: use the
-basename of the `origin` remote after stripping `.git`, or the repository root
-basename when `origin` is unavailable; for a multi-segment name take the first
-character of each of the first six `-`, `_`, or space-separated segments, and
-for a single-segment name take its first 4 characters or the whole name when
-shorter, then uppercase the result (`agent-workflows` -> `AW`,
-`react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` ->
-`WEB3`, `3d-tiles` -> `3T`). An invalid configured `repo_prefix` is a blocker;
-do not silently fall back.
+through canonical [Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
+without reinterpreting its verified title facts.
 derive `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus
 its lowercased optional A/B/C suffix, `<lane>` from the lane id or owner slug in
 the file-touch map, and `<word>` from a short coordinator-chosen session word.
@@ -2089,18 +2155,16 @@ infer a handle from free-form text.
 ```text
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
 
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>.
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>
 
 Thread handle: <batch-short>-<lane>-<word>
 HST-v1
 
 First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
 
-After fail-closed target extraction and source verification, apply the same
-title rule: include `<ID?>` only for exactly one verified source issue, even
-alongside PR or ad-hoc execution targets; omit it for zero or multiple verified
-source issues. Evidence, blocker, dependency, next-action, comment, and example
-refs are not targets and cannot supply title identifiers.
+After fail-closed target extraction and source verification, apply canonical
+[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
+unchanged; this continuation entrypoint does not redefine title eligibility.
 
 If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact PR/issue list. Do not broaden to all open PRs, labels, milestones, or inferred related work unless I explicitly ask for discovery.
 

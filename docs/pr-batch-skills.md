@@ -322,90 +322,21 @@ omit the queue summary and note that queue state is unavailable.
    it collides with another active lane and cannot be safely coordinated; it exposes
    consequential ambiguity; or it weakens verification. An omitted path alone is not
    such a condition.
-8. Give the user the Batch Plan and fenced readable `$pr-batch` goal prompt.
-   The work request lives in exactly one accepted canonical issue or
-   pull-request body, or one trusted maintainer comment. A direct accepted PR
-   target uses its exact PR URL without requiring a synthetic comment. A later
-   trusted maintainer comment may define or override the issue or pull-request
-   body; select its exact URL. Do not synthesize or combine
-   sources. A preflight-accepted trusted ad-hoc override with no GitHub surface
-   uses its existing `plan-state://` or `batch://` durable authorization
-   reference. `Fix issue #123 using $pr-batch with merge authority ask.` is a
-   sufficient one-line shortcut when the repository makes the target
-   unambiguous.
-
-   Use the same readable body for every host; prepend only `/goal` for Codex. <!-- host-allow: codex-only -->
-   The prompt fields are repository, exact work-item URL, task name,
-   instruction, human `auto` or `ask` merge authority, and optional human-
-   availability time. Keep digest, timestamps, model/workflow observations,
-   thread handles, claim holders, Lane Cards, file-touch and dependency
-   evidence, registration-first coordination, and other derived workflow state
-   outside the human-authored prompt.
-   Keep timestamped batch titles in durable Batch Plan/task metadata. Apply the
-   canonical verified source-issue `<ID?>` rule from
-   `workflows/pr-batch-intake.md`; do not add `Batch title:` back to the human
-   prompt.
-
-   Canonical source bytes are the exact GitHub API `body` string for the
-   selected issue, pull request, or comment after JSON decoding, encoded as
-   UTF-8 without Unicode normalization, Markdown rendering, whitespace
-   trimming, or newline insertion or removal. Selection, launch, and worker
-   checks fetch the same object and field and hash only those bytes.
-   When GitHub returns `body: null` for a title-only issue or pull request,
-   treat its canonical source bytes as the empty UTF-8 string. Retain that
-   SHA-256 digest in the selection, launch, and worker fields; do not drop the
-   source because its body is null.
-
-   The launcher keeps one compact collapsed run record with one entry per target
-   lane. Before prompt creation, it persists one immutable unique per-execution
-   `run_id` and one exact canonical `record_destination` in the Batch Plan. It
-   freezes the exact delivered plan, then persists `batch_plan_binding` beside
-   it in the run record and handoff envelope, outside the bytes it hashes. Bind
-   exact inline UTF-8 plan bytes by SHA-256, or bind an existing immutable reference to its exact
-   revision/content digest; reverify before dispatch and worker start. Choose a
-   destination authorized to contain every lane's identity and source. An
-   all-public GitHub run may use one selected issue or PR work-item URL, with a
-   maintainer-comment source anchored to its parent work item. If any lane has
-   no public GitHub surface, use a durable plan/backend destination authorized
-   for all lanes or split the trust boundaries into separate runs. These fields
-   do not belong in the human prompt. The launcher binds each GitHub selection
-   to the successful security-preflight source URL, `body` field, and SHA-256
-   snapshot and writes its selection timestamp plus `Prompt digest at
-   selection`, then records the
-   run-level prompt-creation timestamp after rendering. Immediately before each
-   dispatch it re-fetches that lane's source and directly appends `Launched at`
-   plus `Prompt digest at launch`. If the selection and launch digests differ,
-   that dispatch stops until the changed source is deliberately reselected as a
-   new run and the security preflight is rerun. Use the existing handoff
-   envelope outside the frozen Batch Plan to give each worker that destination,
-   `run_id`, `batch_plan_binding`, lane launch digest, and existing immutable
-   replay identity (`lane_id`, dispatcher, `instance_id`, and launch token).
-   Bind that envelope to the same `run_id`, `batch_plan_binding`, and replay
-   identity; do not add the launch digest to the frozen plan or change its
-   binding. The worker opens the destination, resolves
-   the exactly matching `run_id` and replay identity, reverifies the plan
-   binding, re-fetches the source, and verifies identity and digest before it
-   interprets the source or returns its start observations. The sole
-   coordinator writer serializes or compare-and-swaps those observations into
-   the collapsed record; workers never race GitHub read-modify-write updates. A
-   mismatch stops work and is recorded.
-   The launcher records directional model
-   and Agent Workflows observations at prompt creation and worker start, using
-   `UNKNOWN` field by field without inference, and appends later workflow
-   observations with timestamps. Reruns append new collapsed `<details>`
-   history keyed by the unique per-execution `run_id`, not the deterministic
-   launch token, without rewriting earlier runs or lane values.
-   For the narrow non-GitHub trusted-ad-hoc exception, record the accepted
-   durable reference as the prompt source and write each source-digest field as
-   exact `not applicable — trusted-ad-hoc-override`. Reverify that the reference
-   resolves to the same immutable accepted provenance/authority record revision,
-   or an equivalent existing content binding, at selection, launch, and worker
-   start; missing, mutable, changed, or `UNKNOWN` binding stops. Do not invent a
-   snapshot schema.
-   Do not wait for a telemetry aggregator. Human `auto` maps to machine
-   `auto_merge_when_gates_pass`; `ask` maps to machine `ask`; machine-only
-   `merge_authority: none` remains outside the normal human prompt.
-   Host budget changes item count, not prompt vocabulary.
+8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
+   the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
+   `Use $pr-batch...` for Claude/generic), then render the exact
+   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block through
+   canonical [Verified Batch Title Selection](../workflows/pr-batch-intake.md#verified-batch-title-selection).
+   The prompt template keeps the title and surrounding blank lines stable;
+   prompt intake owns prefix, issue-identifier, trust, time, and spacing
+   selection.
+   Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
+   `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
+   and a coordinator-chosen session word. Add the compact `Lane Card:` line so
+   workers emit the canonical card after claim, PR-open, blocked/cancelled, and
+   final handoff states. Dashboard-generated and skill-generated prompts must
+   carry the same execution rules, including thread handles, claim holders, Lane
+   Cards, registration-first coordination when supported, and UNKNOWN fallbacks.
    Do not launch workers yet.
 9. When the user says to run it, use `$pr-batch`. For `copy-paste`, deliver the
    exact generated goal prompt with an exact immutable plan-state reference plus
@@ -418,6 +349,24 @@ omit the queue summary and note that queue state is unavailable.
    lane; the plan or reference preserves its complete scope.
    If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`
    resolves the spec tasks into exact GitHub targets before running.
+
+Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected; or not applicable — trusted-ad-hoc-override>
+exact GitHub API `body` string
+without Unicode normalization, Markdown rendering, whitespace trimming, or newline insertion or removal
+If the selection and launch digests differ, that dispatch stops
+deliberately reselected as a new run and the security preflight is rerun
+one compact collapsed run record with one entry per target lane
+directly appends `Launched at` plus `Prompt digest at launch`
+successful security-preflight source URL, `body` field, and SHA-256 snapshot
+When GitHub returns `body: null` for a title-only issue or pull request
+treat its canonical source bytes as the empty UTF-8 string
+verifies identity and digest before it interprets the source
+`batch_plan_binding`
+workers never race GitHub read-modify-write updates
+split the trust boundaries into separate runs
+   exact immutable plan-state reference plus its exact `batch_plan_binding`
+   multi-target group remains one coordinator launch with one target per worker lane
+   existing handoff envelope outside the frozen Batch Plan; do not add the launch digest to the frozen plan or change its binding
 
 ## Direct `$pr-batch` Flow
 

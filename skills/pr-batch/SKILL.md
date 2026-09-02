@@ -46,7 +46,7 @@ Run this task as one PR lane
 Run an agent batch
 Run a Codex batch
 Run a Claude batch
-```
+```goal
 
 ## User-Facing Coordination Contract
 
@@ -261,29 +261,12 @@ authority, and completion facts unchanged.
 
 This execution skill adds only batch-shaping details that intake does not own:
 
-1. **Batch title**: for durable Batch Plan and task metadata, derive a short
-   title in the form
-   `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>`.
-   Resolve `<PROJECT>` from the optional `repo_prefix` in
-   `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
-   ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
-   deterministically from the repository name: use the basename of the `origin`
-   remote after stripping `.git`, or the repository root basename when `origin`
-   is unavailable; for a multi-segment name take the first character of each of
-   the first six `-`, `_`, or space-separated segments, and for a single-segment
-   name take its first 4 characters or the whole name when shorter, then
-   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
-   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
-   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
-   Fill the optional `A?` slot with A, B, C, etc. only when recording multiple
-   batch titles; omit it for a single batch. Run `date +'%m-%d %H:%M'` in the
-   local shell when creating the metadata, and use that output for
-   `MM-DD HH:MM`. Resolve `<ID?>` through the verified source-issue cardinality
-   contract in canonical
-   [Plan To Goal Handoff](../../workflows/pr-batch-intake.md#plan-to-goal-handoff).
-   Keep the timestamped `Batch title:` in durable Batch Plan and
-   task metadata only. The readable human prompt uses `Task name:` and must not
-   regain `Batch title:`.
+1. **Batch title**: consume canonical
+   [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection)
+   unchanged and keep the exact
+   `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` placeholder in pasteable
+   prompts. This entrypoint is a compatibility route and does not mirror the
+   selection or trust contract.
 2. **Routing preferences and observations**: record coordinator, worker, and
    checker model/effort preferences before target interpretation. These are
    advisory. Host-observed host/model/effort fields are optional and remain
@@ -429,6 +412,18 @@ Every pasteable batch prompt uses the exact `Task name:` field from the minimal
 prompt shape. Keep the resolved `Thread handle:` in machine-readable launch
 state outside that prompt. Record the handle before dispatch so workers copy it
 unchanged.
+Keep the timestamped `Batch title:` in durable Batch Plan and task metadata only.
+The readable human prompt uses `Task name:` and must not regain `Batch title:`.
+After any target-specific invocation line, each pasteable batch prompt keeps
+the canonical `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block
+near the top. Resolve it through
+[Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection)
+without reinterpreting its verified intake facts.
+Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
+from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
+lane id or owner slug in the file-touch map, and `<word>` from a short
+coordinator-chosen session word. Record the handle before dispatch so workers
+copy it unchanged.
 
 If the user is in `/plan` or asks for a plan-to-goal handoff, stop after the Codex goal prompt. Do not begin implementation from plan approval unless the user explicitly says to launch now.
 
@@ -565,7 +560,7 @@ self-contained completion fallback in the accompanying Batch Plan or delivered
 launch state, never in the human-authored prompt; its inline semantics remain
 normative:
 
-GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+`GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
@@ -586,12 +581,46 @@ launches use the normal prompt unchanged.
 Use this template when creating goal text:
 
 ```text
-Repository: OWNER/REPO
-Work item: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
-Task name: <repository, work item, and purpose>
-Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
-Merge authority: <auto|ask>
-Human available after: <optional time; omit this line when not supplied>
+Use $pr-batch to complete this batch with subagents.
+
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+
+Thread handle: <batch-short>-<lane>-<word>
+Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
+Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
+PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
+Repo:OWNER/REPO
+Objective:...
+merge_authority:<none|ask|auto_merge_when_gates_pass>
+Batch size target: <codex|claude|generic>;wave: <cap/items>
+Coordinator model/effort preference: <model/class>/<effort>.
+Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
+Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
+Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
+- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
+GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+HST-v1
+Batch QA Lane:<owner/scope+evidence|none+rationale>
+Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
+Items:
+- Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+  Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>
+  Goal:outcome
+  Notes:scope/deps
+  Done:req auth+PR/no-PR evidence|no-fix rationale
+Execution rules:
+Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
+- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
+- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
+Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
+Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
+- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+Apply Batch QA Lane;include QA Evidence
+merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
+- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 ```
 
 ## Question And Decision Handling
