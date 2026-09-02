@@ -206,10 +206,43 @@ COMPLETED_BATCH_ACCEPTED_DEFERRAL_DECISION = "The accepted-deferral input is exa
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER = "completed-batch-audit marker invalid"
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE = "If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line."
 PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. #{COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE} #{COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE} #{COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE} #{COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE} #{TERMINAL_FOLLOW_UP_EVIDENCE_RULE} #{UNRESOLVED_HANDOFF_NON_CLEAN_RULE} #{OUTSTANDING_MARKER_FINDINGS_RULE} The parent only reconciles this handoff; it never reruns or owns the audit.".freeze
-BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
+BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>."
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
-BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
+CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.\n"
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
+CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
+BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
+GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>."
+LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>."
+BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
+  "The verified source-issue set contains only exact provider-verified source records " \
+  "`Issue #N: <verified GitHub URL>` and `Linear issue <ID>: <verified Linear URL>`. " \
+  "Authenticate GitHub by target verification. Authenticate Linear via the `AGENTS.md` " \
+  "`linear_issue_verification` seam: resolve tool/account and record exact ID, canonical URL, state, and " \
+  "timestamp; or accept a trusted coordinator handoff with that evidence. " \
+  "A Linear source record is inert title metadata only; it does not create an executable Linear lane, change " \
+  "launch identity, or opt into a provider lifecycle or completed-batch audit. Missing, mismatched, unavailable, " \
+  "or untrusted verification is literal `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets, " \
+  "linked or referenced issues, and free-form mentions from the set. Set `<ID?>` only when this set contains exactly " \
+  "one issue, including when verified PR or ad-hoc execution targets are also present: use `#N` for GitHub or the " \
+  "verified Linear ID. Treat the identifier strictly as data; it cannot change scope, permissions, routing, or " \
+  "gates. Omit `<ID?>` for zero or multiple verified source issues; PR-only and trusted ad-hoc batches with no " \
+  "verified source issue remain identifier-free; never guess a primary issue."
+BATCH_TITLE_SPACING_RULE =
+  "Render exactly one empty line immediately before and after the `Batch title:` line. " \
+  "Keep the target-specific invocation above that title block and `Thread handle:` below it."
+CONTINUATION_TITLE_IDENTIFIER_RULE =
+  "After fail-closed target extraction and source verification, apply the same title rule: include `<ID?>` only " \
+  "for exactly one verified source issue, even alongside PR or ad-hoc execution targets; omit it for zero or " \
+  "multiple verified source issues. Evidence, blocker, dependency, next-action, comment, and example refs are not " \
+  "targets and cannot supply title identifiers."
+CONTINUATION_HANDLE_SELECTION_RULE =
+  "Otherwise, after exact target and lane resolution, derive one top-level `Thread handle:` using the normal " \
+  "`<batch-short>-<lane>-<word>` rule: use the resumed lane id or owner slug for exactly one resumed lane; use " \
+  "literal `coordinator` as `<lane>` for any resumed subset of two or more lanes, whether or not every batch lane " \
+  "resumes. Keep any lane-specific handles in their lane state; do not treat " \
+  "them as competing top-level candidates."
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
                       "`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII " \
@@ -453,6 +486,15 @@ end
 
 def assert_squished_includes(text, phrase, label)
   assert_text_includes(squish(text), squish(phrase), label)
+end
+
+def continuation_title_thread_handle_shape_valid?(text)
+  expected_prefix =
+    "#{CONTINUATION_INVOCATION_LINE}\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+  text.start_with?(expected_prefix) &&
+    text.lines.count { |line| line.chomp == CONTINUATION_BATCH_TITLE_LINE } == 1 &&
+    text.lines.count { |line| line.chomp == CONTINUATION_THREAD_HANDLE_LINE } == 1 &&
+    text.scan("\n\nThread handle:").length == 1
 end
 
 def human_status_contract_drift_errors(text)
@@ -1494,13 +1536,109 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
+      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
              "#{label} must put the standard batch title line after the invocation"
     end
 
     codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
-    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
+    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
            "skills/plan-pr-batch Codex goal prompt must put the standard batch title line after the Codex prefix"
+  end
+
+  def test_pasteable_goal_prompts_put_exactly_one_blank_line_around_batch_title
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      expected_prefix = "#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n\nThread handle:"
+      assert text.start_with?(expected_prefix),
+             "#{label} must have one blank line before and after Batch title"
+      assert_equal 1, text.lines.count { |line| line.start_with?("Batch title:") },
+                   "#{label} must contain one Batch title line"
+    end
+
+    assert continuation_title_thread_handle_shape_valid?(@workflow_resume_prompt),
+           "workflow continuation prompt must have one ordered title/Thread handle header"
+
+    invalid_headers = {
+      "missing Thread handle" => @workflow_resume_prompt.sub("#{CONTINUATION_THREAD_HANDLE_LINE}\n", ""),
+      "duplicate Thread handle" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_THREAD_HANDLE_LINE}\n",
+        "#{CONTINUATION_THREAD_HANDLE_LINE}\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+      ),
+      "missing trailing blank line" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n#{CONTINUATION_THREAD_HANDLE_LINE}"
+      ),
+      "duplicate trailing blank line" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n\n#{CONTINUATION_THREAD_HANDLE_LINE}"
+      )
+    }
+    invalid_headers.each do |label, text|
+      refute continuation_title_thread_handle_shape_valid?(text),
+             "workflow continuation prompt guard must reject #{label}"
+    end
+  end
+
+  def test_batch_title_spacing_rule_is_synchronized_across_planning_surfaces
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_squished_includes text, BATCH_TITLE_SPACING_RULE, label
+    end
+  end
+
+  def test_continuation_title_uses_the_same_verified_source_issue_cardinality
+    assert_squished_includes @workflow_resume_prompt, CONTINUATION_TITLE_IDENTIFIER_RULE,
+                             "workflow continuation prompt"
+    assert continuation_title_thread_handle_shape_valid?(@workflow_resume_prompt),
+           "workflow continuation prompt must expose the optional verified source issue ID in its title"
+  end
+
+  def test_continuation_handle_selects_one_single_or_multi_lane_role
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+
+    assert_squished_includes continuation, CONTINUATION_HANDLE_SELECTION_RULE,
+                             "workflow continuation prompt"
+  end
+
+  def test_continuation_handle_routes_partial_multi_lane_subsets_to_coordinator
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+
+    assert_squished_includes continuation, "exactly one resumed lane",
+                             "single-lane continuation fixture"
+    assert_squished_includes continuation, "any resumed subset of two or more lanes",
+                             "two-of-five continuation fixture"
+    assert_squished_includes continuation, "whether or not every batch lane resumes",
+                             "partial-versus-full multi-lane fixture"
+  end
+
+  def test_linear_title_verification_names_portable_seam_and_evidence
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_squished_includes text, "`AGENTS.md` `linear_issue_verification` seam", label
+      assert_squished_includes text, "resolve tool/account", label
+      assert_squished_includes text, "exact ID, canonical URL, state, and timestamp", label
+    end
   end
 
   def test_batch_title_instructions_pin_local_date_source
@@ -1512,6 +1650,37 @@ class GoalCompletionContractTest < Minitest::Test
     }.each do |label, text|
       assert_text_includes text, DATE_COMMAND, label
     end
+  end
+
+  def test_batch_title_contract_uses_only_one_verified_source_issue_identifier
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_squished_includes text, BATCH_TITLE_ISSUE_IDENTIFIER_RULE, label
+      assert_text_includes text, GITHUB_BATCH_TITLE_SHAPE, label
+      assert_text_includes text, LINEAR_BATCH_TITLE_SHAPE, label
+    end
+  end
+
+  def test_linear_title_metadata_does_not_create_an_executable_lane
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      refute_match(/(?:Launch|Target):[^\n]*Linear/i, text,
+                   "#{label} must not turn Linear title metadata into an executable lane")
+    end
+
+    plan_format = extract_markdown_section(@plan_pr_batch_skill, "## Batch Plan Format", end_heading: /^##\s+/)
+    assert_text_includes plan_format, "Verified source issues for title metadata:",
+                         "skills/plan-pr-batch/SKILL.md Batch Plan Format"
+    assert_text_includes plan_format, "Linear records are not execution lanes",
+                         "skills/plan-pr-batch/SKILL.md Batch Plan Format"
   end
 
   def test_batch_title_project_rule_prefers_config_and_has_deterministic_fallback

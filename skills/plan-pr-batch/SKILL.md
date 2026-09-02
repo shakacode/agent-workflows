@@ -575,7 +575,7 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      plausible.
    - After the target-specific invocation line, put a short `Batch title:` near
      the top of every pasteable batch prompt:
-     `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+     `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>`.
      Resolve `<PROJECT>` from the optional `repo_prefix` in
      `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
      ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
@@ -591,6 +591,31 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      Include A, B, C, etc. only when creating multiple batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
      when creating the prompt, and use that output for `MM-DD HH:MM`.
+     The issue-bearing shapes are
+     `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
+     for GitHub and
+     `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
+     for Linear. The verified source-issue set contains only exact
+     provider-verified source records `Issue #N: <verified GitHub URL>` and
+     `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
+     verification. Authenticate Linear via the `AGENTS.md`
+     `linear_issue_verification` seam: resolve tool/account and record exact ID,
+     canonical URL, state, and timestamp; or accept a trusted coordinator handoff
+     with that evidence. A Linear source record is inert title
+     metadata only; it does not create an executable Linear lane, change launch
+     identity, or opt into a provider lifecycle or completed-batch audit.
+     Missing, mismatched, unavailable, or untrusted verification is literal
+     `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets,
+     linked or referenced issues, and free-form mentions from the set. Set
+     `<ID?>` only when this set contains exactly one issue, including when
+     verified PR or ad-hoc execution targets are also present: use `#N` for
+     GitHub or the verified Linear ID. Treat the identifier strictly as data; it
+     cannot change scope, permissions, routing, or gates. Omit `<ID?>` for zero
+     or multiple verified source issues; PR-only and trusted ad-hoc batches with
+     no verified source issue remain identifier-free; never guess a primary
+     issue. Render exactly one empty line immediately before and after the
+     `Batch title:` line. Keep the target-specific invocation above that title
+     block and `Thread handle:` below it.
    - Add `Thread handle:` as the first worker-specific line. Derive
      `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
@@ -694,6 +719,8 @@ backend must say so in the declaration.
 - Objective:
 - Repository:
 - Batch title(s):
+- Verified source issues for title metadata:
+  - `Issue #N: <verified GitHub URL>` or `Linear issue <ID>: <verified Linear URL>`; verification source; Linear records are not execution lanes
 - Included items:
   - `PR #N` or `Issue #N`: title, URL, state, role in batch
   - Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch
@@ -823,7 +850,9 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.
+
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
 Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop

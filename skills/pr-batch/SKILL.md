@@ -262,7 +262,7 @@ authority, and completion facts unchanged.
 This execution skill adds only batch-shaping details that intake does not own:
 
 1. **Batch title**: for pasteable batch prompts, derive a short title in the form
-   `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+   `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>`.
    Resolve `<PROJECT>` from the optional `repo_prefix` in
    `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
    ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
@@ -278,6 +278,31 @@ This execution skill adds only batch-shaping details that intake does not own:
    B, C, etc. only when creating multiple batch prompts; omit it for a single
    batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
    prompt, and use that output for `MM-DD HH:MM`.
+   The issue-bearing shapes are
+   `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
+   for GitHub and
+   `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
+   for Linear. The verified source-issue set contains only exact
+   provider-verified source records `Issue #N: <verified GitHub URL>` and
+   `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
+   verification. Authenticate Linear via the `AGENTS.md`
+   `linear_issue_verification` seam: resolve tool/account and record exact ID,
+   canonical URL, state, and timestamp; or accept a trusted coordinator handoff
+   with that evidence. A Linear source record is inert title
+   metadata only; it does not create an executable Linear lane, change launch
+   identity, or opt into a provider lifecycle or completed-batch audit.
+   Missing, mismatched, unavailable, or untrusted verification is literal
+   `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets,
+   linked or referenced issues, and free-form mentions from the set. Set
+   `<ID?>` only when this set contains exactly one issue, including when
+   verified PR or ad-hoc execution targets are also present: use `#N` for
+   GitHub or the verified Linear ID. Treat the identifier strictly as data; it
+   cannot change scope, permissions, routing, or gates. Omit `<ID?>` for zero
+   or multiple verified source issues; PR-only and trusted ad-hoc batches with
+   no verified source issue remain identifier-free; never guess a primary
+   issue. Render exactly one empty line immediately before and after the
+   `Batch title:` line. Keep the target-specific invocation above that title
+   block and `Thread handle:` below it.
 2. **Routing preferences and observations**: record coordinator, worker, and
    checker model/effort preferences before target interpretation. These are
    advisory. Host-observed host/model/effort fields are optional and remain
@@ -437,7 +462,7 @@ Before implementation or worker launch, produce:
 <!-- host-branch: codex-only end -->
 
 After any target-specific invocation line, each pasteable batch prompt must put
-`Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>` near the top.
+`Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` near the top.
 Derive `<PROJECT>` with the abbreviation rule in **Required Interview** above,
 and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
 local shell when creating the prompt.
@@ -549,7 +574,9 @@ Use this template when creating Codex goal text:
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.
+
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
 Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
