@@ -25,7 +25,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
   GMCC_V5 = "GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|" \
             "threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
-            "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
+            "auto-clear=>watch(review_gate?same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
             "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
             "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
             "auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|" \
