@@ -244,6 +244,7 @@ module CloseoutEvidenceReplay
 
     qa_fields = qa_evidence.fetch("fields", {})
     missing << "qa_evidence" if qa_evidence.fetch("verdict", "UNKNOWN") == "UNKNOWN"
+    missing << "qa_evidence.marker_version" unless qa_evidence.fetch("marker_version", nil) == 2
     missing << "head_sha.qa_evidence_mismatch" unless qa_fields.fetch("head_sha", "").downcase == head_sha
     missing << "required.qa_evidence_mismatch" unless qa_fields.fetch("required", "") == qa_required
     missing.uniq!

@@ -1740,6 +1740,28 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes supersession.fetch("missing"), "required.qa_evidence_mismatch"
   end
 
+  def test_qa_supersession_requires_adjacent_v2_evidence
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v1_marker(head_sha: final_head_sha) + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: yes
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_equal "UNKNOWN", supersession.fetch("verdict")
+    assert_includes supersession.fetch("missing"), "qa_evidence.marker_version"
+  end
+
   def test_required_qa_supersession_rejects_plain_exact_head_prose_and_marker
     final_head_sha = "2222222222222222222222222222222222222222"
     evidence = <<~MARKDOWN + v2_marker(
