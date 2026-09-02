@@ -1718,12 +1718,14 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   def test_qa_supersession_uses_current_marker_from_preserved_history
     stale_head_sha = "1111111111111111111111111111111111111111"
     final_head_sha = "2222222222222222222222222222222222222222"
-    supersessions = <<~MARKDOWN
+    stale_supersession = <<~MARKDOWN
       <!-- qa-evidence-supersession v1
       head_sha: #{stale_head_sha}
       required: yes
       supersedes: pr_body
       -->
+    MARKDOWN
+    final_supersession = <<~MARKDOWN
       <!-- qa-evidence-supersession v1
       head_sha: #{final_head_sha}
       required: yes
@@ -1731,11 +1733,14 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       -->
     MARKDOWN
     evidence = v2_marker(
+      "head_sha" => stale_head_sha,
+      "tested_at" => "PR #641 head #{stale_head_sha}"
+    ) + stale_supersession + v2_marker(
       "head_sha" => final_head_sha,
       "tested_at" => "PR #641 head #{final_head_sha}"
-    ) + supersessions
+    ) + final_supersession
 
-    replay = run_replay(
+    replay = CloseoutEvidenceReplay.replay(
       evidence,
       expected_head_sha: final_head_sha,
       require_qa_supersession: true
@@ -1746,6 +1751,35 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", supersession.fetch("verdict")
     assert_equal 1, supersession.fetch("marker_count")
     assert_equal final_head_sha, supersession.fetch("fields").fetch("head_sha")
+  end
+
+  def test_qa_supersession_rejects_non_adjacent_supersession_comment
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) + <<~MARKDOWN
+
+      This supersession was posted in a separate comment.
+
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: yes
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_equal "UNKNOWN", supersession.fetch("verdict")
+    assert_includes supersession.fetch("missing"),
+                    "qa-evidence-supersession v1 marker must be adjacent to qa-evidence v2 marker"
   end
 
   def test_qa_supersession_rejects_required_classification_mismatch

@@ -163,7 +163,7 @@ module CloseoutEvidenceReplay
                   replay_hosted_qa_markers(hosted_markers, expected_head_sha:)
                 end
     qa_supersession = replay_qa_supersession_markers(
-      marker_bodies(text, "qa-evidence-supersession v1"),
+      text,
       qa_evidence: qa,
       expected_head_sha:,
       required: require_qa_supersession
@@ -221,20 +221,36 @@ module CloseoutEvidenceReplay
     )
   end
 
-  def replay_qa_supersession_markers(markers, qa_evidence:, expected_head_sha: nil, required: false)
+  def replay_qa_supersession_markers(text, qa_evidence:, expected_head_sha: nil, required: false)
     if expected_head_sha.nil? && !required
       return qa_supersession_not_applicable("qa supersession was not requested for historical replay")
     end
 
-    if markers.empty?
+    raw_markers = marker_bodies(text, "qa-evidence-supersession v1")
+    if raw_markers.empty?
       return qa_supersession_unknown("qa-evidence-supersession v1 marker missing") if required
 
       return qa_supersession_not_applicable("qa-evidence-supersession v1 marker missing")
     end
-    markers = current_head_markers(markers, expected_head_sha) if expected_head_sha
-    return qa_supersession_marker_count_unknown(markers.length) unless markers.length == 1
 
-    fields, duplicate_keys = parse_fields(markers.first)
+    pairs = adjacent_qa_supersession_pairs(text)
+    if pairs.empty?
+      return qa_supersession_unknown("qa-evidence-supersession v1 marker must be adjacent to qa-evidence v2 marker")
+    end
+
+    pairs = current_head_adjacent_pairs(pairs, expected_head_sha) if expected_head_sha
+    return qa_supersession_marker_count_unknown(pairs.length) unless pairs.length == 1
+
+    pair = pairs.first
+    qa_version = pair.fetch("qa_version")
+    qa_marker = pair.fetch("qa_marker")
+    supersession_marker = pair.fetch("supersession_marker")
+    adjacent_qa_evidence = if qa_version == 2
+                             replay_qa_v2(qa_marker, expected_head_sha: expected_head_sha)
+                           else
+                             replay_qa(qa_marker, expected_head_sha: expected_head_sha)
+                           end
+    fields, duplicate_keys = parse_fields(supersession_marker)
     expected_fields = %w[head_sha required supersedes]
     errors = duplicate_keys.map { |key| "duplicate scalar key: #{key}" }
     errors << "scalar keys must be exactly #{expected_fields.sort.join(', ')}" unless
@@ -247,12 +263,12 @@ module CloseoutEvidenceReplay
     missing << "required" unless VALID_QA_REQUIRED.include?(qa_required)
     missing << "supersedes" unless fields.fetch("supersedes", "") == "pr_body"
 
-    qa_fields = qa_evidence.fetch("fields", {})
-    missing << "qa_evidence" if qa_evidence.fetch("verdict", "UNKNOWN") == "UNKNOWN"
+    qa_fields = adjacent_qa_evidence.fetch("fields", {})
+    missing << "qa_evidence" if adjacent_qa_evidence.fetch("verdict", "UNKNOWN") == "UNKNOWN"
     if qa_evidence.fetch("marker_count", 0) != 1
       missing << "exactly one qa-evidence marker is required"
     else
-      missing << "qa_evidence.marker_version" unless qa_evidence.fetch("marker_version", nil) == 2
+      missing << "qa_evidence.marker_version" unless adjacent_qa_evidence.fetch("marker_version", nil) == 2
       missing << "head_sha.qa_evidence_mismatch" unless qa_fields.fetch("head_sha", "").downcase == head_sha
       missing << "required.qa_evidence_mismatch" unless qa_fields.fetch("required", "") == qa_required
     end
@@ -386,6 +402,31 @@ module CloseoutEvidenceReplay
       fields.fetch("head_sha", "").downcase == expected_head_sha || duplicate_keys.include?("head_sha")
     end
     matching.empty? ? markers : matching
+  end
+
+  def adjacent_qa_supersession_pairs(text)
+    text.scan(
+      /<!--\s*qa-evidence v([12])(?=\s|-->)\s*(.*?)-->\r?\n(?:[ \t]*\r?\n)*[ \t]*<!--\s*qa-evidence-supersession v1(?=\s|-->)\s*(.*?)-->/m
+    ).map do |version, qa_marker, supersession_marker|
+      {
+        "qa_version" => version.to_i,
+        "qa_marker" => qa_marker,
+        "supersession_marker" => supersession_marker
+      }
+    end
+  end
+
+  def current_head_adjacent_pairs(pairs, expected_head_sha)
+    matching = pairs.select do |pair|
+      [
+        pair.fetch("qa_marker"),
+        pair.fetch("supersession_marker")
+      ].any? do |marker|
+        fields, duplicate_keys = parse_fields(marker)
+        fields.fetch("head_sha", "").downcase == expected_head_sha || duplicate_keys.include?("head_sha")
+      end
+    end
+    matching.empty? ? pairs : matching
   end
 
   def replay_qa(marker, expected_head_sha: nil)
