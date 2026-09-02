@@ -5,6 +5,8 @@ require "json"
 require "fileutils"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
+require "timeout"
 require "tmpdir"
 require_relative "../lib/autonomous_merge_decision"
 require_relative "../lib/autonomous_merge_runtime_trust"
@@ -1625,6 +1627,191 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
   end
 
+  # Trusted-base runtime verification must run inside the bounded autonomous
+  # replay lifecycle (issue #635).
+
+  def test_trusted_base_verification_is_bounded_and_reaps_its_owned_git_process_group
+    Dir.mktmpdir("trusted-base-replay-deadline", SAFE_TMP_PARENT) do |root|
+      pid_file, stalling_git, = write_stalling_git(root)
+      sources = trusted_base_sources(root)
+      base_sha = "b" * 40
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      error = assert_raises(AutonomousMergeRuntimeTrust::ReplayTimeout) do
+        Timeout.timeout(60) do
+          AutonomousMergeRuntimeTrust.verify_trusted_base(
+            repo_root: root,
+            base_sha: base_sha,
+            claim: "trusted-base:#{base_sha}",
+            sources: sources,
+            git_command: stalling_git,
+            deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+          )
+        end
+      end
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      assert error.cleanup_confirmed, "the owned git process group must be reaped"
+      assert_equal "trusted-base-runtime-verification", error.phase
+      assert_operator elapsed, :<, 30
+      refute alive_after_wait?(read_recorded_pid(pid_file), 10),
+             "a stalled trusted-base read must leave no descendant alive"
+    end
+  end
+
+  def test_trusted_base_verification_reports_unconfirmed_cleanup_distinctly
+    Dir.mktmpdir("trusted-base-replay-cleanup", SAFE_TMP_PARENT) do |root|
+      pid_file, stalling_git, = write_stalling_git(root)
+      sources = trusted_base_sources(root)
+      base_sha = "c" * 40
+      original = AutonomousMergeRuntimeTrust.method(:trusted_base_process_group_alive?)
+      AutonomousMergeRuntimeTrust.define_singleton_method(
+        :trusted_base_process_group_alive?
+      ) { |_pid| true }
+
+      error = assert_raises(AutonomousMergeRuntimeTrust::ReplayTimeout) do
+        Timeout.timeout(60) do
+          AutonomousMergeRuntimeTrust.verify_trusted_base(
+            repo_root: root,
+            base_sha: base_sha,
+            claim: "trusted-base:#{base_sha}",
+            sources: sources,
+            git_command: stalling_git,
+            deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+          )
+        end
+      end
+
+      refute error.cleanup_confirmed
+      assert_includes error.message, "UNKNOWN"
+      refute alive_after_wait?(read_recorded_pid(pid_file), 10),
+             "forced cleanup must still signal the whole owned process group"
+    ensure
+      if original
+        AutonomousMergeRuntimeTrust.define_singleton_method(
+          :trusted_base_process_group_alive?, original
+        )
+      end
+    end
+  end
+
+  def test_trusted_base_read_stays_in_the_outer_replay_group_when_not_the_owner
+    Dir.mktmpdir("trusted-base-inherited-group", SAFE_TMP_PARENT) do |root|
+      pgid_file, recording_git = write_pgid_recording_git(root)
+      base_sha = "d" * 40
+
+      AutonomousMergeRuntimeTrust.verify_trusted_base(
+        repo_root: root,
+        base_sha: base_sha,
+        claim: "trusted-base:#{base_sha}",
+        sources: trusted_base_sources(root),
+        git_command: recording_git,
+        deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60,
+        own_process_group: false
+      )
+
+      assert_equal Process.getpgid(0), Integer(File.read(pgid_file).strip),
+                   "a read inside an outer-owned replay group must not nest a new group"
+    end
+  end
+
+  def test_trusted_base_read_owns_its_process_group_for_the_outermost_caller
+    Dir.mktmpdir("trusted-base-owned-group", SAFE_TMP_PARENT) do |root|
+      pgid_file, recording_git = write_pgid_recording_git(root)
+      base_sha = "e" * 40
+
+      AutonomousMergeRuntimeTrust.verify_trusted_base(
+        repo_root: root,
+        base_sha: base_sha,
+        claim: "trusted-base:#{base_sha}",
+        sources: trusted_base_sources(root),
+        git_command: recording_git,
+        deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60
+      )
+
+      refute_equal Process.getpgid(0), Integer(File.read(pgid_file).strip),
+                   "the outermost caller must own a reapable group per read"
+    end
+  end
+
+  def test_unexpected_read_failure_still_reaps_the_trusted_base_child
+    Dir.mktmpdir("trusted-base-unexpected-failure", SAFE_TMP_PARENT) do |root|
+      pid_file, stalling_git, ready_file = write_stalling_git(root)
+      base_sha = "f" * 40
+      original = AutonomousMergeRuntimeTrust.method(:drain_trusted_base_pipe)
+      AutonomousMergeRuntimeTrust.define_singleton_method(:drain_trusted_base_pipe) do |*_args|
+        sleep(0.01) until File.exist?(ready_file)
+
+        raise IOError, "simulated trusted-base pipe failure"
+      end
+
+      assert_raises(IOError) do
+        Timeout.timeout(60) do
+          AutonomousMergeRuntimeTrust.verify_trusted_base(
+            repo_root: root,
+            base_sha: base_sha,
+            claim: "trusted-base:#{base_sha}",
+            sources: trusted_base_sources(root),
+            git_command: stalling_git,
+            deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 60
+          )
+        end
+      end
+
+      refute alive_after_wait?(read_recorded_pid(pid_file), 10),
+             "an unexpected read failure must still reap the owned process group"
+    ensure
+      if original
+        AutonomousMergeRuntimeTrust.define_singleton_method(:drain_trusted_base_pipe, original)
+      end
+    end
+  end
+
+  def test_cleanup_probes_treat_unsignalable_process_groups_as_still_alive
+    # Signal 0 against pid 1 is side-effect free and raises EPERM for an
+    # unprivileged user. Cleanup must read that as "still alive" and fail closed
+    # with UNKNOWN evidence rather than letting the error escape.
+    assert AutonomousMergeRuntimeTrust.trusted_base_process_group_alive?(-1)
+    assert_nil AutonomousMergeRuntimeTrust.signal_trusted_base_target("TERM", -unreachable_pid)
+  end
+
+  def unreachable_pid
+    candidate = 4_194_303
+    candidate += 1 while process_alive?(candidate)
+    candidate
+  end
+
+  def test_inherited_group_cleanup_escalates_to_kill_without_signalling_the_shared_group
+    descendant = nil
+    Dir.mktmpdir("trusted-base-inherited-cleanup", SAFE_TMP_PARENT) do |root|
+      pid_file, stalling_git, _ready_file, git_pid_file = write_stalling_git(root)
+      base_sha = "a" * 40
+
+      assert_raises(AutonomousMergeRuntimeTrust::ReplayTimeout) do
+        Timeout.timeout(60) do
+          AutonomousMergeRuntimeTrust.verify_trusted_base(
+            repo_root: root,
+            base_sha: base_sha,
+            claim: "trusted-base:#{base_sha}",
+            sources: trusted_base_sources(root),
+            git_command: stalling_git,
+            deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1,
+            own_process_group: false
+          )
+        end
+      end
+
+      descendant = read_recorded_pid(pid_file)
+
+      refute alive_after_wait?(read_recorded_pid(git_pid_file), 10),
+             "a TERM-ignoring read must be escalated to KILL and reaped"
+      assert process_alive?(descendant),
+             "inherited-group cleanup must signal only its own child, never the shared group"
+    end
+  ensure
+    terminate_fixture_process(descendant)
+  end
+
   private
 
   def invoke(root:, calibration_path:, stdin_data: "", evaluation: nil, semantic_path: nil,
@@ -2047,5 +2234,93 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       evidence: #{evidence}
       ...
     YAML
+  end
+
+  # A fake git that stalls on every invocation and forks one TERM-ignoring
+  # descendant into the spawned process group.
+  def write_stalling_git(root)
+    ready_file = File.join(root, "git-descendant-ready")
+    pid_file = File.join(root, "git-descendant.pid")
+    git_pid_file = File.join(root, "git-self.pid")
+    stalling_git = File.join(root, "git")
+    File.write(stalling_git, <<~RUBY)
+      #!#{RbConfig.ruby}
+      # frozen_string_literal: true
+      READY_FILE = #{ready_file.inspect}
+      File.write(#{git_pid_file.inspect}, Process.pid.to_s)
+      descendant = fork do
+        trap("TERM", "IGNORE")
+        File.write(READY_FILE, "ready")
+        sleep 300
+      end
+      File.write(#{pid_file.inspect}, descendant.to_s)
+      trap("TERM", "IGNORE")
+      sleep(0.01) until File.exist?(READY_FILE)
+      sleep 300
+    RUBY
+    File.chmod(0o755, stalling_git)
+    [pid_file, stalling_git, ready_file, git_pid_file]
+  end
+
+  def terminate_fixture_process(pid)
+    return if pid.nil?
+
+    Process.kill("KILL", pid)
+  rescue SystemCallError
+    nil
+  end
+
+  def trusted_base_sources(root)
+    runtime_path = File.join(root, "runtime-source")
+    File.write(runtime_path, "runtime bytes\n")
+    {
+      "helper" => {
+        path: runtime_path,
+        tree_paths: ["skills/pr-batch/bin/autonomous-merge-eligibility"]
+      }
+    }
+  end
+
+  # A fake git that records the process group it landed in and exits cleanly.
+  def write_pgid_recording_git(root)
+    pgid_file = File.join(root, "git-pgid")
+    recording_git = File.join(root, "git")
+    File.write(recording_git, <<~RUBY)
+      #!#{RbConfig.ruby}
+      # frozen_string_literal: true
+      File.write(#{pgid_file.inspect}, Process.getpgid(0).to_s)
+    RUBY
+    File.chmod(0o755, recording_git)
+    [pgid_file, recording_git]
+  end
+
+  def read_recorded_pid(pid_file)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
+    until File.exist?(pid_file) && !File.read(pid_file).strip.empty?
+      raise "the fake git never recorded its descendant" if
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.01
+    end
+    Integer(File.read(pid_file).strip)
+  end
+
+  def alive_after_wait?(pid, seconds)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+    loop do
+      return false unless process_alive?(pid)
+      return true if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.01
+    end
+  end
+
+  def process_alive?(pid)
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
   end
 end

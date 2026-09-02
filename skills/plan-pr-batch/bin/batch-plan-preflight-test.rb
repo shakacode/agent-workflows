@@ -4,16 +4,23 @@
 require "digest"
 require "json"
 require "minitest/autorun"
+require "fileutils"
 require "open3"
 require "rbconfig"
 require "tempfile"
+require "tmpdir"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
 STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
 REPLAY_FIXTURE = File.expand_path("../fixtures/ror-wave-a-plan-replay.json", __dir__)
 UNSIGNED_LIFECYCLE_FIXTURE = File.expand_path("../fixtures/unsigned-lifecycle-smoke.json", __dir__)
+load HELPER
 
 class BatchPlanPreflightTest < Minitest::Test
+  SAFE_TMP_PARENT = ENV.fetch(
+    "BATCH_PLAN_PREFLIGHT_TEST_TMP_PARENT",
+    File.expand_path("../../..", __dir__)
+  )
   RISK_SURFACES = %w[
     ci_workflow
     developer_tooling
@@ -2379,5 +2386,164 @@ class BatchPlanPreflightTest < Minitest::Test
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "stage-dependency-gate-lane-invalid"
+  end
+
+  # Bounded stage-dependency replay lifecycle (issue #635).
+
+  def test_stalled_stage_dependency_gate_is_reaped_and_reported_as_a_confirmed_timeout
+    with_stage_dependency_gate(stalling_gate_source) do |gate_path, pid_file|
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      recomputed, error = BatchPlanPreflight.run_stage_dependency_replay(
+        gate_path, { "id" => "plan-635" }, {}
+      )
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      assert_nil recomputed
+      assert_equal "stage-dependency-replay-timeout", error.fetch("code")
+      assert_equal "confirmed-zero", error.dig("evidence", "process_group_cleanup")
+      assert_equal 0, error.dig("evidence", "surviving_process_count")
+      assert_equal %w[TERM KILL], error.dig("evidence", "signals")
+      assert_operator elapsed, :<,
+                      BatchPlanPreflight::STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS + 10
+      refute alive_after_wait?(read_recorded_pid(pid_file), 10),
+             "the bounded replay must leave no descendant writer alive"
+    end
+  end
+
+  def test_unconfirmed_process_group_cleanup_is_not_reported_as_an_ordinary_timeout
+    with_stage_dependency_gate(stalling_gate_source) do |gate_path, pid_file|
+      recomputed, error = with_unconfirmable_stage_dependency_process_group do
+        BatchPlanPreflight.run_stage_dependency_replay(gate_path, { "id" => "plan-635" }, {})
+      end
+
+      assert_nil recomputed
+      assert_equal "stage-dependency-replay-cleanup-unconfirmed", error.fetch("code")
+      assert_equal "UNKNOWN", error.dig("evidence", "process_group_cleanup")
+      assert_equal "UNKNOWN", error.dig("evidence", "surviving_process_count")
+      assert_equal "timeout", error.dig("evidence", "phase")
+      refute alive_after_wait?(read_recorded_pid(pid_file), 10),
+             "forced cleanup must still signal the whole owned process group"
+    end
+  end
+
+  def test_replay_child_that_exits_leaving_a_writer_fails_closed_and_reaps_the_group
+    with_stage_dependency_gate(writer_leaking_gate_source) do |gate_path, pid_file|
+      recomputed, error = BatchPlanPreflight.run_stage_dependency_replay(
+        gate_path, { "id" => "plan-635" }, {}
+      )
+
+      assert_nil recomputed
+      assert_equal "stage-dependency-replay-cleanup-incomplete", error.fetch("code")
+      assert_equal "confirmed-zero", error.dig("evidence", "process_group_cleanup")
+      assert_equal "exit", error.dig("evidence", "phase")
+      assert_equal 0, error.dig("evidence", "surviving_process_count")
+      assert_equal %w[TERM KILL], error.dig("evidence", "signals")
+      refute alive_after_wait?(read_recorded_pid(pid_file), 10),
+             "a writer that outlived the replay child must be terminated and reaped"
+    end
+  end
+
+  def test_cleanup_probes_treat_unsignalable_process_groups_as_still_alive
+    # Signal 0 against pid 1 is side-effect free and raises EPERM for an
+    # unprivileged user. Cleanup must read that as "still alive" and report
+    # UNKNOWN evidence rather than letting the error escape into the caller's
+    # generic execution-failed rescue.
+    assert BatchPlanPreflight.stage_dependency_process_group_alive?(-1)
+    assert_nil BatchPlanPreflight.signal_stage_dependency_process_group("TERM", unreachable_pid)
+  end
+
+  def unreachable_pid
+    candidate = 4_194_303
+    candidate += 1 while process_alive?(candidate)
+    candidate
+  end
+
+  def stalling_gate_source
+    <<~'RUBY'
+      trap("TERM", "IGNORE")
+      sleep(0.01) until File.exist?(READY_FILE)
+      sleep 300
+    RUBY
+  end
+
+  def writer_leaking_gate_source
+    <<~'RUBY'
+      sleep(0.01) until File.exist?(READY_FILE)
+      $stdout.write("{}")
+      $stdout.flush
+      exit 0
+    RUBY
+  end
+
+  # Builds a fake stage-dependency-gate that forks one TERM-ignoring descendant
+  # into the spawned process group, then runs +body+. Only SIGKILL to the whole
+  # group can clear it, so cleanup escalation is observable and deterministic.
+  def with_stage_dependency_gate(body)
+    root = Dir.mktmpdir("stage-dependency-replay-lifecycle", SAFE_TMP_PARENT)
+    ready_file = File.join(root, "descendant-ready")
+    pid_file = File.join(root, "descendant.pid")
+    gate_path = File.join(root, "stage-dependency-gate")
+    File.write(gate_path, <<~RUBY)
+      #!#{RbConfig.ruby}
+      # frozen_string_literal: true
+      READY_FILE = #{ready_file.inspect}
+      descendant = fork do
+        trap("TERM", "IGNORE")
+        File.write(READY_FILE, "ready")
+        sleep 300
+      end
+      File.write(#{pid_file.inspect}, descendant.to_s)
+      #{body}
+    RUBY
+    File.chmod(0o755, gate_path)
+    yield gate_path, pid_file
+  ensure
+    FileUtils.remove_entry(root) if root && File.exist?(root)
+  end
+
+  # Simulates a process group whose exit can never be confirmed, which is what
+  # an EPERM probe against a surviving foreign-owned descendant looks like.
+  def with_unconfirmable_stage_dependency_process_group
+    original = BatchPlanPreflight.method(:stage_dependency_process_group_alive?)
+    BatchPlanPreflight.define_singleton_method(:stage_dependency_process_group_alive?) do |_pid|
+      true
+    end
+    yield
+  ensure
+    if original
+      BatchPlanPreflight.define_singleton_method(
+        :stage_dependency_process_group_alive?, original
+      )
+    end
+  end
+
+  def read_recorded_pid(pid_file)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
+    until File.exist?(pid_file) && !File.read(pid_file).strip.empty?
+      raise "fake stage-dependency-gate never recorded its descendant" if
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.01
+    end
+    Integer(File.read(pid_file).strip)
+  end
+
+  def alive_after_wait?(pid, seconds)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+    loop do
+      return false unless process_alive?(pid)
+      return true if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.01
+    end
+  end
+
+  def process_alive?(pid)
+    Process.kill(0, pid)
+    true
+  rescue Errno::ESRCH
+    false
+  rescue Errno::EPERM
+    true
   end
 end
