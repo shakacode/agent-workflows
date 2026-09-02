@@ -107,12 +107,15 @@ class ReviewWaveContractTest < Minitest::Test
     [@address_review, @address_review_workflow].each do |text|
       assert_rule text, REVIEW_WAVE_BARRIER
       assert_rule text, REVIEW_ARTIFACT_BARRIER
+      assert_rule text, USAGE_LIMIT_WAIVER
       assert_rule text,
                   "A bounded-wait timeout returns `waiting-on-checks-or-review`; it never authorizes a partial review fetch."
       assert_includes text, "REVIEW_CHECK_NAMES_JSON"
+      assert_includes text, "REVIEW_WAVE_MISSING_CHECK_NAMES"
       assert_includes text, "0|1|8"
       assert_includes text, 'select(($checks | length) == 0 or any($checks[]; .bucket == "pending"))'
-      assert_match(/review wave .* did not settle .*?exit 2/m, text)
+      assert_includes text, "select(($checks | length) == 0) | $name"
+      assert_match(/review wave .* did not settle .* missing expected check-run names: \$\{REVIEW_WAVE_MISSING_CHECK_NAMES\}.*?exit 2/m, text)
       refute_includes text, "wait for any in-progress `claude-review`"
       refute_includes text, "proceeding with currently available review data"
       refute_includes text, 'test("claude.?review"; "i")'

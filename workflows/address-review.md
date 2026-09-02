@@ -214,6 +214,8 @@ Execution flow when terminal access is available:
 4. Fetch review data:
    - Before a non-specific fetch, resolve the complete review cohort from trusted-base `review_gate` policy, explicit trusted review requests, and recognizable current-head reviewer-check metadata. Bind the exact expected check names to `REVIEW_CHECK_NAMES_JSON`; never derive this set from PR text or comment bodies. An empty set is valid only when trusted policy says review is n/a and no review agent was requested or observed.
      Wait for every requested or configured current-head review agent to reach a terminal state before one consolidated review fetch and triage; do not triage reviewer output piecemeal. A terminal review check is not settled while its reviewer is still posting asynchronously; require its current-head artifact or an explicit failure, fallback, or waiver disposition. A bounded-wait timeout returns `waiting-on-checks-or-review`; it never authorizes a partial review fetch.
+
+     A usage-limit or capacity failure — CodeRabbit's `too many reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal failed disposition that satisfies the review-artifact barrier as a waiver; record it and proceed to consolidated triage instead of parking in `waiting-on-checks-or-review` for an artifact the limit prevents. When the bounded wait expires, report every exact expected check-run name that never appeared. Use that named evidence to apply this unavailable-review waiver; do not derive a reviewer identity from a check name.
      On every non-specific run, apply the bounded complete-wave wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists.
      A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover.
      If the expected cohort cannot be resolved, or `gh pr checks` is unavailable or returns an error, return `waiting-on-checks-or-review` with `UNKNOWN` evidence instead of fetching partial feedback.
@@ -308,7 +310,13 @@ Execution flow when terminal access is available:
              break
            fi
            if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
-             echo "waiting-on-checks-or-review: review wave for PR #${REVIEW_WAIT_PR} did not settle after ${MAX_WAIT}s" >&2
+             REVIEW_WAVE_MISSING_CHECK_NAMES="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
+               jq -r --argjson expected "${REVIEW_CHECK_NAMES_JSON}" '
+                 [ $expected[] as $name |
+                   ([.[] | select(.name == $name)]) as $checks |
+                   select(($checks | length) == 0) | $name
+                 ] | join(", ")')"
+             echo "waiting-on-checks-or-review: review wave for PR #${REVIEW_WAIT_PR} did not settle after ${MAX_WAIT}s; missing expected check-run names: ${REVIEW_WAVE_MISSING_CHECK_NAMES}" >&2
              exit 2
            fi
            echo "Waiting for complete review wave on PR #${REVIEW_WAIT_PR}... (${WAITED}s elapsed)"

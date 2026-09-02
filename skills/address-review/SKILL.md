@@ -293,6 +293,15 @@ an explicit failure, fallback, or waiver disposition. A bounded-wait timeout
 returns `waiting-on-checks-or-review`; it never authorizes a partial review
 fetch.
 
+A usage-limit or capacity failure — CodeRabbit's `too many reviews`, or
+Codex/Claude token or quota exhaustion — is an explicit terminal failed
+disposition that satisfies the review-artifact barrier as a waiver; record it
+and proceed to consolidated triage instead of parking in
+`waiting-on-checks-or-review` for an artifact the limit prevents. When the
+bounded wait expires, report every exact expected check-run name that never
+appeared. Use that named evidence to apply this unavailable-review waiver; do
+not derive a reviewer identity from a check name.
+
 On every non-specific run, apply the bounded complete-wave wait to
 `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when
 no prior source summary or status checkpoint exists.
@@ -395,7 +404,13 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
         break
       fi
       if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
-        echo "waiting-on-checks-or-review: review wave for PR #${REVIEW_WAIT_PR} did not settle after ${MAX_WAIT}s" >&2
+        REVIEW_WAVE_MISSING_CHECK_NAMES="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
+          jq -r --argjson expected "${REVIEW_CHECK_NAMES_JSON}" '
+            [ $expected[] as $name |
+              ([.[] | select(.name == $name)]) as $checks |
+              select(($checks | length) == 0) | $name
+            ] | join(", ")')"
+        echo "waiting-on-checks-or-review: review wave for PR #${REVIEW_WAIT_PR} did not settle after ${MAX_WAIT}s; missing expected check-run names: ${REVIEW_WAVE_MISSING_CHECK_NAMES}" >&2
         exit 2
       fi
       echo "Waiting for complete review wave on PR #${REVIEW_WAIT_PR}... (${WAITED}s elapsed)"
