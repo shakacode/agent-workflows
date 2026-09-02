@@ -2413,7 +2413,12 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def safe_pack_fixture_parent
-    candidates = [ENV[PACK_FIXTURE_TMP_PARENT_ENV], File.expand_path("../../..", __dir__), Dir.home]
+    home = begin
+      Dir.home
+    rescue ArgumentError
+      nil
+    end
+    candidates = [ENV[PACK_FIXTURE_TMP_PARENT_ENV], File.expand_path("../../..", __dir__), home]
     candidates.compact.uniq.find { |directory| Dir.exist?(directory) && safe_pack_ancestry?(directory) }
   end
 
