@@ -506,12 +506,17 @@ Return:
   revision, or an equivalent existing content binding, at selection, launch,
   and worker start. Missing, mutable, changed, or `UNKNOWN` binding stops; do
   not invent a source snapshot.
-  - Target: <repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
-    Original: <prompt|n/a>; ovr: <n/a|name/authorizer/ref/task>
-    Goal: one-line outcome.
-    Notes: scope/branch/dependency.
-    Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
-  - Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.
+  - For non-GitHub overrides, capture the generated prompt in the five-field shape shown below and keep the same immutable provenance details in durable planning state.
+
+```text
+- Target: <repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
+  Original: <prompt|n/a>; ovr: <n/a|name/authorizer/ref/task>
+  Goal: one-line outcome.
+  Notes: scope/branch/dependency.
+  Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
+```
+
+- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.
   Report idle slots or the remaining backlog/next wave separately.
 - One durable planning-chat lifecycle record covering every generated group:
   While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
@@ -533,7 +538,7 @@ Return:
 - Residual risks and maintainer decisions needed.
 - Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action or wait instruction with an exact command, paste-ready prompt, URL, question, trigger, or clearing condition, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`.
 - Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
-- Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt, its exact immutable plan-state reference, and the exact batch_plan_binding.` and `Next: Paste all three into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
+- Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt, its exact immutable plan-state reference, or a byte-preserving inline handoff envelope when coordination_backend: n/a leaves no durable reference, and the exact batch_plan_binding.` and `Next: Paste the prompt, reference or envelope, and the exact batch_plan_binding into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
 
 ## Common Mistakes
 

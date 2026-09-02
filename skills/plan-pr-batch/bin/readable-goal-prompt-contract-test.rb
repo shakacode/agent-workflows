@@ -398,8 +398,10 @@ class ReadableGoalPromptContractTest < Minitest::Test
       normalized = text.gsub(/\s+/, " ")
       assert_includes normalized,
                       "Start a new task with the fenced goal prompt, its exact immutable plan-state " \
-                      "reference, and the exact batch_plan_binding."
-      assert_includes normalized, "Next: Paste all three into that task"
+                      "reference, or a byte-preserving inline handoff envelope when coordination_backend: n/a " \
+                      "leaves no durable reference, and the exact batch_plan_binding."
+      assert_includes normalized,
+                      "Next: Paste the prompt, reference or envelope, and the exact batch_plan_binding into that task, then archive this planning task."
     end
   end
 
