@@ -2165,7 +2165,7 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
 
       text, text_status = run_doctor(root)
       assert text_status.success?, text
-      assert_includes text, "ADVICE RuboCop (.rubocop.yml): 0 enforced, 8 missing/disabled"
+      assert_includes text, "ADVICE RuboCop (.rubocop.yml): 0 enforced, 8 recommendations"
       assert_includes text, "disabled Metrics/AbcSize; suggested config:"
       assert_includes text, "Metrics/AbcSize:\n  Enabled: true\n  Max: 17"
     end
@@ -2217,7 +2217,7 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
       expected_recommendations = ESLINT_LIMITS - %w[complexity max-lines]
       assert_equal(expected_recommendations, eslint.fetch("recommendations").map { |item| item.fetch("rule") })
       assert_equal "disabled", eslint.fetch("recommendations").find { |item| item["rule"] == "max-params" }
-                                                              .fetch("state")
+                                     .fetch("state")
       assert(eslint.fetch("recommendations").all? { |item| item.fetch("suggestion").include?(item.fetch("rule")) })
     end
   end
@@ -2227,7 +2227,7 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
       write_valid_binstub_contract(root)
       write_skill(root, "No commands here.\n")
       File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
-        const unrelated = { complexity: ["error", 3] };
+        const unused = { rules: { complexity: ["error", 3] } };
         export default [{
           rules: {
             // "max-lines": ["error", 100],
@@ -2248,32 +2248,73 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
     end
   end
 
+  def test_eslint_static_source_handles_exported_regex_literals_and_commonjs
+    with_repo do |root|
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        export default [{
+          settings: { pattern: /}/ },
+          rules: { complexity: ["error", 7] }
+        }];
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_includes eslint.fetch("enforced"), { "rule" => "complexity", "value" => 7 }
+    end
+
+    with_repo do |root|
+      File.write(File.join(root, ".eslintrc.cjs"), <<~JAVASCRIPT)
+        const unused = { rules: { complexity: ["error", 3] } };
+        module.exports = { rules: { "max-depth": ["error", 5] } };
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_equal [{ "rule" => "max-depth", "value" => 5 }], eslint.fetch("enforced")
+    end
+  end
+
   def test_eslint_enabled_rules_without_options_report_runtime_defaults
     with_repo do |root|
       File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
         export default [{ rules: {
           complexity: "error",
-          "max-params": ["warn"]
+          "max-params": ["warn"],
+          "max-depth": ["error", { maximum: 6 }]
         } }];
       JAVASCRIPT
 
       eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
 
       assert_equal(
-        [{ "rule" => "complexity", "value" => 20 }, { "rule" => "max-params", "value" => 3 }],
+        [
+          { "rule" => "complexity", "value" => 20 },
+          { "rule" => "max-params", "value" => 3 },
+          { "rule" => "max-depth", "value" => 6 }
+        ],
         eslint.fetch("enforced")
       )
     end
 
     with_repo do |root|
       File.write(File.join(root, ".eslintrc.json"), JSON.generate(
-                                                      "rules" => { "max-lines" => "error", "max-statements" => [2] }
+                                                      "rules" => {
+                                                        "max-lines" => "error",
+                                                        "max-statements" => [2],
+                                                        "complexity" => ["error", { "maximum" => 8 }],
+                                                        "max-lines-per-function" => ["error", { "skipBlankLines" => true }]
+                                                      }
                                                     ))
 
       eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
 
       assert_equal(
-        [{ "rule" => "max-lines", "value" => 300 }, { "rule" => "max-statements", "value" => 10 }],
+        [
+          { "rule" => "complexity", "value" => 8 },
+          { "rule" => "max-lines", "value" => 300 },
+          { "rule" => "max-lines-per-function", "value" => 50 },
+          { "rule" => "max-statements", "value" => 10 }
+        ],
         eslint.fetch("enforced")
       )
     end
@@ -2328,6 +2369,11 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
       eslint = advice.find { |item| item["linter"] == "ESLint" }
       max_lines = eslint.fetch("recommendations").find { |item| item["rule"] == "max-lines" }
       assert_equal '"max-lines": ["error", 300]', max_lines.fetch("suggestion")
+
+      text, text_status = run_doctor(root)
+      assert text_status.success?, text
+      assert_includes text, "ADVICE RuboCop (.rubocop.yml): 0 enforced, 8 recommendations"
+      assert_includes text, "invalid Metrics/AbcSize"
     end
   end
 
@@ -2364,6 +2410,25 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
       disabled = eslint.fetch("recommendations").find { |item| item["rule"] == "max-lines" }
       assert_equal "disabled", disabled.fetch("state")
       assert_equal '["spec/**"]', disabled.fetch("scope")
+    end
+  end
+
+  def test_eslint_uses_last_setting_for_the_same_scope
+    with_repo do |root|
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        export default [
+          { rules: { complexity: ["error", 7], "max-depth": "off" } },
+          { rules: { complexity: "off", "max-depth": ["error", 5] } }
+        ];
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      refute_includes eslint.fetch("enforced").map { |item| item.fetch("rule") }, "complexity"
+      complexity = eslint.fetch("recommendations").find { |item| item["rule"] == "complexity" }
+      assert_equal "disabled", complexity.fetch("state")
+      assert_includes eslint.fetch("enforced"), { "rule" => "max-depth", "value" => 5 }
+      refute(eslint.fetch("recommendations").any? { |item| item["rule"] == "max-depth" })
     end
   end
 

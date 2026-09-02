@@ -180,7 +180,7 @@ module AgentDoctor
 
           [*eslint_setting(mapping[rule], rule), scope]
         end
-        [rule, occurrences]
+        [rule, effective_eslint_occurrences(occurrences)]
       end
     rescue JSON::ParserError
       eslint_source_settings(source)
@@ -212,12 +212,15 @@ module AgentDoctor
           expression = eslint_rule_expression(entry.fetch(:body), rule)
           [*eslint_source_setting(expression, rule), entry[:scope]] if expression
         end
-        [rule, occurrences]
+        [rule, effective_eslint_occurrences(occurrences)]
       end
     end
 
     def javascript_rule_bodies(source)
       source = strip_javascript_comments(source)
+      source = exported_javascript_expression(source)
+      return [] unless source
+
       javascript_object_bodies(source).filter_map do |config_body|
         expression = eslint_rule_expression(config_body, "rules")
         next unless expression
@@ -232,27 +235,97 @@ module AgentDoctor
       end
     end
 
+    def exported_javascript_expression(source)
+      start = javascript_export_start(source)
+      return unless start
+
+      javascript_expression(source, start)
+    end
+
+    def javascript_export_start(source)
+      quote = nil
+      regex = false
+      character_class = false
+      escaped = false
+      previous = nil
+      index = 0
+      while index < source.length
+        character = source[index]
+        if quote || regex
+          quote, regex, character_class, escaped = javascript_literal_state(
+            character, quote, regex, character_class, escaped
+          )
+        elsif ["\"", "'", "`"].include?(character)
+          quote = character
+        elsif character == "/" && javascript_regex_start?(previous)
+          regex = true
+        else
+          export = source[index..].match(/\Aexport\s+default\b/)
+          return index + export[0].length if export
+
+          commonjs = source[index..].match(/\Amodule\.exports\s*=/)
+          return index + commonjs[0].length if commonjs
+        end
+        previous = character unless character.match?(/\s/) || quote || regex
+        index += 1
+      end
+      nil
+    end
+
+    def javascript_expression(source, start)
+      depth = { "{" => 0, "[" => 0, "(" => 0 }
+      quote = nil
+      regex = false
+      character_class = false
+      escaped = false
+      previous = "="
+      index = start
+      while index < source.length
+        character = source[index]
+        if quote || regex
+          quote, regex, character_class, escaped = javascript_literal_state(
+            character, quote, regex, character_class, escaped
+          )
+        elsif ["\"", "'", "`"].include?(character)
+          quote = character
+        elsif character == "/" && javascript_regex_start?(previous)
+          regex = true
+        else
+          return source[start...index] if character == ";" && top_level?(depth)
+
+          depth[character] += 1 if depth.key?(character)
+          closing = { "}" => "{", "]" => "[", ")" => "(" }[character]
+          depth[closing] -= 1 if closing && depth[closing].positive?
+        end
+        previous = character unless character.match?(/\s/) || quote || regex
+        index += 1
+      end
+      source[start..]
+    end
+
     def javascript_object_bodies(source)
       bodies = []
       quote = nil
+      regex = false
+      character_class = false
       escaped = false
+      previous = nil
       source.each_char.with_index do |character, index|
-        if quote
-          if escaped
-            escaped = false
-          elsif character == "\\"
-            escaped = true
-          elsif character == quote
-            quote = nil
-          end
+        if quote || regex
+          quote, regex, character_class, escaped = javascript_literal_state(
+            character, quote, regex, character_class, escaped
+          )
           next
         end
         if ["\"", "'", "`"].include?(character)
           quote = character
+        elsif character == "/" && javascript_regex_start?(previous)
+          regex = true
         elsif character == "{"
           body, = javascript_object_body(source, index)
           bodies << body if body
         end
+        previous = character unless character.match?(/\s/) || quote || regex
       end
       bodies
     end
@@ -266,8 +339,11 @@ module AgentDoctor
     def strip_javascript_comments(source)
       output = +""
       quote = nil
+      regex = false
+      character_class = false
       escaped = false
       comment = nil
+      previous = nil
       index = 0
       while index < source.length
         character = source[index]
@@ -283,15 +359,11 @@ module AgentDoctor
             comment = nil
             index += 1
           end
-        elsif quote
+        elsif quote || regex
           output << character
-          if escaped
-            escaped = false
-          elsif character == "\\"
-            escaped = true
-          elsif character == quote
-            quote = nil
-          end
+          quote, regex, character_class, escaped = javascript_literal_state(
+            character, quote, regex, character_class, escaped
+          )
         elsif ["\"", "'", "`"].include?(character)
           quote = character
           output << character
@@ -301,9 +373,13 @@ module AgentDoctor
         elsif character == "/" && following == "*"
           comment = :block
           index += 1
+        elsif character == "/" && javascript_regex_start?(previous)
+          regex = true
+          output << character
         else
           output << character
         end
+        previous = character unless character.match?(/\s/) || comment || quote || regex
         index += 1
       end
       output
@@ -312,29 +388,31 @@ module AgentDoctor
     def javascript_object_body(source, opening_index)
       depth = 0
       quote = nil
+      regex = false
+      character_class = false
       escaped = false
+      previous = nil
       source.each_char.with_index do |character, index|
         next if index < opening_index
 
-        if quote
-          if escaped
-            escaped = false
-          elsif character == "\\"
-            escaped = true
-          elsif character == quote
-            quote = nil
-          end
+        if quote || regex
+          quote, regex, character_class, escaped = javascript_literal_state(
+            character, quote, regex, character_class, escaped
+          )
           next
         end
 
         if ["\"", "'", "`"].include?(character)
           quote = character
+        elsif character == "/" && javascript_regex_start?(previous)
+          regex = true
         elsif character == "{"
           depth += 1
         elsif character == "}"
           depth -= 1
           return [source[(opening_index + 1)...index], index] if depth.zero?
         end
+        previous = character unless character.match?(/\s/) || quote || regex
       end
       [nil, nil]
     end
@@ -342,18 +420,17 @@ module AgentDoctor
     def eslint_rule_expression(source, rule)
       depth = { "{" => 0, "[" => 0, "(" => 0 }
       quote = nil
+      regex = false
+      character_class = false
       escaped = false
+      previous = nil
       index = 0
       while index < source.length
         character = source[index]
-        if quote
-          if escaped
-            escaped = false
-          elsif character == "\\"
-            escaped = true
-          elsif character == quote
-            quote = nil
-          end
+        if quote || regex
+          quote, regex, character_class, escaped = javascript_literal_state(
+            character, quote, regex, character_class, escaped
+          )
           index += 1
           next
         end
@@ -364,6 +441,11 @@ module AgentDoctor
 
           quote = character unless after
           index = after || index + 1
+          next
+        end
+        if character == "/" && javascript_regex_start?(previous)
+          regex = true
+          index += 1
           next
         end
         depth[character] += 1 if depth.key?(character)
@@ -377,6 +459,7 @@ module AgentDoctor
           index = after
           next
         end
+        previous = character unless character.match?(/\s/)
         index += 1
       end
       nil
@@ -408,6 +491,31 @@ module AgentDoctor
       depth.values.all?(&:zero?)
     end
 
+    def javascript_literal_state(character, quote, regex, character_class, escaped)
+      if escaped
+        escaped = false
+      elsif character == "\\"
+        escaped = true
+      elsif quote && character == quote
+        quote = nil
+      elsif regex && character == "["
+        character_class = true
+      elsif regex && character == "]"
+        character_class = false
+      elsif regex && character == "/" && !character_class
+        regex = false
+      end
+      [quote, regex, character_class, escaped]
+    end
+
+    def javascript_regex_start?(previous)
+      previous.nil? || "([{=,:;!?&|+-*%^~<>".include?(previous)
+    end
+
+    def effective_eslint_occurrences(occurrences)
+      occurrences.each_with_object({}) { |occurrence, effective| effective[occurrence[2]] = occurrence }.values
+    end
+
     def eslint_source_setting(expression, rule)
       return [:disabled, nil] if expression.match?(/\A(?:["']off["']|0)(?:\W|\z)/)
       return [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)] if
@@ -419,7 +527,7 @@ module AgentDoctor
       return [:missing, nil] unless match
       return [:disabled, nil] if match[:severity].match?(/(?:off|0)/)
 
-      value = match[:value] || match[:options]&.match(/["']?max["']?\s*:\s*(\d+)/)&.captures&.first
+      value = match[:value] || match[:options]&.match(/["']?(?:max|maximum)["']?\s*:\s*(\d+)/)&.captures&.first
       value ? [:enforced, value.to_i] : [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)]
     end
 
@@ -429,7 +537,15 @@ module AgentDoctor
       return [:missing, nil] unless [1, 2, "warn", "error"].include?(severity)
       return [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)] if options.nil?
 
-      threshold = options.is_a?(Hash) ? (options["max"] || options[:max]) : options
+      if options.is_a?(Hash)
+        keys = ["max", :max, "maximum", :maximum]
+        configured_key = keys.find { |key| options.key?(key) }
+        return [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)] unless configured_key
+
+        threshold = options[configured_key]
+      else
+        threshold = options
+      end
       valid_eslint_limit?(threshold) ? [:enforced, threshold] : [:invalid, nil]
     end
 
