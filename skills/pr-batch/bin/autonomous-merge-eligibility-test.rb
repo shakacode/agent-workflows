@@ -1781,6 +1781,37 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     candidate
   end
 
+  def test_inherited_group_cleanup_escalates_to_kill_without_signalling_the_shared_group
+    descendant = nil
+    Dir.mktmpdir("trusted-base-inherited-cleanup", SAFE_TMP_PARENT) do |root|
+      pid_file, stalling_git, _ready_file, git_pid_file = write_stalling_git(root)
+      base_sha = "a" * 40
+
+      assert_raises(AutonomousMergeRuntimeTrust::ReplayTimeout) do
+        Timeout.timeout(60) do
+          AutonomousMergeRuntimeTrust.verify_trusted_base(
+            repo_root: root,
+            base_sha: base_sha,
+            claim: "trusted-base:#{base_sha}",
+            sources: trusted_base_sources(root),
+            git_command: stalling_git,
+            deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1,
+            own_process_group: false
+          )
+        end
+      end
+
+      descendant = read_recorded_pid(pid_file)
+
+      refute alive_after_wait?(read_recorded_pid(git_pid_file), 10),
+             "a TERM-ignoring read must be escalated to KILL and reaped"
+      assert process_alive?(descendant),
+             "inherited-group cleanup must signal only its own child, never the shared group"
+    end
+  ensure
+    terminate_fixture_process(descendant)
+  end
+
   private
 
   def invoke(root:, calibration_path:, stdin_data: "", evaluation: nil, semantic_path: nil,
@@ -2210,11 +2241,13 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   def write_stalling_git(root)
     ready_file = File.join(root, "git-descendant-ready")
     pid_file = File.join(root, "git-descendant.pid")
+    git_pid_file = File.join(root, "git-self.pid")
     stalling_git = File.join(root, "git")
     File.write(stalling_git, <<~RUBY)
       #!#{RbConfig.ruby}
       # frozen_string_literal: true
       READY_FILE = #{ready_file.inspect}
+      File.write(#{git_pid_file.inspect}, Process.pid.to_s)
       descendant = fork do
         trap("TERM", "IGNORE")
         File.write(READY_FILE, "ready")
@@ -2226,7 +2259,15 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       sleep 300
     RUBY
     File.chmod(0o755, stalling_git)
-    [pid_file, stalling_git, ready_file]
+    [pid_file, stalling_git, ready_file, git_pid_file]
+  end
+
+  def terminate_fixture_process(pid)
+    return if pid.nil?
+
+    Process.kill("KILL", pid)
+  rescue SystemCallError
+    nil
   end
 
   def trusted_base_sources(root)
