@@ -117,9 +117,9 @@ in the same response; omit it for a single prompt. Run
 output for `MM-DD HH:MM`.
 
 The issue-bearing shapes are
-`Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
+`Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>`
 for GitHub and
-`Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
+`Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>`
 for Linear. The verified source-issue set contains only exact provider-verified
 source records `Issue #N: <verified GitHub URL>` and
 `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target

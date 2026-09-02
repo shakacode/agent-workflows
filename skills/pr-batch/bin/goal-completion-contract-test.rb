@@ -210,11 +210,11 @@ BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.\n"
-CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>"
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
-GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>."
-LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>."
+GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>"
+LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>"
 BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
   "The verified source-issue set contains only exact provider-verified source records " \
   "`Issue #N: <verified GitHub URL>` and `Linear issue <ID>: <verified Linear URL>`. " \
@@ -1554,6 +1554,8 @@ class GoalCompletionContractTest < Minitest::Test
     end
     assert_text_includes @verified_batch_title_contract, GITHUB_BATCH_TITLE_SHAPE, "workflows/pr-batch-intake.md"
     assert_text_includes @verified_batch_title_contract, LINEAR_BATCH_TITLE_SHAPE, "workflows/pr-batch-intake.md"
+    refute_includes @verified_batch_title_contract, "#{GITHUB_BATCH_TITLE_SHAPE}."
+    refute_includes @verified_batch_title_contract, "#{LINEAR_BATCH_TITLE_SHAPE}."
     assert_text_includes @verified_batch_title_contract, DATE_COMMAND, "workflows/pr-batch-intake.md"
 
     {
@@ -1566,6 +1568,8 @@ class GoalCompletionContractTest < Minitest::Test
       assert_text_includes text, "pr-batch-intake.md#verified-batch-title-selection", label
       refute_includes squish(text), squish(BATCH_TITLE_ISSUE_IDENTIFIER_RULE),
                       "#{label} must route to prompt intake instead of mirroring title selection"
+      refute_includes squish(text), squish(BATCH_TITLE_SPACING_RULE),
+                      "#{label} must route to prompt intake instead of mirroring title spacing"
       refute_includes squish(text), squish(PROJECT_PREFIX_RULE),
                       "#{label} must route to prompt intake instead of mirroring project selection"
     end

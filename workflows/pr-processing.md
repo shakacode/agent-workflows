@@ -2143,7 +2143,7 @@ infer a handle from free-form text.
 ```text
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
 
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>.
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>
 
 Thread handle: <batch-short>-<lane>-<word>
 HST-v1
