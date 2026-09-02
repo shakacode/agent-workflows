@@ -261,7 +261,7 @@ module PrRouteProvenance
   end
 
   def display(value)
-    escaped(value)
+    code(value)
   end
 
   def code(value)

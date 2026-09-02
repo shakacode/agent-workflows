@@ -65,7 +65,7 @@ class PrRouteProvenanceTest < Minitest::Test
     assert_match(/Wave 4.*`lane-fallback`.*`authorized-fallback`.*`proceed-as-fallback`/, section)
     assert_match(%r{Wave 5.*`aw-i333`.*`gpt-5\.6-sol/high`.*`gpt-5\.6-sol/high`.*`bound-exact-match`.*`proceed`}, section)
     assert_includes section, "Host route metadata was unavailable before editing."
-    assert_includes section, "authority: release-manager approval 2026-08-11"
+    assert_includes section, "authority: `release-manager approval 2026-08-11`"
     assert_match(%r{`0123456789abcdef0123456789abcdef01234567`.*Wave 5.*`gpt-5\.6-sol/high`.*`exact`}, section)
     assert_operator section.index("Wave 1"), :<, section.index("Wave 5")
     assert_equal section, PrRouteProvenance.render(receipts)
@@ -151,6 +151,20 @@ class PrRouteProvenanceTest < Minitest::Test
       PrRouteProvenance.apply([fixture("bound-exact-match-valid")], github: mismatch)
     end
     assert_includes error.message, "readback did not match"
+  end
+
+  def test_apply_is_idempotent_and_still_verifies_readback
+    section = PrRouteProvenance.render([fixture("bound-exact-match-valid")])
+    github = FakeGitHub.new("Human prose.\n\n#{section}")
+
+    result = PrRouteProvenance.apply(
+      [fixture("bound-exact-match-valid")],
+      github: github
+    )
+
+    refute result.fetch("changed")
+    assert_equal 2, github.reads
+    assert_empty github.updates
   end
 
   def test_github_client_uses_get_patch_get_and_persists_the_generated_body

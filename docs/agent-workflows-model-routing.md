@@ -504,10 +504,12 @@ outside the PR prose block.
 
 `apply` reads the current PR description, replaces zero or one
 `agent-workflows-route-provenance` managed section while preserving all other
-text, refuses malformed or duplicate markers, and re-reads the PR to confirm
-the exact result. Run it with the complete receipt set whenever contributing
-commits or execution waves change. A receipt with no observed binding must use
-the schema's `unbound-exact-route` mismatch and literal `UNKNOWN` tuple. An
+text, inserts a missing section inside the canonical `Agent details`
+disclosure when present, refuses malformed or duplicate markers, and re-reads
+the PR to confirm the exact result. Run it with the complete receipt set
+whenever contributing commits or execution waves change. A receipt with no
+observed binding must use the schema's `unbound-exact-route` mismatch and
+literal `UNKNOWN` tuple. An
 invalid receipt that labels such a route `bound-exact-match` is rejected rather
 than rendered as satisfied. Requested-route prose is never an input fallback.
 
