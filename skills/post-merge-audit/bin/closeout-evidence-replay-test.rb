@@ -1321,6 +1321,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_rejects_path_shaped_markdown_link_text
+    %w[ARTIFACTS/2.3 run/42 artifacts/7 build/2].each do |link_text|
+      evidence =
+        "durable: before HTTPS: [#{link_text}](https://evidence.example.test/x) " \
+        "after https://github.com/example/repo/pull/123#visual"
+      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), link_text
+      assert_includes qa.fetch("missing"), "visual_evidence.local_reference", link_text
+    end
+  end
+
   def test_v2_rejects_single_token_exact_unresolved_metric_names
     # Guards the equivalence relied on when the length-1 clause was folded into the terminal check.
     %w[nil none null pending undefined unset].each do |metric_name|
@@ -1491,6 +1503,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
 
       assert_equal "SATISFIED", run_replay(body).dig("hosted_qa_evidence", "verdict"), evidence
+    end
+  end
+
+  def test_hosted_v1_rejects_opaque_schemes_in_https_label_continuations
+    %w[javascript: mailto: file: data:].each do |scheme|
+      evidence = "HTTPS: enabled; #{scheme} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
     end
   end
 
