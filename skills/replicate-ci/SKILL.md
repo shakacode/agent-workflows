@@ -25,12 +25,22 @@ reproduction explains the failure.
    commit. Use provider-native run history for that exact commit and failure
    identity, resolving the repo-policy/AGENTS.md seam when defined.
    For GitHub Actions with no repo-policy/AGENTS.md seam, use the shipped
-   default:
+   default, then extend it with a per-run API/log pass for the missing control
+   inputs:
 
    ```bash
    gh run list --all --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,attempt,conclusion,headSha,event,workflowName,number,createdAt,url
    gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
+   gh api repos/<OWNER>/<REPO>/actions/runs/<RUN_ID> --jq '{event: .event, path: .path, head_sha: .head_sha, run_attempt: .run_attempt}'
+   gh api repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/jobs --jq '.jobs[] | {name: .name, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}'
+   gh run view <RUN_ID> --attempt <N> --log
    ```
+
+   Use the run payload for event/configuration selection, the job payload for
+   job-level identity and runner labels, and the logs for any
+   workflow-dispatch inputs, matrix values, runner image, toolchain version, or
+   other configuration selection the workflow prints. If a required dimension
+   is still unavailable after those lookups, record it as `UNKNOWN`.
 
    `gh run list`'s `conclusion` reflects only the latest attempt of each run;
    its `attempt` field is the count of attempts, not a signal by itself. When
@@ -43,20 +53,21 @@ reproduction explains the failure.
    --json jobs` and match by job name—so an unrelated job's failure or pass
    is never substituted for the failure identity's own history, and a
    retried run's earlier attempt is not silently dropped to the latest one.
-   An equivalent hosted invocation has matching controlled
-   invocation parameters and selected or known pre-run hosted environment
-   identity—event, inputs, matrix, runner image, toolchain, and configuration
-   selection—not runtime behavior or outcomes.
-   A single verified hosted failure with no conflicting equivalent same-commit
-   run is sufficient to proceed as a candidate deterministic/parity case. If
-   the failure identity, hosted run history, or invocation equivalence cannot
-   be retrieved or verified, record the
-   unverifiable fact(s) as `UNKNOWN`, classify the result as `BLOCKED`, and
-   stop before reproduction.
-   If equivalent hosted invocations for the same commit pass and fail, stop
-   before parity reproduction and use
-   `fix-flaky-tests`; that workflow owns intermittency regardless of local
-   results. Do not produce an Outcomes classification for that handoff.
+
+   - The equivalence predicate is mechanically evaluable only when the
+     required dimensions above are known: event, inputs, matrix, runner image,
+     toolchain, and configuration selection. It compares controlled invocation
+     parameters and pre-run environment identity, not runtime behavior or
+     outcomes.
+   - A single verified hosted failure with no conflicting equivalent same-commit
+     run is sufficient to proceed as a candidate deterministic/parity case.
+   - If the failure identity, hosted run history, or invocation equivalence
+     cannot be retrieved or verified, record the unverifiable fact(s) as
+     `UNKNOWN`, classify the result as `BLOCKED`, and stop before reproduction.
+   - If equivalent hosted invocations for the same commit pass and fail, stop
+     before parity reproduction and use `fix-flaky-tests`; that workflow owns
+     intermittency regardless of local results. Do not produce an Outcomes
+     classification for that handoff.
 4. Confirm the local-green evidence: command or workflow path used, head SHA,
    environment, and timestamp. Use `.agents/bin/validate` instead of inventing a
    substitute command.
