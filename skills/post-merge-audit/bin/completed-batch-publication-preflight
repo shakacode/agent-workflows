@@ -68,6 +68,11 @@ module CompletedBatchPublicationPreflight
     batch_id = normalized_known_string(input["batch_id"])
     blockers << "publication batch id is invalid" unless batch_id
     expected_targets = validated_target_set(input["expected_targets"], blockers, "expected target")
+    require_qa_supersession = input.fetch("require_qa_supersession", false)
+    unless [true, false].include?(require_qa_supersession)
+      blockers << "publication preflight input require_qa_supersession must be boolean"
+      require_qa_supersession = false
+    end
     no_backend = backend&.downcase == "n/a"
     if no_backend
       no_backend_evidence = resolved_no_backend_evidence(
@@ -114,7 +119,8 @@ module CompletedBatchPublicationPreflight
       snapshots,
       qa_entries,
       blockers,
-      waiver_verifier:
+      waiver_verifier:,
+      require_qa_supersession:
     )
     snapshot = {
       "batch_id" => batch_id,
@@ -677,7 +683,14 @@ module CompletedBatchPublicationPreflight
     [canonical_targets, authenticated_later_target_keys]
   end
 
-  def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, waiver_verifier:)
+  def canonical_qa_snapshots(
+    expected_targets,
+    snapshots,
+    qa_entries,
+    blockers,
+    waiver_verifier:,
+    require_qa_supersession: false
+  )
     expected_targets.map do |target|
       key = target_key(target)
       row = qa_entries[key]
@@ -706,11 +719,13 @@ module CompletedBatchPublicationPreflight
       replay = CloseoutEvidenceReplay.replay(
         evidence,
         expected_head_sha: head_sha,
-        require_visual_evidence_v2: user_visible_ui_change == "yes"
+        require_visual_evidence_v2: user_visible_ui_change == "yes",
+        require_qa_supersession:
       )
       qa = replay.fetch("qa_evidence")
-      verdict = qa.fetch("verdict")
+      qa_verdict = qa.fetch("verdict")
       status = qa.dig("fields", "status")
+      verdict = require_qa_supersession ? replay.fetch("overall_verdict") : qa_verdict
       if %w[yes no].include?(user_visible_ui_change) &&
          qa["marker_version"] == 2 &&
          qa.dig("fields", "user_visible_ui_change") != user_visible_ui_change
@@ -721,8 +736,13 @@ module CompletedBatchPublicationPreflight
       if no_pr_disposition && !valid_no_pr_qa_disposition?(qa)
         blockers << "#{target_label(target)} QA evidence contradicts typed no-PR disposition"
       end
+      blocker_verdict = if require_qa_supersession && verdict != qa_verdict
+                          verdict
+                        else
+                          status || verdict
+                        end
       unless %w[SATISFIED NOT_APPLICABLE WAIVED].include?(verdict)
-        blockers << "#{target_label(target)} QA disposition is #{status || verdict}"
+        blockers << "#{target_label(target)} QA disposition is #{blocker_verdict}"
       end
       waiver = canonical_waiver(
         row["maintainer_waiver"],
