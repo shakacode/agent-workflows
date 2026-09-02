@@ -87,7 +87,7 @@ module PrCiReadiness
   end
 
   def non_draft_head_rows(rows)
-    rows.reject { |row| draft_head_validation_row?(row) }
+    rows.reject { |row| draft_head_validation_row?(row) && evidence_row_state(row) != "UNKNOWN" }
   end
 
   def draft_head_validation_row?(row)
@@ -328,7 +328,7 @@ module PrCiReadiness
   # out before readiness classification so they cannot masquerade as a
   # recognized bucket, and are reported separately in "invalid".
   def assess(pr_number:, required_used:, rows:, required_cancellations: [])
-    invalid = invalid_names(non_draft_head_rows(rows))
+    invalid = invalid_names(rows)
     valid_rows = rows.reject { |row| invalid_row?(row) }
     gated_rows = readiness_rows(valid_rows, required_used:, required_cancellations:)
     failing = failing_names(gated_rows)

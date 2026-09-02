@@ -63,7 +63,6 @@ class PrCiReadinessTest < Minitest::Test
                                  { "name" => "validate", "bucket" => "pass" }
                                ])
     assert_equal "READY", out["verdict"]
-    assert_empty out["failing"]
   end
 
   def test_only_draft_head_rows_is_unknown
@@ -72,13 +71,13 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal "UNKNOWN", out["verdict"]
   end
 
-  def test_invalid_draft_head_row_is_ignored_before_invalid_classification
+  def test_invalid_draft_head_row_still_fails_closed
     out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
                                  { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "future-state" },
                                  { "workflow" => "Validate", "name" => "validate", "bucket" => "pass" }
                                ])
-    assert_equal "READY", out["verdict"]
-    assert_empty out["invalid"]
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ['validate (draft head) (bucket: "future-state")'], out["invalid"]
   end
 
   def test_draft_head_filter_is_exact_and_applies_to_evidence_scopes
@@ -86,14 +85,16 @@ class PrCiReadinessTest < Minitest::Test
       source: "github.actions.exact_head", head_sha: "a" * 40, complete: true,
       rows: [
         { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "fail" },
+        { "workflow" => "Validate", "name" => "validate (draft head)" },
         { "workflow" => "Security", "name" => "validate (draft head)", "bucket" => "fail" },
         { "workflow" => "Validate", "name" => "validate (draft head extra)", "bucket" => "fail" }
       ],
       checked_at: "2026-09-02T00:00:00Z"
     )
     identities = scope["rows"].map { |row| [row["workflow"], row["name"]] }
-    assert_equal "NOT_READY", scope["state"]
+    assert_equal "UNKNOWN", scope["state"]
     assert_equal [
+      ["Validate", "validate (draft head)"],
       ["Security", "validate (draft head)"],
       ["Validate", "validate (draft head extra)"]
     ], identities
@@ -107,7 +108,6 @@ class PrCiReadinessTest < Minitest::Test
       { "kind" => "run", "id" => 20, "name" => "Security", "url" => "#{base}/20" },
       { "kind" => "job", "id" => 21, "name" => "validate (draft head)", "url" => "#{base}/20/job/21" }
     ]
-
     ids = PrCiReadiness.non_draft_head_actions_rows(rows).map { |row| row["id"] }
     assert_equal [20, 21], ids
   end

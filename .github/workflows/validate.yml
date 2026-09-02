@@ -22,7 +22,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.draft == true && github.event.pull_request.head.sha || github.ref }}
+          ref: ${{ github.event.pull_request.draft == true && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Report validation target

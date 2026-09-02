@@ -187,7 +187,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes @validate_workflow,
                     "name: ${{ github.event.pull_request.draft == true && 'validate (draft head)' || 'validate' }}"
     assert_includes @validate_workflow,
-                    "ref: ${{ github.event.pull_request.draft == true && github.event.pull_request.head.sha || github.ref }}"
+                    "ref: ${{ github.event.pull_request.draft == true && github.event.pull_request.head.sha || github.sha }}"
     assert_includes @validate_workflow, "VALIDATION_TARGET:"
     assert_includes @validate_workflow, "git rev-parse HEAD"
   end
