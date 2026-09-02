@@ -232,6 +232,12 @@ BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
 BATCH_TITLE_SPACING_RULE =
   "Render exactly one empty line immediately before and after the `Batch title:` line. " \
   "Keep the target-specific invocation above that title block and `Thread handle:` below it."
+BATCH_TITLE_PLAN_LINK =
+  "[Plan To Goal Handoff](../../workflows/pr-processing.md#plan-to-goal-handoff)"
+BATCH_TITLE_METADATA_WORKFLOW_LINK =
+  "[Verified Source-Issue Title Metadata](pr-batch-intake.md#verified-source-issue-title-metadata)"
+BATCH_TITLE_METADATA_SKILL_LINK =
+  "[Verified Source-Issue Title Metadata](../../workflows/pr-batch-intake.md#verified-source-issue-title-metadata)"
 CONTINUATION_TITLE_IDENTIFIER_RULE =
   "After fail-closed target extraction and source verification, apply the same title rule: include `<ID?>` only " \
   "for exactly one verified source issue, even alongside PR or ad-hoc execution targets; omit it for zero or " \
@@ -1585,13 +1591,14 @@ class GoalCompletionContractTest < Minitest::Test
   def test_batch_title_spacing_rule_is_synchronized_across_planning_surfaces
     {
       "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill,
       "docs/pr-batch-skills.md" => @pr_batch_docs
     }.each do |label, text|
       assert_squished_includes text, BATCH_TITLE_SPACING_RULE, label
     end
+
+    assert_text_includes @pr_batch_skill, BATCH_TITLE_PLAN_LINK, "skills/pr-batch/SKILL.md"
   end
 
   def test_continuation_title_uses_the_same_verified_source_issue_cardinality
@@ -1629,8 +1636,7 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_linear_title_verification_names_portable_seam_and_evidence
     {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "workflows/pr-batch-intake.md" => @prompt_intake,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill,
       "docs/pr-batch-skills.md" => @pr_batch_docs
@@ -1639,31 +1645,46 @@ class GoalCompletionContractTest < Minitest::Test
       assert_squished_includes text, "resolve tool/account", label
       assert_squished_includes text, "exact ID, canonical URL, state, and timestamp", label
     end
+
+    assert_text_includes @workflow, BATCH_TITLE_METADATA_WORKFLOW_LINK, "workflows/pr-processing.md"
+    assert_text_includes @pr_batch_skill, BATCH_TITLE_METADATA_SKILL_LINK, "skills/pr-batch/SKILL.md"
   end
 
   def test_batch_title_instructions_pin_local_date_source
     {
       "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, DATE_COMMAND, label
     end
+
+    assert_text_includes @pr_batch_skill, BATCH_TITLE_PLAN_LINK, "skills/pr-batch/SKILL.md"
   end
 
   def test_batch_title_contract_uses_only_one_verified_source_issue_identifier
     {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "workflows/pr-batch-intake.md" => @prompt_intake,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill,
       "docs/pr-batch-skills.md" => @pr_batch_docs
     }.each do |label, text|
       assert_squished_includes text, BATCH_TITLE_ISSUE_IDENTIFIER_RULE, label
+    end
+
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
       assert_text_includes text, GITHUB_BATCH_TITLE_SHAPE, label
       assert_text_includes text, LINEAR_BATCH_TITLE_SHAPE, label
     end
+
+    assert_text_includes @workflow, BATCH_TITLE_METADATA_WORKFLOW_LINK, "workflows/pr-processing.md"
+    assert_text_includes @pr_batch_skill, BATCH_TITLE_PLAN_LINK, "skills/pr-batch/SKILL.md"
+    assert_text_includes @pr_batch_skill, BATCH_TITLE_METADATA_SKILL_LINK, "skills/pr-batch/SKILL.md"
   end
 
   def test_linear_title_metadata_does_not_create_an_executable_lane
@@ -1686,13 +1707,13 @@ class GoalCompletionContractTest < Minitest::Test
   def test_batch_title_project_rule_prefers_config_and_has_deterministic_fallback
     {
       "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
       "skills/triage/SKILL.md" => @triage_skill
     }.each do |label, text|
       assert_squished_includes text, PROJECT_PREFIX_RULE, label
     end
 
+    assert_text_includes @pr_batch_skill, BATCH_TITLE_PLAN_LINK, "skills/pr-batch/SKILL.md"
     assert_squished_includes @pr_batch_docs, PROJECT_PREFIX_DOCS_RULE, "docs/pr-batch-skills.md"
   end
 

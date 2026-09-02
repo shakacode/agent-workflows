@@ -738,10 +738,9 @@ Every target must use one explicit final state:
   local equivalent evidence, failing hosted URLs, and whether the next action is
   a maintainer waiver, rerun, or code change.
 - `blocked-user-input`: a surfaced maintainer/product decision is required. For
-  an overdue open permission request, include its stable request id, state,
-  original request text, `requested_at`, current age, and exact manual-resume
-  action. The `lane_closed` evidence must name that original request id; a later
-  generic blocker does not replace it.
+  an overdue open permission request, report its stable request id, state,
+  original request text, `requested_at`, age, and exact manual-resume action;
+  `lane_closed` evidence names that id rather than a later generic blocker.
 - `ready-human-review-required`: ordinary readiness is clean but autonomous
   eligibility requires a qualifying exact-current-head human risk decision.
 - `autonomous-merge-evidence-unknown`: ordinary readiness may be clean, but
