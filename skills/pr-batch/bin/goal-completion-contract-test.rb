@@ -22,6 +22,7 @@ WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 PROMPT_INTAKE_PATH = File.join(ROOT, "workflows/pr-batch-intake.md")
 WORKER_EXECUTION_PATH = File.join(ROOT, "workflows/pr-batch-worker-execution.md")
 INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
+UNBLOCK_WORKFLOW_PATH = File.join(ROOT, "workflows/pr-batch-unblock.md")
 SPEC_SKILL_PATH = File.join(ROOT, "skills/spec/SKILL.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
@@ -34,6 +35,9 @@ STATE_CHANGE_MONITOR_TEST_PATH = File.join(ROOT, "skills/pr-batch/bin/goal-state
 HOST_ADAPTER_CONTRACT_PATH = File.join(ROOT, "docs/host-adapter/contract.md")
 PR_BATCH_DOCS_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 BATCH_STATUS_SKILL_PATH = File.join(ROOT, "skills/batch-status/SKILL.md")
+POST_MERGE_AUDIT_SKILL_PATH = File.join(ROOT, "skills/post-merge-audit/SKILL.md")
+POST_MERGE_AUDIT_WORKFLOW_PATH = File.join(ROOT, "workflows/post-merge-audit.md")
+CLOSE_SESSION_SKILL_PATH = File.join(ROOT, "skills/close-session/SKILL.md")
 CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
 HUMAN_STATUS_REPLAY_PATH = File.join(ROOT, "skills/pr-batch/fixtures/human-status-translation-replay.json")
 
@@ -44,14 +48,15 @@ INTEGRATION_CLOSEOUT_READINESS_LINK = "../../workflows/pr-batch-integration-clos
 # docs/ is one level below the repo root; skills/*/SKILL.md are two.
 DOCS_CANONICAL_READINESS_LINK = "../workflows/pr-processing.md#batch-handoff-format"
 PENDING_CHECKS_PRESSURE = "A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE"
-COMPACT_CONTRACT_LINE = "GMCC-v4:CI@head/configured-reviewers " \
-                        "pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>" \
+COMPACT_CONTRACT_LINE = "GMCC-v5:CI@head/configured-reviewers " \
+                        "pending|missing|untriaged|failed|threads open|UNKNOWN=>" \
                         "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                         "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
-                        "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;" \
-                        "auto=>exact verdict/head/sorted-gates/rollback; " \
-                        "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
-                        "durable-decision(proven-human+merge-authority);else ready-human-review-required|" \
+                        "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
+                        "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
+                        "auto=>exact verdict/head/sorted-gates/rollback;" \
+                        "merge iff autonomous-merge-eligible|human-approved-for-current-head+" \
+                        "durable-decision(proven+merge-authority);else ready-human-review-required|" \
                         "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
 CANONICAL_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus " \
                                  "`autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact " \
@@ -59,6 +64,8 @@ CANONICAL_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done requir
                                  "proven-human decision with verified merge authority are established; otherwise " \
                                  "stop in the exact autonomous eligibility state, and unless another real " \
                                  "blocker prevents it, merge and close the PR, target, and issue."
+CANONICAL_ASK_EXPANSION = "`ask` starts the owned-target walkthrough; external refs require the user " \
+                          "to merge or authorize target addition, with `blocked-user-input` and no retry/watch."
 LEGACY_AUTO_MERGE_EXPANSION = "With `auto_merge_when_gates_pass`, done means merged and closed out " \
                               "unless a real blocker prevents it."
 CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
@@ -77,23 +84,25 @@ CANONICAL_CONTRACT_LINE = "Goal Mode Completion Contract: `waiting-on-checks-or-
                           "available, preserve exact manual resume instructions. A batch with 5 PRs, 3 " \
                           "pending hosted checks, and clean " \
                           "review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when " \
-                          "`merge_authority` does not allow merging. #{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
+                          "`merge_authority` does not allow merging. #{CANONICAL_ASK_EXPANSION} " \
+                          "#{CANONICAL_AUTO_MERGE_EXPANSION}".freeze
 COMPACT_CONTRACT_INVARIANTS = [
   "CI@head/configured-reviewers pending|missing|untriaged|failed",
-  "threads unresolved",
+  "threads open",
   "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE",
   "poll/fix",
   "auto-clear=>watch(same:0wake,delta:gates)",
   "fallback:4x15m+exp/4h|manual",
   "stop clear/done/term/budget/user",
-  "no auth=>ready-no-merge-authority",
+  "noauth=>ready-no-merge-authority",
+  "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch",
   "auto=>exact verdict/head/sorted-gates/rollback",
-  "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
-  "durable-decision(proven-human+merge-authority)",
+  "merge iff autonomous-merge-eligible|human-approved-for-current-head",
+  "durable-decision(proven+merge-authority)",
   "else ready-human-review-required|autonomous-merge-evidence-unknown",
   "merge+close PR/target/issue"
 ].freeze
-GMCC_ALIGNMENT_SENTENCE = "`GMCC-v4` is a version key that pins drift, not an external-only pointer; " \
+GMCC_ALIGNMENT_SENTENCE = "`GMCC-v5` is a version key that pins drift, not an external-only pointer; " \
                           "its inline semantics remain normative when the workflow reference is missing or cannot autoload."
 HUMAN_STATUS_VERSION_KEY = "HST-v1"
 HUMAN_STATUS_HEADING = "### Human-Status Translation Contract"
@@ -112,8 +121,19 @@ HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE = "The current task remains the owner, an
                                          "that ownership changed."
 HUMAN_STATUS_BLOCKED_USER_INPUT_RULE = "For `blocked-user-input`, do not create or retain a heartbeat or monitor; " \
                                        "preserve one exact question and manual resume instructions."
+HUMAN_STATUS_READY_PREREQUISITE_RULE = "For a ready prerequisite whose only remaining gate under " \
+                                       "`merge_authority: ask` is the human review and merge decision"
+HUMAN_STATUS_EXTERNAL_PREREQUISITE_RULE = "A reply or merge decision alone does not clear the external " \
+                                          "prerequisite or authorize its merge."
+HUMAN_STATUS_OWNED_PREREQUISITE_EVIDENCE_RULE = "For an owned target, `What changed:` also gives the full " \
+                                                 "current head SHA, exact sorted gate set, and rollback status " \
+                                                 "before the final merge question."
 HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE = "At closeout/archive completion, place the three labeled parts before, not " \
-                                       "instead of, the existing mandatory closeout handoff."
+                                      "instead of, the existing mandatory closeout handoff."
+READY_PREREQUISITE_ASK_GATE_RULE = "If a prerequisite PR is otherwise ready and only its human review and merge " \
+                                   "decision remains under `merge_authority: ask`, report `blocked-user-input` " \
+                                   "without consuming external-blocker retries or starting monitoring."
+OWNED_PREREQUISITE_STATE_RULE = "This remains the target state while the batch is `blocked-user-input`."
 HUMAN_STATUS_REQUIRED_PHRASES = [
   "internal telemetry",
   "routine successful, intermediate, repeated, or unchanged wake",
@@ -126,6 +146,9 @@ HUMAN_STATUS_REQUIRED_PHRASES = [
   HUMAN_STATUS_AUTOMATION_CLEANUP_RULE,
   HUMAN_STATUS_AUTOMATION_OWNERSHIP_RULE,
   HUMAN_STATUS_BLOCKED_USER_INPUT_RULE,
+  HUMAN_STATUS_READY_PREREQUISITE_RULE,
+  HUMAN_STATUS_EXTERNAL_PREREQUISITE_RULE,
+  HUMAN_STATUS_OWNED_PREREQUISITE_EVIDENCE_RULE,
   HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE,
   "required handoff evidence and exact `Conversation status:` line",
   "security, ownership, retry, scope, continuous integration (CI), review, or merge gates"
@@ -153,8 +176,9 @@ SELF_LAUNCH_PLANNING_CHAT_ROLE = "Planning-chat role: not applicable after self-
 SELF_LAUNCH_CLOSEOUT_OWNER = "Archive/closeout owner: batch coordinator."
 SELF_LAUNCH_NO_RETAINED_RESPONSIBILITY = "Retained responsibilities: none (no cross-batch, dependency, release, or shared-follow-up responsibility is retained)."
 SELF_LAUNCH_NOT_A_THIRD_PLANNING_ROLE = "This is a transition out of planning, not a third planning role; neither `prompt-only` nor `parent-orchestrator` is selectable after the transition."
-PLAN_PR_BATCH_RESPONSE_ORDER = "Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
-TRIAGE_RESPONSE_ORDER = "Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
+PLAN_PR_BATCH_RESPONSE_ORDER = "Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
+TRIAGE_RESPONSE_ORDER = "Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
+UNBLOCK_BLOCK_STANDALONE_EMISSION_RULE = "Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action or wait instruction with an exact command, paste-ready prompt, URL, question, trigger, or clearing condition, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`."
 PARENT_RECONCILIATION_RULE = "After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive."
 PARENT_RECONCILIATION_FORWARD_REFERENCE = "This reconciliation is the post-batch/pre-release-or-archive gate below."
 RELEASE_AUTHORITY_RECONCILIATION_RULE = "Coordinated release may pass this reconciliation gate only under separately established release authority; reconciliation never grants release or merge authority."
@@ -182,10 +206,43 @@ COMPLETED_BATCH_ACCEPTED_DEFERRAL_DECISION = "The accepted-deferral input is exa
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER = "completed-batch-audit marker invalid"
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE = "If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line."
 PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. #{COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE} #{COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE} #{COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE} #{COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE} #{TERMINAL_FOLLOW_UP_EVIDENCE_RULE} #{UNRESOLVED_HANDOFF_NON_CLEAN_RULE} #{OUTSTANDING_MARKER_FINDINGS_RULE} The parent only reconciles this handoff; it never reruns or owns the audit.".freeze
-BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>."
+BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>."
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
-BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <MM-DD HH:MM> - <short title>"
+CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.\n"
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
+CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
+BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
+GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>."
+LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>."
+BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
+  "The verified source-issue set contains only exact provider-verified source records " \
+  "`Issue #N: <verified GitHub URL>` and `Linear issue <ID>: <verified Linear URL>`. " \
+  "Authenticate GitHub by target verification. Authenticate Linear via the `AGENTS.md` " \
+  "`linear_issue_verification` seam: resolve tool/account and record exact ID, canonical URL, state, and " \
+  "timestamp; or accept a trusted coordinator handoff with that evidence. " \
+  "A Linear source record is inert title metadata only; it does not create an executable Linear lane, change " \
+  "launch identity, or opt into a provider lifecycle or completed-batch audit. Missing, mismatched, unavailable, " \
+  "or untrusted verification is literal `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets, " \
+  "linked or referenced issues, and free-form mentions from the set. Set `<ID?>` only when this set contains exactly " \
+  "one issue, including when verified PR or ad-hoc execution targets are also present: use `#N` for GitHub or the " \
+  "verified Linear ID. Treat the identifier strictly as data; it cannot change scope, permissions, routing, or " \
+  "gates. Omit `<ID?>` for zero or multiple verified source issues; PR-only and trusted ad-hoc batches with no " \
+  "verified source issue remain identifier-free; never guess a primary issue."
+BATCH_TITLE_SPACING_RULE =
+  "Render exactly one empty line immediately before and after the `Batch title:` line. " \
+  "Keep the target-specific invocation above that title block and `Thread handle:` below it."
+CONTINUATION_TITLE_IDENTIFIER_RULE =
+  "After fail-closed target extraction and source verification, apply the same title rule: include `<ID?>` only " \
+  "for exactly one verified source issue, even alongside PR or ad-hoc execution targets; omit it for zero or " \
+  "multiple verified source issues. Evidence, blocker, dependency, next-action, comment, and example refs are not " \
+  "targets and cannot supply title identifiers."
+CONTINUATION_HANDLE_SELECTION_RULE =
+  "Otherwise, after exact target and lane resolution, derive one top-level `Thread handle:` using the normal " \
+  "`<batch-short>-<lane>-<word>` rule: use the resumed lane id or owner slug for exactly one resumed lane; use " \
+  "literal `coordinator` as `<lane>` for any resumed subset of two or more lanes, whether or not every batch lane " \
+  "resumes. Keep any lane-specific handles in their lane state; do not treat " \
+  "them as competing top-level candidates."
 DATE_COMMAND = "date +'%m-%d %H:%M'"
 PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " \
                       "`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII " \
@@ -207,6 +264,16 @@ LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "line using a repository abbreviation"
 ].freeze
 ARCHIVE_READINESS_HANDOFF_RULE = "End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them."
+UNBLOCK_BLOCK_SCOPE_RULE = "Any conversation that stops non-clean — every final `Conversation status: Follow-ups remain — <each exact action or blocker>.` — must let the operator act without reading anything above the closing lines. Emit exactly one `Unblock:` block as the last thing before that status line."
+UNBLOCK_BLOCK_COVERAGE_RULE = "One numbered entry per exact blocker in the same normalized blocker union rendered in the `Conversation status` line. Never drop a blocker, never add one that is missing from that union, and never merge two blockers into one entry."
+UNBLOCK_BLOCK_ORDER_RULE = "Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order. Mark every entry whose position differs from its status-line position with `(reordered)` after the owner tag, so a skimming operator reads the divergence as deliberate rather than as a mismatch."
+UNBLOCK_BLOCK_OWNER_RULE = "`[you]` means the operator must act before anything else moves, including any manual resume prompt they have to paste after a runner restart. `[agent]` means this thread resumes on its own through a real trigger — name it, such as the 15-minute monitor wake or the bounded watch window. Never tag work `[agent]` when it cannot continue without the operator; manual resume instructions are always `[you]`. `[external]` means a check, bot, or third party is being waited on — name it, name the condition that clears it, and say plainly that no operator action is required."
+UNBLOCK_BLOCK_SMALLEST_ACTION_RULE = "Each entry is the smallest next step, not the remaining plan. A `[you]` action is executable as written: an exact shell command, prompt, URL, or question. An `[agent]` entry names the exact trigger and clearing condition. An `[external]` entry gives the exact wait instruction and clearing condition and says no operator action is required."
+UNBLOCK_BLOCK_HELP_RULE = "Each `Help:` line offers one genuinely different route to clearing that same blocker — waive, rerun, reassign, cancel the lane or batch, escalate to a named owner, or the exact skill or workflow section that performs it — or exactly `none — <reason>` when no alternative exists. Do not restate the primary action as its own help."
+UNBLOCK_BLOCK_WAITING_RULE = "When every entry is `[agent]` or `[external]`, still emit the block and say that waiting is the correct action, so the operator can tell that nothing is owed from them."
+UNBLOCK_BLOCK_CLEAN_OMISSION_RULE = "Omit the block when the final status is `Conversation status: Ready for archiving.`; that status is valid only when the normalized blocker union is empty."
+UNBLOCK_BLOCK_TEMPLATE_LINE = "1. [<you|agent|external>] <smallest next action or wait instruction> — <exact command, paste-ready prompt, URL, question, trigger, or clearing condition>"
+UNBLOCK_BLOCK_VERIFIED_RECEIPT_RULE = "The compact `Completed-batch audit:` receipt line, only when a completed-batch receipt is required and an existing verified receipt is available. When a completed-batch receipt is required but missing, emit no receipt line; carry the missing receipt only as a blocker and matching Unblock entry."
 # #243: the qualifier is the whole point of the sentence. An unqualified "A final
 # handoff without one of those two exact lines is incomplete" reads as binding on
 # the worker and planning-chat audiences that this section is their canonical
@@ -379,7 +446,7 @@ def contract_line(text)
 end
 
 def compact_contract_line(text)
-  text.lines.grep(/^\s*GMCC-v4:/).first&.strip
+  text.lines.grep(/^\s*GMCC-v5:/).first&.strip
 end
 
 def render_human_status(replay_case, stable_payload:)
@@ -419,6 +486,15 @@ end
 
 def assert_squished_includes(text, phrase, label)
   assert_text_includes(squish(text), squish(phrase), label)
+end
+
+def continuation_title_thread_handle_shape_valid?(text)
+  expected_prefix =
+    "#{CONTINUATION_INVOCATION_LINE}\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+  text.start_with?(expected_prefix) &&
+    text.lines.count { |line| line.chomp == CONTINUATION_BATCH_TITLE_LINE } == 1 &&
+    text.lines.count { |line| line.chomp == CONTINUATION_THREAD_HANDLE_LINE } == 1 &&
+    text.scan("\n\nThread handle:").length == 1
 end
 
 def human_status_contract_drift_errors(text)
@@ -551,6 +627,7 @@ class GoalCompletionContractTest < Minitest::Test
     @prompt_intake = read_repo_file(PROMPT_INTAKE_PATH)
     @worker_execution = read_repo_file(WORKER_EXECUTION_PATH)
     @integration_closeout = read_repo_file(INTEGRATION_CLOSEOUT_PATH)
+    @unblock_workflow = read_repo_file(UNBLOCK_WORKFLOW_PATH)
     @workflow = "#{@integration_closeout}\n#{@workflow_source}"
     @spec_skill = read_repo_file(SPEC_SKILL_PATH)
     @pr_batch_skill_source = read_repo_file(PR_BATCH_SKILL_PATH)
@@ -563,6 +640,9 @@ class GoalCompletionContractTest < Minitest::Test
     @host_adapter_contract = read_repo_file(HOST_ADAPTER_CONTRACT_PATH)
     @pr_batch_docs = read_repo_file(PR_BATCH_DOCS_PATH)
     @batch_status_skill = read_repo_file(BATCH_STATUS_SKILL_PATH)
+    @post_merge_audit_skill = read_repo_file(POST_MERGE_AUDIT_SKILL_PATH)
+    @post_merge_audit_workflow = read_repo_file(POST_MERGE_AUDIT_WORKFLOW_PATH)
+    @close_session_skill = read_repo_file(CLOSE_SESSION_SKILL_PATH)
     @changelog = read_repo_file(CHANGELOG_PATH)
     @human_status_replay = JSON.parse(read_repo_file(HUMAN_STATUS_REPLAY_PATH))
     @workflow_contract_section = extract_markdown_section(@workflow, "### Goal Mode Completion Contract")
@@ -647,6 +727,14 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_contract, "manual resume instructions", "canonical completion contract"
     assert_text_includes normalized_contract, "`blocked-user-input` does not start a watcher",
                          "canonical completion contract"
+    normalized_canonical_contract = @workflow_resume_prompt.gsub(/\s+/, " ")
+    assert_squished_includes normalized_canonical_contract, READY_PREREQUISITE_ASK_GATE_RULE,
+                             "canonical ready-prerequisite ask gate"
+    assert_text_includes normalized_canonical_contract, "without consuming external-blocker retries",
+                         "canonical ready-prerequisite ask gate"
+    assert_text_includes COMPACT_CONTRACT_LINE,
+                         "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch",
+                         "compact ready-prerequisite ask gate"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
       line = compact_contract_line(text)
@@ -724,6 +812,23 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes normalized_pr_monitoring,
                          "`stop-dependency-terminal` is a waking outcome and does not require a manual handoff",
                          "standalone dependency-terminal delivery"
+  end
+
+  def test_ready_prerequisite_ask_gate_rejects_external_failure_reclassification
+    deletion = delete_squished_phrase(@workflow_resume_prompt, READY_PREREQUISITE_ASK_GATE_RULE)
+    refute_equal @workflow_resume_prompt, deletion,
+                 "ready-prerequisite mutation must delete the production classification"
+    refute_includes squish(deletion), squish(READY_PREREQUISITE_ASK_GATE_RULE)
+    assert_squished_includes @workflow_resume_prompt,
+                             "For an owned target, start the exact-diff walkthrough before asking the final merge question",
+                             "canonical ready-prerequisite owned-target route"
+    assert_squished_includes @workflow_resume_prompt,
+                             "For an external dependency-only reference, instruct the user either to merge it and " \
+                             "reply only after it is merged, or to explicitly authorize adding it as a target",
+                             "canonical ready-prerequisite external route"
+    assert_squished_includes @workflow_resume_prompt,
+                             "a reply or merge decision alone does not clear the prerequisite or authorize its merge.",
+                             "canonical ready-prerequisite external authority guard"
   end
 
   def test_state_change_monitor_regressions_are_part_of_the_canonical_goal_contract_gate
@@ -817,6 +922,32 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes blocked_input.fetch("expected_user_output"), blocked_input.dig("input", "manual_resume")
     assert_includes blocked_input.dig("input", "manual_resume"), "Reply here"
 
+    owned_prerequisite = cases.find { |replay_case| replay_case.fetch("id") == "ready-owned-target-ask" }
+    assert_equal "none", owned_prerequisite.dig("input", "automation_action")
+    assert_includes owned_prerequisite.fetch("expected_user_output"),
+                    "no code or continuous integration failure remains"
+    assert_includes owned_prerequisite.fetch("expected_user_output"),
+                    "exact-diff walkthrough is complete"
+    assert_match(/\b[0-9a-f]{40}\b/, owned_prerequisite.fetch("expected_user_output"))
+    assert_includes owned_prerequisite.fetch("expected_user_output"),
+                    "sorted gate set is [continuous-integration, review, security]"
+    assert_includes owned_prerequisite.fetch("expected_user_output"),
+                    "rollback status is revert-ready"
+    assert_includes owned_prerequisite.dig("input", "manual_resume"),
+                    "https://github.com/acme/widgets/pull/41"
+
+    external_prerequisite = cases.find do |replay_case|
+      replay_case.fetch("id") == "ready-external-prerequisite-ask"
+    end
+    assert_equal "none", external_prerequisite.dig("input", "automation_action")
+    assert_includes external_prerequisite.fetch("expected_user_output"),
+                    "not a batch target"
+    assert_includes external_prerequisite.fetch("expected_user_output"),
+                    "reply after it is merged"
+    assert_includes external_prerequisite.fetch("expected_user_output"),
+                    "explicitly authorize adding it as a batch target"
+    refute_includes external_prerequisite.fetch("expected_user_output"),
+                    "decide whether to merge it"
     diagnostic = cases.find { |replay_case| replay_case.fetch("id") == "explicit-diagnostics" }
     diagnostic_output = diagnostic.fetch("expected_user_output")
     ["functional B2", "B3", "B+C", "c6", "raw load", "PID", "holder", "lease"].each do |term|
@@ -864,6 +995,14 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes followups_output, "Action needed: Start a new task for issue #445."
     assert_includes followups_output,
                     "Next: Start a new task from issue #445; keep this task open until the handoff is created."
+    assert_includes followups_output,
+                    "Unblock:\n1. [you] Start a new task for issue #445 — https://github.com/acme/widgets/issues/445"
+    assert_includes followups_output,
+                    "Help: assign issue #445 to an existing active task and paste that task URL here."
+    assert_match(
+      /Completed-batch audit:.*\nUnblock:\n.*\n   Help:.*\nConversation status: Follow-ups remain — issue #445 \(open\): track\.\z/m,
+      followups_output
+    )
     assert_includes followups_output, "Conversation status: Follow-ups remain — issue #445 (open): track."
 
     unknown_diagnostic = cases.find do |replay_case|
@@ -953,6 +1092,15 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes human_status_contract_drift_errors(blocked_input_deletion),
                     HUMAN_STATUS_BLOCKED_USER_INPUT_RULE
 
+    ready_prerequisite_deletion = delete_squished_phrase(
+      @human_status_contract_section,
+      HUMAN_STATUS_READY_PREREQUISITE_RULE
+    )
+    refute_equal @human_status_contract_section, ready_prerequisite_deletion,
+                 "ready-prerequisite mutation must delete the production rule"
+    assert_includes human_status_contract_drift_errors(ready_prerequisite_deletion),
+                    HUMAN_STATUS_READY_PREREQUISITE_RULE
+
     closeout_deletion = delete_squished_phrase(
       @human_status_contract_section,
       HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE
@@ -973,7 +1121,7 @@ class GoalCompletionContractTest < Minitest::Test
     actual_counts = surfaces.transform_values { |text| text.scan(GMCC_ALIGNMENT_SENTENCE).length }
     expected_counts = surfaces.transform_values { 1 }
     assert_equal expected_counts, actual_counts,
-                 "all generation surfaces must carry the exact GMCC-v4 alignment sentence once"
+                 "all generation surfaces must carry the exact GMCC-v5 alignment sentence once"
 
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       refute_includes prompt, GMCC_ALIGNMENT_SENTENCE,
@@ -984,8 +1132,8 @@ class GoalCompletionContractTest < Minitest::Test
   def test_triaged_but_unresolved_current_head_review_thread_is_not_complete
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
-      assert_text_includes line, "threads unresolved", "compact completion contract"
-      assert_operator line.index("threads unresolved"), :<,
+      assert_text_includes line, "threads open", "compact completion contract"
+      assert_operator line.index("threads open"), :<,
                       line.index("=>waiting-on-checks-or-review/NOT COMPLETE")
     end
   end
@@ -998,8 +1146,8 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "CI@head/configured-reviewers pending|missing|untriaged|failed or " \
-                           "threads unresolved",
+                           "CI@head/configured-reviewers pending|missing|untriaged|failed|" \
+                           "threads open",
                            "compact completion contract"
       refute_includes line, "CI/reviews/review agents",
                       "compact completion contract must not duplicate the review category"
@@ -1024,11 +1172,11 @@ class GoalCompletionContractTest < Minitest::Test
     [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
-                           "auto=>exact verdict/head/sorted-gates/rollback; merge iff " \
-                           "autonomous-merge-eligible OR human-approved-for-current-head",
+                           "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
+                           "autonomous-merge-eligible|human-approved-for-current-head",
                            "compact completion contract"
       assert_text_includes line,
-                           "durable-decision(proven-human+merge-authority)",
+                           "durable-decision(proven+merge-authority)",
                            "compact completion contract"
       assert_text_includes line,
                            "ready-human-review-required|autonomous-merge-evidence-unknown",
@@ -1233,7 +1381,7 @@ class GoalCompletionContractTest < Minitest::Test
     }
 
     contracts.each do |label, line|
-      refute_nil line, "#{label} is missing the GMCC-v4 line"
+      refute_nil line, "#{label} is missing the GMCC-v5 line"
       assert_equal COMPACT_CONTRACT_LINE, line, "#{label} drifted"
     end
   end
@@ -1388,13 +1536,109 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
+      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
              "#{label} must put the standard batch title line after the invocation"
     end
 
     codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
-    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
+    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
            "skills/plan-pr-batch Codex goal prompt must put the standard batch title line after the Codex prefix"
+  end
+
+  def test_pasteable_goal_prompts_put_exactly_one_blank_line_around_batch_title
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      expected_prefix = "#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n\nThread handle:"
+      assert text.start_with?(expected_prefix),
+             "#{label} must have one blank line before and after Batch title"
+      assert_equal 1, text.lines.count { |line| line.start_with?("Batch title:") },
+                   "#{label} must contain one Batch title line"
+    end
+
+    assert continuation_title_thread_handle_shape_valid?(@workflow_resume_prompt),
+           "workflow continuation prompt must have one ordered title/Thread handle header"
+
+    invalid_headers = {
+      "missing Thread handle" => @workflow_resume_prompt.sub("#{CONTINUATION_THREAD_HANDLE_LINE}\n", ""),
+      "duplicate Thread handle" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_THREAD_HANDLE_LINE}\n",
+        "#{CONTINUATION_THREAD_HANDLE_LINE}\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+      ),
+      "missing trailing blank line" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n#{CONTINUATION_THREAD_HANDLE_LINE}"
+      ),
+      "duplicate trailing blank line" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n\n#{CONTINUATION_THREAD_HANDLE_LINE}"
+      )
+    }
+    invalid_headers.each do |label, text|
+      refute continuation_title_thread_handle_shape_valid?(text),
+             "workflow continuation prompt guard must reject #{label}"
+    end
+  end
+
+  def test_batch_title_spacing_rule_is_synchronized_across_planning_surfaces
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_squished_includes text, BATCH_TITLE_SPACING_RULE, label
+    end
+  end
+
+  def test_continuation_title_uses_the_same_verified_source_issue_cardinality
+    assert_squished_includes @workflow_resume_prompt, CONTINUATION_TITLE_IDENTIFIER_RULE,
+                             "workflow continuation prompt"
+    assert continuation_title_thread_handle_shape_valid?(@workflow_resume_prompt),
+           "workflow continuation prompt must expose the optional verified source issue ID in its title"
+  end
+
+  def test_continuation_handle_selects_one_single_or_multi_lane_role
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+
+    assert_squished_includes continuation, CONTINUATION_HANDLE_SELECTION_RULE,
+                             "workflow continuation prompt"
+  end
+
+  def test_continuation_handle_routes_partial_multi_lane_subsets_to_coordinator
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+
+    assert_squished_includes continuation, "exactly one resumed lane",
+                             "single-lane continuation fixture"
+    assert_squished_includes continuation, "any resumed subset of two or more lanes",
+                             "two-of-five continuation fixture"
+    assert_squished_includes continuation, "whether or not every batch lane resumes",
+                             "partial-versus-full multi-lane fixture"
+  end
+
+  def test_linear_title_verification_names_portable_seam_and_evidence
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_squished_includes text, "`AGENTS.md` `linear_issue_verification` seam", label
+      assert_squished_includes text, "resolve tool/account", label
+      assert_squished_includes text, "exact ID, canonical URL, state, and timestamp", label
+    end
   end
 
   def test_batch_title_instructions_pin_local_date_source
@@ -1406,6 +1650,37 @@ class GoalCompletionContractTest < Minitest::Test
     }.each do |label, text|
       assert_text_includes text, DATE_COMMAND, label
     end
+  end
+
+  def test_batch_title_contract_uses_only_one_verified_source_issue_identifier
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_squished_includes text, BATCH_TITLE_ISSUE_IDENTIFIER_RULE, label
+      assert_text_includes text, GITHUB_BATCH_TITLE_SHAPE, label
+      assert_text_includes text, LINEAR_BATCH_TITLE_SHAPE, label
+    end
+  end
+
+  def test_linear_title_metadata_does_not_create_an_executable_lane
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      refute_match(/(?:Launch|Target):[^\n]*Linear/i, text,
+                   "#{label} must not turn Linear title metadata into an executable lane")
+    end
+
+    plan_format = extract_markdown_section(@plan_pr_batch_skill, "## Batch Plan Format", end_heading: /^##\s+/)
+    assert_text_includes plan_format, "Verified source issues for title metadata:",
+                         "skills/plan-pr-batch/SKILL.md Batch Plan Format"
+    assert_text_includes plan_format, "Linear records are not execution lanes",
+                         "skills/plan-pr-batch/SKILL.md Batch Plan Format"
   end
 
   def test_batch_title_project_rule_prefers_config_and_has_deterministic_fallback
@@ -1452,6 +1727,166 @@ class GoalCompletionContractTest < Minitest::Test
     )
     assert_text_includes skill_route, "pr-batch-integration-closeout.md#batch-handoff-format",
                          "skills/pr-batch/SKILL.md Batch Handoff Format route"
+  end
+
+  def test_blocked_handoffs_end_with_a_canonical_unblock_block
+    canonical = extract_markdown_section(@unblock_workflow, "## Unblock Block", end_heading: /^##\s+/)
+
+    [
+      UNBLOCK_BLOCK_SCOPE_RULE,
+      UNBLOCK_BLOCK_COVERAGE_RULE,
+      UNBLOCK_BLOCK_ORDER_RULE,
+      UNBLOCK_BLOCK_OWNER_RULE,
+      UNBLOCK_BLOCK_SMALLEST_ACTION_RULE,
+      UNBLOCK_BLOCK_HELP_RULE,
+      UNBLOCK_BLOCK_WAITING_RULE,
+      UNBLOCK_BLOCK_CLEAN_OMISSION_RULE,
+      UNBLOCK_BLOCK_TEMPLATE_LINE,
+      UNBLOCK_BLOCK_VERIFIED_RECEIPT_RULE
+    ].each do |rule|
+      assert_squished_includes canonical, rule,
+                               "workflows/pr-batch-unblock.md Unblock Block"
+    end
+
+    assert_squished_includes canonical,
+                             "An `UNKNOWN` fact is a blocker; its entry names the exact command or check that resolves it.",
+                             "workflows/pr-batch-unblock.md Unblock Block"
+    assert_squished_includes canonical, "Carry only blockers.",
+                             "workflows/pr-batch-unblock.md Unblock Block"
+  end
+
+  def test_unblock_block_pins_the_closing_order_before_the_status_line
+    canonical = extract_markdown_section(@unblock_workflow, "## Unblock Block", end_heading: /^##\s+/)
+    squished = squish(canonical)
+
+    receipt_index = squished.index("The compact `Completed-batch audit:` receipt line")
+    unblock_index = squished.index("The `Unblock:` block, whenever the final status is `Follow-ups remain`")
+    status_index = squished.index("The exact `Conversation status:` line")
+
+    refute_nil receipt_index, "the closing order must place the compact audit receipt first"
+    refute_nil unblock_index, "the closing order must place the Unblock block second"
+    refute_nil status_index, "the closing order must place the Conversation status line last"
+    assert_operator receipt_index, :<, unblock_index
+    assert_operator unblock_index, :<, status_index
+  end
+
+  def test_unblock_block_example_marks_every_entry_moved_from_status_order
+    canonical = extract_markdown_section(@unblock_workflow, "## Unblock Block", end_heading: /^##\s+/)
+    example = canonical.split("Worked example").last
+    entries = example.lines.grep(/^\d+\. \[/)
+    status_line = example.lines.grep(/^Conversation status: Follow-ups remain/).first
+
+    assert_equal 2, entries.length
+    refute_nil status_line
+    assert_match(/^1\. \[you\] \(reordered\).*PR #123/, entries.fetch(0))
+    assert_match(/^2\. \[external\] \(reordered\).*PR #124/, entries.fetch(1))
+    assert_match(/Wait for hosted CI .* — it clears when the queued run finishes; no action needed from you/, entries.fetch(1))
+    assert_operator status_line.index("PR #124"), :<, status_line.index("PR #123")
+  end
+
+  def test_unblock_block_queued_run_help_waits_for_cancel_before_rerun
+    canonical = extract_markdown_section(@unblock_workflow, "## Unblock Block", end_heading: /^##\s+/)
+    example = canonical.split("Worked example").last
+    command = "`gh run cancel --repo OWNER/REPO <run-id>` then " \
+              "`gh run watch --repo OWNER/REPO <run-id>` then " \
+              "`gh run rerun --repo OWNER/REPO <run-id>`"
+
+    assert_squished_includes example, command, "workflows/pr-batch-unblock.md queued-run Help"
+    refute_includes example,
+                    "`gh run cancel --repo OWNER/REPO <run-id>` then `gh run rerun --repo OWNER/REPO <run-id>`",
+                    "queued-run Help must not rerun before cancellation completes"
+  end
+
+  def test_every_stopping_surface_routes_to_the_canonical_unblock_block
+    {
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill_source,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "skills/post-merge-audit/SKILL.md" => @post_merge_audit_skill,
+      "workflows/post-merge-audit.md" => @post_merge_audit_workflow,
+      "workflows/pr-processing.md" => @workflow_source
+    }.each do |label, text|
+      assert_text_includes text, "Unblock Block", label
+      assert_text_includes text, "#unblock-block", label
+    end
+  end
+
+  def test_unblock_compatibility_routes_point_to_the_dedicated_component
+    {
+      "workflows/pr-processing.md" => @workflow_source,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill_source
+    }.each do |label, text|
+      assert_text_includes text, "pr-batch-unblock.md#unblock-block", label
+    end
+  end
+
+  def test_operator_docs_summary_stays_aligned_with_the_canonical_unblock_block
+    [
+      "the last thing before the exact",
+      "`Conversation status: Follow-ups remain — <each exact action or blocker>.` line",
+      "one numbered entry per blocker in that same union",
+      "tagged `[you]`, `[agent]`, or `[external]`",
+      "names the smallest next action or wait instruction",
+      "exact trigger or clearing condition",
+      "a `Help:` line offering a different route to clearing the same blocker",
+      "or exactly `none — <reason>`",
+      "A clean batch omits the block because the normalized blocker union is empty",
+      "[Unblock Block](../workflows/pr-processing.md#unblock-block)"
+    ].each do |phrase|
+      assert_squished_includes @pr_batch_docs, phrase, "docs/pr-batch-skills.md Unblock Block summary"
+    end
+  end
+
+  def test_planning_surfaces_carry_a_standalone_unblock_emission_rule
+    {
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }.each do |label, text|
+      assert_squished_includes text, UNBLOCK_BLOCK_STANDALONE_EMISSION_RULE, label
+    end
+  end
+
+  def test_close_session_non_clean_handoff_uses_the_canonical_unblock_block
+    assert_squished_includes @close_session_skill,
+                             UNBLOCK_BLOCK_STANDALONE_EMISSION_RULE,
+                             "skills/close-session/SKILL.md Final response"
+  end
+
+  def test_post_merge_audit_surfaces_require_the_unblock_block_with_the_follow_ups_line
+    {
+      "workflows/post-merge-audit.md" => [@post_merge_audit_workflow, "pr-processing.md#unblock-block"],
+      "skills/post-merge-audit/SKILL.md" => [@post_merge_audit_skill, "../../workflows/pr-processing.md#unblock-block"]
+    }.each do |label, (text, link)|
+      assert_squished_includes text,
+                               "Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` " \
+                               "and emit the [Unblock Block](#{link}) immediately before it, with one entry per blocker in that same union.",
+                               label
+      assert_squished_includes text,
+                               "this compact receipt line opens the closing lines: it is followed by the [Unblock Block](#{link}) " \
+                               "whenever the status is not clean, and then by the exact `Conversation status` final line",
+                               label
+    end
+  end
+
+  def test_completed_batch_receipt_output_leaves_room_for_the_unblock_block
+    assert_squished_includes @integration_closeout,
+                             "Existing verified receipt only; missing means no line and an Unblock blocker:",
+                             "workflows/pr-batch-integration-closeout.md completed-batch receipt output"
+
+    assert_squished_includes @close_session_skill,
+                             "If no existing verified receipt is available, emit no receipt line and carry the missing receipt only as a blocker and matching Unblock entry.",
+                             "skills/close-session/SKILL.md completed-batch reconciliation"
+
+    {
+      "workflows/post-merge-audit.md" => @post_merge_audit_workflow,
+      "skills/post-merge-audit/SKILL.md" => @post_merge_audit_skill
+    }.each do |label, text|
+      assert_squished_includes text,
+                               "the receipt can open the closing lines before the Unblock Block when status is not clean, and before the final `Conversation status:` line",
+                               label
+      refute_includes text, "receipt can still immediately precede the final `Conversation status:` line",
+                      "#{label} must not exclude the Unblock Block from the closing lines"
+    end
   end
 
   # #243/1: this section is what workers and planning chats are pointed at for the
@@ -1726,8 +2161,14 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert_text_includes text, "no auth=>ready-no-merge-authority", label
+      assert_text_includes text, "noauth=>ready-no-merge-authority", label
     end
+  end
+
+  def test_ready_owned_prerequisite_separates_target_state_from_batch_blocker
+    assert_squished_includes @integration_closeout,
+                             OWNED_PREREQUISITE_STATE_RULE,
+                             "canonical ready-prerequisite ask gate"
   end
 
   def test_auto_merge_done_means_merged_or_blocked
@@ -1740,11 +2181,11 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
       assert_text_includes text,
-                           "auto=>exact verdict/head/sorted-gates/rollback; merge iff " \
-                           "autonomous-merge-eligible OR human-approved-for-current-head",
+                           "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
+                           "autonomous-merge-eligible|human-approved-for-current-head",
                            label
       assert_text_includes text,
-                           "durable-decision(proven-human+merge-authority)",
+                           "durable-decision(proven+merge-authority)",
                            label
       assert_text_includes text,
                            "ready-human-review-required|autonomous-merge-evidence-unknown",
@@ -1906,7 +2347,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes @plan_pr_batch_skill, PLAN_PR_BATCH_RESPONSE_ORDER
 
     ["Batch Plan", "generated goal prompt", "Goal prompt character count",
-     "Action needed:", "Next:", "selected exact",
+     "Action needed:", "Next:", "Unblock Block", "selected exact",
      "actual final user-visible line"].each_cons(2) do |first, second|
       assert_operator PLAN_PR_BATCH_RESPONSE_ORDER.index(first), :<,
                       PLAN_PR_BATCH_RESPONSE_ORDER.index(second),
@@ -1922,7 +2363,7 @@ class GoalCompletionContractTest < Minitest::Test
     ["scope/repositories/sources", "phase-1 counts/dependency graph", "coordination",
      "capacity", "wave plan/prompts", "lifecycle record", "queue summary if applicable",
      "residual risks", "maintainer decisions", "Action needed:", "Next:",
-     "selected exact", "actual final user-visible line"].each_cons(2) do |first, second|
+     "Unblock Block", "selected exact", "actual final user-visible line"].each_cons(2) do |first, second|
       assert_operator TRIAGE_RESPONSE_ORDER.index(first), :<,
                       TRIAGE_RESPONSE_ORDER.index(second),
                       "triage response order must keep #{first.inspect} before #{second.inspect}"
