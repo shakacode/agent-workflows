@@ -344,7 +344,6 @@ test_installed_status_reports_a_removed_doctor_module_it_depends_on() {
   local tmp source target output status module_name module_path
   tmp="$(mktemp -d)"
   source="$tmp/source"
-  target="$tmp/codex-home"
   mkdir -p "$source"
   new_source_repo "$source"
 
@@ -352,9 +351,10 @@ test_installed_status_reports_a_removed_doctor_module_it_depends_on() {
   # doctor tree, so removing either must still produce a structured report
   # rather than a LoadError from its own require.
   for module_name in install_ownership.rb timeout_budget.rb; do
+    # A fresh target per module keeps each case independent.
+    target="$tmp/codex-home-$module_name"
     module_path="$target/bin/agent_doctor/$module_name"
-    rm -rf "$target"
-    "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-$module_name.out"
     rm -f "$module_path"
 
     set +e
