@@ -383,7 +383,7 @@ test_copy_install_restores_a_fully_removed_doctor_tree() {
   new_source_repo "$source"
 
   "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
-  rm -rf "$target/bin/agent_doctor"
+  mv "$target/bin/agent_doctor" "$tmp/agent_doctor.removed"
 
   # An absent tree short-circuits the ownership marker check, so this stays a
   # clean reinstall and status must not have blocked it.
