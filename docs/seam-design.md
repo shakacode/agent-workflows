@@ -127,6 +127,11 @@ rejects preflight instead of being ignored.
 Each `companion-path-omitted` advisory includes `source_path` and
 `companion_path` fields naming the mapped pair.
 
+The command resolves the consumer repository root with Git from its invocation
+directory, then passes that root explicitly to policy loading and companion
+existence checks. Invoking it anywhere inside the consumer worktree therefore
+uses the same repository policy.
+
 ### Writing Style
 
 `writing_style` is an optional scalar in the repository policy. It accepts

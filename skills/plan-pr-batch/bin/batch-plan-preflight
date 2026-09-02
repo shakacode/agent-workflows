@@ -4,6 +4,7 @@
 require "json"
 require "date"
 require "digest"
+require "open3"
 require "uri"
 require "yaml"
 
@@ -136,7 +137,7 @@ module BatchPlanPreflight
     }
   end
 
-  def evaluate(input)
+  def evaluate(input, repo_root:)
     unless input.is_a?(Hash) && input["type"] == "batch-plan-preflight" && input["version"] == 1
       return result(
         "rejected", [], [],
@@ -150,7 +151,7 @@ module BatchPlanPreflight
     plan_violations = validate_plan(input["plan"])
     violations = plan_violations.dup
     advisories = []
-    companion_config_violations, companion_conventions = companion_path_conventions(Dir.pwd)
+    companion_config_violations, companion_conventions = companion_path_conventions(repo_root)
     violations.concat(companion_config_violations)
     violations.concat(validate_unknown_decisions(input["plan"]))
     plan_violation_codes = plan_violations.map { |item| item["code"] }
@@ -211,7 +212,8 @@ module BatchPlanPreflight
       advisories = collision_advisories + companion_path_advisories(
         input["file_touch_map"],
         effective_maps,
-        companion_conventions
+        companion_conventions,
+        repo_root:
       )
       if changed_surfaces_valid
         violations.concat(validate_caps(
@@ -691,7 +693,7 @@ module BatchPlanPreflight
     effective
   end
 
-  def companion_path_advisories(declared_maps, effective_maps, conventions, repo_root: Dir.pwd)
+  def companion_path_advisories(declared_maps, effective_maps, conventions, repo_root:)
     return [] if conventions.empty?
 
     declared_maps.flat_map do |lane_id, map|
@@ -718,6 +720,15 @@ module BatchPlanPreflight
         end
       end
     end
+  end
+
+  def repository_root(cwd)
+    expanded_cwd = File.expand_path(cwd)
+    stdout, _stderr, status = Open3.capture3("git", "-C", expanded_cwd, "rev-parse", "--show-toplevel")
+    root = stdout.strip
+    status.success? && File.directory?(root) ? File.expand_path(root) : expanded_cwd
+  rescue SystemCallError
+    expanded_cwd
   end
 
   def companion_path_conventions(repo_root)
@@ -1370,7 +1381,10 @@ rescue JSON::ParserError
   )
 end
 begin
-  output ||= BatchPlanPreflight.evaluate(parsed_input)
+  output ||= BatchPlanPreflight.evaluate(
+    parsed_input,
+    repo_root: BatchPlanPreflight.repository_root(Dir.pwd)
+  )
 rescue KeyError, NoMethodError, TypeError, ArgumentError
   output = BatchPlanPreflight.result(
     "rejected", [], [],

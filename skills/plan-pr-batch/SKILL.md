@@ -466,7 +466,10 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      explicit env-var / loaded-skill / repo-local pinned-copy chain and pass a
      `batch-plan-preflight` v1 envelope on stdin to
      `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
-     owns schema, advisory-overlap reporting, backend-cap, QA, external-premise, active-wave, and
+     resolves the consumer Git top level from the invocation directory and
+     passes that root explicitly to repository-policy and companion-file checks.
+     Invoke it from inside the verified consumer worktree. The gate owns schema,
+     advisory-overlap reporting, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
      `lane_lifecycle_states` array. Advance max-one groups only from a separate

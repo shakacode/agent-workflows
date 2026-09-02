@@ -54,6 +54,21 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_companion_policy_resolves_from_repository_subdirectory
+    with_companion_repo do |root, fixture|
+      assert system("git", "init", "--quiet", root), "git init failed"
+      nested = File.join(root, "nested")
+      FileUtils.mkdir_p(nested)
+      input = companion_input(fixture, paths: [fixture.fetch("source_path")])
+
+      result, stderr, status = evaluate(input, chdir: nested)
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
   def test_listed_companion_does_not_produce_advisory
     with_companion_repo do |root, fixture|
       input = companion_input(

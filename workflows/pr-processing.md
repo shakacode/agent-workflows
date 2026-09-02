@@ -628,13 +628,17 @@ overfilling the active worker set.
 
 Before dispatcher selection or any worker launch, resolve
 `PLAN_PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
-repo-local pinned-copy chain and run the plan's v1 envelope through:
+repo-local pinned-copy chain. From inside the verified consumer worktree, run
+the plan's v1 envelope through:
 
 ```bash
 PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch}"
 "${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight" \
   < path/to/batch-plan-preflight-v1.json
 ```
+
+The helper resolves the consumer Git top level from the invocation directory
+and passes that root explicitly to repository-policy and companion-file checks.
 
 This machine gate owns schema and launch scheduling, including advisory overlap reporting,
 backend-cap, QA, external-premise, required `plan.active_wave`, and max-one
