@@ -757,14 +757,16 @@ module BatchPlanPreflight
 
   def companion_policy_node_from_stream(stream)
     documents = stream.children
-    root = documents.one? ? documents.first.root : nil
-    return [:absent, nil] unless root.is_a?(Psych::Nodes::Mapping)
+    matching_values = documents.flat_map do |document|
+      root = document.root
+      next [] unless root.is_a?(Psych::Nodes::Mapping)
 
-    matching_values = root.children.each_slice(2).filter_map do |key, value|
-      value if key.is_a?(Psych::Nodes::Scalar) && key.value == "companion_path_conventions"
+      root.children.each_slice(2).filter_map do |key, value|
+        value if key.is_a?(Psych::Nodes::Scalar) && key.value == "companion_path_conventions"
+      end
     end
     return [:absent, nil] if matching_values.empty?
-    return [:invalid, nil] unless matching_values.one?
+    return [:invalid, nil] unless documents.one? && matching_values.one?
 
     [:present, matching_values.first]
   end

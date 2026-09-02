@@ -312,6 +312,23 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_companion_policy_in_multi_document_yaml_fails_closed
+    Dir.mktmpdir("batch-plan-multi-document-companion-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions: invalid
+        ---
+        metadata: true
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
   def test_unreadable_shared_policy_does_not_block_preflight
     Dir.mktmpdir("batch-plan-unreadable-companion") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
