@@ -244,6 +244,11 @@ module TaskReviewLoop
     [nil, "#{label}-invalid"]
   end
 
+  def findings_bound?(document, identity, head_sha)
+    expected_target = identity.merge("head_sha" => head_sha)
+    document.fetch("review_findings").all? { |finding| finding["target"] == expected_target }
+  end
+
   def validate_cap_adjudication(adjudication, open_ids)
     return ["cap-adjudication-required"] unless adjudication.is_a?(Hash)
 
@@ -271,6 +276,34 @@ module TaskReviewLoop
     errors
   end
 
+  def validate_pending_open_findings(input, round, identity)
+    reference = input["open_findings"]
+    if round.nil?
+      return [] if reference.nil? && input["finding_controls"].empty?
+
+      return ["open-findings-premature"]
+    end
+    return ["open-findings-required"] if reference.nil?
+
+    document, artifact_error = load_findings(reference, "open-findings")
+    return [artifact_error] if artifact_error
+
+    errors = []
+    errors << "open-findings-foreign" unless findings_bound?(document, identity, round["head_sha"])
+    prior_document, = load_findings(round["review_findings"], "review-findings")
+    if prior_document
+      prior_open_records = prior_document.fetch("review_findings").select do |finding|
+        OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
+      end
+      errors << "open-findings-round-mismatch" unless document.fetch("review_findings") == prior_open_records
+    end
+    pending_ids = document.fetch("review_findings").map { |finding| finding["id"] }
+    errors << "open-finding-ids-mismatch" unless reference["ids"] == pending_ids
+    control_ids = input["finding_controls"].map { |control| control["finding_id"] }
+    errors << "finding-controls-mismatch" unless control_ids == pending_ids && control_ids.uniq == control_ids
+    errors
+  end
+
   def validate(input)
     return ["input-object-required"] unless input.is_a?(Hash)
     return ["contract-version-invalid"] unless input["contract"] == "task-review-loop" && input["version"] == 1
@@ -284,6 +317,11 @@ module TaskReviewLoop
     rounds = input.fetch("rounds", [])
     round = rounds.last
 
+    if !input["cap_adjudication"].nil? && (!round.is_a?(Hash) || round["number"] != 5)
+      errors << "cap-adjudication-premature"
+    end
+    errors.concat(validate_pending_open_findings(input, round, identity)) if input["review_state"] == "pending"
+
     if !rounds.is_a?(Array) || rounds.length > 6 || rounds.each_with_index.any? do |entry, index|
       !entry.is_a?(Hash) || entry["number"] != index ||
       entry["kind"] != (index.zero? ? "initial_review" : "fix_re_review")
@@ -293,6 +331,8 @@ module TaskReviewLoop
 
     errors << "task-brief-invalid" unless brief.is_a?(Hash) && valid_record_digest?(brief)
     errors << "worker-report-invalid" unless report.is_a?(Hash) && valid_record_digest?(report)
+    errors << "worker-report-not-reviewable" unless report.is_a?(Hash) &&
+                                                    %w[done done_with_concerns].include?(report["status"])
     errors << "review-package-invalid" unless package.is_a?(Hash) && valid_record_digest?(package)
     errors << "task-brief-foreign" unless brief.is_a?(Hash) && same_identity?(identity, brief["identity"])
     errors << "worker-report-foreign" unless report.is_a?(Hash) && same_identity?(identity, report["identity"])
@@ -304,6 +344,12 @@ module TaskReviewLoop
     if brief.is_a?(Hash) && report.is_a?(Hash) && package.is_a?(Hash)
       errors << "review-package-brief-digest-mismatch" unless package["brief_digest"] == brief["digest"]
       errors << "review-package-report-digest-mismatch" unless package["worker_report_digest"] == report["digest"]
+      package_commits = package["commit_list"]
+      report_commits = report["commits"]
+      unless !package_commits.empty? && report_commits.last(package_commits.length) == package_commits &&
+             package_commits.last == package["head_sha"] && report_commits.last == report["head_sha"]
+        errors << "review-package-commit-list-mismatch"
+      end
     end
 
     expected_head = input["expected_current_head_sha"]
@@ -364,6 +410,7 @@ module TaskReviewLoop
         errors << "reviewer-not-independent"
       end
 
+      prior_finding_ids = []
       rounds.each do |review_round|
         errors << "review-round-digest-mismatch" unless valid_record_digest?(review_round)
         findings_document, findings_error = load_findings(review_round["review_findings"], "review-findings")
@@ -373,6 +420,9 @@ module TaskReviewLoop
         end
 
         findings = findings_document.fetch("review_findings")
+        unless findings_bound?(findings_document, identity, review_round["head_sha"])
+          errors << "review-findings-foreign"
+        end
         derived_open_ids = findings.filter_map do |finding|
           finding["id"] if OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
         end
@@ -383,6 +433,13 @@ module TaskReviewLoop
                review_round["addressed_finding_ids"] == derived_addressed_ids
           errors << "round-finding-outcome-mismatch"
         end
+        consequential_ids = findings.filter_map do |finding|
+          finding["id"] if finding["consequential"] == true || %w[P0 P1].include?(finding["severity"])
+        end
+        declared_new = review_round["new_consequential_finding_ids"]
+        errors << "new-consequential-finding-invalid" unless (declared_new - consequential_ids).empty?
+        errors << "new-consequential-finding-not-new" unless (declared_new & prior_finding_ids).empty?
+        prior_finding_ids = findings.map { |finding| finding["id"] }
       end
     end
 
@@ -391,11 +448,17 @@ module TaskReviewLoop
       if round.is_a?(Hash)
         errors << "review-round-package-mismatch" unless package.is_a?(Hash) && round["package_digest"] == package["digest"]
         errors << "reviewer-not-independent" unless independent?(round["implementer_id"], round["reviewer_id"])
+        unless round["base_sha"] == package["base_sha"] && round["head_sha"] == package["head_sha"] &&
+               same_actor?(round["implementer_id"], package["implementer_id"]) &&
+               same_actor?(round["reviewer_id"], package["reviewer_id"])
+          errors << "review-round-package-binding-mismatch"
+        end
       end
 
       open_document, open_error = load_findings(input["open_findings"], "open-findings")
       errors << open_error if open_error
       if open_document && input["open_findings"].is_a?(Hash)
+        errors << "open-findings-foreign" unless findings_bound?(open_document, identity, expected_head)
         open_records = open_document.fetch("review_findings")
         actual_open_ids = open_records.map { |finding| finding["id"] }
         errors << "open-finding-ids-mismatch" unless input["open_findings"]["ids"] == actual_open_ids

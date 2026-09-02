@@ -79,6 +79,8 @@ and brief digest. It records:
 Append fix evidence to the same task-scoped report, then recompute its digest.
 The coordinator can show a compact status, but review uses the durable report.
 A new implementer never relies on hidden context from the prior worker.
+Only `done` and `done_with_concerns` reports can enter review. A
+`needs_context` or `blocked` report remains a worker-execution stop.
 
 ## Exact-Diff Review Package
 
@@ -103,9 +105,11 @@ package reduces to `review_eligible`.
 Each review writes a separate `review-finding-v0` JSON artifact. The helper
 loads it and calls `ValidateReviewFindings.validate_document`; do not define a
 second finding format or translate findings into a private severity system.
+Set each existing finding `target` to the exact task identity plus the reviewed
+head SHA. A foreign identity or head fails closed.
 The round record classifies normalized finding ids as addressed, open, or new
 consequential breakage. The current `open_findings` artifact must match the
-open subset of the latest round byte for byte at the record level.
+open records in the latest round exactly.
 
 The reviewer must be distinct from every implementer in the task after Unicode
 case folding and whitespace trimming. Implementer self-review is useful but
