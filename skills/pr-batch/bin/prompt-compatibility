@@ -9,7 +9,7 @@ CONTRACT_REFERENCE = "docs/host-adapter/contract.md"
 CONTRACT_PROTOCOL = "Prompt compatibility protocol: 1"
 HEADER_NAMES = ["Prompt host", "Prompt mode", "Preferred route", "Route requirement"].freeze
 RESERVED_HEADER_LIKE =
-  /^[ \t]*(?:Prompt[ \t._-]+(?:host|mode)|Preferred[ \t._-]+route|Route[ \t._-]+requirement)[ \t]*(?::+|=)/i
+  /^[ \t]*(?:Prompt[ \t._-]+(?:host|mode)|Preferred[ \t._-]+route|Route[ \t._-]+requirement)(?:[ \t]*(?::+|=)|[ \t]+[^\r\n]+)/i
 CANONICAL_HEADER = /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): [^\r\n]*\r?\n?\z/
 BATCH_TARGET_LIKE =
   /^[ \t]*Batch[ \t._-]+size[ \t._-]+target(?:[ \t]*(?::|=)|[ \t]+(?=(?:codex|claude|generic)\b))/i
@@ -31,7 +31,7 @@ CLAUDE_RUNTIME_MECHANICS = [
   %r{(?<![[:alnum:]_/$])/(?:code-review|loop)\b},
   %r{(?<![[:alnum:]_/$])/pr-review-toolkit:review-pr\b},
   /\bClaude (?:Agent|Workflow)\b/,
-  /(?:\b(?:Agent|Workflow)\b|`(?:Agent|Workflow)`) (?:tool|subagents?|workers?)\b/,
+  /(?:\b(?:Agent|Workflow)\b|`(?:Agent|Workflow)`|(?:\*\*|\*|__|_)(?:Agent|Workflow)(?:\*\*|\*|__|_))\s+(?:tool|subagents?|workers?)\b/,
   /\bisolation:[ \t]*['"]worktree['"]/
 ].freeze
 CODEX_RUNTIME_MECHANICS = [

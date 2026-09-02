@@ -211,15 +211,22 @@ class PromptCompatibilityTest < Minitest::Test
 
   def test_malformed_header_like_text_cannot_hide_behind_legacy_detection
     marker = "MALFORMED_METADATA_MUST_NOT_BE_ECHOED"
-    prompt = fixture("legacy-goal.txt") + "Prompt host : claude #{marker}\n"
+    prompts = [
+      fixture("legacy-goal.txt") + "Prompt host : claude #{marker}\n",
+      fixture("legacy-goal.txt") + "Prompt host claude #{marker}\n"
+    ]
 
-    result, stderr, status, stdout = run_helper(prompt, active_host: "codex")
+    prompts.each do |prompt|
+      %w[codex claude].each do |active_host|
+        result, stderr, status, stdout = run_helper(prompt, active_host:)
 
-    refute status.success?
-    assert_empty stderr
-    assert_equal "invalid-metadata", result.fetch("error")
-    refute result.key?("decision")
-    refute_includes stdout, marker
+        refute status.success?
+        assert_empty stderr
+        assert_equal "invalid-metadata", result.fetch("error")
+        refute result.key?("decision")
+        refute_includes stdout, marker
+      end
+    end
   end
 
   def test_malformed_batch_size_target_fails_closed_instead_of_partial_conversion
@@ -336,11 +343,20 @@ class PromptCompatibilityTest < Minitest::Test
   end
 
   def test_portable_and_cross_host_prompts_reject_nonconvertible_host_mechanics
+    markdown_agent_prompt = <<~PROMPT
+      Prompt host: claude
+      Prompt mode: direct
+      Preferred route: default
+      Route requirement: advisory
+      Dispatch each lane with the **Agent** tool.
+    PROMPT
+
     prompts = [
       ["#{fixture('portable.txt')}Use $address-review after QA.\n", "claude"],
       ["#{fixture('codex-to-claude.txt')}Use $address-review after QA.\n", "claude"],
       ["#{fixture('codex-to-claude.txt')}Use $scw:pr-batch for this route.\n", "claude"],
       ["#{fixture('claude-to-codex.txt')}Use Claude Agent with isolation: 'worktree'.\n", "codex"],
+      [markdown_agent_prompt, "codex"],
       ["#{fixture('claude-to-codex.txt')}Dispatch each lane with the Agent tool.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Dispatch each lane with the `Agent` tool.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Start one `Workflow` worker per lane.\n", "codex"],
