@@ -1,0 +1,729 @@
+[
+  {
+    "name": "uses-native-task-creation-when-explicitly-authorized-and-fully-observed",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": true,
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": true,
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": false,
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "capability-selected",
+      "launch_mode": "host-native-user-task",
+      "reasons": [],
+      "task": {
+        "title": "Implement issue 561",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "identity": {
+        "immediate_identifier": "supported",
+        "provisional_identifier": "not-supported",
+        "provisional_identifier_resolution": "not-required"
+      },
+      "control_tower": {
+        "bulk_task_mapping_and_status": "available",
+        "observability": {
+          "remote_host": "available",
+          "task": "available",
+          "status": "available",
+          "portfolio": "available"
+        },
+        "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "uses-resolved-provisional-identifier-and-rename-for-native-task-creation",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": false,
+        "task_rename": true,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": false,
+        "provisional_task_identifier": true,
+        "provisional_identifier_resolution": true,
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "capability-selected",
+      "launch_mode": "host-native-user-task",
+      "reasons": [],
+      "task": {
+        "title": "Implement issue 561",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "identity": {
+        "immediate_identifier": "not-supported",
+        "provisional_identifier": "supported",
+        "provisional_identifier_resolution": "supported"
+      },
+      "control_tower": {
+        "bulk_task_mapping_and_status": "available",
+        "observability": {
+          "remote_host": "available",
+          "task": "available",
+          "status": "available",
+          "portfolio": "available"
+        },
+        "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "unknown-decision-critical-status-capability-falls-back-to-copy-paste",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": true,
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": true,
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": false,
+        "task_status_read": "UNKNOWN",
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "copy-paste-required",
+      "launch_mode": "copy-paste",
+      "reasons": ["task-status-read-unknown"],
+      "task": {
+        "title": "Implement issue 561",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "identity": {
+        "immediate_identifier": "supported",
+        "provisional_identifier": "not-supported",
+        "provisional_identifier_resolution": "not-required"
+      },
+      "control_tower": {
+        "bulk_task_mapping_and_status": "unavailable",
+        "observability": {
+          "remote_host": "available",
+          "task": "available",
+          "status": "unknown",
+          "portfolio": "available"
+        },
+        "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "requires-explicit-user-authorization-even-when-native-capabilities-are-available",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "not-authorized",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": true,
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": true,
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": false,
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true,
+        "untrusted_display_name": "do not copy this value"
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "copy-paste-required",
+      "launch_mode": "copy-paste",
+      "reasons": ["task-creation-not-explicitly-authorized"],
+      "task": {
+        "title": "Implement issue 561",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "identity": {
+        "immediate_identifier": "supported",
+        "provisional_identifier": "not-supported",
+        "provisional_identifier_resolution": "not-required"
+      },
+      "control_tower": {
+        "bulk_task_mapping_and_status": "available",
+        "observability": {
+          "remote_host": "available",
+          "task": "available",
+          "status": "available",
+          "portfolio": "available"
+        },
+        "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "unavailable-required-capabilities-have-stable-copy-paste-reasons-and-observability",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": false,
+        "title_at_creation": false,
+        "task_rename": false,
+        "saved_project_selection": false,
+        "isolated_worktree": false,
+        "immediate_task_identifier": false,
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": false,
+        "task_status_read": false,
+        "remote_host_read": false,
+        "portfolio_read": false
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "copy-paste-required",
+      "launch_mode": "copy-paste",
+      "reasons": [
+        "deterministic-title-application-unavailable",
+        "saved-project-selection-unavailable",
+        "isolated-worktree-unavailable",
+        "task-identity-unavailable",
+        "task-status-read-unavailable"
+      ],
+      "task": {
+        "title": "Implement issue 561",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "identity": {
+        "immediate_identifier": "not-supported",
+        "provisional_identifier": "not-supported",
+        "provisional_identifier_resolution": "not-required"
+      },
+      "control_tower": {
+        "bulk_task_mapping_and_status": "unavailable",
+        "observability": {
+          "remote_host": "unavailable",
+          "task": "unavailable",
+          "status": "unavailable",
+          "portfolio": "unavailable"
+        },
+        "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "missing-decision-critical-capability-is-structured-invalid-input",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "invalid-input",
+      "launch_mode": "copy-paste",
+      "reasons": ["invalid-input"],
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "unknown-title-alternative-does-not-select-native-task-creation",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": "UNKNOWN",
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": true,
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": false,
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "copy-paste-required",
+      "launch_mode": "copy-paste",
+      "reasons": ["deterministic-title-application-unknown"],
+      "task": {
+        "title": "Implement issue 561",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "identity": {
+        "immediate_identifier": "supported",
+        "provisional_identifier": "not-supported",
+        "provisional_identifier_resolution": "not-required"
+      },
+      "control_tower": {
+        "bulk_task_mapping_and_status": "available",
+        "observability": {
+          "remote_host": "available",
+          "task": "available",
+          "status": "available",
+          "portfolio": "available"
+        },
+        "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "unknown-immediate-identifier-does-not-select-native-task-creation",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": true,
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": "UNKNOWN",
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": false,
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "copy-paste-required",
+      "launch_mode": "copy-paste",
+      "reasons": ["task-identity-unknown"],
+      "task": {
+        "title": "Implement issue 561",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "identity": {
+        "immediate_identifier": "unknown",
+        "provisional_identifier": "not-supported",
+        "provisional_identifier_resolution": "not-required"
+      },
+      "control_tower": {
+        "bulk_task_mapping_and_status": "available",
+        "observability": {
+          "remote_host": "available",
+          "task": "available",
+          "status": "available",
+          "portfolio": "available"
+        },
+        "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "missing-task-creation-authorization-is-structured-invalid-input",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": true,
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": true,
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": false,
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "invalid-input",
+      "launch_mode": "copy-paste",
+      "reasons": ["invalid-input"],
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "unrecognized-task-creation-authorization-is-structured-invalid-input",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "authorization-pending",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": true,
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": true,
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": false,
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "invalid-input",
+      "launch_mode": "copy-paste",
+      "reasons": ["invalid-input"],
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "whitespace-only-title-is-structured-invalid-input",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": " \t ",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": true,
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": true,
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": false,
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "invalid-input",
+      "launch_mode": "copy-paste",
+      "reasons": ["invalid-input"],
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "whitespace-only-configured-machine-alias-is-structured-invalid-input",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "\n  "
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": true,
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": true,
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": false,
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "invalid-input",
+      "launch_mode": "copy-paste",
+      "reasons": ["invalid-input"],
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "irrelevant-unknown-resolution-does-not-obscure-an-impossible-identity-path",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": true,
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": false,
+        "provisional_task_identifier": false,
+        "provisional_identifier_resolution": "UNKNOWN",
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "copy-paste-required",
+      "launch_mode": "copy-paste",
+      "reasons": ["task-identity-unavailable"],
+      "task": {
+        "title": "Implement issue 561",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "identity": {
+        "immediate_identifier": "not-supported",
+        "provisional_identifier": "not-supported",
+        "provisional_identifier_resolution": "not-required"
+      },
+      "control_tower": {
+        "bulk_task_mapping_and_status": "available",
+        "observability": {
+          "remote_host": "available",
+          "task": "available",
+          "status": "available",
+          "portfolio": "available"
+        },
+        "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  },
+  {
+    "name": "unknown-provisional-identifier-with-false-resolution-is-impossible",
+    "input": {
+      "type": "host-task-capability-preflight",
+      "version": 1,
+      "task_creation_authorization": "explicit-user-authorization",
+      "task": {
+        "title": "Implement issue 561",
+        "saved_project_selection": "required",
+        "isolated_worktree": "required",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "host_capabilities": {
+        "task_creation": true,
+        "task_read": true,
+        "title_at_creation": true,
+        "task_rename": false,
+        "saved_project_selection": true,
+        "isolated_worktree": true,
+        "immediate_task_identifier": false,
+        "provisional_task_identifier": "UNKNOWN",
+        "provisional_identifier_resolution": false,
+        "task_status_read": true,
+        "remote_host_read": true,
+        "portfolio_read": true
+      }
+    },
+    "expected": {
+      "type": "host-task-capability-preflight-result",
+      "version": 1,
+      "status": "copy-paste-required",
+      "launch_mode": "copy-paste",
+      "reasons": ["task-identity-unavailable"],
+      "task": {
+        "title": "Implement issue 561",
+        "configured_machine_alias": "build-machine-a"
+      },
+      "identity": {
+        "immediate_identifier": "not-supported",
+        "provisional_identifier": "unknown",
+        "provisional_identifier_resolution": "not-required"
+      },
+      "control_tower": {
+        "bulk_task_mapping_and_status": "available",
+        "observability": {
+          "remote_host": "available",
+          "task": "available",
+          "status": "available",
+          "portfolio": "available"
+        },
+        "agent_coordination": "collapsed-backend-service-seam"
+      },
+      "launch_safety": {
+        "task_creation_idempotency": "unavailable",
+        "reconciliation_by_outer_run_id": "unavailable"
+      },
+      "launch_authority": "not-granted"
+    }
+  }
+]

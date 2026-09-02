@@ -1,0 +1,188 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+
+module HostTaskCapabilityPreflight
+  TYPE = "host-task-capability-preflight"
+  RESULT_TYPE = "host-task-capability-preflight-result"
+  VERSION = 1
+  TASK_CREATION_AUTHORIZATIONS = %w[explicit-user-authorization not-authorized].freeze
+  OBSERVED_CAPABILITIES = [true, false, "UNKNOWN"].freeze
+  CAPABILITY_KEYS = %w[
+    task_creation
+    task_read
+    title_at_creation
+    task_rename
+    saved_project_selection
+    isolated_worktree
+    immediate_task_identifier
+    provisional_task_identifier
+    provisional_identifier_resolution
+    task_status_read
+    remote_host_read
+    portfolio_read
+  ].freeze
+  LAUNCH_SAFETY_KEYS = %w[task_creation_idempotency reconciliation_by_outer_run_id].freeze
+
+  module_function
+
+  def evaluate(input)
+    return invalid_input unless valid_input_shape?(input)
+
+    capabilities = input.fetch("host_capabilities")
+    return invalid_input unless CAPABILITY_KEYS.all? { |key| observed_capability?(capabilities[key]) }
+    return invalid_input unless LAUNCH_SAFETY_KEYS.all? { |key| !capabilities.key?(key) || observed_capability?(capabilities[key]) }
+    return invalid_input unless TASK_CREATION_AUTHORIZATIONS.include?(input["task_creation_authorization"])
+
+    task = input.fetch("task")
+    return invalid_input unless valid_task?(task)
+
+    reasons = unavailable_reasons(input.fetch("task_creation_authorization"), task, capabilities)
+    result(input, capabilities, reasons)
+  end
+
+  def valid_input_shape?(input)
+    input.is_a?(Hash) && input["type"] == TYPE && input["version"] == VERSION &&
+      input["host_capabilities"].is_a?(Hash) && input["task"].is_a?(Hash)
+  end
+
+  def valid_task?(task)
+    nonempty_string?(task["title"]) && nonempty_string?(task["configured_machine_alias"]) &&
+      %w[required not-required].include?(task["saved_project_selection"]) &&
+      %w[required not-required].include?(task["isolated_worktree"])
+  end
+
+  def nonempty_string?(value)
+    value.is_a?(String) && !value.strip.empty? && value.strip != "UNKNOWN"
+  end
+
+  def observed_capability?(value)
+    OBSERVED_CAPABILITIES.include?(value)
+  end
+
+  def unavailable_reasons(authorization, task, capabilities)
+    reasons = []
+    reasons << "task-creation-not-explicitly-authorized" unless authorization == "explicit-user-authorization"
+    reasons << unavailable_reason("task-creation", capabilities["task_creation"])
+    reasons << title_reason(capabilities)
+    reasons << requirement_reason("saved-project-selection", task["saved_project_selection"],
+                                  capabilities["saved_project_selection"])
+    reasons << requirement_reason("isolated-worktree", task["isolated_worktree"],
+                                  capabilities["isolated_worktree"])
+    reasons << identity_reason(capabilities)
+    reasons << unavailable_reason("task-status-read", capabilities["task_status_read"])
+    reasons.compact
+  end
+
+  def unavailable_reason(name, value)
+    return if value == true
+
+    "#{name}-#{value == 'UNKNOWN' ? 'unknown' : 'unavailable'}"
+  end
+
+  def title_reason(capabilities)
+    return if capabilities["title_at_creation"] == true || capabilities["task_rename"] == true
+
+    unknown = capabilities.values_at("title_at_creation", "task_rename").include?("UNKNOWN")
+    "deterministic-title-application-#{unknown ? 'unknown' : 'unavailable'}"
+  end
+
+  def requirement_reason(name, requirement, capability)
+    return unless requirement == "required"
+
+    unavailable_reason(name, capability)
+  end
+
+  def identity_reason(capabilities)
+    immediate = capabilities["immediate_task_identifier"]
+    provisional = capabilities["provisional_task_identifier"]
+    resolution = capabilities["provisional_identifier_resolution"]
+    return if immediate == true || (provisional == true && resolution == true)
+
+    unknown = immediate == "UNKNOWN" ||
+              (provisional == "UNKNOWN" && resolution != false) ||
+              (provisional == true && resolution == "UNKNOWN")
+    "task-identity-#{unknown ? 'unknown' : 'unavailable'}"
+  end
+
+  def result(input, capabilities, reasons)
+    native = reasons.empty?
+    {
+      "type" => RESULT_TYPE,
+      "version" => VERSION,
+      "status" => native ? "capability-selected" : "copy-paste-required",
+      "launch_mode" => native ? "host-native-user-task" : "copy-paste",
+      "reasons" => reasons,
+      "task" => {
+        "title" => input.fetch("task").fetch("title"),
+        "configured_machine_alias" => input.fetch("task").fetch("configured_machine_alias")
+      },
+      "launch_safety" => launch_safety(capabilities),
+      "identity" => identity(capabilities),
+      "control_tower" => control_tower(capabilities),
+      "launch_authority" => "not-granted"
+    }
+  end
+
+  def launch_safety(capabilities)
+    LAUNCH_SAFETY_KEYS.to_h { |key| [key, capabilities[key] == true ? "available" : "unavailable"] }
+  end
+
+  def identity(capabilities)
+    {
+      "immediate_identifier" => support(capabilities["immediate_task_identifier"]),
+      "provisional_identifier" => support(capabilities["provisional_task_identifier"]),
+      "provisional_identifier_resolution" => if capabilities["provisional_task_identifier"] == true
+                                               support(capabilities["provisional_identifier_resolution"])
+                                             else
+                                               "not-required"
+                                             end
+    }
+  end
+
+  def control_tower(capabilities)
+    observability = {
+      "remote_host" => availability(capabilities["remote_host_read"]),
+      "task" => availability(capabilities["task_read"]),
+      "status" => availability(capabilities["task_status_read"]),
+      "portfolio" => availability(capabilities["portfolio_read"])
+    }
+    {
+      "bulk_task_mapping_and_status" => observability.values.all? { |value| value == "available" } ? "available" : "unavailable",
+      "observability" => observability,
+      "agent_coordination" => "collapsed-backend-service-seam"
+    }
+  end
+
+  def support(value)
+    return "unknown" if value == "UNKNOWN"
+
+    value == true ? "supported" : "not-supported"
+  end
+
+  def availability(value)
+    return "unknown" if value == "UNKNOWN"
+
+    value == true ? "available" : "unavailable"
+  end
+
+  def invalid_input
+    {
+      "type" => RESULT_TYPE,
+      "version" => VERSION,
+      "status" => "invalid-input",
+      "launch_mode" => "copy-paste",
+      "reasons" => ["invalid-input"],
+      "launch_safety" => launch_safety({}),
+      "launch_authority" => "not-granted"
+    }
+  end
+end
+
+begin
+  input = JSON.parse($stdin.read)
+  puts JSON.generate(HostTaskCapabilityPreflight.evaluate(input))
+rescue JSON::ParserError
+  puts JSON.generate(HostTaskCapabilityPreflight.invalid_input)
+end
