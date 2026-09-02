@@ -5,6 +5,7 @@ require "fileutils"
 require "tmpdir"
 require "rbconfig"
 require_relative "../../bin/agent_doctor/process_runner"
+require_relative "../../bin/agent_doctor/timeout_budget"
 
 class AgentDoctorProcessRunnerTest < Minitest::Test
   def test_captures_bounded_stdout_stderr_and_exit
@@ -82,6 +83,18 @@ class AgentDoctorProcessRunnerTest < Minitest::Test
     assert_equal 2, attempts
     assert_equal "diagnostic timed out", result[:failure]
     assert_nil result[:exit]
+  end
+
+  def test_helper_completing_after_meaningful_share_of_workflow_budget_is_successful
+    ticks = [0.0, 1.0, 3.0, 5.0]
+    process_runner = runner(timeout: AgentDoctor::TimeoutBudget::WORKFLOW_STATUS_DEFAULT)
+    process_runner.define_singleton_method(:monotonic) { ticks.shift || 5.0 }
+
+    result = process_runner.capture([RbConfig.ruby, "-e", 'STDOUT.write("ok")'])
+
+    assert_equal "ok", result[:stdout]
+    assert_equal 0, result[:exit]
+    assert_nil result[:failure]
   end
 
   def test_timeout_terminates_descendant_process_group
