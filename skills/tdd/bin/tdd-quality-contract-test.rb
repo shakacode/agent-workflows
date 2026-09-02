@@ -42,7 +42,7 @@ class TddQualityContractTest < Minitest::Test
       )
       receipt = File.exist?(receipt_path) ? File.read(receipt_path, encoding: "UTF-8") : ""
 
-      return {stdout: stdout, stderr: stderr, exit_status: status.exitstatus, receipt: receipt}
+      return { stdout: stdout, stderr: stderr, exit_status: status.exitstatus, receipt: receipt }
     end
   end
 
