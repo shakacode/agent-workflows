@@ -241,6 +241,18 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_unrelated_invalid_utf8_policy_does_not_block_preflight
+    Dir.mktmpdir("batch-plan-invalid-utf8-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.binwrite(File.join(root, ".agents", "agent-workflow.yml"), "base_branch: \xFF\n".b)
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_empty result.fetch("violations")
+    end
+  end
+
   def test_unrelated_malformed_policy_does_not_hide_valid_companion_contract
     Dir.mktmpdir("batch-plan-valid-companion-malformed-sibling") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))

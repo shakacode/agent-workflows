@@ -770,7 +770,7 @@ module BatchPlanPreflight
   end
 
   def companion_policy_fragment_node(yaml)
-    lines = yaml.to_s.lines
+    lines = yaml.to_s.b.lines
     starts = lines.each_index.select { |index| companion_policy_key_line?(lines[index]) }
     return [:absent, nil] if starts.empty?
     return [:invalid, nil] unless starts.one?
@@ -787,7 +787,7 @@ module BatchPlanPreflight
   end
 
   def companion_policy_key_line?(line)
-    line.match?(/\A(?:companion_path_conventions|["']companion_path_conventions["'])\s*:/)
+    line.b.match?(/\A(?:companion_path_conventions|["']companion_path_conventions["'])\s*:/)
   end
 
   def companion_conventions_from_node(node)
