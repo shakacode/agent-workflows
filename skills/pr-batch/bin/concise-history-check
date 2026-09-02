@@ -32,6 +32,7 @@ module ConciseHistoryCheck
   PR_ONLY_COMMIT_ARTIFACTS = ([AGENT_DETAILS_OPEN] + PR_EVIDENCE_ARTIFACTS).freeze
   TERMINAL_REPLAY_VERDICTS = %w[SATISFIED WAIVED NOT_APPLICABLE].freeze
   TRAILER_LINE = /\A(?<token>[A-Za-z0-9][A-Za-z0-9-]*):[ \t]+\S/
+  NON_RATIONALE_TRAILER_NAMES = %w[Signed-off-by].freeze
   FENCE_OPEN = /\A {0,3}(?<fence>`{3,}|~{3,})/
   INLINE_CODE_SPAN = /(?<!`)(?<delimiter>`+)(?!`).*?(?<!`)\k<delimiter>(?!`)/m
 
@@ -103,16 +104,20 @@ module ConciseHistoryCheck
                       ["PR evidence did not replay to a terminal verdict"]
                     else
                       []
-                    end
+    end
     message_lines = commit_message.lines.map(&:strip)
+    trailer_start = terminal_trailer_start(message_lines, options[:provenance_trailers])
+    trailer_lines = message_lines.drop(trailer_start)
     subject = message_lines.first.to_s
-    rationale = without_terminal_metadata_trailers(message_lines).drop(1).reject do |line|
+    rationale = message_lines.take(trailer_start).drop(1).reject do |line|
       line.empty? || options[:issue_linkage].include?(line) ||
-        options[:provenance_trailers].any? { |name| line.match?(/\A#{Regexp.escape(name)}:[ \t]+\S/) }
+        terminal_metadata_trailer_names(options[:provenance_trailers]).any? do |name|
+          line.match?(/\A#{Regexp.escape(name)}:[ \t]+\S/)
+        end
     end
     missing_linkage = options[:issue_linkage].reject { |line| message_lines.include?(line) }
     missing_trailers = options[:provenance_trailers].reject do |name|
-      commit_message.match?(/^#{Regexp.escape(name)}:[ \t]+\S.*$/)
+      trailer_lines.any? { |line| line.match?(/\A#{Regexp.escape(name)}:[ \t]+\S.*$/) }
     end
     duplicated_artifacts = PR_ONLY_COMMIT_ARTIFACTS.select { |artifact| commit_message.include?(artifact) }
     stats = diff_stats(diff)
@@ -145,18 +150,21 @@ module ConciseHistoryCheck
     }
   end
 
-  def without_terminal_metadata_trailers(message_lines)
-    trailer_start = message_lines.length
-    index = message_lines.rindex { |line| !line.empty? }
-    while index&.positive?
+  def terminal_trailer_start(message_lines, provenance_trailers)
+    allowed = terminal_metadata_trailer_names(provenance_trailers)
+    index = message_lines.length - 1
+    index -= 1 while index >= 0 && message_lines[index].empty?
+    while index >= 0
       trailer = message_lines[index].match(TRAILER_LINE)
-      break unless trailer
-      break if trailer[:token].casecmp?("Reason")
+      break unless trailer && allowed.any? { |name| trailer[:token].casecmp?(name) }
 
-      trailer_start = index
       index -= 1
     end
-    message_lines.take(trailer_start)
+    index + 1
+  end
+
+  def terminal_metadata_trailer_names(provenance_trailers)
+    (provenance_trailers + NON_RATIONALE_TRAILER_NAMES).freeze
   end
 
   def diff_stats(diff)
@@ -169,7 +177,8 @@ module ConciseHistoryCheck
 
   def agent_details(pr_body)
     errors = []
-    structural_body = structural_markdown(pr_body)
+    markdown_body = markdown_without_code(pr_body)
+    structural_body = markdown_without_html_comments(markdown_body)
     unless structural_body.scan(AGENT_DETAILS_OPEN).length == 1
       errors << "PR body must contain exactly one canonical Agent details disclosure"
     end
@@ -190,46 +199,56 @@ module ConciseHistoryCheck
     end
     return [nil, errors << "Agent details disclosure must close after it opens"] unless finish
 
-    [pr_body[start...finish], errors]
+    [markdown_body[start...finish], errors]
   end
 
   def structural_markdown(markdown)
+    markdown_without_html_comments(markdown_without_code(markdown))
+  end
+
+  def markdown_without_code(markdown)
     fence = nil
-    in_comment = false
     structural = markdown.each_line.map do |line|
       if fence
         closing_fence = /\A {0,3}#{Regexp.escape(fence[0])}{#{fence.length},}[ \t]*(?:\r?\n)?\z/
         fence = nil if line.match?(closing_fence)
         line.gsub(/[^\r\n]/, " ")
-      elsif !in_comment && (opening = line.match(FENCE_OPEN))
+      elsif (opening = line.match(FENCE_OPEN))
         fence = opening[:fence]
         line.gsub(/[^\r\n]/, " ")
       else
-        characters = line.chars
-        index = 0
-        while index < characters.length
-          marker_length = if in_comment && characters[index, 3].join == "-->"
-                            in_comment = false
-                            3
-                          elsif !in_comment && characters[index, 4].join == "<!--"
-                            in_comment = true
-                            4
-                          elsif in_comment
-                            1
-                          else
-                            index += 1
-                            next
-                          end
-          marker_length.times do |offset|
-            position = index + offset
-            characters[position] = " " unless characters[position].match?(/[\r\n]/)
-          end
-          index += marker_length
-        end
-        characters.join
+        line
       end
     end.join
     structural.gsub(INLINE_CODE_SPAN) { |span| span.gsub(/[^\r\n]/, " ") }
+  end
+
+  def markdown_without_html_comments(markdown)
+    in_comment = false
+    markdown.each_line.map do |line|
+      characters = line.chars
+      index = 0
+      while index < characters.length
+        marker_length = if in_comment && characters[index, 3].join == "-->"
+                          in_comment = false
+                          3
+                        elsif !in_comment && characters[index, 4].join == "<!--"
+                          in_comment = true
+                          4
+                        elsif in_comment
+                          1
+                        else
+                          index += 1
+                          next
+                        end
+        marker_length.times do |offset|
+          position = index + offset
+          characters[position] = " " unless characters[position].match?(/[\r\n]/)
+        end
+        index += marker_length
+      end
+      characters.join
+    end.join
   end
 
   def missing_pr_artifacts(pr_body, disclosure)
@@ -237,10 +256,46 @@ module ConciseHistoryCheck
       "missing PR evidence artifact: #{artifact}" unless disclosure.include?(artifact)
     end
     leaked = PR_EVIDENCE_ARTIFACTS.reject do |artifact|
-      pr_body.scan(artifact).length == disclosure.scan(artifact).length
+      artifact_count(pr_body, artifact) == artifact_count(disclosure, artifact)
     end
     errors << "PR evidence artifacts must stay inside Agent details: #{leaked.join(', ')}" unless leaked.empty?
     errors
+  end
+
+  def artifact_count(markdown, artifact)
+    if artifact.start_with?("<!--")
+      count_comment_artifacts(markdown_without_code(markdown), artifact)
+    else
+      structural_markdown(markdown).scan(artifact).length
+    end
+  end
+
+  def count_comment_artifacts(markdown, artifact)
+    count = 0
+    in_comment = false
+    markdown.each_line do |line|
+      index = 0
+      while index < line.length
+        if in_comment
+          if line[index, 3] == "-->"
+            in_comment = false
+            index += 3
+          else
+            index += 1
+          end
+        elsif line[index, artifact.length] == artifact
+          count += 1
+          in_comment = true
+          index += artifact.length
+        elsif line[index, 4] == "<!--"
+          in_comment = true
+          index += 4
+        else
+          index += 1
+        end
+      end
+    end
+    count
   end
 end
 

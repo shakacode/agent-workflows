@@ -226,6 +226,61 @@ class ConciseHistoryCheckTest < Minitest::Test
     end
   end
 
+  def test_agent_details_ignores_html_comment_opener_inside_inline_code_before_disclosure
+    Tempfile.create("inline-code-comment-opener") do |file|
+      file.write("Document the `<!-- qa-evidence v2` marker.\n\n")
+      file.write(File.read(fixture("pr-body.md"), encoding: "UTF-8"))
+      file.flush
+
+      stdout, stderr, status = run_check(pr_body: file.path)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "PASS", result.fetch("status")
+      assert_equal "SATISFIED", result.dig("pr_evidence", "replay_verdict")
+    end
+  end
+
+  def test_replay_ignores_evidence_marker_inside_inline_code
+    Tempfile.create("inline-code-evidence-marker") do |file|
+      pr_body = File.read(fixture("pr-body.md"), encoding: "UTF-8")
+      marker_example = <<~MARKDOWN
+        Document the `<!-- qa-evidence v2 head_sha: #{CONCISE_HISTORY_HEAD} -->` marker.
+
+        ### QA Evidence
+      MARKDOWN
+      file.write(pr_body.sub("### QA Evidence", marker_example))
+      file.flush
+
+      stdout, stderr, status = run_check(pr_body: file.path)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "PASS", result.fetch("status")
+      assert_equal "SATISFIED", result.dig("pr_evidence", "replay_verdict")
+    end
+  end
+
+  def test_artifact_leak_check_ignores_heading_inside_fenced_code
+    Tempfile.create("fenced-artifact-heading") do |file|
+      file.write(<<~MARKDOWN)
+        ```markdown
+        ### Decision log
+        ```
+
+      MARKDOWN
+      file.write(File.read(fixture("pr-body.md"), encoding: "UTF-8"))
+      file.flush
+
+      stdout, stderr, status = run_check(pr_body: file.path)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "PASS", result.fetch("status")
+      assert_equal "SATISFIED", result.dig("pr_evidence", "replay_verdict")
+    end
+  end
+
   def test_labeled_prose_counts_as_durable_rationale
     Tempfile.create("labeled-rationale") do |file|
       file.write(<<~MESSAGE)
@@ -246,6 +301,52 @@ class ConciseHistoryCheckTest < Minitest::Test
       result = JSON.parse(stdout)
       assert_equal "PASS", result.fetch("status")
       assert_equal true, result.dig("commit_history", "durable_rationale")
+    end
+  end
+
+  def test_labeled_prose_counts_as_durable_rationale_before_terminal_trailers
+    Tempfile.create("labeled-rationale-terminal-block") do |file|
+      file.write(<<~MESSAGE)
+        Keep small-diff history concise
+
+        Fixes #318
+
+        Impact: the replay contract keeps review evidence in the pull request.
+        Co-Authored-By: Fixture Agent <fixture-agent@example.com>
+        Agent-Session: fixture-session-318
+      MESSAGE
+      file.flush
+
+      stdout, stderr, status = run_check(commit_message: file.path)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "PASS", result.fetch("status")
+      assert_equal true, result.dig("commit_history", "durable_rationale")
+    end
+  end
+
+  def test_required_provenance_trailers_must_appear_in_the_terminal_block
+    Tempfile.create("provenance-trailer-terminal-block") do |file|
+      file.write(<<~MESSAGE)
+        Keep small-diff history concise
+
+        Reason: the replay contract keeps review evidence in the pull request.
+
+        Co-Authored-By: Fixture Agent <fixture-agent@example.com>
+
+        Fixes #318
+
+        Agent-Session: fixture-session-318
+      MESSAGE
+      file.flush
+
+      stdout, _stderr, status = run_check(commit_message: file.path)
+
+      refute status.success?
+      result = JSON.parse(stdout)
+      assert_equal true, result.dig("commit_history", "durable_rationale")
+      assert_includes result.fetch("errors"), "missing provenance trailers: Co-Authored-By"
     end
   end
 
