@@ -26,7 +26,7 @@ FORBIDDEN_PROMPT_FRAGMENTS = [
   "Manifest:",
   "Dispatch ",
   "Stage deps:",
-  "GMCC-v4:",
+  "GMCC-v5:",
   "HST-v1",
   "Batch QA Lane:",
   "Scope:",

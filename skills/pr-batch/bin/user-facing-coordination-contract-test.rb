@@ -23,12 +23,13 @@ class UserFacingCoordinationContractTest < Minitest::Test
   README = "README.md"
   SKILL_GUIDE = "docs/skills.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
-  GMCC_V4 = "GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or " \
-            "threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
+  GMCC_V5 = "GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|" \
+            "threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
             "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
-            "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact " \
-            "verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR " \
-            "human-approved-for-current-head+durable-decision(proven-human+merge-authority);" \
+            "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
+            "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
+            "auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|" \
+            "human-approved-for-current-head+durable-decision(proven+merge-authority);" \
             "else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close " \
             "PR/target/issue."
   HST_ACTIONABLE_SUMMARY = "HST-v1 actionable material state change: a decision or action is required, " \
@@ -172,24 +173,24 @@ class UserFacingCoordinationContractTest < Minitest::Test
                     "merge without asking the user to perform the authorized mechanical action"
   end
 
-  def test_coordination_changes_preserve_exact_gmcc_v4_merge_authority_clauses
+  def test_coordination_changes_preserve_exact_gmcc_v5_merge_authority_clauses
     integration_closeout = File.read(File.join(ROOT, INTEGRATION_CLOSEOUT), encoding: "UTF-8")
-    assert_includes integration_closeout, GMCC_V4, INTEGRATION_CLOSEOUT
+    assert_includes integration_closeout, GMCC_V5, INTEGRATION_CLOSEOUT
     assert_includes normalized(INTEGRATION_CLOSEOUT),
-                    "Keep this compact, self-contained `GMCC-v4` line verbatim in the Batch Plan or " \
+                    "Keep this compact, self-contained `GMCC-v5` line verbatim in the Batch Plan or " \
                     "delivered machine launch state, never in the human-authored prompt.",
                     INTEGRATION_CLOSEOUT
     refute_includes integration_closeout, "in PR-batch goal prompts", INTEGRATION_CLOSEOUT
 
     pr_batch = File.read(File.join(ROOT, PR_BATCH), encoding: "UTF-8")
-    assert_includes pr_batch, GMCC_V4, PR_BATCH
+    assert_includes pr_batch, GMCC_V5, PR_BATCH
     assert_includes pr_batch, "ready-human-review-required", PR_BATCH
     assert_includes pr_batch, "autonomous-merge-evidence-unknown", PR_BATCH
     refute_includes pr_batch, "GMCC-v3:", PR_BATCH
 
     [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
-      refute_includes text, "GMCC-v4:", path
+      refute_includes text, "GMCC-v5:", path
       assert_includes text, "ready-human-review-required", path
       assert_includes text, "autonomous-merge-evidence-unknown", path
       refute_includes text, "GMCC-v3:", path
@@ -246,6 +247,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
   def test_terminal_handoffs_name_one_unambiguous_next_step_or_archive
     contract = normalized(DOC)
     assert_includes contract, "A durable issue, receipt, or blocker list is evidence, not a next step."
+    assert_includes contract,
+                    "Preserve any required receipt before the closing stack: the Unblock Block when the status is not clean, then the final `Conversation status:` line."
+    refute_includes contract, "receipt immediately before the final `Conversation status:` line"
     assert_includes contract, "`Next: Archive this task.`"
     assert_includes contract,
                     "state the smallest action that clears the blocker and whether to reply here or start a new task"

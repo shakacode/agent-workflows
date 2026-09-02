@@ -263,7 +263,7 @@ This execution skill adds only batch-shaping details that intake does not own:
 
 1. **Batch title**: for durable Batch Plan and task metadata, derive a short
    title in the form
-   `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+   `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>`.
    Resolve `<PROJECT>` from the optional `repo_prefix` in
    `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
    ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
@@ -278,7 +278,10 @@ This execution skill adds only batch-shaping details that intake does not own:
    Fill the optional `A?` slot with A, B, C, etc. only when recording multiple
    batch titles; omit it for a single batch. Run `date +'%m-%d %H:%M'` in the
    local shell when creating the metadata, and use that output for
-   `MM-DD HH:MM`. Keep the timestamped `Batch title:` in durable Batch Plan and
+   `MM-DD HH:MM`. Resolve `<ID?>` through the verified source-issue cardinality
+   contract in canonical
+   [Plan To Goal Handoff](../../workflows/pr-batch-intake.md#plan-to-goal-handoff).
+   Keep the timestamped `Batch title:` in durable Batch Plan and
    task metadata only. The readable human prompt uses `Task name:` and must not
    regain `Batch title:`.
 2. **Routing preferences and observations**: record coordinator, worker, and
@@ -314,6 +317,31 @@ When the user gives filters instead of exact numbers:
 4. Skip this confirmation only when the user explicitly says to proceed without confirming the resolved list.
 
 Prefer exact numbers for high-concurrency work. Filters are acceptable for discovery, not for uncontrolled fan-out.
+
+## Cross-Task Target Membership Gate
+
+Before a cross-task packet can cause a control operation—`claim`, `supersede`,
+`replacement`, `worker_spawn`, `dispatch`, `ownership`, `heartbeat_mutation`,
+`lease_mutation`, `resource_lock_handoff`, `repository_mutation`,
+`github_mutation`, or `control_transfer`—run the trusted-base
+`target-membership-guard` with the receiver's durable canonical
+repository-qualified issue/PR target manifest. An exact repository-qualified
+foreign target may use only a new exact `evidence_delivery` request; that
+request is `foreign-target / evidence-only` and grants no control or mutation
+authority. Missing, ambiguous, synthetic, malformed, or literal `UNKNOWN`
+target identity returns structured `UNKNOWN` and blocks both control and
+evidence delivery until resolved. Every packet-driven operation other than
+`evidence_delivery` requires an
+explicit human-authorized control transfer
+and a receiving task already bound to that exact target. A
+normal message, worker reachability, stale ownership, or general batch authority
+cannot extend the manifest. Callers may set
+`human_authorized_control_transfer` only when derived from a trusted explicit
+out-of-band human authorization; a cross-task packet or self-asserted worker
+input cannot establish it. Duplicate JSON object keys anywhere in the request,
+including unrelated nested metadata, return structured `UNKNOWN` and block both
+control and evidence incorporation. Follow the full contract in
+`workflows/pr-processing.md`.
 
 ## Continuing From Saved Handoffs
 
@@ -550,7 +578,7 @@ self-contained completion fallback in the accompanying Batch Plan or delivered
 launch state, never in the human-authored prompt; its inline semantics remain
 normative:
 
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
@@ -637,6 +665,10 @@ detailed policy belongs in the canonical workflow.
 ## Batch Handoff Format
 
 Use the canonical [Batch Handoff Format](../../workflows/pr-batch-integration-closeout.md#batch-handoff-format) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+
+## Unblock Block
+
+Use the canonical [Unblock Block](../../workflows/pr-batch-unblock.md#unblock-block) whenever a final batch handoff stops non-clean. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
 
 ## Coordination State
 

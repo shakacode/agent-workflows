@@ -130,10 +130,13 @@ module GoalPromptDriftContract
     "merge gates"
   ].freeze
 
-  CONTINUATION_TITLE = "Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <continuation title>."
+  CONTINUATION_INVOCATION = "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch."
+  CONTINUATION_TITLE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
+  CONTINUATION_THREAD_HANDLE = "Thread handle: <batch-short>-<lane>-<word>"
   CONTINUATION_PHRASES = [
+    CONTINUATION_INVOCATION,
     CONTINUATION_TITLE,
-    "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.",
+    CONTINUATION_THREAD_HANDLE,
     "HST-v1",
     "determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table",
     "Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries.",
@@ -151,7 +154,7 @@ module GoalPromptDriftContract
     "Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.",
     "If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll.",
     "Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage.",
-    "GMCC-v4 compatibility fallback:",
+    "GMCC-v5 compatibility fallback:",
     "reuse or create one bounded current-thread monitor before handoff and do not create a duplicate",
     "Use at most four 15-minute fast-window polls followed by exponential backoff capped at four hours",
     "On each wake, refresh live blocker evidence and resume if a blocker clears.",
@@ -350,7 +353,8 @@ module GoalPromptDriftContract
     continuation_section = section(workflow, "### Generic PR-Batch Continuation Prompt")
     continuation = text_fence(continuation_section, "continuation prompt")
     require_phrases(workflow, CONTINUATION_PHRASES, "continuation contract")
-    fail!("continuation prompt must start with title") unless continuation.start_with?("#{CONTINUATION_TITLE}\n")
+    expected_prefix = "#{CONTINUATION_INVOCATION}\n\n#{CONTINUATION_TITLE}\n\n#{CONTINUATION_THREAD_HANDLE}\n"
+    fail!("continuation prompt header drifted") unless continuation.start_with?(expected_prefix)
 
     pressure_section = section(workflow, "Pressure scenarios this prompt must satisfy:")
     require_phrases(workflow, PRESSURE_SCENARIOS, "continuation pressure scenarios")
