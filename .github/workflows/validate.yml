@@ -2,6 +2,7 @@ name: Validate
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [main]
 
@@ -14,12 +15,19 @@ permissions:
 
 jobs:
   validate:
+    name: ${{ github.event.pull_request.draft == true && 'validate (draft head)' || 'validate' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ github.event.pull_request.draft == true && github.event.pull_request.head.sha || github.ref }}
           persist-credentials: false
+
+      - name: Report validation target
+        env:
+          VALIDATION_TARGET: ${{ github.event_name == 'push' && 'main push' || (github.event.pull_request.draft == true && 'draft head' || 'current-base integration') }}
+        run: echo "Validating ${VALIDATION_TARGET} at $(git rev-parse HEAD)"
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1

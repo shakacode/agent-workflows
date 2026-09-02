@@ -9,6 +9,7 @@ PRODUCTION_RELEASE_PATH = File.join(ROOT, "workflows/pr-production-release.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 VALIDATE_WORKFLOW_PATH = File.join(ROOT, ".github/workflows/validate.yml")
+VALIDATE_SCRIPT_PATH = File.join(ROOT, "bin/validate")
 
 def route_after(text, heading)
   match = text.match(/^(\#{2,4}) #{Regexp.escape(heading)}[[:blank:]]*$/)
@@ -64,6 +65,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
     @skill = File.read(SKILL_PATH, encoding: "UTF-8")
     @validate_workflow = File.read(VALIDATE_WORKFLOW_PATH, encoding: "UTF-8")
+    @validate_script = File.read(VALIDATE_SCRIPT_PATH, encoding: "UTF-8")
   end
 
   def test_route_after_keeps_nested_headings_and_stops_at_the_next_peer
@@ -174,6 +176,28 @@ class IntegrationCloseoutContractTest < Minitest::Test
                     "group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
     assert_includes @validate_workflow,
                     "cancel-in-progress: ${{ github.event_name == 'pull_request' }}"
+  end
+
+  def test_validate_workflow_separates_draft_head_from_integration_evidence
+    jobs = @validate_workflow[/^jobs:\s*$.*\z/m].scan(/^  ([a-zA-Z0-9_-]+):\s*$/).flatten
+
+    assert_equal ["validate"], jobs
+    assert_includes @validate_workflow,
+                    "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]"
+    assert_includes @validate_workflow,
+                    "name: ${{ github.event.pull_request.draft == true && 'validate (draft head)' || 'validate' }}"
+    assert_includes @validate_workflow,
+                    "ref: ${{ github.event.pull_request.draft == true && github.event.pull_request.head.sha || github.ref }}"
+    assert_includes @validate_workflow, "VALIDATION_TARGET:"
+    assert_includes @validate_workflow, "git rev-parse HEAD"
+  end
+
+  def test_validate_runs_expensive_installer_and_stack_suites_last
+    installer = @validate_script.index("== installer and stack suites")
+    rubocop = @validate_script.index('rubocop "_${RUBOCOP_VERSION}_"')
+
+    assert_equal 1, @validate_script.scan("== installer and stack suites").length
+    assert_operator rubocop, :<, installer
   end
 
   def test_retained_processing_contracts_use_existing_compatibility_routes

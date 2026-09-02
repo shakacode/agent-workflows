@@ -83,9 +83,15 @@ module PrCiReadiness
     [row["workflow"].to_s, row["name"].to_s]
   end
 
+  def non_draft_head_rows(rows)
+    rows.reject { |row| row.is_a?(Hash) && row["name"].to_s.end_with?(" (draft head)") }
+  end
+
   # Preserve required cancellations unless a current row with the exact same
   # workflow/name identity supersedes them. Full-list cancellations are noise.
   def readiness_rows(rows, required_used:, required_cancellations: [])
+    rows = non_draft_head_rows(rows)
+    required_cancellations = non_draft_head_rows(required_cancellations)
     current_rows = active_rows(rows)
     gate_rows = required_used ? rows : current_rows + required_cancellations
     current_contexts = current_rows.map { |row| check_identity(row) }
@@ -171,7 +177,7 @@ module PrCiReadiness
     source:, head_sha:, complete:, rows:, checked_at:, error: nil,
     informational_rows: [], gates_verdict: true
   )
-    normalized_rows = rows.is_a?(Array) ? rows : []
+    normalized_rows = non_draft_head_rows(rows.is_a?(Array) ? rows : [])
     row_states = normalized_rows.map { |row| evidence_row_state(row) }
     state =
       # Non-gating scopes preserve completeness and error diagnostics without
