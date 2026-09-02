@@ -2598,13 +2598,25 @@ class BatchPlanPreflightTest < Minitest::Test
   def test_foreign_owned_fixed_sibling_fails_closed
     with_isolated_pack("batch-plan-preflight-foreign-owner") do |root, _pack, fixture_helper, fixture_gate|
       route = substitute_foreign_owned_sibling(root, fixture_gate)
+      context = "foreign-ownership route: #{route}"
+
+      # Guard the fixture itself, so a route that silently stopped constructing
+      # what it advertises cannot pass on some other predicate.
+      if route == "symlink-substitute"
+        assert_predicate File.lstat(fixture_gate), :symlink?, context
+      else
+        refute_equal Process.uid, File.lstat(fixture_gate).uid, context
+        assert_predicate File.lstat(fixture_gate), :file?, context
+        assert_equal 0, File.lstat(fixture_gate).mode & 0o022, context
+        assert_predicate File.lstat(fixture_gate).mode & 0o111, :positive?, context
+      end
 
       result, _stderr, status = evaluate(input_for, helper: fixture_helper)
 
-      refute status.success?, route
-      assert_equal "rejected", result.fetch("status"), route
-      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result), route
-      assert_empty result.dig("launch", "eligible_lane_ids"), route
+      refute status.success?, context
+      assert_equal "rejected", result.fetch("status"), context
+      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result), context
+      assert_empty result.dig("launch", "eligible_lane_ids"), context
     end
   end
 
