@@ -66,7 +66,11 @@ class TddQualityContractTest < Minitest::Test
     [skill, workflow].each do |entrypoint|
       assert_includes entrypoint, "Before writing or changing tests, mocks, or test helpers, apply"
     end
-    assert_equal skill[skill.index("## Core Loop")..], workflow[workflow.index("## Core Loop")..]
+    skill_core_loop_index = skill.index("## Core Loop")
+    workflow_core_loop_index = workflow.index("## Core Loop")
+    refute_nil skill_core_loop_index, "SKILL.md is missing '## Core Loop'"
+    refute_nil workflow_core_loop_index, "workflows/tdd.md is missing '## Core Loop'"
+    assert_equal skill[skill_core_loop_index..], workflow[workflow_core_loop_index..]
     assert_includes validation, "ruby skills/tdd/bin/tdd-quality-contract-test.rb"
 
     [skill, workflow].each do |entrypoint|
