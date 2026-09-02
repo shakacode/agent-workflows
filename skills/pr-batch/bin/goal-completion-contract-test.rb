@@ -22,6 +22,7 @@ WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 PROMPT_INTAKE_PATH = File.join(ROOT, "workflows/pr-batch-intake.md")
 WORKER_EXECUTION_PATH = File.join(ROOT, "workflows/pr-batch-worker-execution.md")
 INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
+UNBLOCK_WORKFLOW_PATH = File.join(ROOT, "workflows/pr-batch-unblock.md")
 SPEC_SKILL_PATH = File.join(ROOT, "skills/spec/SKILL.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
@@ -34,6 +35,9 @@ STATE_CHANGE_MONITOR_TEST_PATH = File.join(ROOT, "skills/pr-batch/bin/goal-state
 HOST_ADAPTER_CONTRACT_PATH = File.join(ROOT, "docs/host-adapter/contract.md")
 PR_BATCH_DOCS_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 BATCH_STATUS_SKILL_PATH = File.join(ROOT, "skills/batch-status/SKILL.md")
+POST_MERGE_AUDIT_SKILL_PATH = File.join(ROOT, "skills/post-merge-audit/SKILL.md")
+POST_MERGE_AUDIT_WORKFLOW_PATH = File.join(ROOT, "workflows/post-merge-audit.md")
+CLOSE_SESSION_SKILL_PATH = File.join(ROOT, "skills/close-session/SKILL.md")
 CHANGELOG_PATH = File.join(ROOT, "CHANGELOG.md")
 HUMAN_STATUS_REPLAY_PATH = File.join(ROOT, "skills/pr-batch/fixtures/human-status-translation-replay.json")
 
@@ -153,8 +157,9 @@ SELF_LAUNCH_PLANNING_CHAT_ROLE = "Planning-chat role: not applicable after self-
 SELF_LAUNCH_CLOSEOUT_OWNER = "Archive/closeout owner: batch coordinator."
 SELF_LAUNCH_NO_RETAINED_RESPONSIBILITY = "Retained responsibilities: none (no cross-batch, dependency, release, or shared-follow-up responsibility is retained)."
 SELF_LAUNCH_NOT_A_THIRD_PLANNING_ROLE = "This is a transition out of planning, not a third planning role; neither `prompt-only` nor `parent-orchestrator` is selectable after the transition."
-PLAN_PR_BATCH_RESPONSE_ORDER = "Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
-TRIAGE_RESPONSE_ORDER = "Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
+PLAN_PR_BATCH_RESPONSE_ORDER = "Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
+TRIAGE_RESPONSE_ORDER = "Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line."
+UNBLOCK_BLOCK_STANDALONE_EMISSION_RULE = "Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action or wait instruction with an exact command, paste-ready prompt, URL, question, trigger, or clearing condition, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`."
 PARENT_RECONCILIATION_RULE = "After terminal batch handoffs, parent reconciliation is a post-batch/pre-release-or-archive gate, not a per-PR/pre-merge gate. Before a coordinated release action or parent archive, the parent determines applicability for every exact target/surface and performs a bounded read-only refresh and comparison with durable terminal handoffs/manifests only for applicable GitHub, coordination-backend/claim, head/merge, issue, QA, and release-note surfaces. Explicit durable `n/a`, `no-PR`, or `no-code/not-required` evidence with rationale satisfies an inapplicable surface. `UNKNOWN` applicability or missing applicable evidence blocks both release action and parent archive."
 PARENT_RECONCILIATION_FORWARD_REFERENCE = "This reconciliation is the post-batch/pre-release-or-archive gate below."
 RELEASE_AUTHORITY_RECONCILIATION_RULE = "Coordinated release may pass this reconciliation gate only under separately established release authority; reconciliation never grants release or merge authority."
@@ -207,6 +212,16 @@ LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "line using a repository abbreviation"
 ].freeze
 ARCHIVE_READINESS_HANDOFF_RULE = "End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them."
+UNBLOCK_BLOCK_SCOPE_RULE = "Any conversation that stops non-clean — every final `Conversation status: Follow-ups remain — <each exact action or blocker>.` — must let the operator act without reading anything above the closing lines. Emit exactly one `Unblock:` block as the last thing before that status line."
+UNBLOCK_BLOCK_COVERAGE_RULE = "One numbered entry per exact blocker in the same normalized blocker union rendered in the `Conversation status` line. Never drop a blocker, never add one that is missing from that union, and never merge two blockers into one entry."
+UNBLOCK_BLOCK_ORDER_RULE = "Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order. Mark every entry whose position differs from its status-line position with `(reordered)` after the owner tag, so a skimming operator reads the divergence as deliberate rather than as a mismatch."
+UNBLOCK_BLOCK_OWNER_RULE = "`[you]` means the operator must act before anything else moves, including any manual resume prompt they have to paste after a runner restart. `[agent]` means this thread resumes on its own through a real trigger — name it, such as the 15-minute monitor wake or the bounded watch window. Never tag work `[agent]` when it cannot continue without the operator; manual resume instructions are always `[you]`. `[external]` means a check, bot, or third party is being waited on — name it, name the condition that clears it, and say plainly that no operator action is required."
+UNBLOCK_BLOCK_SMALLEST_ACTION_RULE = "Each entry is the smallest next step, not the remaining plan. A `[you]` action is executable as written: an exact shell command, prompt, URL, or question. An `[agent]` entry names the exact trigger and clearing condition. An `[external]` entry gives the exact wait instruction and clearing condition and says no operator action is required."
+UNBLOCK_BLOCK_HELP_RULE = "Each `Help:` line offers one genuinely different route to clearing that same blocker — waive, rerun, reassign, cancel the lane or batch, escalate to a named owner, or the exact skill or workflow section that performs it — or exactly `none — <reason>` when no alternative exists. Do not restate the primary action as its own help."
+UNBLOCK_BLOCK_WAITING_RULE = "When every entry is `[agent]` or `[external]`, still emit the block and say that waiting is the correct action, so the operator can tell that nothing is owed from them."
+UNBLOCK_BLOCK_CLEAN_OMISSION_RULE = "Omit the block when the final status is `Conversation status: Ready for archiving.`; that status is valid only when the normalized blocker union is empty."
+UNBLOCK_BLOCK_TEMPLATE_LINE = "1. [<you|agent|external>] <smallest next action or wait instruction> — <exact command, paste-ready prompt, URL, question, trigger, or clearing condition>"
+UNBLOCK_BLOCK_VERIFIED_RECEIPT_RULE = "The compact `Completed-batch audit:` receipt line, only when a completed-batch receipt is required and an existing verified receipt is available. When a completed-batch receipt is required but missing, emit no receipt line; carry the missing receipt only as a blocker and matching Unblock entry."
 # #243: the qualifier is the whole point of the sentence. An unqualified "A final
 # handoff without one of those two exact lines is incomplete" reads as binding on
 # the worker and planning-chat audiences that this section is their canonical
@@ -551,6 +566,7 @@ class GoalCompletionContractTest < Minitest::Test
     @prompt_intake = read_repo_file(PROMPT_INTAKE_PATH)
     @worker_execution = read_repo_file(WORKER_EXECUTION_PATH)
     @integration_closeout = read_repo_file(INTEGRATION_CLOSEOUT_PATH)
+    @unblock_workflow = read_repo_file(UNBLOCK_WORKFLOW_PATH)
     @workflow = "#{@integration_closeout}\n#{@workflow_source}"
     @spec_skill = read_repo_file(SPEC_SKILL_PATH)
     @pr_batch_skill_source = read_repo_file(PR_BATCH_SKILL_PATH)
@@ -563,6 +579,9 @@ class GoalCompletionContractTest < Minitest::Test
     @host_adapter_contract = read_repo_file(HOST_ADAPTER_CONTRACT_PATH)
     @pr_batch_docs = read_repo_file(PR_BATCH_DOCS_PATH)
     @batch_status_skill = read_repo_file(BATCH_STATUS_SKILL_PATH)
+    @post_merge_audit_skill = read_repo_file(POST_MERGE_AUDIT_SKILL_PATH)
+    @post_merge_audit_workflow = read_repo_file(POST_MERGE_AUDIT_WORKFLOW_PATH)
+    @close_session_skill = read_repo_file(CLOSE_SESSION_SKILL_PATH)
     @changelog = read_repo_file(CHANGELOG_PATH)
     @human_status_replay = JSON.parse(read_repo_file(HUMAN_STATUS_REPLAY_PATH))
     @workflow_contract_section = extract_markdown_section(@workflow, "### Goal Mode Completion Contract")
@@ -864,6 +883,14 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes followups_output, "Action needed: Start a new task for issue #445."
     assert_includes followups_output,
                     "Next: Start a new task from issue #445; keep this task open until the handoff is created."
+    assert_includes followups_output,
+                    "Unblock:\n1. [you] Start a new task for issue #445 — https://github.com/acme/widgets/issues/445"
+    assert_includes followups_output,
+                    "Help: assign issue #445 to an existing active task and paste that task URL here."
+    assert_match(
+      /Completed-batch audit:.*\nUnblock:\n.*\n   Help:.*\nConversation status: Follow-ups remain — issue #445 \(open\): track\.\z/m,
+      followups_output
+    )
     assert_includes followups_output, "Conversation status: Follow-ups remain — issue #445 (open): track."
 
     unknown_diagnostic = cases.find do |replay_case|
@@ -1454,6 +1481,166 @@ class GoalCompletionContractTest < Minitest::Test
                          "skills/pr-batch/SKILL.md Batch Handoff Format route"
   end
 
+  def test_blocked_handoffs_end_with_a_canonical_unblock_block
+    canonical = extract_markdown_section(@unblock_workflow, "## Unblock Block", end_heading: /^##\s+/)
+
+    [
+      UNBLOCK_BLOCK_SCOPE_RULE,
+      UNBLOCK_BLOCK_COVERAGE_RULE,
+      UNBLOCK_BLOCK_ORDER_RULE,
+      UNBLOCK_BLOCK_OWNER_RULE,
+      UNBLOCK_BLOCK_SMALLEST_ACTION_RULE,
+      UNBLOCK_BLOCK_HELP_RULE,
+      UNBLOCK_BLOCK_WAITING_RULE,
+      UNBLOCK_BLOCK_CLEAN_OMISSION_RULE,
+      UNBLOCK_BLOCK_TEMPLATE_LINE,
+      UNBLOCK_BLOCK_VERIFIED_RECEIPT_RULE
+    ].each do |rule|
+      assert_squished_includes canonical, rule,
+                               "workflows/pr-batch-unblock.md Unblock Block"
+    end
+
+    assert_squished_includes canonical,
+                             "An `UNKNOWN` fact is a blocker; its entry names the exact command or check that resolves it.",
+                             "workflows/pr-batch-unblock.md Unblock Block"
+    assert_squished_includes canonical, "Carry only blockers.",
+                             "workflows/pr-batch-unblock.md Unblock Block"
+  end
+
+  def test_unblock_block_pins_the_closing_order_before_the_status_line
+    canonical = extract_markdown_section(@unblock_workflow, "## Unblock Block", end_heading: /^##\s+/)
+    squished = squish(canonical)
+
+    receipt_index = squished.index("The compact `Completed-batch audit:` receipt line")
+    unblock_index = squished.index("The `Unblock:` block, whenever the final status is `Follow-ups remain`")
+    status_index = squished.index("The exact `Conversation status:` line")
+
+    refute_nil receipt_index, "the closing order must place the compact audit receipt first"
+    refute_nil unblock_index, "the closing order must place the Unblock block second"
+    refute_nil status_index, "the closing order must place the Conversation status line last"
+    assert_operator receipt_index, :<, unblock_index
+    assert_operator unblock_index, :<, status_index
+  end
+
+  def test_unblock_block_example_marks_every_entry_moved_from_status_order
+    canonical = extract_markdown_section(@unblock_workflow, "## Unblock Block", end_heading: /^##\s+/)
+    example = canonical.split("Worked example").last
+    entries = example.lines.grep(/^\d+\. \[/)
+    status_line = example.lines.grep(/^Conversation status: Follow-ups remain/).first
+
+    assert_equal 2, entries.length
+    refute_nil status_line
+    assert_match(/^1\. \[you\] \(reordered\).*PR #123/, entries.fetch(0))
+    assert_match(/^2\. \[external\] \(reordered\).*PR #124/, entries.fetch(1))
+    assert_match(/Wait for hosted CI .* — it clears when the queued run finishes; no action needed from you/, entries.fetch(1))
+    assert_operator status_line.index("PR #124"), :<, status_line.index("PR #123")
+  end
+
+  def test_unblock_block_queued_run_help_waits_for_cancel_before_rerun
+    canonical = extract_markdown_section(@unblock_workflow, "## Unblock Block", end_heading: /^##\s+/)
+    example = canonical.split("Worked example").last
+    command = "`gh run cancel --repo OWNER/REPO <run-id>` then " \
+              "`gh run watch --repo OWNER/REPO <run-id>` then " \
+              "`gh run rerun --repo OWNER/REPO <run-id>`"
+
+    assert_squished_includes example, command, "workflows/pr-batch-unblock.md queued-run Help"
+    refute_includes example,
+                    "`gh run cancel --repo OWNER/REPO <run-id>` then `gh run rerun --repo OWNER/REPO <run-id>`",
+                    "queued-run Help must not rerun before cancellation completes"
+  end
+
+  def test_every_stopping_surface_routes_to_the_canonical_unblock_block
+    {
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill_source,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "skills/post-merge-audit/SKILL.md" => @post_merge_audit_skill,
+      "workflows/post-merge-audit.md" => @post_merge_audit_workflow,
+      "workflows/pr-processing.md" => @workflow_source
+    }.each do |label, text|
+      assert_text_includes text, "Unblock Block", label
+      assert_text_includes text, "#unblock-block", label
+    end
+  end
+
+  def test_unblock_compatibility_routes_point_to_the_dedicated_component
+    {
+      "workflows/pr-processing.md" => @workflow_source,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill_source
+    }.each do |label, text|
+      assert_text_includes text, "pr-batch-unblock.md#unblock-block", label
+    end
+  end
+
+  def test_operator_docs_summary_stays_aligned_with_the_canonical_unblock_block
+    [
+      "the last thing before the exact",
+      "`Conversation status: Follow-ups remain — <each exact action or blocker>.` line",
+      "one numbered entry per blocker in that same union",
+      "tagged `[you]`, `[agent]`, or `[external]`",
+      "names the smallest next action or wait instruction",
+      "exact trigger or clearing condition",
+      "a `Help:` line offering a different route to clearing the same blocker",
+      "or exactly `none — <reason>`",
+      "A clean batch omits the block because the normalized blocker union is empty",
+      "[Unblock Block](../workflows/pr-processing.md#unblock-block)"
+    ].each do |phrase|
+      assert_squished_includes @pr_batch_docs, phrase, "docs/pr-batch-skills.md Unblock Block summary"
+    end
+  end
+
+  def test_planning_surfaces_carry_a_standalone_unblock_emission_rule
+    {
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }.each do |label, text|
+      assert_squished_includes text, UNBLOCK_BLOCK_STANDALONE_EMISSION_RULE, label
+    end
+  end
+
+  def test_close_session_non_clean_handoff_uses_the_canonical_unblock_block
+    assert_squished_includes @close_session_skill,
+                             UNBLOCK_BLOCK_STANDALONE_EMISSION_RULE,
+                             "skills/close-session/SKILL.md Final response"
+  end
+
+  def test_post_merge_audit_surfaces_require_the_unblock_block_with_the_follow_ups_line
+    {
+      "workflows/post-merge-audit.md" => [@post_merge_audit_workflow, "pr-processing.md#unblock-block"],
+      "skills/post-merge-audit/SKILL.md" => [@post_merge_audit_skill, "../../workflows/pr-processing.md#unblock-block"]
+    }.each do |label, (text, link)|
+      assert_squished_includes text,
+                               "Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` " \
+                               "and emit the [Unblock Block](#{link}) immediately before it, with one entry per blocker in that same union.",
+                               label
+      assert_squished_includes text,
+                               "this compact receipt line opens the closing lines: it is followed by the [Unblock Block](#{link}) " \
+                               "whenever the status is not clean, and then by the exact `Conversation status` final line",
+                               label
+    end
+  end
+
+  def test_completed_batch_receipt_output_leaves_room_for_the_unblock_block
+    assert_squished_includes @integration_closeout,
+                             "Existing verified receipt only; missing means no line and an Unblock blocker:",
+                             "workflows/pr-batch-integration-closeout.md completed-batch receipt output"
+
+    assert_squished_includes @close_session_skill,
+                             "If no existing verified receipt is available, emit no receipt line and carry the missing receipt only as a blocker and matching Unblock entry.",
+                             "skills/close-session/SKILL.md completed-batch reconciliation"
+
+    {
+      "workflows/post-merge-audit.md" => @post_merge_audit_workflow,
+      "skills/post-merge-audit/SKILL.md" => @post_merge_audit_skill
+    }.each do |label, text|
+      assert_squished_includes text,
+                               "the receipt can open the closing lines before the Unblock Block when status is not clean, and before the final `Conversation status:` line",
+                               label
+      refute_includes text, "receipt can still immediately precede the final `Conversation status:` line",
+                      "#{label} must not exclude the Unblock Block from the closing lines"
+    end
+  end
+
   # #243/1: this section is what workers and planning chats are pointed at for the
   # canonical readiness vocabulary, so an unqualified "final handoff" sentence here
   # reads as binding on them.
@@ -1906,7 +2093,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes @plan_pr_batch_skill, PLAN_PR_BATCH_RESPONSE_ORDER
 
     ["Batch Plan", "generated goal prompt", "Goal prompt character count",
-     "Action needed:", "Next:", "selected exact",
+     "Action needed:", "Next:", "Unblock Block", "selected exact",
      "actual final user-visible line"].each_cons(2) do |first, second|
       assert_operator PLAN_PR_BATCH_RESPONSE_ORDER.index(first), :<,
                       PLAN_PR_BATCH_RESPONSE_ORDER.index(second),
@@ -1922,7 +2109,7 @@ class GoalCompletionContractTest < Minitest::Test
     ["scope/repositories/sources", "phase-1 counts/dependency graph", "coordination",
      "capacity", "wave plan/prompts", "lifecycle record", "queue summary if applicable",
      "residual risks", "maintainer decisions", "Action needed:", "Next:",
-     "selected exact", "actual final user-visible line"].each_cons(2) do |first, second|
+     "Unblock Block", "selected exact", "actual final user-visible line"].each_cons(2) do |first, second|
       assert_operator TRIAGE_RESPONSE_ORDER.index(first), :<,
                       TRIAGE_RESPONSE_ORDER.index(second),
                       "triage response order must keep #{first.inspect} before #{second.inspect}"
