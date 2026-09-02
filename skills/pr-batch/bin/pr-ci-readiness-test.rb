@@ -1304,7 +1304,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_exact_head_actions_keep_only_current_run_per_workflow_and_event
+  def test_exact_head_actions_keep_latest_non_cancelled_run_per_workflow_and_event
     head = "a" * 40
     action_runs = [
       {
@@ -1323,7 +1323,7 @@ class PrCiReadinessCliTest < Minitest::Test
       },
       {
         "id" => 102, "workflow_id" => 10, "event" => "pull_request",
-        "run_number" => 8, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
+        "run_number" => 9, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
         "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
         "pull_requests" => [],
         "status" => "completed", "conclusion" => "cancelled"

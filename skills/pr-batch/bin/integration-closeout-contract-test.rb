@@ -180,7 +180,6 @@ class IntegrationCloseoutContractTest < Minitest::Test
 
   def test_validate_workflow_separates_draft_head_from_integration_evidence
     jobs = @validate_workflow[/^jobs:\s*$.*\z/m].scan(/^  ([a-zA-Z0-9_-]+):\s*$/).flatten
-
     assert_equal ["validate"], jobs
     assert_includes @validate_workflow,
                     "types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]"
