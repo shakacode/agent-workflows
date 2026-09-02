@@ -2504,44 +2504,97 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
-  def test_foreign_owned_fixed_sibling_fails_closed
-    with_isolated_pack("batch-plan-preflight-foreign-owner") do |_root, _pack, fixture_helper, fixture_gate|
-      # Real cross-owner substitution needs privileges the ordinary macOS and
-      # CI runners do not have. Attempt it, and otherwise fall through to the
-      # deterministic substitute below.
-      foreign_owned =
-        begin
-          File.chown(1, nil, fixture_gate)
-          File.lstat(fixture_gate).uid != File.stat(fixture_helper).uid
-        rescue SystemCallError
-          false
-        end
+  # Ordered routes for building a sibling the pack owner does not own. The
+  # first two construct real foreign ownership; the third is the documented
+  # deterministic substitute for platforms that permit neither.
+  FOREIGN_SIBLING_DONOR_DIRECTORIES = %w[
+    /usr/bin
+    /bin
+    /usr/sbin
+    /sbin
+    /usr/libexec
+    /usr/local/bin
+    /Library/Developer/CommandLineTools/usr/bin
+    /opt/homebrew/bin
+  ].freeze
 
-      if foreign_owned
-        result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+  FOREIGN_SIBLING_DONOR_ATTEMPTS_PER_DIRECTORY = 3
 
-        refute status.success?
-        assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result)
-        return
+  # Ordered, bounded donor candidates: regular executable files with no
+  # group/other write bits that the pack owner does not own, on the same device
+  # as the fixture. Sealed system volumes can still refuse the hard link, so
+  # the caller tries each candidate in turn.
+  def foreign_owned_donors(same_device_as)
+    device = File.stat(same_device_as).dev
+    FOREIGN_SIBLING_DONOR_DIRECTORIES.flat_map do |directory|
+      next [] unless Dir.exist?(directory)
+
+      entries = begin
+        Dir.children(directory).sort
+      rescue SystemCallError
+        []
       end
+      entries.filter_map do |entry|
+        candidate = File.join(directory, entry)
+        stat = begin
+          File.lstat(candidate)
+        rescue SystemCallError
+          next
+        end
+        next unless stat.file? && stat.dev == device
+        next if stat.uid == Process.uid
+        next unless (stat.mode & 0o022).zero? && (stat.mode & 0o111).positive?
 
-      # Deterministic unprivileged substitute for the same ownership branch:
-      # the fixed sibling is swapped for a symlink to an identical helper the
-      # attacker owns outside the pack. `File.lstat` sees a symlink rather than
-      # the pack owner's regular file, so the ownership check still fails
-      # closed and the outside copy is never executed.
-      outside_gate = File.join(File.dirname(File.dirname(File.dirname(fixture_gate))), "attacker-gate")
-      FileUtils.cp(STAGE_DEPENDENCY_GATE, outside_gate)
-      File.chmod(0o755, outside_gate)
-      File.delete(fixture_gate)
-      File.symlink(outside_gate, fixture_gate)
+        candidate
+      end.first(FOREIGN_SIBLING_DONOR_ATTEMPTS_PER_DIRECTORY)
+    end
+  end
+
+  # Replace the fixed sibling with one the pack owner does not own, preferring a
+  # real foreign-owned file. Returns the route label that succeeded.
+  def substitute_foreign_owned_sibling(root, fixture_gate)
+    begin
+      File.chown(1, nil, fixture_gate)
+      return "chown" if File.lstat(fixture_gate).uid != Process.uid
+    rescue SystemCallError
+      nil
+    end
+
+    # A hard link keeps the donor inode's foreign uid while staying a regular
+    # executable file with no group/other write bits, so ownership is the only
+    # trust predicate this route breaks.
+    foreign_owned_donors(File.dirname(fixture_gate)).each do |donor|
+      File.delete(fixture_gate) if File.exist?(fixture_gate)
+      begin
+        File.link(donor, fixture_gate)
+      rescue SystemCallError
+        next
+      end
+      return "hardlink:#{donor}" if File.lstat(fixture_gate).uid != Process.uid
+    end
+
+    # Documented deterministic substitute: the fixed sibling is swapped for a
+    # symlink to an identical helper the attacker owns outside the pack. lstat
+    # sees a symlink instead of the pack owner's regular file, so the same
+    # fail-closed resolution rejects it and the outside copy never runs.
+    attacker_gate = File.join(root, "attacker-owned-stage-dependency-gate")
+    FileUtils.cp(STAGE_DEPENDENCY_GATE, attacker_gate)
+    File.chmod(0o755, attacker_gate)
+    File.delete(fixture_gate) if File.exist?(fixture_gate) || File.symlink?(fixture_gate)
+    File.symlink(attacker_gate, fixture_gate)
+    "symlink-substitute"
+  end
+
+  def test_foreign_owned_fixed_sibling_fails_closed
+    with_isolated_pack("batch-plan-preflight-foreign-owner") do |root, _pack, fixture_helper, fixture_gate|
+      route = substitute_foreign_owned_sibling(root, fixture_gate)
 
       result, _stderr, status = evaluate(input_for, helper: fixture_helper)
 
-      refute status.success?
-      assert_equal "rejected", result.fetch("status")
-      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result)
-      assert_empty result.dig("launch", "eligible_lane_ids")
+      refute status.success?, route
+      assert_equal "rejected", result.fetch("status"), route
+      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result), route
+      assert_empty result.dig("launch", "eligible_lane_ids"), route
     end
   end
 
