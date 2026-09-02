@@ -2408,6 +2408,18 @@ class GoalCompletionContractTest < Minitest::Test
     refute_includes @plan_goal_prompt, "Final conversation-status/archive expectation:"
   end
 
+  def test_planning_goal_prompts_carry_expected_terminal_only_on_planning_surfaces
+    {
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
+      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+    }.each do |label, text|
+      assert_includes text, "expected-terminal=<terminal>", label
+    end
+
+    refute_includes @pr_batch_goal_prompt, "expected-terminal=<terminal>",
+                    "skills/pr-batch goal prompt should not mirror the planning-only terminal field"
+  end
+
   def test_prompt_only_clean_archive_prerequisite_is_explicit_in_batch_plan_and_triage_output
     batch_plan = extract_markdown_section(@plan_pr_batch_skill, "## Batch Plan Format", end_heading: /^##\s+/)
     triage_output = extract_markdown_section(@triage_skill, "## Output", end_heading: /^##\s+/)
