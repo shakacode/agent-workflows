@@ -884,8 +884,8 @@ module AgentRunRecord
     raise ContractError, "launch identity candidate is incomplete; refusing to publish a partial identity"
   end
 
-  # The candidate name is only ever discarded by the launch that created it, so a
-  # concurrent writer's in-flight candidate is never removed here.
+  # Discarding is always best effort: the candidate may already be gone, and losing the
+  # race to remove it only leaves debris for a later launch to reap.
   def discard_identity_candidate(candidate_path)
     File.unlink(candidate_path)
   rescue SystemCallError
@@ -902,6 +902,7 @@ module AgentRunRecord
     prefix = "#{File.basename(path)}#{IDENTITY_CANDIDATE_PREFIX}"
     deadline = Time.now - IDENTITY_CANDIDATE_REAP_AGE_SECONDS
     examined = 0
+    # Sorted so the cap always examines the same candidates on a repeated launch.
     Dir.children(directory).sort.each do |name|
       next unless name.start_with?(prefix)
 
@@ -909,7 +910,12 @@ module AgentRunRecord
       break if examined > IDENTITY_CANDIDATE_REAP_LIMIT
 
       stale_path = File.join(directory, name)
-      stat = File.lstat(stale_path)
+      # A concurrent reaper may remove a candidate between listing and inspection.
+      stat = begin
+        File.lstat(stale_path)
+      rescue SystemCallError
+        next
+      end
       next unless stat.file?
       next if stat.mtime > deadline
 
