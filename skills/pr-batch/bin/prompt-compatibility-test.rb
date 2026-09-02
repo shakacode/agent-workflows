@@ -345,7 +345,7 @@ class PromptCompatibilityTest < Minitest::Test
 
   def test_batch_size_target_rejects_item_counts_above_the_declared_cap
     prompt = fixture("claude-to-codex.txt")
-             .sub("Batch size target: claude;wave: 1/1", "Batch size target: claude;wave: 5/11")
+             .sub("Batch size target: claude;wave: 1/1", "Batch size target: claude; wave: 5/11")
 
     result, stderr, status = run_helper(prompt, active_host: "claude")
 
@@ -358,6 +358,7 @@ class PromptCompatibilityTest < Minitest::Test
   def test_legacy_goal_validates_batch_targets_before_execution_or_conversion
     prompts = [
       ["#{fixture('legacy-goal.txt')}Batch size target: claude;wave: 1/1\n", "contradictory-batch-size-target"],
+      ["#{fixture('legacy-goal.txt')}Batch size target: claude; wave: 1/1\n", "contradictory-batch-size-target"],
       ["#{fixture('legacy-goal.txt')}Batch size target = codex;wave: 1/1\n", "invalid-batch-size-target"],
       ["#{fixture('legacy-goal.txt')}Batch size target codex;wave: 1/1\n", "invalid-batch-size-target"],
       ["#{fixture('legacy-goal.txt')}Batch size target banana;wave: 99/99\n", "invalid-batch-size-target"]
@@ -536,6 +537,16 @@ class PromptCompatibilityTest < Minitest::Test
       assert_equal "unsupported-host-mechanic", result.fetch("error")
       refute result.key?("decision")
     end
+  end
+
+  def test_codex_review_stays_compatible_on_codex
+    prompt = "#{fixture('active-host-codex.txt')}Use codex review before closeout.\n"
+
+    result, stderr, status = run_helper(prompt, active_host: "codex")
+
+    assert status.success?, stderr
+    assert_decision result, "compatible"
+    assert_equal prompt, result.fetch("prompt")
   end
 
   def test_conversion_never_rewrites_protected_semantic_fields

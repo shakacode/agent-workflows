@@ -66,7 +66,6 @@ PROTECTED_PREFIXES = ["Work item:", "Safety gates:", "Merge authority:"].freeze
 CLAUDE_RUNTIME_MECHANICS = [
   %r{(?<![[:alnum:]_/$])/(?:code-review|loop|resume)\b},
   %r{(?<![[:alnum:]_/$])claude\s+--(?:resume|continue)\b}i,
-  %r{(?<![[:alnum:]_/$])codex\s+review\b}i,
   %r{(?<![[:alnum:]_/$])/plugin\b},
   %r{(?<![[:alnum:]_/$])/pr-review-toolkit:review-pr\b},
   /\bClaude (?:Agent|Workflow)\b/,
@@ -74,6 +73,7 @@ CLAUDE_RUNTIME_MECHANICS = [
   %r{(?<![[:alnum:]_/$])(?:["']?isolation["']?[ \t]*(?::|=)[ \t]*)(?:['"])?worktree(?:['"])?\b}
 ].freeze
 CODEX_RUNTIME_MECHANICS = [
+  %r{(?<![[:alnum:]_/$])codex\s+review\b}i,
   /\b(?:interrupt_agent|list_agents)\b/,
   /\b(?:spawn_agent|send_message|followup_task|wait_agent)\b/,
   /\bsandbox_permissions["'`]?[ \t]*:[ \t]*["'`]?(?:require_escalated|use_default)\b["'`]?/
@@ -264,7 +264,7 @@ end
 
 def batch_target_error(prompt, prompt_host)
   declarations = prompt.lines.count { |line| line.match?(BATCH_TARGET_LIKE) }
-  targets = prompt.scan(/^Batch size target: (codex|claude|generic);/).flatten
+  targets = prompt.scan(/^Batch size target: (codex|claude|generic);[ \t]*wave:/).flatten
   return "invalid-batch-size-target" if targets.length != declarations
   return "duplicate-batch-size-target" if targets.length > 1
 
@@ -273,7 +273,7 @@ def batch_target_error(prompt, prompt_host)
 
   wave_line = prompt.lines.find { |line| line.match?(BATCH_TARGET_LIKE) }
   if wave_line
-    wave_match = wave_line.chomp.match(%r{\ABatch size target: (codex|claude|generic);wave: (\d+)/(\d+)\z})
+    wave_match = wave_line.chomp.match(%r{\ABatch size target: (codex|claude|generic);[ \t]*wave: (\d+)/(\d+)\z})
     return "invalid-batch-size-target" unless wave_match
 
     wave_cap = wave_match[2].to_i
