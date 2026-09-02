@@ -140,7 +140,7 @@ module AutonomousMergeEvidence
     end
 
     parsed
-    rescue Errno::ENOENT
+  rescue Errno::ENOENT
     raise CollectionError, "GitHub CLI is unavailable"
   end
 
