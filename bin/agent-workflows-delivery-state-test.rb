@@ -1901,6 +1901,46 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_legacy_hidden_symlink_from_recorded_revision_can_migrate
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      create_source(source)
+      FileUtils.mkdir_p(File.join(source, "skills/.shadow"))
+      File.write(File.join(source, "skills/.shadow/SKILL.md"), "hidden skill\n")
+      system("git", "-C", source, "add", "skills/.shadow", exception: true)
+      system("git", "-C", source, "commit", "--quiet", "-m", "hidden skill", exception: true)
+      revision = Open3.capture2("git", "-C", source, "rev-parse", "HEAD").first.strip
+      write_codex_native_state(target)
+      skills_path = File.join(target, "skills")
+      FileUtils.mkdir_p(skills_path)
+      %w[.shadow alpha beta].each do |name|
+        File.symlink(File.join(source, "skills", name), File.join(skills_path, name))
+      end
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "symlink",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => revision
+      )
+
+      out, err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      assert status.success?, "expected legacy hidden symlink migration to succeed: #{out}#{err}"
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal [], flat.fetch("blocking")
+      assert_equal %w[.shadow alpha beta].map { |name| File.join(skills_path, name) }, flat.fetch("removed").sort
+      assert_empty Dir.children(skills_path)
+      assert_path_exists File.join(source, "skills/.shadow/SKILL.md")
+    end
+  end
+
   def test_malformed_fingerprint_names_do_not_widen_revision_backed_inventory
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source = File.join(tmp, "source")

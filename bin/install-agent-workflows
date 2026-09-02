@@ -3530,7 +3530,7 @@ verify_third_party_notices_destination() {
 }
 
 verify_install_destinations() {
-  local destination helper skill source_path
+  local destination helper skill skill_name source_path
 
   if [[ "$mode" = "copy" ]]; then
     for destination in "$target/bin" "$target/workflows" "$target/docs" "$target/docs/solutions"; do
@@ -3581,7 +3581,9 @@ verify_install_destinations() {
     if [[ "$delivery_mode" = "flat" ]]; then
       for skill in "$repo_root"/skills/*; do
         [[ -d "$skill" ]] || continue
-        destination="$target/skills/$(basename "$skill")"
+        skill_name="$(basename "$skill")"
+        [[ "$skill_name" != .* ]] || continue
+        destination="$target/skills/$skill_name"
         if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
           echo "Refusing to replace non-symlink path: $destination" >&2
           exit 1

@@ -712,12 +712,15 @@ module AgentWorkflowsDeliveryState
                                                [[], collision_names, nil]
                                              end
     if legacy_flat
-      # `copy_children_preserving_unrelated` never installs a hidden entry, so a
-      # recorded dot name — from the fingerprint map or from the recorded revision
-      # tree — describes source content that was never installed and can never
-      # authorize removing a same-named target path.
-      snapshot_backed_names = snapshot_backed_names.grep_v(/\A\./)
-      names = names.grep_v(/\A\./).sort
+      unless metadata["mode"] == "symlink"
+        # A copy receipt cannot prove whether an inherited glob option
+        # installed a hidden entry or merely fingerprinted an unrelated one. Keep
+        # those names fail-closed. Symlink ownership remains provable from the exact
+        # recorded link target, including installs made before the hidden-name guard.
+        snapshot_backed_names = snapshot_backed_names.grep_v(/\A\./)
+        names = names.grep_v(/\A\./)
+      end
+      names = names.sort
     end
     snapshot_backed = snapshot_backed_names.to_h { |name| [name, true] }
     # Two recorded names can resolve to one installed entry, for example a case-only

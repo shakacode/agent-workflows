@@ -4762,6 +4762,27 @@ test_inherited_dotglob_does_not_change_the_symlinked_skill_set() {
   ' "$target/.agent-workflows-install.json"
 }
 
+test_inherited_dotglob_symlink_preflight_ignores_hidden_source_entry() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/.shadow" "$target/skills/.shadow"
+  printf 'source shadow\n' > "$source/skills/.shadow/notes.md"
+  printf 'personal shadow\n' > "$target/skills/.shadow/notes.md"
+  git -C "$source" add skills/.shadow
+  git -C "$source" commit --quiet -m "commit hidden skill"
+
+  env BASHOPTS=dotglob "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode symlink --delivery-mode flat >"$tmp/flat.out"
+
+  assert_symlink "$target/skills/pr-batch"
+  grep -qxF 'personal shadow' "$target/skills/.shadow/notes.md" || \
+    fail "symlink preflight changed an unrelated hidden target entry"
+}
+
 test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
   local tmp source target recorded_fingerprint verified_fingerprint
   tmp="$(mktemp -d)"
@@ -8775,6 +8796,7 @@ main() {
     test_hidden_source_skill_entry_is_never_recorded_or_migrated
     test_inherited_dotglob_does_not_change_the_installed_skill_set
     test_inherited_dotglob_does_not_change_the_symlinked_skill_set
+    test_inherited_dotglob_symlink_preflight_ignores_hidden_source_entry
     test_copy_metadata_fingerprint_matches_delivery_state_verifier
     test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
     test_repeat_copy_install_blocks_modified_solution_document
