@@ -121,6 +121,21 @@ class ReadableGoalPromptContractTest < Minitest::Test
     GoalPromptDriftContract.check_security_pins!(surfaces:, batch_plan_preflight: @batch_plan_preflight)
   end
 
+  def test_security_pins_ignore_hidden_html_comments
+    surfaces = {
+      "workflows/pr-batch-intake.md" => @prompt_intake,
+      "skills/triage/SKILL.md" => @triage_skill.sub(
+        GoalPromptDriftContract::CANONICAL_ISSUE_CREATION_PIN,
+        "<!-- #{GoalPromptDriftContract::CANONICAL_ISSUE_CREATION_PIN} -->"
+      )
+    }
+
+    error = assert_raises(RuntimeError) do
+      GoalPromptDriftContract.check_security_pins!(surfaces:, batch_plan_preflight: @batch_plan_preflight)
+    end
+    assert_includes error.message, "skills/triage/SKILL.md canonical issue creation count is 0, expected 1"
+  end
+
   def test_all_canonical_surfaces_share_one_readable_prompt
     assert_equal 1, @prompts.values.uniq.length
     assert_equal EXPECTED_PROMPT, @prompts.values.first

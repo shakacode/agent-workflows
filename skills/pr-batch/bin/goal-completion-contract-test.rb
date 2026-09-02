@@ -236,6 +236,9 @@ CONTINUATION_HANDLE_SELECTION_RULE =
   "literal `coordinator` as `<lane>` for any resumed subset of two or more lanes, whether or not every batch lane " \
   "resumes. Keep any lane-specific handles in their lane state; do not treat " \
   "them as competing top-level candidates."
+CONTINUATION_BATCH_SHORT_RULE = "derive `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus " \
+                                "its lowercased optional A/B/C suffix, `<lane>` from the lane id or owner slug in " \
+                                "the file-touch map, and `<word>` from a short coordinator-chosen session word."
 LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "`<PROJECT>` is a short abbreviation derived from the current repository name",
   "Derive `<PROJECT>` from the current repository name",
@@ -1621,6 +1624,8 @@ class GoalCompletionContractTest < Minitest::Test
     )
 
     assert_squished_includes continuation, CONTINUATION_HANDLE_SELECTION_RULE,
+                             "workflow continuation prompt"
+    assert_squished_includes continuation, CONTINUATION_BATCH_SHORT_RULE,
                              "workflow continuation prompt"
     assert_squished_includes continuation, "exactly one resumed lane",
                              "single-lane continuation fixture"

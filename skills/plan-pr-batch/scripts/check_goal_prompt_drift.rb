@@ -246,6 +246,8 @@ module GoalPromptDriftContract
   def check_host_caps!(surfaces)
     HOST_CAP_CLAUSES.each do |path, clauses|
       text = surfaces[path]
+      next if path == "docs/pr-batch-skills.md" && !text
+
       fail!("missing host-cap surface #{path}") unless text
 
       clauses.each do |label, providers, pattern|
@@ -265,11 +267,7 @@ module GoalPromptDriftContract
   end
 
   def check_security_pins!(surfaces:, batch_plan_preflight:)
-    intake_surfaces = if surfaces.key?("workflows/pr-batch-intake.md")
-                        surfaces.slice("workflows/pr-batch-intake.md", "skills/triage/SKILL.md")
-                      else
-                        surfaces.slice("skills/triage/SKILL.md")
-                      end
+    intake_surfaces = surfaces.slice("workflows/pr-batch-intake.md", "skills/triage/SKILL.md")
     replay_surfaces = surfaces.slice(
       "workflows/pr-processing.md",
       "skills/plan-pr-batch/SKILL.md",
@@ -283,7 +281,8 @@ module GoalPromptDriftContract
       "implementation PR file-touch replay" => [IMPLEMENTATION_PR_FILE_TOUCH_REPLAY_PIN, replay_surfaces]
     }.each do |label, (phrase, selected_surfaces)|
       selected_surfaces.each do |path, text|
-        count = text.gsub(/\s+/, " ").scan(phrase).length
+        visible_text = text.gsub(/<!--.*?-->/m, "")
+        count = visible_text.gsub(/\s+/, " ").scan(phrase).length
         fail!("#{path} #{label} count is #{count}, expected 1") unless count == 1
       end
     end
@@ -317,15 +316,13 @@ module GoalPromptDriftContract
     routing_surfaces["docs/pr-batch-skills.md"] = source_docs if source_checkout
     routing_surfaces.each { |path, text| check_routes!(text, path) }
 
-    if source_checkout
-      check_host_caps!(
-        {
-          "workflows/pr-processing.md" => workflow,
-          **skills,
-          "docs/pr-batch-skills.md" => source_docs
-        }
-      )
-    end
+    check_host_caps!(
+      {
+        "workflows/pr-processing.md" => workflow,
+        **skills,
+        "docs/pr-batch-skills.md" => source_docs
+      }
+    )
 
     require_phrases(workflow, HST_WORKFLOW_PHRASES, "workflow HST-v1")
     skills.each do |path, text|

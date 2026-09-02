@@ -564,7 +564,7 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
 4. Output
-   <!-- prompt-size-check: scripts/check_goal_prompt_size.rb pins selected wording in this section. -->
+   <!-- The goal-prompt size and drift guards validate selected wording in this section. -->
    - Return a concise "Batch Plan" and a fenced "Goal Prompt for pr-batch".
    - Determine the prompt target only to select the Codex `/goal` wrapper and <!-- host-allow: codex-only -->
      the host-aware item cap. An explicit paste destination wins over host

@@ -1889,7 +1889,7 @@ coordinator cancellation switches to the
 After the runner relaunches, explicitly resume each paused persistent thread
 with this companion prompt:
 
-<!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
+<!-- Validated by the goal-prompt size and drift guards. -->
 
 ```text
 Resume batch processing now.
@@ -2057,7 +2057,7 @@ Use this saved clipboard prompt when a prior handoff or final-bucket table
 contains the batch closeout targets but the operator should not hand-edit a
 target list for each batch:
 
-<!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
+<!-- Validated by the goal-prompt size and drift guards. -->
 
 Before filling this continuation-only `Batch title:` line, run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`. Resolve `<PROJECT>`
@@ -2072,6 +2072,9 @@ shorter, then uppercase the result (`agent-workflows` -> `AW`,
 `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` ->
 `WEB3`, `3d-tiles` -> `3T`). An invalid configured `repo_prefix` is a blocker;
 do not silently fall back.
+derive `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus
+its lowercased optional A/B/C suffix, `<lane>` from the lane id or owner slug in
+the file-touch map, and `<word>` from a short coordinator-chosen session word.
 Preserve exactly one trusted persisted coordinator continuation handle when it
 can be verified. Otherwise, after exact target and lane resolution, derive one
 top-level `Thread handle:` using the normal `<batch-short>-<lane>-<word>` rule:

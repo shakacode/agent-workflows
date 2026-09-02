@@ -186,6 +186,9 @@ Keep the expanded Batch Plan file-touch key in durable plan state:
 
 > Target ids: repository-qualified PR/Issue #N or durably overridden ad-hoc `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` plus its complete override record
 
+Use this durable Lane Card field grammar:
+`Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN`.
+
 The fenced prompt is not standalone coordinator state. For `copy-paste` and
 `host-native-user-task`, deliver it together with the complete Batch Plan for
 that coordinator group or an exact durable plan-state reference, plus the exact
