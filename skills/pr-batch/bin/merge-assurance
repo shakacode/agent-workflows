@@ -308,6 +308,12 @@ module MergeAssurance
     raise Error, "AUTONOMOUS_MERGE_GIT is forbidden during trusted replay" if ENV.key?("AUTONOMOUS_MERGE_GIT")
     raise Error, "AUTONOMOUS_MERGE_GH is forbidden during trusted replay" if ENV.key?("AUTONOMOUS_MERGE_GH")
 
+    # One overall deadline covers trusted-base runtime authentication and the
+    # replay child, so a stalled trusted-base read cannot escape the advertised
+    # bounded replay lifecycle.
+    validate_autonomous_replay_timeout!(timeout_seconds)
+    deadline = monotonic_time + timeout_seconds
+
     context_failures = []
     validate_context(context, context_failures)
     unless context_failures.empty?
@@ -321,8 +327,12 @@ module MergeAssurance
       repo_root:,
       base_sha: context.dig("base", "sha"),
       trusted_helper_provenance:,
-      trusted_git_executable: trusted_git
+      trusted_git_executable: trusted_git,
+      deadline:
     )
+    remaining_seconds = deadline - monotonic_time
+    raise Error, "autonomous eligibility replay timed out" unless remaining_seconds.positive?
+
     args = [
       "--repo-root", repo_root,
       "--trusted-base", context.dig("base", "sha"),
@@ -337,9 +347,12 @@ module MergeAssurance
       "CURRENT_INTEGRATION_GH" => trusted_gh
     )
     stdout, stderr, status, timed_out, cleanup_complete =
-      run_autonomous_replay(helper, args, environment:, timeout_seconds:)
+      run_autonomous_replay(helper, args, environment:, timeout_seconds: remaining_seconds)
+    unless cleanup_complete
+      raise Error, "autonomous eligibility replay process group cleanup could not be " \
+                   "confirmed (process group cleanup: UNKNOWN)"
+    end
     raise Error, "autonomous eligibility replay timed out" if timed_out
-    raise Error, "autonomous eligibility replay cleanup failed" unless cleanup_complete
 
     unless status&.success?
       detail = stderr.lines.first.to_s.strip
@@ -363,10 +376,12 @@ module MergeAssurance
     replayed
   rescue JSON::ParserError => e
     raise Error, "autonomous eligibility replay returned invalid JSON: #{e.message}"
+  rescue AutonomousMergeRuntimeTrust::ReplayTimeout => e
+    raise Error, "autonomous eligibility replay timed out: #{e.message}"
   end
 
   def authenticated_autonomous_replay_helper_path(
-    repo_root:, base_sha:, trusted_helper_provenance:, trusted_git_executable:
+    repo_root:, base_sha:, trusted_helper_provenance:, trusted_git_executable:, deadline: nil
   )
     trusted_sources = AutonomousMergeRuntimeTrust.trusted_runtime_sources(
       AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
@@ -378,7 +393,8 @@ module MergeAssurance
       claim: trusted_helper_provenance,
       calibration_path: AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH,
       git_command: trusted_git_executable,
-      trusted_sources:
+      trusted_sources:,
+      deadline:
     )
     unless runtime_trust.accepted && runtime_trust.provenance == trusted_helper_provenance
       detail = runtime_trust.errors.join("; ")
@@ -447,11 +463,14 @@ module MergeAssurance
     raise Error, "autonomous eligibility sibling is unavailable: #{e.message}"
   end
 
-  def run_autonomous_replay(helper, args, timeout_seconds:, environment: {})
-    unless timeout_seconds.is_a?(Numeric) && timeout_seconds.positive? && timeout_seconds.finite?
-      raise Error, "autonomous eligibility replay timeout must be positive and finite"
-    end
+  def validate_autonomous_replay_timeout!(timeout_seconds)
+    return if timeout_seconds.is_a?(Numeric) && timeout_seconds.positive? && timeout_seconds.finite?
 
+    raise Error, "autonomous eligibility replay timeout must be positive and finite"
+  end
+
+  def run_autonomous_replay(helper, args, timeout_seconds:, environment: {})
+    validate_autonomous_replay_timeout!(timeout_seconds)
     stdout_file = Tempfile.new("merge-assurance-autonomous-stdout")
     stderr_file = Tempfile.new("merge-assurance-autonomous-stderr")
     pid = Process.spawn(

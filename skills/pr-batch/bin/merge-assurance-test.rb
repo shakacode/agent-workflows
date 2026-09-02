@@ -4041,7 +4041,9 @@ class MergeAssuranceTest < Minitest::Test
     started_replay = false
 
     error = assert_raises(MergeAssurance::Error) do
-      replay_within_single_deadline(replayed: replayed, verification_seconds: 1.2) do
+      replay_within_single_deadline(
+        replayed: replayed, verification_seconds: 1.2, timeout_seconds: 1
+      ) do
         started_replay = true
         [JSON.generate(replayed), "", successful_replay_status, false, true]
       end

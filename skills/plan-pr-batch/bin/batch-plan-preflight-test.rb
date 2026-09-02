@@ -2402,6 +2402,7 @@ class BatchPlanPreflightTest < Minitest::Test
       assert_equal "stage-dependency-replay-timeout", error.fetch("code")
       assert_equal "confirmed-zero", error.dig("evidence", "process_group_cleanup")
       assert_equal 0, error.dig("evidence", "surviving_process_count")
+      assert_equal %w[TERM KILL], error.dig("evidence", "signals")
       assert_operator elapsed, :<,
                       BatchPlanPreflight::STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS + 10
       refute alive_after_wait?(read_recorded_pid(pid_file), 10),
@@ -2436,6 +2437,7 @@ class BatchPlanPreflightTest < Minitest::Test
       assert_equal "confirmed-zero", error.dig("evidence", "process_group_cleanup")
       assert_equal "exit", error.dig("evidence", "phase")
       assert_equal 0, error.dig("evidence", "surviving_process_count")
+      assert_equal %w[TERM KILL], error.dig("evidence", "signals")
       refute alive_after_wait?(read_recorded_pid(pid_file), 10),
              "a writer that outlived the replay child must be terminated and reaped"
     end

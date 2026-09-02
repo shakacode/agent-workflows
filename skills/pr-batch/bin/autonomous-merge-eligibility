@@ -85,13 +85,17 @@ base_sha, base_status = Open3.capture2(
 )
 emit_unknown("trusted base is unavailable: #{trusted_base}") unless base_status.success?
 trusted_helper_claim = options[:trusted_helper_provenance]
-runtime_trust = AutonomousMergeRuntimeTrust.verify(
-  repo_root:,
-  base_sha: base_sha.strip,
-  claim: trusted_helper_claim,
-  calibration_path: options.fetch(:calibration_decision),
-  git_command:
-)
+runtime_trust = begin
+  AutonomousMergeRuntimeTrust.verify(
+    repo_root:,
+    base_sha: base_sha.strip,
+    claim: trusted_helper_claim,
+    calibration_path: options.fetch(:calibration_decision),
+    git_command:
+  )
+rescue AutonomousMergeRuntimeTrust::ReplayTimeout => e
+  emit_unknown(e.message)
+end
 unless runtime_trust.accepted
   emit_unknown(runtime_trust.errors.join("; "))
 end
