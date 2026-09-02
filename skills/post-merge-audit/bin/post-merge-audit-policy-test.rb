@@ -289,6 +289,20 @@ class PostMergeAuditPolicyTest < Minitest::Test
       assert_includes text, REQUIRED_CHANGELOG_CLASSIFICATION_RULE
       assert_includes text, REQUIRED_CHANGELOG_OUTPUT_RULE
     end
+
+    # These closeout files are executable instructions, so the mirrored rules have to
+    # sit inside the step that owns them rather than as a pasted standalone block.
+    closeout = File.read(
+      File.join(ROOT, "workflows/pr-batch-integration-closeout.md"), encoding: "UTF-8"
+    ).gsub(/\s+/, " ")
+
+    assert_includes closeout,
+                    "#{REQUIRED_CHANGELOG_CLASSIFICATION_RULE} Report them in step 11 as: " \
+                    "#{REQUIRED_CHANGELOG_OUTPUT_RULE}",
+                    "the changelog output rule must stay attached to the step that produces it"
+    assert_includes closeout,
+                    "before standalone fallback. #{REQUIRED_COMPLETE_FOLLOW_UP_RECEIPT_RULE}",
+                    "the receipt rule must stay in the marker-validity paragraph"
   end
 
   def test_follow_up_prompt_is_executable_and_preserved_by_pr_batch
