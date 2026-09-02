@@ -699,11 +699,13 @@ module AgentWorkflowsDeliveryState
   # shape or no longer attests the tree. Report the same conflict, but only when
   # nothing else already names one, so the marker never adds noise to a conflict
   # that is already reported against the file that caused it.
-  def managed_doctor_marker_conflict(bin_root, fingerprints)
+  def managed_doctor_marker_conflict(bin_root, source, fingerprints)
     return nil unless fingerprints.keys.any? { |name| name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/") }
 
     doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
     return nil unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+    # An empty tree short-circuits the installer's marker logic entirely.
+    return nil if Dir.empty?(doctor_root)
 
     marker = File.join(doctor_root, MANAGED_DOCTOR_MARKER)
     stack_marker = File.join(doctor_root, MANAGED_DOCTOR_STACK_MARKER)
@@ -715,9 +717,16 @@ module AgentWorkflowsDeliveryState
     return stack_marker if managed_marker_shape_conflict?(stack_marker)
 
     return AgentDoctor::InstallOwnership.verify(doctor_root, marker) ? nil : marker if File.file?(marker)
-    return nil unless File.file?(stack_marker)
 
-    File.readlines(stack_marker, chomp: true).include?(MANAGED_DOCTOR_STACK_MARKER_LINE) ? nil : stack_marker
+    if File.file?(stack_marker)
+      return File.readlines(stack_marker, chomp: true).include?(MANAGED_DOCTOR_STACK_MARKER_LINE) ? nil : stack_marker
+    end
+
+    # With no attestation at all the installer adopts the tree only when it
+    # already equals the current source, so a source that has moved on since
+    # this copy was installed leaves nothing that can adopt it.
+    source_doctor_root = File.join(source, "bin", MANAGED_DOCTOR_SUBDIRECTORY)
+    AgentDoctor::InstallOwnership.compare(source_doctor_root, doctor_root) ? nil : doctor_root
   rescue SystemCallError
     doctor_root
   end
@@ -844,7 +853,8 @@ module AgentWorkflowsDeliveryState
     end
     unowned = (unowned_paths + unexpected_managed_doctor_entries(bin_root, fingerprints)).uniq.sort
     unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort
-    if unowned.empty? && unrestorable.empty? && (marker = managed_doctor_marker_conflict(bin_root, fingerprints))
+    if unowned.empty? && unrestorable.empty? &&
+       (marker = managed_doctor_marker_conflict(bin_root, source, fingerprints))
       unowned = [marker]
     end
     blocking = (unowned + unrestorable).uniq.sort

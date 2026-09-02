@@ -2111,6 +2111,34 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_absent_doctor_markers_block_when_the_source_has_advanced
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # No attestation, and the installed tree is the recorded revision rather
+      # than the current source, so nothing left can adopt it.
+      File.write(File.join(source, "bin/agent_doctor/renderer.rb"), "renderer v2\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [doctor_root], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_absent_doctor_markers_stay_compatible_when_the_tree_matches_the_source
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
   def test_valid_doctor_ownership_marker_stays_compatible
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)

@@ -476,7 +476,8 @@ This matches the ownership marker the installer verifies over that tree, which
 also hashes exact modes; that marker is itself checked, so an install whose
 doctor tree is otherwise unchanged but whose marker is missing its attestation,
 corrupted, or replaced by a symlink is reported rather than left to fail at the
-next install. A managed doctor module is owned only by its recorded
+next install. With no marker at all the installer adopts the tree only when it
+already equals the current source, and the report says the same. A managed doctor module is owned only by its recorded
 fingerprint: matching the current source is not enough there, because the
 marker still attests the recorded contents. Because `rsync --delete` owns the whole `<target>/bin/agent_doctor` tree,
 an unrecorded entry there is reported as well, matching the refusal the
