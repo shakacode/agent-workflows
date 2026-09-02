@@ -11,6 +11,7 @@ SKILL_PATH = File.join(ROOT, "skills/tdd/SKILL.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/tdd.md")
 REFERENCE_PATH = File.join(ROOT, "skills/tdd/references/writing-good-tests.md")
 VALIDATE_PATH = File.join(ROOT, "bin/validate")
+NOTICE_PATH = File.join(ROOT, "THIRD_PARTY-NOTICES.md")
 
 class TddQualityContractTest < Minitest::Test
   PUBLISHER_EXAMPLE = <<~'RUBY'
@@ -100,6 +101,18 @@ class TddQualityContractTest < Minitest::Test
     assert_includes reference, "Superpowers v6.2.0"
     assert_includes reference, "44c9b2d6e889982ac18c27d05a19fefe335194e1"
     assert_includes reference, "MIT License"
+  end
+
+  def test_substantial_adaptation_routes_to_the_complete_pack_notice
+    reference = read(REFERENCE_PATH)
+    notice = read(NOTICE_PATH)
+
+    # These assertions prove source and packaging invariants, not license compliance.
+    assert_includes reference, "[third-party notice](../../../THIRD_PARTY-NOTICES.md)"
+    assert_includes notice, "## obra/superpowers"
+    assert_includes notice, "Copyright (c) 2025 Jesse Vincent"
+    assert_includes notice, "The above copyright notice and this permission notice"
+    assert_includes notice, "44c9b2d6e889982ac18c27d05a19fefe335194e1/LICENSE"
   end
 
   def test_one_behavior_assertion_rejects_realistic_script_mutations

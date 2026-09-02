@@ -69,5 +69,7 @@ source mutation was constructed.
 Material in this reference is substantially adapted from Superpowers v6.2.0's
 [Writing Good Tests](https://github.com/obra/superpowers/blob/44c9b2d6e889982ac18c27d05a19fefe335194e1/skills/test-driven-development/writing-good-tests.md)
 at commit `44c9b2d6e889982ac18c27d05a19fefe335194e1`, licensed under the MIT
-License. The upstream document is reviewed source material only. This skill
-does not install, execute, or depend on Superpowers at runtime.
+License. The full copyright and permission text is retained in the
+[third-party notice](../../../THIRD_PARTY-NOTICES.md). The upstream document is
+reviewed source material only. This skill does not install, execute, or depend
+on Superpowers at runtime.
