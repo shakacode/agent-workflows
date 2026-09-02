@@ -127,6 +127,10 @@ COORDINATION_DEPENDENCY_PROMPT_LINE =
   "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
+PLANNING_STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
+                                       "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
+                                       "live=<replay/ref>,expected-terminal=<terminal>;" \
+                                       "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN"
 STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
                               "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                               "live=<replay/ref>;" \
@@ -288,6 +292,17 @@ CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
+  #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
+  #{OBSERVED_HOST_PROMPT_LINE}
+  #{MANIFEST_PROVENANCE_PROMPT_LINE}
+  #{WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE}
+  #{DISPATCH_PLAN_PROMPT_LINE}
+  #{STAGE_DEPENDENCY_PROMPT_LINE}
+  #{GOAL_MODE_COMPACT_CONTRACT}
+TEXT
+PLANNING_GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
+  merge_authority:<none|ask|auto_merge_when_gates_pass>
+  Batch size target: <codex|claude|generic>;wave:<cap>
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{OBSERVED_HOST_PROMPT_LINE}
   #{MANIFEST_PROVENANCE_PROMPT_LINE}
@@ -821,7 +836,6 @@ required_all_prompt_phrases = [
   DISPATCHER_PREFLIGHT_PROMPT_LINE,
   DISPATCH_PLAN_PROMPT_LINE,
   STAGE_DEPENDENCY_PROMPT_LINE,
-  STAGE_DEPENDENCY_SCOPE_LINE,
   ASK_WALKTHROUGH_PROMPT_LINE,
   "merge iff `merge_authority` is `auto_merge_when_gates_pass`",
   "explicit merge approval",
@@ -1007,9 +1021,15 @@ end
 
 goal_prompt_batch_size_target_text_by_path.each do |path, text|
   require_occurrence_count(text, BATCH_SIZE_TARGET_PROMPT_PHRASE, 1, "#{path} goal prompt batch-size target")
+  batch_size_order_snippet =
+    if path == "skills/pr-batch/SKILL.md"
+      GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET
+    else
+      PLANNING_GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET
+    end
   require_occurrence_count(
     text,
-    GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET,
+    batch_size_order_snippet,
     1,
     "#{path} goal prompt batch-size target field order"
   )
@@ -1040,7 +1060,6 @@ end
   require_occurrence_count(template, GOAL_MODE_COMPACT_CONTRACT, 1, "#{label} compact completion contract")
   require_occurrence_count(template, HUMAN_STATUS_VERSION_KEY, 1, "#{label} human-status contract reference")
   require_occurrence_count(template, STAGE_DEPENDENCY_PROMPT_LINE, 1, "#{label} stage-dependency contract")
-  require_occurrence_count(template, STAGE_DEPENDENCY_SCOPE_LINE, 1, "#{label} stage-dependency scope")
   require_occurrence_count(template, BATCH_QA_PROMPT_LINE, 1, "#{label} Batch QA contract")
   require_occurrence_count(
     template,
@@ -1061,6 +1080,25 @@ end
     "#{label} synchronized current-wave assignment contract"
   )
 end
+
+{
+  "plan-pr-batch goal prompt" => prompt_template,
+  "workflow plan-to-goal prompt" => workflow_prompt_template
+}.each do |label, template|
+  require_occurrence_count(
+    template,
+    PLANNING_STAGE_DEPENDENCY_SCOPE_LINE,
+    1,
+    "#{label} planning stage-dependency scope"
+  )
+end
+
+require_occurrence_count(
+  pr_batch_prompt_template,
+  STAGE_DEPENDENCY_SCOPE_LINE,
+  1,
+  "pr-batch goal prompt stage-dependency scope"
+)
 
 {
   "renamed planning-pass field" => "#{prompt_template}\nPlanning recommendation: `affirmatively-simple`",
