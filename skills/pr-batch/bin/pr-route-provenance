@@ -1,0 +1,317 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "open3"
+require "optparse"
+
+load File.expand_path("../../../bin/validate-execution-provenance", __dir__)
+
+module PrRouteProvenance
+  START_MARKER = "<!-- agent-workflows-route-provenance:start -->"
+  END_MARKER = "<!-- agent-workflows-route-provenance:end -->"
+  AGENT_DETAILS_OPENING = "<details>\n<summary>Agent details</summary>"
+  MAX_WAVE_ROWS = 20
+  MAX_COMMIT_ROWS = 20
+  MEASUREMENT_DISPOSITIONS = {
+    "bound-exact-match" => "proceed",
+    "unbound-exact-route" => "proceed-unmeasured",
+    "silent-substitution" => "proceed-unmeasured",
+    "coordinator-pair-inheritance" => "proceed-unmeasured",
+    "authorized-fallback" => "proceed-as-fallback"
+  }.freeze
+
+  Error = Class.new(StandardError)
+
+  class GitHubClient
+    def initialize(repo:, pr_number:)
+      raise Error, "--repo must be OWNER/REPO" unless repo.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z})
+
+      number = Integer(pr_number, exception: false)
+      raise Error, "--pr must be a positive integer" unless number&.positive?
+
+      @endpoint = "repos/#{repo}/pulls/#{number}"
+    end
+
+    def read_pr_body
+      response = gh_api(@endpoint)
+      body = response.fetch("body")
+      return "" if body.nil?
+      raise Error, "GitHub PR body must be a string or null" unless body.is_a?(String)
+
+      body
+    end
+
+    def update_pr_body(body)
+      gh_api(@endpoint, method: "PATCH", input: JSON.generate("body" => body))
+    end
+
+    private
+
+    def gh_api(endpoint, method: "GET", input: nil)
+      command = ["gh", "api", endpoint]
+      command.concat(["--method", method, "--input", "-"]) unless method == "GET"
+      stdout, stderr, status = Open3.capture3({ "GH_PROMPT_DISABLED" => "1" }, *command, stdin_data: input.to_s)
+      raise Error, "GitHub API #{method} failed: #{stderr.strip}" unless status.success?
+
+      response = JSON.parse(stdout)
+      raise Error, "GitHub API #{method} returned a non-object" unless response.is_a?(Hash)
+
+      response
+    rescue JSON::ParserError => e
+      raise Error, "GitHub API #{method} returned invalid JSON: #{e.message}"
+    end
+  end
+
+  module_function
+
+  def apply(documents, github:)
+    section = render(documents)
+    current_body = github.read_pr_body
+    expected_body = apply_to_body(current_body, section)
+    changed = expected_body != current_body
+    github.update_pr_body(expected_body) if changed
+    readback = github.read_pr_body
+    raise Error, "PR body readback did not match the generated managed-section update" unless readback == expected_body
+
+    validate_applied_body!(readback)
+    { "changed" => changed, "body" => readback }
+  end
+
+  def render(documents)
+    receipts = validated_receipts(documents).sort_by { |receipt| receipt_sort_key(receipt) }
+    rows = wave_rows(receipts)
+    commits = commit_rows(receipts)
+
+    <<~MARKDOWN.chomp
+      #{START_MARKER}
+      #### Agent Workflows route provenance
+
+      Generated from #{receipts.length} validated `execution-provenance-v0` #{receipts.length == 1 ? 'receipt' : 'receipts'}. Requested routes are instructions; observed routes below come only from receipt binding evidence.
+
+      ##### Execution and correction/review waves
+
+      | Wave | Role / lane | Requested route | Observed route | Deviation / disposition | Attribution confidence |
+      | --- | --- | --- | --- | --- | --- |
+      #{rows.join("\n")}
+
+      ##### Contributing commit mapping
+
+      | Commit | Contributing receipt waves and observed routes | Attribution confidence |
+      | --- | --- | --- |
+      #{commits.join("\n")}
+      #{END_MARKER}
+    MARKDOWN
+  end
+
+  def wave_rows(receipts)
+    indexed = receipts.each_with_index.map { |receipt, index| [receipt, index + 1] }
+    return indexed.map { |receipt, wave| route_row(receipt, wave) } if indexed.length <= MAX_WAVE_ROWS
+
+    edge_size = MAX_WAVE_ROWS / 2
+    omitted = indexed.length - MAX_WAVE_ROWS
+    first = indexed.first(edge_size).map { |receipt, wave| route_row(receipt, wave) }
+    last = indexed.last(edge_size).map { |receipt, wave| route_row(receipt, wave) }
+    omission = "| … | … | … | … | #{omitted} intermediate receipt waves remain in the validated receipts " \
+               "outside this PR prose block. | … |"
+    first + [omission] + last
+  end
+
+  def validated_receipts(documents)
+    raise Error, "at least one execution-provenance receipt is required" if documents.empty?
+
+    receipts = documents.map.with_index(1) do |document, index|
+      failures = ValidateExecutionProvenance.validate_document(document, "receipt #{index}")
+      raise Error, failures.join("\n") unless failures.empty?
+
+      document.fetch("execution_provenance")
+    end
+    identities = receipts.map { |receipt| receipt.values_at("batch", "target") }.uniq
+    raise Error, "all receipts must describe one batch and target" unless identities.length == 1
+
+    receipts
+  end
+
+  def apply_to_body(body, section)
+    validate_managed_section!(section, label: "generated section")
+    starts = body.scan(START_MARKER).length
+    ends = body.scan(END_MARKER).length
+    if starts.zero? && ends.zero?
+      return section if body.empty?
+
+      return insert_new_section(body, section)
+    end
+    unless starts == 1 && ends == 1 && body.index(START_MARKER) < body.index(END_MARKER)
+      raise Error, "PR body must contain zero or exactly one ordered managed section"
+    end
+
+    body.sub(/#{Regexp.escape(START_MARKER)}.*?#{Regexp.escape(END_MARKER)}/m, section)
+  end
+
+  def insert_new_section(body, section)
+    openings = body.scan(AGENT_DETAILS_OPENING).length
+    raise Error, "PR body must contain at most one canonical Agent details disclosure" if openings > 1
+
+    if openings == 1
+      opening_index = body.index(AGENT_DETAILS_OPENING)
+      closing_index = body.index("</details>", opening_index + AGENT_DETAILS_OPENING.length)
+      raise Error, "canonical Agent details disclosure is missing </details>" unless closing_index
+
+      before = body[0...closing_index]
+      after = body[closing_index..]
+      return "#{before}#{section_separator(before)}#{section}\n#{after}"
+    end
+
+    "#{body}#{section_separator(body)}#{section}"
+  end
+
+  def section_separator(text)
+    return "" if text.end_with?("\n\n")
+    return "\n" if text.end_with?("\n")
+
+    "\n\n"
+  end
+
+  def validate_managed_section!(section, label:)
+    starts = section.scan(START_MARKER).length
+    ends = section.scan(END_MARKER).length
+    ordered = starts == 1 && ends == 1 && section.index(START_MARKER) < section.index(END_MARKER)
+    raise Error, "#{label} must contain exactly one ordered managed section" unless ordered
+  end
+
+  def validate_applied_body!(body)
+    starts = body.scan(START_MARKER).length
+    ends = body.scan(END_MARKER).length
+    ordered = starts == 1 && ends == 1 && body.index(START_MARKER) < body.index(END_MARKER)
+    raise Error, "PR body readback must contain exactly one ordered managed section" unless ordered
+  end
+
+  def receipt_sort_key(receipt)
+    [
+      ValidateExecutionProvenance.parse_rfc3339(receipt.fetch("started_at")),
+      ValidateExecutionProvenance.parse_rfc3339(receipt.fetch("ended_at")),
+      receipt.fetch("lane"),
+      receipt.fetch("role"),
+      receipt.fetch("session_id"),
+      receipt.fetch("thread_id"),
+      canonical_json(receipt)
+    ]
+  end
+
+  def canonical_json(value)
+    JSON.generate(canonical_value(value))
+  end
+
+  def canonical_value(value)
+    case value
+    when Hash
+      value.keys.sort.to_h { |key| [key, canonical_value(value.fetch(key))] }
+    when Array
+      value.map { |item| canonical_value(item) }
+    else
+      value
+    end
+  end
+
+  def route_row(receipt, wave)
+    disposition = receipt.fetch("disposition")
+    match_label = disposition == "bound-exact-match" ? "Match" : "Mismatch"
+    details = [
+      "#{match_label} — #{code(disposition)} / #{code(MEASUREMENT_DISPOSITIONS.fetch(disposition))}",
+      "reason: #{display(receipt.fetch('mismatch_reason'))}",
+      "binding: #{code(receipt.fetch('binding_source'))}"
+    ]
+    if disposition == "authorized-fallback"
+      details << "authority: #{display(receipt.fetch('recorded_authority'))}"
+    end
+
+    "| Wave #{wave} | #{code(receipt.fetch('role'))} / #{code(receipt.fetch('lane'))} | " \
+      "#{route(receipt.fetch('requested'))} | #{route(receipt.fetch('observed'))} | " \
+      "#{details.join('; ')} | #{code(receipt.fetch('attribution_confidence'))} |"
+  end
+
+  def commit_rows(receipts)
+    waves_by_commit = Hash.new { |hash, commit| hash[commit] = [] }
+    receipts.each_with_index do |receipt, index|
+      receipt.fetch("influenced_commits").each do |commit|
+        waves_by_commit[commit] << [index + 1, receipt]
+      end
+    end
+    return ["| `UNKNOWN` | No commits are attributed by the validated receipts. | `UNKNOWN` |"] if waves_by_commit.empty?
+
+    commits = waves_by_commit.keys.sort
+    rows = commits.first(MAX_COMMIT_ROWS).map do |commit|
+      contributors = waves_by_commit.fetch(commit).map do |wave, receipt|
+        "Wave #{wave} #{code(receipt.fetch('role'))}/#{code(receipt.fetch('lane'))}: #{route(receipt.fetch('observed'))}"
+      end
+      confidence = waves_by_commit.fetch(commit).map do |wave, receipt|
+        "Wave #{wave}: #{code(receipt.fetch('attribution_confidence'))}"
+      end
+      "| #{code(commit)} | #{contributors.join('; ')} | #{confidence.join('; ')} |"
+    end
+    overflow = commits.length - rows.length
+    if overflow.positive?
+      rows << "| … | #{overflow} additional commit mappings remain in the validated receipts outside this PR prose block. | See source receipts. |"
+    end
+    rows
+  end
+
+  def route(tuple)
+    code("#{tuple.fetch('model')}/#{tuple.fetch('effort')}")
+  end
+
+  def display(value)
+    escaped(value)
+  end
+
+  def code(value)
+    "`#{escaped(value).gsub('`', '&#96;')}`"
+  end
+
+  def escaped(value)
+    value.to_s.gsub("&", "&amp;").gsub("<", "&lt;").gsub(">", "&gt;").gsub("|", "&#124;").gsub(/\s+/, " ")
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  command = ARGV.shift
+  paths = []
+  repo = nil
+  pr = nil
+  parser = OptionParser.new do |options|
+    options.banner = "Usage: pr-route-provenance <render|apply> --receipt PATH [--receipt PATH ...] [--repo OWNER/REPO --pr N]"
+    options.on("--receipt PATH", "Validated execution-provenance-v0 JSON receipt") { |path| paths << path }
+    options.on("--repo OWNER/REPO", "Repository containing the pull request") { |value| repo = value }
+    options.on("--pr NUMBER", Integer, "Pull request number") { |value| pr = value }
+  end
+
+  begin
+    parser.parse!(ARGV)
+    raise OptionParser::InvalidArgument, "command must be render or apply" unless %w[render apply].include?(command)
+    raise OptionParser::MissingArgument, "at least one --receipt is required" if paths.empty?
+
+    documents = paths.map { |path| JSON.parse(File.read(path, encoding: "UTF-8")) }
+    if command == "render"
+      puts PrRouteProvenance.render(documents)
+    else
+      raise OptionParser::MissingArgument, "--repo is required for apply" unless repo
+      raise OptionParser::MissingArgument, "--pr is required for apply" unless pr
+
+      result = PrRouteProvenance.apply(
+        documents,
+        github: PrRouteProvenance::GitHubClient.new(repo:, pr_number: pr)
+      )
+      puts JSON.pretty_generate(
+        "status" => "applied",
+        "changed" => result.fetch("changed"),
+        "repo" => repo,
+        "pr" => pr,
+        "managed_section_count" => result.fetch("body").scan(PrRouteProvenance::START_MARKER).length
+      )
+    end
+    exit 0
+  rescue OptionParser::ParseError, JSON::ParserError, SystemCallError, KeyError, PrRouteProvenance::Error => e
+    warn "Error: #{e.message}"
+    exit 1
+  end
+end

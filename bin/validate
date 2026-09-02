@@ -183,6 +183,7 @@ ruby skills/pr-batch/bin/coordination-declaration-contract-test.rb
 echo "== json_schemer =="
 JSON_SCHEMER_VERSION=$(tr -d '[:space:]' < .json-schemer-version)
 JSON_SCHEMER_VERSION="${JSON_SCHEMER_VERSION}" ruby skills/pr-batch/bin/batch-usage-receipt-test.rb
+ruby skills/pr-batch/bin/pr-route-provenance-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/pr-batch/bin/model-routing-contract-test.rb
 ruby skills/pr-batch/bin/dispatcher-capability-preflight-test.rb
 ruby skills/pr-batch/bin/single_target_entrypoint_test.rb
