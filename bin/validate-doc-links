@@ -1,0 +1,197 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Checks relative Markdown file links and GitHub-style heading anchors in a
+# narrow, named set of routing documents. Scope stays deliberately small: these
+# documents are pure navigation, so a renamed heading in a linked file breaks
+# them silently. Repository-wide link hygiene is a separate concern.
+module ValidateDocLinks
+  # Widening this list is the intended way to grow scope, but check the new
+  # document first: only ATX (`#`) headings and inline `[text](target)` links
+  # are parsed. Setext headings and reference-style links would be skipped
+  # silently, and the checked documents use neither today.
+  CHECKED_DOCUMENTS = ["docs/operator-handbook.md"].freeze
+  FENCE_PATTERN = /\A\s{0,3}(`{3,}|~{3,})/
+  HEADING_PATTERN = /\A\s{0,3}(\#{1,6})\s+(.*?)\s*\z/
+  # Inline links only. A leading "!" marks an image, which carries no anchor.
+  LINK_PATTERN = /(?<!!)\[[^\]]*\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/
+  INLINE_LINK_TEXT = /\[([^\]]*)\]\([^)]*\)/
+  ABSOLUTE_TARGET = %r{\A([a-z][a-z0-9+.-]*:|//|/)}i
+
+  module_function
+
+  def run(root)
+    failures = validate(root)
+
+    if failures.empty?
+      puts "PASS #{CHECKED_DOCUMENTS.length} routing docs"
+      0
+    else
+      warn failures.join("\n")
+      1
+    end
+  end
+
+  def validate(root, documents: CHECKED_DOCUMENTS)
+    documents.flat_map { |relative| validate_document(root, relative) }
+  end
+
+  def validate_document(root, relative)
+    path = File.join(root, relative)
+    return ["#{relative}: checked document not found"] unless File.file?(path)
+
+    text = File.read(path, encoding: "UTF-8")
+    anchor_cache = { relative => heading_anchors(text) }
+    relative_links = links(text).reject { |target, _line| target.match?(ABSOLUTE_TARGET) }
+    # A routing doc with no relative links means the extraction broke, not that
+    # the document is clean. Fail loudly instead of passing an empty check.
+    return ["#{relative}: no relative links found"] if relative_links.empty?
+
+    relative_links.flat_map do |target, line|
+      check_link(root, relative, target, line, anchor_cache)
+    end
+  end
+
+  def check_link(root, relative, target, line, anchor_cache)
+    path_part, _, anchor = target.partition("#")
+    linked = path_part.empty? ? relative : normalize(File.join(File.dirname(relative), path_part))
+
+    if linked.nil?
+      return ["#{relative}:#{line}: link target escapes repository: #{path_part}"]
+    end
+
+    if !path_part.empty? && !File.file?(File.join(root, linked))
+      return ["#{relative}:#{line}: link target not found: #{path_part}"]
+    end
+
+    return [] if anchor.empty?
+
+    anchors = anchor_cache[linked] ||= heading_anchors(File.read(File.join(root, linked), encoding: "UTF-8"))
+    return [] if anchors.include?(anchor)
+
+    ["#{relative}:#{line}: heading anchor not found in #{linked}: ##{anchor}"]
+  end
+
+  # Repository-relative path without resolving symlinks or touching the filesystem.
+  def normalize(path)
+    parts = []
+    path.split("/").each do |segment|
+      case segment
+      when ".", "" then next
+      when ".."
+        return nil if parts.empty?
+
+        parts.pop
+      else parts << segment
+      end
+    end
+    parts.join("/")
+  end
+
+  # [target, line_number] for every inline link outside fenced code blocks.
+  def links(text)
+    found = []
+    each_prose_line(text) do |line, number|
+      link_scan_source(line).scan(LINK_PATTERN) { |(target)| found << [target, number] }
+    end
+    found
+  end
+
+  # Inline code and escaped opening brackets render as prose, not links. Mask
+  # them without changing line numbers before applying the deliberately narrow
+  # inline-link pattern.
+  def link_scan_source(line)
+    source = mask_inline_code_spans(line)
+    index = 0
+    while index < source.bytesize
+      if source.getbyte(index) == 91 # "["
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 && source.getbyte(cursor) == 92 # "\\"
+          backslashes += 1
+          cursor -= 1
+        end
+        source.setbyte(index, 32) if backslashes.odd?
+      end
+      index += 1
+    end
+    source
+  end
+
+  def mask_inline_code_spans(line)
+    masked = line.dup
+    cursor = 0
+    while (opener = /`+/.match(line, cursor))
+      delimiter = opener[0]
+      closer = Regexp.new("(?<!`)#{Regexp.escape(delimiter)}(?!`)").match(line, opener.end(0))
+      unless closer
+        cursor = opener.end(0)
+        next
+      end
+
+      range = opener.begin(0)...closer.end(0)
+      masked[range] = " " * range.size
+      cursor = closer.end(0)
+    end
+    masked
+  end
+
+  # GitHub anchor slugs for every ATX heading outside fenced code blocks, in
+  # document order, with the -1/-2 suffixes GitHub appends to duplicates.
+  def heading_anchors(text)
+    next_suffix = Hash.new(0)
+    used = {}
+    anchors = []
+    each_prose_line(text) do |line, _number|
+      match = HEADING_PATTERN.match(line)
+      next unless match
+
+      slug = slugify(match[2])
+      next if slug.empty?
+
+      candidate = slug
+      while used[candidate]
+        next_suffix[slug] += 1
+        candidate = "#{slug}-#{next_suffix[slug]}"
+      end
+      used[candidate] = true
+      anchors << candidate
+    end
+    anchors
+  end
+
+  def slugify(heading)
+    slug = heading.sub(/\s+#+\s*\z/, "")
+    slug = slug.gsub(INLINE_LINK_TEXT) { Regexp.last_match(1) }
+    slug = slug.gsub(/<[^>]*>/, "")
+    slug = slug.downcase
+    slug = slug.gsub(/[^\p{Word}\- ]/, "")
+    slug.tr(" ", "-")
+  end
+
+  def each_prose_line(text)
+    fence = nil
+    text.each_line.with_index(1) do |line, number|
+      match = FENCE_PATTERN.match(line)
+      if fence
+        closes_fence = match &&
+                       match[1][0] == fence[0] &&
+                       match[1].length >= fence.length &&
+                       match.post_match.match?(/\A[ \t]*(?:\r?\n)?\z/)
+        fence = nil if closes_fence
+        next
+      end
+      if match
+        fence = match[1]
+        next
+      end
+
+      yield line, number
+    end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  root = File.expand_path(ARGV.fetch(0, File.join(__dir__, "..")))
+  exit ValidateDocLinks.run(root)
+end
