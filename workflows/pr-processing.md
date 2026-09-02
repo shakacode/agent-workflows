@@ -1159,6 +1159,10 @@ Canonical rules: [Human-First PR Description Contract](pr-batch-integration-clos
 
 Canonical rules: [Batch Handoff Format](pr-batch-integration-closeout.md#batch-handoff-format). This heading remains as a compatibility route and must not mirror the component.
 
+### Unblock Block
+
+Canonical rules: [Unblock Block](pr-batch-unblock.md#unblock-block). This heading remains as a compatibility route and must not mirror the component.
+
 ### Goal Mode Completion Contract
 
 Canonical rules: [Goal Mode Completion Contract](pr-batch-integration-closeout.md#goal-mode-completion-contract). This heading remains as a compatibility route and must not mirror the component.

@@ -454,3 +454,17 @@ reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+<!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Unblock Block`. -->
+
+Unblock Block: when a batch stops non-clean, the last thing before the exact
+`Conversation status: Follow-ups remain — <each exact action or blocker>.` line
+is an `Unblock:` block with one numbered entry per blocker in that same union.
+Each entry is tagged `[you]`, `[agent]`, or `[external]` so an operator can tell
+at a glance whether anything is owed from them, names the smallest next action
+or wait instruction with the exact command, paste-ready prompt, URL, question,
+exact trigger or clearing condition, and carries a `Help:` line offering a different
+route to clearing the same blocker (waive, rerun, reassign, cancel, escalate)
+or exactly `none — <reason>`. A clean batch omits the block because the
+normalized blocker union is empty. See
+[Unblock Block](../workflows/pr-processing.md#unblock-block).

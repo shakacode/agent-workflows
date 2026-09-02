@@ -391,6 +391,21 @@ class IntegrationCloseoutContractTest < Minitest::Test
     refute_match(/invalidates the walkthrough unless the checklist/, normalized_gate)
   end
 
+  def test_blocked_reconciliation_does_not_invent_a_missing_receipt
+    assert_includes @component,
+                    "Existing verified receipt only; missing means no line and an Unblock blocker:"
+    refute_includes @component, "Before the Unblock Block and final status, emit only:"
+  end
+
+  def test_goal_closeout_puts_unblock_immediately_before_non_clean_status
+    closeout = route_after(@component, "Coordinator Closeout Lane")
+
+    assert_includes closeout,
+                    "Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; " \
+                    "otherwise put an `Unblock:` block with every normalized blocker immediately before the final " \
+                    "`Conversation status: Follow-ups remain — <each exact action or blocker>.` line."
+  end
+
   def test_sibling_components_remain_outside_the_boundary
     refute_match(/^## Release Mode Preflight$/, @component)
     refute_match(/^### Accelerated RC Auto-Merge$/, @component)
