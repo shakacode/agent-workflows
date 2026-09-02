@@ -371,6 +371,62 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_recovery_ignores_nested_companion_policy_content
+    with_companion_repo do |root, fixture|
+      cases = {
+        "nested mapping" => <<-YAML,
+  defaults:
+    companion_path_conventions:
+      - source_glob: #{fixture.fetch('source_glob')}
+        companion_glob: #{fixture.fetch('companion_glob')}
+  malformed: [
+        YAML
+        "block scalar" => <<-YAML
+  notes: |
+    companion_path_conventions:
+      - source_glob: #{fixture.fetch('source_glob')}
+        companion_glob: #{fixture.fetch('companion_glob')}
+  malformed: [
+        YAML
+      }
+
+      cases.each do |label, yaml|
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), yaml)
+
+        result, stderr, status = evaluate(
+          companion_input(fixture, paths: [fixture.fetch("source_path")]),
+          chdir: root
+        )
+
+        assert status.success?, "#{label}: #{stderr}"
+        assert_equal "accepted", result.fetch("status"), label
+        assert_empty result.fetch("violations"), label
+        assert_empty result.fetch("advisories"), label
+      end
+    end
+  end
+
+  def test_merged_companion_policy_keys_fail_closed
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)
+  defaults: &defaults
+    companion_path_conventions:
+      - source_glob: #{fixture.fetch('source_glob')}
+        companion_glob: #{fixture.fetch('companion_glob')}
+  <<: *defaults
+      YAML
+
+      result, _stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
   def test_malformed_declared_companion_policy_fails_closed
     Dir.mktmpdir("batch-plan-malformed-companion-policy") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))

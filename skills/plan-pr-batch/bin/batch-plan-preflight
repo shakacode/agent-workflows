@@ -761,6 +761,10 @@ module BatchPlanPreflight
       root = document.root
       next [] unless root.is_a?(Psych::Nodes::Mapping)
 
+      return [:invalid, nil] if root.children.each_slice(2).any? do |key, _value|
+        key.is_a?(Psych::Nodes::Scalar) && key.value == "<<"
+      end
+
       root.children.each_slice(2).filter_map do |key, value|
         value if key.is_a?(Psych::Nodes::Scalar) && key.value == "companion_path_conventions"
       end
@@ -773,7 +777,13 @@ module BatchPlanPreflight
 
   def companion_policy_fragment_node(yaml)
     lines = yaml.to_s.b.lines
-    starts = lines.each_index.select { |index| companion_policy_key_line?(lines[index]) }
+    root_indentation = companion_policy_root_indentation(lines)
+    return [:absent, nil] if root_indentation.nil?
+
+    starts = lines.each_index.select do |index|
+      companion_policy_key_line?(lines[index]) &&
+        companion_policy_line_indentation(lines[index]) == root_indentation
+    end
     return [:absent, nil] if starts.empty?
     return [:invalid, nil] unless starts.one?
     return [:invalid, nil] if lines.any? { |line| yaml_document_boundary_line?(line) }
@@ -796,6 +806,15 @@ module BatchPlanPreflight
 
   def companion_policy_key_line?(line)
     line.b.match?(/\A[ \t]*(?:companion_path_conventions|["']companion_path_conventions["'])\s*:/)
+  end
+
+  def companion_policy_root_indentation(lines)
+    lines.each do |line|
+      next if line.strip.empty? || line.lstrip.start_with?("#")
+
+      return companion_policy_line_indentation(line)
+    end
+    nil
   end
 
   def companion_policy_line_indentation(line)
