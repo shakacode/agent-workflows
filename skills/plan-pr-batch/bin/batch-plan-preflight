@@ -778,12 +778,16 @@ module BatchPlanPreflight
     return [:invalid, nil] unless starts.one?
     return [:invalid, nil] if lines.any? { |line| yaml_document_boundary_line?(line) }
 
-    finish = ((starts.first + 1)...lines.length).find do |index|
+    start_index = starts.first
+    key_indent = companion_policy_line_indentation(lines[start_index])
+    finish = ((start_index + 1)...lines.length).find do |index|
       line = lines[index]
-      !line.strip.empty? && !line.lstrip.start_with?("#") &&
-        line.match?(/\A\S/) && !line.match?(/\A-\s/)
+      next false if line.strip.empty? || line.lstrip.start_with?("#")
+
+      line_indent = companion_policy_line_indentation(line)
+      line_indent < key_indent || (line_indent == key_indent && !line.lstrip.start_with?("-"))
     end
-    fragment = lines[starts.first...(finish || lines.length)].join
+    fragment = lines[start_index...(finish || lines.length)].join
     state, node = companion_policy_node_from_stream(Psych.parse_stream(fragment))
     state == :present ? [state, node] : [:invalid, nil]
   rescue Psych::Exception
@@ -791,7 +795,11 @@ module BatchPlanPreflight
   end
 
   def companion_policy_key_line?(line)
-    line.b.match?(/\A(?:companion_path_conventions|["']companion_path_conventions["'])\s*:/)
+    line.b.match?(/\A[ \t]*(?:companion_path_conventions|["']companion_path_conventions["'])\s*:/)
+  end
+
+  def companion_policy_line_indentation(line)
+    line.b.match(/\A[ \t]*/).to_s.length
   end
 
   def yaml_document_boundary_line?(line)
@@ -833,12 +841,16 @@ module BatchPlanPreflight
   def valid_companion_path_convention?(convention)
     return false unless convention.is_a?(Hash) && convention.keys.sort == %w[companion_glob source_glob]
 
-    source = companion_template_tokens(convention["source_glob"], single_named_per_segment: true)
+    source = companion_template_tokens(
+      convention["source_glob"],
+      single_named_per_segment: true,
+      single_globstar: true
+    )
     companion = companion_template_tokens(convention["companion_glob"])
     source && companion && source == companion
   end
 
-  def companion_template_tokens(template, single_named_per_segment: false)
+  def companion_template_tokens(template, single_named_per_segment: false, single_globstar: false)
     return nil unless canonical_repository_relative_path?(template)
 
     tokens = { "globstars" => 0, "stars" => 0, "named" => [] }
@@ -861,6 +873,8 @@ module BatchPlanPreflight
       end
     end
     tokens["named"].sort!
+    return nil if single_globstar && tokens["globstars"] > 1
+
     tokens if tokens["named"].uniq.length == tokens["named"].length
   end
 

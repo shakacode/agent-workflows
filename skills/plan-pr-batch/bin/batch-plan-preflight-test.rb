@@ -216,6 +216,28 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_multiple_globstar_captures_are_rejected_as_ambiguous
+    fixture = {
+      "repository" => "owner/repo",
+      "issue" => 461,
+      "lane_id" => "lane-ambiguous-multi-globstar",
+      "source_glob" => "src/**/mid/**/{name}.rb",
+      "companion_glob" => "sig/**/{name}.rbs",
+      "source_path" => "src/a/mid/b/mid/c/foo.rb",
+      "companion_path" => "sig/a/mid/b/foo.rbs"
+    }
+    with_companion_fixture(fixture) do |root|
+      result, _stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
   def test_globstar_matches_zero_directories
     fixture = {
       "repository" => "owner/repo",
@@ -315,6 +337,27 @@ class BatchPlanPreflightTest < Minitest::Test
         companion_path_conventions:
         - source_glob: #{fixture.fetch('source_glob')}
           companion_glob: #{fixture.fetch('companion_glob')}
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
+  def test_indented_malformed_policy_preserves_companion_sequence
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)
+  base_branch: main
+  companion_path_conventions:
+    - source_glob: #{fixture.fetch('source_glob')}
+      companion_glob: #{fixture.fetch('companion_glob')}
+  malformed: [
       YAML
 
       result, stderr, status = evaluate(
