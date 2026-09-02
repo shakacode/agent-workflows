@@ -429,6 +429,7 @@ module CompletedBatchPublicationPreflight
 
       target = target_from_url(url)
       return [] unless target
+      return [] if field == "issue_url" && target["type"] != "issue"
 
       target
     end

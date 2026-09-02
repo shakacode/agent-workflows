@@ -1408,6 +1408,28 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_issue_identity_url_cannot_collapse_into_the_produced_pr_url
+    issue_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
+    }
+    pr_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 156
+    }
+    produced_pr_url = "https://github.com/shakacode/hichee/pull/156"
+
+    targets = CompletedBatchPublicationPreflight.targets_for_lane(
+      {
+        "targets" => ["issue:130"],
+        "issue_url" => produced_pr_url,
+        "pr_url" => produced_pr_url
+      },
+      "shakacode/hichee",
+      [issue_target, pr_target]
+    )
+
+    assert_empty targets
+  end
+
   def test_produced_pr_is_not_treated_as_complementary_to_multiple_issue_targets
     first_issue = {
       "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
