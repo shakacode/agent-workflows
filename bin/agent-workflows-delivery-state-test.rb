@@ -2112,6 +2112,35 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_doctor_module_matching_the_current_source_needs_an_attesting_marker
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      module_path = File.join(doctor_root, "autonomous_merge_policy.rb")
+      moved = "policy library v2\n"
+      File.write(File.join(source, "bin/agent_doctor/autonomous_merge_policy.rb"), moved)
+      File.write(module_path, moved)
+      # A marker attesting the older contents, as a hand-copied module leaves.
+      File.write(File.join(doctor_root, ".agent-workflows-managed"), "agent-workflows-doctor-v1:#{'0' * 64}\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_includes payload.dig("bin", "blocking"), module_path
+
+      # Re-attesting the tree, as the installer does after rsync, adopts it.
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
   def test_absent_doctor_markers_block_when_the_source_has_advanced
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)
@@ -2166,6 +2195,8 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       helpers_only = fingerprints.reject { |name, _| name.include?("/") || name == "agent_doctor" }
       managed_bin_metadata(target, source, helpers_only)
       doctor_root = File.join(target, "bin/agent_doctor")
+      skip "unreadable-directory probe requires an unprivileged user" if Process.euid.zero?
+
       FileUtils.chmod(0o000, doctor_root)
 
       begin
@@ -2235,6 +2266,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       source, target, fingerprints = managed_bin_fixture(tmp)
       managed_bin_metadata(target, source, fingerprints)
       doctor_root = File.join(target, "bin/agent_doctor")
+      # A 0000 directory stays readable to UID 0, so the probe cannot make the
+      # tree unreadable there and the check reaches a different branch.
+      skip "unreadable-directory probe requires an unprivileged user" if Process.euid.zero?
+
       FileUtils.chmod(0o000, doctor_root)
 
       begin

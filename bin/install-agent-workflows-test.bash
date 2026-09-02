@@ -340,6 +340,38 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
 }
 
 
+test_companion_upgrade_accepts_a_changed_doctor_module() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion >"$tmp/install.out"
+
+  # The companion path re-runs the delivery check after rsync but before the
+  # metadata commit, so the recorded map still describes the previous revision.
+  printf '\n# upstream change\n' >> "$source/bin/agent_doctor/renderer.rb"
+  git -C "$source" add bin/agent_doctor/renderer.rb
+  git -C "$source" commit --quiet -m "change a doctor module"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "companion upgrade refused its own freshly copied module: $output"
+  cmp -s "$source/bin/agent_doctor/renderer.rb" "$target/bin/agent_doctor/renderer.rb" || \
+    fail "companion upgrade did not install the changed doctor module"
+  ruby "$source/bin/agent_doctor/install_ownership.rb" verify \
+    "$target/bin/agent_doctor" "$target/bin/agent_doctor/.agent-workflows-managed" || \
+    fail "companion upgrade left an invalid ownership marker"
+}
+
 test_status_and_installer_agree_on_doctor_marker_states() {
   local tmp source state target marker module_path status_exit install_exit output
   tmp="$(mktemp -d)"
@@ -9109,6 +9141,7 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_companion_upgrade_accepts_a_changed_doctor_module
     test_status_and_installer_agree_on_doctor_marker_states
     test_installed_status_reports_a_removed_doctor_module_it_depends_on
     test_fresh_copy_install_reports_up_to_date_from_recorded_fingerprints

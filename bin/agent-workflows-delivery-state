@@ -689,20 +689,44 @@ module AgentWorkflowsDeliveryState
     nil
   end
 
-  def managed_bin_copy_owned?(path:, source:, name:, digest:)
+  # True when the doctor tree's marker attests the tree as it now stands. That
+  # is what separates the installer's own post-rsync verification, which rewrites
+  # the marker over the new bytes, from a module hand-copied to newer source
+  # content whose marker still attests the recorded contents.
+  def managed_doctor_tree_attested?(bin_root)
+    doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
+    return false unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+
+    marker = File.join(doctor_root, MANAGED_DOCTOR_MARKER)
+    return false if File.symlink?(marker) || !File.file?(marker)
+
+    ownership = doctor_install_ownership
+    return false unless ownership
+
+    ownership.verify(doctor_root, marker)
+  rescue SystemCallError
+    false
+  end
+
+  def managed_bin_copy_owned?(path:, source:, name:, digest:, doctor_attested: false)
     actual = managed_path_fingerprint(path)
     return false unless actual
     return true if actual == digest.downcase
-    # The doctor tree gets no current-source fallback. Its ownership marker
-    # still attests the recorded contents, so a module hand-copied to newer
-    # source content is refused by the installer however new it looks here.
-    return false if name.include?("/") || name == MANAGED_DOCTOR_SUBDIRECTORY
+
+    source_path = File.join(source, "bin", name)
+    if name.include?("/") || name == MANAGED_DOCTOR_SUBDIRECTORY
+      # The doctor tree earns the current-source fallback only under a marker
+      # that attests it, so the recorded map going stale mid-install does not
+      # make the installer refuse the bytes it just wrote.
+      return false unless doctor_attested
+
+      return actual == managed_path_fingerprint(source_path)
+    end
 
     # A helper that already matches what the installer would write stays owned
     # across a source that moved forward. That is the source's content at the
     # mode `install -m 0755` writes, not the source file's own mode, which the
     # recorded fingerprint normalizes the same way.
-    source_path = File.join(source, "bin", name)
     return false unless File.file?(source_path) && !File.symlink?(source_path)
 
     actual == managed_file_fingerprint_value(
@@ -870,6 +894,7 @@ module AgentWorkflowsDeliveryState
       }
     end
 
+    doctor_attested = manages_doctor_tree && managed_doctor_tree_attested?(bin_root)
     present = []
     missing = []
     unowned_paths = []
@@ -890,7 +915,7 @@ module AgentWorkflowsDeliveryState
       # mode wholesale, so its recorded mode is not judged in that state.
       next if name == MANAGED_DOCTOR_SUBDIRECTORY && empty_managed_directory?(path)
 
-      unowned_paths << path unless managed_bin_copy_owned?(path:, source:, name:, digest:)
+      unowned_paths << path unless managed_bin_copy_owned?(path:, source:, name:, digest:, doctor_attested:)
     end
     unowned = (unowned_paths + unexpected_managed_doctor_entries(bin_root, fingerprints)).uniq.sort
     unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort
