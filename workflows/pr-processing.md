@@ -638,7 +638,12 @@ PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch
 
 This machine gate owns schema and launch scheduling, including advisory overlap reporting,
 backend-cap, QA, external-premise, required `plan.active_wave`, and max-one
-serialization enforcement. Do not reproduce those matrices in dispatcher or
+serialization enforcement. The v1 envelope also carries the exact
+`stage_dependency_replay` live input and the claimed completed
+`stage_dependency_gate`; the preflight reruns its fixed sibling gate in a
+bounded, sanitized process and requires an exact result match before launch.
+Missing, malformed, timed-out, failed, `UNKNOWN`, or mismatched replay fails
+closed. Do not reproduce those matrices in dispatcher or
 merge checks. Preserve real PR verified `pr-file-touch-map` results unchanged;
 encode explicit pre-PR paths as typed `planned-path-evidence` v1 records with
 durable evidence references. An `issue` source must bind to the target's exact

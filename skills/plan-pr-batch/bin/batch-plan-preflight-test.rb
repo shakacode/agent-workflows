@@ -203,6 +203,67 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
+  def stage_lane(id, head_sha: "1" * 40)
+    {
+      "id" => id,
+      "maker" => "maker-#{id}",
+      "checker" => "checker-#{id}",
+      "head_sha" => head_sha,
+      "base_sha" => "a" * 40,
+      "preparation" => {
+        "source_patch_inspection" => "plan-state://preparation/source-patch",
+        "collision_domain_mapping" => "plan-state://preparation/collision-domains",
+        "semantic_adaptation_notes" => "plan-state://preparation/semantic-adaptation",
+        "validation_review_plan" => "plan-state://preparation/validation-review",
+        "evidence_templates" => "plan-state://preparation/evidence-templates"
+      }
+    }
+  end
+
+  def stage_dependency_replay(stage_lanes, edges, gate_lanes)
+    stage_lanes_by_id = stage_lanes.to_h { |record| [record.fetch("id"), record] }
+    gate_lanes_by_id = gate_lanes.to_h { |record| [record.fetch("id"), record] }
+    live_edges = edges.map do |edge|
+      target_held = gate_lanes_by_id.dig(edge["to"], "permissions", "patch_edit") == false
+      if target_held
+        { "id" => edge["id"], "state" => "pending" }
+      else
+        evidence = { "evidence_ref" => "plan-state://evidence/#{edge['id']}" }
+        case edge["type"]
+        when "validation_open"
+          target = stage_lanes_by_id.fetch(edge["to"])
+          evidence.merge!("head_sha" => target.fetch("head_sha"), "base_sha" => target.fetch("base_sha"))
+          {
+            "id" => edge["id"],
+            "state" => "satisfied",
+            "evidence" => evidence,
+            "base_movement" => {
+              "status" => "unchanged",
+              "semantic_overlap" => false,
+              "required_dependency" => false,
+              "conflict_or_base_sensitive" => false,
+              "consumer_policy" => false
+            }
+          }
+        when "merge_order"
+          evidence.merge!(
+            "terminal_state" => "merged",
+            "head_sha" => stage_lanes_by_id.fetch(edge["from"]).fetch("head_sha")
+          )
+          { "id" => edge["id"], "state" => "satisfied", "evidence" => evidence }
+        else
+          { "id" => edge["id"], "state" => "satisfied", "evidence" => evidence }
+        end
+      end
+    end
+    {
+      "contract" => "stage-dependency-gate",
+      "version" => 1,
+      "lanes" => stage_lanes,
+      "edges" => live_edges
+    }
+  end
+
   def input_for(lanes: [lane], maps: nil, edges: [], groups: [], premises: [], gate_lanes: nil,
                 backend: "generic", active_wave: "wave-a", batch_plan_id: "batch-plan-1",
                 lifecycle_states: [], reservations: nil)
@@ -235,6 +296,49 @@ class BatchPlanPreflightTest < Minitest::Test
     end
     gate_lanes ||= lanes.map { |record| gate_lane(record.fetch("id")) }
     plan_id = "trusted-plan-1"
+    dependency_plan = {
+      "contract" => "stage-dependency-plan",
+      "version" => 1,
+      "id" => plan_id,
+      "edges" => edges
+    }
+    stage_lanes = lanes.map { |record| stage_lane(record.fetch("id")) }
+    dependency_replay = stage_dependency_replay(stage_lanes, edges, gate_lanes)
+    valid_edges = edges.all? do |edge|
+      edge.is_a?(Hash) &&
+        %w[edit validation_open merge_order].include?(edge["type"]) &&
+        stage_lanes.map { |record| record.fetch("id") }.include?(edge["from"]) &&
+        stage_lanes.map { |record| record.fetch("id") }.include?(edge["to"])
+    end
+    dependency_gate = if valid_edges
+                        evaluate_stage_dependency_gate(
+                          dependency_plan,
+                          lanes: dependency_replay.fetch("lanes"),
+                          edges: dependency_replay.fetch("edges")
+                        )
+                      else
+                        {
+                          "contract" => "stage-dependency-gate",
+                          "version" => 1,
+                          "status" => "eligible",
+                          "trusted_plan_id" => plan_id,
+                          "trusted_plan_binding" => stage_dependency_plan_binding(dependency_plan),
+                          "lanes" => gate_lanes,
+                          "checker_verdict" => { "status" => "eligible", "blockers" => [] },
+                          "critical_path" => {
+                            "lane_ids" => lanes.map { |record| record.fetch("id") },
+                            "edge_count" => edges.length,
+                            "tie_breaker" => "maximum-dependency-hops-then-lexicographic-lane-id-sequence",
+                            "assignments" => []
+                          },
+                          "downstream_requirements" => {
+                            "final_combined_tip_validation" => "required-via-repo-seam",
+                            "preserved_gates" => %w[
+                              exact_head_ci independent_review unresolved_threads merge_readiness
+                            ]
+                          }
+                        }
+                      end
     input = {
       "type" => "batch-plan-preflight",
       "version" => 1,
@@ -248,35 +352,64 @@ class BatchPlanPreflightTest < Minitest::Test
       },
       "file_touch_map" => maps,
       "lane_lifecycle_states" => lifecycle_states,
-      "stage_dependency_plan" => {
-        "contract" => "stage-dependency-plan",
-        "version" => 1,
-        "id" => plan_id,
-        "edges" => edges
-      },
-      "stage_dependency_gate" => {
-        "contract" => "stage-dependency-gate",
-        "version" => 1,
-        "status" => "eligible",
-        "trusted_plan_id" => plan_id,
-        "lanes" => gate_lanes,
-        "checker_verdict" => { "status" => "eligible", "blockers" => [] },
-        "critical_path" => {
-          "lane_ids" => lanes.map { |record| record.fetch("id") },
-          "edge_count" => edges.length,
-          "tie_breaker" => "maximum-dependency-hops-then-lexicographic-lane-id-sequence",
-          "assignments" => []
-        },
-        "downstream_requirements" => {
-          "final_combined_tip_validation" => "required-via-repo-seam",
-          "preserved_gates" => %w[exact_head_ci independent_review unresolved_threads merge_readiness]
-        }
-      }
+      "stage_dependency_plan" => dependency_plan,
+      "stage_dependency_replay" => dependency_replay,
+      "stage_dependency_gate" => dependency_gate
     }
-    input.fetch("stage_dependency_gate")["trusted_plan_binding"] =
-      stage_dependency_plan_binding(input.fetch("stage_dependency_plan"))
     input["expansion_path_reservations"] = reservations unless reservations.nil?
     input
+  end
+
+  def test_replay_envelope_is_required_well_formed_and_known
+    mutations = {
+      "missing" => ["stage-dependency-replay-missing", lambda do |input|
+        input.delete("stage_dependency_replay")
+      end],
+      "not an object" => ["stage-dependency-replay-invalid", lambda do |input|
+        input["stage_dependency_replay"] = []
+      end],
+      "extra field" => ["stage-dependency-replay-invalid", lambda do |input|
+        input.fetch("stage_dependency_replay")["caller_override"] = "/tmp/gate"
+      end],
+      "unknown nested fact" => ["stage-dependency-replay-unknown", lambda do |input|
+        input.dig("stage_dependency_replay", "lanes", 0)["head_sha"] = "UNKNOWN"
+      end]
+    }
+
+    mutations.each do |label, (expected_code, mutate)|
+      input = input_for
+      mutate.call(input)
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, label
+      assert_equal [expected_code], result.fetch("violations").map { |item| item.fetch("code") }, label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+      assert_empty result.dig("launch", "held_lane_ids"), label
+      assert_empty result.dig("launch", "completed_lane_ids"), label
+    end
+  end
+
+  def test_stale_satisfied_edit_gate_rejects_changed_replay_facts_before_launch
+    lanes = [lane("foundation"), lane("consumer")]
+    edge = {
+      "id" => "foundation-before-consumer",
+      "from" => "foundation",
+      "to" => "consumer",
+      "type" => "edit"
+    }
+    input = input_for(lanes:, edges: [edge])
+    input.dig("stage_dependency_replay", "edges", 0)["state"] = "pending"
+    input.dig("stage_dependency_replay", "edges", 0).delete("evidence")
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_equal "rejected", result.fetch("status")
+    assert_equal(
+      ["stage-dependency-replay-mismatch"],
+      result.fetch("violations").map { |item| item.fetch("code") }
+    )
+    assert_empty result.dig("launch", "eligible_lane_ids")
   end
 
   def test_ordinary_durable_lane_state_advances_serialized_work_without_trust_material

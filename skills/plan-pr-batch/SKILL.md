@@ -469,7 +469,15 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      owns schema, advisory-overlap reporting, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
-     `lane_lifecycle_states` array. Advance max-one groups only from a separate
+     `lane_lifecycle_states` array, plus the exact top-level
+     `stage_dependency_replay` live input. The helper reruns its fixed sibling
+     stage-dependency gate in a bounded, sanitized process and requires its
+     complete result to match the supplied `stage_dependency_gate` exactly;
+     this authenticates the fixed helper and the consistency of the supplied
+     facts, not the truth of caller-supplied live facts, which the coordinator
+     must still obtain from the required trusted reads;
+     missing, malformed, timed-out, failed, `UNKNOWN`, or mismatched replay
+     stops before launch. Advance max-one groups only from a separate
      ordinary durable `lane-lifecycle-state` v1 record bound to the batch,
      dependency plan, lane, and wave. Reject duplicates, unknown identities,
      unsupported states, and inline lane completion claims.
