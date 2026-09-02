@@ -33,6 +33,7 @@ module ConciseHistoryCheck
   TERMINAL_REPLAY_VERDICTS = %w[SATISFIED WAIVED NOT_APPLICABLE].freeze
   TRAILER_LINE = /\A(?<token>[A-Za-z0-9][A-Za-z0-9-]*):[ \t]+\S/
   FENCE_OPEN = /\A {0,3}(?<fence>`{3,}|~{3,})/
+  INLINE_CODE_SPAN = /(?<!`)(?<delimiter>`+)(?!`).*?(?<!`)\k<delimiter>(?!`)/m
 
   def run(argv)
     options = parse_options(argv)
@@ -195,7 +196,7 @@ module ConciseHistoryCheck
   def structural_markdown(markdown)
     fence = nil
     in_comment = false
-    markdown.each_line.map do |line|
+    structural = markdown.each_line.map do |line|
       if fence
         closing_fence = /\A {0,3}#{Regexp.escape(fence[0])}{#{fence.length},}[ \t]*(?:\r?\n)?\z/
         fence = nil if line.match?(closing_fence)
@@ -228,6 +229,7 @@ module ConciseHistoryCheck
         characters.join
       end
     end.join
+    structural.gsub(INLINE_CODE_SPAN) { |span| span.gsub(/[^\r\n]/, " ") }
   end
 
   def missing_pr_artifacts(pr_body, disclosure)

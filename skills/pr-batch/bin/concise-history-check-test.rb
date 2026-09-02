@@ -206,6 +206,26 @@ class ConciseHistoryCheckTest < Minitest::Test
     end
   end
 
+  def test_agent_details_ignores_closing_tag_inside_inline_code
+    Tempfile.create("inline-code-closing-details-tag") do |file|
+      pr_body = File.read(fixture("pr-body.md"), encoding: "UTF-8")
+      inline_example = <<~MARKDOWN
+        Example: `</details>` closes the block.
+
+        ### QA Evidence
+      MARKDOWN
+      file.write(pr_body.sub("### QA Evidence", inline_example))
+      file.flush
+
+      stdout, stderr, status = run_check(pr_body: file.path)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "PASS", result.fetch("status")
+      assert_equal "SATISFIED", result.dig("pr_evidence", "replay_verdict")
+    end
+  end
+
   def test_labeled_prose_counts_as_durable_rationale
     Tempfile.create("labeled-rationale") do |file|
       file.write(<<~MESSAGE)
