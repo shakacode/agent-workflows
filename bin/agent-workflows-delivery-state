@@ -434,6 +434,22 @@ module AgentWorkflowsDeliveryState
     metadata
   end
 
+  # Read the stdout of git as the structured channel. Incidental stderr — a
+  # tool-manager shim warning, a git advice line — is never data: git can
+  # succeed while writing it, and merging the two streams invents skill names
+  # and feeds untabbed rows to the ls-tree parser. Failure diagnostics stay
+  # visible on our own stderr instead of being dropped.
+  def git_capture(root, *args)
+    stdout, stderr, status = Open3.capture3("git", "-C", root, *args)
+    unless status.success?
+      diagnostic = stderr.force_encoding("UTF-8").scrub.strip
+      warn("git #{args.first} failed in #{root}: #{diagnostic}") unless diagnostic.empty?
+      return nil
+    end
+
+    stdout.force_encoding("UTF-8").scrub
+  end
+
   def git_snapshot_root(source_roots, revision)
     return nil unless revision.to_s.match?(/\A[0-9a-f]{40}\z/i)
 
@@ -446,8 +462,8 @@ module AgentWorkflowsDeliveryState
     revision = metadata&.fetch("source_revision", nil)
     roots = [metadata&.fetch("source", nil), source]
     if (git_root = git_snapshot_root(roots, revision))
-      output, status = Open3.capture2e("git", "-C", git_root, "ls-tree", "--name-only", "#{revision}:skills")
-      return [output.lines.map(&:strip).reject(&:empty?).sort, { type: :git, root: git_root, revision: revision }] if status.success?
+      output = git_capture(git_root, "ls-tree", "--name-only", "#{revision}:skills")
+      return [output.lines.map(&:strip).reject(&:empty?).sort, { type: :git, root: git_root, revision: revision }] if output
     end
 
     source_root = roots.compact.find { |root| File.directory?(File.join(root, "skills")) }
@@ -516,10 +532,8 @@ module AgentWorkflowsDeliveryState
 
     revision = snapshot.fetch(:revision)
     skill_root = "skills/#{skill_name}"
-    output, status = Open3.capture2e(
-      "git", "-C", snapshot.fetch(:root), "ls-tree", "-r", "-t", revision, "--", skill_root
-    )
-    return false unless status.success?
+    output = git_capture(snapshot.fetch(:root), "ls-tree", "-r", "-t", revision, "--", skill_root)
+    return false unless output
 
     expected = output.lines.filter_map do |line|
       metadata, path = line.chomp.split("\t", 2)

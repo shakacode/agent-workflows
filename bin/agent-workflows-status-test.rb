@@ -573,4 +573,91 @@ class AgentWorkflowsStatusTest < Minitest::Test
       end
     end
   end
+
+  # A tool-manager shim, or a git advice line, writes to stderr while git itself
+  # succeeds. This reproduces that condition deterministically: a `git` wrapper
+  # on PATH warns and then execs the real git.
+  def noisy_git_env(root)
+    FileUtils.mkdir_p(root)
+    real_git = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR)
+                  .map { |dir| File.join(dir, "git") }
+                  .find { |path| File.file?(path) && File.executable?(path) }
+    refute_nil real_git, "no git executable on PATH"
+    wrapper = File.join(root, "git")
+    File.write(wrapper, <<~SH)
+      #!/bin/sh
+      echo 'mise WARN  no version is set for shim: git' >&2
+      exec #{real_git} "$@"
+    SH
+    FileUtils.chmod(0o755, wrapper)
+    { "PATH" => "#{root}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH', '')}" }
+  end
+
+  def create_git_source(source)
+    FileUtils.mkdir_p(File.join(source, "skills/example"))
+    File.write(File.join(source, "VERSION"), "9.9.9\n")
+    File.write(File.join(source, "skills/example/SKILL.md"), "example\n")
+    system("git", "-C", source, "init", "--quiet", exception: true)
+    system("git", "-C", source, "config", "user.email", "status-test@example.com", exception: true)
+    system("git", "-C", source, "config", "user.name", "Status Test", exception: true)
+    system("git", "-C", source, "add", ".", exception: true)
+    system("git", "-C", source, "commit", "--quiet", "-m", "fixture", exception: true)
+    revision, revision_status = Open3.capture2("git", "-C", source, "rev-parse", "HEAD")
+    assert revision_status.success?, revision
+    revision.strip
+  end
+
+  def test_available_revision_ignores_incidental_git_stderr
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        Dir.mktmpdir("agent-workflows-status-bin") do |bin|
+          revision = create_git_source(source)
+          FileUtils.mkdir_p(File.join(target, "skills/example"))
+          File.write(File.join(target, "skills/example/SKILL.md"), "example\n")
+          write_metadata(
+            target,
+            "version" => "9.9.9",
+            "source" => source,
+            "source_revision" => revision,
+            "delivery_mode" => "flat"
+          )
+
+          out, status = run_status(noisy_git_env(bin), "--target", target, "--host", "codex", "--json")
+          payload = JSON.parse(out)
+
+          assert_equal 0, status.exitstatus, out
+          assert_equal "UP_TO_DATE", payload.fetch("status")
+          assert_equal revision, payload.fetch("available_revision")
+          assert_equal "present", payload.dig("flat", "state")
+        end
+      end
+    end
+  end
+
+  def test_failed_git_read_reports_git_diagnostics
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        FileUtils.mkdir_p(File.join(source, "skills/example"))
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        File.write(File.join(source, "skills/example/SKILL.md"), "example\n")
+        # Looks like a clone to the source probe, but git cannot read it.
+        FileUtils.mkdir_p(File.join(source, ".git"))
+        write_metadata(
+          target,
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "abc123",
+          "delivery_mode" => "flat"
+        )
+
+        out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 3, status.exitstatus, out
+        assert_equal "CHECK_FAILED", payload.fetch("status")
+        assert_includes payload.fetch("reason"), "git rev-parse HEAD failed"
+        assert_includes payload.fetch("reason"), "not a git repository"
+      end
+    end
+  end
 end
