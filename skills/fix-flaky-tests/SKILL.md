@@ -142,7 +142,8 @@ substituted for the failing job's own history, and a retried run's earlier
 attempt is not silently dropped to the latest one.
 
 For any other provider, resolve the log-fetch and replay commands from the
-repository seam described above rather than assuming a provider CLI exists.
+repo-policy/AGENTS.md seam described above rather than assuming a provider CLI
+exists.
 Buildkite, CircleCI, and everything else stay seam-resolved by design: this
 skill must not hardcode a provider the consumer repo does not use.
 

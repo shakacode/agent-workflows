@@ -23,8 +23,9 @@ reproduction explains the failure.
    verified, write `UNKNOWN`.
 3. Establish hosted run history for the exact failure identity on the exact
    commit. Use provider-native run history for that exact commit and failure
-   identity, resolving a repo command or policy seam when defined.
-   For GitHub Actions with no provider seam, use the shipped default:
+   identity, resolving the repo-policy/AGENTS.md seam when defined.
+   For GitHub Actions with no repo-policy/AGENTS.md seam, use the shipped
+   default:
 
    ```bash
    gh run list --all --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,attempt,conclusion,headSha,event,workflowName,number,createdAt,url
