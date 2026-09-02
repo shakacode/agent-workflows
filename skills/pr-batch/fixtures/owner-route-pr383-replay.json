@@ -7,7 +7,7 @@
   },
   "observations": [
     {
-      "material_fingerprint": "sha256:f0d7f8ee5399b9e256ef09f45fbcffcc555300d46935a7f4debadfe861688f65",
+      "material_fingerprint": "sha256:09e6174214e4d55a13b084bb721ee53f915b2605979760a3a436ac48099b7e3c",
       "emit_user_message": true,
       "blocker_state": "blocked",
       "claim": {
@@ -47,7 +47,7 @@
       }
     },
     {
-      "material_fingerprint": "sha256:f0d7f8ee5399b9e256ef09f45fbcffcc555300d46935a7f4debadfe861688f65",
+      "material_fingerprint": "sha256:09e6174214e4d55a13b084bb721ee53f915b2605979760a3a436ac48099b7e3c",
       "emit_user_message": false,
       "blocker_state": "blocked",
       "claim": {
@@ -85,10 +85,51 @@
         "queue_position": 1,
         "log": "/tmp/pr383-validate6.log"
       }
+    },
+    {
+      "material_fingerprint": "sha256:33cc3e5c944727e0c39efab5d1c8efc76187af7eb79af055cace8012088d62cb",
+      "emit_user_message": true,
+      "blocker_state": "blocked",
+      "claim": {
+        "agent_id": "worker-pr383-remediation",
+        "repo": "shakacode/agent-workflows",
+        "target": "383",
+        "branch": "codex/ruby-packaging-design",
+        "host": "claude-code/conductor",
+        "thread_handle": "aw-pr383-harbor",
+        "session_id": "claude-session-pr383"
+      },
+      "heartbeat": {
+        "agent_id": "worker-pr383-remediation",
+        "target": "shakacode/agent-workflows#383",
+        "branch": "codex/ruby-packaging-design",
+        "host": "claude-code/conductor",
+        "thread_handle": "aw-pr383-harbor",
+        "session_id": "claude-session-pr383",
+        "workspace": "la-paz",
+        "status": "validating"
+      },
+      "host_task": {
+        "repository": "shakacode/agent-workflows",
+        "work_item": "383",
+        "workspace": "la-paz",
+        "branch": "codex/ruby-packaging-design",
+        "session_id": "claude-session-pr383",
+        "url": "https://github.com/shakacode/agent-workflows/pull/383",
+        "head": "e2ab23a74875d18d9d6589131244009a6ed4a005"
+      },
+      "durable_diagnostics": {
+        "pid": 4479,
+        "pgid": 4479,
+        "lease": "heartbeat-pr383-7",
+        "queue_position": 1,
+        "log": "/tmp/pr383-validate7.log"
+      }
     }
   ],
   "expected_user_messages": [
-    "What changed: PR #383 is blocked waiting for its retained validator. Owner route: PR #383 (https://github.com/shakacode/agent-workflows/pull/383); runner Conductor/Claude; open workspace `la-paz` in Conductor; retained validator log `/tmp/pr383-validate6.log`; thread `aw-pr383-harbor`; session `claude-session-pr383`; there is no Codex sidebar task to find and the cross-app deep link is unavailable; branch `codex/ruby-packaging-design` at head `e2ab23a74875d18d9d6589131244009a6ed4a005`; this Codex task cannot navigate to or message that session. Action needed: none. Next: The coordinator will follow up with the owner and report only a material blocker or route change, a terminal result, a real decision, or release of the waiting work."
+    "What changed: PR #383 is blocked waiting for its retained validator. Owner route: PR #383 (https://github.com/shakacode/agent-workflows/pull/383); runner Conductor/Claude; open workspace `la-paz` in Conductor; retained validator log `/tmp/pr383-validate6.log`; thread `aw-pr383-harbor`; session `claude-session-pr383`; there is no Codex sidebar task to find and the cross-app deep link is unavailable; branch `codex/ruby-packaging-design` at head `e2ab23a74875d18d9d6589131244009a6ed4a005`; this Codex task cannot navigate to or message that session. Action needed: none. Next: The coordinator will follow up with the owner and report only a material blocker or route change, a terminal result, a real decision, or release of the waiting work.",
+    "What changed: PR #383 remains blocked, but its retained validator log changed. Owner route: PR #383 (https://github.com/shakacode/agent-workflows/pull/383); runner Conductor/Claude; open workspace `la-paz` in Conductor; retained validator log `/tmp/pr383-validate7.log`; thread `aw-pr383-harbor`; session `claude-session-pr383`; there is no Codex sidebar task to find and the cross-app deep link is unavailable; branch `codex/ruby-packaging-design` at head `e2ab23a74875d18d9d6589131244009a6ed4a005`; this Codex task cannot navigate to or message that session. Action needed: none. Next: The coordinator will follow up with the owner and report only a material blocker or route change, a terminal result, a real decision, or release of the waiting work."
   ],
   "variants": [
     {

@@ -265,12 +265,19 @@ class UserFacingCoordinationContractTest < Minitest::Test
       changed
     end
     assert_equal observations.map { |observation| observation.fetch("emit_user_message") }, replayed_emissions
-    assert_equal 1, replayed_emissions.count(true)
-    assert_equal 1, replay.fetch("expected_user_messages").length
-    assert_equal 1, observations.map { |observation| observation.fetch("material_fingerprint") }.uniq.length
+    assert_equal 2, replayed_emissions.count(true)
+    assert_equal 2, replay.fetch("expected_user_messages").length
+    assert_equal 2, observations.map { |observation| observation.fetch("material_fingerprint") }.uniq.length
     assert_operator observations.map { |observation| observation.dig("durable_diagnostics", "pid") }.uniq.length, :>, 1
+    assert_equal observations[0].fetch("material_fingerprint"), observations[1].fetch("material_fingerprint")
+    refute_equal observations[1].fetch("material_fingerprint"), observations[2].fetch("material_fingerprint")
+    assert_equal observations[0].dig("durable_diagnostics", "log"),
+                 observations[1].dig("durable_diagnostics", "log")
+    refute_equal observations[1].dig("durable_diagnostics", "log"),
+                 observations[2].dig("durable_diagnostics", "log")
 
-    message = replay.fetch("expected_user_messages").first
+    messages = replay.fetch("expected_user_messages")
+    message = messages.first
     [
       "What changed:",
       "Action needed: none.",
@@ -288,6 +295,8 @@ class UserFacingCoordinationContractTest < Minitest::Test
       "e2ab23a74875d18d9d6589131244009a6ed4a005"
     ].each { |value| assert_includes message, value }
     refute_match(/\bPID\b|\bPGID\b|\blease\b|queue position/i, message)
+    assert_includes messages.last, "`/tmp/pr383-validate7.log`"
+    refute_equal messages.first, messages.last
 
     observations.each do |observation|
       claim = observation.fetch("claim")
@@ -301,7 +310,8 @@ class UserFacingCoordinationContractTest < Minitest::Test
         heartbeat.fetch("thread_handle"),
         heartbeat.fetch("session_id"),
         heartbeat.fetch("branch"),
-        host_task.fetch("head")
+        host_task.fetch("head"),
+        observation.dig("durable_diagnostics", "log")
       ].join("|")
       assert_equal "sha256:#{Digest::SHA256.hexdigest(fingerprint_source)}",
                    observation.fetch("material_fingerprint")
@@ -315,8 +325,10 @@ class UserFacingCoordinationContractTest < Minitest::Test
       assert_equal heartbeat.fetch("workspace"), host_task.fetch("workspace")
       assert_equal claim.fetch("branch"), host_task.fetch("branch")
       assert_equal claim.fetch("session_id"), host_task.fetch("session_id")
-      assert_includes message, host_task.fetch("url")
-      assert_includes message, host_task.fetch("head")
+      messages.each do |expected_message|
+        assert_includes expected_message, host_task.fetch("url")
+        assert_includes expected_message, host_task.fetch("head")
+      end
     end
 
     variants = replay.fetch("variants").to_h { |variant| [variant.fetch("id"), variant] }
