@@ -109,15 +109,17 @@ class ReviewWaveContractTest < Minitest::Test
       assert_rule text, REVIEW_ARTIFACT_BARRIER
       assert_rule text, USAGE_LIMIT_WAIVER
       assert_rule text,
-                  "Absence alone is not capacity evidence; apply the unavailable-review waiver only with explicit evidence that the named reviewer is unavailable because of usage or capacity."
+                  "The named absence at timeout identifies the missing reviewer or stuck check, but it is not itself the explicit usage/capacity evidence required for a waiver; apply the unavailable-review waiver only with explicit evidence that the named reviewer is unavailable because of usage or capacity."
       assert_rule text,
                   "A bounded-wait timeout returns `waiting-on-checks-or-review`; it never authorizes a partial review fetch."
       assert_includes text, "REVIEW_CHECK_NAMES_JSON"
       assert_includes text, "REVIEW_WAVE_MISSING_CHECK_NAMES"
+      assert_includes text, "REVIEW_WAVE_PENDING_CHECK_NAMES"
       assert_includes text, "0|1|8"
       assert_includes text, 'select(($checks | length) == 0 or any($checks[]; .bucket == "pending"))'
       assert_includes text, "select(($checks | length) == 0) | $name"
-      assert_match(/review wave .* did not settle .* missing expected check-run names: \$\{REVIEW_WAVE_MISSING_CHECK_NAMES\}.*?exit 2/m, text)
+      assert_includes text, 'select(($checks | length) > 0 and any($checks[]; .bucket == "pending")) | $name'
+      assert_match(/review wave .* did not settle .* missing expected check-run names: \$\{REVIEW_WAVE_MISSING_CHECK_NAMES\}; pending expected check-run names: \$\{REVIEW_WAVE_PENDING_CHECK_NAMES\}.*?exit 2/m, text)
       refute_includes text, "wait for any in-progress `claude-review`"
       refute_includes text, "proceeding with currently available review data"
       refute_includes text, 'test("claude.?review"; "i")'
