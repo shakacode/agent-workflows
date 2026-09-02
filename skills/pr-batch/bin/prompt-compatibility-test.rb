@@ -241,6 +241,24 @@ class PromptCompatibilityTest < Minitest::Test
     end
   end
 
+  def test_legacy_goal_validates_batch_targets_before_execution_or_conversion
+    prompts = [
+      ["#{fixture('legacy-goal.txt')}Batch size target: claude;wave: 1/1\n", "contradictory-batch-size-target"],
+      ["#{fixture('legacy-goal.txt')}Batch size target = codex;wave: 1/1\n", "invalid-batch-size-target"]
+    ]
+
+    prompts.each do |prompt, expected_error|
+      %w[codex claude].each do |active_host|
+        result, stderr, status = run_helper(prompt, active_host:)
+
+        refute status.success?
+        assert_empty stderr
+        assert_equal expected_error, result.fetch("error")
+        refute result.key?("decision")
+      end
+    end
+  end
+
   def test_goal_mode_is_rejected_for_non_codex_prompt_hosts
     %w[claude portable].each do |prompt_host|
       prompt = fixture("active-host-codex.txt")

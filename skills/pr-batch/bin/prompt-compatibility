@@ -210,6 +210,18 @@ def validate_cross_host_mechanics(body, prompt_host, active_host)
   emit_error("unsupported-host-mechanic", active_host) if unsupported_supported_mechanic
 end
 
+def validate_batch_target(prompt, prompt_host, active_host)
+  declarations = prompt.lines.count { |line| line.match?(BATCH_TARGET_LIKE) }
+  targets = prompt.scan(/^Batch size target: (codex|claude|generic);/).flatten
+  emit_error("invalid-batch-size-target", active_host) if targets.length != declarations
+  emit_error("duplicate-batch-size-target", active_host) if targets.length > 1
+
+  expected_target = prompt_host == "portable" ? "generic" : prompt_host
+  return unless targets.any? && targets.first != expected_target
+
+  emit_error("contradictory-batch-size-target", active_host)
+end
+
 options = { active_hosts: [] }
 OptionParser.new do |parser|
   parser.on("--active-host HOST") { |host| options.fetch(:active_hosts) << host }
@@ -284,16 +296,7 @@ if complete_headers
     validate_cross_host_mechanics(body, prompt_host, active_host)
   end
 
-  batch_target_declarations = prompt.lines.count { |line| line.match?(BATCH_TARGET_LIKE) }
-  batch_targets = prompt.scan(/^Batch size target: (codex|claude|generic);/).flatten
-  if batch_targets.length != batch_target_declarations
-    emit_error("invalid-batch-size-target", active_host)
-  end
-  emit_error("duplicate-batch-size-target", active_host) if batch_targets.length > 1
-  expected_target = prompt_host == "portable" ? "generic" : prompt_host
-  if batch_targets.any? && batch_targets.first != expected_target
-    emit_error("contradictory-batch-size-target", active_host)
-  end
+  validate_batch_target(prompt, prompt_host, active_host)
 
   if prompt_host == "portable"
     contract_available = File.file?(CONTRACT_PATH) && File.read(CONTRACT_PATH).include?(CONTRACT_PROTOCOL)
@@ -332,6 +335,7 @@ if complete_headers
 elsif prompt.match?(LEGACY_CODEX)
   legacy_body = prompt.sub(GOAL_WRAPPER, "")
   emit_error("unsupported-host-mechanic", active_host) if unsupported_for_prompt_host?(legacy_body, "codex")
+  validate_batch_target(prompt, "codex", active_host)
   result = if active_host == "codex"
              decision_result(
                "compatible",
