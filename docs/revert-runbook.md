@@ -1231,10 +1231,14 @@ A terminal release has preconditions, and failing them leaves the lane open —
 the dangling state these rules exist to prevent. Verified against this repo's
 seam: the release refuses with `terminal release requires a claim with batch_id`
 unless the claim carried one, and with `terminal closeout does not match exactly
-one lane in batch <id>` unless it resolves to exactly one registered lane. Claim
-both lanes under their batch and lane identifiers from the start, and treat a
-closeout that cannot resolve as `UNKNOWN`: reconcile the lane and retry rather
-than moving on with it open.
+one lane in batch <id>` unless it resolves to exactly one registered lane. If
+terminal closeout does not match exactly one lane in batch <id> because the
+claim/release target string differs from the registered manifest lane,
+immediately route to the ordinary claim-only release fallback/recovery and
+re-register or retry with the exact same string. Claim both lanes under their
+batch and lane identifiers from the start, and treat a closeout that cannot
+resolve as `UNKNOWN`: reconcile the lane and retry rather than moving on with it
+open.
 
 *Lane already closed `done`* — you cannot rewrite it. **The first terminal
 event is immutable.** Later authenticated completion may reconcile an

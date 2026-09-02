@@ -123,14 +123,14 @@ its batch-registration seam. A representative dry-run manifest is:
     "effort": "xhigh"
   },
   "lanes": [
-    {
-      "name": "implementation",
-      "owner": "batch-a-implementation",
-      "targets": ["issue:123"],
-      "worker_preference": {
-        "model": "gpt-5.6-terra",
-        "effort": "high"
-      },
+      {
+        "name": "implementation",
+        "owner": "batch-a-implementation",
+      "targets": ["123"],
+        "worker_preference": {
+          "model": "gpt-5.6-terra",
+          "effort": "high"
+        },
       "observed_host": {
         "host": "codex",
         "model": "UNKNOWN",
@@ -140,6 +140,9 @@ its batch-registration seam. A representative dry-run manifest is:
   ]
 }
 ```
+
+The `targets[]` strings are exact target identities; use the same exact string
+in claim and release.
 
 `pack_sha` is the verified full git SHA of the loaded Agent Workflows pack, or
 the verified installed-release identifier when the pack is not a git checkout.

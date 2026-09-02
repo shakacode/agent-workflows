@@ -8,6 +8,7 @@ ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
+REVERT_RUNBOOK_PATH = File.join(ROOT, "docs/revert-runbook.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
 PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 PAUSE_SKILL_PATH = File.join(ROOT, "skills/pause/SKILL.md")
@@ -17,6 +18,8 @@ MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                        "coordinator_preference=<model>/<effort>;" \
                        "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
                        "UNKNOWN=field;no guesses"
+MANIFEST_TARGET_FORM_RULE =
+  "`targets[]` strings are exact target identities; use the same exact string in claim and release."
 MANIFEST_MISSING_REPETITION_LINE = MANIFEST_PROMPT_LINE.sub(">,...", ">")
 MANIFEST_WHOLE_LANE_ENTRY_UNKNOWN_LINE =
   MANIFEST_PROMPT_LINE.sub("observed-host/model/effort>,...", "observed-host/model/effort|UNKNOWN>,...")
@@ -133,6 +136,10 @@ REGISTRATION_BOUNDED_FRAGMENTS = [
   "whole-group `TERM` then `KILL`",
   "does not block worker launch"
 ].freeze
+TERMINAL_CLOSEOUT_MISMATCH_RECOVERY_RULE =
+  "If terminal closeout does not match exactly one lane in batch <id> because the claim/release " \
+  "target string differs from the registered manifest lane, immediately route to the ordinary " \
+  "claim-only release fallback/recovery and re-register or retry with the exact same string."
 REGISTRATION_NO_SHELL_MARKER = "without shell evaluation"
 REGISTRATION_UPDATE_PATTERNS = {
   "update capability detection" => %r{registration update/upsert/reconciliation capability},
@@ -619,10 +626,24 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
     assert_match(/\A[0-9a-f]{40}\z|\AUNKNOWN\z/, manifest.fetch("pack_sha"))
     assert_manifest_route_provenance(manifest)
+    implementation_lane = manifest.fetch("lanes").find { |lane| lane.fetch("name") == "implementation" }
+    refute_nil implementation_lane
+    assert_equal ["123"], implementation_lane.fetch("targets")
 
     [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
       assert_manifest_prompt_contract(read_repo_file(path), path)
     end
+
+    manifest_section = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Batch Provenance Manifest")
+    normalized_section = manifest_section.gsub(/\s+/, " ")
+    assert_includes normalized_section, MANIFEST_TARGET_FORM_RULE
+  end
+
+  def test_terminal_closeout_mismatch_routes_to_claim_only_recovery
+    runbook = read_repo_file(REVERT_RUNBOOK_PATH).gsub(/\s+/, " ")
+
+    assert_includes runbook, "terminal closeout does not match exactly one lane in batch <id>"
+    assert_includes runbook, TERMINAL_CLOSEOUT_MISMATCH_RECOVERY_RULE
   end
 
   def test_registration_runtime_contract_is_synchronized
