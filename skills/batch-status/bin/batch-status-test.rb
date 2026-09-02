@@ -62,6 +62,7 @@ class BatchStatusTest < Minitest::Test
       route = row.fetch("owner_route")
       assert_equal "consistent", route.fetch("binding_status")
       assert_empty route.fetch("binding_issues")
+      assert_empty route.fetch("missing_fields")
       assert_equal "shakacode/agent-workflows#362", route.dig("work_item", "ref")
       assert_equal "https://github.com/shakacode/agent-workflows/pull/362", route.dig("work_item", "url")
       assert_equal "worker-362", route.fetch("holder")
@@ -69,6 +70,53 @@ class BatchStatusTest < Minitest::Test
       assert_equal "aw-362", route.fetch("thread_handle")
       assert_equal "instance-362", route.fetch("instance_id")
       assert_equal "required", route.fetch("host_task_lookup")
+    end
+  end
+
+  def test_owner_route_is_unavailable_when_required_session_identity_is_missing
+    coordination = {
+      "claims" => [{
+        "agent_id" => "worker-362",
+        "status" => "active",
+        "repo" => "shakacode/agent-workflows",
+        "target" => "362",
+        "branch" => "codex/status-362",
+        "host" => "codex",
+        "thread_handle" => "aw-362"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "worker-362",
+        "target" => "shakacode/agent-workflows#362",
+        "branch" => "codex/status-362",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "thread_handle" => "aw-362",
+        "session_source" => "codex_thread_id",
+        "status" => "in_progress"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "pr", number: 362) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--pr", "362",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      route = row.fetch("owner_route")
+      assert_equal "unavailable", route.fetch("binding_status")
+      assert_includes route.fetch("missing_fields"), "claim session_id"
+      assert_includes route.fetch("missing_fields"), "heartbeat session_id"
+      assert_includes route.fetch("missing_fields"), "Codex deep link"
+      assert_empty route.fetch("binding_issues")
+      assert_equal "UNKNOWN", route.fetch("runner")
+      assert_equal "UNKNOWN", route.fetch("session_id")
+      assert_includes row.fetch("unknowns"), "owner route unavailable: missing claim session_id"
     end
   end
 

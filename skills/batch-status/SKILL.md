@@ -137,13 +137,18 @@ Report one row per lane:
   or workspace listing exposed by the current app. It is not coordination
   evidence. If the host does not expose that lookup, render the route as
   unavailable.
-  Include the holder, runner, visible task or workspace, stable identity, and
+  For a lane with no active cross-task or cross-runner blocker, render `n/a`;
+  do not turn a released claim, terminal lane, or ready lane into
+  `Owner route: unavailable` or coordinator follow-up. For a blocked lane,
+  include the holder, runner, visible task or workspace, stable identity, and
   work-item link. Never infer a holder or runner from a branch name or model
   request. For Codex, include `codex_deep_link` only when its verified machine
-  and session binding permit it. The link opens the task only on
-  `codex_deep_link_machine_id`; never present it as a cross-machine link. For
-  Conductor/Claude, name the workspace and session and say when there is no
-  Codex sidebar task or cross-app link. Use `Owner route: inconsistent` or
+  and session binding permit it. Present the link as directly navigable only
+  when the current machine equals `codex_deep_link_machine_id`. Otherwise name
+  the recorded machine and say the task link is unavailable from here; never
+  present it as a cross-machine link. For Conductor/Claude, report no Codex
+  task link, name the workspace and session, and say when there is no Codex
+  sidebar task or cross-app link. Use `Owner route: inconsistent` or
   `Owner route: unavailable` when required, with coordinator-owned bounded
   follow-up. In routine output, do not print raw PID, process-group ID (PGID),
   lease, or queue-position telemetry.

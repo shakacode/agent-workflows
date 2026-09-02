@@ -149,8 +149,10 @@ in Conductor.
 
 Validate the route before showing it. The active claim and heartbeat must agree
 on the owner, repository-qualified work item, runner or host, branch, thread
-handle, session, and instance when those fields are recorded. The resolved task
-must match the repository, work item, workspace, branch, and session.
+handle, and session. Missing fields needed for the rendered route make it
+unavailable. If both records include an instance, those instances must also
+agree. The resolved task must match the repository, work item, workspace,
+branch, and session.
 A contradictory, stale, or cross-repository binding must fail closed as
 `Owner route: inconsistent`; do not offer its link as the owner. Missing or
 unreachable route evidence renders exactly `Owner route: unavailable`. In both

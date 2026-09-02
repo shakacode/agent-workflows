@@ -59,33 +59,56 @@ end
 def owner_route_evidence(repo:, number:, url:, claim:, heartbeat:, holder:, record:, runner:, machine_id:,
                          thread_id:, deep_link:)
   issues = []
+  missing = []
   if holder.nil?
-    issues << "active claim missing"
+    missing << "active claim"
   elsif heartbeat.nil?
-    issues << "same-holder heartbeat missing"
+    missing << "same-holder heartbeat"
   else
-    issues << "claim/heartbeat holder mismatch" if present_string(heartbeat["agent_id"]) != holder
+    heartbeat_holder = present_string(heartbeat["agent_id"])
+    missing << "heartbeat agent_id" unless heartbeat_holder
+    issues << "claim/heartbeat holder mismatch" if heartbeat_holder && heartbeat_holder != holder
 
     claim_repo = present_string(claim["repo"])
+    missing << "claim repo" unless claim_repo
     issues << "claim repository mismatch" if claim_repo && claim_repo != repo
     claim_target = coordination_target_number(claim["target"])
+    missing << "claim target" unless claim_target
     issues << "claim work item mismatch" if claim["target"] && claim_target != number
     heartbeat_target = present_string(heartbeat["target"])
+    missing << "heartbeat target" unless heartbeat_target
     issues << "heartbeat work item mismatch" if heartbeat_target && heartbeat_target != "#{repo}##{number}"
 
-    %w[host branch thread_handle session_id instance_id].each do |field|
+    %w[host branch thread_handle session_id].each do |field|
       claim_value = present_string(claim[field])
       heartbeat_value = present_string(heartbeat[field])
+      missing << "claim #{field}" unless claim_value
+      missing << "heartbeat #{field}" unless heartbeat_value
       issues << "claim/heartbeat #{field} mismatch" if claim_value && heartbeat_value && claim_value != heartbeat_value
+    end
+
+    claim_instance = present_string(claim["instance_id"])
+    heartbeat_instance = present_string(heartbeat["instance_id"])
+    if claim_instance && heartbeat_instance && claim_instance != heartbeat_instance
+      issues << "claim/heartbeat instance_id mismatch"
+    end
+    if runner == UNKNOWN && present_string(heartbeat["host"]) && present_string(heartbeat["session_source"])
+      issues << "runner metadata conflict"
+    elsif runner == UNKNOWN
+      missing << "runner"
+    end
+    if runner == "Codex"
+      missing << "Codex machine_id" if machine_id == UNKNOWN
+      missing << "Codex deep link" if deep_link == UNKNOWN
     end
   end
 
-  binding_status = if holder.nil? || heartbeat.nil?
-                     "unavailable"
-                   elsif issues.empty?
-                     "consistent"
-                   else
+  binding_status = if issues.any?
                      "inconsistent"
+                   elsif missing.any?
+                     "unavailable"
+                   else
+                     "consistent"
                    end
   route_record = binding_status == "consistent" ? record : {}
   route_runner = binding_status == "consistent" ? runner : UNKNOWN
@@ -96,6 +119,7 @@ def owner_route_evidence(repo:, number:, url:, claim:, heartbeat:, holder:, reco
   {
     "binding_status" => binding_status,
     "binding_issues" => issues,
+    "missing_fields" => missing,
     "work_item" => {
       "ref" => "#{repo}##{number}",
       "url" => url
@@ -408,6 +432,7 @@ items = requests.map do |request|
     thread_id:, deep_link:
   )
   owner_route.fetch("binding_issues").each { |issue| unknowns << "owner route: #{issue}" }
+  owner_route.fetch("missing_fields").each { |field| unknowns << "owner route unavailable: missing #{field}" }
 
   {
     "batch_id" => request[:batch_id] || UNKNOWN,

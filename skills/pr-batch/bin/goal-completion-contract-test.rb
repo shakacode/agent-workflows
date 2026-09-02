@@ -1119,6 +1119,18 @@ class GoalCompletionContractTest < Minitest::Test
                  "closeout-additive mutation must delete the production rule"
     assert_includes human_status_contract_drift_errors(closeout_deletion),
                     HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE
+
+    {
+      "owner-route" => HUMAN_STATUS_OWNER_ROUTE_RULE,
+      "owner-route-unavailable" => HUMAN_STATUS_OWNER_ROUTE_UNAVAILABLE_RULE,
+      "owner-route-inconsistent" => HUMAN_STATUS_OWNER_ROUTE_INCONSISTENT_RULE,
+      "owner-route-coalescing" => HUMAN_STATUS_OWNER_ROUTE_COALESCING_RULE
+    }.each do |label, phrase|
+      deletion = delete_squished_phrase(@human_status_contract_section, phrase)
+      refute_equal @human_status_contract_section, deletion,
+                   "#{label} mutation must delete the production rule"
+      assert_includes human_status_contract_drift_errors(deletion), phrase
+    end
   end
 
   def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces

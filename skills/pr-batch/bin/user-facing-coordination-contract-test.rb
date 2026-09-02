@@ -241,6 +241,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes batch_status, "Owner route", BATCH_STATUS
     assert_includes batch_status, "collector's `owner_route` object", BATCH_STATUS
     assert_includes batch_status, "host-provided task or workspace lookup", BATCH_STATUS
+    assert_includes batch_status, "For a lane with no active cross-task or cross-runner blocker, render `n/a`", BATCH_STATUS
+    assert_includes batch_status, "never present it as a cross-machine link", BATCH_STATUS
+    assert_includes batch_status, "For Conductor/Claude, report no Codex task link", BATCH_STATUS
     assert_includes batch_status, "do not print raw PID, process-group ID (PGID), lease, or queue-position", BATCH_STATUS
   end
 
