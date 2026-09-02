@@ -124,14 +124,24 @@ class AgentDoctorWorkflowsCLIIntegrationTest < Minitest::Test
 
     doctor(environment: { "DOCTOR_STATUS_STARTED_FILE" => started, "DOCTOR_STATUS_RELEASE_FILE" => release })
   ensure
-    releaser&.join(RELEASE_JOIN_TIMEOUT_SECONDS)
-    releaser&.kill
+    stop_releaser(releaser)
+  end
+
+  # A releaser failure must never replace the doctor result this test asserts on.
+  def stop_releaser(releaser)
+    return unless releaser
+
+    releaser.kill
+    releaser.join(RELEASE_JOIN_TIMEOUT_SECONDS)
+  rescue StandardError
+    nil
   end
 
   def doctor(delay: nil, timeout: nil, environment: {})
-    environment = environment.dup
-    environment["DOCTOR_STATUS_DELAY_SECONDS"] = delay.to_s if delay
-    environment["AGENT_DOCTOR_WORKFLOW_STATUS_TIMEOUT_SECONDS"] = timeout.to_s if timeout
+    defaults = {}
+    defaults["DOCTOR_STATUS_DELAY_SECONDS"] = delay.to_s if delay
+    defaults["AGENT_DOCTOR_WORKFLOW_STATUS_TIMEOUT_SECONDS"] = timeout.to_s if timeout
+    environment = defaults.merge(environment)
     Open3.capture3(environment, File.join(ROOT, "bin/agent-workflows-doctor"), "--stack-json",
                    "--host", "codex", "--target", @target, "--source", @source)
   end
