@@ -12,6 +12,7 @@ require "tmpdir"
 SCRIPT = File.expand_path("agent-workflows-delivery-state", __dir__)
 load SCRIPT
 require_relative "agent_doctor/install_ownership"
+require_relative "agent_doctor/timeout_budget"
 
 class AgentWorkflowsDeliveryStateTest < Minitest::Test
   def setup

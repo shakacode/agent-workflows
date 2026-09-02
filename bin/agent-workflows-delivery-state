@@ -8,7 +8,6 @@ require "find"
 require "open3"
 require "optparse"
 require "tmpdir"
-require_relative "agent_doctor/timeout_budget"
 
 module AgentWorkflowsDeliveryState
   SUPERPOWERS_MARKETPLACES = %w[openai-curated openai-curated-remote superpowers-dev].freeze
@@ -22,6 +21,16 @@ module AgentWorkflowsDeliveryState
   MANAGED_HELPER_INSTALL_MODE = 0o755
 
   module_function
+
+  # timeout_budget.rb is a fingerprinted managed copy like install_ownership.rb,
+  # so requiring it at load time would raise before the inventory could report
+  # it missing or broken. The inventory names that file either way.
+  def doctor_timeout_budget
+    require_relative "agent_doctor/timeout_budget"
+    AgentDoctor::TimeoutBudget
+  rescue LoadError, SyntaxError, StandardError
+    nil
+  end
 
   def normalized_plugin_source(value)
     return nil unless value.is_a?(String) && !value.strip.empty?
@@ -157,7 +166,10 @@ module AgentWorkflowsDeliveryState
 
   def codex_marketplace_output(target, marketplace)
     executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
-    default_timeout = AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT.to_s
+    budget = doctor_timeout_budget
+    return [nil, "agent doctor timeout budget is unavailable"] unless budget
+
+    default_timeout = budget::DELIVERY_STATE_HELPER_DEFAULT.to_s
     timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", default_timeout))
     return [nil, "invalid Codex plugin state timeout"] unless timeout_seconds.positive?
 

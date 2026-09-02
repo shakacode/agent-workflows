@@ -340,27 +340,31 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
 }
 
 
-test_installed_status_reports_a_removed_install_ownership_module() {
-  local tmp source target output status module_path
+test_installed_status_reports_a_removed_doctor_module_it_depends_on() {
+  local tmp source target output status module_name module_path
   tmp="$(mktemp -d)"
   source="$tmp/source"
   target="$tmp/codex-home"
-  module_path="$target/bin/agent_doctor/install_ownership.rb"
   mkdir -p "$source"
   new_source_repo "$source"
 
-  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
-  # The delivery-state helper verifies the doctor tree using this very module,
-  # so removing it must still produce a structured report, not a LoadError.
-  rm -f "$module_path"
+  # The delivery-state helper depends on these very modules while verifying the
+  # doctor tree, so removing either must still produce a structured report
+  # rather than a LoadError from its own require.
+  for module_name in install_ownership.rb timeout_budget.rb; do
+    module_path="$target/bin/agent_doctor/$module_name"
+    rm -rf "$target"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+    rm -f "$module_path"
 
-  set +e
-  output="$("$target/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
-  status=$?
-  set -e
-  [[ "$status" -eq 3 ]] || fail "installed status exited $status without its ownership module: $output"
-  assert_contains "$output" "$module_path"
-  assert_not_contains "$output" "LoadError"
+    set +e
+    output="$("$target/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+    status=$?
+    set -e
+    [[ "$status" -eq 3 ]] || fail "installed status exited $status without $module_name: $output"
+    assert_contains "$output" "$module_path"
+    assert_not_contains "$output" "LoadError"
+  done
 }
 
 test_fresh_copy_install_reports_up_to_date_from_recorded_fingerprints() {
@@ -9054,7 +9058,7 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
-    test_installed_status_reports_a_removed_install_ownership_module
+    test_installed_status_reports_a_removed_doctor_module_it_depends_on
     test_fresh_copy_install_reports_up_to_date_from_recorded_fingerprints
     test_copy_install_refuses_a_mode_only_managed_doctor_module_change
     test_copy_install_refuses_a_managed_doctor_root_mode_change
