@@ -1213,9 +1213,21 @@ module CompletedBatchAuditReceipt
     source_label = "#{source_pr.fetch('repo')}#pull_request:#{source_pr.fetch('number')}"
     expected = [
       "#{source_label} is outside the trusted batch target manifest",
-      "#{label} target state/head is not authenticated or fresh",
-      "#{source_label} coordination target state is not merged"
+      "#{label} target state/head is not authenticated or fresh"
     ]
+    case lane["pr_state"]
+    when "closed"
+      expected << "#{source_label} coordination target state is not merged"
+    when "merged"
+      expected.concat(
+        [
+          "#{label} coordination and target state disagree",
+          "#{label} coordination target state is not closed"
+        ]
+      )
+    else
+      return false
+    end
     blockers.sort == expected.sort
   rescue KeyError, TypeError, ArgumentError
     false
