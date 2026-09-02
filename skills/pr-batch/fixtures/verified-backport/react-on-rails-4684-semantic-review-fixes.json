@@ -3,14 +3,21 @@
   "source": {
     "repository": "shakacode/react_on_rails",
     "pull_request": 4661,
+    "author": "justin808",
     "head_sha": "d4fef09df8b5da0f580563e4f5fb775f4fcb5f0f",
     "merge_sha": "0357a64ac01bf748ecf0483eb3e9fc87b494b1d0",
     "trusted_status": "merged"
   },
   "source_evidence": {
+    "required_coverage": {
+      "policy_source": "source branch protection and review policy",
+      "review_ids": ["PRR_kwDOAnNnU88AAAABF9bvVA"],
+      "check_ids": ["actions-run-29337585065-job-87100656105"]
+    },
     "reviews": [
       {
         "id": "PRR_kwDOAnNnU88AAAABF9bvVA",
+        "actor": "justin808",
         "head_sha": "d4fef09df8b5da0f580563e4f5fb775f4fcb5f0f",
         "status": "accepted",
         "url": "https://github.com/shakacode/react_on_rails/pull/4661"
@@ -71,7 +78,7 @@
   },
   "review_generated_changes": [
     {
-      "id": "discussion-r3590737543",
+      "id": "discussion-r3590737544",
       "files": ["rakelib/release.rake", "react_on_rails/spec/react_on_rails/release_rake_helpers_spec.rb"],
       "hunks": ["accept the installed gh response framing without accepting arbitrary mixed framing"],
       "behavior_change": true,
@@ -87,10 +94,10 @@
   ],
   "forward_port_dispositions": [
     {
-      "change_id": "discussion-r3590737543",
+      "change_id": "discussion-r3590737544",
       "status": "tracked",
       "rationale": "The durable review thread records the response-framing fix for source-branch assessment.",
-      "url": "https://github.com/shakacode/react_on_rails/pull/4684#discussion_r3590737543"
+      "url": "https://github.com/shakacode/react_on_rails/pull/4684#discussion_r3590737544"
     },
     {
       "change_id": "discussion-r3590767355",

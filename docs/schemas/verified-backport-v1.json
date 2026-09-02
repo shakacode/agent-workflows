@@ -78,9 +78,20 @@
         {"const": "UNKNOWN"}
       ]
     },
+    "nonemptyStringListOrUnknown": {
+      "oneOf": [
+        {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/nonemptyString"}
+        },
+        {"const": "UNKNOWN"}
+      ]
+    },
     "source": {
       "type": "object",
-      "required": ["repository", "pull_request", "head_sha", "merge_sha", "trusted_status"],
+      "required": ["repository", "pull_request", "author", "head_sha", "merge_sha", "trusted_status"],
       "properties": {
         "repository": {
           "oneOf": [
@@ -94,6 +105,7 @@
             {"const": "UNKNOWN"}
           ]
         },
+        "author": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
         "head_sha": {"$ref": "#/$defs/shaOrUnknown"},
         "merge_sha": {"$ref": "#/$defs/shaOrUnknown"},
         "trusted_status": {"enum": ["merged", "untrusted", "UNKNOWN"]}
@@ -102,8 +114,9 @@
     },
     "sourceEvidence": {
       "type": "object",
-      "required": ["reviews", "checks"],
+      "required": ["required_coverage", "reviews", "checks"],
       "properties": {
+        "required_coverage": {"$ref": "#/$defs/requiredCoverage"},
         "reviews": {
           "type": "array",
           "items": {"$ref": "#/$defs/reviewEvidence"}
@@ -115,11 +128,22 @@
       },
       "additionalProperties": false
     },
+    "requiredCoverage": {
+      "type": "object",
+      "required": ["policy_source", "review_ids", "check_ids"],
+      "properties": {
+        "policy_source": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "review_ids": {"$ref": "#/$defs/nonemptyStringListOrUnknown"},
+        "check_ids": {"$ref": "#/$defs/nonemptyStringListOrUnknown"}
+      },
+      "additionalProperties": false
+    },
     "reviewEvidence": {
       "type": "object",
-      "required": ["id", "head_sha", "status", "url"],
+      "required": ["id", "actor", "head_sha", "status", "url"],
       "properties": {
         "id": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
+        "actor": {"$ref": "#/$defs/nonemptyStringOrUnknown"},
         "head_sha": {"$ref": "#/$defs/shaOrUnknown"},
         "status": {"enum": ["accepted", "rejected", "pending", "UNKNOWN"]},
         "url": {"$ref": "#/$defs/durableUrlOrUnknown"}

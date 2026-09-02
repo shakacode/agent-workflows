@@ -53,6 +53,18 @@ class VerifiedBackportClassifyTest < Minitest::Test
     assert_includes result.fetch("reasons"), "invalid-contract"
   end
 
+  def test_schema_invalid_evidence_cannot_enter_the_fast_path
+    evidence = fixture("react-on-rails-4677-exact-validation-focused")
+    evidence.dig("source_evidence", "reviews", 0)["url"] = "http://example.com/self-attested-review"
+
+    refute_empty schema_errors(evidence)
+    result = classify(evidence)
+
+    assert_equal "ordinary-full", result.fetch("classification")
+    refute result.fetch("fast_path")
+    assert_includes result.fetch("reasons"), "invalid-contract"
+  end
+
   def test_exact_claim_without_both_review_and_ci_reuse_fails_closed
     evidence = fixture("react-on-rails-4677-exact-validation-focused")
     evidence["reused_evidence"] = evidence.fetch("reused_evidence").select do |item|
@@ -63,6 +75,46 @@ class VerifiedBackportClassifyTest < Minitest::Test
 
     assert_equal "ordinary-full", result.fetch("classification")
     assert_includes result.fetch("reasons"), "reused-evidence-incomplete"
+  end
+
+  def test_self_attested_review_and_arbitrary_selector_cannot_earn_the_fast_path
+    evidence = fixture("react-on-rails-4677-exact-validation-focused")
+    source_head = evidence.dig("source", "head_sha")
+    evidence["source_evidence"] = {
+      "reviews" => [{
+        "id" => "self-attested-review",
+        "head_sha" => source_head,
+        "status" => "accepted",
+        "url" => "https://github.com/shakacode/react_on_rails/pull/4656"
+      }],
+      "checks" => [{
+        "id" => "arbitrary-selector",
+        "name" => "detect-changes",
+        "head_sha" => source_head,
+        "status" => "passed",
+        "url" => "https://github.com/shakacode/react_on_rails/actions/runs/29305769015/job/86998660379"
+      }]
+    }
+    evidence["reused_evidence"] = [
+      { "kind" => "review", "source_id" => "self-attested-review", "head_sha" => source_head },
+      { "kind" => "check", "source_id" => "arbitrary-selector", "head_sha" => source_head }
+    ]
+
+    result = classify(evidence)
+
+    assert_equal "ordinary-full", result.fetch("classification")
+    refute result.fetch("fast_path")
+  end
+
+  def test_required_source_review_must_be_independent_from_the_author
+    evidence = fixture("react-on-rails-4677-exact-validation-focused")
+    evidence.dig("source_evidence", "reviews", 0)["actor"] = evidence.dig("source", "author")
+
+    result = classify(evidence)
+
+    assert_equal "ordinary-full", result.fetch("classification")
+    refute result.fetch("fast_path")
+    assert_includes result.fetch("reasons"), "source-review-not-independent"
   end
 
   def test_review_behavior_change_requires_a_durable_forward_port_url
@@ -78,7 +130,7 @@ class VerifiedBackportClassifyTest < Minitest::Test
       "change_id" => "review-fix-1",
       "status" => "tracked",
       "rationale" => "Follow-up recorded outside this receipt.",
-      "url" => "not-a-durable-url"
+      "url" => "UNKNOWN"
     }]
 
     result = classify(evidence)
@@ -86,6 +138,47 @@ class VerifiedBackportClassifyTest < Minitest::Test
     assert_equal "ordinary-full", result.fetch("classification")
     refute result.fetch("forward_port_complete")
     assert_includes result.fetch("reasons"), "forward-port-disposition-missing"
+  end
+
+  def test_duplicate_behavior_change_identities_are_not_forward_port_complete
+    evidence = fixture("react-on-rails-4677-exact-validation-focused")
+    evidence["review_generated_changes"] = [
+      behavior_change("review-fix-1", "first behavior change"),
+      behavior_change("review-fix-1", "different behavior change")
+    ]
+    evidence["forward_port_dispositions"] = [forward_port_disposition("review-fix-1", "tracked")]
+
+    result = classify(evidence)
+
+    refute result.fetch("forward_port_complete")
+    assert_includes result.fetch("reasons"), "forward-port-disposition-missing"
+  end
+
+  def test_conflicting_forward_port_dispositions_are_not_complete
+    evidence = fixture("react-on-rails-4677-exact-validation-focused")
+    evidence["review_generated_changes"] = [behavior_change("review-fix-1", "behavior change")]
+    evidence["forward_port_dispositions"] = [
+      forward_port_disposition("review-fix-1", "tracked"),
+      forward_port_disposition("review-fix-1", "not-applicable")
+    ]
+
+    result = classify(evidence)
+
+    refute result.fetch("forward_port_complete")
+    assert_includes result.fetch("reasons"), "forward-port-disposition-missing"
+  end
+
+  def test_required_source_coverage_must_be_present_and_reused
+    evidence = fixture("react-on-rails-4677-exact-validation-focused")
+    omitted_check_id = evidence.dig("source_evidence", "required_coverage", "check_ids").last
+    evidence.fetch("source_evidence").fetch("checks").reject! { |item| item.fetch("id") == omitted_check_id }
+    evidence.fetch("reused_evidence").reject! { |item| item.fetch("source_id") == omitted_check_id }
+
+    result = classify(evidence)
+
+    assert_equal "ordinary-full", result.fetch("classification")
+    refute result.fetch("fast_path")
+    assert_includes result.fetch("reasons"), "source-required-coverage-incomplete"
   end
 
   def test_contradictory_target_policy_fails_closed
@@ -116,6 +209,20 @@ class VerifiedBackportClassifyTest < Minitest::Test
       assert_empty result.fetch("reused_evidence"), name
       refute result.fetch("target_gates_waived"), name
     end
+  end
+
+  def test_react_on_rails_4684_response_framing_links_the_actual_fix_thread
+    evidence = fixture("react-on-rails-4684-semantic-review-fixes")
+    response_change = evidence.fetch("review_generated_changes").find do |change|
+      change.fetch("hunks").include?("accept the installed gh response framing without accepting arbitrary mixed framing")
+    end
+    response_disposition = evidence.fetch("forward_port_dispositions").find do |item|
+      item.fetch("change_id") == response_change.fetch("id")
+    end
+
+    assert_equal "discussion-r3590737544", response_change.fetch("id")
+    assert_equal "https://github.com/shakacode/react_on_rails/pull/4684#discussion_r3590737544",
+                 response_disposition.fetch("url")
   end
 
   def test_schema_extensions_do_not_accidentally_qualify_as_exact
@@ -182,8 +289,32 @@ class VerifiedBackportClassifyTest < Minitest::Test
 
   private
 
+  def behavior_change(id, rationale)
+    {
+      "id" => id,
+      "files" => ["rakelib/release.rake"],
+      "hunks" => [rationale],
+      "behavior_change" => true,
+      "rationale" => rationale
+    }
+  end
+
+  def forward_port_disposition(change_id, status)
+    {
+      "change_id" => change_id,
+      "status" => status,
+      "rationale" => "Durable source-branch disposition.",
+      "url" => "https://github.com/shakacode/react_on_rails/issues/4681"
+    }
+  end
+
   def fixture(name)
     JSON.parse(File.read(File.join(FIXTURES, "#{name}.json"), encoding: "UTF-8"))
+  end
+
+  def schema_errors(evidence)
+    schema = JSON.parse(File.read(SCHEMA, encoding: "UTF-8"))
+    JSONSchemer.schema(schema).validate(evidence).to_a
   end
 
   def classify(evidence)

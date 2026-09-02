@@ -1,6 +1,14 @@
 # frozen_string_literal: true
 
+require "json"
+
+pinned_json_schemer_version = ENV["JSON_SCHEMER_VERSION"]
+gem "json_schemer", pinned_json_schemer_version if pinned_json_schemer_version
+require "json_schemer"
+
 module VerifiedBackport
+  SCHEMA_PATH = File.expand_path("../../../docs/schemas/verified-backport-v1.json", __dir__)
+  SCHEMA = JSONSchemer.schema(JSON.parse(File.read(SCHEMA_PATH, encoding: "UTF-8")))
   SHA = /\A[0-9a-f]{40}\z/
   PATCH_ID = /\A[0-9a-f]{40}\z/
   EXACT_MECHANISMS = %w[git-patch-id-stable-v1].freeze
@@ -9,9 +17,10 @@ module VerifiedBackport
     target_requirements review_generated_changes forward_port_dispositions
   ].freeze
   OBJECT_KEYS = {
-    "source" => %w[repository pull_request head_sha merge_sha trusted_status],
-    "source_evidence" => %w[reviews checks],
-    "review_evidence" => %w[id head_sha status url],
+    "source" => %w[repository pull_request author head_sha merge_sha trusted_status],
+    "source_evidence" => %w[required_coverage reviews checks],
+    "required_coverage" => %w[policy_source review_ids check_ids],
+    "review_evidence" => %w[id actor head_sha status url],
     "check_evidence" => %w[id name head_sha status url],
     "target" => %w[branch base_sha head_sha],
     "patch" => %w[
@@ -59,7 +68,8 @@ module VerifiedBackport
   end
 
   def contract_shape?(evidence)
-    exact_keys?(evidence, ["schema", *REQUIRED_SECTIONS]) && evidence["schema"] == "verified-backport-v1" &&
+    evidence.is_a?(Hash) && SCHEMA.valid?(evidence) &&
+      exact_keys?(evidence, ["schema", *REQUIRED_SECTIONS]) && evidence["schema"] == "verified-backport-v1" &&
       REQUIRED_SECTIONS.all? { |key| evidence.key?(key) } &&
       %w[source source_evidence target patch target_only_delta target_requirements].all? do |key|
         exact_keys?(evidence[key], OBJECT_KEYS.fetch(key))
@@ -68,6 +78,8 @@ module VerifiedBackport
         evidence[key].is_a?(Array)
       end && evidence.dig("source_evidence", "reviews").is_a?(Array) &&
       evidence.dig("source_evidence", "checks").is_a?(Array) &&
+      exact_keys?(evidence.dig("source_evidence", "required_coverage"),
+                  OBJECT_KEYS.fetch("required_coverage")) &&
       evidence.dig("source_evidence", "reviews").all? do |item|
         exact_keys?(item, OBJECT_KEYS.fetch("review_evidence"))
       end &&
@@ -108,6 +120,26 @@ module VerifiedBackport
     successful = reviews.all? { |item| item["status"] == "accepted" } &&
                  checks.all? { |item| item["status"] == "passed" }
     reasons << "source-evidence-not-successful" unless successful
+
+    required = source_evidence["required_coverage"]
+    review_ids = reviews.map { |item| item["id"] }
+    check_ids = checks.map { |item| item["id"] }
+    identities_unique = review_ids.uniq.length == review_ids.length && check_ids.uniq.length == check_ids.length
+    reasons << "source-evidence-identity-ambiguous" unless identities_unique
+
+    required_review_ids = required["review_ids"]
+    required_check_ids = required["check_ids"]
+    coverage_complete = nonempty_string?(required["policy_source"]) &&
+                        required_review_ids.is_a?(Array) && !required_review_ids.empty? &&
+                        required_check_ids.is_a?(Array) && !required_check_ids.empty? &&
+                        (required_review_ids - review_ids).empty? && (required_check_ids - check_ids).empty?
+    reasons << "source-required-coverage-incomplete" unless coverage_complete
+
+    required_reviews = reviews.select { |item| Array(required_review_ids).include?(item["id"]) }
+    independent = required_reviews.all? do |item|
+      nonempty_string?(item["actor"]) && !item["actor"].strip.casecmp?(source["author"].to_s.strip)
+    end
+    reasons << "source-review-not-independent" unless independent
   end
 
   def patch_reasons(evidence, reasons)
@@ -147,7 +179,12 @@ module VerifiedBackport
       source_ids.fetch(item["kind"], []).include?(item["source_id"])
     end
     reasons << "reused-evidence-unresolved" unless resolved
-    reasons << "reused-evidence-incomplete" unless reused.map { |item| item["kind"] }.uniq.sort == %w[check review]
+
+    required = evidence.dig("source_evidence", "required_coverage")
+    required_reuse = Array(required["review_ids"]).map { |id| ["review", id] } +
+                     Array(required["check_ids"]).map { |id| ["check", id] }
+    reused_identities = reused.map { |item| [item["kind"], item["source_id"]] }
+    reasons << "reused-evidence-incomplete" unless (required_reuse - reused_identities).empty?
   end
 
   def target_policy_reasons(evidence, reasons)
@@ -180,16 +217,19 @@ module VerifiedBackport
   def forward_port_complete?(evidence)
     return false unless contract_shape?(evidence)
 
-    behavior_change_ids = evidence.fetch("review_generated_changes").filter_map do |change|
+    changes = evidence.fetch("review_generated_changes")
+    change_ids = changes.filter_map { |change| change["id"] if change.is_a?(Hash) }
+    return false unless change_ids.uniq.length == change_ids.length
+
+    behavior_change_ids = changes.filter_map do |change|
       change["id"] if change.is_a?(Hash) && change["behavior_change"] == true
     end
+
     dispositions = evidence.fetch("forward_port_dispositions")
     behavior_change_ids.all? do |id|
-      dispositions.any? do |item|
-        item.is_a?(Hash) && item["change_id"] == id &&
-          %w[applied tracked not-applicable].include?(item["status"]) &&
-          nonempty_string?(item["rationale"]) && durable_url?(item["url"])
-      end
+      matches = dispositions.select { |item| item.is_a?(Hash) && item["change_id"] == id }
+      matches.length == 1 && %w[applied tracked not-applicable].include?(matches.first["status"]) &&
+        nonempty_string?(matches.first["rationale"]) && durable_url?(matches.first["url"])
     end
   end
 
