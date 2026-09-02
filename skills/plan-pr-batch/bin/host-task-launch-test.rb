@@ -41,6 +41,20 @@ class HostTaskLaunchTest < Minitest::Test
     end
   end
 
+  def test_prepare_remains_non_creating_after_durable_publication
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      publish(input)
+      input["operation"] = "prepare"
+
+      repeated = invoke(input)
+
+      assert_equal "publish-control-tower", repeated.dig("action", "kind")
+      refute repeated.fetch("action").key?("create_attempt_fenced")
+      assert_equal "prepared", repeated.dig("record", "lanes", 0, "transition")
+    end
+  end
+
   def test_rejects_a_different_intent_without_mutating_the_existing_fence
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
@@ -353,6 +367,45 @@ class HostTaskLaunchTest < Minitest::Test
     end
   end
 
+  def test_dependency_transition_cannot_reopen_a_terminal_lane
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      publish(input)
+      input["operation"] = "update"
+      input["update"] = { "state" => "completed", "outcome" => "merged", "latest" => "merged" }
+      terminal = invoke(input)
+      assert_equal "completed", terminal.dig("record", "lanes", 0, "state")
+      before = File.binread(input.fetch("local_fence_path"))
+
+      input["operation"] = "retry"
+      input.delete("update")
+      input["dependency_state"] = "waiting"
+      rejected = invoke(input)
+
+      assert_equal "invalid-input", rejected.fetch("status")
+      assert_equal before, File.binread(input.fetch("local_fence_path"))
+    end
+  end
+
+  def test_task_binding_cannot_reopen_a_terminal_lane
+    Dir.mktmpdir("host-task-launch-test") do |directory|
+      input = input_for(directory)
+      begin_create(input)
+      input["operation"] = "update"
+      input["update"] = { "state" => "completed", "outcome" => "merged", "latest" => "merged" }
+      invoke(input)
+      before = File.binread(input.fetch("local_fence_path"))
+
+      input["operation"] = "bind-task"
+      input.delete("update")
+      input["task_identity"] = { "task_id" => "late-task", "task_url" => "https://example.test/late-task" }
+      rejected = invoke(input)
+
+      assert_equal "invalid-input", rejected.fetch("status")
+      assert_equal before, File.binread(input.fetch("local_fence_path"))
+    end
+  end
+
   def test_valid_no_backend_override_keeps_reconciliation_due_visible_and_invalid_override_is_rejected
     Dir.mktmpdir("host-task-launch-test") do |directory|
       input = input_for(directory)
@@ -364,6 +417,9 @@ class HostTaskLaunchTest < Minitest::Test
         "operator_context" => "single-operator",
         "coordination" => { "status" => "unavailable", "retry_evidence" => "bounded retry exhausted" }
       }
+      prepared = invoke(input)
+      assert_equal "publish-control-tower", prepared.dig("action", "kind")
+      input["operation"] = "begin-create"
       result = invoke(input)
       assert_equal "create-task", result.dig("action", "kind")
       assert_includes result.fetch("control_tower"), "GitHub reconciliation due: yes"

@@ -772,9 +772,10 @@ Select `host-native-user-task` only after both the capability result and the
 launch fence pass. The fence requires the persisted outer identity and a durable
 record-destination publication before returning a create action, except for a
 visible, explicit, bounded single-operator/no-backend override that preserves
-the same identity and makes GitHub reconciliation due visible. It fences every
-attempt, retries with the same key only when the host supports idempotency, and
-otherwise returns reconciliation by outer run ID and replay identity. It never
+the same identity and makes GitHub reconciliation due visible. `prepare` stays
+non-creating after either gate is ready; `begin-create` fences the create
+attempt. Retries use the same key only when the host supports idempotency, and
+otherwise return reconciliation by outer run ID and replay identity. It never
 calls host task APIs or GitHub itself. A waiting dependency returns a waiting
 action. A later ready transition clears that persisted wait and resumes the
 pending launch or active task; unavailable capability or fence evidence remains

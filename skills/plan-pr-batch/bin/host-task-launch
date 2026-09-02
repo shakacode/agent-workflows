@@ -46,9 +46,12 @@ module HostTaskLaunch
     publication = publication_gate(input, record)
     return invalid_input if publication == :invalid
 
-    lane["state"] = "waiting" if input["dependency_state"] == "waiting"
-    if input["dependency_state"] == "ready" && lane["state"] == "waiting"
+    if input["dependency_state"] == "waiting"
+      lane["state"] = "waiting"
+      validate_lane_lifecycle!(lane)
+    elsif input["dependency_state"] == "ready" && lane["state"] == "waiting"
       lane["state"] = lane.dig("task", "id") == "UNKNOWN" ? "launch-pending" : "active"
+      validate_lane_lifecycle!(lane)
     end
     record["reconciliation_due"] = publication.fetch("reconciliation_due")
     record["coordination"] = publication.fetch("coordination")
@@ -337,7 +340,7 @@ module HostTaskLaunch
   end
 
   def action_for(operation, capabilities, publication, _record, lane, create_attempt_already_fenced)
-    return { "kind" => "publish-control-tower" } if operation == "prepare" && !publication.fetch("ready")
+    return { "kind" => "publish-control-tower" } if operation == "prepare"
     return { "kind" => "publish-control-tower" } unless publication.fetch("ready")
     return { "kind" => "wait-for-dependencies" } if lane && lane["state"] == "waiting"
     return { "kind" => "begin-create" } if operation == "publish"
@@ -370,6 +373,7 @@ module HostTaskLaunch
     lane["state"] = "active"
     lane["transition"] = "task-bound"
     lane["latest"] = "task identity bound"
+    validate_lane_lifecycle!(lane)
   end
 
   def update_lane!(lane, update)
