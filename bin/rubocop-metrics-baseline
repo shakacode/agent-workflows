@@ -4,6 +4,7 @@
 require "fileutils"
 require "json"
 require "open3"
+require_relative "ruby_file_surface"
 
 module RubocopMetrics
   COPS = %w[
@@ -18,13 +19,18 @@ module RubocopMetrics
   ].freeze
   BASELINE_PATH = File.join("test", "fixtures", "rubocop-metrics-baseline.json")
 
+  def self.version(root)
+    File.read(File.join(root, ".rubocop-version"), encoding: "UTF-8").strip
+  end
+
   class Profile
     def initialize(root:)
       @root = root
     end
 
     def build
-      result = rubocop_result
+      files = tracked_ruby_files
+      result = files.empty? ? empty_result : rubocop_result(files)
       {
         "schema_version" => 1,
         "rubocop_version" => version,
@@ -35,9 +41,13 @@ module RubocopMetrics
 
     private
 
-    def rubocop_result
+    def empty_result
+      { "metadata" => { "rubocop_version" => version }, "files" => [] }
+    end
+
+    def rubocop_result(files)
       output, error_output, status = Open3.capture3(
-        "rubocop", *rubocop_arguments, chdir: @root
+        "rubocop", *rubocop_arguments(files), chdir: @root
       )
       unless [0, 1].include?(status.exitstatus)
         raise "rubocop failed (exit #{status.exitstatus}): #{error_output.strip}"
@@ -46,14 +56,14 @@ module RubocopMetrics
       JSON.parse(output).tap { |result| verify_version!(result) }
     end
 
-    def rubocop_arguments
+    def rubocop_arguments(files)
       [
         "_#{version}_",
         "--only", COPS.join(","),
         "--format", "json",
         "--ignore-disable-comments",
         "--force-exclusion",
-        *tracked_ruby_files
+        *files
       ]
     end
 
@@ -78,16 +88,7 @@ module RubocopMetrics
     end
 
     def ruby_file?(path)
-      return true if path.end_with?(".rb", ".rake", ".gemspec", ".ru")
-      return true if File.basename(path).match?(/\A(?:Gemfile|Rakefile)\z/)
-
-      first_line(path)&.match?(%r{\A#!\s*(?:/usr/bin/env\s+|/(?:usr/)?bin/)ruby(?:\s|\z)})
-    end
-
-    def first_line(path)
-      File.open(File.join(@root, path), "rb") { |file| file.gets(nil, 256) }
-    rescue ArgumentError, Errno::EACCES, Errno::ENOENT
-      nil
+      RubyFileSurface.ruby_file?(File.join(@root, path))
     end
 
     def metric_files(files)
@@ -119,9 +120,7 @@ module RubocopMetrics
     end
 
     def version
-      @version ||= File.read(
-        File.join(@root, ".rubocop-version"), encoding: "UTF-8"
-      ).strip
+      @version ||= RubocopMetrics.version(@root)
     end
   end
 
@@ -196,7 +195,7 @@ module RubocopMetrics
     end
 
     def current_version
-      File.read(File.join(@root, ".rubocop-version"), encoding: "UTF-8").strip
+      RubocopMetrics.version(@root)
     end
 
     def metric_increases(baseline_files, current_files)

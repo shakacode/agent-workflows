@@ -62,6 +62,46 @@ module LintCommandTestSupport
       }]
     }] }
   end
+
+  def assert_regular_lint_ran(log)
+    commands = File.readlines(log, chomp: true).map { |line| JSON.parse(line) }
+    assert_equal 2, rubocop_commands(commands).length
+    assert_includes commands.map(&:first), "yamllint"
+  end
+end
+
+class LintMetricsBaselineTest < Minitest::Test
+  include LintCommandTestSupport
+
+  ROOT = File.expand_path("..", __dir__)
+  SCRIPT = File.join(ROOT, "bin/lint")
+
+  def test_reports_a_missing_helper
+    runner = Class.new(LintRunner) do
+      def check_version!(_tool); end
+      def system(*); end
+    end.new
+
+    _stdout, stderr = capture_io { refute runner.send(:check_metrics_baseline) }
+
+    assert_includes stderr, "bin/rubocop-metrics-baseline is missing or not executable"
+  end
+
+  def test_reports_regular_lint_results_when_the_baseline_increases
+    Dir.mktmpdir("lint-command-test") do |directory|
+      log = File.join(directory, "commands.jsonl")
+      install_fake_linters(directory)
+      environment = { "PATH" => "#{directory}:#{ENV.fetch('PATH')}",
+                      "LINT_TEST_LOG" => log,
+                      "LINT_TEST_RUBOCOP_RESULT" => JSON.generate(increased_metrics_result) }
+
+      stdout, stderr, status = Open3.capture3(environment, SCRIPT)
+
+      refute status.success?, stdout
+      assert_includes stderr, "new.rb Metrics/MethodLength value #1: 0 -> 12"
+      assert_regular_lint_ran(log)
+    end
+  end
 end
 
 class LintCommandTest < Minitest::Test
@@ -132,22 +172,6 @@ class LintCommandTest < Minitest::Test
       assert_includes by_tool.fetch("yamllint"), ".github/workflows/validate.yml"
       assert_includes by_tool.fetch("yamllint"), "--strict"
       assert_includes by_tool.fetch("actionlint"), ".github/workflows/validate.yml"
-    end
-  end
-
-  def test_stops_when_the_metrics_baseline_increases
-    Dir.mktmpdir("lint-command-test") do |directory|
-      log = File.join(directory, "commands.jsonl")
-      install_fake_linters(directory)
-      environment = { "PATH" => "#{directory}:#{ENV.fetch('PATH')}",
-                      "LINT_TEST_LOG" => log,
-                      "LINT_TEST_RUBOCOP_RESULT" => JSON.generate(increased_metrics_result) }
-
-      stdout, stderr, status = Open3.capture3(environment, SCRIPT)
-
-      refute status.success?, stdout
-      assert_includes stderr, "new.rb Metrics/MethodLength value #1: 0 -> 12"
-      assert_equal 1, File.readlines(log).length
     end
   end
 

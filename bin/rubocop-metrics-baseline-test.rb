@@ -7,18 +7,10 @@ require "minitest/autorun"
 require "open3"
 require "rbconfig"
 require "tmpdir"
+load File.expand_path("rubocop-metrics-baseline", __dir__)
 
 module RubocopMetricsFixtures
-  COPS = %w[
-    Metrics/AbcSize
-    Metrics/BlockLength
-    Metrics/ClassLength
-    Metrics/CyclomaticComplexity
-    Metrics/MethodLength
-    Metrics/ModuleLength
-    Metrics/ParameterLists
-    Metrics/PerceivedComplexity
-  ].freeze
+  COPS = RubocopMetrics::COPS
   LOCATION = {
     "start_line" => 1, "start_column" => 1, "last_line" => 1,
     "last_column" => 3, "length" => 3, "line" => 1, "column" => 1
@@ -66,6 +58,7 @@ module RubocopMetricsTestRepository
 
   ROOT = File.expand_path("..", __dir__)
   SCRIPT = File.join(ROOT, "bin/rubocop-metrics-baseline")
+  RUBY_FILE_SURFACE = File.join(ROOT, "bin/ruby_file_surface.rb")
   BASELINE = File.join("test", "fixtures", "rubocop-metrics-baseline.json")
 
   def run_helper(root, environment, command)
@@ -83,11 +76,13 @@ module RubocopMetricsTestRepository
   def prepare_repository(root)
     FileUtils.mkdir_p(File.join(root, "bin"))
     FileUtils.cp(SCRIPT, File.join(root, "bin"))
+    FileUtils.cp(RUBY_FILE_SURFACE, File.join(root, "bin"))
     File.write(File.join(root, ".rubocop-version"), "1.87.0\n")
     File.write(File.join(root, ".rubocop.yml"), "AllCops:\n  NewCops: disable\n")
     File.write(File.join(root, "example.rb"), "def example = :ok\n")
+    File.write(File.join(root, "README.md"), "# Not Ruby\n")
     git(root, "init", "--quiet")
-    git(root, "add", ".rubocop-version", ".rubocop.yml", "example.rb")
+    git(root, "add", ".rubocop-version", ".rubocop.yml", "README.md", "example.rb")
   end
 
   def fake_rubocop_environment(root)
@@ -148,6 +143,19 @@ class RubocopMetricsRefreshTest < Minitest::Test
       assert_equal COPS.join(","), arguments.fetch(arguments.index("--only") + 1)
       assert_includes arguments, "--ignore-disable-comments"
       assert_includes arguments, "example.rb"
+      refute_includes arguments, "README.md"
+    end
+  end
+
+  def test_refresh_does_not_invoke_rubocop_without_tracked_ruby_files
+    with_repository do |root, environment, log|
+      FileUtils.rm(File.join(root, "example.rb"))
+
+      stdout, stderr, status = run_helper(root, environment, "refresh")
+
+      assert status.success?, "#{stdout}\n#{stderr}"
+      assert_equal({}, JSON.parse(File.read(File.join(root, BASELINE))).fetch("files"))
+      refute_path_exists log
     end
   end
 end

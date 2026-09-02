@@ -10,7 +10,10 @@ selects the disabled cops explicitly, uses the version in `.rubocop-version`,
 and scans tracked Ruby files. For each file and cop, the baseline stores the
 observed values in descending order. A check fails when a file gains an offense
 or any ranked value rises, even when the number of offenses stays unchanged.
-Moving a method or changing line numbers does not create noise.
+This is a per-file, per-cop severity-distribution guarantee, not an identity
+check for each method or block. Moving a method or changing line numbers does
+not create noise, and one reduction can offset a smaller increase at a lower
+rank. Review the JSON diff when reductions and increases occur together.
 
 ## Current Baseline And Priorities
 
