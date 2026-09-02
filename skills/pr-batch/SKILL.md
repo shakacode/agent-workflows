@@ -748,15 +748,15 @@ Use the canonical [Integration And PR Publication](../../workflows/pr-batch-inte
 
 When a coordinator-owned post-merge audit returns a ready follow-up prompt,
 use this bounded intake path. Consume the post-merge audit's deduplicated exact
-issue URL set without discovering or creating another target, and preserve its
-explicit follow-up `merge_authority`. Run ordinary prompt intake, planning,
-security, dependency, and dispatch gates for those issue targets; the audit
-handoff supplies targets, not launch authority or readiness evidence.
-
-Set the generated prompt's `merge_authority` to the active audit task's explicit
-value when present; otherwise use `none`. A prompt with a
-placeholder, missing issue URL, or `UNKNOWN` target returns to the audit
-coordinator for corrected issue accounting instead of launching.
+issue URL set without discovering or creating another target, preserve its
+explicit follow-up `merge_authority`, and run the ordinary prompt intake,
+planning, security, dependency, coordination, and dispatch gates. The audit
+handoff supplies targets and authority input, not launch or readiness evidence.
+Accept only an explicit `merge_authority` value of `none`, `ask`, or
+`auto_merge_when_gates_pass`; reject a missing, placeholder, or `UNKNOWN` value
+instead of generating or defaulting it. A prompt with a placeholder, missing
+issue URL, or `UNKNOWN` target returns to the audit coordinator for corrected
+issue accounting instead of launching.
 
 ## Pausing Or Stopping A Batch
 

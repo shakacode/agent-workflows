@@ -14,6 +14,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   SCRIPT = File.expand_path("completed-batch-audit-receipt", __dir__)
   FIXTURES = File.expand_path("../fixtures", __dir__)
   WORKFLOW_CONFIG = File.expand_path("../../../.agents/agent-workflow.yml", __dir__)
+  MOTIVATING_RECEIPT = File.join(FIXTURES, "pr-377-completed-batch-audit-receipt.txt")
   REAL_BACKEND = "agent-coord private backend"
 
   def marker(body)
@@ -42,6 +43,239 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       findings: OUTSTANDING #184
       followups_dispositions: ref: #184; owner: maintainer; current status: open; disposition: fix; evidence: issue #184
     BODY
+  end
+
+  def follow_up_handoff_input(findings:, merge_authority: nil)
+    {
+      "contract" => "post-merge-audit-follow-up-handoff",
+      "version" => 1,
+      "audit_url" => "https://github.com/acme/widgets/pull/377#issuecomment-5225395540",
+      "merge_authority" => merge_authority,
+      "findings" => findings
+    }
+  end
+
+  def tracked_finding(fingerprint:, issue_url:, outcome: "created", kind: "finding")
+    {
+      "affected_prs" => [377],
+      "fingerprint" => fingerprint,
+      "kind" => kind,
+      "outcome" => outcome,
+      "owner" => "audit coordinator",
+      "issue_url" => issue_url
+    }
+  end
+
+  def receipt_marker_from_handoff(handoff)
+    marker(<<~BODY)
+      batch_id: batch-380
+      audit_status: #{handoff.fetch('audit_status')}
+      verdict: #{handoff.fetch('verdict')}
+      scope_evidence: targets #377; audit report
+      checker_evidence: independent checker report
+      findings: #{handoff.fetch('findings')}
+      followups_dispositions: #{handoff.fetch('followups_dispositions')}
+    BODY
+  end
+
+  def test_complete_follow_up_receipt_requires_matching_canonical_issue_urls
+    issue_url = "https://github.com/acme/widgets/issues/380"
+    valid = marker(<<~BODY)
+      batch_id: batch-380
+      audit_status: complete
+      verdict: follow-ups-remain
+      scope_evidence: targets #377; audit report
+      checker_evidence: independent checker report
+      findings: OUTSTANDING #{issue_url}
+      followups_dispositions: ref: #{issue_url}; owner: audit coordinator; current status: open; disposition: track; evidence: #{issue_url}
+    BODY
+    motivating_miss = valid.sub(
+      "OUTSTANDING #{issue_url}",
+      "OUTSTANDING pr-377:missing-human-first-pr-description-changelog"
+    )
+    motivating_miss = motivating_miss.sub(
+      "ref: #{issue_url}",
+      "ref: pr-377:missing-human-first-pr-description-changelog"
+    )
+    no_disposition = motivating_miss.sub(
+      /^followups_dispositions:.*$/,
+      "followups_dispositions: none"
+    )
+    mismatched_evidence = valid.sub(
+      "evidence: #{issue_url}",
+      "evidence: https://github.com/acme/widgets/issues/381"
+    )
+    pull_request_ref = valid.gsub(issue_url, "https://github.com/acme/widgets/pull/380")
+    real_pr_377_receipt = File.read(MOTIVATING_RECEIPT, encoding: "UTF-8")
+    real_pr_377_marker = real_pr_377_receipt.delete_prefix(
+      "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n"
+    )
+
+    assert CompletedBatchAuditReceipt.marker_state(valid), "tracked exact issue URL must remain well formed"
+    refute CompletedBatchAuditReceipt.marker_state(real_pr_377_marker),
+           "the exact PR #377 receipt must fail closed"
+    refute CompletedBatchAuditReceipt.marker_state(motivating_miss),
+           "PR #377 prose-only follow-up identity must fail closed"
+    refute CompletedBatchAuditReceipt.marker_state(no_disposition),
+           "OUTSTANDING finding without a durable disposition must fail closed"
+    refute CompletedBatchAuditReceipt.marker_state(mismatched_evidence),
+           "tracked ref and evidence must identify the same exact issue"
+    refute CompletedBatchAuditReceipt.marker_state(pull_request_ref),
+           "a pull request URL is not a durable follow-up issue URL"
+  end
+
+  def test_follow_up_handoff_builds_one_changelog_issue_and_deduped_prompt
+    issue_url = "https://github.com/acme/widgets/issues/380"
+    findings = [
+      tracked_finding(
+        fingerprint: "pr-377:missing-changelog-a",
+        issue_url:,
+        kind: "changelog"
+      ),
+      tracked_finding(
+        fingerprint: "pr-377:missing-changelog-b",
+        issue_url:,
+        kind: "changelog"
+      ),
+      tracked_finding(
+        fingerprint: "pr-377:missing-changelog-a",
+        issue_url:,
+        kind: "changelog"
+      )
+    ]
+
+    assert_respond_to CompletedBatchAuditReceipt, :build_follow_up_handoff
+    handoff = CompletedBatchAuditReceipt.build_follow_up_handoff(
+      follow_up_handoff_input(findings:)
+    )
+
+    assert_equal [issue_url], handoff.fetch("issue_urls")
+    assert_equal 2, handoff.fetch("accounting").length
+    assert_equal "none", handoff.fetch("merge_authority")
+    assert_equal 1, handoff.fetch("prompt").scan(issue_url).length
+    assert_includes handoff.fetch("prompt"), "merge_authority: none"
+    assert CompletedBatchAuditReceipt.marker_state(receipt_marker_from_handoff(handoff))
+
+    conflicting = findings.map(&:dup)
+    conflicting[1]["issue_url"] = "https://github.com/acme/widgets/issues/381"
+    assert_raises(CompletedBatchAuditReceipt::Error) do
+      CompletedBatchAuditReceipt.build_follow_up_handoff(
+        follow_up_handoff_input(findings: conflicting)
+      )
+    end
+  end
+
+  def test_follow_up_handoff_reuses_existing_issue_and_preserves_explicit_authority
+    issue_url = "https://ghe.example.com:8443/acme/widgets/issues/376"
+    assert_respond_to CompletedBatchAuditReceipt, :build_follow_up_handoff
+    handoff = CompletedBatchAuditReceipt.build_follow_up_handoff(
+      follow_up_handoff_input(
+        findings: [
+          tracked_finding(
+            fingerprint: "pr-377:missing-tests",
+            issue_url:,
+            outcome: "existing"
+          )
+        ],
+        merge_authority: "ask"
+      )
+    )
+
+    assert_equal [issue_url], handoff.fetch("issue_urls")
+    assert_equal "existing", handoff.fetch("accounting").first.fetch("outcome")
+    assert_equal "ask", handoff.fetch("merge_authority")
+    assert_includes handoff.fetch("prompt"), "merge_authority: ask"
+    assert CompletedBatchAuditReceipt.marker_state(receipt_marker_from_handoff(handoff))
+
+    assert_raises(CompletedBatchAuditReceipt::Error) do
+      CompletedBatchAuditReceipt.build_follow_up_handoff(
+        follow_up_handoff_input(
+          findings: [tracked_finding(fingerprint: "pr-377:missing-tests", issue_url:)],
+          merge_authority: "UNKNOWN"
+        )
+      )
+    end
+  end
+
+  def test_follow_up_handoff_records_blocked_creation_without_a_placeholder
+    finding = {
+      "affected_prs" => [377],
+      "fingerprint" => "pr-377:missing-changelog",
+      "kind" => "changelog",
+      "outcome" => "blocked",
+      "owner" => "audit coordinator",
+      "operation" => "gh issue create",
+      "error" => "HTTP 403",
+      "retry" => "refresh authentication and retry issue creation"
+    }
+
+    assert_respond_to CompletedBatchAuditReceipt, :build_follow_up_handoff
+    handoff = CompletedBatchAuditReceipt.build_follow_up_handoff(
+      follow_up_handoff_input(findings: [finding])
+    )
+
+    assert_equal "blocked", handoff.fetch("audit_status")
+    assert_equal [], handoff.fetch("issue_urls")
+    assert_nil handoff.fetch("prompt")
+    assert_includes handoff.fetch("followups_dispositions"), "operation=gh issue create"
+    assert_includes handoff.fetch("followups_dispositions"), "error=HTTP 403"
+    assert_includes handoff.fetch("followups_dispositions"),
+                    "retry=refresh authentication and retry issue creation"
+    refute_includes handoff.fetch("followups_dispositions"), "<"
+    receipt = receipt_marker_from_handoff(handoff)
+    assert CompletedBatchAuditReceipt.marker_state(receipt)
+    refute CompletedBatchAuditReceipt.marker_state(
+      receipt.sub(/evidence: operation=.*$/, "evidence: HTTP 403")
+    ), "blocked creation must preserve the operation, error, and retry action"
+  end
+
+  def test_follow_up_handoff_records_report_only_as_terminal_without_issue_noise
+    finding = {
+      "affected_prs" => [377],
+      "fingerprint" => "pr-377:missing-changelog",
+      "kind" => "changelog",
+      "outcome" => "report-only",
+      "owner" => "audit coordinator",
+      "instruction_url" => "https://github.com/acme/widgets/issues/380#issuecomment-5225000000"
+    }
+
+    assert_respond_to CompletedBatchAuditReceipt, :build_follow_up_handoff
+    handoff = CompletedBatchAuditReceipt.build_follow_up_handoff(
+      follow_up_handoff_input(findings: [finding])
+    )
+
+    assert_equal "complete", handoff.fetch("audit_status")
+    assert_equal "clean", handoff.fetch("verdict")
+    assert_equal "none", handoff.fetch("findings")
+    assert_equal [], handoff.fetch("issue_urls")
+    assert_nil handoff.fetch("prompt")
+    assert_includes handoff.fetch("followups_dispositions"), "current status: terminal"
+    assert_includes handoff.fetch("followups_dispositions"), "disposition: not-applicable"
+    assert CompletedBatchAuditReceipt.marker_state(receipt_marker_from_handoff(handoff))
+  end
+
+  def test_follow_up_handoff_cli_emits_the_executable_contract
+    issue_url = "https://github.com/acme/widgets/issues/380"
+    input = follow_up_handoff_input(
+      findings: [
+        tracked_finding(
+          fingerprint: "pr-377:missing-changelog",
+          issue_url:,
+          kind: "changelog"
+        )
+      ]
+    )
+
+    Dir.mktmpdir("post-merge-audit-follow-up") do |directory|
+      input_path = File.join(directory, "input.json")
+      File.write(input_path, JSON.generate(input), encoding: "UTF-8")
+      stdout, stderr, status = Open3.capture3(SCRIPT, "handoff", "--handoff-json", input_path)
+
+      assert_predicate status, :success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal [issue_url], result.fetch("issue_urls")
+      assert_includes result.fetch("prompt"), "merge_authority: none"
+    end
   end
 
   def accepted_deferral_target

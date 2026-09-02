@@ -18,6 +18,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_CHANGELOG_TRACKING_RULE = "A changelog-only audit creates or reuses one bundled changelog issue; recommending `/update-changelog` is supplementary and never substitutes for durable tracking."
   REQUIRED_FOLLOW_UP_PROMPT_RULE = "After issue accounting, emit one ready copy-paste `$pr-batch` prompt whose target list contains every unique linked or created issue URL exactly once and no unresolved placeholder."
   REQUIRED_FOLLOW_UP_AUTHORITY_RULE = "Set the generated prompt's `merge_authority` to the active audit task's explicit value when present; otherwise use `none`."
+  REQUIRED_FOLLOW_UP_HANDOFF_HELPER_RULE = "Use `completed-batch-audit-receipt handoff --handoff-json <path>` as the source of truth for issue accounting, receipt dispositions, the deduplicated issue set, and the ready prompt."
+  REQUIRED_COMPLETE_FOLLOW_UP_RECEIPT_RULE = "A `complete` receipt with `follow-ups-remain` is well formed only when every `OUTSTANDING` ref has a nonterminal disposition whose `ref` and `evidence` are the same exact canonical issue URL."
   FORBIDDEN_FOLLOW_UP_AUTHORITY_DEFAULT = "otherwise use `auto_merge_when_gates_pass`"
   REQUIRED_CHANGELOG_CLASSIFICATION_RULE = "**Needs changelog update**: user-visible change is missing from the repo's changelog; create or reuse one bundled changelog issue as durable tracking and recommend `/update-changelog` when useful."
   REQUIRED_CHANGELOG_OUTPUT_RULE = "Missing changelog candidates, bound to one created or reused bundled changelog issue, with a recommendation to run `/update-changelog` when useful."
@@ -25,7 +27,9 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_BLOCKED_CREATION_RULE = "When issue creation is blocked, do not invent an issue URL or emit a target placeholder; preserve the finding fingerprint, exact failed operation and error, and one retry action in the issue accounting, receipt disposition, `Action needed:`, and `Next:` output."
   REQUIRED_REPORT_ONLY_RULE = "An explicit report-only/no-issue instruction suppresses issue creation and follow-up prompt generation for that finding, and the final accounting records the instruction as its disposition evidence."
   REQUIRED_RECEIPT_ISSUE_IDENTITY_RULE = "For every linked or created follow-up, use the exact issue URL as the receipt disposition `ref` and evidence so replay and final archive status share the same durable identity."
-  REQUIRED_FOLLOW_UP_PROMPT_COMPATIBILITY = "Consume the post-merge audit's deduplicated exact issue URL set without discovering or creating another target, and preserve its explicit follow-up `merge_authority`."
+  REQUIRED_FOLLOW_UP_PROMPT_COMPATIBILITY = "Consume the post-merge audit's deduplicated exact issue URL set without discovering or creating another target, preserve its explicit follow-up `merge_authority`, and run the ordinary prompt intake, planning, security, dependency, coordination, and dispatch gates."
+  REQUIRED_FOLLOW_UP_AUTHORITY_CONSUMER_RULE = "Accept only an explicit `merge_authority` value of `none`, `ask`, or `auto_merge_when_gates_pass`; reject a missing, placeholder, or `UNKNOWN` value instead of generating or defaulting it."
+  REQUIRED_FOLLOW_UP_COMPATIBILITY_ROUTE = "Canonical rules: [Post-Merge Batch Audit](pr-batch-integration-closeout.md#post-merge-batch-audit) and [Post-Merge Audit Follow-Up Intake](../skills/pr-batch/SKILL.md#post-merge-audit-follow-up-intake). This heading remains as a compatibility route and must not mirror the canonical policy."
   REQUIRED_UNAVAILABLE_COORDINATION_ASK = "ask before deep audit whether to wait for backend recovery or proceed with an explicitly `UNKNOWN` worked-issue scope"
   REQUIRED_COMPLETED_BATCH_MODE_SCOPE = "In completed-batch mode only:"
   REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
@@ -35,7 +39,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_ARCHIVE_READY_CRITERIA = "A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts."
   REQUIRED_TERMINAL_DISPOSITION_CLEAN_RULE = "Clean/none permits no records or only fully evidenced terminal records."
   REQUIRED_NON_TERMINAL_DISPOSITION_NON_CLEAN_RULE = "A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state."
-  REQUIRED_OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
+  REQUIRED_OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref must map to a disposition record and remains visible in the final blocker union, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
   REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, the Unblock Block when the status is not clean, and the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
   REQUIRED_UNBLOCK_FOLLOW_UP_RULE = "Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and emit the [Unblock Block]"
   REQUIRED_UNBLOCK_RECEIPT_ORDER = "this compact receipt line opens the closing lines: it is followed by the [Unblock Block]"
@@ -243,6 +247,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
         REQUIRED_CHANGELOG_TRACKING_RULE,
         REQUIRED_FOLLOW_UP_PROMPT_RULE,
         REQUIRED_FOLLOW_UP_AUTHORITY_RULE,
+        REQUIRED_FOLLOW_UP_HANDOFF_HELPER_RULE,
+        REQUIRED_COMPLETE_FOLLOW_UP_RECEIPT_RULE,
         REQUIRED_NON_ACTIONABLE_NOISE_RULE,
         REQUIRED_BLOCKED_CREATION_RULE,
         REQUIRED_REPORT_ONLY_RULE,
@@ -255,11 +261,33 @@ class PostMergeAuditPolicyTest < Minitest::Test
     end
   end
 
-  def test_changelog_dispositions_require_durable_tracking_in_every_skill_section
-    text = File.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+  def test_executable_follow_up_handoff_is_shared_by_all_closeout_surfaces
+    [
+      "skills/post-merge-audit/SKILL.md",
+      "workflows/post-merge-audit.md"
+    ].each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
 
-    assert_includes text, REQUIRED_CHANGELOG_CLASSIFICATION_RULE
-    assert_includes text, REQUIRED_CHANGELOG_OUTPUT_RULE
+      assert_includes text, REQUIRED_FOLLOW_UP_HANDOFF_HELPER_RULE
+    end
+
+    REQUIRED_FILES.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_COMPLETE_FOLLOW_UP_RECEIPT_RULE
+    end
+  end
+
+  def test_changelog_dispositions_require_durable_tracking_in_every_skill_section
+    [
+      "skills/post-merge-audit/SKILL.md",
+      "workflows/pr-batch-integration-closeout.md"
+    ].each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_CHANGELOG_CLASSIFICATION_RULE
+      assert_includes text, REQUIRED_CHANGELOG_OUTPUT_RULE
+    end
   end
 
   def test_follow_up_prompt_is_executable_and_preserved_by_pr_batch
@@ -273,19 +301,16 @@ class PostMergeAuditPolicyTest < Minitest::Test
     assert_includes prompt[:body], "Targets:\n- <exact linked or created issue URL>"
     assert_includes prompt[:body], "merge_authority: <resolved explicit value>"
 
-    [
-      "skills/pr-batch/SKILL.md",
-      "workflows/pr-processing.md"
-    ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+    consumer = File.read(File.join(ROOT, "skills/pr-batch/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+    assert_includes consumer, REQUIRED_FOLLOW_UP_PROMPT_COMPATIBILITY
+    assert_includes consumer, REQUIRED_FOLLOW_UP_AUTHORITY_CONSUMER_RULE
+    refute_includes consumer, REQUIRED_FOLLOW_UP_AUTHORITY_RULE,
+                    "the intake consumer must not generate or default producer authority"
 
-      assert_includes text, REQUIRED_FOLLOW_UP_PROMPT_COMPATIBILITY,
-                      "#{relative_path} should preserve the audited follow-up target set and authority"
-      assert_includes text, REQUIRED_FOLLOW_UP_AUTHORITY_RULE,
-                      "#{relative_path} should resolve follow-up merge authority without placeholders"
-      refute_includes text, FORBIDDEN_FOLLOW_UP_AUTHORITY_DEFAULT,
-                      "#{relative_path} must not silently enable autonomous merge"
-    end
+    compatibility = File.read(File.join(ROOT, "workflows/pr-processing.md"), encoding: "UTF-8")
+    section = compatibility.match(/^## Post-Merge Batch Audit\n(?<body>.*?)(?=^## |\z)/m)
+    refute_nil section
+    assert_equal REQUIRED_FOLLOW_UP_COMPATIBILITY_ROUTE, section[:body].strip
   end
 
   def test_unavailable_coordination_scope_requires_user_choice_before_deep_audit

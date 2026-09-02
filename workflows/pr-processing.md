@@ -2566,15 +2566,4 @@ Canonical rules: [Multi-PR Landing Plan](pr-batch-integration-closeout.md#multi-
 
 ## Post-Merge Batch Audit
 
-Canonical rules: [Post-Merge Batch Audit](pr-batch-integration-closeout.md#post-merge-batch-audit). This heading remains as a compatibility route and must not mirror the component.
-
-For a ready follow-up batch produced by the resolved post-merge audit skill,
-use the bounded intake path below. Consume the post-merge audit's deduplicated
-exact issue URL set without discovering or creating another target, and preserve
-its explicit follow-up `merge_authority`. The new batch still runs normal target
-intake, planning, security, dependency, coordination, and dispatch gates.
-
-Set the generated prompt's `merge_authority` to the active audit task's explicit
-value when present; otherwise use `none`. Reject a prompt
-with a placeholder, missing issue URL, or `UNKNOWN` target and return it to the
-audit coordinator for corrected issue accounting.
+Canonical rules: [Post-Merge Batch Audit](pr-batch-integration-closeout.md#post-merge-batch-audit) and [Post-Merge Audit Follow-Up Intake](../skills/pr-batch/SKILL.md#post-merge-audit-follow-up-intake). This heading remains as a compatibility route and must not mirror the canonical policy.
