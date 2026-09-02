@@ -300,7 +300,9 @@ and proceed to consolidated triage instead of parking in
 `waiting-on-checks-or-review` for an artifact the limit prevents. When the
 bounded wait expires, report every exact expected check-run name that never
 appeared. Use that named evidence to apply this unavailable-review waiver; do
-not derive a reviewer identity from a check name.
+not derive a reviewer identity from a check name. Absence alone is not capacity
+evidence; apply the unavailable-review waiver only with explicit evidence that
+the named reviewer is unavailable because of usage or capacity.
 
 On every non-specific run, apply the bounded complete-wave wait to
 `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when

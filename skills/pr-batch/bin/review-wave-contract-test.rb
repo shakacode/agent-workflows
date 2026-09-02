@@ -109,6 +109,8 @@ class ReviewWaveContractTest < Minitest::Test
       assert_rule text, REVIEW_ARTIFACT_BARRIER
       assert_rule text, USAGE_LIMIT_WAIVER
       assert_rule text,
+                  "Absence alone is not capacity evidence; apply the unavailable-review waiver only with explicit evidence that the named reviewer is unavailable because of usage or capacity."
+      assert_rule text,
                   "A bounded-wait timeout returns `waiting-on-checks-or-review`; it never authorizes a partial review fetch."
       assert_includes text, "REVIEW_CHECK_NAMES_JSON"
       assert_includes text, "REVIEW_WAVE_MISSING_CHECK_NAMES"
