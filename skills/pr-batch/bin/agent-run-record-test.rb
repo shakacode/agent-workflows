@@ -886,6 +886,211 @@ class AgentRunRecordTest < Minitest::Test
     end
   end
 
+  def prepare_arguments(repo, identity_file)
+    [
+      RbConfig.ruby, HELPER, "prepare", *launch_timestamp_arguments,
+      "--issue", "560", "--runner", "Codex", "--machine", "M5",
+      "--repo-root", repo, "--identity-file", identity_file, "--format", "json"
+    ]
+  end
+
+  def candidate_path_for(identity_file, token)
+    "#{identity_file}#{AgentRunRecord::IDENTITY_CANDIDATE_PREFIX}#{token}"
+  end
+
+  def identity_candidate_debris(identity_file)
+    prefix = "#{File.basename(identity_file)}#{AgentRunRecord::IDENTITY_CANDIDATE_PREFIX}"
+    Dir.children(File.dirname(identity_file)).select { |name| name.start_with?(prefix) }
+  end
+
+  def with_published_identity_fixture
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      fixture_file = File.join(directory, "fixture-identity.json")
+      _stdout, stderr, status = Open3.capture3(environment, *prepare_arguments(repo, fixture_file))
+      assert status.success?, stderr
+      identity = JSON.parse(File.read(fixture_file, encoding: "UTF-8"))
+      FileUtils.rm_f(fixture_file)
+      yield directory, repo, environment, identity
+    end
+  end
+
+  def with_stubbed_directory_flush(calls)
+    original = AgentRunRecord.method(:fsync_directory)
+    AgentRunRecord.define_singleton_method(:fsync_directory) do |directory|
+      calls << directory
+      original.call(directory)
+    end
+    yield
+  ensure
+    AgentRunRecord.define_singleton_method(:fsync_directory) { |directory| original.call(directory) }
+  end
+
+  def test_publication_refuses_an_empty_or_truncated_identity_candidate
+    with_published_identity_fixture do |directory, _repo, _environment, identity|
+      payload = "#{JSON.pretty_generate(identity)}\n"
+      { "empty" => "", "truncated" => payload[0, 40] }.each do |label, bytes|
+        identity_file = File.join(directory, "#{label}-candidate-identity.json")
+        candidate = candidate_path_for(identity_file, "0" * 24)
+        File.write(candidate, bytes, mode: "w", perm: 0o600)
+
+        error = assert_raises(AgentRunRecord::ContractError, label) do
+          AgentRunRecord.publish_identity_candidate(
+            candidate, identity_file, identity, identity.fetch("binding")
+          )
+        end
+
+        assert_includes error.message, "launch identity candidate is incomplete", label
+        refute File.exist?(identity_file), "#{label} candidate must never occupy the authoritative path"
+      end
+    end
+  end
+
+  def test_prepare_refuses_a_symlinked_identity_path_instead_of_adopting_its_target
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      planted_file = File.join(directory, "planted-identity.json")
+      _stdout, stderr, status = Open3.capture3(environment, *prepare_arguments(repo, planted_file))
+      assert status.success?, stderr
+      planted = JSON.parse(File.read(planted_file, encoding: "UTF-8"))
+
+      identity_file = File.join(directory, "symlinked-identity.json")
+      File.symlink(planted_file, identity_file)
+
+      retry_stdout, retry_stderr, retry_status =
+        Open3.capture3(environment, *prepare_arguments(repo, identity_file))
+
+      refute retry_status.success?
+      assert_empty retry_stdout
+      assert_includes retry_stderr, "launch identity must be a regular file"
+      assert File.symlink?(identity_file), "the symlink must be refused, not replaced"
+      assert_equal planted, JSON.parse(File.read(planted_file, encoding: "UTF-8"))
+      assert_empty identity_candidate_debris(identity_file)
+    end
+  end
+
+  def test_prepare_refuses_a_published_identity_that_lost_owner_only_permissions
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "loosened-identity.json")
+      arguments = prepare_arguments(repo, identity_file)
+      _stdout, stderr, status = Open3.capture3(environment, *arguments)
+      assert status.success?, stderr
+      published = File.read(identity_file, encoding: "UTF-8")
+      FileUtils.chmod(0o644, identity_file)
+
+      retry_stdout, retry_stderr, retry_status = Open3.capture3(environment, *arguments)
+
+      refute retry_status.success?
+      assert_empty retry_stdout
+      assert_includes retry_stderr, "launch identity must stay owner-only"
+      assert_equal published, File.read(identity_file, encoding: "UTF-8")
+    ensure
+      FileUtils.chmod(0o600, identity_file) if identity_file && File.exist?(identity_file)
+    end
+  end
+
+  def test_prepare_refuses_an_empty_published_identity_without_replacing_it
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "empty-published-identity.json")
+      File.write(identity_file, "", mode: "w", perm: 0o600)
+
+      stdout, stderr, status = Open3.capture3(environment, *prepare_arguments(repo, identity_file))
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "launch identity is empty; publication did not complete"
+      assert_equal 0, File.size(identity_file), "a failed launch must not mint a replacement identity"
+      assert_empty identity_candidate_debris(identity_file)
+    end
+  end
+
+  def test_prepare_recovers_from_an_interrupted_pre_publication_write
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "interrupted-identity.json")
+      abandoned = candidate_path_for(identity_file, "a" * 24)
+      in_flight = candidate_path_for(identity_file, "b" * 24)
+      File.write(abandoned, "", mode: "w", perm: 0o600)
+      File.write(in_flight, "", mode: "w", perm: 0o600)
+      backdated = Time.now - AgentRunRecord::IDENTITY_CANDIDATE_REAP_AGE_SECONDS - 60
+      File.utime(backdated, backdated, abandoned)
+
+      arguments = prepare_arguments(repo, identity_file)
+      stdout, stderr, status = Open3.capture3(environment, *arguments)
+
+      assert status.success?, stderr
+      record = JSON.parse(stdout)
+      published = JSON.parse(File.read(identity_file, encoding: "UTF-8"))
+      assert_equal record.fetch("run_id"), published.fetch("run_id")
+      assert_equal 0o600, File.stat(identity_file).mode & 0o777
+      refute File.exist?(abandoned), "an abandoned pre-publication candidate must be reaped"
+      assert File.exist?(in_flight), "a candidate a live writer may still own must survive"
+
+      retry_stdout, retry_stderr, retry_status = Open3.capture3(environment, *arguments)
+
+      assert retry_status.success?, retry_stderr
+      assert_equal published.fetch("run_id"), JSON.parse(retry_stdout).fetch("run_id"),
+                   "recovery must never mint a different identity once one is published"
+      assert_equal published, JSON.parse(File.read(identity_file, encoding: "UTF-8"))
+    end
+  end
+
+  def test_concurrent_first_writers_converge_on_one_published_identity
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "concurrent-identity.json")
+      arguments = prepare_arguments(repo, identity_file)
+      results = Array.new(4) { Thread.new { Open3.capture3(environment, *arguments) } }.map(&:value)
+
+      published = JSON.parse(File.read(identity_file, encoding: "UTF-8"))
+      run_ids = results.map do |stdout, stderr, status|
+        assert status.success?, stderr
+        JSON.parse(stdout).fetch("run_id")
+      end
+
+      assert_equal [published.fetch("run_id")], run_ids.uniq,
+                   "concurrent first writers must converge on exactly one immutable identity"
+      assert_equal 0o600, File.stat(identity_file).mode & 0o777
+      assert_empty identity_candidate_debris(identity_file), "losers must not leave candidate debris"
+    end
+  end
+
+  def test_publication_flushes_the_identity_directory_entry
+    with_published_identity_fixture do |directory, _repo, _environment, identity|
+      identity_file = File.join(directory, "flushed-identity.json")
+      candidate = candidate_path_for(identity_file, "f" * 24)
+      File.write(candidate, "#{JSON.pretty_generate(identity)}\n", mode: "w", perm: 0o600)
+
+      flushed = []
+      with_stubbed_directory_flush(flushed) do
+        AgentRunRecord.publish_identity_candidate(
+          candidate, identity_file, identity, identity.fetch("binding")
+        )
+      end
+
+      assert_equal [directory], flushed, "publication must flush the directory entry it created"
+      assert File.file?(identity_file)
+    end
+  end
+
+  def test_directory_flush_degrades_instead_of_failing_where_the_platform_refuses_it
+    skip "directory permissions do not constrain a privileged user" if Process.uid.zero?
+
+    Dir.mktmpdir("agent-run-record-flush") do |directory|
+      assert AgentRunRecord.fsync_directory(directory)
+      FileUtils.chmod(0o000, directory)
+      begin
+        refute AgentRunRecord.fsync_directory(directory)
+      ensure
+        FileUtils.chmod(0o700, directory)
+      end
+    end
+  end
+
+  def test_directory_flush_surfaces_real_errors_to_the_caller
+    Dir.mktmpdir("agent-run-record-flush") do |directory|
+      assert_raises(Errno::ENOENT) do
+        AgentRunRecord.fsync_directory(File.join(directory, "missing"))
+      end
+    end
+  end
+
   def test_pr_batch_entrypoints_are_short_distinct_v1_contract_routers
     sections = []
 

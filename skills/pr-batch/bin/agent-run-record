@@ -31,6 +31,12 @@ module AgentRunRecord
   UTC_MILLISECONDS = /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\z/
   REPOSITORY = %r{\A[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\z}
   WORKER_DIGEST_MISMATCH_BLOCKER = "worker prompt digest mismatch; source interpretation refused"
+  IDENTITY_CANDIDATE_PREFIX = ".tmp-"
+  IDENTITY_CANDIDATE_REAP_AGE_SECONDS = 3600
+  IDENTITY_CANDIDATE_REAP_LIMIT = 64
+  DIRECTORY_FSYNC_UNSUPPORTED = %i[EACCES EBADF EINVAL EISDIR ENOTSUP EOPNOTSUPP EPERM]
+                                .filter_map { |name| Errno.const_get(name) if Errno.const_defined?(name) }
+                                .uniq.freeze
 
   module_function
 
@@ -811,30 +817,131 @@ module AgentRunRecord
     }
   end
 
+  # Launch identity is published in two steps so no partially written byte range can
+  # ever occupy the authoritative path: the identity is written to a private candidate
+  # beside it, fsynced, re-read, and only then hard-linked into place. `File.link` is
+  # atomic and fails with EEXIST when the name is taken, so exactly one writer creates
+  # the identity and every loser authenticates and reuses the published one.
+  #
+  # Crash points and their recovery:
+  # A. before or during the candidate write - the authoritative path is untouched, so a
+  #    retry mints a fresh identity; the abandoned candidate is reaped by a later launch.
+  # B. after the candidate is durable but before the link - identical to A. The candidate
+  #    carries a random name, so no later launch can mistake it for a published identity.
+  # C. after the link but before the directory flush - the identity may or may not survive
+  #    a power loss, but it can never be replaced: a retry that still sees it adopts it,
+  #    and a retry that does not see it is indistinguishable from crash point B.
+  # D. after the directory flush but before the candidate is discarded - the identity is
+  #    durable and the leftover candidate is reaped by a later launch.
   def persist_launch_identity(path, candidate, binding)
-    temporary_path = "#{path}.tmp-#{SecureRandom.hex(12)}"
+    reap_stale_identity_candidates(path)
+    candidate_path = "#{path}#{IDENTITY_CANDIDATE_PREFIX}#{SecureRandom.hex(12)}"
+    owned = false
     begin
-      File.open(temporary_path, File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|
-        file.write("#{JSON.pretty_generate(candidate)}\n")
-        file.flush
-        file.fsync
-      end
-      begin
-        File.link(temporary_path, path)
-        candidate
-      rescue Errno::EEXIST
-        existing = read_launch_identity(path, "cannot persist launch identity")
-        validate_identity!(existing, binding)
-        existing
-      end
+      handle = File.open(candidate_path, File::WRONLY | File::CREAT | File::EXCL, 0o600)
+      owned = true
+      write_identity_candidate(handle, candidate)
+      publish_identity_candidate(candidate_path, path, candidate, binding)
     rescue SystemCallError => e
       raise ContractError, "cannot persist launch identity: #{e.message}"
     ensure
-      File.unlink(temporary_path) if File.exist?(temporary_path)
+      discard_identity_candidate(candidate_path) if owned
     end
   end
 
+  def write_identity_candidate(handle, candidate)
+    handle.write("#{JSON.pretty_generate(candidate)}\n")
+    handle.flush
+    handle.fsync
+  ensure
+    handle.close
+  end
+
+  # Publishing verifies the candidate on disk first, so a short write, a full disk, or a
+  # truncated file fails closed here instead of becoming the authoritative identity.
+  def publish_identity_candidate(candidate_path, path, candidate, binding)
+    verify_identity_candidate!(candidate_path, candidate)
+    begin
+      File.link(candidate_path, path)
+    rescue Errno::EEXIST
+      # Another writer already published. Authenticate that identity against this
+      # launch's immutable binding and reuse it rather than minting a second one.
+      existing = read_launch_identity(path, "cannot persist launch identity")
+      validate_identity!(existing, binding)
+      return existing
+    end
+    fsync_directory(File.dirname(path))
+    candidate
+  end
+
+  def verify_identity_candidate!(candidate_path, candidate)
+    stat = File.lstat(candidate_path)
+    unless stat.file? && (stat.mode & 0o077).zero?
+      raise ContractError, "launch identity candidate must be a private regular file"
+    end
+    return if File.read(candidate_path, encoding: "UTF-8") == "#{JSON.pretty_generate(candidate)}\n"
+
+    raise ContractError, "launch identity candidate is incomplete; refusing to publish a partial identity"
+  end
+
+  # The candidate name is only ever discarded by the launch that created it, so a
+  # concurrent writer's in-flight candidate is never removed here.
+  def discard_identity_candidate(candidate_path)
+    File.unlink(candidate_path)
+  rescue SystemCallError
+    nil
+  end
+
+  # An interrupted launch leaves an unpublished candidate beside the identity. It can
+  # never become authoritative, but it must not accumulate. Only candidates older than
+  # any plausible live writer are reaped, and the scan is capped so recovery stays
+  # bounded no matter how much debris a directory has collected. Reaping is hygiene, so
+  # any error here is swallowed rather than failing an otherwise valid launch.
+  def reap_stale_identity_candidates(path)
+    directory = File.dirname(path)
+    prefix = "#{File.basename(path)}#{IDENTITY_CANDIDATE_PREFIX}"
+    deadline = Time.now - IDENTITY_CANDIDATE_REAP_AGE_SECONDS
+    examined = 0
+    Dir.children(directory).sort.each do |name|
+      next unless name.start_with?(prefix)
+
+      examined += 1
+      break if examined > IDENTITY_CANDIDATE_REAP_LIMIT
+
+      stale_path = File.join(directory, name)
+      stat = File.lstat(stale_path)
+      next unless stat.file?
+      next if stat.mtime > deadline
+
+      discard_identity_candidate(stale_path)
+    end
+  rescue SystemCallError
+    nil
+  end
+
+  # Only the directory entry makes a published identity survive a power loss. Platforms
+  # that do not expose directory fsync keep the atomic single-creator guarantee and lose
+  # only the durability upgrade, so an unsupported flush degrades instead of failing.
+  # A real I/O error still propagates and fails the launch closed.
+  def fsync_directory(directory)
+    File.open(directory, &:fsync)
+    true
+  rescue *DIRECTORY_FSYNC_UNSUPPORTED, NotImplementedError
+    false
+  end
+
   def read_launch_identity(path, error_prefix)
+    stat = File.lstat(path)
+    unless stat.file?
+      raise ContractError, "#{error_prefix}: launch identity must be a regular file"
+    end
+    unless (stat.mode & 0o077).zero?
+      raise ContractError, "#{error_prefix}: launch identity must stay owner-only"
+    end
+    if stat.zero?
+      raise ContractError, "#{error_prefix}: launch identity is empty; publication did not complete"
+    end
+
     identity = JSON.parse(File.read(path, encoding: "UTF-8"))
     object!(identity, "launch identity")
     identity
