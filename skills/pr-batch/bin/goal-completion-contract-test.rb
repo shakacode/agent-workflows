@@ -3025,7 +3025,7 @@ class GoalCompletionContractTest < Minitest::Test
         ["#117 (terminal): evidence UNKNOWN", "#118 (terminal): evidence missing"]
       ],
       "UNKNOWN current status is valid only in a non-clean marker" => [
-        completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #117; owner: maintainer; current status: UNKNOWN; disposition: track; evidence: issue #117"),
+        completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #117; owner: maintainer; current status: UNKNOWN; disposition: track; evidence: https://github.com/acme/widgets/issues/117"),
         true,
         false,
         ["#117 (UNKNOWN): track"]
@@ -3198,7 +3198,7 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_completed_batch_audit_followup_only_and_mixed_findings_replay_matrix
     followup_only = %w[open pending unresolved UNKNOWN].map do |status|
-      action = { "open" => "fix", "pending" => "await-input", "unresolved" => "investigate", "UNKNOWN" => "track" }.fetch(status)
+      action = { "open" => "fix", "pending" => "await-input", "unresolved" => "investigate", "UNKNOWN" => "replay" }.fetch(status)
       [status, completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: ref: ##{status.length}; owner: maintainer; current status: #{status}; disposition: #{action}; evidence: issue ##{status.length}"), "##{status.length} (#{status}): #{action}"]
     end
     mixed = completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING https://github.com/acme/widgets/issues/117\nfollowups_dispositions: ref: https://github.com/acme/widgets/issues/117; owner: maintainer; current status: open; disposition: track; evidence: https://github.com/acme/widgets/issues/117 | ref: https://github.com/acme/widgets/issues/118; owner: maintainer; current status: pending; disposition: await-input; evidence: https://github.com/acme/widgets/issues/118")

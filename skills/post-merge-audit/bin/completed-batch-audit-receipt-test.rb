@@ -278,6 +278,128 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_follow_up_prompt_matches_the_documented_pr_batch_template
+    issue_urls = [
+      "https://github.com/acme/widgets/issues/380",
+      "https://github.com/acme/widgets/issues/381"
+    ]
+    handoff = CompletedBatchAuditReceipt.build_follow_up_handoff(
+      follow_up_handoff_input(
+        findings: issue_urls.each_with_index.map do |issue_url, index|
+          tracked_finding(fingerprint: "pr-377:finding-#{index}", issue_url:)
+        end
+      )
+    )
+
+    assert_equal(<<~PROMPT.chomp, handoff.fetch("prompt"))
+      $pr-batch
+
+      Continue the tracked follow-ups from https://github.com/acme/widgets/pull/377#issuecomment-5225395540.
+      Repository: acme/widgets
+      Targets:
+      - https://github.com/acme/widgets/issues/380
+      - https://github.com/acme/widgets/issues/381
+      Objective: Resolve the tracked post-merge audit follow-ups within each issue's accepted scope.
+      merge_authority: none
+    PROMPT
+
+    cross_repository = assert_raises(CompletedBatchAuditReceipt::Error) do
+      CompletedBatchAuditReceipt.build_follow_up_handoff(
+        follow_up_handoff_input(
+          findings: [
+            tracked_finding(
+              fingerprint: "pr-377:finding-a",
+              issue_url: "https://github.com/acme/widgets/issues/380"
+            ),
+            tracked_finding(
+              fingerprint: "pr-377:finding-b",
+              issue_url: "https://github.com/acme/gadgets/issues/380"
+            )
+          ]
+        )
+      )
+    end
+    assert_equal "follow-up issues must share one repository", cross_repository.message
+  end
+
+  def test_report_only_instruction_url_rejects_disposition_record_delimiters
+    %w[; |].each do |delimiter|
+      finding = {
+        "affected_prs" => [377],
+        "fingerprint" => "pr-377:missing-changelog",
+        "kind" => "changelog",
+        "outcome" => "report-only",
+        "owner" => "audit coordinator",
+        "instruction_url" =>
+          "https://github.com/acme/widgets/issues/380#issuecomment-5225000000#{delimiter}ref=x"
+      }
+      error = assert_raises(CompletedBatchAuditReceipt::Error) do
+        CompletedBatchAuditReceipt.build_follow_up_handoff(
+          follow_up_handoff_input(findings: [finding])
+        )
+      end
+
+      assert_equal "report-only instruction URL is invalid", error.message,
+                   "#{delimiter.inspect} must be rejected by the durable-URL validator itself"
+    end
+
+    assert_nil CompletedBatchAuditReceipt.exact_durable_url(
+      "https://github.com/acme/widgets/issues/380#issuecomment-5225000000;ref=x"
+    )
+    assert_equal "https://github.com/acme/widgets/issues/380#issuecomment-5225000000",
+                 CompletedBatchAuditReceipt.exact_durable_url(
+                   "https://github.com/acme/widgets/issues/380#issuecomment-5225000000"
+                 )
+  end
+
+  def test_tracked_dispositions_need_durable_issue_evidence_in_every_audit_status
+    issue_url = "https://github.com/acme/widgets/issues/380"
+    blocked_body = <<~BODY
+      batch_id: batch-380
+      audit_status: blocked
+      verdict: follow-ups-remain
+      scope_evidence: targets #377; audit report
+      checker_evidence: independent checker report
+      findings: OUTSTANDING pr-377:blocked-creation, pr-377:tracked-finding
+      followups_dispositions: ref: pr-377:blocked-creation; owner: audit coordinator; current status: unresolved; disposition: retry; evidence: operation=gh issue create, error=HTTP 403, retry=refresh authentication | ref: pr-377:tracked-finding; owner: audit coordinator; current status: open; disposition: track; evidence: #{issue_url}
+    BODY
+    durable = marker(blocked_body)
+    smuggled = marker(blocked_body.sub("evidence: #{issue_url}", "evidence: pr-377:tracked-finding"))
+    pull_request_evidence = marker(
+      blocked_body.sub("evidence: #{issue_url}", "evidence: https://github.com/acme/widgets/pull/380")
+    )
+    legacy_operational_action = marker(
+      blocked_body.sub("disposition: track; evidence: #{issue_url}", "disposition: fix; evidence: patch queued")
+    )
+
+    assert CompletedBatchAuditReceipt.marker_state(durable),
+           "a blocked marker may keep a fingerprint ref when its track evidence is an exact issue URL"
+    refute CompletedBatchAuditReceipt.marker_state(smuggled),
+           "a blocked marker must not accept a track disposition without a durable issue URL"
+    refute CompletedBatchAuditReceipt.marker_state(pull_request_evidence),
+           "a pull request URL is not durable follow-up issue tracking"
+    assert CompletedBatchAuditReceipt.marker_state(legacy_operational_action),
+           "non-tracking operational dispositions keep their existing blocked-marker latitude"
+  end
+
+  def test_retry_records_require_precise_evidence_even_with_issue_url_refs
+    issue_url = "https://github.com/acme/widgets/issues/380"
+    precise = marker(<<~BODY)
+      batch_id: batch-380
+      audit_status: blocked
+      verdict: follow-ups-remain
+      scope_evidence: targets #377; audit report
+      checker_evidence: independent checker report
+      findings: OUTSTANDING #{issue_url}
+      followups_dispositions: ref: #{issue_url}; owner: audit coordinator; current status: unresolved; disposition: retry; evidence: operation=gh issue create, error=HTTP 403, retry=refresh authentication
+    BODY
+
+    assert CompletedBatchAuditReceipt.marker_state(precise),
+           "a retry record with an issue URL ref stays well formed when its evidence is precise"
+    refute CompletedBatchAuditReceipt.marker_state(precise.sub(/evidence: operation=.*$/, "evidence: oops")),
+           "an issue-URL retry ref must not skip the operation/error/retry evidence check"
+  end
+
   def accepted_deferral_target
     {
       "host" => "github.com",

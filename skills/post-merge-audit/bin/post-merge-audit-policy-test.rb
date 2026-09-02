@@ -18,6 +18,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_CHANGELOG_TRACKING_RULE = "A changelog-only audit creates or reuses one bundled changelog issue; recommending `/update-changelog` is supplementary and never substitutes for durable tracking."
   REQUIRED_FOLLOW_UP_PROMPT_RULE = "After issue accounting, emit one ready copy-paste `$pr-batch` prompt whose target list contains every unique linked or created issue URL exactly once and no unresolved placeholder."
   REQUIRED_FOLLOW_UP_AUTHORITY_RULE = "Set the generated prompt's `merge_authority` to the active audit task's explicit value when present; otherwise use `none`."
+  REQUIRED_FOLLOW_UP_PROMPT_OBJECTIVE = "Resolve the tracked post-merge audit follow-ups within each issue's accepted scope."
   REQUIRED_FOLLOW_UP_HANDOFF_HELPER_RULE = "Use `completed-batch-audit-receipt handoff --handoff-json <path>` as the source of truth for issue accounting, receipt dispositions, the deduplicated issue set, and the ready prompt."
   REQUIRED_COMPLETE_FOLLOW_UP_RECEIPT_RULE = "A `complete` receipt with `follow-ups-remain` is well formed only when every `OUTSTANDING` ref has a nonterminal disposition whose `ref` and `evidence` are the same exact canonical issue URL."
   FORBIDDEN_FOLLOW_UP_AUTHORITY_DEFAULT = "otherwise use `auto_merge_when_gates_pass`"
@@ -298,7 +299,9 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
     refute_nil prompt, "post-merge audit workflow should provide the ready follow-up prompt"
     assert_includes prompt[:body], "$pr-batch"
+    assert_includes prompt[:body], "Repository: <OWNER/REPO>"
     assert_includes prompt[:body], "Targets:\n- <exact linked or created issue URL>"
+    assert_includes prompt[:body], "Objective: #{REQUIRED_FOLLOW_UP_PROMPT_OBJECTIVE}"
     assert_includes prompt[:body], "merge_authority: <resolved explicit value>"
 
     consumer = File.read(File.join(ROOT, "skills/pr-batch/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")

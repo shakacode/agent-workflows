@@ -48,6 +48,10 @@ module CompletedBatchAuditReceipt
   FOLLOW_UP_OUTCOMES = %w[created existing report-only blocked].freeze
   FOLLOW_UP_KINDS = %w[finding changelog].freeze
   MERGE_AUTHORITIES = %w[none ask auto_merge_when_gates_pass].freeze
+  FOLLOW_UP_ISSUE_URL_PATTERN =
+    %r{\Ahttps://(?<authority>[^/]+)/(?<repository>[^/]+/[^/]+)/issues/[1-9][0-9]*\z}
+  FOLLOW_UP_PROMPT_OBJECTIVE =
+    "Resolve the tracked post-merge audit follow-ups within each issue's accepted scope."
 
   State = Struct.new(:fields, :records, keyword_init: true)
   CanonicalRef = Struct.new(:canonical_display, :identity, keyword_init: true)
@@ -260,6 +264,18 @@ module CompletedBatchAuditReceipt
     end.join(" | ")
   end
 
+  def follow_up_repository(issue_urls)
+    repositories = issue_urls.map do |url|
+      match = url.match(FOLLOW_UP_ISSUE_URL_PATTERN)
+      raise Error, "follow-up issue URL is invalid" unless match
+
+      [match[:authority], match[:repository]]
+    end.uniq
+    raise Error, "follow-up issues must share one repository" unless repositories.length == 1
+
+    repositories.first.last
+  end
+
   def follow_up_prompt(audit_url:, issue_urls:, merge_authority:)
     return if issue_urls.empty?
 
@@ -268,10 +284,10 @@ module CompletedBatchAuditReceipt
       $pr-batch
 
       Continue the tracked follow-ups from #{audit_url}.
-
+      Repository: #{follow_up_repository(issue_urls)}
       Targets:
       #{targets}
-
+      Objective: #{FOLLOW_UP_PROMPT_OBJECTIVE}
       merge_authority: #{merge_authority}
     PROMPT
   end
@@ -1768,6 +1784,7 @@ module CompletedBatchAuditReceipt
 
   def exact_durable_url(value)
     return unless value.is_a?(String)
+    return if value.include?(";") || value.include?("|")
 
     uri = URI.parse(value.to_s)
     return unless uri.scheme == "https" && uri.userinfo.nil? && uri.query.nil?
@@ -1918,11 +1935,22 @@ module CompletedBatchAuditReceipt
       end
     end
     return false unless records.all? { |record| precise_retry_record?(record) }
-
-    return false if fields.fetch("audit_status") == "complete" &&
-                    !non_ready_records.all? { |record| tracked_issue_record?(record) }
+    return false unless non_ready_records.all? do |record|
+      durably_tracked_record?(record, fields.fetch("audit_status"))
+    end
 
     true
+  end
+
+  # A `complete` audit must bind every outstanding finding to the same exact durable
+  # issue URL in both `ref` and `evidence`. A `track` disposition makes that durable
+  # tracking claim in every audit status, so a `blocked` marker may keep a legacy
+  # fingerprint `ref` but still has to name an exact issue URL as its evidence.
+  def durably_tracked_record?(record, audit_status)
+    return tracked_issue_record?(record) if audit_status == "complete"
+    return true unless record.disposition == "track"
+
+    !exact_issue_url(record.evidence).nil?
   end
 
   def tracked_issue_record?(record)
@@ -1931,7 +1959,7 @@ module CompletedBatchAuditReceipt
   end
 
   def precise_retry_record?(record)
-    return true unless record.disposition == "retry" && !exact_issue_url(record.ref)
+    return true unless record.disposition == "retry"
 
     record.evidence.match?(/\Aoperation=\S(?:.*\S)?, error=\S(?:.*\S)?, retry=\S(?:.*\S)?\z/)
   end
