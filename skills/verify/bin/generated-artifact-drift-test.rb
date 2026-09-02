@@ -56,6 +56,28 @@ class GeneratedArtifactDriftTest < Minitest::Test
     end
   end
 
+  def test_changed_source_with_golden_test_symlink_outside_root_fails_precisely
+    Dir.mktmpdir("external-golden-test") do |outside_root|
+      outside_test = File.join(outside_root, "widget_spec.rb")
+      File.write(outside_test, "test\n")
+
+      with_policy("generated_artifacts" => [valid_declaration]) do |root|
+        golden_test = File.join(root, "spec/golden/widget_spec.rb")
+        FileUtils.mkdir_p(File.dirname(golden_test))
+        File.symlink(outside_test, golden_test)
+
+        stdout, stderr, status = run_helper(root, "--changed-file", "templates/widget.tt")
+
+        refute status.success?
+        assert_empty stdout
+        assert_includes stderr, 'source "templates/widget.tt" changed'
+        assert_includes stderr,
+                        'generated_artifacts[0].golden_test "spec/golden/widget_spec.rb" is not an existing repository file'
+        assert_includes stderr, "Restore it or update the declaration before verification can pass."
+      end
+    end
+  end
+
   def test_changed_source_without_changed_mirror_requires_acknowledgment
     with_policy(
       "generated_artifacts" => [

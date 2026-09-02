@@ -60,7 +60,7 @@ module GeneratedArtifactDrift
         next
       end
       golden_test = declaration.fetch("golden_test")
-      unless File.file?(File.join(root, golden_test))
+      unless repository_file_beneath_root?(root, golden_test)
         failures << "FAIL generated-artifact drift gate: source #{declaration['source'].inspect} changed, but " \
                     "generated_artifacts[#{index}].golden_test #{golden_test.inspect} is not an existing " \
                     "repository file beneath --root. Restore it or update the declaration before verification can pass."
@@ -104,6 +104,17 @@ module GeneratedArtifactDrift
       git_changed_paths(root, "diff", "--name-only", "--no-renames", "-z", "--"),
       git_changed_paths(root, "ls-files", "--others", "--exclude-standard", "-z", "--")
     ].flatten.uniq
+  end
+
+  def repository_file_beneath_root?(root, relative_path)
+    candidate = File.join(root, relative_path)
+    return false unless File.file?(candidate)
+
+    real_root = Pathname.new(File.realpath(root))
+    real_candidate = Pathname.new(File.realpath(candidate))
+    !real_candidate.relative_path_from(real_root).each_filename.include?("..")
+  rescue ArgumentError, SystemCallError
+    false
   end
 
   def git_changed_paths(root, *arguments)
