@@ -126,17 +126,10 @@ class TddQualityContractTest < Minitest::Test
     end
   end
 
-  def test_delete_substring_check_is_tautological_and_observes_no_behavior
-    assert_includes normalized_reference, "deletion guarantees the absence assertion"
+  def test_reference_classifies_delete_substring_checks_as_source_only
+    reference = normalized_reference
 
-    searched_substring = "execute the artifact"
-    original_source = "The test must execute the artifact before claiming behavior."
-    mutated_source = original_source.sub(searched_substring, "")
-    source_only_checker = ->(source) { !source.include?(searched_substring) }
-    behavior_observations = []
-
-    assert source_only_checker.call(mutated_source)
-    assert source_only_checker.call("Runtime behavior is still broken.")
-    assert_empty behavior_observations
+    assert_includes reference, "deletion guarantees the absence assertion"
+    assert_includes reference, "It exercises no artifact or consumer"
   end
 end
