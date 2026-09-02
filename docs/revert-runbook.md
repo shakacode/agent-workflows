@@ -213,6 +213,7 @@ Where GraphQL is unavailable, page the REST endpoint and sum — same answer, on
 request per 100 commits:
 
 ```bash
+set -o pipefail
 N=$(gh api "repos/${REPO}/pulls/${PR}/commits" --paginate --jq 'length' \
   | awk '{s+=$1} END {print s}')
 ```
@@ -416,7 +417,8 @@ Two artifacts declare lane dependency, and both are authoritative for scope:
   carries `edges[]`, each binding `from` (predecessor lane), `to` (dependent
   lane), and `type`. Every lane reachable from the failing lane by following
   edges forward — **of any type** — is a candidate for joint revert. Take the
-  transitive closure, not just direct successors.
+  transitive closure, not just direct successors. A dependency-selected unit
+  stays in scope even when it landed before the suspect PR.
 
 Read `type` from the **immutable `stage-dependency-plan` file**, which is the
 only one of the two artifacts whose edges carry it; the mutable
@@ -450,14 +452,15 @@ commits but blocks push and PR open, `merge_order` blocks merge alone. That is a
 scheduling distinction, not a dependency-direction one. For revert scope all
 three mean the same thing — the `to` lane's landed work was produced or
 validated in a world where the `from` lane exists — so all three belong in the
-closure.
+closure, even when the dependent landed before the suspect PR.
 
 `edit` is the most dangerous type to omit, not the least. A lane blocked on an
 `edit` edge could not create a branch until its predecessor was satisfied, so it
 is the case where a later PR most likely builds on the suspect PR's *behavior*
 without touching the suspect PR's *files* — which means it also passes the
 disjoint-file check in [Decision rule](#decision-rule). Filtering the edges and
-relying on file overlap therefore misses it twice.
+relying on file overlap therefore misses it twice. Landing time does not change
+membership.
 
 `STAGE_DEPENDENCY_PLAN_PATH` and `STAGE_DEPENDENCY_PLAN_ID` both come from the
 trusted coordinator handoff, per
@@ -482,13 +485,16 @@ Check both; disagreement is itself a finding worth recording.
 Neither query filters on `--merges`, for the reason above.
 
 ```bash
-# Everything that landed after the suspect commit, on the base branch's
-# first-parent line. These are the commits a revert can collide with.
+# First-parent commits that landed after the suspect commit. These are one side
+# of the scope check.
 git log --ancestry-path --first-parent --format='%h %s' "${SHA}..${BASE_TIP}"
 
 # Everything that touched the same files, in either direction.
 git log --first-parent --format='%h %s' "${BASE_TIP}" -- "${PATHS[@]}"
 ```
+
+A dependency-selected unit that landed before `${SHA}` will not appear in this
+window; keep it in the closure anyway.
 
 `"${PATHS[@]}"` is quoted deliberately: see
 [Build the path set](#build-the-path-set) for why an unquoted expansion turns a
@@ -543,21 +549,22 @@ Revert **one PR** when all of the following hold:
 
 - no edge of **any** type names its lane as a `from`; and
 - the union of the file sets across the PR's **entire landed range** is disjoint
-  from the file set of every later landed commit on `BASE`; and
-- no later landed commit's content depends on symbols, files, or schema any
-  commit in that range introduced.
+  from the file set of every other landed commit in the closure on `BASE`; and
+- no other landed commit in the closure depends on symbols, files, or schema
+  any commit in that range introduced.
 
 Compare whole ranges, not individual commits: a later commit that depends on any
 one member of a rebased series depends on the PR, and testing member-by-member
 can find each individual commit "independent" while the PR as a whole is not.
 
-Otherwise **unwind the closure**: the suspect PR's range plus every later
-closure unit that depends on it, transitively — a later PR's whole range, or a
-later direct commit on its own, per
-[Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr). If any input to that test is
-`UNKNOWN`, take the wider scope or stop for the operator. A too-wide revert is
-a review problem; a too-narrow revert leaves the base branch in a state that
-never existed and that nothing has ever validated.
+Otherwise **unwind the closure**: the suspect PR's range plus every closure
+unit that depends on it, transitively — whether that unit landed before or
+after the suspect PR. A dependent PR contributes its whole landed range, and a
+direct commit stands on its own, per
+[Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr).
+If any input to that test is `UNKNOWN`, take the wider scope or stop for the
+operator. A too-wide revert is a review problem; a too-narrow revert leaves the
+base branch in a state that never existed and that nothing has ever validated.
 
 Note that a `--merges`-filtered enumeration fails this test in the *unsafe*
 direction: it makes the disjointness check trivially true by hiding the later
@@ -1188,15 +1195,22 @@ still reach a defensible state rather than dangling with an open
 *Lane not yet terminal* (`planned`, `claimed`, `active`, `blocked`) — close it
 now, choosing between the two non-`done` terminal values:
 
-**Build the arguments conditionally.** `--evidence-url` is optional and must be
-either a real HTTP(S) URL or absent — an empty string is rejected and the
-closeout fails, leaving the lane open. Do not print one command that passes the
-flag unconditionally and rely on the reader to drop it: the same block then
-serves both the repair and the accepted-risk paths, and it is correct as run.
+**Build the arguments conditionally.** `--terminal` comes from whether a named
+successor exists, and `--evidence-url` is optional and must be either a real
+HTTP(S) URL or absent — an empty string is rejected and the closeout fails,
+leaving the lane open. Do not print one command that passes the flag
+unconditionally and rely on the reader to drop it: the same block then serves
+both the repair and the accepted-risk paths, and it is correct as run.
 
 ```bash
-RELEASE_ARGS=(--terminal superseded --pr-state "${PR_STATE}"
-  --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}")
+RELEASE_ARGS=(--pr-state "${PR_STATE}" --batch-id "${BATCH_ID}"
+  --repo "${REPO}" --target "${TARGET}")
+# any nonempty value means a named successor exists
+if [ -n "${NAMED_SUCCESSOR:-}" ]; then
+  RELEASE_ARGS+=(--terminal superseded)
+else
+  RELEASE_ARGS+=(--terminal abandoned)
+fi
 if [ -n "${EVIDENCE_URL:-}" ]; then
   RELEASE_ARGS+=(--evidence-url "${EVIDENCE_URL}")
 fi
@@ -1207,13 +1221,13 @@ Where an array is not available, the two forms are separate commands, never one
 command with an optionally-empty flag:
 
 ```bash
-# a durable evidence URL exists
+# a named successor exists
 agent-coord release --terminal superseded --pr-state "${PR_STATE}" \
   --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}" \
   --evidence-url "${EVIDENCE_URL}"
 
-# no durable URL exists — omit the flag entirely
-agent-coord release --terminal superseded --pr-state "${PR_STATE}" \
+# no named successor exists
+agent-coord release --terminal abandoned --pr-state "${PR_STATE}" \
   --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}"
 ```
 
@@ -1340,8 +1354,9 @@ An agent **may not**, without an explicit operator decision:
 5. Compute the revert closure from the batch manifest, dependency-plan edges of
    **every** type, and
    git, comparing whole ranges. Map every in-scope commit to a PR: a confirmed
-   direct commit is a closure unit of one, and a failed lookup is `UNKNOWN`.
-   Fail closed to the wider scope on any `UNKNOWN`.
+   direct commit is a closure unit of one, a dependency-selected unit stays in
+   scope even when it landed before the suspect PR, and a failed lookup is
+   `UNKNOWN`. Fail closed to the wider scope on any `UNKNOWN`.
    Fix `PRE_BATCH_SHA` as `${OLDEST_IN_SCOPE_SHA}^1`.
 6. Decide revert versus forward fix, and write down why.
 7. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
@@ -1381,9 +1396,9 @@ An agent **may not**, without an explicit operator decision:
     or `abandoned`; release the repair lane claimed in step 7 as `done` under
     `REPAIR_BATCH_ID` / `REPAIR_LANE`; restore `RERERE_PRIOR`; reclassify the
     worked issue as `regressed`. Build the release arguments conditionally so
-    `--evidence-url` is present only when `EVIDENCE_URL` is set. If no repair
-    lands at all, skip checkpoint B but still close **both** lanes terminally
-    (omitting `--evidence-url` when no durable URL exists), close the draft
-    revert PR, restore `RERERE_PRIOR`, reclassify the worked issue `regressed`,
-    and record the accepted-risk decision and its operator in the durable
-    handoff.
+    `--terminal` follows whether a named successor exists and `--evidence-url`
+    is present only when `EVIDENCE_URL` is set. If no repair lands at all,
+    skip checkpoint B but still close **both** lanes terminally (omitting
+    `--evidence-url` when no durable URL exists), close the draft revert PR,
+    restore `RERERE_PRIOR`, reclassify the worked issue `regressed`, and record
+    the accepted-risk decision and its operator in the durable handoff.
