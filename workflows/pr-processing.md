@@ -2044,8 +2044,8 @@ too-expensive route. This is distinct from the closeout-only generic
 continuation prompt below.
 
 Before resuming, keep the current goal. Near its top, replace any conflicting
-static model-group line with the compact `Coordinator model/effort preference:`
-and `Worker model/effort preferences:` fields from the Plan To Goal template. Do not clear the
+static model-group line with the compact `Preferred route:` metadata and
+`Worker model/effort preferences:` field from the Plan To Goal template. Do not clear the
 goal; its objective, targets, `merge_authority`, QA decision, and completion
 contract remain authoritative.
 

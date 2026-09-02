@@ -321,6 +321,8 @@ class PromptCompatibilityTest < Minitest::Test
       ["#{fixture('codex-to-claude.txt')}Use $scw:pr-batch for this route.\n", "claude"],
       ["#{fixture('claude-to-codex.txt')}Use Claude Agent with isolation: 'worktree'.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Dispatch each lane with the Agent tool.\n", "codex"],
+      ["#{fixture('claude-to-codex.txt')}Dispatch each lane with the `Agent` tool.\n", "codex"],
+      ["#{fixture('claude-to-codex.txt')}Start one `Workflow` worker per lane.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Run /code-review before closeout.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Use /loop to monitor CI.\n", "codex"],
       ["#{fixture('codex-to-claude.txt')}Call spawn_agent with sandbox_permissions: use_default.\n", "claude"]

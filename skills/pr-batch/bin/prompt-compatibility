@@ -29,7 +29,7 @@ PROTECTED_PREFIXES = ["Work item:", "Safety gates:", "Merge authority:"].freeze
 CLAUDE_RUNTIME_MECHANICS = [
   %r{(?<![[:alnum:]_/$])/(?:code-review|loop)\b},
   /\bClaude (?:Agent|Workflow)\b/,
-  /\b(?:Agent|Workflow) (?:tool|subagents?|workers?)\b/,
+  /(?:\b(?:Agent|Workflow)\b|`(?:Agent|Workflow)`) (?:tool|subagents?|workers?)\b/,
   /\bisolation:[ \t]*['"]worktree['"]/
 ].freeze
 CODEX_RUNTIME_MECHANICS = [
