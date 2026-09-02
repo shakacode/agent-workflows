@@ -35,6 +35,7 @@ require "time"
 module PrCiReadiness
   class Error < StandardError; end
 
+  VALIDATION_WORKFLOW = "Validate"
   DRAFT_HEAD_VALIDATION_CHECK = "validate (draft head)"
 
   module_function
@@ -86,8 +87,24 @@ module PrCiReadiness
   end
 
   def non_draft_head_rows(rows)
+    rows.reject { |row| draft_head_validation_row?(row) }
+  end
+
+  def draft_head_validation_row?(row)
+    row.is_a?(Hash) &&
+      row["workflow"].to_s == VALIDATION_WORKFLOW &&
+      row["name"].to_s == DRAFT_HEAD_VALIDATION_CHECK
+  end
+
+  def non_draft_head_actions_rows(rows)
+    validate_run_ids = rows.filter_map do |row|
+      row["id"] if row.is_a?(Hash) && row["kind"] == "run" && row["name"] == VALIDATION_WORKFLOW
+    end
     rows.reject do |row|
-      row.is_a?(Hash) && row["name"].to_s == DRAFT_HEAD_VALIDATION_CHECK
+      next false unless row.is_a?(Hash) && row["name"] == DRAFT_HEAD_VALIDATION_CHECK
+
+      match = row["url"].to_s.match(%r{/actions/runs/([1-9]\d*)/job/[1-9]\d*(?:[/?#]|\z)})
+      match && validate_run_ids.include?(match[1].to_i)
     end
   end
 
@@ -241,6 +258,7 @@ module PrCiReadiness
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
     statuses_complete:, errors: {}, gate_advisory_rows: true
   )
+    actions_rows = non_draft_head_actions_rows(actions_rows)
     # required_rows may still contain a non-Hash entry that survived
     # readiness classification upstream (kept, not dropped, so it remains
     # visible below in the required_status_check_rollup scope's own rows and
@@ -306,7 +324,7 @@ module PrCiReadiness
   # out before readiness classification so they cannot masquerade as a
   # recognized bucket, and are reported separately in "invalid".
   def assess(pr_number:, required_used:, rows:, required_cancellations: [])
-    invalid = invalid_names(rows)
+    invalid = invalid_names(non_draft_head_rows(rows))
     valid_rows = rows.reject { |row| invalid_row?(row) }
     gated_rows = readiness_rows(valid_rows, required_used:, required_cancellations:)
     failing = failing_names(gated_rows)

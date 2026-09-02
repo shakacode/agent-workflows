@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   validate:
+    # pr-ci-readiness recognizes this exact workflow/job pair as draft-only evidence.
     name: ${{ github.event.pull_request.draft == true && 'validate (draft head)' || 'validate' }}
     runs-on: ubuntu-latest
     steps:

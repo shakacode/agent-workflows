@@ -74,19 +74,45 @@ class PrCiReadinessTest < Minitest::Test
     assert_equal "UNKNOWN", out["verdict"]
   end
 
+  def test_invalid_draft_head_row_is_ignored_before_invalid_classification
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
+                                 { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "future-state" },
+                                 { "workflow" => "Validate", "name" => "validate", "bucket" => "pass" }
+                               ])
+
+    assert_equal "READY", out["verdict"]
+    assert_empty out["invalid"]
+  end
+
   def test_draft_head_filter_is_exact_and_applies_to_evidence_scopes
     scope = PrCiReadiness.evidence_scope(
       source: "github.actions.exact_head", head_sha: "a" * 40, complete: true,
       rows: [
-        { "name" => "validate (draft head)", "bucket" => "fail" },
-        { "name" => "security (draft head)", "bucket" => "fail" },
-        { "name" => "validate (draft head extra)", "bucket" => "fail" }
+        { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "fail" },
+        { "workflow" => "Security", "name" => "validate (draft head)", "bucket" => "fail" },
+        { "workflow" => "Validate", "name" => "validate (draft head extra)", "bucket" => "fail" }
       ],
       checked_at: "2026-09-02T00:00:00Z"
     )
-    names = scope["rows"].map { |row| row["name"] }
+    identities = scope["rows"].map { |row| [row["workflow"], row["name"]] }
     assert_equal "NOT_READY", scope["state"]
-    assert_equal ["security (draft head)", "validate (draft head extra)"], names
+    assert_equal [
+      ["Security", "validate (draft head)"],
+      ["Validate", "validate (draft head extra)"]
+    ], identities
+  end
+
+  def test_draft_head_actions_filter_binds_the_job_to_the_validate_run
+    base = "https://github.com/owner/repo/actions/runs"
+    rows = [
+      { "kind" => "run", "id" => 10, "name" => "Validate", "url" => "#{base}/10" },
+      { "kind" => "job", "id" => 11, "name" => "validate (draft head)", "url" => "#{base}/10/job/11" },
+      { "kind" => "run", "id" => 20, "name" => "Security", "url" => "#{base}/20" },
+      { "kind" => "job", "id" => 21, "name" => "validate (draft head)", "url" => "#{base}/20/job/21" }
+    ]
+
+    ids = PrCiReadiness.non_draft_head_actions_rows(rows).map { |row| row["id"] }
+    assert_equal [10, 20, 21], ids
   end
 
   def test_same_context_current_pass_supersedes_cancelled_history
