@@ -280,9 +280,11 @@ the current base or resting on a stale CI run. Only when both checks pass
 does the coordinator automatically start a `$pr-walkthrough` — an exact-diff
 explanation of the PR, one conceptual change at a time, with room for your
 questions between changes — and only then ask one final merge question. If
-the PR is behind the current base or that CI check has not reported
-`READY`, the coordinator waits (`waiting-on-checks-or-review`) instead of
-starting the walkthrough. The walkthrough itself is not approval: if the
+the PR is behind the current base, the coordinator reconciles the base
+instead of waiting — a stale branch never clears on its own. If only the CI
+check has not reported `READY`, the coordinator waits
+(`waiting-on-checks-or-review`) instead of starting the walkthrough. The
+walkthrough itself is not approval: if the
 diff changes or a gate starts failing in the meantime, the merge question is
 withheld and the walkthrough restarts or stops.
 

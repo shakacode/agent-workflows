@@ -391,9 +391,11 @@ head contains the current base and that exact-head CI reports the normalized
 hold does it automatically start `$pr-walkthrough`, explaining one conceptual
 change at a time in full mode for large or complex PRs (concise mode for
 smaller cohesive PRs), then refresh the diff identity and readiness. If the PR
-is behind the current base or that CI check has not reported `READY`, the
-coordinator waits (`waiting-on-checks-or-review`) instead of starting the
-walkthrough. A changed identity invalidates the walkthrough and restarts or
+is behind the current base, the coordinator reconciles the base instead of
+waiting — a stale branch never clears on its own. If only the CI check has
+not reported `READY`, the coordinator waits (`waiting-on-checks-or-review`)
+instead of starting the walkthrough. A changed identity invalidates the
+walkthrough and restarts or
 stops it; a newly failing gate stops it. The coordinator asks the one final
 merge question only when the refreshed identity matches the recorded identity
 and readiness remains clean; a completed walkthrough must have explained that
