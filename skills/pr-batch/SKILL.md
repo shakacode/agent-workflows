@@ -539,7 +539,7 @@ Use this template when creating Codex goal text:
 ```text
 Use $pr-batch to complete this batch with subagents.
 
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
 
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN

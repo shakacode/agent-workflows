@@ -82,7 +82,7 @@ LEGACY_PLANNING_PASS_PROFILE_PHRASES = [
 ].freeze
 GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
-BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>."
+BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
 CONTINUATION_INVOCATION_LINE =
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch."
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
