@@ -85,9 +85,48 @@ module ValidateDocLinks
   def links(text)
     found = []
     each_prose_line(text) do |line, number|
-      line.scan(LINK_PATTERN) { |(target)| found << [target, number] }
+      link_scan_source(line).scan(LINK_PATTERN) { |(target)| found << [target, number] }
     end
     found
+  end
+
+  # Inline code and escaped opening brackets render as prose, not links. Mask
+  # them without changing line numbers before applying the deliberately narrow
+  # inline-link pattern.
+  def link_scan_source(line)
+    source = mask_inline_code_spans(line)
+    index = 0
+    while index < source.bytesize
+      if source.getbyte(index) == 91 # "["
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 && source.getbyte(cursor) == 92 # "\\"
+          backslashes += 1
+          cursor -= 1
+        end
+        source.setbyte(index, 32) if backslashes.odd?
+      end
+      index += 1
+    end
+    source
+  end
+
+  def mask_inline_code_spans(line)
+    masked = line.dup
+    cursor = 0
+    while (opener = /`+/.match(line, cursor))
+      delimiter = opener[0]
+      closer = Regexp.new("(?<!`)#{Regexp.escape(delimiter)}(?!`)").match(line, opener.end(0))
+      unless closer
+        cursor = opener.end(0)
+        next
+      end
+
+      range = opener.begin(0)...closer.end(0)
+      masked[range] = " " * range.size
+      cursor = closer.end(0)
+    end
+    masked
   end
 
   # GitHub anchor slugs for every ATX heading outside fenced code blocks, in

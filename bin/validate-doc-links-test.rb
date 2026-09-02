@@ -138,6 +138,14 @@ class ValidateDocLinksTest < Minitest::Test
     assert_equal %w[authority authority-1 authority-2], ValidateDocLinks.heading_anchors(text)
   end
 
+  def test_inline_code_and_escaped_link_syntax_are_not_links
+    text = <<~'MARKDOWN'
+      `[Code Example](missing.md)` \[Escaped Example](missing.md) [Real](real.md)
+    MARKDOWN
+
+    assert_equal [["real.md", 1]], ValidateDocLinks.links(text)
+  end
+
   def test_fenced_code_blocks_are_not_headings_and_do_not_contain_links
     text = <<~MARKDOWN
       # Real Heading
