@@ -104,7 +104,7 @@ blocker. Do not fake a manual pass from static inspection.
      `.agents/skills/manual-testing` copy. Run its
      `bin/configured-evidence-upload --repo-root <root> --trusted-base
      <accepted-base-SHA> <file>` once per artifact. The helper invokes only the
-     fixed, trusted-base, byte-identical `.agents/bin/upload-evidence` wrapper,
+     fixed `.agents/bin/upload-evidence` wrapper materialized from the trusted base,
      passes the file as one argv value, bounds runtime/output, and accepts only
      one exact `https://github.com/user-attachments/assets/<asset-id>` line.
      It passes the resolved skill root as `MANUAL_TESTING_SKILL_DIR`, so a

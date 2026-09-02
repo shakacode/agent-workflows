@@ -8,6 +8,10 @@ from the same project share the project-level license notice below.
 
 Project: [intercom/2x-skills](https://github.com/intercom/2x-skills)
 
+Adapted component:
+[`plugins/pr-tools/skills/attach-github-assets/scripts/upload.sh`](https://github.com/intercom/2x-skills/blob/59213af0a2db9321ef10355ff24e9bd619151b6b/plugins/pr-tools/skills/attach-github-assets/scripts/upload.sh)
+as `skills/manual-testing/bin/github-user-attachments-upload`.
+
 License source: [LICENSE](https://github.com/intercom/2x-skills/blob/59213af0a2db9321ef10355ff24e9bd619151b6b/LICENSE)
 
 MIT License

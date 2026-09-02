@@ -10,7 +10,7 @@ module ManualTesting
     TERM_GRACE_SECONDS = 1.0
     KILL_GRACE_SECONDS = 1.0
 
-    Result = Data.define(:stdout, :stderr, :status, :timed_out, :output_too_large)
+    Result = Data.define(:stdout, :stderr, :status, :timed_out, :output_too_large, :process_group_leaked)
 
     def initialize(timeout: DEFAULT_TIMEOUT_SECONDS, output_limit: DEFAULT_OUTPUT_LIMIT_BYTES)
       @timeout = timeout
@@ -38,6 +38,7 @@ module ManualTesting
       deadline = monotonic_now + @timeout
       status = nil
       timed_out = false
+      process_group_leaked = false
 
       loop do
         waited = Process.waitpid2(pid, Process::WNOHANG)
@@ -47,10 +48,15 @@ module ManualTesting
         end
         if monotonic_now >= deadline
           timed_out = true
-          terminate_process_group(pid)
+          status = terminate_process_group(pid)
           break
         end
         sleep POLL_SECONDS
+      end
+
+      if process_group_alive?(pid)
+        process_group_leaked = true
+        terminate_process_group(pid)
       end
 
       stdout_file.rewind
@@ -62,7 +68,8 @@ module ManualTesting
         stderr: stderr.byteslice(0, @output_limit),
         status:,
         timed_out:,
-        output_too_large: stdout.bytesize > @output_limit || stderr.bytesize > @output_limit
+        output_too_large: stdout.bytesize > @output_limit || stderr.bytesize > @output_limit,
+        process_group_leaked:
       )
     ensure
       stdout_file&.close!
@@ -82,17 +89,20 @@ module ManualTesting
 
     def wait_for_group(pid, deadline)
       status = nil
+      child_reaped = false
       while monotonic_now < deadline
-        unless status
-          waited = Process.waitpid2(pid, Process::WNOHANG)
-          status = waited[1] if waited
+        unless status || child_reaped
+          begin
+            waited = Process.waitpid2(pid, Process::WNOHANG)
+            status = waited[1] if waited
+          rescue Errno::ECHILD
+            child_reaped = true
+          end
         end
         return status unless process_group_alive?(pid)
 
         sleep POLL_SECONDS
       end
-      status
-    rescue Errno::ECHILD
       status
     end
 

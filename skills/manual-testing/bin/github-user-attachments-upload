@@ -3,18 +3,18 @@
 
 # Adapted from intercom/2x-skills' MIT-licensed upload.sh:
 # https://github.com/intercom/2x-skills/blob/main/plugins/pr-tools/skills/attach-github-assets/scripts/upload.sh
-# Copyright (c) 2026 Intercom. See THIRD_PARTY_NOTICES.md for the MIT notice.
+# Copyright (c) 2026 Intercom. See THIRD_PARTY-NOTICES.md for the MIT notice.
 
 require "json"
 require "optparse"
 require "tempfile"
 require "uri"
 require_relative "../lib/bounded_command"
+require_relative "../lib/evidence_upload"
 
 module GitHubUserAttachmentsUpload
   ENDPOINT = "https://uploads.github.com/user-attachments/assets"
   CURL_STATUS_FORMAT = "\n%{http_code}" # rubocop:disable Style/FormatStringToken
-  ATTACHMENT_URL = %r{\Ahttps://github\.com/user-attachments/assets/[A-Za-z0-9_-]+\z}
   TOKEN = /\A[A-Za-z0-9_]+\z/
   REPOSITORY_ID = /\A[1-9][0-9]*\z/
   REMOTE_PATTERNS = [
@@ -38,15 +38,15 @@ module GitHubUserAttachmentsUpload
 
   module_function
 
-  def upload(file_path, repository_id: nil, runner: ManualTesting::BoundedCommand.new)
-    artifact = verified_artifact(file_path)
+  def upload(file_path, runner: ManualTesting::BoundedCommand.new)
+    artifact = ManualTesting::EvidenceUpload.verified_artifact(file_path)
     mime = MIME_TYPES[File.extname(artifact).downcase]
     raise Error, "unsupported file type" unless mime
 
     token = successful_output(runner, %w[gh auth token], "GitHub authentication").strip
     raise Error, "GitHub authentication returned an unsafe token" unless token.match?(TOKEN)
 
-    resolved_repository_id = repository_id || detect_repository_id(runner)
+    resolved_repository_id = detect_repository_id(runner)
     raise Error, "repository id must be a positive integer" unless resolved_repository_id.to_s.match?(REPOSITORY_ID)
 
     query = URI.encode_www_form(
@@ -77,22 +77,15 @@ module GitHubUserAttachmentsUpload
       raise Error, "GitHub attachment upload returned HTTP #{status}" unless status == "201"
 
       url = JSON.parse(body).fetch("url", nil)
-      raise Error, "GitHub attachment upload returned an invalid URL" unless url.is_a?(String) && url.match?(ATTACHMENT_URL)
+      raise Error, "GitHub attachment upload returned an invalid URL" unless
+        ManualTesting::EvidenceUpload.exact_attachment_url?(url)
 
       url
     end
   rescue JSON::ParserError
     raise Error, "GitHub attachment upload returned malformed JSON"
-  end
-
-  def verified_artifact(path)
-    expanded = File.expand_path(path)
-    stat = File.lstat(expanded)
-    raise Error, "artifact must be a non-symlink regular file" unless stat.file? && !stat.symlink?
-
-    File.realpath(expanded)
-  rescue Errno::ENOENT, Errno::ENOTDIR, Errno::ELOOP
-    raise Error, "artifact must be an existing non-symlink regular file"
+  rescue ManualTesting::EvidenceUpload::UnsafeArtifact => e
+    raise Error, e.message
   end
 
   def detect_repository_id(runner)
@@ -115,16 +108,15 @@ module GitHubUserAttachmentsUpload
     result = runner.capture(command)
     raise Error, "#{label} timed out" if result.timed_out
     raise Error, "#{label} output exceeded the bounded limit" if result.output_too_large
+    raise Error, "#{label} left a running process group" if result.process_group_leaked
     raise Error, "#{label} failed" unless result.status&.success?
 
     result.stdout
   end
 
   def parse_options(argv)
-    options = {}
     parser = OptionParser.new do |opts|
-      opts.banner = "Usage: github-user-attachments-upload [--repository-id ID] FILE"
-      opts.on("--repository-id ID") { |value| options[:repository_id] = value }
+      opts.banner = "Usage: github-user-attachments-upload FILE"
       opts.on("-h", "--help") do
         puts opts
         exit 0
@@ -133,14 +125,14 @@ module GitHubUserAttachmentsUpload
     parser.parse!(argv)
     raise OptionParser::InvalidArgument, "exactly one FILE is required" unless argv.length == 1
 
-    [options, argv.first]
+    argv.first
   end
 end
 
 if $PROGRAM_NAME == __FILE__
   begin
-    options, file = GitHubUserAttachmentsUpload.parse_options(ARGV)
-    puts GitHubUserAttachmentsUpload.upload(file, **options)
+    file = GitHubUserAttachmentsUpload.parse_options(ARGV)
+    puts GitHubUserAttachmentsUpload.upload(file)
   rescue GitHubUserAttachmentsUpload::Error, OptionParser::ParseError => e
     warn "github-user-attachments-upload: #{e.message}"
     exit 1

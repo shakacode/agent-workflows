@@ -7,6 +7,7 @@ require "open3"
 require "tmpdir"
 
 SCRIPT = File.expand_path("configured-evidence-upload", __dir__)
+load SCRIPT
 
 class ConfiguredEvidenceUploadTest < Minitest::Test
   ATTACHMENT_URL = "https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc"
@@ -99,7 +100,7 @@ class ConfiguredEvidenceUploadTest < Minitest::Test
     end
   end
 
-  def test_live_wrapper_must_be_byte_identical_to_the_trusted_base
+  def test_trusted_base_wrapper_bytes_run_even_when_the_live_wrapper_changes
     with_repo do |root|
       write_policy(root, configured: true)
       wrapper = <<~RUBY
@@ -113,9 +114,28 @@ class ConfiguredEvidenceUploadTest < Minitest::Test
 
       stdout, stderr, status = run_upload(root, base_sha, artifact)
 
-      refute status.success?
+      assert status.success?, stderr
+      assert_equal "#{ATTACHMENT_URL}\n", stdout
+      assert_empty stderr
+    end
+  end
+
+  def test_missing_policy_file_returns_absent_configuration_without_an_uncaught_throw
+    with_repo do |root|
+      write_wrapper(root, "#!/usr/bin/env ruby\nabort 'must not run'\n")
+      base_sha = commit!(root, "omit policy file")
+      artifact = write_artifact(root)
+      code = nil
+      arguments = ["--repo-root", root, "--trusted-base", base_sha, artifact]
+
+      stdout, stderr = capture_io do
+        code = ConfiguredEvidenceUpload.run(arguments)
+      end
+
+      assert_equal 69, code
       assert_empty stdout
-      assert_includes stderr, "differs from trusted base"
+      assert_includes stderr, "configuration is absent"
+      refute_includes stderr, "UncaughtThrowError"
     end
   end
 
@@ -139,6 +159,73 @@ class ConfiguredEvidenceUploadTest < Minitest::Test
       assert_empty stdout
       assert_includes stderr, "artifact must be a non-symlink regular file"
       refute_path_exists marker
+    end
+  end
+
+  def test_inaccessible_artifact_is_rejected_before_the_wrapper_runs
+    with_repo do |root|
+      write_policy(root, configured: true)
+      marker = File.join(root, "wrapper-ran")
+      write_wrapper(root, <<~RUBY)
+        #!/usr/bin/env ruby
+        File.write(#{marker.inspect}, "ran")
+        puts #{ATTACHMENT_URL.inspect}
+      RUBY
+      base_sha = commit!(root, "configure evidence uploader")
+      artifact = write_artifact(root)
+      artifact_directory = File.dirname(artifact)
+      File.chmod(0o000, artifact_directory)
+
+      stdout, stderr, status = run_upload(root, base_sha, artifact)
+
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "artifact must be an existing non-symlink regular file"
+      refute_path_exists marker
+    ensure
+      File.chmod(0o700, artifact_directory) if artifact_directory && File.exist?(artifact_directory)
+    end
+  end
+
+  def test_configured_wrapper_composes_with_reference_uploader_using_stubbed_tools
+    with_repo do |root|
+      write_policy(root, configured: true)
+      stub_directory = File.join(root, "stub-tools")
+      write_wrapper(root, <<~RUBY)
+        #!/usr/bin/env ruby
+        ENV["PATH"] = #{stub_directory.inspect} + File::PATH_SEPARATOR + ENV.fetch("PATH")
+        exec File.join(ENV.fetch("MANUAL_TESTING_SKILL_DIR"), "bin", "github-user-attachments-upload"), *ARGV
+      RUBY
+      base_sha = commit!(root, "configure reference evidence uploader")
+      write_stub(root, "gh", <<~'RUBY')
+        #!/usr/bin/env ruby
+        case ARGV
+        when ["auth", "token"]
+          puts "github_pat_fixture"
+        when ["api", "repos/shakacode/agent-workflows", "--jq", ".id"]
+          puts "12345"
+        else
+          exit 2
+        end
+      RUBY
+      write_stub(root, "git", <<~'RUBY')
+        #!/usr/bin/env ruby
+        abort "unexpected git invocation" unless ARGV == ["remote", "get-url", "origin"]
+        puts "git@github.com:shakacode/agent-workflows.git"
+      RUBY
+      write_stub(root, "curl", <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        puts({ "url" => #{ATTACHMENT_URL.inspect} }.to_json)
+        print "201"
+      RUBY
+      artifact = write_artifact(root)
+
+      stdout, stderr, status = run_upload(root, base_sha, artifact)
+
+      assert status.success?, stderr
+      assert_equal "#{ATTACHMENT_URL}\n", stdout
+      assert_empty stderr
     end
   end
 
@@ -178,12 +265,12 @@ class ConfiguredEvidenceUploadTest < Minitest::Test
       base_sha = commit!(root, "configure backgrounding evidence uploader")
       artifact = write_artifact(root)
 
-      stdout, stderr, status = run_upload(root, base_sha, artifact, timeout: 0.1)
+      stdout, stderr, status = run_upload(root, base_sha, artifact, timeout: 5)
       sleep 0.6
 
       refute status.success?
       assert_empty stdout
-      assert_includes stderr, "configured uploader timed out"
+      assert_includes stderr, "configured uploader left a running process group"
       refute_path_exists marker
     end
   end
@@ -220,6 +307,11 @@ class ConfiguredEvidenceUploadTest < Minitest::Test
 
   def write_artifact(root, name = "before.png")
     write(root, File.join("artifacts", name), "fixture image bytes")
+  end
+
+  def write_stub(root, name, content)
+    path = write(root, File.join("stub-tools", name), content)
+    File.chmod(0o755, path)
   end
 
   def write(root, relative, content)

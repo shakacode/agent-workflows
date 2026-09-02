@@ -10,7 +10,7 @@ load SCRIPT
 class GitHubUserAttachmentsUploadTest < Minitest::Test
   ATTACHMENT_URL = "https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc"
 
-  FakeResult = Data.define(:stdout, :stderr, :status, :timed_out, :output_too_large)
+  FakeResult = Data.define(:stdout, :stderr, :status, :timed_out, :output_too_large, :process_group_leaked)
 
   class FakeStatus
     def initialize(success: true, exitstatus: 0)
@@ -55,7 +55,8 @@ class GitHubUserAttachmentsUploadTest < Minitest::Test
         stderr: "",
         status: FakeStatus.new,
         timed_out: false,
-        output_too_large: false
+        output_too_large: false,
+        process_group_leaked: false
       )
     end
   end
@@ -74,7 +75,8 @@ class GitHubUserAttachmentsUploadTest < Minitest::Test
         stderr: "auth failure with secret-token-that-must-not-leak\n",
         status: FakeStatus.new(success: false, exitstatus: 1),
         timed_out: false,
-        output_too_large: false
+        output_too_large: false,
+        process_group_leaked: false
       )
     end
   end
@@ -166,6 +168,22 @@ class GitHubUserAttachmentsUploadTest < Minitest::Test
 
         assert_equal "artifact must be a non-symlink regular file", error.message
       end
+    end
+  end
+
+  def test_inaccessible_artifact_is_rejected
+    Dir.mktmpdir("github-upload-inaccessible") do |root|
+      artifact = File.join(root, "before.png")
+      File.write(artifact, "fixture")
+      File.chmod(0o000, root)
+
+      error = assert_raises(GitHubUserAttachmentsUpload::Error) do
+        GitHubUserAttachmentsUpload.upload(artifact, runner: SuccessfulRunner.new(ATTACHMENT_URL))
+      end
+
+      assert_equal "artifact must be an existing non-symlink regular file", error.message
+    ensure
+      File.chmod(0o700, root) if root && File.exist?(root)
     end
   end
 end

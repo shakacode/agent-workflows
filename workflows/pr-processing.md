@@ -993,7 +993,7 @@ For each user-visible UI change:
    `.agents/skills/manual-testing` copy. Invoke
    `bin/configured-evidence-upload --repo-root <root> --trusted-base
    <accepted-base-SHA> <file>` separately for each artifact. It runs only the
-   fixed, trusted-base, byte-identical `.agents/bin/upload-evidence` wrapper,
+   fixed `.agents/bin/upload-evidence` wrapper materialized from the trusted base,
    preserves the file as one argv value, bounds output/runtime, and accepts one
    exact `https://github.com/user-attachments/assets/<asset-id>` line. A
    deliberately verified consumer wrapper may delegate to the manual-testing
