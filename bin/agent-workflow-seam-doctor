@@ -2396,10 +2396,12 @@ module AgentWorkflowSeamDoctor
       out << "ADVICE #{item.fetch('linter')} (#{item.fetch('config')}): " \
              "#{item.fetch('enforced').length} enforced, #{recommendations.length} missing/disabled\n"
       item.fetch("enforced").each do |limit|
-        out << "- enforced #{limit.fetch('rule')}: #{limit.fetch('value')}\n"
+        scope = limit["scope"] ? " (scope: #{limit.fetch('scope')})" : ""
+        out << "- enforced #{limit.fetch('rule')}: #{limit.fetch('value')}#{scope}\n"
       end
       recommendations.each do |recommendation|
-        out << "- #{recommendation.fetch('state')} #{recommendation.fetch('rule')}; suggested config:\n" \
+        scope = recommendation["scope"] ? " (scope: #{recommendation.fetch('scope')})" : ""
+        out << "- #{recommendation.fetch('state')} #{recommendation.fetch('rule')}#{scope}; suggested config:\n" \
                "#{recommendation.fetch('suggestion')}\n"
       end
       out << "- #{item.fetch('note')}\n" if item["note"]

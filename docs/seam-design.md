@@ -122,9 +122,11 @@ lint_advice:
 
 The seam doctor statically inspects root `.rubocop.yml`, `eslint.config.*`, and
 `.eslintrc*` files. It reports actual configured values separately from missing
-or disabled limits and never evaluates JavaScript configuration. Its top-level
-`advice` JSON array and matching human-readable section are recommendations,
-not contract issues: they do not change `status`, the process exit code, or the
+or disabled limits, keeps scoped ESLint overrides distinct, and never evaluates
+JavaScript configuration. Threshold overrides must be positive integers;
+invalid values fall back to the portable suggestion. Its top-level `advice`
+JSON array and matching human-readable section are recommendations, not
+contract issues: they do not change `status`, the process exit code, or the
 stack doctor's healthy `workflows.seam` check. A repository with none of these
 files gets one concise no-recognized-config advisory.
 
