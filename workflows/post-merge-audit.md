@@ -522,6 +522,58 @@ placeholders; replace them with the real batch id and issues):
 | qa | batch-abc:qa / codex-qa | QA Evidence block URL | blocked | blocked | fix or waiver needed before release |
 ```
 
+## Outstanding Follow-Up Handoff
+
+A coordinator-owned audit may return `follow-ups-remain` only after every
+outstanding finding is bound to an exact durable issue URL, covered by an
+explicit report-only/no-issue instruction, or named in a precise issue-creation
+blocker with its failed operation, error, and retry action.
+
+A changelog-only audit creates or reuses one bundled changelog issue;
+recommending `/update-changelog` is supplementary and never substitutes for
+durable tracking. Do not create issue noise for duplicate, resolved, `OK`,
+explicitly waived or deferred, or report-only findings.
+
+Deduplicate findings by affected PR and audit fingerprint, reuse each matching
+open issue, then create one issue per independently actionable remaining item.
+Collapse changelog-only findings into one bundled changelog issue. For every
+linked or created follow-up, use the exact issue URL as the receipt disposition
+`ref` and evidence so replay and final archive status share the same durable
+identity. After issue accounting, emit one ready copy-paste `$pr-batch` prompt
+whose target list contains every unique linked or created issue URL exactly once
+and no unresolved placeholder. Set the generated prompt's `merge_authority` to
+the active audit task's explicit value when present; otherwise use
+`auto_merge_when_gates_pass`.
+
+Independent checker and advisory-auditor runs still stop after drafting
+fingerprinted issue entries. Only the coordinator performs issue search,
+creation, receipt binding, and prompt generation.
+
+When issue creation is blocked, do not invent an issue URL or emit a target
+placeholder; preserve the finding fingerprint, exact failed operation and
+error, and one retry action in the issue accounting, receipt disposition,
+`Action needed:`, and `Next:` output. An explicit report-only/no-issue
+instruction suppresses issue creation and follow-up prompt generation for that
+finding, and the final accounting records the instruction as its disposition
+evidence.
+
+## Ready Follow-Up PR-Batch Prompt
+
+Replace every angle-bracket field before returning this prompt. Sort the unique
+issue URLs deterministically, list each once, and use the already resolved
+follow-up merge authority rather than leaving a choice or placeholder.
+
+```text
+$pr-batch
+
+Continue the tracked follow-ups from <exact audit receipt or report URL>.
+Repository: <OWNER/REPO>
+Targets:
+- <exact linked or created issue URL>
+Objective: Resolve the tracked post-merge audit follow-ups within each issue's accepted scope.
+merge_authority: <resolved explicit value>
+```
+
 ## Comparison Prompt
 
 Use this in a fresh coordinator chat after both independent reports are complete.
@@ -614,7 +666,9 @@ Rules:
 - For non-release audits with no release-gate ledger, include
   `Audit ledger: not applicable (non-release audit)` in every parent and child
   issue body.
-- For missing changelog findings, prefer one bundled changelog issue or recommend `/update-changelog`; do not create one issue per missing entry unless explicitly approved.
+- For missing changelog findings, create or reuse one bundled changelog issue
+  and optionally recommend `/update-changelog`; do not create one issue per
+  missing entry.
 - For process findings, preserve the deduped Process Gap Disposition fields:
   `Mechanism target`, `Motivating miss`, `Replay evidence or park reason`, and
   `Non-goal`.
@@ -628,6 +682,9 @@ After creation, return:
 - skipped duplicates with existing issue URLs
 - changelog recommendation
 - any issue from the deduped plan that could not be created
+- receipt follow-up dispositions keyed by exact linked or created issue URL
+- the ready follow-up `$pr-batch` prompt from the section above, unless the
+  exact finding is report-only/no-issue or issue creation is blocked
 ```
 
 ## Claude PR Review Handoff Prompt

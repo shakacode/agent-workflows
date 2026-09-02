@@ -369,7 +369,9 @@ audit instructions, labels, issue fields, or issue-creation policy.
   QA omissions marked `not_applicable`; include those rows in the
   worked-issue/QA-lane coverage table so the coordinator can see they were
   checked.
-- **Changelog only**: for missing changelog entries; prefer one bundled changelog issue or a recommendation to run `/update-changelog`, not one issue per entry.
+- **Changelog only**: for missing changelog entries; create or reuse one bundled
+  changelog issue, not one issue per entry. Also recommend `/update-changelog`
+  when useful, but do not use that recommendation as the durable follow-up.
 - **One child issue**: for each independently actionable fix PR, revert consideration, maintainer question, follow-up task, non-OK worked-issue outcome (`partial`, `missed`, `regressed`, or `unknown`), or non-OK QA coverage outcome (`blocked`, `unknown`, or release-audit `in_progress`) that needs follow-up.
 - **Parent issue**: create one parent issue only to group two or more related
   _child fix_ issues from the same audit. Do **not** create a standalone
@@ -385,6 +387,39 @@ audit instructions, labels, issue fields, or issue-creation policy.
   `Audit ledger: not applicable (non-release audit)` in every parent or child
   issue. Genuine non-OK findings still become real child issues; only the
   snapshot/report is what goes to the ledger instead of a new issue.
+
+### Outstanding Follow-Up Handoff
+
+A coordinator-owned audit may return `follow-ups-remain` only after every
+outstanding finding is bound to an exact durable issue URL, covered by an
+explicit report-only/no-issue instruction, or named in a precise issue-creation
+blocker with its failed operation, error, and retry action.
+
+A changelog-only audit creates or reuses one bundled changelog issue;
+recommending `/update-changelog` is supplementary and never substitutes for
+durable tracking. Do not create issue noise for duplicate, resolved, `OK`,
+explicitly waived or deferred, or report-only findings.
+
+After deduplication and issue creation, build one stable issue set from every
+unique linked or created issue URL. For every linked or created follow-up, use
+the exact issue URL as the receipt disposition `ref` and evidence so replay and
+final archive status share the same durable identity. After issue accounting,
+emit one ready copy-paste `$pr-batch` prompt whose target list contains every
+unique linked or created issue URL exactly once and no unresolved placeholder.
+Set the generated prompt's `merge_authority` to the active audit task's explicit
+value when present; otherwise use `auto_merge_when_gates_pass`.
+
+Independent checker and advisory-auditor runs remain draft-only. They return
+fingerprinted issue entries to the coordinator and never create issues or
+generate the launch prompt.
+
+When issue creation is blocked, do not invent an issue URL or emit a target
+placeholder; preserve the finding fingerprint, exact failed operation and
+error, and one retry action in the issue accounting, receipt disposition,
+`Action needed:`, and `Next:` output. An explicit report-only/no-issue
+instruction suppresses issue creation and follow-up prompt generation for that
+finding, and the final accounting records the instruction as its disposition
+evidence.
 
 For process findings, the issue plan must include a Process Gap Disposition
 before issue creation:

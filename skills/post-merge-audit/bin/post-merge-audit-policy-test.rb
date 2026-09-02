@@ -14,6 +14,15 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_SKILL_CLOSING_DEFAULT = "Create follow-up issues by default unless the user explicitly asked for report-only or no issue creation, issue creation is blocked, or there are no issue-worthy findings."
   REQUIRED_PR_PROCESSING_EXCEPTION = "Post-merge batch audit follow-up issues are governed by the Post-Merge Batch Audit section, not this ordinary follow-up tracking default; after dedupe, the coordinator creates those follow-up issues by default unless the user explicitly asked for report-only or no issue creation."
   REQUIRED_ISSUE_CREATION_ACCOUNTING = "issue-creation accounting: parent issue URL if created, child issue URLs, skipped duplicates with existing issue URLs, changelog recommendation, and any planned issue that could not be created"
+  REQUIRED_OUTSTANDING_TRACKING_GATE = "A coordinator-owned audit may return `follow-ups-remain` only after every outstanding finding is bound to an exact durable issue URL, covered by an explicit report-only/no-issue instruction, or named in a precise issue-creation blocker with its failed operation, error, and retry action."
+  REQUIRED_CHANGELOG_TRACKING_RULE = "A changelog-only audit creates or reuses one bundled changelog issue; recommending `/update-changelog` is supplementary and never substitutes for durable tracking."
+  REQUIRED_FOLLOW_UP_PROMPT_RULE = "After issue accounting, emit one ready copy-paste `$pr-batch` prompt whose target list contains every unique linked or created issue URL exactly once and no unresolved placeholder."
+  REQUIRED_FOLLOW_UP_AUTHORITY_RULE = "Set the generated prompt's `merge_authority` to the active audit task's explicit value when present; otherwise use `auto_merge_when_gates_pass`."
+  REQUIRED_NON_ACTIONABLE_NOISE_RULE = "Do not create issue noise for duplicate, resolved, `OK`, explicitly waived or deferred, or report-only findings."
+  REQUIRED_BLOCKED_CREATION_RULE = "When issue creation is blocked, do not invent an issue URL or emit a target placeholder; preserve the finding fingerprint, exact failed operation and error, and one retry action in the issue accounting, receipt disposition, `Action needed:`, and `Next:` output."
+  REQUIRED_REPORT_ONLY_RULE = "An explicit report-only/no-issue instruction suppresses issue creation and follow-up prompt generation for that finding, and the final accounting records the instruction as its disposition evidence."
+  REQUIRED_RECEIPT_ISSUE_IDENTITY_RULE = "For every linked or created follow-up, use the exact issue URL as the receipt disposition `ref` and evidence so replay and final archive status share the same durable identity."
+  REQUIRED_FOLLOW_UP_PROMPT_COMPATIBILITY = "Consume the post-merge audit's deduplicated exact issue URL set without discovering or creating another target, and preserve its explicit follow-up `merge_authority`."
   REQUIRED_UNAVAILABLE_COORDINATION_ASK = "ask before deep audit whether to wait for backend recovery or proceed with an explicitly `UNKNOWN` worked-issue scope"
   REQUIRED_COMPLETED_BATCH_MODE_SCOPE = "In completed-batch mode only:"
   REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
@@ -214,6 +223,54 @@ class PostMergeAuditPolicyTest < Minitest::Test
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_ISSUE_CREATION_ACCOUNTING
+    end
+  end
+
+  def test_outstanding_findings_are_durably_tracked_before_coordinator_closeout
+    canonical_files = [
+      "skills/post-merge-audit/SKILL.md",
+      "workflows/post-merge-audit.md"
+    ]
+
+    canonical_files.each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      [
+        REQUIRED_OUTSTANDING_TRACKING_GATE,
+        REQUIRED_CHANGELOG_TRACKING_RULE,
+        REQUIRED_FOLLOW_UP_PROMPT_RULE,
+        REQUIRED_FOLLOW_UP_AUTHORITY_RULE,
+        REQUIRED_NON_ACTIONABLE_NOISE_RULE,
+        REQUIRED_BLOCKED_CREATION_RULE,
+        REQUIRED_REPORT_ONLY_RULE,
+        REQUIRED_RECEIPT_ISSUE_IDENTITY_RULE
+      ].each do |rule|
+        assert_includes text, rule, "#{relative_path} should pin #{rule.inspect}"
+      end
+    end
+  end
+
+  def test_follow_up_prompt_is_executable_and_preserved_by_pr_batch
+    workflow = File.read(File.join(ROOT, "workflows/post-merge-audit.md"), encoding: "UTF-8")
+    prompt = workflow.match(
+      /^## Ready Follow-Up PR-Batch Prompt\n.*?```text\n(?<body>.*?)^```$/m
+    )
+
+    refute_nil prompt, "post-merge audit workflow should provide the ready follow-up prompt"
+    assert_includes prompt[:body], "$pr-batch"
+    assert_includes prompt[:body], "Targets:\n- <exact linked or created issue URL>"
+    assert_includes prompt[:body], "merge_authority: <resolved explicit value>"
+
+    [
+      "skills/pr-batch/SKILL.md",
+      "workflows/pr-processing.md"
+    ].each do |relative_path|
+      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes text, REQUIRED_FOLLOW_UP_PROMPT_COMPATIBILITY,
+                      "#{relative_path} should preserve the audited follow-up target set and authority"
+      assert_includes text, REQUIRED_FOLLOW_UP_AUTHORITY_RULE,
+                      "#{relative_path} should resolve follow-up merge authority without placeholders"
     end
   end
 
