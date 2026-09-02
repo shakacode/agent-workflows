@@ -49,6 +49,15 @@ class ConfiguredReviewGateWorkflowTest < Minitest::Test
     refute_includes run.fetch(:stdout), UNSETTLED_DESCRIPTION
   end
 
+  def test_a_helper_path_that_is_not_a_regular_file_reports_an_unavailable_gate
+    run = execute_gate_step(helper: :directory)
+
+    refute_equal 0, run.fetch(:exit_status)
+    assert_equal [["failure", UNAVAILABLE_DESCRIPTION]], run.fetch(:statuses)
+    assert_match(/not a regular file/i, error_annotation(run))
+    refute_includes run.fetch(:stdout), UNSETTLED_DESCRIPTION
+  end
+
   def test_an_executed_gate_with_unsettled_reviews_keeps_the_unsettled_description
     run = execute_gate_step(helper: :executable, helper_exit_status: 8)
 
@@ -154,6 +163,11 @@ class ConfiguredReviewGateWorkflowTest < Minitest::Test
 
   def install_helper(path, helper, helper_exit_status, helper_invocation_path)
     return if helper == :missing
+
+    if helper == :directory
+      FileUtils.mkdir_p(path)
+      return
+    end
 
     File.write(path, <<~HELPER)
       #!/usr/bin/env bash

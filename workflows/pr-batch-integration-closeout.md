@@ -1288,6 +1288,9 @@ queues: advisory state cannot stop a queued merge.
 The advisory `configured-review-gate` commit status is visibility only. Never configure
 this context as a required ruleset or merge-queue check. GitHub does not emit an Actions
 event when a review thread is resolved or unresolved; dispatch with only numeric `pr`, then replay.
+Preflight the helper on the trusted base before posting a verdict. A gate that never ran
+reports `configured-review gate unavailable on the trusted base` instead of
+`configured reviews are not merge-ready`; both fail closed.
 
 `pr-ci-readiness` encapsulates the required-vs-full readiness rule: it runs
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no
