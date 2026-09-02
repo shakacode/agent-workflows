@@ -11,7 +11,8 @@ HEADER_NAMES = ["Prompt host", "Prompt mode", "Preferred route", "Route requirem
 RESERVED_HEADER_LIKE =
   /^[ \t]*(?:Prompt[ \t._-]+(?:host|mode)|Preferred[ \t._-]+route|Route[ \t._-]+requirement)[ \t]*(?::+|=)/i
 CANONICAL_HEADER = /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): [^\r\n]*\r?\n?\z/
-BATCH_TARGET_LIKE = /^[ \t]*Batch[ \t._-]+size[ \t._-]+target[ \t]*(?::|=)/i
+BATCH_TARGET_LIKE =
+  /^[ \t]*Batch[ \t._-]+size[ \t._-]+target(?:[ \t]*(?::|=)|[ \t]+(?=(?:codex|claude|generic)\b))/i
 SUPPORTED_HOSTS = %w[codex claude].freeze
 SUPPORTED_PROMPT_HOSTS = (SUPPORTED_HOSTS + ["portable"]).freeze
 SUPPORTED_MODES = %w[goal direct batch].freeze
@@ -28,13 +29,14 @@ PROTECTED_LABELS = %w[
 PROTECTED_PREFIXES = ["Work item:", "Safety gates:", "Merge authority:"].freeze
 CLAUDE_RUNTIME_MECHANICS = [
   %r{(?<![[:alnum:]_/$])/(?:code-review|loop)\b},
+  %r{(?<![[:alnum:]_/$])/pr-review-toolkit:review-pr\b},
   /\bClaude (?:Agent|Workflow)\b/,
   /(?:\b(?:Agent|Workflow)\b|`(?:Agent|Workflow)`) (?:tool|subagents?|workers?)\b/,
   /\bisolation:[ \t]*['"]worktree['"]/
 ].freeze
 CODEX_RUNTIME_MECHANICS = [
   /\b(?:spawn_agent|send_message|followup_task|wait_agent)\b/,
-  /\bsandbox_permissions:[ \t]*(?:require_escalated|use_default)\b/
+  /\bsandbox_permissions["']?[ \t]*:[ \t]*["']?(?:require_escalated|use_default)["']?\b/
 ].freeze
 GOAL_WRAPPER = %r{\A/goal\r?\n}
 LEGACY_CODEX = %r{\A/goal\r?\nUse \$pr-batch(?:\s|\z)}
@@ -286,7 +288,7 @@ if complete_headers
   valid_wrapper = prompt_host == "codex" && prompt_mode == "goal" ? has_goal_wrapper : !has_goal_wrapper
   emit_error("host-mode-wrapper-mismatch", active_host) unless valid_wrapper
 
-  emit_error("empty-prompt-body", active_host) if body.empty?
+  emit_error("empty-prompt-body", active_host) if body.strip.empty?
 
   if prompt_host == "portable" &&
      (skill_mechanics(body, "/").any? || skill_mechanics(body, "$").any? ||

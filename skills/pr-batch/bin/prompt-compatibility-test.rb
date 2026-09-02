@@ -228,7 +228,9 @@ class PromptCompatibilityTest < Minitest::Test
       fixture("codex-to-claude.txt")
         .sub("Batch size target: codex;wave: 1/1", "Batch size target: codex wave: 1/1"),
       fixture("codex-to-claude.txt")
-        .sub("Batch size target: codex;wave: 1/1", "Batch size target = codex;wave: 1/1")
+        .sub("Batch size target: codex;wave: 1/1", "Batch size target = codex;wave: 1/1"),
+      fixture("codex-to-claude.txt")
+        .sub("Batch size target: codex;wave: 1/1", "Batch size target codex;wave: 1/1")
     ]
 
     prompts.each do |prompt|
@@ -245,7 +247,8 @@ class PromptCompatibilityTest < Minitest::Test
   def test_legacy_goal_validates_batch_targets_before_execution_or_conversion
     prompts = [
       ["#{fixture('legacy-goal.txt')}Batch size target: claude;wave: 1/1\n", "contradictory-batch-size-target"],
-      ["#{fixture('legacy-goal.txt')}Batch size target = codex;wave: 1/1\n", "invalid-batch-size-target"]
+      ["#{fixture('legacy-goal.txt')}Batch size target = codex;wave: 1/1\n", "invalid-batch-size-target"],
+      ["#{fixture('legacy-goal.txt')}Batch size target codex;wave: 1/1\n", "invalid-batch-size-target"]
     ]
 
     prompts.each do |prompt, expected_error|
@@ -258,6 +261,23 @@ class PromptCompatibilityTest < Minitest::Test
         refute result.key?("decision")
       end
     end
+  end
+
+  def test_whitespace_only_body_fails_closed
+    prompt = <<~PROMPT
+      Prompt host: codex
+      Prompt mode: batch
+      Preferred route: default
+      Route requirement: advisory
+
+    PROMPT
+
+    result, stderr, status = run_helper(prompt, active_host: "codex")
+
+    refute status.success?
+    assert_empty stderr
+    assert_equal "empty-prompt-body", result.fetch("error")
+    refute result.key?("decision")
   end
 
   def test_goal_mode_is_rejected_for_non_codex_prompt_hosts
@@ -324,8 +344,10 @@ class PromptCompatibilityTest < Minitest::Test
       ["#{fixture('claude-to-codex.txt')}Dispatch each lane with the `Agent` tool.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Start one `Workflow` worker per lane.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Run /code-review before closeout.\n", "codex"],
+      ["#{fixture('claude-to-codex.txt')}Run /pr-review-toolkit:review-pr before closeout.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Use /loop to monitor CI.\n", "codex"],
-      ["#{fixture('codex-to-claude.txt')}Call spawn_agent with sandbox_permissions: use_default.\n", "claude"]
+      ["#{fixture('codex-to-claude.txt')}Call spawn_agent with sandbox_permissions: use_default.\n", "claude"],
+      ["#{fixture('claude-to-codex.txt')}Set \"sandbox_permissions\": \"require_escalated\".\n", "codex"]
     ]
 
     prompts.each do |prompt, active_host|
