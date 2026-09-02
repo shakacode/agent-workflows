@@ -45,7 +45,12 @@ backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 
 ## Preconditions
 
-1. Read `AGENTS.md` and `.agents/workflows/pr-processing.md`.
+1. Read `AGENTS.md` and `.agents/workflows/pr-processing.md`, then load the
+   canonical [PR-Batch Prompt Intake](../../workflows/pr-batch-intake.md)
+   component. Run its runtime prompt-compatibility gate before interpreting an
+   incoming batch prompt or performing any mutation, and use its four-field
+   metadata renderer for every generated prompt. Do not restate the parser or
+   conversion rules here.
 2. **Routing preferences**: before repository or target interpretation, record
    coordinator and independent-checker model/effort preferences. Model and effort selections are advisory preferences: an unavailable or different model or effort never alone blocks launch, replay, review, or audit.
    Record host-observed host, model, and effort only when the host exposes them; otherwise record each unavailable field as `UNKNOWN`, and never infer observations from requested preferences, prompts, or model self-report.
@@ -292,9 +297,12 @@ precise blocker.
    with the selected target and current aggregate wave cap. Each generated prompt must include
    `merge_authority:<none|ask|auto_merge_when_gates_pass>` with the value resolved from visible
    authority or the operator's answer; never silently default an omitted value.
-   Each generated prompt must include
-   `Coordinator model/effort preference: <model/class>/<effort>.` and
-   `Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.` and
+   Each generated prompt must begin with `Prompt host: <codex|claude|portable>`,
+   `Prompt mode: <goal|direct|batch>`,
+   `Preferred route: <model/class>/<effort>|default`, and
+   `Route requirement: advisory`. Render host-specific invocations only after
+   these fields; the preferred route remains metadata, never a launch gate.
+   Each generated prompt must also include
    `Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses` and
    `Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord` and
    `Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`

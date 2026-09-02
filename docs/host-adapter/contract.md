@@ -3,6 +3,8 @@
 Date: 2026-07-02
 Status: accepted
 
+Prompt compatibility protocol: 1
+
 This contract defines how one installed `agent-workflows` pack runs in both
 Codex Desktop and Claude Code Desktop without forking shared skills or workflow
 text. Shared skill text stays portable. Host-specific behavior lives in this
@@ -79,6 +81,59 @@ mechanism. Agent Workflows does not provision or require signing keys, fixed
 trust anchors, launch-confirmation receipts, or human waivers. Prompt conversion
 for incompatible runtime instructions is tracked separately in
 [issue #372](https://github.com/shakacode/agent-workflows/issues/372).
+
+## Prompt Compatibility Boundary
+
+Every generated batch, goal, or direct prompt starts with these fields after an
+optional Codex `/goal` wrapper: <!-- host-allow: codex-only -->
+
+```text
+Prompt host: codex|claude|portable
+Prompt mode: goal|direct|batch
+Preferred route: default|<model-or-class>/<effort>
+Route requirement: advisory
+```
+
+Codex `goal` requires the wrapper. Codex and Claude `batch` or `direct` prompts
+have no wrapper. Portable prompts have no wrapper and use neutral skill prose.
+The preferred route is metadata only: availability or substitution cannot
+weaken a gate or block an otherwise valid prompt.
+
+Before worker launch, repository mutation, or a GitHub write, resolve and run
+the loaded or repo-pinned `pr-batch/bin/prompt-compatibility` helper with an
+explicit `--active-host codex|claude`. Do not infer the active runner from
+installed homes, prompt prose, a model name, or the preferred route. The helper
+is read-only: it consumes the complete prompt on standard input and emits the
+v1 JSON shape in
+[`prompt-compatibility-v1.schema.json`](../schemas/prompt-compatibility-v1.schema.json).
+It verifies this document's `Prompt compatibility protocol: 1` marker before
+returning a portable decision, so a missing or mixed-revision adapter fails
+closed.
+
+The only successful decisions are:
+
+| Decision | Execution boundary |
+| --- | --- |
+| `compatible` | Continue through ordinary gates with the original prompt bytes. |
+| `portable` | Resolve neutral verbs through this host adapter, then continue through ordinary gates with the original prompt bytes. |
+| `conversion-required` | The returned conversion is inert. Display or copy it and stop; never execute it in this run. |
+
+Unknown or mixed active-host evidence, invalid encoding, incomplete,
+duplicated, reordered, contradictory, or non-advisory metadata, unsupported
+mechanics, and unrecognized input produce a nonzero error record. Error records
+omit a decision and all prompt text. Legacy detection is deliberately bounded
+to a leading Codex `/goal` immediately followed by a `$pr-batch` invocation. <!-- host-allow: codex-only -->
+Incidental Codex or Claude names do not establish a host and never produce a
+conversion.
+
+Known cross-host conversion changes only the header host/mode, the optional
+Codex Goal wrapper, `pr-batch` / `pr-walkthrough` invocation sigils, and an
+explicit host-specific batch-size target. Codex Goal becomes Claude `batch`;
+Claude-to-Codex conversion does not invent Goal mode. Objective, targets,
+scope, dependencies, permissions, safety gates, QA, review, merge authority,
+and the preferred advisory route remain byte-identical. Any other detected
+host-specific mechanism is unsupported input and stops rather than being
+guessed.
 
 ## Host-Owned Fact Rollout
 

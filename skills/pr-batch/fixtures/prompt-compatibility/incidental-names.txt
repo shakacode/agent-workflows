@@ -1,0 +1,2 @@
+Compare how Codex and Claude describe a review workflow.
+Do not infer a prompt host from these product names.

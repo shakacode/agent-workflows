@@ -664,6 +664,26 @@ Code slash commands, or `/simplify`. Treat those as available-tool branches:
 use them only when the current host actually provides them, and record the
 fallback when it does not. The repo seam still controls repository policy.
 
+### Converting A Prompt For This Host
+
+Generated batch prompts declare `Prompt host`, `Prompt mode`, `Preferred
+route`, and `Route requirement: advisory`. At intake, the installed workflow
+compares that declaration with the active Codex or Claude runner.
+
+If the result is `conversion-required`, the displayed converted prompt is inert:
+
+1. Stop the current task; do not approve or continue execution there.
+2. Copy the complete converted prompt exactly as displayed.
+3. Start a new task in the named active host and paste the converted prompt.
+4. Let the new task classify it again. Only `compatible` or `portable` may
+   continue into ordinary trust, safety, QA, review, and merge gates.
+
+If host evidence is ambiguous or the metadata is invalid, no converted prompt
+is emitted. Resolve the active host or obtain a newly generated prompt; do not
+guess from mentions of Codex, Claude, a model, or an installed home. Conversion
+never changes route authority, target scope, permissions, or merge authority,
+and a preferred model/effort remains advisory.
+
 ## Active Batches
 
 Do not stop healthy in-flight batches just because the shared pack changed.

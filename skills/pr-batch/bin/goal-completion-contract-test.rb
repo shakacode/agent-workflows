@@ -208,6 +208,12 @@ COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE = "If marker parsing fails, replay `we
 PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. #{COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE} #{COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE} #{COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE} #{COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE} #{TERMINAL_FOLLOW_UP_EVIDENCE_RULE} #{UNRESOLVED_HANDOFF_NON_CLEAN_RULE} #{OUTSTANDING_MARKER_FINDINGS_RULE} The parent only reconciles this handoff; it never reruns or owns the audit.".freeze
 BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>."
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
+PLAN_PR_BATCH_COMPATIBILITY_METADATA = <<~TEXT
+  Prompt host: <codex|claude|portable>
+  Prompt mode: <goal|direct|batch>
+  Preferred route: <model/class>/<effort>|default
+  Route requirement: advisory
+TEXT
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.\n"
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
@@ -1536,12 +1542,12 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
+      assert text.start_with?("#{PLAN_PR_BATCH_COMPATIBILITY_METADATA}#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
              "#{label} must put the standard batch title line after the invocation"
     end
 
     codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
-    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
+    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_COMPATIBILITY_METADATA}#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
            "skills/plan-pr-batch Codex goal prompt must put the standard batch title line after the Codex prefix"
   end
 
@@ -1551,7 +1557,7 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      expected_prefix = "#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n\nThread handle:"
+      expected_prefix = "#{PLAN_PR_BATCH_COMPATIBILITY_METADATA}#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n\nThread handle:"
       assert text.start_with?(expected_prefix),
              "#{label} must have one blank line before and after Batch title"
       assert_equal 1, text.lines.count { |line| line.start_with?("Batch title:") },

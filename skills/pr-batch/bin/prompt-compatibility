@@ -1,0 +1,222 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+
+CONTRACT_PATH = File.expand_path("../../../docs/host-adapter/contract.md", __dir__)
+CONTRACT_REFERENCE = "docs/host-adapter/contract.md"
+CONTRACT_PROTOCOL = "Prompt compatibility protocol: 1"
+HEADER_NAMES = ["Prompt host", "Prompt mode", "Preferred route", "Route requirement"].freeze
+RESERVED_HEADER_LIKE =
+  /^[ \t]*(?:Prompt[ \t._-]+(?:host|mode)|Preferred[ \t._-]+route|Route[ \t._-]+requirement)[ \t]*(?::+|=)/i
+CANONICAL_HEADER = /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): [^\r\n]*\r?\n?\z/
+SUPPORTED_HOSTS = %w[codex claude].freeze
+SUPPORTED_PROMPT_HOSTS = (SUPPORTED_HOSTS + ["portable"]).freeze
+SUPPORTED_MODES = %w[goal direct batch].freeze
+SKILL_NAMES = %w[pr-batch pr-walkthrough].freeze
+GOAL_WRAPPER = %r{\A/goal\r?\n}
+LEGACY_CODEX = %r{\A/goal\r?\nUse \$pr-batch(?:\s|\z)}
+
+def emit_error(reason, active_host)
+  puts JSON.generate(
+    "contract" => "prompt-compatibility",
+    "version" => 1,
+    "error" => reason,
+    "active_host" => active_host,
+    "execute_allowed" => false,
+    "stop_required" => true
+  )
+  exit 2
+end
+
+def decision_result(decision, active_host:, prompt_host:, prompt_mode:, preferred_route:,
+                    prompt: nil, converted_prompt: nil, adapter_contract: nil)
+  executable = %w[compatible portable].include?(decision)
+  {
+    "contract" => "prompt-compatibility",
+    "version" => 1,
+    "decision" => decision,
+    "active_host" => active_host,
+    "prompt_host" => prompt_host,
+    "prompt_mode" => prompt_mode,
+    "preferred_route" => preferred_route,
+    "route_requirement" => "advisory",
+    "execute_allowed" => executable,
+    "stop_required" => !executable,
+    "adapter_contract" => adapter_contract,
+    "prompt" => prompt,
+    "converted_prompt" => converted_prompt
+  }
+end
+
+def line_ending(prompt)
+  prompt.include?("\r\n") ? "\r\n" : "\n"
+end
+
+def headers_for(host, mode, route, ending)
+  [
+    "Prompt host: #{host}",
+    "Prompt mode: #{mode}",
+    "Preferred route: #{route}",
+    "Route requirement: advisory"
+  ].join(ending) + ending
+end
+
+def host_mechanic?(text, sigil)
+  SKILL_NAMES.any? do |name|
+    text.match?(%r{(?<![[:alnum:]_/$])#{Regexp.escape(sigil)}#{Regexp.escape(name)}\b})
+  end
+end
+
+def rewrite_host_mechanics(prompt, target_host)
+  source_sigil, target_sigil = target_host == "codex" ? ["/", "$"] : ["$", "/"]
+  SKILL_NAMES.reduce(prompt) do |rewritten, name|
+    rewritten.gsub(
+      %r{(?<![[:alnum:]_/$])#{Regexp.escape(source_sigil)}#{Regexp.escape(name)}\b},
+      "#{target_sigil}#{name}"
+    )
+  end
+end
+
+def convert(prompt, source_host, source_mode, target_host, preferred_route)
+  ending = line_ending(prompt)
+  converted = prompt.sub(GOAL_WRAPPER, "")
+  target_mode = source_mode == "goal" && target_host == "claude" ? "batch" : source_mode
+  converted = converted.sub(/^Prompt host: #{source_host}(?=\r?$)/, "Prompt host: #{target_host}")
+  converted = converted.sub(/^Prompt mode: #{source_mode}(?=\r?$)/, "Prompt mode: #{target_mode}")
+  converted = converted.sub(
+    /^Batch size target: #{source_host}(?=;)/,
+    "Batch size target: #{target_host}"
+  )
+  converted = rewrite_host_mechanics(converted, target_host)
+
+  return converted unless source_mode == "legacy-goal"
+
+  body = converted.sub(%r{\AUse [/$]pr-batch\b}) do |invocation|
+    invocation.sub(%r{[/$]}, target_host == "codex" ? "$" : "/")
+  end
+  headers_for(target_host, "batch", preferred_route, ending) + body
+end
+
+options = { active_host: "unknown" }
+OptionParser.new do |parser|
+  parser.on("--active-host HOST") { |host| options[:active_host] = host }
+end.parse!
+
+active_host = options.fetch(:active_host)
+emit_error("ambiguous-active-host", active_host) unless SUPPORTED_HOSTS.include?(active_host)
+
+raw_prompt = $stdin.binmode.read
+prompt = raw_prompt.dup.force_encoding(Encoding::UTF_8)
+emit_error("invalid-encoding", active_host) unless prompt.valid_encoding?
+
+has_goal_wrapper = prompt.match?(GOAL_WRAPPER)
+header_text = has_goal_wrapper ? prompt.sub(GOAL_WRAPPER, "") : prompt
+header_lines = header_text.lines.first(4).map { |line| line.delete_suffix("\n").delete_suffix("\r") }
+header_counts = HEADER_NAMES.to_h do |name|
+  [name, header_text.scan(/^#{Regexp.escape(name)}:/).length]
+end
+malformed_reserved_header = header_text.lines.any? do |line|
+  line.match?(RESERVED_HEADER_LIKE) && !line.match?(CANONICAL_HEADER)
+end
+emit_error("invalid-metadata", active_host) if malformed_reserved_header
+has_reserved_header = header_counts.values.any?(&:positive?)
+complete_headers = header_counts.values.all?(1) &&
+                   header_lines.map { |line| line.split(": ", 2).first } == HEADER_NAMES
+
+if has_reserved_header && !complete_headers
+  emit_error("invalid-metadata", active_host)
+end
+
+if complete_headers
+  metadata = header_lines.to_h { |line| line.split(": ", 2) }
+  prompt_host = metadata.fetch("Prompt host")
+  prompt_mode = metadata.fetch("Prompt mode")
+  preferred_route = metadata.fetch("Preferred route")
+  route_requirement = metadata.fetch("Route requirement")
+  body = header_text.lines.drop(4).join
+
+  emit_error("unsupported-prompt-host", active_host) unless SUPPORTED_PROMPT_HOSTS.include?(prompt_host)
+  emit_error("unsupported-prompt-mode", active_host) unless SUPPORTED_MODES.include?(prompt_mode)
+  route_pattern = %r{\A[[:alnum:]][[:alnum:] ._:+-]*/[[:alnum:]][[:alnum:]_.:+-]*\z}
+  unless preferred_route == "default" || preferred_route.match?(route_pattern)
+    emit_error("invalid-preferred-route", active_host)
+  end
+  emit_error("non-advisory-route", active_host) unless route_requirement == "advisory"
+
+  valid_wrapper = prompt_host == "codex" && prompt_mode == "goal" ? has_goal_wrapper : !has_goal_wrapper
+  emit_error("host-mode-wrapper-mismatch", active_host) unless valid_wrapper
+
+  emit_error("empty-prompt-body", active_host) if body.empty?
+
+  contradictory = case prompt_host
+                  when "codex" then host_mechanic?(body, "/")
+                  when "claude" then host_mechanic?(body, "$")
+                  when "portable" then host_mechanic?(body, "/") || host_mechanic?(body, "$")
+                  end
+  emit_error("contradictory-host-mechanic", active_host) if contradictory
+
+  batch_targets = prompt.scan(/^Batch size target: ([^;\r\n]+);/).flatten
+  emit_error("duplicate-batch-size-target", active_host) if batch_targets.length > 1
+  expected_target = prompt_host == "portable" ? "generic" : prompt_host
+  if batch_targets.any? && batch_targets.first != expected_target
+    emit_error("contradictory-batch-size-target", active_host)
+  end
+
+  if prompt_host == "portable"
+    contract_available = File.file?(CONTRACT_PATH) && File.read(CONTRACT_PATH).include?(CONTRACT_PROTOCOL)
+    emit_error("adapter-contract-unavailable", active_host) unless contract_available
+    result = decision_result(
+      "portable",
+      active_host:,
+      prompt_host:,
+      prompt_mode:,
+      preferred_route:,
+      adapter_contract: CONTRACT_REFERENCE,
+      prompt:
+    )
+  elsif prompt_host == active_host
+    result = decision_result(
+      "compatible",
+      active_host:,
+      prompt_host:,
+      prompt_mode:,
+      preferred_route:,
+      prompt:
+    )
+  else
+    result = decision_result(
+      "conversion-required",
+      active_host:,
+      prompt_host:,
+      prompt_mode:,
+      preferred_route:,
+      converted_prompt: convert(prompt, prompt_host, prompt_mode, active_host, preferred_route)
+    )
+  end
+elsif prompt.match?(LEGACY_CODEX)
+  result = if active_host == "codex"
+             decision_result(
+               "compatible",
+               active_host:,
+               prompt_host: "codex",
+               prompt_mode: "legacy-goal",
+               preferred_route: "default",
+               prompt:
+             )
+           else
+             decision_result(
+               "conversion-required",
+               active_host:,
+               prompt_host: "codex",
+               prompt_mode: "legacy-goal",
+               preferred_route: "default",
+               converted_prompt: convert(prompt, "codex", "legacy-goal", active_host, "default")
+             )
+           end
+else
+  emit_error("unrecognized-prompt", active_host)
+end
+
+puts JSON.generate(result)

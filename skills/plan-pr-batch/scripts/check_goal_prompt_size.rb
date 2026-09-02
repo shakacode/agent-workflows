@@ -89,6 +89,10 @@ BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wav
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
 OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
+PROMPT_HOST_METADATA_LINE = "Prompt host: <codex|claude|portable>"
+PROMPT_MODE_METADATA_LINE = "Prompt mode: <goal|direct|batch>"
+PREFERRED_ROUTE_METADATA_LINE = "Preferred route: <model/class>/<effort>|default"
+ROUTE_REQUIREMENT_METADATA_LINE = "Route requirement: advisory"
 MERGE_AUTHORITY_PROMPT_LINE = "merge_authority:<none|ask|auto_merge_when_gates_pass>"
 PLANNING_PASS_ASSESSMENT_FIELD = "Planning-pass model/effort assessment:"
 PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES = [
@@ -280,16 +284,41 @@ ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
 READY_ITEM_DONE_WHEN_LINE =
   "Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale."
-CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
-SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
+PROMPT_METADATA_TEMPLATE = <<~TEXT.freeze
+  #{PROMPT_HOST_METADATA_LINE}
+  #{PROMPT_MODE_METADATA_LINE}
+  #{PREFERRED_ROUTE_METADATA_LINE}
+  #{ROUTE_REQUIREMENT_METADATA_LINE}
+TEXT
+CODEX_PROMPT_START = <<~TEXT.freeze
+  #{GOAL_LINE}
+  Prompt host: codex
+  Prompt mode: goal
+  #{PREFERRED_ROUTE_METADATA_LINE}
+  #{ROUTE_REQUIREMENT_METADATA_LINE}
+  #{INVOCATION_LINE}
+TEXT
+SHARED_PROMPT_START = "#{PROMPT_METADATA_TEMPLATE}#{INVOCATION_LINE}\n".freeze
+CLAUDE_PROMPT_START = <<~TEXT.freeze
+  Prompt host: claude
+  Prompt mode: batch
+  #{PREFERRED_ROUTE_METADATA_LINE}
+  #{ROUTE_REQUIREMENT_METADATA_LINE}
+  Use /pr-batch to complete this batch with subagents.
+TEXT
+PORTABLE_PROMPT_START = <<~TEXT.freeze
+  Prompt host: portable
+  Prompt mode: batch
+  #{PREFERRED_ROUTE_METADATA_LINE}
+  #{ROUTE_REQUIREMENT_METADATA_LINE}
+  Use the pr-batch skill to complete this batch with subagents.
+TEXT
 REPO_ROOT = File.expand_path("../../..", __dir__)
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
-  #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
-  #{OBSERVED_HOST_PROMPT_LINE}
   #{MANIFEST_PROVENANCE_PROMPT_LINE}
   #{WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE}
   #{DISPATCH_PLAN_PROMPT_LINE}
@@ -615,20 +644,34 @@ def with_items(prompt_template, items)
 end
 
 def prompt_for_target(prompt_template, target)
-  case target
-  when :codex
-    "#{GOAL_LINE}\n#{prompt_template}"
-  when :claude, :generic
-    prompt_template
-  else
-    abort_with_failure("unknown prompt target: #{target.inspect}")
-  end
+  host, mode = case target
+               when :codex then %w[codex goal]
+               when :claude then %w[claude batch]
+               when :generic then %w[portable batch]
+               else abort_with_failure("unknown prompt target: #{target.inspect}")
+               end
+  rendered = prompt_template
+             .sub(PROMPT_HOST_METADATA_LINE, "Prompt host: #{host}")
+             .sub(PROMPT_MODE_METADATA_LINE, "Prompt mode: #{mode}")
+  rendered = case target
+             when :codex
+               rendered
+             when :claude
+               rendered.gsub("$pr-batch", "/pr-batch").gsub("$pr-walkthrough", "/pr-walkthrough")
+             when :generic
+               neutral = rendered.sub(
+                 INVOCATION_LINE,
+                 "Use the pr-batch skill to complete this batch with subagents."
+               )
+               neutral.gsub("$pr-batch", "pr-batch").gsub("$pr-walkthrough", "pr-walkthrough")
+             end
+  target == :codex ? "#{GOAL_LINE}\n#{rendered}" : rendered
 end
 
-def assert_prompt_budget(label, prompt_template, codex_prefix:)
-  codex_prompt = "#{codex_prefix}#{prompt_template}"
-  claude_prompt = prompt_template
-  generic_prompt = prompt_template
+def assert_prompt_budget(label, prompt_template)
+  codex_prompt = prompt_for_target(prompt_template, :codex)
+  claude_prompt = prompt_for_target(prompt_template, :claude)
+  generic_prompt = prompt_for_target(prompt_template, :generic)
 
   codex_chars = codex_prompt.length
   if codex_chars >= CODEX_GOAL_PROMPT_CHAR_LIMIT
@@ -695,6 +738,18 @@ workflow_prompt_template = extract_first_text_fence_body(
   workflow_goal_section,
   "canonical workflow plan-to-goal prompt"
 )
+{
+  "plan-pr-batch goal prompt" => prompt_template,
+  "pr-batch goal prompt" => pr_batch_prompt_template,
+  "workflow plan-to-goal prompt" => workflow_prompt_template
+}.each do |label, template|
+  require_phrases(
+    template,
+    [PROMPT_HOST_METADATA_LINE, PROMPT_MODE_METADATA_LINE,
+     PREFERRED_ROUTE_METADATA_LINE, ROUTE_REQUIREMENT_METADATA_LINE],
+    "#{label} compatibility metadata"
+  )
+end
 enforce_restart_docs_drift = ENV[SOURCE_CHECKOUT_ENV] == "1"
 pr_batch_docs_text = enforce_restart_docs_drift ? read_optional_repo_file("docs/pr-batch-skills.md") : nil
 context_text = enforce_restart_docs_drift ? read_optional_repo_file("CONTEXT.md") : nil
@@ -773,7 +828,7 @@ required_skill_rule_phrases = [
   "target-specific prompt",
   "including the `/goal` line",
   "prepend only the `/goal` line",
-  "keep the shared `$pr-batch` invocation",
+  "render the target-specific invocation",
   "apply Codex's strict 4000-character limit",
   GOAL_PROMPT_HEADROOM_RULE_PHRASE,
   "under 8000 characters",
@@ -804,8 +859,6 @@ required_all_prompt_phrases = [
   HUMAN_STATUS_VERSION_KEY,
   "merge_authority:",
   BATCH_SIZE_TARGET_PROMPT_PHRASE,
-  COORDINATOR_MODEL_EFFORT_PROMPT_LINE,
-  OBSERVED_HOST_PROMPT_LINE,
   MANIFEST_PROVENANCE_PROMPT_LINE,
   BATCH_QA_PROMPT_LINE,
   CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE,
@@ -815,7 +868,6 @@ required_all_prompt_phrases = [
   DISPATCH_PLAN_PROMPT_LINE,
   STAGE_DEPENDENCY_PROMPT_LINE,
   STAGE_DEPENDENCY_SCOPE_LINE,
-  ASK_WALKTHROUGH_PROMPT_LINE,
   "merge iff `merge_authority` is `auto_merge_when_gates_pass`",
   "explicit merge approval",
   "ready-no-merge-authority",
@@ -864,8 +916,10 @@ host_aware_batch_sizing_phrase_checks = {
     ["`claude` or `generic`: up to 5 independent items, or 3", 1],
     ["current-wave item cap applies across all generated groups in aggregate", 1],
     ["Each generated prompt must include `Batch size target: <codex|claude|generic>; wave:", 1],
-    ["`Coordinator model/effort preference: <model/class>/<effort>.`", 1],
-    ["`Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.`", 1],
+    ["`Prompt host: <codex|claude|portable>`", 1],
+    ["`Prompt mode: <goal|direct|batch>`", 1],
+    ["`Preferred route: <model/class>/<effort>|default`", 1],
+    ["`Route requirement: advisory`", 1],
     ["`Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.`", 1],
     ["`#{DISPATCH_PLAN_PROMPT_LINE}`", 1],
     ["classify every lane by the canonical staged model/effort routing", 1],
@@ -1025,6 +1079,7 @@ end
   require_occurrence_count(template, GOAL_PROMPT_PREFLIGHT_LINE, 1, "#{label} preflight contract")
   require_occurrence_count(template, GOAL_PROMPT_ITEM_SHAPE, 1, "#{label} complete item shape")
   require_occurrence_count(template, GOAL_PROMPT_BASE_RESOLUTION_LINE, 1, "#{label} base-resolution contract")
+  require_occurrence_count(template, ASK_WALKTHROUGH_PROMPT_LINE, 1, "#{label} walkthrough route")
   require_occurrence_count(template, GOAL_MODE_COMPACT_CONTRACT, 1, "#{label} compact completion contract")
   require_occurrence_count(template, HUMAN_STATUS_VERSION_KEY, 1, "#{label} human-status contract reference")
   require_occurrence_count(template, STAGE_DEPENDENCY_PROMPT_LINE, 1, "#{label} stage-dependency contract")
@@ -1227,21 +1282,9 @@ unless unexpected_pressure_refs.empty?
 end
 
 budget_checks = {
-  "plan_pr_batch" => assert_prompt_budget(
-    "plan-pr-batch",
-    prompt_template,
-    codex_prefix: "#{GOAL_LINE}\n"
-  ),
-  "pr_batch" => assert_prompt_budget(
-    "pr-batch",
-    pr_batch_prompt_template,
-    codex_prefix: "#{GOAL_LINE}\n"
-  ),
-  "workflow_plan_to_goal" => assert_prompt_budget(
-    "workflow plan-to-goal",
-    workflow_prompt_template,
-    codex_prefix: "#{GOAL_LINE}\n"
-  )
+  "plan_pr_batch" => assert_prompt_budget("plan-pr-batch", prompt_template),
+  "pr_batch" => assert_prompt_budget("pr-batch", pr_batch_prompt_template),
+  "workflow_plan_to_goal" => assert_prompt_budget("workflow plan-to-goal", workflow_prompt_template)
 }
 
 codex_prompt_template = prompt_for_target(prompt_template, :codex)
@@ -1264,22 +1307,22 @@ required_all_prompt_phrases.each do |phrase|
 end
 
 unless codex_prompt_template.start_with?(CODEX_PROMPT_START)
-  abort_with_failure("Goal prompt template must start with /goal followed by the $pr-batch invocation")
+  abort_with_failure("Codex goal prompt must start with /goal, metadata, and the $pr-batch invocation")
 end
 
 unless prompt_template.start_with?(SHARED_PROMPT_START)
   abort_with_failure("Shared goal prompt template must start with the $pr-batch invocation")
 end
 
-unless claude_prompt_template.start_with?(SHARED_PROMPT_START)
-  abort_with_failure("Claude goal prompt template must omit /goal and start with the $pr-batch invocation")
+unless claude_prompt_template.start_with?(CLAUDE_PROMPT_START)
+  abort_with_failure("Claude batch prompt must start with metadata and the /pr-batch invocation")
 end
 
-unless generic_prompt_template.start_with?(SHARED_PROMPT_START)
-  abort_with_failure("Generic goal prompt template must omit /goal and start with the $pr-batch invocation")
+unless generic_prompt_template.start_with?(PORTABLE_PROMPT_START)
+  abort_with_failure("Generic batch prompt must start with portable metadata and a neutral invocation")
 end
 
-title_block = "#{INVOCATION_LINE}\n\n#{BATCH_TITLE_LINE}\n\nThread handle:"
+title_block = "#{SHARED_PROMPT_START}\n#{BATCH_TITLE_LINE}\n\nThread handle:"
 {
   "plan-pr-batch" => prompt_template,
   "pr-batch" => pr_batch_prompt_template,

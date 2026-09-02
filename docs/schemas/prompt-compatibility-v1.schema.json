@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://shakacode.com/schemas/prompt-compatibility-v1.schema.json",
+  "title": "Prompt compatibility decision v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "contract",
+        "version",
+        "decision",
+        "active_host",
+        "prompt_host",
+        "prompt_mode",
+        "preferred_route",
+        "route_requirement",
+        "execute_allowed",
+        "stop_required",
+        "adapter_contract",
+        "prompt",
+        "converted_prompt"
+      ],
+      "properties": {
+        "contract": { "const": "prompt-compatibility" },
+        "version": { "const": 1 },
+        "decision": {
+          "enum": ["compatible", "portable", "conversion-required"]
+        },
+        "active_host": { "enum": ["codex", "claude"] },
+        "prompt_host": { "enum": ["codex", "claude", "portable"] },
+        "prompt_mode": { "enum": ["goal", "direct", "batch", "legacy-goal"] },
+        "preferred_route": { "type": "string", "minLength": 1 },
+        "route_requirement": { "const": "advisory" },
+        "execute_allowed": { "type": "boolean" },
+        "stop_required": { "type": "boolean" },
+        "adapter_contract": {
+          "type": ["string", "null"]
+        },
+        "prompt": { "type": ["string", "null"] },
+        "converted_prompt": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "contract",
+        "version",
+        "error",
+        "active_host",
+        "execute_allowed",
+        "stop_required"
+      ],
+      "properties": {
+        "contract": { "const": "prompt-compatibility" },
+        "version": { "const": 1 },
+        "error": { "type": "string", "minLength": 1 },
+        "active_host": { "type": "string" },
+        "execute_allowed": { "const": false },
+        "stop_required": { "const": true }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

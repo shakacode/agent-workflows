@@ -1082,6 +1082,10 @@ The Lane Card `route` field carries preferred model/effort and observed
 host/model/effort/UNKNOWN separately.
 
 Use this goal prompt shape:
+Render the four compatibility fields and supported skill invocations through
+the canonical [PR-Batch Prompt Intake](pr-batch-intake.md#runtime-prompt-compatibility)
+rules. Ordinary Codex delivery uses `batch`; use `goal` and `/goal` only when <!-- host-allow: codex-only -->
+Goal delivery was explicitly requested.
 Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
 `date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
 Resolve `<PROJECT>` from the optional `repo_prefix` in
@@ -1126,6 +1130,10 @@ coordinator-chosen session word. The coordinator records the handle before
 dispatch; workers copy it unchanged.
 
 ```text
+Prompt host: <codex|claude|portable>
+Prompt mode: <goal|direct|batch>
+Preferred route: <model/class>/<effort>|default
+Route requirement: advisory
 Use $pr-batch to complete this batch with subagents.
 
 Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.
@@ -1138,8 +1146,6 @@ Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
