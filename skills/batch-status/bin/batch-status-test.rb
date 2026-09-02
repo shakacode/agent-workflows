@@ -33,7 +33,6 @@ class BatchStatusTest < Minitest::Test
         "branch" => "codex/status-362",
         "thread_handle" => "aw-362",
         "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10",
-        "instance_id" => "instance-362",
         "session_source" => "codex_thread_id",
         "status" => "in_progress",
         "liveness" => "live"
@@ -249,6 +248,52 @@ class BatchStatusTest < Minitest::Test
       assert_equal "Codex", row.fetch("editor"), "current heartbeat must override stale lane metadata"
       assert_equal "kona", row.fetch("machine_id")
       assert_equal "codex://threads/019feb28-f6a7-7e53-992e-09fa93633f10", row.fetch("codex_deep_link")
+    end
+  end
+
+  def test_batch_owner_divergence_makes_the_owner_route_inconsistent
+    batch_coordination = {
+      "batches" => [{
+        "batch_id" => "aw-b",
+        "repo" => "shakacode/agent-workflows",
+        "lanes" => [{ "name" => "status-skill", "owner" => "worker-a", "targets" => ["issue:186"] }]
+      }]
+    }
+    target_coordination = {
+      "claims" => [{
+        "agent_id" => "worker-b",
+        "status" => "active",
+        "repo" => "shakacode/agent-workflows",
+        "target" => "issue:186",
+        "branch" => "codex/status-186",
+        "host" => "codex",
+        "thread_handle" => "aw-186",
+        "session_id" => "session-186"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "worker-b",
+        "target" => "shakacode/agent-workflows#186",
+        "branch" => "codex/status-186",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "thread_handle" => "aw-186",
+        "session_id" => "session-186",
+        "session_source" => "codex_thread_id",
+        "status" => "in_progress"
+      }]
+    }
+
+    with_fake_batch_commands(coordination: batch_coordination, target_coordination:) do |env|
+      stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, SCRIPT, "--batch-id", "aw-b", "--json")
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      route = row.fetch("owner_route")
+      assert_equal "inconsistent", route.fetch("binding_status")
+      assert_includes route.fetch("binding_issues"), "batch owner/claim holder mismatch"
+      assert_equal "UNKNOWN", route.fetch("codex_deep_link")
+      assert_includes row.fetch("unknowns"), "coordination holder divergence: batch owner worker-a, active claim worker-b"
+      assert_includes row.fetch("unknowns"), "owner route: batch owner/claim holder mismatch"
     end
   end
 

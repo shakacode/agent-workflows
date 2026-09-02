@@ -56,10 +56,13 @@ def coordination_target_number(value)
   parse_batch_target(value)&.fetch(:number)
 end
 
-def owner_route_evidence(repo:, number:, url:, claim:, heartbeat:, holder:, record:, runner:, machine_id:,
-                         thread_id:, deep_link:)
+def owner_route_evidence(repo:, number:, url:, claim:, heartbeat:, holder:, expected_owner:, record:, runner:,
+                         machine_id:, thread_id:, deep_link:)
   issues = []
   missing = []
+  if expected_owner && holder && expected_owner != holder
+    issues << "batch owner/claim holder mismatch"
+  end
   if holder.nil?
     missing << "active claim"
   elsif heartbeat.nil?
@@ -110,7 +113,7 @@ def owner_route_evidence(repo:, number:, url:, claim:, heartbeat:, holder:, reco
                    else
                      "consistent"
                    end
-  route_record = binding_status == "consistent" ? record : {}
+  route_record = binding_status == "consistent" ? claim.merge(record) : {}
   route_runner = binding_status == "consistent" ? runner : UNKNOWN
   route_machine = binding_status == "consistent" ? machine_id : UNKNOWN
   route_thread = binding_status == "consistent" ? thread_id : UNKNOWN
@@ -428,8 +431,8 @@ items = requests.map do |request|
 
   target_url = github&.fetch("html_url", UNKNOWN) || UNKNOWN
   owner_route = owner_route_evidence(
-    repo:, number:, url: target_url, claim:, heartbeat:, holder:, record:, runner:, machine_id:,
-    thread_id:, deep_link:
+    repo:, number:, url: target_url, claim:, heartbeat:, holder:, expected_owner:, record:, runner:,
+    machine_id:, thread_id:, deep_link:
   )
   owner_route.fetch("binding_issues").each { |issue| unknowns << "owner route: #{issue}" }
   owner_route.fetch("missing_fields").each { |field| unknowns << "owner route unavailable: missing #{field}" }
