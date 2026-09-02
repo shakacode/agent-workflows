@@ -1615,10 +1615,12 @@ SUCCESSFUL STATE — NOT MERGE-READY.** No banner when both pass.
 Compact goals encode that checklist inline as `head>=base+CI=READY`; every
 other result waits without a walkthrough.
 
-Immediately before starting the walkthrough, re-fetch and re-resolve the
-live base into a fresh `TRUSTED_BASE_SHA`, then re-run the ancestry check
-against it — the base can advance during evidence collection, and rerunning
-against a stale value proves nothing.
+Immediately before starting the walkthrough, re-fetch and re-resolve both
+the live base and the exact head into fresh `TRUSTED_BASE_SHA`/
+`CURRENT_HEAD_SHA` values, then re-run the ancestry check against them —
+either can advance during evidence collection, and rerunning against a
+stale value proves nothing. A changed head also makes the collected CI
+evidence stale: restart this gate from the top instead of reusing it.
 
 When `merge_authority` is `ask` and every ordinary gate is clean,
 automatically start the exact-diff PR walkthrough before asking for merge
