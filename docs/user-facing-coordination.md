@@ -124,7 +124,8 @@ A durable issue, receipt, or blocker list is evidence, not a next step.
 Keep `Action needed:` separate: name the exact user action, or use `none`. A
 handoff may not make the user infer an action from technical status, durable
 references, or a `Conversation status:` blocker union. Preserve any required
-receipt immediately before the final `Conversation status:` line.
+receipt before the closing stack: the Unblock Block when the status is not
+clean, then the final `Conversation status:` line.
 
 ## Output Contract
 
