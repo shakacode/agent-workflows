@@ -801,6 +801,20 @@ reject_phrases(
   "SKILL.md shared invocation guidance"
 )
 
+required_prompt_intake_title_phrases = [
+  "## Verified Batch Title Selection",
+  "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
+  "metadata only; it does not create an executable Linear lane",
+  "optional `repo_prefix`",
+  "remote after stripping `.git`",
+  "repository root basename",
+  "configured `repo_prefix` is a blocker; do not silently fall back",
+  "date +'%m-%d %H:%M'",
+  "exactly one issue",
+  "zero or multiple verified source issues",
+  "Render exactly one empty line immediately before and after the `Batch title:`"
+]
+
 required_codex_prompt_phrases = [
   CODEX_PROMPT_START
 ]
@@ -985,6 +999,11 @@ end
 
 # These phrases live in the broader skill rules, not necessarily inside the prompt fence.
 require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
+require_phrases(
+  prompt_intake_text,
+  required_prompt_intake_title_phrases,
+  "workflows/pr-batch-intake.md verified batch-title rules"
+)
 
 require_occurrence_count(
   skill_text,
