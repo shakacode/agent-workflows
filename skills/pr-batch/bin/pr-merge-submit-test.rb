@@ -180,12 +180,117 @@ class PrMergeSubmitTest < Minitest::Test
       runner = PrMergeSubmit::Runner.new
       runner.instance_variable_set(:@repo_root, root)
 
-      runner.send(:validate_current_integration_live!, {}, integration)
+      runner.send(:validate_current_integration_live!, {}, integration, method: "squash")
       integration.fetch("candidate")["tree_oid"] = "f" * 40
       error = assert_raises(PrMergeSubmit::Error) do
-        runner.send(:validate_current_integration_live!, {}, integration)
+        runner.send(:validate_current_integration_live!, {}, integration, method: "squash")
       end
       assert_includes error.message, "no longer matches"
+    end
+  end
+
+  def test_rebase_rejects_merge_shaped_reuse_when_an_intermediate_commit_conflicts
+    Dir.mktmpdir("pr-merge-submit-rebase-integration") do |root|
+      run_git!(root, "init", "-q", "-b", "main")
+      run_git!(root, "config", "user.name", "Test")
+      run_git!(root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(root, "lib"))
+      File.write(File.join(root, "lib/shared.rb"), "value = :original\n")
+      run_git!(root, "add", ".")
+      run_git!(root, "commit", "-qm", "base")
+      recorded_base = run_git!(root, "rev-parse", "HEAD").strip
+
+      run_git!(root, "switch", "-q", "-c", "feature")
+      File.write(File.join(root, "lib/shared.rb"), "value = :feature\n")
+      run_git!(root, "add", ".")
+      run_git!(root, "commit", "-qm", "intermediate feature change")
+      File.write(File.join(root, "lib/shared.rb"), "value = :original\n")
+      FileUtils.mkdir_p(File.join(root, "docs"))
+      File.write(File.join(root, "docs/feature.md"), "feature docs\n")
+      run_git!(root, "add", ".")
+      run_git!(root, "commit", "-qm", "restore shared file and add docs")
+      head = run_git!(root, "rev-parse", "HEAD").strip
+
+      run_git!(root, "switch", "-q", "main")
+      File.write(File.join(root, "lib/shared.rb"), "value = :base\n")
+      run_git!(root, "add", ".")
+      run_git!(root, "commit", "-qm", "advance base")
+      current_base = run_git!(root, "rev-parse", "HEAD").strip
+      snapshot = {
+        "head_sha" => head,
+        "base_ref" => "main",
+        "base_sha" => current_base,
+        "candidate" => nil
+      }
+      integration = CurrentIntegrationEvidence.collect(
+        repo_root: root,
+        repo: "owner/repo",
+        pr_number: 42,
+        recorded_base_sha: recorded_base,
+        head_sha: head,
+        trusted_base_sha: current_base,
+        pr_paths: ["docs/feature.md"],
+        policy: AutonomousMergePolicy.parse("{}"),
+        changelog_path: "CHANGELOG.md",
+        snapshot_reader: ->(**) { snapshot }
+      )
+
+      assert_equal "reuse-exact-head", integration.dig("reuse", "decision")
+      assert_equal "git-merge-tree", integration.dig("candidate", "source")
+
+      run_git!(root, "switch", "-q", "-c", "rebase-check", head)
+      _stdout, _stderr, rebase_status = Open3.capture3(
+        git_environment, "git", "rebase", "--onto", current_base, recorded_base, chdir: root
+      )
+      refute rebase_status.success?, "fixture must conflict when commits are replayed"
+      assert_includes run_git!(root, "status", "--short"), "UU lib/shared.rb"
+      run_git!(root, "rebase", "--abort")
+
+      bindings = {
+        "host" => "github.com",
+        "repo" => "owner/repo",
+        "pr" => 42,
+        "head_sha" => head,
+        "base" => { "ref" => "main", "sha" => current_base },
+        "current_integration" => integration
+      }
+      pull_request = {
+        "headRefOid" => head,
+        "baseRefName" => "main",
+        "currentBaseRefOid" => current_base
+      }
+      options = {
+        host: "github.com",
+        repo: "owner/repo",
+        pr: "42",
+        expected_head: head,
+        expected_base: "main"
+      }
+      runner = PrMergeSubmit::Runner.new
+      runner.instance_variable_set(:@repo_root, root)
+      runner.instance_variable_set(:@merge_assurance_receipt, { "bindings" => bindings })
+
+      %w[merge squash].each do |method|
+        runner.send(:validate_receipt_live_bindings!, pull_request, options.merge(method:))
+      end
+      error = assert_raises(PrMergeSubmit::Error) do
+        runner.send(:validate_receipt_live_bindings!, pull_request, options.merge(method: "rebase"))
+      end
+      assert_includes error.message, "rebase"
+      assert_includes error.message, "fresh-integration-required"
+
+      pull_request["isMergeQueueEnabled"] = true
+      pull_request["isInMergeQueue"] = false
+      %w[merge_queue_only merge_queue_or_guarded_direct].each do |mode|
+        runner.instance_variable_set(:@merge_submission, { "mode" => mode })
+        %w[merge squash rebase].each do |method|
+          queue_error = assert_raises(PrMergeSubmit::Error) do
+            runner.send(:validate_receipt_live_bindings!, pull_request, options.merge(method:))
+          end
+          assert_includes queue_error.message, "merge queue"
+          assert_includes queue_error.message, "fresh-integration-required"
+        end
+      end
     end
   end
 
@@ -2650,7 +2755,14 @@ class PrMergeSubmitTest < Minitest::Test
   end
 
   def run_git!(root, *args)
-    environment = {
+    stdout, stderr, status = Open3.capture3(git_environment, "git", *args, chdir: root)
+    raise "git fixture failed: #{stderr}" unless status.success?
+
+    stdout
+  end
+
+  def git_environment
+    {
       "GIT_CONFIG_NOSYSTEM" => "1",
       "GIT_CONFIG_GLOBAL" => File::NULL,
       "GIT_CONFIG_PARAMETERS" => nil,
@@ -2658,10 +2770,6 @@ class PrMergeSubmitTest < Minitest::Test
       "GIT_CONFIG_KEY_0" => "commit.gpgSign",
       "GIT_CONFIG_VALUE_0" => "false"
     }
-    stdout, stderr, status = Open3.capture3(environment, "git", *args, chdir: root)
-    raise "git fixture failed: #{stderr}" unless status.success?
-
-    stdout
   end
 
   def fake_guard
