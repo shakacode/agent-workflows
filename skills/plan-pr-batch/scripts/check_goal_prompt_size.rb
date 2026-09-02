@@ -5,6 +5,7 @@ require "stringio"
 
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
+# Advisory reserve for the static template; the runnable prompt cap remains fatal at 4,000.
 GOAL_PROMPT_MIN_HEADROOM = 300
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
@@ -86,7 +87,9 @@ BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
 CONTINUATION_INVOCATION_LINE =
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch."
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
-GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
+GOAL_PROMPT_HEADROOM_RULE_PHRASE = "The static template's remaining headroom is advisory"
+GOAL_PROMPT_HEADROOM_WARNING_PHRASE = "warns when it dips below that reserve"
+GOAL_PROMPT_HEADROOM_METRIC_PHRASE = "codex_goal_prompt_template_headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
 OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
 MERGE_AUTHORITY_PROMPT_LINE = "merge_authority:<none|ask|auto_merge_when_gates_pass>"
@@ -638,9 +641,10 @@ def assert_prompt_budget(label, prompt_template, codex_prefix:)
 
   template_headroom = CODEX_GOAL_PROMPT_CHAR_LIMIT - codex_chars
   if template_headroom < GOAL_PROMPT_MIN_HEADROOM
-    abort_with_failure(
-      "#{label} Codex goal prompt template has #{template_headroom} chars of headroom, " \
-      "must keep at least #{GOAL_PROMPT_MIN_HEADROOM}"
+    warn(
+      "#{label} Codex static template remaining headroom is #{template_headroom} chars; " \
+      "advisory reserve is #{GOAL_PROMPT_MIN_HEADROOM} and the hard cap remains " \
+      "#{CODEX_GOAL_PROMPT_CHAR_LIMIT}"
     )
   end
 
@@ -769,6 +773,8 @@ required_skill_rule_phrases = [
   "keep the shared `$pr-batch` invocation",
   "apply Codex's strict 4000-character limit",
   GOAL_PROMPT_HEADROOM_RULE_PHRASE,
+  GOAL_PROMPT_HEADROOM_WARNING_PHRASE,
+  GOAL_PROMPT_HEADROOM_METRIC_PHRASE,
   "under 8000 characters",
   "For Codex, if the measured prompt is 4000 characters or more",
   "For Claude or generic targets, do not split solely because the prompt is",
