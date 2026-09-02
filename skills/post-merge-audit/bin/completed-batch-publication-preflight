@@ -469,7 +469,10 @@ module CompletedBatchPublicationPreflight
       end
     end
 
-    (target_rows + url_targets).uniq { |target| target_key(target) }
+    canonical_url_targets = url_targets.map do |target|
+      expected_targets.find { |candidate| target_key(candidate) == target_key(target) } || target
+    end
+    (target_rows + canonical_url_targets).uniq { |target| target_key(target) }
   end
 
   def complementary_pr_url?(lane, additional_url_targets, target_rows)

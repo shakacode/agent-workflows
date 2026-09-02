@@ -1384,6 +1384,22 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal [issue_target, pr_target], targets
   end
 
+  def test_mixed_case_complementary_urls_canonicalize_to_expected_targets
+    input = issue_with_pr_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes", 0)
+    lane["issue_url"] = "https://github.com/ShakaCode/HIChee/issues/10036"
+    lane["pr_url"] = "https://github.com/ShakaCode/HIChee/pull/10049"
+    lane["evidence_url"] = lane["pr_url"]
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(
+      result,
+      expected_targets: input.fetch("expected_targets")
+    )
+  end
+
   def test_explicit_complementary_target_identity_is_order_independent
     issue_target = {
       "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130

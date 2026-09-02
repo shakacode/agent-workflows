@@ -764,6 +764,38 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_replay_accepts_headless_issue_snapshots
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target, issue_head_sha: "not_applicable")
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: [target],
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: preflight
+      )
+
+      assert replay.fetch("ready"), replay.fetch("blockers").join("\n")
+      assert_empty replay.fetch("blockers")
+    end
+  end
+
   def test_accepted_deferral_replay_preserves_legacy_evidence_when_lane_pr_state_is_merged
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
@@ -3813,9 +3845,10 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     coordination_repo: "shakacode/react_on_rails",
     lane_identity_fields: {},
     lane_targets: ["4731"],
-    lane_pr_state: "closed"
+    lane_pr_state: "closed",
+    issue_head_sha: "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e"
   )
-    head_sha = "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e"
+    headless_issue = issue_head_sha == "not_applicable"
     coordination_status = {
       "scope" => { "kind" => "batch", "batch_id" => "ror-d-issue-4731-20260817" },
       "batches" => [{
@@ -3847,20 +3880,37 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         ]
       }]
     }
-    qa_evidence = <<~MARKER
-      <!-- qa-evidence v1
-      required: yes
-      status: satisfied
-      head_sha: #{head_sha}
-      tested_at: PR/head #{head_sha}
-      scope: PR #4918 exact head
-      automated_checks: focused tests
-      manual_checks: not applicable: no manual surface
-      findings: none
-      release_blocking: clear
-      process_gap_disposition: script
-      -->
-    MARKER
+    qa_evidence = if headless_issue
+                    <<~MARKER
+                      <!-- qa-evidence v1
+                      required: no
+                      status: not_applicable
+                      head_sha: not_applicable
+                      tested_at: issue #4731 resolved by complementary PR
+                      scope: issue #4731 headless accept-deferral
+                      automated_checks: not applicable
+                      manual_checks: not applicable
+                      findings: none
+                      release_blocking: not_applicable
+                      process_gap_disposition: not_applicable
+                      -->
+                    MARKER
+                  else
+                    <<~MARKER
+                      <!-- qa-evidence v1
+                      required: yes
+                      status: satisfied
+                      head_sha: #{issue_head_sha}
+                      tested_at: PR/head #{issue_head_sha}
+                      scope: PR #4918 exact head
+                      automated_checks: focused tests
+                      manual_checks: not applicable: no manual surface
+                      findings: none
+                      release_blocking: clear
+                      process_gap_disposition: script
+                      -->
+                    MARKER
+                  end
     source_input = {
       "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
@@ -3870,7 +3920,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "target_snapshots" => [{
         "target" => target,
         "state" => "closed",
-        "head_sha" => head_sha,
+        "head_sha" => issue_head_sha,
         "source" => "https://github.com/shakacode/react_on_rails/pull/4918"
       }],
       "qa_evidence" => [{
