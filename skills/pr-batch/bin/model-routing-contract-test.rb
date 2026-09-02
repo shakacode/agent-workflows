@@ -1097,9 +1097,12 @@ class ModelRoutingContractTest < Minitest::Test
     }
 
     prompts.each do |label, prompt|
-      assert_includes prompt, "Coordinator model/effort preference:", label
+      assert_includes prompt, "Prompt host: <codex|claude|portable>", label
+      assert_includes prompt, "Preferred route: <model/class>/<effort>|default", label
+      assert_includes prompt, "Route requirement: advisory", label
+      assert_includes prompt, "coordinator_preference=<model>/<effort>", label
       assert_includes prompt, "Worker model/effort preferences:", label
-      assert_includes prompt, "Observed host/model/effort:", label
+      assert_includes prompt, "observed host/model/effort host-only or UNKNOWN", label
       assert_includes prompt, "ordinary pending/active lifecycle", label
       refute_includes prompt, "Launch assurance:", label
       refute_includes prompt, "exact-policy", label

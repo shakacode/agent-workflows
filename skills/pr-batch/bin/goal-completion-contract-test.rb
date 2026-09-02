@@ -215,7 +215,14 @@ PLAN_PR_BATCH_COMPATIBILITY_METADATA = <<~TEXT
   Route requirement: advisory
 TEXT
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
-CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.\n"
+CONTINUATION_COMPATIBILITY_METADATA = <<~TEXT
+  Prompt host: portable
+  Prompt mode: batch
+  Preferred route: default
+  Route requirement: advisory
+TEXT
+CONTINUATION_INVOCATION_LINE =
+  "Use the pr-batch skill to continue PR-batch closeout, not to start a new implementation batch.\n"
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
@@ -496,7 +503,8 @@ end
 
 def continuation_title_thread_handle_shape_valid?(text)
   expected_prefix =
-    "#{CONTINUATION_INVOCATION_LINE}\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+    "#{CONTINUATION_COMPATIBILITY_METADATA}#{CONTINUATION_INVOCATION_LINE}\n" \
+    "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
   text.start_with?(expected_prefix) &&
     text.lines.count { |line| line.chomp == CONTINUATION_BATCH_TITLE_LINE } == 1 &&
     text.lines.count { |line| line.chomp == CONTINUATION_THREAD_HANDLE_LINE } == 1 &&

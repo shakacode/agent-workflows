@@ -11,6 +11,7 @@ class PromptCompatibilityTest < Minitest::Test
   FIXTURES = File.expand_path("../fixtures/prompt-compatibility", __dir__)
   SCHEMA = File.expand_path("../../../docs/schemas/prompt-compatibility-v1.schema.json", __dir__)
   INTAKE = File.expand_path("../../../workflows/pr-batch-intake.md", __dir__)
+  WORKFLOW = File.expand_path("../../../workflows/pr-processing.md", __dir__)
   DECISIONS = %w[compatible portable conversion-required].freeze
 
   def fixture(name)
@@ -319,6 +320,8 @@ class PromptCompatibilityTest < Minitest::Test
       ["#{fixture('codex-to-claude.txt')}Use $address-review after QA.\n", "claude"],
       ["#{fixture('codex-to-claude.txt')}Use $scw:pr-batch for this route.\n", "claude"],
       ["#{fixture('claude-to-codex.txt')}Use Claude Agent with isolation: 'worktree'.\n", "codex"],
+      ["#{fixture('claude-to-codex.txt')}Run /code-review before closeout.\n", "codex"],
+      ["#{fixture('claude-to-codex.txt')}Use /loop to monitor CI.\n", "codex"],
       ["#{fixture('codex-to-claude.txt')}Call spawn_agent with sandbox_permissions: use_default.\n", "claude"]
     ]
 
@@ -329,6 +332,25 @@ class PromptCompatibilityTest < Minitest::Test
       assert_empty stderr
       assert_equal "unsupported-host-mechanic", result.fetch("error")
       refute result.key?("decision")
+    end
+  end
+
+  def test_relaunchable_workflow_prompts_are_portable_at_the_runtime_gate
+    workflow = File.read(WORKFLOW, encoding: "UTF-8")
+    headings = ["Model-Routing Recovery Prompt", "Generic PR-Batch Continuation Prompt"]
+
+    headings.each do |heading|
+      section = workflow[/^### #{Regexp.escape(heading)}\n(?<body>.*?)(?=^### |\z)/m, :body]
+      prompt = section&.match(/```text\n(?<prompt>.*?)```/m)&.[](:prompt)
+      refute_nil prompt, heading
+
+      %w[codex claude].each do |active_host|
+        result, stderr, status = run_helper(prompt, active_host:)
+
+        assert status.success?, "#{heading} on #{active_host}: #{stderr} #{result.inspect}"
+        assert_decision result, "portable"
+        assert_equal prompt, result.fetch("prompt")
+      end
     end
   end
 

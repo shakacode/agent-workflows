@@ -84,7 +84,13 @@ GOAL_LINE = "/goal"
 INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
 BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>."
 CONTINUATION_INVOCATION_LINE =
-  "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch."
+  "Use the pr-batch skill to continue PR-batch closeout, not to start a new implementation batch."
+CONTINUATION_COMPATIBILITY_METADATA = <<~TEXT
+  Prompt host: portable
+  Prompt mode: batch
+  Preferred route: default
+  Route requirement: advisory
+TEXT
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
@@ -1267,7 +1273,8 @@ require_phrases(
 )
 
 continuation_title_block =
-  "#{CONTINUATION_INVOCATION_LINE}\n\n#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+  "#{CONTINUATION_COMPATIBILITY_METADATA}#{CONTINUATION_INVOCATION_LINE}\n\n" \
+  "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
 unless continuation_prompt.start_with?(continuation_title_block)
   abort_with_failure(
     "canonical workflow continuation prompt must put one blank line around the title after the invocation"
@@ -1303,6 +1310,17 @@ required_all_prompt_phrases.each do |phrase|
     unless target_prompt_template.include?(phrase)
       abort_with_failure("#{target} goal prompt template is missing required phrase: #{phrase}")
     end
+  end
+end
+
+walkthrough_sigil_by_target = { codex: "$", claude: "/", generic: "" }.freeze
+prompt_templates_by_target.each do |target, target_prompt_template|
+  rendered_walkthrough = ASK_WALKTHROUGH_PROMPT_LINE.sub(
+    "$pr-walkthrough",
+    "#{walkthrough_sigil_by_target.fetch(target)}pr-walkthrough"
+  )
+  unless target_prompt_template.include?(rendered_walkthrough)
+    abort_with_failure("#{target} goal prompt template is missing rendered walkthrough route")
   end
 end
 

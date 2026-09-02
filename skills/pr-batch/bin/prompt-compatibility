@@ -17,6 +17,8 @@ SUPPORTED_PROMPT_HOSTS = (SUPPORTED_HOSTS + ["portable"]).freeze
 SUPPORTED_MODES = %w[goal direct batch].freeze
 SKILL_NAMES = %w[pr-batch pr-walkthrough].freeze
 SKILLS_ROOT = File.expand_path("../..", __dir__)
+# Keep review triage fail-closed for partial installs that contain pr-batch but
+# resolve address-review from another managed skill root.
 KNOWN_SKILL_NAMES = Dir.children(SKILLS_ROOT).select do |name|
   File.file?(File.join(SKILLS_ROOT, name, "SKILL.md"))
 end.append("address-review").uniq.freeze
@@ -25,6 +27,7 @@ PROTECTED_LABELS = %w[
 ].freeze
 PROTECTED_PREFIXES = ["Work item:", "Safety gates:", "Merge authority:"].freeze
 CLAUDE_RUNTIME_MECHANICS = [
+  %r{(?<![[:alnum:]_/$])/(?:code-review|loop)\b},
   /\bClaude (?:Agent|Workflow)\b/,
   /\bisolation:[ \t]*['"]worktree['"]/
 ].freeze
