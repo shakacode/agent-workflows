@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD033 -->
+
 ## Why
 
 Small workflow diffs can leave noisy Git history when squash messages copy the
