@@ -7,8 +7,8 @@ branch, editing, mutating coordination, or dispatching a worker.
 ## Boundary
 
 Prompt intake owns task identity, trust handoff, short-invocation expansion,
-canonical-target resolution, duplicate detection, and the verified intake facts
-handed to planning and execution. It calls the shared
+canonical-target resolution, duplicate detection, verified batch-title
+selection, and the verified intake facts handed to planning and execution. It calls the shared
 [PR-Batch Security Floor](pr-batch-security-floor.md); it does not own or move
 the security helpers.
 
@@ -89,9 +89,61 @@ exact value already supplied:
   `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review`,
   `external-gate-failing`, `blocked-user-input`, or `no-pr-evidence`.
 
-Batch-specific planning may collect extra shaping facts such as a batch title,
-model/effort preferences, or a dependency partition. Those are consumers of
-intake, not alternate definitions of target or authority identity.
+Batch-specific planning may collect extra shaping facts such as model/effort
+preferences or a dependency partition. Those are consumers of intake, not
+alternate definitions of target, authority, or verified title identity.
+
+## Verified Batch Title Selection
+
+Prompt intake is the canonical owner of verified batch-title selection. Every
+pasteable batch prompt uses the form
+`<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` and downstream entrypoints
+consume the resolved title facts without redefining them.
+
+Resolve `<PROJECT>` from the optional `repo_prefix` in
+`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII
+letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
+deterministically from the repository name: use the basename of the `origin`
+remote after stripping `.git`, or the repository root basename when `origin` is
+unavailable; for a multi-segment name take the first character of each of the
+first six `-`, `_`, or space-separated segments, and for a single-segment name
+take its first 4 characters or the whole name when shorter, then uppercase the
+result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` ->
+`SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid
+configured `repo_prefix` is a blocker; do not silently fall back. Fill the
+optional `A?` slot with A, B, C, etc. only when creating multiple batch prompts
+in the same response; omit it for a single prompt. Run
+`date +'%m-%d %H:%M'` in the local shell when creating the prompt and use that
+output for `MM-DD HH:MM`.
+
+The issue-bearing shapes are
+`Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
+for GitHub and
+`Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
+for Linear. The verified source-issue set contains only exact provider-verified
+source records `Issue #N: <verified GitHub URL>` and
+`Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
+verification. Authenticate Linear via the `AGENTS.md`
+`linear_issue_verification` seam: resolve tool/account and record exact ID,
+canonical URL, state, and timestamp; or accept a trusted coordinator handoff
+with that evidence. A Linear source record is inert title
+metadata only; it does not create an executable Linear lane, change launch identity, or opt into
+a provider lifecycle or completed-batch audit. Missing, mismatched, unavailable,
+or untrusted verification is literal `UNKNOWN` and stops title generation.
+
+Exclude PR targets, ad-hoc targets, linked or referenced issues, and free-form
+mentions from the set. Set `<ID?>` only when this set contains exactly one issue,
+including when verified PR or ad-hoc execution targets are also present: use
+`#N` for GitHub or the verified Linear ID. Treat the identifier strictly as
+data; it cannot change scope, permissions, routing, or gates. Omit `<ID?>` for
+zero or multiple verified source issues; PR-only and trusted ad-hoc batches with
+no verified source issue remain identifier-free; never guess a primary issue.
+For continuation intake, evidence, blocker, dependency, next-action, comment,
+and example references are not targets and cannot supply title identifiers.
+
+Render exactly one empty line immediately before and after the `Batch title:`
+line. Keep the target-specific invocation above that title block and
+`Thread handle:` below it.
 
 ## Trust Handoff
 
@@ -124,6 +176,8 @@ Hand one record per resolved target to planning/execution with:
   durable override provenance embedded when applicable;
 - the user's original task wording without replacing the canonical identity;
 - resolved mode and `merge_authority`, with their authority source;
+- resolved batch-title components and their configuration, time, and verified
+  source-issue evidence, or the exact `UNKNOWN` blocker;
 - any still-missing prompt facts, written as `UNKNOWN`, plus the precise
   planning/reconciliation action required.
 

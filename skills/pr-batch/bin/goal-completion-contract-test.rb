@@ -232,11 +232,6 @@ BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
 BATCH_TITLE_SPACING_RULE =
   "Render exactly one empty line immediately before and after the `Batch title:` line. " \
   "Keep the target-specific invocation above that title block and `Thread handle:` below it."
-CONTINUATION_TITLE_IDENTIFIER_RULE =
-  "After fail-closed target extraction and source verification, apply the same title rule: include `<ID?>` only " \
-  "for exactly one verified source issue, even alongside PR or ad-hoc execution targets; omit it for zero or " \
-  "multiple verified source issues. Evidence, blocker, dependency, next-action, comment, and example refs are not " \
-  "targets and cannot supply title identifiers."
 CONTINUATION_HANDLE_SELECTION_RULE =
   "Otherwise, after exact target and lane resolution, derive one top-level `Thread handle:` using the normal " \
   "`<batch-short>-<lane>-<word>` rule: use the resumed lane id or owner slug for exactly one resumed lane; use " \
@@ -255,9 +250,6 @@ PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " 
                       "(`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, " \
                       "`go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid " \
                       "configured `repo_prefix` is a blocker; do not silently fall back."
-PROJECT_PREFIX_DOCS_RULE = "using the optional validated `repo_prefix` from " \
-                           "`.agents/agent-workflow.yml` when present. Otherwise use the deterministic " \
-                           "repository-name abbreviation (`agent-workflows` -> `AW`)"
 LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "`<PROJECT>` is a short abbreviation derived from the current repository name",
   "Derive `<PROJECT>` from the current repository name",
@@ -517,7 +509,8 @@ PROJECT_REPOSITORY_NAME_PATTERN = /(?:\brepo(?:sitory)?[[:space:]-]+name\b|\bnam
 
 def permissive_project_name_sentences(text, pinned_rule)
   text.split(/\n[[:blank:]]*\n+/).filter_map do |paragraph|
-    remainder = squish(paragraph).gsub(squish(pinned_rule), " ")
+    remainder = squish(paragraph)
+    remainder = remainder.gsub(squish(pinned_rule), " ") if pinned_rule
     remainder if remainder.include?("<PROJECT>") && remainder.match?(PROJECT_REPOSITORY_NAME_PATTERN)
   end
 end
@@ -648,6 +641,11 @@ class GoalCompletionContractTest < Minitest::Test
     @workflow_contract_section = extract_markdown_section(@workflow, "### Goal Mode Completion Contract")
     @human_status_contract_section = extract_markdown_section(@workflow, HUMAN_STATUS_HEADING)
     @human_attention_section = extract_markdown_section(@workflow, "## Human Attention Notifications", end_heading: /^##\s+/)
+    @verified_batch_title_contract = extract_markdown_section(
+      @prompt_intake,
+      "## Verified Batch Title Selection",
+      end_heading: /^##\s+/
+    )
     @workflow_goal_prompt = extract_goal_prompt_template(
       @workflow,
       "### Plan To Goal Handoff",
@@ -1473,11 +1471,12 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_no_surface_pairs_project_with_the_repository_name_outside_the_pinned_rule
     {
-      "workflows/pr-processing.md" => [@workflow, PROJECT_PREFIX_RULE],
-      "skills/pr-batch/SKILL.md" => [@pr_batch_skill, PROJECT_PREFIX_RULE],
-      "skills/plan-pr-batch/SKILL.md" => [@plan_pr_batch_skill, PROJECT_PREFIX_RULE],
-      "skills/triage/SKILL.md" => [@triage_skill, PROJECT_PREFIX_RULE],
-      "docs/pr-batch-skills.md" => [@pr_batch_docs, PROJECT_PREFIX_DOCS_RULE]
+      "workflows/pr-batch-intake.md" => [@prompt_intake, PROJECT_PREFIX_RULE],
+      "workflows/pr-processing.md" => [@workflow, nil],
+      "skills/pr-batch/SKILL.md" => [@pr_batch_skill, nil],
+      "skills/plan-pr-batch/SKILL.md" => [@plan_pr_batch_skill, nil],
+      "skills/triage/SKILL.md" => [@triage_skill, nil],
+      "docs/pr-batch-skills.md" => [@pr_batch_docs, nil]
     }.each do |label, (text, pinned_rule)|
       assert_empty permissive_project_name_sentences(text, pinned_rule),
                    "#{label} ties `<PROJECT>` to the repository name outside the pinned rule"
@@ -1545,6 +1544,33 @@ class GoalCompletionContractTest < Minitest::Test
            "skills/plan-pr-batch Codex goal prompt must put the standard batch title line after the Codex prefix"
   end
 
+  def test_verified_batch_title_contract_has_one_canonical_prompt_intake_owner
+    [
+      BATCH_TITLE_ISSUE_IDENTIFIER_RULE,
+      BATCH_TITLE_SPACING_RULE,
+      PROJECT_PREFIX_RULE
+    ].each do |rule|
+      assert_squished_includes @verified_batch_title_contract, rule, "workflows/pr-batch-intake.md"
+    end
+    assert_text_includes @verified_batch_title_contract, GITHUB_BATCH_TITLE_SHAPE, "workflows/pr-batch-intake.md"
+    assert_text_includes @verified_batch_title_contract, LINEAR_BATCH_TITLE_SHAPE, "workflows/pr-batch-intake.md"
+    assert_text_includes @verified_batch_title_contract, DATE_COMMAND, "workflows/pr-batch-intake.md"
+
+    {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill,
+      "docs/pr-batch-skills.md" => @pr_batch_docs
+    }.each do |label, text|
+      assert_text_includes text, "pr-batch-intake.md#verified-batch-title-selection", label
+      refute_includes squish(text), squish(BATCH_TITLE_ISSUE_IDENTIFIER_RULE),
+                      "#{label} must route to prompt intake instead of mirroring title selection"
+      refute_includes squish(text), squish(PROJECT_PREFIX_RULE),
+                      "#{label} must route to prompt intake instead of mirroring project selection"
+    end
+  end
+
   def test_pasteable_goal_prompts_put_exactly_one_blank_line_around_batch_title
     {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
@@ -1582,21 +1608,21 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_batch_title_spacing_rule_is_synchronized_across_planning_surfaces
-    {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
-      "skills/triage/SKILL.md" => @triage_skill,
-      "docs/pr-batch-skills.md" => @pr_batch_docs
-    }.each do |label, text|
-      assert_squished_includes text, BATCH_TITLE_SPACING_RULE, label
-    end
+  def test_batch_title_spacing_rule_is_canonical_in_prompt_intake
+    assert_squished_includes @verified_batch_title_contract, BATCH_TITLE_SPACING_RULE,
+                             "workflows/pr-batch-intake.md"
   end
 
   def test_continuation_title_uses_the_same_verified_source_issue_cardinality
-    assert_squished_includes @workflow_resume_prompt, CONTINUATION_TITLE_IDENTIFIER_RULE,
-                             "workflow continuation prompt"
+    assert_squished_includes @verified_batch_title_contract, BATCH_TITLE_ISSUE_IDENTIFIER_RULE,
+                             "workflows/pr-batch-intake.md"
+    assert_squished_includes @verified_batch_title_contract,
+                             "For continuation intake, evidence, blocker, dependency, next-action, comment, " \
+                             "and example references are not targets and cannot supply title identifiers.",
+                             "workflows/pr-batch-intake.md"
+    assert_text_includes @workflow_resume_prompt,
+                         "pr-batch-intake.md#verified-batch-title-selection",
+                         "workflow continuation prompt"
     assert continuation_title_thread_handle_shape_valid?(@workflow_resume_prompt),
            "workflow continuation prompt must expose the optional verified source issue ID in its title"
   end
@@ -1628,42 +1654,22 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_linear_title_verification_names_portable_seam_and_evidence
-    {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
-      "skills/triage/SKILL.md" => @triage_skill,
-      "docs/pr-batch-skills.md" => @pr_batch_docs
-    }.each do |label, text|
-      assert_squished_includes text, "`AGENTS.md` `linear_issue_verification` seam", label
-      assert_squished_includes text, "resolve tool/account", label
-      assert_squished_includes text, "exact ID, canonical URL, state, and timestamp", label
-    end
+    assert_squished_includes @verified_batch_title_contract, "`AGENTS.md` `linear_issue_verification` seam",
+                             "workflows/pr-batch-intake.md"
+    assert_squished_includes @verified_batch_title_contract, "resolve tool/account", "workflows/pr-batch-intake.md"
+    assert_squished_includes @verified_batch_title_contract, "exact ID, canonical URL, state, and timestamp",
+                             "workflows/pr-batch-intake.md"
   end
 
   def test_batch_title_instructions_pin_local_date_source
-    {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
-      "skills/triage/SKILL.md" => @triage_skill
-    }.each do |label, text|
-      assert_text_includes text, DATE_COMMAND, label
-    end
+    assert_text_includes @verified_batch_title_contract, DATE_COMMAND, "workflows/pr-batch-intake.md"
   end
 
   def test_batch_title_contract_uses_only_one_verified_source_issue_identifier
-    {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
-      "skills/triage/SKILL.md" => @triage_skill,
-      "docs/pr-batch-skills.md" => @pr_batch_docs
-    }.each do |label, text|
-      assert_squished_includes text, BATCH_TITLE_ISSUE_IDENTIFIER_RULE, label
-      assert_text_includes text, GITHUB_BATCH_TITLE_SHAPE, label
-      assert_text_includes text, LINEAR_BATCH_TITLE_SHAPE, label
-    end
+    assert_squished_includes @verified_batch_title_contract, BATCH_TITLE_ISSUE_IDENTIFIER_RULE,
+                             "workflows/pr-batch-intake.md"
+    assert_text_includes @verified_batch_title_contract, GITHUB_BATCH_TITLE_SHAPE, "workflows/pr-batch-intake.md"
+    assert_text_includes @verified_batch_title_contract, LINEAR_BATCH_TITLE_SHAPE, "workflows/pr-batch-intake.md"
   end
 
   def test_linear_title_metadata_does_not_create_an_executable_lane
@@ -1684,20 +1690,13 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_batch_title_project_rule_prefers_config_and_has_deterministic_fallback
-    {
-      "workflows/pr-processing.md" => @workflow,
-      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
-      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
-      "skills/triage/SKILL.md" => @triage_skill
-    }.each do |label, text|
-      assert_squished_includes text, PROJECT_PREFIX_RULE, label
-    end
-
-    assert_squished_includes @pr_batch_docs, PROJECT_PREFIX_DOCS_RULE, "docs/pr-batch-skills.md"
+    assert_squished_includes @verified_batch_title_contract, PROJECT_PREFIX_RULE,
+                             "workflows/pr-batch-intake.md"
   end
 
   def test_batch_title_rules_reject_the_full_repository_name
     {
+      "workflows/pr-batch-intake.md" => @prompt_intake,
       "workflows/pr-processing.md" => @workflow,
       "skills/pr-batch/SKILL.md" => @pr_batch_skill,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
