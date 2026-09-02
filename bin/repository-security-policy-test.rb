@@ -242,10 +242,10 @@ class RepositorySecurityPolicyTest < Minitest::Test
     end
 
     refute_nil action_updates
-    assert_equal "monthly", action_updates.dig("schedule", "interval")
+    assert_equal "weekly", action_updates.dig("schedule", "interval")
 
     policy = File.read(File.join(ROOT, "docs/repository-supply-chain.md"))
-    assert_includes policy, "Dependabot proposes Action updates monthly"
+    assert_includes policy, "Dependabot proposes Action updates weekly"
   end
 
   private
