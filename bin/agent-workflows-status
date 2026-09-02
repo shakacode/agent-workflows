@@ -104,10 +104,12 @@ module AgentWorkflowsStatus
       file.binmode
       bytes = file.read
       file.rewind
-      # Same binding the installer's own metadata reader uses: reject a file whose identity or
-      # content moved under the handle mid-read.
-      final = file.stat
-      unless final.file? && final.dev == opened.dev && final.ino == opened.ino && file.read == bytes
+      # An fstat pair on one handle is a tautology, so compare the path's own lstat with the
+      # handle we read, the way the installer's reader does: that catches the path being
+      # replaced, and the re-read catches the content changing, mid-read.
+      current = File.lstat(path)
+      unless current.file? && !current.symlink? &&
+             current.dev == opened.dev && current.ino == opened.ino && file.read == bytes
         raise "invalid metadata #{path}: changed while being read"
       end
 

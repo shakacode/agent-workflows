@@ -1856,10 +1856,31 @@ validate_delivery_mode() {
   esac
 }
 
+# Runs in its own interpreter on purpose. `load` executes source-pack code at top level, and the
+# metadata writer must not share a process with it: that writer performs the security-sensitive
+# O_NOFOLLOW/renameat metadata commit, and loaded code could redefine anything it relies on.
+compute_autonomous_merge_runtime_digest() {
+  local library="$repo_root/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb"
+  [[ -f "$library" && ! -L "$library" ]] || return 0
+  ruby -e '
+    begin
+      load ARGV.fetch(0)
+      digest = AutonomousMergeRuntimeTrust.default_installed_pack_digest
+      abort "unexpected runtime manifest digest" unless digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/)
+      print digest
+    rescue ScriptError, SystemCallError
+      # Exactly the two degrade-quietly cases: a missing or unreadable runtime source, and a Ruby
+      # too old to parse the library. Neither host can run the gate, so record nothing rather than
+      # failing the install. Any other error escapes and fails the install loudly.
+    end
+  ' "$library"
+}
+
 prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
   local version source_revision source_branch source_remote installed_at prepare_status=0
+  local runtime_manifest_digest
   prepared_metadata_attestation=""
   if [[ -e "$metadata_tmp" || -L "$metadata_tmp" ]]; then
     echo "METADATA_PREPARE_BLOCKED: preserved existing untrusted metadata preparation path $metadata_tmp." >&2
@@ -1871,6 +1892,14 @@ prepare_metadata() {
   source_branch="$(metadata_value source_branch)"
   source_remote="$(metadata_value source_remote)"
   installed_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  runtime_manifest_digest=""
+  if [[ "$mode" = "copy" && "$delivery_mode" = "flat" ]]; then
+    if ! runtime_manifest_digest="$(compute_autonomous_merge_runtime_digest)"; then
+      echo "RUNTIME_DIGEST_FAILED: could not compute the autonomous-merge runtime manifest digest from $repo_root." >&2
+      echo "The source pack's runtime trust library raised an unexpected error; fix the pack and retry." >&2
+      return 68
+    fi
+  fi
 
   prepared_metadata_attestation="$(ruby -rjson -rdigest -rfind -rfiddle/import -rsecurerandom -e '
     module PreparedMetadataSyscalls
@@ -1890,7 +1919,8 @@ prepare_metadata() {
         end
       end
     end
-    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, *pack_docs = ARGV
+    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at,
+      runtime_manifest_digest, *pack_docs = ARGV
     directory_fingerprint = lambda do |root|
       entries = []
       Find.find(root) do |entry|
@@ -1929,30 +1959,15 @@ prepare_metadata() {
                        else
                          {}
                        end
-    # An incomplete or unreadable runtime closure records nothing rather than blocking the
-    # install or publishing a digest for a partial pack. The gate then stays unsatisfiable,
-    # which is the same fail-closed outcome as an install predating this key.
-    autonomous_merge_digest = lambda do
-      library = File.join(source, "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb")
-      return nil unless File.file?(library) && !File.symlink?(library)
-
-      # This is the one place install-agent-workflows executes source-provided code rather than
-      # only copying or hashing it. Intentional: copy mode already fully trusts the source pack,
-      # whose helpers it installs and the host later runs. Never extend this to a less-trusted
-      # input.
-      load library
-      AutonomousMergeRuntimeTrust.default_installed_pack_digest
-    rescue ScriptError, SystemCallError
-      # Exactly the two degrade-quietly cases: a missing or unreadable runtime source, and a
-      # Ruby too old to parse the library. Neither host can run the gate, so record nothing
-      # rather than failing the install. Any other error is a broken pack and must surface.
-      nil
-    end
-    runtime_manifest_digests = {}
-    if mode == "copy" && delivery_mode == "flat"
-      recorded_digest = autonomous_merge_digest.call
-      runtime_manifest_digests["autonomous-merge"] = recorded_digest if recorded_digest
-    end
+    # Computed by compute_autonomous_merge_runtime_digest in a separate interpreter, so no
+    # source-pack code is ever loaded into the process that commits this metadata. Empty means
+    # the closure was incomplete or unloadable, which records nothing and leaves the gate
+    # unsatisfiable -- the same fail-closed outcome as an install predating this key.
+    runtime_manifest_digests = if runtime_manifest_digest.empty?
+                                 {}
+                               else
+                                 { "autonomous-merge" => runtime_manifest_digest }
+                               end
     root_fingerprints = if mode == "copy"
                           name = "THIRD_PARTY-NOTICES.md"
                           root_file = File.join(source, name)
@@ -2025,7 +2040,7 @@ prepare_metadata() {
         end
       end
     end
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}" 2>/dev/null)" || prepare_status=$?
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "$runtime_manifest_digest" "${pack_docs[@]}" 2>/dev/null)" || prepare_status=$?
   if [[ "$prepare_status" -ne 0 ]]; then
     echo "METADATA_PREPARE_BLOCKED: could not safely create $metadata_tmp; preserved any path that exists there." >&2
     echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite an unverified path." >&2
