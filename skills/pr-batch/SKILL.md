@@ -743,6 +743,8 @@ publication, current-head review/CI, readiness, and merge sequencing.
 ## Integration And PR Publication
 
 Use the canonical [Integration And PR Publication](../../workflows/pr-batch-integration-closeout.md#integration-and-pr-publication) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+Apply its Human-First PR Description and `concise-history-check` authoring gates
+before publishing the lane.
 
 ## Pausing Or Stopping A Batch
 
