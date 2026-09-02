@@ -472,6 +472,30 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_accepts_a_canonical_typed_issue_lane_selector
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target, lane_targets: ["issue:4731"])
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      assert CompletedBatchAuditReceipt.accepted_deferral_product_evidence?(
+        preflight,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        coordination_backend: REAL_BACKEND
+      )
+    end
+
+    wrong_type = accepted_deferral_publication_preflight(target, lane_targets: ["pr:4731"])
+    with_accepted_deferral_api(wrong_type, accepted_deferral_api(wrong_type)) do
+      refute CompletedBatchAuditReceipt.accepted_deferral_product_evidence?(
+        wrong_type,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        coordination_backend: REAL_BACKEND
+      )
+    end
+  end
+
   def test_accepted_deferral_binds_shorthand_blocker_to_its_exact_tracking_issue
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
@@ -3669,7 +3693,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     blockers: nil,
     extra_unattributed_lane_names: [],
     coordination_repo: "shakacode/react_on_rails",
-    lane_identity_fields: {}
+    lane_identity_fields: {},
+    lane_targets: ["4731"]
   )
     head_sha = "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e"
     coordination_status = {
@@ -3683,7 +3708,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "lanes" => [
           {
             "name" => "ror-d-issue-4731",
-            "targets" => ["4731"],
+            "targets" => lane_targets,
             "status" => "done",
             "terminal" => "done",
             "closed_at" => "2026-08-17T20:00:00Z",

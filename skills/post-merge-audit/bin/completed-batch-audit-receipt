@@ -1236,8 +1236,7 @@ module CompletedBatchAuditReceipt
     return unless lanes.is_a?(Array)
 
     candidates = lanes.select do |lane|
-      lane.is_a?(Hash) && lane["targets"].is_a?(Array) &&
-        lane["targets"].map(&:to_s) == [target.fetch("number").to_s] &&
+      lane.is_a?(Hash) && accepted_deferral_lane_target_matches?(lane, target) &&
         same_target_urls?(lane["pr_url"], source_url) &&
         accepted_deferral_lane_identity_urls_match?(lane, target)
     end
@@ -1246,6 +1245,14 @@ module CompletedBatchAuditReceipt
     lane = candidates.first
     name = CompletedBatchPublicationPreflight.normalized_known_string(lane["name"])
     lane.merge("name" => name) if name
+  end
+
+  def accepted_deferral_lane_target_matches?(lane, target)
+    selectors = lane["targets"]
+    return false unless selectors.is_a?(Array) && selectors.one?
+
+    type, number = CompletedBatchPublicationPreflight.lane_target_selector(selectors.first)
+    number == target.fetch("number") && (!type || type == target.fetch("type"))
   end
 
   def accepted_deferral_lane_identity_urls_match?(lane, target)
