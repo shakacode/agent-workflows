@@ -405,11 +405,6 @@ items = requests.map do |request|
         batch_payloads[batch_id] = batch_payload
       end
     end
-    help_request_lifecycles[batch_id] ||= help_request_lifecycle(
-      batch_payloads[batch_id],
-      now: options.fetch(:now),
-      max_open_seconds: options.fetch(:help_request_max_open_seconds)
-    )
     lifecycle = if lane
                   lane_cache_key = [batch_id, lane]
                   lane_help_request_lifecycles[lane_cache_key] ||= help_request_lifecycle(
@@ -418,6 +413,7 @@ items = requests.map do |request|
                     max_open_seconds: options.fetch(:help_request_max_open_seconds),
                     lane: lane
                   )
+                  help_request_lifecycles[batch_id] ||= lane_help_request_lifecycles[lane_cache_key]
                 else
                   { "status" => UNKNOWN, "error" => "lane unavailable for target-scoped replay" }
                 end

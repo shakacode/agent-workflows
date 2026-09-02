@@ -545,6 +545,15 @@ class HelpRequestLifecycleTest < Minitest::Test
     assert_equal true, review.fetch("terminal_action").fetch("recorded")
     assert_equal false, docs.fetch("terminal_action").fetch("recorded")
     assert_equal true, docs.fetch("terminal_action").fetch("required")
+
+    batch_wide, batch_wide_stderr, batch_wide_status = run_lifecycle(
+      input: input.path,
+      now: "2026-08-23T10:00:01Z"
+    )
+
+    assert_predicate batch_wide_status, :success?, batch_wide_stderr
+    assert_equal false, batch_wide.fetch("terminal_action").fetch("recorded")
+    assert_equal true, batch_wide.fetch("terminal_action").fetch("required")
   ensure
     input&.close!
   end

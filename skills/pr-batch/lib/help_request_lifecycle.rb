@@ -185,7 +185,7 @@ module HelpRequestLifecycle
                      elsif request["lane"]
                        event_lane == request["lane"]
                      else
-                       true
+                       event_lane.nil?
                      end
       event["evidence"] == request["request_id"] && normalized_status == "blocked_user_input" && lane_matches
     end

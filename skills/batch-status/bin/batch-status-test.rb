@@ -206,6 +206,56 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_target_status_uses_a_lane_filtered_batch_lifecycle_for_the_batch_map
+    request_id = "20260823T054818.000000Z-help4846"
+    target_coordination = {
+      "claims" => [{
+        "agent_id" => "worker-462",
+        "status" => "active",
+        "batch_id" => "aw-help",
+        "lane" => "review"
+      }],
+      "heartbeats" => []
+    }
+    batch_coordination = {
+      "events" => [{
+        "event_id" => request_id,
+        "batch_id" => "aw-help",
+        "lane" => "different-lane",
+        "agent_id" => "worker-462",
+        "type" => "help_requested",
+        "reason" => "permission",
+        "at" => "2026-08-23T05:48:18Z",
+        "message" => "Approve the exact merge head."
+      }]
+    }
+
+    with_fake_help_lifecycle_commands(target_coordination:, batch_coordination:) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "462",
+        "--now", "2026-08-23T10:00:00Z",
+        "--help-request-max-open-seconds", "14400",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      row = payload.fetch("items").first
+      lifecycle = row.fetch("help_request_lifecycle")
+      batch_lifecycle = payload.fetch("help_request_lifecycles").fetch("aw-help")
+
+      assert_equal "aw-help", row.fetch("batch_id")
+      assert_equal "review", row.fetch("lane")
+      assert_equal "clear", lifecycle.fetch("status")
+      assert_equal "clear", batch_lifecycle.fetch("status")
+      assert_empty batch_lifecycle.fetch("requests")
+    end
+  end
+
   def test_batch_item_reports_open_permission_request_age_and_bounded_outcome
     request_id = "20260823T054818.000000Z-help4846"
     coordination = {
