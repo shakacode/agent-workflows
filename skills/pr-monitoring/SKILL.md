@@ -17,7 +17,11 @@ monitoring handoff or maintainer-facing explanation. Preserve current-head
 evidence, blockers, URLs, readiness vocabulary, and `UNKNOWN` facts.
 
 Default `merge_authority` is `none` unless the user, `AGENTS.md`, or a resolved
-batch plan grants more authority.
+batch plan grants more authority. This is `pr-monitoring`'s own gating
+fallback for a PR with no other resolved value; it does not relax the
+launch-time requirement in `$pr-batch`, `plan-pr-batch`, and `triage` to
+resolve `merge_authority` explicitly and never silently default it before
+launch.
 
 Before any coordination probe or closeout declaration validation, consume or
 record the canonical **Coordination Applicability Gate** outcome from

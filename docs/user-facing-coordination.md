@@ -96,6 +96,16 @@ and rollback status before asking one final question that names the exact
 approval needed. Walkthrough participation is not approval, and any head change
 invalidates both the walkthrough identity and the approval request.
 
+When a prerequisite PR is otherwise ready and only its human review and merge
+decision remains under `merge_authority: ask`, treat that dependency as
+`blocked-user-input`, not an external failure. Do not spend external-blocker
+retries or create monitoring automation for it. Start the exact-diff walkthrough
+first when the prerequisite is an authorized batch target; otherwise provide
+the exact external PR link and instruct the user either to merge it and reply
+only after it is merged, or to explicitly authorize adding it as a batch target
+so target resolution, preflight, and the walkthrough can run. A reply or merge
+decision alone does not clear an external prerequisite or authorize its merge.
+
 ## Heartbeat And Automation Lifecycle
 
 A heartbeat automation is only a wake-up mechanism. On a no-change wake, emit

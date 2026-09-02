@@ -474,18 +474,18 @@ includes this evidence block:
 ```markdown
 ### QA Evidence
 
-- QA lane: <agent id, branch/worktree, claim status, last heartbeat status; required QA needs concrete owner/worktree; only private claim/heartbeat may be UNKNOWN>
+- QA lane: <agent id, branch/worktree, claim/heartbeat status; required QA needs a concrete owner/worktree; only private coordination may be UNKNOWN>
 - Scope checked: <changed areas, PRs, release phase, and why this QA depth was enough>
 - Tested at: <PR/head SHA(s), audited range, or "not applicable: no PR/code changes">
 - Automated checks: <commands, CI links, or "covered by worker validation: ...">
 - Manual checks: <workflow/app smoke checks, screenshots, or "not applicable: ...">
 - User-visible UI change: <yes | no>
-- Visual evidence: <durable before/after URL(s), destination, and paint check; blocked human-attachment paths; or reasoned "not applicable: no user-visible UI change">
+- Visual evidence: <durable URL(s), destination, and paint check; blocked reason and remedy; or reasoned not applicable>
 - Interaction change: <yes | no; yes requires clip/measured substitute, no requires reasoned not applicable>
 - Interaction evidence: <durable clip URL, exact measured_substitute with labeled before/after/tolerance values and units, or reasoned "not applicable: ...">
 - Visual fix: <yes | no; yes requires observed unfixed failure, no requires reasoned not applicable>
 - Negative control: <observed unfixed failure, or reasoned "not applicable: no visual fix">
-- Performance evidence: <repo performance-seam result with source=<stable command/report/ref>, baseline_value=<number><unit>, and candidate_value=<number><unit> plus bundle_hygiene/measured_metric classification; non-byte bundle_hygiene names metric_name=<bundle/asset shape metric>; measured_metric names metric_name=<runtime/user metric>; or reasoned "not applicable: ...">
+- Performance evidence: <repo-seam source, baseline/candidate values and units, bundle_hygiene or measured_metric classification, and required metric_name; or reasoned not applicable>
 - Findings: <none, fixed in PR(s), waived with link, or follow-up recommended with tracking outcome/link>
 - QA required: <yes | no>
 - QA required rationale: <one-line reason for the decision and selected QA depth>
@@ -512,6 +512,7 @@ automated_checks: <commands, CI links, or covered-by-worker-validation note>
 manual_checks: <manual smoke checks or not applicable>
 user_visible_ui_change: <yes | no>
 visual_evidence_destination: <github_pr | linked_tracker | repo_artifact_store | human_attachment_pending | not_applicable>
+visual_evidence_blocked_reason: <uploader_absent | uploader_denied | no_configured_store | upload_failed: reason>
 visual_evidence: <durable: before/after https URL(s) | blocked: human attachment required; prepared local artifacts: absolute paths | not applicable: reason>
 paint_check: <passed: painted/rendered target inspected | not applicable: reason>
 interaction_change: <yes | no>
@@ -529,6 +530,9 @@ process_gap_disposition: <script | schema | checklist+replay | park | not applic
 For `required: no`, record `status: not_applicable` and
 `release_blocking: not_applicable`. Replay treats any other terminal pair as an
 inconsistent omission record and returns `UNKNOWN`.
+
+Use `visual_evidence_blocked_reason` only with `human_attachment_pending`;
+missing or extra values replay as `UNKNOWN`.
 
 Historical `qa-evidence v1` receipts remain replayable for backward
 compatibility. Do not emit v1 for new closeout evidence. The presence of any v2
@@ -728,9 +732,9 @@ Every target must use one explicit final state:
   `auto_merge_when_gates_pass`, the coordinator must merge instead of handing
   off this state unless release-mode policy, branch protection, or tool failure
   blocks the mechanical merge; document that blocker when using this state.
-- `ready-no-merge-authority`: all readiness gates passed, but `merge_authority`
-  is `none` or `ask` and no merge approval has been given, including a declined
-  `ask` decision.
+- `ready-no-merge-authority`: gates passed; authority is `none` or an
+  unapproved or declined `ask`. This remains the target state while the batch is
+  `blocked-user-input`.
 - `waiting-on-checks-or-review`: current-head checks or configured review agents
   are still pending, missing, or not yet triaged.
 - `external-gate-failing`: the remaining blocker is outside the PR's code, such
@@ -793,17 +797,17 @@ End the final user-visible message carrying the batch handoff with the exact arc
 
 ### Goal Mode Completion Contract
 
-Use this compact, self-contained `GMCC-v4` line verbatim in PR-batch goal
+Use this compact, self-contained `GMCC-v5` line verbatim in PR-batch goal
 prompts.
-`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 
-`GMCC-v4` expands to this canonical contract:
+`GMCC-v5` expands to this canonical contract:
 
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. For an autonomously clearable blocker, prefer one deduplicated deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint persists without loading parent context, while a material change resumes once with only `state_delta` and reruns security, origin, coordination, overlap, review, readiness, and exact-head gates. If deterministic watching is unavailable, use one bounded model-mediated fallback: the default fast window is four 15-minute polls, then the interval doubles to a four-hour cap, with finite unchanged-run, model-call, and token ceilings. Stop or pause on clear, done, terminal, non-resumable, `blocked-user-input`, or budget state and preserve an exact restart-safe manual-resume handoff; do not create a duplicate. If neither watcher is available, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. For an autonomously clearable blocker, prefer one deduplicated deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint persists without loading parent context, while a material change resumes once with only `state_delta` and reruns security, origin, coordination, overlap, review, readiness, and exact-head gates. If deterministic watching is unavailable, use one bounded model-mediated fallback: the default fast window is four 15-minute polls, then the interval doubles to a four-hour cap, with finite unchanged-run, model-call, and token ceilings. Stop or pause on clear, done, terminal, non-resumable, `blocked-user-input`, or budget state and preserve an exact restart-safe manual-resume handoff; do not create a duplicate. If neither watcher is available, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. `ask` starts the owned-target walkthrough; external refs require the user to merge or authorize target addition, with `blocked-user-input` and no retry/watch. With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
-The `auto-clear=>watch(same:0wake,delta:gates)` phrase in the compact `GMCC-v4` line
+The `auto-clear=>watch(same:0wake,delta:gates)` phrase in the compact `GMCC-v5` line
 is the preferred watcher. Before creating its bounded fallback, detect whether
 the host can run a deterministic probe without resuming the parent task. A
 qualifying state-change watcher:
@@ -859,10 +863,7 @@ The heartbeat targets the current thread rather than starting a standalone task,
 
 Pressure checks:
 
-- A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE.
-- An autonomously clearable blocked goal gets one deterministic state-change watcher when supported; unchanged evidence does not wake the parent. A bounded, deduplicated 15-minute-fast-window/backoff monitor is the fallback. Stop or pause either mode on unblocked, terminal, non-resumable, user-input, or budget state.
 - A blocker that publishes an exact future reset time gets one same-thread heartbeat scheduled for that time, because neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that exact published time; use it as the single scheduled mechanism for that blocker and gate; do not start or retain either watcher mode for the same gate, and create or update its durable record before stopping or replacing any existing watcher so no wake is lost. Replay updates that one heartbeat instead of duplicating it, and a terminal state pauses or deletes it. An `UNKNOWN` retry time, a `blocked-user-input` blocker, or an unavailable scheduling capability creates no automation and keeps the exact manual resume instructions.
-- `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
 ## Integration, Review, And Merge Readiness
@@ -1306,18 +1307,17 @@ PRs; never derive it from the PR's own text.
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no
 required checks exist, ignores cancelled/superseded rows, and prints a `verdict`
 of `READY`, `NOT_READY`, or `UNKNOWN` plus the `failing`/`pending` check names
-(`required_used` records whether required checks gated the verdict). Treat
-`UNKNOWN` (an empty check list) as not ready and request hosted CI or maintainer
-status-check configuration before merge; skipped checks still need CI selector or
-maintainer-waiver evidence allowed by `AGENTS.md`. (As of #3844, `main` defines
-zero required status-check contexts, so the helper falls back to the full list;
-if required checks are later configured per #3844 option (a), it uses them.)
-When hosted CI was explicitly requested for the current head, pass each requested
-Actions run id or URL as `--requested-hosted-run <run-id-or-url>`; the helper
-then blocks only those requested current-head hosted runs while leaving unrelated
-advisory checks advisory. When no usable required checks exist, the requested
-runs become the gate instead of the full advisory list. A stale requested run for
-an older head is `UNKNOWN`, not success.
+(`required_used` records whether required checks gated). An empty check list is
+`UNKNOWN`; request hosted CI or configure status checks. Skips need CI-selector
+or `AGENTS.md` waiver evidence. Configured required checks gate; without them,
+the helper uses its advisory list unless runs are selected below.
+For requested CI, pass current-head runs with
+`--requested-hosted-run <run-id-or-url>`. Required checks always gate; otherwise
+only selected runs gate. Unselected non-required checks—even failures or pending
+ones—are informational. Without required checks, selected runs replace the
+advisory list; completed rows must carry the exact head for merge assurance.
+Require or select relied-on hosted Markdown checks. Older-head runs are
+`UNKNOWN`.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 Avoid long-lived `gh ... --watch` commands in agent sessions. Avoid relying on
