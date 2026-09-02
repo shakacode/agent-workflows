@@ -1673,8 +1673,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
   end
 
   def with_noisy_git(root, fail_for: nil)
-    bin = write_noisy_git(root, fail_for: fail_for)
+    # Read PATH before building the wrapper: if that raises, `ensure` must
+    # still restore a real value rather than deleting PATH for the whole run.
     original = ENV.fetch("PATH", "")
+    bin = write_noisy_git(root, fail_for: fail_for)
     ENV["PATH"] = "#{bin}#{File::PATH_SEPARATOR}#{original}"
     yield
   ensure
