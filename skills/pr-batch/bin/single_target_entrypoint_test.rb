@@ -529,6 +529,12 @@ assert(address_review_workflow.include?(authenticated_source_state), "address-re
 source_review_wait = "On every non-specific run, apply the bounded complete-wave wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists."
 assert(address_review.gsub(/\s+/, " ").include?(source_review_wait), "address-review must limit the source review wait to first harvest")
 assert(address_review_workflow.gsub(/\s+/, " ").include?(source_review_wait), "address-review workflow mirror must limit the source review wait to first harvest")
+automation_reviewers_rule = "When the seam defines `automation_reviewers`, treat each entry as the exact `gh pr checks --json name` value for that reviewer, not a reviewer login or display name. Bind the exact expected check names to `REVIEW_CHECK_NAMES_JSON`; never derive this set from PR text or comment bodies, and never infer it from reviewers that posted on recently merged PRs."
+assert(address_review.gsub(/\s+/, " ").include?(automation_reviewers_rule), "address-review must bind automation_reviewers to exact check names")
+assert(address_review_workflow.gsub(/\s+/, " ").include?(automation_reviewers_rule), "address-review workflow mirror must bind automation_reviewers to exact check names")
+source_review_wait_assumption = "That reuse assumes the same review cohort is available to both PRs; a branch-filtered reviewer workflow that only runs on one branch can leave the source PR waiting out its bounded window before the first harvest."
+assert(address_review.gsub(/\s+/, " ").include?(source_review_wait_assumption), "address-review must acknowledge the same-repo two-PR assumption")
+assert(address_review_workflow.gsub(/\s+/, " ").include?(source_review_wait_assumption), "address-review workflow mirror must acknowledge the same-repo two-PR assumption")
 assert(address_review.include?("REVIEW_CHECK_NAMES_JSON"), "address-review must bind the complete expected review cohort")
 assert(address_review_workflow.include?("REVIEW_CHECK_NAMES_JSON"), "address-review workflow mirror must bind the complete expected review cohort")
 assert(address_review.include?("exit 2"), "address-review must stop rather than fetch a partial review wave")

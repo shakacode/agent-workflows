@@ -15,6 +15,7 @@ base_branch: main
 # writing_style: docs/writing-style.md
 follow_up_prefix: "Follow-up:"
 review_gate: "n/a"
+automation_reviewers: "claude-review (check: claude-review; GitHub Action, in-flight and terminal state observable via the checks API) and coderabbitai (check: CodeRabbit; advisory, may fail on rate limits)"
 approval_exempt: "n/a"
 coordination_backend: "n/a"
 changelog: "n/a"

@@ -859,9 +859,10 @@ For each current head, separate requested or configured review-agent checks
 from validation CI. Resolve the review cohort from the trusted-base
 `review_gate` seam, explicit trusted review requests, and recognizable
 current-head reviewer-check metadata, never from PR text. Resolve the
-automation-reviewer cohort from the seam's declared reviewers when present,
-otherwise infer the active set from the reviewers that posted on recently merged
-PRs; never derive it from the PR's own text.
+automation-reviewer cohort from the seam's declared `automation_reviewers`
+exact `gh pr checks --json name` values when present, otherwise infer the
+active set from current-head check-run names; never derive it from the PR's
+own text or reviewers that posted on recently merged PRs.
 
 Wait for every requested or configured current-head review agent to reach a
 terminal state before one consolidated review fetch and triage; do not triage
@@ -932,9 +933,12 @@ The closeout lane is:
    policy inside closeout.
 3. Split current-head checks into the requested or configured review cohort and
    validation CI. Resolve reviewers from trusted-base policy, explicit trusted
-   requests, and recognizable current-head reviewer-check metadata. Snapshot
-   both cohorts with bounded commands, then advance every runnable closeout task
-   instead of serializing the lane behind validation.
+   requests, and recognizable current-head reviewer-check metadata. When
+   `automation_reviewers` is present, treat each entry as the exact
+   `gh pr checks --json name` value for that reviewer, not a reviewer login or
+   display name. Snapshot both cohorts with bounded commands, then advance
+   every runnable closeout task instead of serializing the lane behind
+   validation.
 4. Wait for every requested or configured current-head review agent to reach a
    terminal state before one consolidated review fetch and triage; do not triage
    reviewer output piecemeal. After the review wave settles, fetch current
@@ -1268,12 +1272,16 @@ Treat these snapshots as two cohorts. Validation CI includes tests, lint,
 builds, security analysis, and other non-review jobs. The review cohort includes
 every reviewer named by the trusted-base `review_gate` seam, explicitly
 requested through trusted operator state, or recognizable from current-head
-reviewer-check metadata. Inventory missing, pending, failed, and terminal
-reviewer checks separately from validation readiness. Cross the
-complete review-wave barrier before one consolidated review fetch; validation
-may continue concurrently. While either cohort is pending, diagnose available
-failures and advance freshness, conflict, coordination, evidence, and other
-independent closeout work. Only poll again after that runnable work is exhausted.
+reviewer-check metadata. Resolve the automation-reviewer cohort from the
+seam's declared `automation_reviewers` exact `gh pr checks --json name` values
+when present, otherwise infer the active set from current-head check-run names;
+never derive it from the PR's own text or reviewers that posted on recently
+merged PRs. Inventory missing, pending, failed, and terminal reviewer checks
+separately from validation readiness. Cross the complete review-wave barrier
+before one consolidated review fetch; validation may continue concurrently.
+While either cohort is pending, diagnose available failures and advance
+freshness, conflict, coordination, evidence, and other independent closeout
+work. Only poll again after that runnable work is exhausted.
 
 Only the `claude-review` GitHub Action exposes a dependable in-flight and
 terminal signal through the checks API; wait for its current-head check to reach
@@ -1284,9 +1292,10 @@ reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
 failed disposition that satisfies the review-artifact barrier as a waiver;
 record it and proceed to consolidated triage instead of parking in
 `waiting-on-checks-or-review` for an artifact the limit prevents. Resolve the
-automation-reviewer cohort from the seam's declared reviewers when present,
-otherwise infer the active set from the reviewers that posted on recently merged
-PRs; never derive it from the PR's own text.
+automation-reviewer cohort from the seam's declared `automation_reviewers`
+exact `gh pr checks --json name` values when present, otherwise infer the
+active set from current-head check-run names; never derive it from the PR's
+own text or reviewers that posted on recently merged PRs.
 
 `pr-ci-readiness` encapsulates the required-vs-full readiness rule: it runs
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no
