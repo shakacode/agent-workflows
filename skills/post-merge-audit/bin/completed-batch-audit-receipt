@@ -1152,8 +1152,9 @@ module CompletedBatchAuditReceipt
       coordination_backend:
     )
     return unless preflight["eligible"] == false && preflight["verdict"] == "BLOCKED"
-    return unless accepted_deferral_target_resolution_blockers?(preflight, targets, preflight["blockers"])
 
+    # Legacy replay must rebuild the pre-#522 blocker trio from authenticated
+    # source input, even when current publication logic emits newer blockers.
     target = validated_target(targets.first)
     source_input = preflight.fetch("source_input")
     target_row = source_input.fetch("target_snapshots").first
