@@ -913,8 +913,9 @@ module AgentRunRecord
     prefix = "#{File.basename(path)}#{IDENTITY_CANDIDATE_PREFIX}"
     deadline = Time.now - IDENTITY_CANDIDATE_REAP_AGE_SECONDS
     examined = 0
-    # Sorted so the cap always examines the same candidates on a repeated launch.
-    Dir.children(directory).sort.each do |name|
+    # Streamed rather than listed: the identity directory is shared and long-lived, so
+    # this must not materialize or sort every historical identity file on every launch.
+    Dir.each_child(directory) do |name|
       next unless name.start_with?(prefix)
 
       examined += 1
