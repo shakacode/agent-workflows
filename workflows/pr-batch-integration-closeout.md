@@ -1585,7 +1585,7 @@ live facts: require that the exact head contains the current base by
 requiring this command to exit zero:
 
 ```bash
-git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"
+GIT_GRAFT_FILE=/dev/null git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"
 ```
 
 Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh here; do not

@@ -289,7 +289,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     normalized_walkthrough = @pr_walkthrough.gsub(/\s+/, " ")
     prompt_gate = "- ask:I=head>=base+V=READY;I?$pr-walkthrough(large|complex=full):wait;" \
                   "refresh;chg=>redo/stop;ordinary|I fail=>stop;ask iff same clean"
-    ancestry_command = 'git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
+    ancestry_command = 'GIT_GRAFT_FILE=/dev/null git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
 
     positions = [
       "Before entering this gate",
@@ -358,7 +358,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
   def test_ask_gate_sha_names_are_unified_with_earlier_resolved_facts
     ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
     normalized_gate = ask_gate.gsub(/\s+/, " ")
-    ancestry_command = 'git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
+    ancestry_command = 'GIT_GRAFT_FILE=/dev/null git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
 
     assert_includes ask_gate, ancestry_command
     assert_includes normalized_gate, "Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh"

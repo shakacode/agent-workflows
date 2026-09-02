@@ -166,7 +166,12 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_equal 2, skill.scan("that gate's applicable hard-failure banner").length
     assert_equal 2,
                  skill.scan("behind-base banner routing to Integration And PR Publication step 3").length
-    assert_equal 2, skill.scan("whenever ancestry fails, regardless of CI").length
+    assert_equal 2, skill.scan("whenever ancestry is proven behind, regardless of CI").length
+    # UNKNOWN ancestry (missing SHA, shallow clone, command error) must never
+    # be treated as proven-behind and routed to base reconciliation — it
+    # stays in the fail-closed waiting-on-checks-or-review state instead.
+    assert_equal 2,
+                 skill.scan("never for `UNKNOWN` ancestry, which stays in `waiting-on-checks-or-review`").length
     assert_equal 2, skill.scan("only when ancestry passed and CI itself is not `READY`").length
 
     # Both caller blocks (step 4, and its restatement in Set Expectations)

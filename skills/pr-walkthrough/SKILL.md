@@ -39,8 +39,10 @@ responsibility to a worker, external task, or automation.
    `UNKNOWN` facts return control to the caller with that gate's applicable
    hard-failure banner — a behind-base banner routing to Integration And PR
    Publication step 3 (a proven-behind head never clears through
-   `waiting-on-checks-or-review` polling) whenever ancestry fails, regardless
-   of CI, or **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL
+   `waiting-on-checks-or-review` polling) whenever ancestry is proven behind,
+   regardless of CI — never for `UNKNOWN` ancestry, which stays in
+   `waiting-on-checks-or-review` per the missing-facts rule above — or
+   **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL
    STATE — NOT MERGE-READY.** in state `waiting-on-checks-or-review` only
    when ancestry passed and CI itself is not `READY` — without starting the
    walkthrough. A standalone walkthrough not invoked by that
@@ -113,8 +115,10 @@ a claim either way. An `ask` merge-authority caller must pass the gate in
 Establish The Exact Change above before reaching this step; a failed
 checklist there returns control to the caller with that gate's applicable
 hard-failure banner — a behind-base banner routing to Integration And PR
-Publication step 3 whenever ancestry fails, regardless of CI, or
-**CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT
+Publication step 3 whenever ancestry is proven behind, regardless of CI —
+never for `UNKNOWN` ancestry, which stays in `waiting-on-checks-or-review`
+per the missing-facts rule above — or **CURRENT-INTEGRATION CI IS NOT IN A
+NORMALIZED SUCCESSFUL STATE — NOT
 MERGE-READY.** in state `waiting-on-checks-or-review` only when ancestry
 passed and CI itself is not `READY` — instead of starting the walkthrough,
 so this orientation step is never reached with a known failure to report.
