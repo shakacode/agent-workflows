@@ -67,10 +67,8 @@ class PrCiReadinessTest < Minitest::Test
   end
 
   def test_only_draft_head_rows_is_unknown
-    out = PrCiReadiness.assess(
-      pr_number: 1, required_used: true,
-      rows: [{ "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "pass" }]
-    )
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true,
+                               rows: [{ "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "pass" }])
     assert_equal "UNKNOWN", out["verdict"]
   end
 
@@ -79,7 +77,6 @@ class PrCiReadinessTest < Minitest::Test
                                  { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "future-state" },
                                  { "workflow" => "Validate", "name" => "validate", "bucket" => "pass" }
                                ])
-
     assert_equal "READY", out["verdict"]
     assert_empty out["invalid"]
   end
@@ -102,7 +99,7 @@ class PrCiReadinessTest < Minitest::Test
     ], identities
   end
 
-  def test_draft_head_actions_filter_binds_the_job_to_the_validate_run
+  def test_draft_head_actions_filter_removes_the_validate_run_and_job
     base = "https://github.com/owner/repo/actions/runs"
     rows = [
       { "kind" => "run", "id" => 10, "name" => "Validate", "url" => "#{base}/10" },
@@ -112,7 +109,7 @@ class PrCiReadinessTest < Minitest::Test
     ]
 
     ids = PrCiReadiness.non_draft_head_actions_rows(rows).map { |row| row["id"] }
-    assert_equal [10, 20, 21], ids
+    assert_equal [20, 21], ids
   end
 
   def test_same_context_current_pass_supersedes_cancelled_history

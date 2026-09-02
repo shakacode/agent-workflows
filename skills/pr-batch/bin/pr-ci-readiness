@@ -97,14 +97,18 @@ module PrCiReadiness
   end
 
   def non_draft_head_actions_rows(rows)
-    validate_run_ids = rows.filter_map do |row|
-      row["id"] if row.is_a?(Hash) && row["kind"] == "run" && row["name"] == VALIDATION_WORKFLOW
+    validate_run_urls = rows.filter_map do |row|
+      row["url"].to_s if row.is_a?(Hash) && row["kind"] == "run" && row["name"] == VALIDATION_WORKFLOW
+    end
+    draft_run_urls = rows.filter_map do |row|
+      next unless row.is_a?(Hash) && row["name"] == DRAFT_HEAD_VALIDATION_CHECK
+
+      validate_run_urls.find { |url| row["url"].to_s.start_with?("#{url}/job/") }
     end
     rows.reject do |row|
-      next false unless row.is_a?(Hash) && row["name"] == DRAFT_HEAD_VALIDATION_CHECK
+      next false unless row.is_a?(Hash)
 
-      match = row["url"].to_s.match(%r{/actions/runs/([1-9]\d*)/job/[1-9]\d*(?:[/?#]|\z)})
-      match && validate_run_ids.include?(match[1].to_i)
+      draft_run_urls.any? { |url| row["url"].to_s == url || row["url"].to_s.start_with?("#{url}/job/") }
     end
   end
 
