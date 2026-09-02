@@ -1612,6 +1612,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def managed_file_fingerprint(body, executable)
+    Digest::SHA256.hexdigest(JSON.generate(["file", executable, Digest::SHA256.hexdigest(body)]))
+  end
+
   def write_managed_bin_copy(target, source, contents)
     fingerprints = {}
     contents.each do |relative, body|
@@ -1619,7 +1623,7 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
         FileUtils.mkdir_p(File.dirname(path))
         File.write(path, body)
       end
-      fingerprints[relative] = Digest::SHA256.hexdigest(body)
+      fingerprints[relative] = managed_file_fingerprint(body, false)
     end
     fingerprints
   end
@@ -1644,6 +1648,15 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       "--delivery-mode", "flat", "--json", codex_state: "disabled"
     )
     [JSON.parse(out), status, "#{out}#{err}"]
+  end
+
+  def managed_bin_fixture_fingerprints(target, source)
+    write_managed_bin_copy(
+      target,
+      source,
+      "agent-workflows-status" => "status helper\n",
+      "agent_doctor/autonomous_merge_policy.rb" => "policy library\n"
+    )
   end
 
   def managed_bin_fixture(tmp)
@@ -1740,6 +1753,86 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       managed_bin_metadata(target, source, fingerprints)
       File.write(File.join(target, "bin/personal-helper"), "unrelated\n")
       File.write(File.join(target, "bin/agent_doctor/.agent-workflows-managed"), "marker\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_chmod_only_change_to_a_managed_bin_copy_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      helper = File.join(target, "bin/agent-workflows-status")
+      before = File.binread(helper)
+      FileUtils.chmod(0o755, helper)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [helper], payload.dig("bin", "blocking")
+      assert_equal before, File.binread(helper)
+    end
+  end
+
+  def test_unexpected_entry_under_the_managed_doctor_tree_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      intruder = File.join(target, "bin/agent_doctor/intruder.rb")
+      File.write(intruder, "foreign\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [intruder], payload.dig("bin", "blocking")
+      assert_path_exists intruder
+    end
+  end
+
+  def test_unexpected_doctor_subdirectory_blocks_once_without_listing_its_children
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      nested = File.join(target, "bin/agent_doctor/personal")
+      FileUtils.mkdir_p(nested)
+      File.write(File.join(nested, "notes.md"), "personal\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [nested], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_doctor_ownership_markers_and_recorded_subdirectories_do_not_block
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, _fingerprints = managed_bin_fixture(tmp)
+      nested = write_managed_bin_copy(target, source, "agent_doctor/nested/module.rb" => "nested\n")
+      fingerprints = managed_bin_fixture_fingerprints(target, source).merge(nested)
+      managed_bin_metadata(target, source, fingerprints)
+      %w[.agent-workflows-managed .agent-stack-managed].each do |marker|
+        File.write(File.join(target, "bin/agent_doctor", marker), "marker\n")
+      end
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "present", payload.dig("bin", "state")
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_unrecorded_doctor_tree_does_not_inventory_unexpected_entries
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      # Only top-level helpers recorded: this install never managed the tree.
+      managed_bin_metadata(target, source, fingerprints.reject { |name, _| name.include?("/") })
+      File.write(File.join(target, "bin/agent_doctor/intruder.rb"), "foreign\n")
 
       payload, status, output = check_managed_bin(target, source)
 

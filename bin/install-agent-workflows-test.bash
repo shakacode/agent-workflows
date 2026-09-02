@@ -340,6 +340,74 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
 }
 
 
+test_copy_install_refuses_a_chmod_only_managed_helper_change() {
+  local tmp source target output status helper
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  helper="$target/bin/agent-workflows-trust-audit"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  [[ -x "$helper" ]] || fail "installed helper was not executable"
+  chmod 0644 "$helper"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for a chmod-only helper change: $output"
+  assert_contains "$output" "$helper"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install accepted a chmod-only managed helper change"
+  [[ ! -x "$helper" ]] || fail "refused install changed the helper mode"
+
+  chmod 0755 "$helper"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  [[ -x "$helper" ]] || fail "restored helper did not reinstall cleanly"
+}
+
+test_copy_install_refuses_an_unexpected_managed_doctor_entry() {
+  local tmp source target output status intruder
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  intruder="$target/bin/agent_doctor/intruder.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  printf 'foreign module\n' > "$intruder"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" --json 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for an unexpected doctor entry: $output"
+  ruby -rjson -e '
+    payload = JSON.parse(ARGV.fetch(0))
+    abort payload.inspect unless payload.fetch("status") == "CHECK_FAILED" &&
+                                 payload.dig("bin", "blocking") == [ARGV.fetch(1)]
+  ' "$output" "$intruder" || fail "status did not report the unexpected doctor entry"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install accepted an unexpected doctor entry"
+  assert_contains "$output" "$intruder"
+  assert_file "$intruder"
+
+  rm -f "$intruder"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  assert_file "$target/bin/agent_doctor/autonomous_merge_policy.rb"
+}
+
 test_copy_install_refuses_a_symlinked_managed_bin_root() {
   local tmp source target output status
   tmp="$(mktemp -d)"
@@ -405,7 +473,12 @@ test_copy_metadata_records_managed_bin_copy_fingerprints() {
       digest = fingerprints[name]
       abort "missing managed bin fingerprint for #{name}: #{fingerprints.keys.inspect}" unless digest
       installed = File.join(target, "bin", name)
-      abort "recorded fingerprint does not match #{installed}" unless
+      executable = (File.stat(installed).mode & 0o111).positive?
+      expected = Digest::SHA256.hexdigest(
+        JSON.generate(["file", executable, Digest::SHA256.file(installed).hexdigest])
+      )
+      abort "recorded fingerprint does not match #{installed}" unless expected == digest
+      abort "content-only digest recorded for #{installed}" if
         Digest::SHA256.file(installed).hexdigest == digest
     end
     abort "recorded a marker file" if fingerprints.key?("agent_doctor/.agent-workflows-managed")
@@ -8817,6 +8890,8 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_copy_install_refuses_a_chmod_only_managed_helper_change
+    test_copy_install_refuses_an_unexpected_managed_doctor_entry
     test_copy_install_refuses_a_symlinked_managed_bin_root
     test_fresh_copy_install_refuses_a_non_file_managed_helper_path
     test_copy_metadata_records_managed_bin_copy_fingerprints

@@ -1916,6 +1916,11 @@ prepare_metadata() {
                        else
                          {}
                        end
+    # Mirrors AgentWorkflowsDeliveryState.managed_file_fingerprint: the recorded
+    # value covers the executable bit as well as the content.
+    managed_file_fingerprint = lambda do |file, executable|
+      Digest::SHA256.hexdigest(JSON.generate(["file", executable, Digest::SHA256.file(file).hexdigest]))
+    end
     bin_fingerprints = if mode == "copy"
                          entries = {}
                          bin_helpers.each do |name|
@@ -1924,7 +1929,9 @@ prepare_metadata() {
                              abort "missing pack bin helper while preparing install metadata: #{helper}"
                            end
 
-                           entries[name] = Digest::SHA256.file(helper).hexdigest
+                           # Helpers land through install -m 0755 regardless of
+                           # the source mode, so record what the install writes.
+                           entries[name] = managed_file_fingerprint.call(helper, true)
                          end
                          doctor_root = File.join(source, "bin", "agent_doctor")
                          Find.find(doctor_root) do |entry|
@@ -1939,7 +1946,9 @@ prepare_metadata() {
                              abort "unsupported pack doctor entry while preparing install metadata: #{entry}"
                            end
 
-                           entries["agent_doctor/#{relative}"] = Digest::SHA256.file(entry).hexdigest
+                           # rsync -a preserves the source mode for the tree.
+                           entries["agent_doctor/#{relative}"] =
+                             managed_file_fingerprint.call(entry, (File.stat(entry).mode & 0o111).positive?)
                          end
                          entries.sort.to_h
                        else

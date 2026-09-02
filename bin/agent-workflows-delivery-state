@@ -13,6 +13,8 @@ require_relative "agent_doctor/timeout_budget"
 module AgentWorkflowsDeliveryState
   SUPERPOWERS_MARKETPLACES = %w[openai-curated openai-curated-remote superpowers-dev].freeze
   MANAGED_BIN_COPY_FINGERPRINTS = "managed_bin_copy_fingerprints"
+  MANAGED_DOCTOR_SUBDIRECTORY = "agent_doctor"
+  MANAGED_DOCTOR_OWNERSHIP_MARKERS = %w[.agent-workflows-managed .agent-stack-managed].freeze
 
   module_function
 
@@ -640,20 +642,57 @@ module AgentWorkflowsDeliveryState
     nil
   end
 
-  def managed_bin_copy_owned?(path:, source:, name:, digest:)
-    return false if File.symlink?(path) || !File.file?(path)
+  # Fold the executable bit into the value the way directory_fingerprint already
+  # does for skill trees, so a chmod-only change to an installed command cannot
+  # pass as unmodified.
+  def managed_file_fingerprint(path)
+    return nil unless File.file?(path) && !File.symlink?(path)
 
-    actual = Digest::SHA256.file(path).hexdigest
+    executable = (File.stat(path).mode & 0o111).positive?
+    Digest::SHA256.hexdigest(JSON.generate(["file", executable, Digest::SHA256.file(path).hexdigest]))
+  end
+
+  def managed_bin_copy_owned?(path:, source:, name:, digest:)
+    actual = managed_file_fingerprint(path)
+    return false unless actual
     return true if actual == digest.downcase
 
     # A copy that already matches the current source is what the installer would
     # write anyway, so it stays owned across a source that moved forward.
-    source_path = File.join(source, "bin", name)
-    File.file?(source_path) && !File.symlink?(source_path) &&
-      Digest::SHA256.file(source_path).hexdigest == actual
+    actual == managed_file_fingerprint(File.join(source, "bin", name))
   rescue SystemCallError
     # An unreadable managed copy cannot be proven owned, so it stays blocking.
     false
+  end
+
+  # rsync --delete owns the whole managed doctor tree, and the installer's
+  # ownership marker already refuses to reinstall over an unrecorded entry
+  # there. Report that conflict here so status sees it before the install does.
+  def unexpected_managed_doctor_entries(bin_root, fingerprints)
+    prefix = "#{MANAGED_DOCTOR_SUBDIRECTORY}/"
+    recorded = fingerprints.keys.select { |name| name.start_with?(prefix) }.map { |name| name.delete_prefix(prefix) }
+    return [] if recorded.empty?
+
+    doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
+    return [] unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+
+    unexpected = []
+    Find.find(doctor_root) do |entry|
+      next if entry == doctor_root
+
+      relative = entry.delete_prefix("#{doctor_root}/")
+      next if MANAGED_DOCTOR_OWNERSHIP_MARKERS.include?(relative)
+
+      if File.directory?(entry) && !File.symlink?(entry)
+        next if recorded.any? { |name| name.start_with?("#{relative}/") }
+
+        unexpected << entry
+        Find.prune
+      elsif !recorded.include?(relative)
+        unexpected << entry
+      end
+    end
+    unexpected
   end
 
   # Copy installs own every file the pack writes below <target>/bin. Missing
@@ -695,6 +734,7 @@ module AgentWorkflowsDeliveryState
       present << path
       blocking << path unless managed_bin_copy_owned?(path:, source:, name:, digest:)
     end
+    blocking.concat(unexpected_managed_doctor_entries(bin_root, fingerprints))
 
     state = if blocking.any?
               "ambiguous"

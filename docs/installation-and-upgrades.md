@@ -469,12 +469,17 @@ before retrying.
 `managed_bin_copy_fingerprints` keys are paths relative to `<target>/bin`, so
 `agent-workflows-status` reports a modified managed executable or runtime module
 as `CHECK_FAILED` with the offending paths under `bin.blocking` instead of
-`UP_TO_DATE`. A managed bin path that is missing stays non-blocking so the
-installer can restore it, and installs that predate the key keep their previous
-behavior until the next install refreshes the metadata. This delivery-state map
-is separate from the `verified-installed-pack` runtime digest an autonomous
-merge gate verifies; that digest is an expected-identity claim, not an
-install-integrity report. The status and upgrade helpers use the metadata so they can run
+`UP_TO_DATE`. Each recorded value covers the executable bit as well as the file
+content, so removing the executable bit from an installed command is reported
+too. Because `rsync --delete` owns the whole `<target>/bin/agent_doctor` tree,
+an unrecorded entry there is reported as well, matching the refusal the
+installer's ownership marker already raises; the two ownership markers
+themselves are never recorded and never block. A managed bin path that is
+missing stays non-blocking so the installer can restore it, and installs that
+predate the key keep their previous behavior until the next install refreshes
+the metadata. This delivery-state map is separate from the
+`verified-installed-pack` runtime digest an autonomous merge gate verifies; that
+digest is an expected-identity claim, not an install-integrity report. The status and upgrade helpers use the metadata so they can run
 from either the source clone or the installed host.
 
 ## Status Checks
