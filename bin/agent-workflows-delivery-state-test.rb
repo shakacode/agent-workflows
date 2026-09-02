@@ -1764,6 +1764,40 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_plain_file_managed_bin_root_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      bin_root = File.join(target, "bin")
+      FileUtils.rm_rf(bin_root)
+      File.write(bin_root, "foreign content\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [bin_root], payload.dig("bin", "blocking")
+      assert_equal "foreign content\n", File.read(bin_root)
+    end
+  end
+
+  def test_plain_file_managed_bin_subdirectory_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor = File.join(target, "bin/agent_doctor")
+      FileUtils.rm_rf(doctor)
+      File.write(doctor, "foreign content\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [doctor], payload.dig("bin", "blocking")
+      assert_empty payload.dig("bin", "missing")
+    end
+  end
+
   def test_symlinked_managed_bin_root_blocks_the_delivery_check
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)

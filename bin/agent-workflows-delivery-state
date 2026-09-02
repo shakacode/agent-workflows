@@ -621,11 +621,21 @@ module AgentWorkflowsDeliveryState
     fingerprints
   end
 
-  def managed_bin_ancestor_symlink(bin_root, name)
+  # The bin root and every managed subdirectory below it must be a real
+  # directory. A symlink or a plain file there hides every entry beneath it, so
+  # it has to block rather than let those entries read as merely missing.
+  def managed_bin_directory_conflict(path)
+    return "a symlink" if File.symlink?(path)
+    return nil unless File.exist?(path)
+
+    File.directory?(path) ? nil : "not a directory"
+  end
+
+  def managed_bin_ancestor_conflict(bin_root, name)
     current = bin_root
     name.split("/")[0..-2].each do |segment|
       current = File.join(current, segment)
-      return current if File.symlink?(current)
+      return current if managed_bin_directory_conflict(current)
     end
     nil
   end
@@ -660,12 +670,10 @@ module AgentWorkflowsDeliveryState
     return { "state" => "unrecorded", "paths" => [], "missing" => [], "blocking" => [] } if fingerprints == :unrecorded
 
     bin_root = File.join(target, "bin")
-    # A symlinked bin root is never a copy install's managed directory, even when
-    # every recorded byte still matches through the link.
-    if File.symlink?(bin_root)
+    if (conflict = managed_bin_directory_conflict(bin_root))
       return {
         "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [bin_root],
-        "reason" => "managed bin root is a symlink"
+        "reason" => "managed bin root is #{conflict}"
       }
     end
 
@@ -673,7 +681,7 @@ module AgentWorkflowsDeliveryState
     missing = []
     blocking = []
     fingerprints.sort.each do |name, digest|
-      if (ancestor = managed_bin_ancestor_symlink(bin_root, name))
+      if (ancestor = managed_bin_ancestor_conflict(bin_root, name))
         blocking << ancestor
         next
       end
