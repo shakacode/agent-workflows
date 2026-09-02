@@ -104,7 +104,8 @@ module ConciseHistoryCheck
     message_lines = commit_message.lines.map(&:strip)
     subject = message_lines.first.to_s
     rationale = message_lines.drop(1).reject do |line|
-      line.empty? || options[:issue_linkage].include?(line) || line.match?(/\A[A-Za-z0-9][A-Za-z0-9-]*:[ \t]+\S/)
+      line.empty? || options[:issue_linkage].include?(line) ||
+        options[:provenance_trailers].any? { |name| line.match?(/\A#{Regexp.escape(name)}:[ \t]+\S/) }
     end
     missing_linkage = options[:issue_linkage].reject { |line| message_lines.include?(line) }
     missing_trailers = options[:provenance_trailers].reject do |name|
@@ -155,10 +156,21 @@ module ConciseHistoryCheck
     return [nil, errors] unless errors.empty?
 
     start = pr_body.index(AGENT_DETAILS_OPEN)
-    finish = pr_body.index("</details>", start)
+    depth = 0
+    finish = nil
+    pr_body.to_enum(:scan, %r{</?details(?:\s[^>]*)?>}).each do
+      tag = Regexp.last_match
+      next if tag.begin(0) < start
+
+      depth += tag[0].start_with?("<details") ? 1 : -1
+      next unless depth.zero?
+
+      finish = tag.end(0)
+      break
+    end
     return [nil, errors << "Agent details disclosure must close after it opens"] unless finish
 
-    [pr_body[start..(finish + "</details>".length - 1)], errors]
+    [pr_body[start...finish], errors]
   end
 
   def missing_pr_artifacts(pr_body, disclosure)

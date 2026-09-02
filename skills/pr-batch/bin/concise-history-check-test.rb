@@ -136,6 +136,55 @@ class ConciseHistoryCheckTest < Minitest::Test
     end
   end
 
+  def test_agent_details_can_contain_nested_disclosures
+    Tempfile.create("nested-agent-details") do |file|
+      pr_body = File.read(fixture("pr-body.md"), encoding: "UTF-8")
+      nested_disclosure = <<~MARKDOWN
+        <details>
+        <summary>Focused command output</summary>
+
+        The focused check passed.
+
+        </details>
+
+        ### QA Evidence
+      MARKDOWN
+      file.write(pr_body.sub("### QA Evidence", nested_disclosure))
+      file.flush
+
+      stdout, stderr, status = run_check(pr_body: file.path)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "PASS", result.fetch("status")
+      assert_equal true, result.dig("pr_evidence", "canonical_agent_details")
+      assert_equal "SATISFIED", result.dig("pr_evidence", "replay_verdict")
+    end
+  end
+
+  def test_labeled_prose_counts_as_durable_rationale
+    Tempfile.create("labeled-rationale") do |file|
+      file.write(<<~MESSAGE)
+        Keep small-diff history concise
+
+        Reason: the replay contract keeps review evidence in the pull request.
+
+        Fixes #318
+
+        Co-Authored-By: Fixture Agent <fixture-agent@example.com>
+        Agent-Session: fixture-session-318
+      MESSAGE
+      file.flush
+
+      stdout, stderr, status = run_check(commit_message: file.path)
+
+      assert status.success?, stderr
+      result = JSON.parse(stdout)
+      assert_equal "PASS", result.fetch("status")
+      assert_equal true, result.dig("commit_history", "durable_rationale")
+    end
+  end
+
   def test_commit_message_requires_durable_rationale_without_a_line_cap
     Tempfile.create("missing-rationale") do |file|
       file.write(<<~MESSAGE)
