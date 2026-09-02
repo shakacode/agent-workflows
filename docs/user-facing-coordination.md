@@ -128,7 +128,8 @@ The route must identify:
 
 - the work item and its pull-request or issue URL;
 - the runner or application;
-- the visible task title or workspace name;
+- the visible task title or workspace name and a stable workspace or log
+  location when the host exposes one;
 - the thread handle and stable task, thread, or session identifier;
 - a deep link when the host supports one, or the visible app route and an
   explicit statement that no cross-app link exists;
@@ -142,9 +143,11 @@ Conductor workspace and session identity. When no cross-app deep link exists,
 say that there is no Codex sidebar task to find and name the workspace to open
 in Conductor.
 
-Validate the route before showing it. The active claim and heartbeat must bind
-the same owner and session. The resolved task must match the repository, work
-item, workspace, branch, and session. A contradictory, stale, or
+Validate the route before showing it. The active claim and heartbeat must agree
+on the owner, repository-qualified work item, runner or host, branch, thread
+handle, session, and instance when those fields are recorded. The resolved task
+must match the repository, work item, workspace, branch, and session. A
+contradictory, stale, or
 cross-repository binding must fail closed as `Owner route: inconsistent`; do
 not offer its link as the owner. Missing or unreachable route evidence renders
 `Owner route: unavailable`. In both cases, say what cannot be navigated or

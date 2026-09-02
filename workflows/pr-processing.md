@@ -1266,10 +1266,10 @@ notification wording.
   claim, heartbeat, batch or lane record, live work item and head, and the
   host's task or workspace lookup; do not require a new coordination schema.
   It identifies the work item and URL, runner, visible task or workspace,
-  thread handle, stable task, thread, or session identifier, supported deep
-  link or explicit cross-app unavailability, and the branch and exact head
-  when relevant. It also says whether the current task can navigate to or
-  message the owner.
+  stable workspace or log location when exposed, thread handle, stable task,
+  thread, or session identifier, supported deep link or explicit cross-app
+  unavailability, and the branch and exact head when relevant. It also says
+  whether the current task can navigate to or message the owner.
 - A Codex route includes the verified task ID and deep link. An untitled task
   uses the deterministic `<work item> <role> — <thread handle>` fallback. A
   Conductor/Claude route includes the Conductor workspace and session identity;
@@ -1278,9 +1278,10 @@ notification wording.
   evidence renders exactly `Owner route: unavailable`, and the coordinator
   owns bounded follow-up.
 - Validate route consistency before rendering it. The active claim and
-  heartbeat bind the same owner and session, and the resolved task matches the
-  repository, work item, workspace, branch, and session. Contradictory, stale,
-  or cross-repository evidence must fail closed as
+  heartbeat agree on the owner, repository-qualified work item, runner or host,
+  branch, thread handle, session, and instance when recorded. The resolved task
+  matches the repository, work item, workspace, branch, and session.
+  Contradictory, stale, or cross-repository evidence must fail closed as
   `Owner route: inconsistent`; do not render the stale link as authoritative.
   The coordinator owns bounded follow-up and asks the user only when a separate
   decision or action is truly required.

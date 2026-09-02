@@ -88,7 +88,7 @@
     }
   ],
   "expected_user_messages": [
-    "What changed: PR #383 is blocked waiting for its retained validator. Owner route: PR #383 (https://github.com/shakacode/agent-workflows/pull/383); runner Conductor/Claude; open workspace `la-paz` in Conductor; thread `aw-pr383-harbor`; session `claude-session-pr383`; there is no Codex sidebar task to find and the cross-app deep link is unavailable; branch `codex/ruby-packaging-design` at head `e2ab23a74875d18d9d6589131244009a6ed4a005`; this Codex task cannot navigate to or message that session. Action needed: none. Next: The coordinator will follow up with the owner and report only a material blocker or route change, a terminal result, a real decision, or release of the waiting work."
+    "What changed: PR #383 is blocked waiting for its retained validator. Owner route: PR #383 (https://github.com/shakacode/agent-workflows/pull/383); runner Conductor/Claude; open workspace `la-paz` in Conductor; retained validator log `/tmp/pr383-validate6.log`; thread `aw-pr383-harbor`; session `claude-session-pr383`; there is no Codex sidebar task to find and the cross-app deep link is unavailable; branch `codex/ruby-packaging-design` at head `e2ab23a74875d18d9d6589131244009a6ed4a005`; this Codex task cannot navigate to or message that session. Action needed: none. Next: The coordinator will follow up with the owner and report only a material blocker or route change, a terminal result, a real decision, or release of the waiting work."
   ],
   "variants": [
     {

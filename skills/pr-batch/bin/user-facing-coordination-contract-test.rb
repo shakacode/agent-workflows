@@ -222,6 +222,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
       assert_includes text, "Owner route:", path
       assert_includes text, "work item", path
       assert_includes text, "runner", path
+      assert_includes text, "stable workspace or log location", path
       assert_includes text, "thread handle", path
       assert_includes text, "task, thread, or session identifier", path
       assert_includes text, "branch and exact head", path
@@ -278,6 +279,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
       "https://github.com/shakacode/agent-workflows/pull/383",
       "Conductor/Claude",
       "workspace `la-paz`",
+      "`/tmp/pr383-validate6.log`",
       "aw-pr383-harbor",
       "session `claude-session-pr383`",
       "no Codex sidebar task",
