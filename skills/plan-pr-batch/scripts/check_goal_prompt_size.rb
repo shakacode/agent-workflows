@@ -219,6 +219,7 @@ require_phrases(
   ],
   "launcher run record"
 )
+require_phrases(launcher_record, LAUNCHER_RECORD_FIELDS, "launcher run record")
 
 if source_checkout
   launcher_record_contract = read_repo_file("docs/github-task-prompts-and-run-records.md")

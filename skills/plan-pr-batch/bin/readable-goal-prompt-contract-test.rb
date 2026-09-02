@@ -290,7 +290,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "Workflow at prompt creation: <version or UNKNOWN>",
       "Later workflow observations: <timestamped append-only entries or none>",
       "Target lanes:",
-      "Lane:",
+      "Lane: <lane id; repeat this entry once per planned target>",
       "Target:",
       "Replay identity:",
       "Prompt source:",
