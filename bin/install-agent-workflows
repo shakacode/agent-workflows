@@ -4101,7 +4101,11 @@ else
     mkdir -p "$target/skills"
     for skill in "$repo_root"/skills/*; do
       [[ -d "$skill" ]] || continue
-      destination="$target/skills/$(basename "$skill")"
+      skill_name="$(basename "$skill")"
+      # Same hidden-entry rule as copy mode: never depend on glob options an
+      # inherited BASHOPTS or GLOBIGNORE can change.
+      [[ "$skill_name" != .* ]] || continue
+      destination="$target/skills/$skill_name"
       if [[ -e "$destination" && ! -L "$destination" ]]; then
         echo "Refusing to replace non-symlink path: $destination" >&2
         exit 1

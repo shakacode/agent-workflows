@@ -1575,6 +1575,43 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_revision_only_case_alias_is_not_both_owned_and_extra
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      skip "requires a case-insensitive filesystem" unless case_insensitive_filesystem?(tmp)
+
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(target, "skills/alpha"))
+      FileUtils.cp_r(File.join(source, "skills/beta"), File.join(target, "skills/beta"))
+      # Ownership comes only from the recorded revision, which spells the skill
+      # "alpha"; the installed directory was re-cased after install.
+      installed = File.join(target, "skills/Alpha")
+      File.rename(File.join(target, "skills/alpha"), installed)
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => revision
+      )
+
+      out, err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      assert status.success?, "expected a compatible check: #{out}#{err}"
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal [], flat.fetch("blocking")
+      assert_equal [installed, File.join(target, "skills/beta")], flat.fetch("removable")
+    end
+  end
+
   def test_case_only_alias_is_reported_under_its_installed_spelling
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       skip "requires a case-insensitive filesystem" unless case_insensitive_filesystem?(tmp)

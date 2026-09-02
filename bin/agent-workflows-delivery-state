@@ -716,14 +716,6 @@ module AgentWorkflowsDeliveryState
       names = names.grep_v(/\A\./).sort
     end
     snapshot_backed = snapshot_backed_names.to_h { |name| [name, true] }
-    recorded_names = names.to_h { |name| [name, true] }
-    blocking = if legacy_flat && File.directory?(skills_path) && !File.symlink?(skills_path)
-                 Dir.children(skills_path).filter_map do |name|
-                   File.join(skills_path, name) unless recorded_names.key?(name)
-                 end
-               else
-                 []
-               end
     # Two recorded names can resolve to one installed entry, for example a case-only
     # rename recorded on a case-insensitive volume. Classify each entry once so the
     # migration never stages the same directory twice, and let any recorded name that
@@ -759,6 +751,10 @@ module AgentWorkflowsDeliveryState
                           fingerprint_owned || (name_snapshot && matches_directory_snapshot?(path, name_snapshot, name))
                         end
     end
+    # An installed entry that no recorded name resolves to is not installer-owned.
+    # Compare by filesystem entry rather than by name so a case-only alias cannot
+    # land in this list and in `entries` at the same time.
+    blocking = legacy_flat ? installed_paths.reject { |key, _| entries.key?(key) }.values : []
     entries.each_value do |entry|
       (entry.fetch(:owned) ? removable : blocking) << entry.fetch(:path)
     end
