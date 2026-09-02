@@ -1170,9 +1170,11 @@ module BatchPlanPreflight
     [wait_for_stage_dependency_process_group_exit(pid, grace), %w[TERM KILL]]
   end
 
+  # Cleanup must never raise: a signal failure has to surface as UNKNOWN cleanup
+  # evidence, not escape into the caller's generic execution-failed rescue.
   def signal_stage_dependency_process_group(signal, pid)
     Process.kill(signal, -pid)
-  rescue Errno::ESRCH
+  rescue SystemCallError
     nil
   end
 
@@ -1193,7 +1195,7 @@ module BatchPlanPreflight
     true
   rescue Errno::ESRCH
     false
-  rescue Errno::EPERM
+  rescue SystemCallError
     true
   end
 

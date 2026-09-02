@@ -91,7 +91,11 @@ runtime_trust = begin
     base_sha: base_sha.strip,
     claim: trusted_helper_claim,
     calibration_path: options.fetch(:calibration_decision),
-    git_command:
+    git_command:,
+    # This helper is spawned as the leader of the coordinator-owned replay
+    # group. Giving its trusted-base reads their own group would hide them from
+    # that outer group kill and strand a stalled git as an orphan.
+    own_process_group: false
   )
 rescue AutonomousMergeRuntimeTrust::ReplayTimeout => e
   emit_unknown(e.message)

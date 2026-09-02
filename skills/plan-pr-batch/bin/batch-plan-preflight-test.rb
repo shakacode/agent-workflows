@@ -2443,6 +2443,21 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_cleanup_probes_treat_unsignalable_process_groups_as_still_alive
+    # Signal 0 against pid 1 is side-effect free and raises EPERM for an
+    # unprivileged user. Cleanup must read that as "still alive" and report
+    # UNKNOWN evidence rather than letting the error escape into the caller's
+    # generic execution-failed rescue.
+    assert BatchPlanPreflight.stage_dependency_process_group_alive?(-1)
+    assert_nil BatchPlanPreflight.signal_stage_dependency_process_group("TERM", unreachable_pid)
+  end
+
+  def unreachable_pid
+    candidate = 4_194_303
+    candidate += 1 while process_alive?(candidate)
+    candidate
+  end
+
   def stalling_gate_source
     <<~'RUBY'
       trap("TERM", "IGNORE")

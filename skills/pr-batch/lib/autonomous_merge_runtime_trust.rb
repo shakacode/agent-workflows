@@ -108,7 +108,7 @@ module AutonomousMergeRuntimeTrust
 
   def verify(
     repo_root:, base_sha:, claim:, calibration_path:, git_command: nil, trusted_sources: nil,
-    deadline: nil
+    deadline: nil, own_process_group: true
   )
     sources = trusted_runtime_sources(calibration_path)
     if trusted_sources && sources != trusted_sources
@@ -128,7 +128,7 @@ module AutonomousMergeRuntimeTrust
       verify_trusted_base(
         repo_root:, base_sha:, claim:, sources:,
         git_command: git_command || trusted_git_executable,
-        deadline:
+        deadline:, own_process_group:
       )
     when /\Averified-installed-pack:([0-9a-f]{64})\z/
       expected = Regexp.last_match(1)
@@ -258,7 +258,9 @@ module AutonomousMergeRuntimeTrust
   # deadline and owns its own process group, so a lazy-fetch stall in a partial
   # clone can no longer escape the advertised replay lifecycle. Path, owner,
   # mode, provenance, and byte-identity authentication are unchanged.
-  def verify_trusted_base(repo_root:, base_sha:, claim:, sources:, git_command:, deadline: nil)
+  def verify_trusted_base(
+    repo_root:, base_sha:, claim:, sources:, git_command:, deadline: nil, own_process_group: true
+  )
     deadline ||= monotonic_time + TRUSTED_BASE_TIMEOUT_SECONDS
     errors = []
     manifest = {}
@@ -266,7 +268,7 @@ module AutonomousMergeRuntimeTrust
       runtime_bytes = File.binread(source.fetch(:path))
       matches = source.fetch(:tree_paths).filter_map do |tree_path|
         tree_bytes, readable = bounded_trusted_base_read(
-          git_command, repo_root, base_sha, tree_path, deadline
+          git_command, repo_root, base_sha, tree_path, deadline, own_process_group:
         )
         tree_path if readable && tree_bytes == runtime_bytes
       end
@@ -281,34 +283,48 @@ module AutonomousMergeRuntimeTrust
     accepted(claim, manifest)
   end
 
-  # Reads one trusted-base blob through a bounded, process-group-owning child.
-  # The bytes stay in a private pipe, exactly as the previous capture did, so
-  # byte-identity authentication never round-trips through a shared temp dir.
+  # Reads one trusted-base blob through a bounded child inside the caller's
+  # single replay deadline. The bytes stay in a private pipe, exactly as the
+  # previous capture did, so byte-identity authentication never round-trips
+  # through a shared temp dir.
+  #
+  # +own_process_group+ says whether this read is the outermost owner. The
+  # coordinator owns its reads and gives each one its own group so every
+  # descendant can be reaped. A caller that is already running inside an
+  # outer-owned replay group must pass false: nesting a new group there would
+  # hide the child from the outer group kill and strand it as an orphan.
   # Returns the exact bytes only when git exited successfully within the deadline.
-  def bounded_trusted_base_read(git_command, repo_root, base_sha, tree_path, deadline)
+  def bounded_trusted_base_read(git_command, repo_root, base_sha, tree_path, deadline,
+                                own_process_group: true)
+    reaped = false
     reader, writer = IO.pipe
     reader.binmode
+    redirects = { out: writer, err: File::NULL }
+    redirects[:pgroup] = true if own_process_group
     pid = Process.spawn(
-      git_command, "-C", repo_root, "show", "#{base_sha}:#{tree_path}",
-      out: writer, err: File::NULL, pgroup: true
+      git_command, "-C", repo_root, "show", "#{base_sha}:#{tree_path}", **redirects
     )
     writer.close
-    bytes = drain_trusted_base_pipe(reader, pid, deadline)
-    status = await_trusted_base_read(pid, deadline)
+    bytes = drain_trusted_base_pipe(reader, pid, deadline, own_process_group)
+    status = await_trusted_base_read(pid, deadline, own_process_group)
+    reaped = true
     return [nil, false] unless status.success?
 
     [bytes, true]
   ensure
     writer.close unless writer.nil? || writer.closed?
     reader&.close
+    # Any unexpected exit still terminates and reaps everything this read owns,
+    # so no git child or descendant outlives the verification.
+    terminate_trusted_base_read(pid, own_process_group) if pid && !reaped
   end
 
-  def drain_trusted_base_pipe(reader, pid, deadline)
+  def drain_trusted_base_pipe(reader, pid, deadline, own_process_group)
     bytes = +""
     bytes.force_encoding(Encoding::BINARY)
     loop do
       remaining = deadline - monotonic_time
-      raise_trusted_base_timeout(pid, "deadline") if remaining <= 0
+      raise_trusted_base_timeout(pid, "deadline", own_process_group) if remaining <= 0
       next unless IO.select([reader], nil, nil, remaining)
 
       begin
@@ -322,7 +338,7 @@ module AutonomousMergeRuntimeTrust
     bytes
   end
 
-  def await_trusted_base_read(pid, deadline)
+  def await_trusted_base_read(pid, deadline, own_process_group)
     status = nil
     loop do
       waited = Process.waitpid2(pid, Process::WNOHANG)
@@ -334,18 +350,19 @@ module AutonomousMergeRuntimeTrust
 
       sleep TRUSTED_BASE_POLL_SECONDS
     end
-    raise_trusted_base_timeout(pid, "deadline") if status.nil?
+    raise_trusted_base_timeout(pid, "deadline", own_process_group) if status.nil?
+    return status unless own_process_group
 
     group_deadline = monotonic_time + TRUSTED_BASE_TERMINATION_GRACE_SECONDS
     return status if wait_for_trusted_base_process_group_exit(pid, group_deadline)
 
-    raise_trusted_base_timeout(pid, "descendants")
+    raise_trusted_base_timeout(pid, "descendants", own_process_group)
   rescue Errno::ECHILD
-    raise_trusted_base_timeout(pid, "deadline")
+    raise_trusted_base_timeout(pid, "deadline", own_process_group)
   end
 
-  def raise_trusted_base_timeout(pid, reason)
-    confirmed = terminate_trusted_base_process_group(pid)
+  def raise_trusted_base_timeout(pid, reason, own_process_group)
+    confirmed = terminate_trusted_base_read(pid, own_process_group)
     state = confirmed ? TRUSTED_BASE_CLEANUP_CONFIRMED : TRUSTED_BASE_CLEANUP_UNKNOWN
     detail = if reason == "descendants"
                "trusted-base runtime verification left descendants in its owned process group"
@@ -359,23 +376,44 @@ module AutonomousMergeRuntimeTrust
     )
   end
 
+  def terminate_trusted_base_read(pid, own_process_group)
+    return terminate_trusted_base_process_group(pid) if own_process_group
+
+    terminate_trusted_base_child(pid)
+  end
+
   # Terminates and reaps the whole owned process group, escalating TERM to KILL.
   # Returns true only when the group is observed empty.
   def terminate_trusted_base_process_group(pid)
-    signal_trusted_base_process_group("TERM", pid)
+    signal_trusted_base_target("TERM", -pid)
     grace = monotonic_time + TRUSTED_BASE_TERMINATION_GRACE_SECONDS
     wait_for_trusted_base_child(pid, grace)
     return true if wait_for_trusted_base_process_group_exit(pid, grace)
 
-    signal_trusted_base_process_group("KILL", pid)
+    signal_trusted_base_target("KILL", -pid)
     grace = monotonic_time + TRUSTED_BASE_TERMINATION_GRACE_SECONDS
     wait_for_trusted_base_child(pid, grace)
     wait_for_trusted_base_process_group_exit(pid, grace)
   end
 
-  def signal_trusted_base_process_group(signal, pid)
-    Process.kill(signal, -pid)
-  rescue Errno::ESRCH
+  # Cleanup for a read that deliberately stayed inside an outer-owned group:
+  # signal only this child, never the shared group, and confirm it is reaped.
+  # Its own descendants stay inside the outer group the caller already reaps.
+  def terminate_trusted_base_child(pid)
+    signal_trusted_base_target("TERM", pid)
+    grace = monotonic_time + TRUSTED_BASE_TERMINATION_GRACE_SECONDS
+    return true unless wait_for_trusted_base_child(pid, grace).nil?
+
+    signal_trusted_base_target("KILL", pid)
+    grace = monotonic_time + TRUSTED_BASE_TERMINATION_GRACE_SECONDS
+    !wait_for_trusted_base_child(pid, grace).nil?
+  end
+
+  # Cleanup must never raise: a signal failure has to surface as UNKNOWN
+  # cleanup evidence, not escape and get rewritten as a generic trust failure.
+  def signal_trusted_base_target(signal, target)
+    Process.kill(signal, target)
+  rescue SystemCallError
     nil
   end
 
@@ -396,7 +434,7 @@ module AutonomousMergeRuntimeTrust
     true
   rescue Errno::ESRCH
     false
-  rescue Errno::EPERM
+  rescue SystemCallError
     true
   end
 
