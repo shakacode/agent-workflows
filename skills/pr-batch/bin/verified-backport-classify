@@ -1,0 +1,16 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require_relative "../lib/verified_backport"
+
+begin
+  input = if ARGV.length <= 1
+            ARGV.empty? ? $stdin.read : File.read(ARGV.fetch(0), encoding: "UTF-8")
+          end
+
+  evidence = JSON.parse(input.to_s)
+  puts JSON.generate(VerifiedBackport.classify(evidence))
+rescue JSON::ParserError, EncodingError, SystemCallError
+  puts JSON.generate(VerifiedBackport.classify(nil))
+end
