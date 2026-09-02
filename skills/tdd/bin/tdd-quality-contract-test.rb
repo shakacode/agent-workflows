@@ -10,7 +10,7 @@ ROOT = File.expand_path("../../..", __dir__)
 SKILL_PATH = File.join(ROOT, "skills/tdd/SKILL.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/tdd.md")
 SKILL_REFERENCE_PATH = File.join(ROOT, "skills/tdd/references/writing-good-tests.md")
-WORKFLOW_REFERENCE_PATH = File.join(ROOT, "workflows/references/writing-good-tests.md")
+WORKFLOW_REFERENCE_PATH = File.join(ROOT, "workflows/tdd-writing-good-tests-reference.md")
 VALIDATE_PATH = File.join(ROOT, "bin/validate")
 NOTICE_PATH = File.join(ROOT, "THIRD_PARTY-NOTICES.md")
 
@@ -64,10 +64,10 @@ class TddQualityContractTest < Minitest::Test
     assert_path_exists SKILL_REFERENCE_PATH
     assert_path_exists WORKFLOW_REFERENCE_PATH
     assert_includes skill, "[Writing Good Tests](references/writing-good-tests.md)"
-    assert_includes workflow, "[Writing Good Tests](references/writing-good-tests.md)"
+    assert_includes workflow, "[Writing Good Tests](tdd-writing-good-tests-reference.md)"
     assert_equal normalized_reference,
                  normalized_reference(WORKFLOW_REFERENCE_PATH).sub(
-                   "[third-party notice](../../THIRD_PARTY-NOTICES.md)",
+                   "[third-party notice](../THIRD_PARTY-NOTICES.md)",
                    "[third-party notice](../../../THIRD_PARTY-NOTICES.md)"
                  )
     [skill, workflow].each do |entrypoint|
@@ -123,7 +123,7 @@ class TddQualityContractTest < Minitest::Test
 
     # These assertions prove source and packaging invariants, not license compliance.
     assert_includes reference, "[third-party notice](../../../THIRD_PARTY-NOTICES.md)"
-    assert_includes workflow_reference, "[third-party notice](../../THIRD_PARTY-NOTICES.md)"
+    assert_includes workflow_reference, "[third-party notice](../THIRD_PARTY-NOTICES.md)"
     assert_includes notice, "## obra/superpowers"
     assert_includes notice, "Copyright (c) 2025 Jesse Vincent"
     assert_includes notice, "The above copyright notice and this permission notice"

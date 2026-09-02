@@ -466,7 +466,7 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     grep -qxF 'personal' "$target/skills/personal/SKILL.md" || fail "$host companion install changed an unrelated skill"
     assert_file "$target/LICENSE"
     assert_file "$target/workflows/pr-processing.md"
-    assert_file "$target/workflows/references/writing-good-tests.md"
+    assert_file "$target/workflows/tdd-writing-good-tests-reference.md"
     assert_file "$target/docs/coordination-backend.md"
     assert_file "$target/docs/writing-style.md"
     assert_file "$target/docs/writing-style-asd-ste100.md"
