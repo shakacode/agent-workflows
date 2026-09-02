@@ -16,12 +16,19 @@ module ConciseHistoryCheck
     "### Exact-head and replay evidence",
     "### QA Evidence",
     "<!-- qa-evidence v2",
+    "<!-- hosted-qa-evidence v1",
     "### Coordination and reviewer telemetry",
     "<!-- priority-finding-dispositions v1",
     "### Decision log",
+    "### Merge confidence",
+    "<!-- completed-batch-audit v1",
     "### Audit receipts"
   ].freeze
-  REQUIRED_REPLAY_ARTIFACTS = ["### QA Evidence", "<!-- qa-evidence v2"].freeze
+  REQUIRED_REPLAY_ARTIFACTS = [
+    "### QA Evidence",
+    "<!-- qa-evidence v2",
+    "<!-- priority-finding-dispositions v1"
+  ].freeze
   PR_ONLY_COMMIT_ARTIFACTS = ([AGENT_DETAILS_OPEN] + PR_EVIDENCE_ARTIFACTS).freeze
   TERMINAL_REPLAY_VERDICTS = %w[SATISFIED WAIVED NOT_APPLICABLE].freeze
 
@@ -145,7 +152,6 @@ module ConciseHistoryCheck
   def agent_details(pr_body)
     errors = []
     errors << "PR body must contain exactly one canonical Agent details disclosure" unless pr_body.scan(AGENT_DETAILS_OPEN).length == 1
-    errors << "PR body must contain exactly one closing details tag" unless pr_body.scan("</details>").length == 1
     return [nil, errors] unless errors.empty?
 
     start = pr_body.index(AGENT_DETAILS_OPEN)

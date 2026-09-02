@@ -73,19 +73,66 @@ class ConciseHistoryCheckTest < Minitest::Test
     assert_includes validation, "ruby skills/pr-batch/bin/concise-history-check-test.rb"
   end
 
-  def test_commit_message_cannot_copy_replay_markers_from_agent_details
-    Tempfile.create("duplicated-agent-evidence") do |file|
-      file.write(File.read(fixture("commit-message.txt"), encoding: "UTF-8"))
-      file.write("\n<!-- qa-evidence v2 status: satisfied -->\n")
+  def test_commit_message_cannot_copy_agent_details_artifacts
+    {
+      "<!-- qa-evidence v2" => "<!-- qa-evidence v2 status: satisfied -->",
+      "### Merge confidence" => "### Merge confidence\nAgent Merge Confidence: HIGH",
+      "<!-- hosted-qa-evidence v1" => "<!-- hosted-qa-evidence v1\nstatus: satisfied\n-->",
+      "<!-- completed-batch-audit v1" => "<!-- completed-batch-audit v1\naudit_status: complete\n-->"
+    }.each do |artifact, copied_text|
+      Tempfile.create("duplicated-agent-evidence") do |file|
+        file.write(File.read(fixture("commit-message.txt"), encoding: "UTF-8"))
+        file.write("\n#{copied_text}\n")
+        file.flush
+
+        stdout, _stderr, status = run_check(commit_message: file.path)
+
+        refute status.success?, artifact
+        result = JSON.parse(stdout)
+        assert_equal "FAIL", result.fetch("status"), artifact
+        assert_equal [artifact], result.dig("commit_history", "duplicated_pr_artifacts")
+        assert_includes result.fetch("errors"), "commit message duplicates PR-only artifacts"
+      end
+    end
+  end
+
+  def test_pr_evidence_requires_each_canonical_replay_marker
+    ["<!-- qa-evidence v2", "<!-- priority-finding-dispositions v1"].each do |artifact|
+      Tempfile.create("missing-agent-evidence") do |file|
+        pr_body = File.read(fixture("pr-body.md"), encoding: "UTF-8")
+        file.write(pr_body.sub(/#{Regexp.escape(artifact)}.*?-->\n/m, ""))
+        file.flush
+
+        stdout, _stderr, status = run_check(pr_body: file.path)
+
+        refute status.success?, artifact
+        result = JSON.parse(stdout)
+        assert_equal "FAIL", result.fetch("status"), artifact
+        assert_includes result.fetch("errors"), "missing PR evidence artifact: #{artifact}"
+      end
+    end
+  end
+
+  def test_human_authored_disclosure_can_coexist_with_agent_details
+    Tempfile.create("human-authored-details") do |file|
+      file.write(<<~MARKDOWN)
+        <details>
+        <summary>Protocol rationale</summary>
+
+        Human-authored design detail.
+
+        </details>
+
+      MARKDOWN
+      file.write(File.read(fixture("pr-body.md"), encoding: "UTF-8"))
       file.flush
 
-      stdout, _stderr, status = run_check(commit_message: file.path)
+      stdout, stderr, status = run_check(pr_body: file.path)
 
-      refute status.success?
+      assert status.success?, stderr
       result = JSON.parse(stdout)
-      assert_equal "FAIL", result.fetch("status")
-      assert_equal ["<!-- qa-evidence v2"], result.dig("commit_history", "duplicated_pr_artifacts")
-      assert_includes result.fetch("errors"), "commit message duplicates PR-only artifacts"
+      assert_equal "PASS", result.fetch("status")
+      assert_equal true, result.dig("pr_evidence", "canonical_agent_details")
     end
   end
 
