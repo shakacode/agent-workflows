@@ -442,9 +442,9 @@ and focused repository tests must establish that before landing it.
 
 Coordinate QA with the same primitives as other batch lanes. For
 `coordination_not_applicable`, the one controller owns the QA lane in its
-durable local batch record instead: keep the stable owner, scope label, and
-branch/worktree ownership, and make no lane declaration, claim, or heartbeat
-call. The bullets below are `coordination_required` only:
+durable local record: keep the owner, scope label, and branch/worktree
+ownership, and make no lane declaration, claim, or heartbeat call. The bullets
+below are `coordination_required` only:
 
 - The coordinator declares the QA lane in private batch state when the backend is
   available, for example as lane `qa` or the nearest backend-supported
@@ -1345,8 +1345,10 @@ Use `.agents/skills/address-review/SKILL.md` when skills are available; Claude C
 - `SKIPPED`: reply with rationale only when useful; do not create work from noise.
 
 When review triage verifies a P0/P1 finding, confirmed regression, or required
-revert, emit the private-backend `error` event with the evidence-backed
+revert in a `coordination_required` lane, emit the private-backend `error` event
+with the evidence-backed
 `severity`, `category`, and `message` before fixing, waiving, or handing it off.
+A `coordination_not_applicable` lane emits none and records the same evidence locally.
 Do not classify an advisory label alone as an error; follow the canonical
 best-effort/`UNKNOWN` event rules when the backend or a required field is
 unavailable.

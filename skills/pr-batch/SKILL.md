@@ -104,14 +104,12 @@ intake facts consumed below. Do not restate or reinterpret that contract here.
 
 ### Coordination Applicability
 
-Before any coordination operation, apply the canonical **Coordination Applicability Gate**
-in `workflows/pr-processing.md` and persist either
-`coordination_not_applicable` or `coordination_required` from trusted topology
-and repository/operator policy. Ordinary one-agent, one-target serialized work
-is `coordination_not_applicable`; do not contact a backend or emit a coordination
-warning merely because this skill represents it as a batch of one. This does not
-relax canonical issue/existing-PR target identity or foreign-target control-
-transfer guards.
+Before any coordination operation, apply the canonical
+[Coordination Applicability Gate](../../workflows/pr-processing.md#coordination-applicability-gate)
+and persist its outcome. Ordinary one-agent, one-target serialized work is
+`coordination_not_applicable`; do not contact a backend or warn about
+coordination merely because this skill calls it a batch of one. This relaxes no
+target-identity or foreign-target control-transfer guard.
 
 ### Single-Target Launch
 

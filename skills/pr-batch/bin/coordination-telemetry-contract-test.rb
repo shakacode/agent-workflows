@@ -540,15 +540,21 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
     assert_includes closeout,
                     "For `coordination_not_applicable`, the one controller owns the QA lane in its durable local " \
-                    "batch record instead: keep the stable owner, scope label, and branch/worktree ownership, and " \
-                    "make no lane declaration, claim, or heartbeat call. The bullets below are " \
-                    "`coordination_required` only:",
+                    "record: keep the owner, scope label, and branch/worktree ownership, and make no lane " \
+                    "declaration, claim, or heartbeat call. The bullets below are `coordination_required` only:",
                     INTEGRATION_CLOSEOUT_PATH
     assert_includes guide,
                     "For `coordination_not_applicable` it reads none of them and keeps the one controlled serial " \
                     "group, so the rest of this paragraph and the unavailable- capacity stop below apply only to " \
                     "`coordination_required`.",
                     PR_BATCH_DOC_PATH
+    assert_includes closeout,
+                    "When review triage verifies a P0/P1 finding, confirmed regression, or required revert in a " \
+                    "`coordination_required` lane, emit the private-backend `error` event",
+                    INTEGRATION_CLOSEOUT_PATH
+    assert_includes closeout,
+                    "A `coordination_not_applicable` lane emits none and records the same evidence locally.",
+                    INTEGRATION_CLOSEOUT_PATH
   end
 
   def test_cancellation_and_relaunch_have_a_not_applicable_path
