@@ -805,10 +805,13 @@ module PrCiReadiness
       runs.each { |run| validate_actions_run_identity!(run, head_sha) }
       runs.select! { |run| actions_run_targets_pr?(run, target_pr) }
       rows = []
-      current_runs = runs.reject { |run| run["status"] == "completed" && run["conclusion"] == "cancelled" }
-      current_runs = current_runs.group_by { |run| [run["workflow_id"], run["event"]] }
+      current_runs = runs.group_by { |run| [run["workflow_id"], run["event"]] }
       current_runs = current_runs.values.map do |group|
-        group.max_by { |run| [run["run_number"], run["run_attempt"], run["id"]] }
+        non_cancelled = group.reject do |run|
+          run["status"] == "completed" && run["conclusion"] == "cancelled"
+        end
+        candidates = non_cancelled.empty? ? group : non_cancelled
+        candidates.max_by { |run| [run["run_number"], run["run_attempt"], run["id"]] }
       end
       current_runs.sort_by! { |run| [run["workflow_id"], run["event"]] }
       current_runs.each do |run|

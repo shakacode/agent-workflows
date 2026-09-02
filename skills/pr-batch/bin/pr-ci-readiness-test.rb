@@ -1393,6 +1393,34 @@ class PrCiReadinessCliTest < Minitest::Test
     )
   end
 
+  def test_exact_head_actions_keep_latest_cancelled_run_when_group_has_no_successor
+    head = "a" * 40
+    cancelled_run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "cancelled"
+    }
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [cancelled_run],
+      runs: { "100" => { run: cancelled_run, jobs: [] } }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal "NOT_READY", data.dig("scopes", "github_actions", "state")
+      row_ids = data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      assert_equal [100], row_ids
+    end
+  end
+
   # Regression: exact_head_inventory must not re-append a superseded GitHub
   # Actions check run after fetch_exact_head_actions selects the current run.
   def test_exact_head_actions_do_not_reappend_superseded_check_runs
