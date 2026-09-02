@@ -194,6 +194,17 @@ class RubocopMetricsCheckTest < Minitest::Test
     end
   end
 
+  def test_check_rejects_a_different_metrics_cop_set
+    with_repository do |root, environment, _log|
+      run_helper(root, environment, "refresh")
+      write_baseline_field(root, "cops", COPS.drop(1))
+      stdout, stderr, status = run_helper(root, environment, "check")
+      refute status.success?
+      assert_empty stdout
+      assert_includes stderr, "baseline cop set differs from the current Metrics cop set; refresh it"
+    end
+  end
+
   private
 
   def configure_increased_result(root, environment)
@@ -211,9 +222,13 @@ class RubocopMetricsCheckTest < Minitest::Test
   end
 
   def write_baseline_version(root, version)
+    write_baseline_field(root, "rubocop_version", version)
+  end
+
+  def write_baseline_field(root, field, value)
     path = File.join(root, BASELINE)
     baseline = JSON.parse(File.read(path))
-    baseline["rubocop_version"] = version
+    baseline[field] = value
     File.write(path, "#{JSON.pretty_generate(baseline)}\n")
   end
 end

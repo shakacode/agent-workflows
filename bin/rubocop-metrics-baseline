@@ -176,11 +176,18 @@ module RubocopMetrics
 
     def read_baseline
       baseline = JSON.parse(File.read(baseline_file, encoding: "UTF-8"))
+      verify_cops!(baseline)
       actual_version = baseline.fetch("rubocop_version")
       expected_version = current_version
       return baseline if actual_version == expected_version
 
       raise "baseline uses RuboCop #{actual_version}; expected #{expected_version}; refresh it"
+    end
+
+    def verify_cops!(baseline)
+      return if baseline.fetch("cops") == COPS
+
+      raise "baseline cop set differs from the current Metrics cop set; refresh it"
     end
 
     def baseline_file
