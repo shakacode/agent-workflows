@@ -2,11 +2,13 @@
 # frozen_string_literal: true
 
 require "digest"
+require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
 require "rbconfig"
 require "tempfile"
+require "tmpdir"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
 STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
@@ -2246,5 +2248,205 @@ class BatchPlanPreflightTest < Minitest::Test
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "stage-dependency-gate-lane-invalid"
+  end
+
+  # --- Adversarial fixed-sibling trust fixtures (issue #636) -----------------
+  #
+  # `batch-plan-preflight` reruns its fixed sibling `stage-dependency-gate`
+  # from the pack that loaded it. These fixtures build a throwaway copy of that
+  # pack and attack the copy only; the live installed helper is never chmodded,
+  # replaced, or removed.
+
+  # The trust rule rejects any pack ancestor that is group- or world-writable,
+  # so the fixture pack needs a parent whose whole realpath chain is already
+  # safe. Sandboxes rooted under a mode-1777 `/tmp` do not qualify, so fall
+  # back through the checkout and the home directory before skipping.
+  PACK_FIXTURE_TMP_PARENT_ENV = "BATCH_PLAN_PREFLIGHT_TEST_TMP_PARENT"
+
+  def safe_pack_ancestry?(directory)
+    path = File.realpath(directory)
+    loop do
+      stat = File.lstat(path)
+      return false unless stat.directory?
+      return false unless [0, Process.uid].include?(stat.uid)
+      return false unless (stat.mode & 0o022).zero?
+      break if path == File.dirname(path)
+
+      path = File.dirname(path)
+    end
+    true
+  rescue SystemCallError
+    false
+  end
+
+  def safe_pack_fixture_parent
+    candidates = [ENV[PACK_FIXTURE_TMP_PARENT_ENV], File.expand_path("../../..", __dir__), Dir.home]
+    candidates.compact.uniq.find { |directory| Dir.exist?(directory) && safe_pack_ancestry?(directory) }
+  end
+
+  def with_isolated_pack(name)
+    parent = safe_pack_fixture_parent
+    if parent.nil?
+      skip(
+        "No parent directory with a fully non-group/world-writable realpath chain is available; " \
+        "set #{PACK_FIXTURE_TMP_PARENT_ENV} to one to run the fixed-sibling trust fixtures."
+      )
+    end
+
+    Dir.mktmpdir(name, parent) do |root|
+      File.chmod(0o700, root)
+      pack = File.join(root, "pack")
+      preflight_bin = File.join(pack, "skills", "plan-pr-batch", "bin")
+      gate_bin = File.join(pack, "skills", "pr-batch", "bin")
+      FileUtils.mkdir_p([preflight_bin, gate_bin], mode: 0o755)
+      fixture_helper = File.join(preflight_bin, File.basename(HELPER))
+      fixture_gate = File.join(gate_bin, File.basename(STAGE_DEPENDENCY_GATE))
+      FileUtils.cp(HELPER, fixture_helper)
+      FileUtils.cp(STAGE_DEPENDENCY_GATE, fixture_gate)
+      File.chmod(0o755, fixture_helper)
+      File.chmod(0o755, fixture_gate)
+      yield(root, pack, fixture_helper, fixture_gate)
+    end
+  end
+
+  def violation_codes(result)
+    result.fetch("violations").map { |item| item.fetch("code") }
+  end
+
+  def test_safe_installed_pack_fixture_accepts_and_actually_reruns_its_fixed_sibling
+    with_isolated_pack("batch-plan-preflight-safe-pack") do |_root, _pack, fixture_helper, _fixture_gate|
+      result, stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+      assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+
+      tampered = input_for
+      tampered.fetch("stage_dependency_gate")["status"] = "gated"
+      mismatch, _mismatch_stderr, mismatch_status = evaluate(tampered, helper: fixture_helper)
+
+      refute mismatch_status.success?, "The fixture pack must rerun its own fixed sibling, not trust the caller."
+      assert_equal ["stage-dependency-replay-mismatch"], violation_codes(mismatch)
+      assert_empty mismatch.dig("launch", "eligible_lane_ids")
+    end
+  end
+
+  def test_group_writable_pack_ancestor_fails_closed
+    with_isolated_pack("batch-plan-preflight-group-writable") do |_root, pack, fixture_helper, _fixture_gate|
+      File.chmod(0o775, File.join(pack, "skills"))
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal "rejected", result.fetch("status")
+      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result)
+      assert_empty result.dig("launch", "eligible_lane_ids")
+    end
+  end
+
+  def test_world_writable_pack_ancestor_fails_closed
+    with_isolated_pack("batch-plan-preflight-world-writable") do |_root, pack, fixture_helper, _fixture_gate|
+      File.chmod(0o757, File.join(pack, "skills", "pr-batch"))
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal "rejected", result.fetch("status")
+      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result)
+      assert_empty result.dig("launch", "eligible_lane_ids")
+    end
+  end
+
+  def test_world_writable_pack_root_above_the_pack_fails_closed
+    with_isolated_pack("batch-plan-preflight-world-writable-root") do |root, _pack, fixture_helper, _fixture_gate|
+      File.chmod(0o1777, root)
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result)
+    ensure
+      File.chmod(0o700, root)
+    end
+  end
+
+  def test_foreign_owned_fixed_sibling_fails_closed
+    with_isolated_pack("batch-plan-preflight-foreign-owner") do |_root, _pack, fixture_helper, fixture_gate|
+      # Real cross-owner substitution needs privileges the ordinary macOS and
+      # CI runners do not have. Attempt it, and otherwise fall through to the
+      # deterministic substitute below.
+      foreign_owned =
+        begin
+          File.chown(1, nil, fixture_gate)
+          File.lstat(fixture_gate).uid != File.stat(fixture_helper).uid
+        rescue SystemCallError
+          false
+        end
+
+      if foreign_owned
+        result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+        refute status.success?
+        assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result)
+        return
+      end
+
+      # Deterministic unprivileged substitute for the same ownership branch:
+      # the fixed sibling is swapped for a symlink to an identical helper the
+      # attacker owns outside the pack. `File.lstat` sees a symlink rather than
+      # the pack owner's regular file, so the ownership check still fails
+      # closed and the outside copy is never executed.
+      outside_gate = File.join(File.dirname(File.dirname(File.dirname(fixture_gate))), "attacker-gate")
+      FileUtils.cp(STAGE_DEPENDENCY_GATE, outside_gate)
+      File.chmod(0o755, outside_gate)
+      File.delete(fixture_gate)
+      File.symlink(outside_gate, fixture_gate)
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal "rejected", result.fetch("status")
+      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result)
+      assert_empty result.dig("launch", "eligible_lane_ids")
+    end
+  end
+
+  def test_missing_fixed_sibling_fails_closed
+    with_isolated_pack("batch-plan-preflight-missing-sibling") do |_root, _pack, fixture_helper, fixture_gate|
+      File.delete(fixture_gate)
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal "rejected", result.fetch("status")
+      assert_equal ["stage-dependency-helper-missing"], violation_codes(result)
+      assert_empty result.dig("launch", "eligible_lane_ids")
+    end
+  end
+
+  def test_missing_fixed_sibling_directory_fails_closed
+    with_isolated_pack("batch-plan-preflight-missing-sibling-dir") do |_root, pack, fixture_helper, _fixture_gate|
+      FileUtils.rm_rf(File.join(pack, "skills", "pr-batch"))
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal ["stage-dependency-helper-missing"], violation_codes(result)
+    end
+  end
+
+  def test_live_installed_pack_helper_and_sibling_are_left_untouched
+    with_isolated_pack("batch-plan-preflight-live-pack-guard") do |_root, _pack, fixture_helper, fixture_gate|
+      File.chmod(0o777, fixture_gate)
+      evaluate(input_for, helper: fixture_helper)
+
+      assert_path_exists HELPER
+      assert_path_exists STAGE_DEPENDENCY_GATE
+      assert_predicate File.lstat(HELPER), :file?
+      assert_predicate File.lstat(STAGE_DEPENDENCY_GATE), :file?
+      assert_equal 0, File.lstat(HELPER).mode & 0o022
+      assert_equal 0, File.lstat(STAGE_DEPENDENCY_GATE).mode & 0o022
+    end
   end
 end
