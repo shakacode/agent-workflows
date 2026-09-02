@@ -37,6 +37,14 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input
   end
 
+  def backend_transition_input
+    replay = fixture("completed-batch-publication-hichee-backend-transition-replay.json")
+    input = fixture(replay.fetch("baseline_fixture"))
+    input["coordination_status"] = replay.fetch("coordination_status")
+    input["workflow_config_revisions"] = replay.fetch("workflow_config_revisions")
+    input
+  end
+
   def no_pr_input
     input = fixture("completed-batch-publication-hichee-terminal.json")
     number = 10_036
@@ -1469,6 +1477,82 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                       "typed no-backend coordination evidence is absent or invalid",
                       index
     end
+  end
+
+  def test_trusted_base_refresh_reconciles_no_backend_provenance_into_an_authenticated_transition
+    input = backend_transition_input
+    live_coordination = fixture("completed-batch-publication-hichee-terminal.json").fetch("coordination_status")
+
+    result = assess_input(
+      input,
+      coordination_verifier: lambda do |backend:, batch_id:|
+        next unless backend == BACKEND && batch_id == input.fetch("batch_id")
+
+        live_coordination
+      end
+    )
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal BACKEND, result.fetch("coordination_backend")
+    assert_equal BACKEND, result.dig("snapshot", "coordination_backend")
+    assert_equal(
+      "authenticated agent-coord-bounded transition from durable no-backend provenance",
+      result.dig("snapshot", "coordination", "verification_source")
+    )
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+    assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: lambda do |backend:, batch_id:|
+        next unless backend == BACKEND && batch_id == input.fetch("batch_id")
+
+        live_coordination
+      end
+    )
+
+    transition = result.dig("snapshot", "coordination", "transition")
+    assert_equal "completed-batch-coordination-transition", transition.fetch("contract")
+    assert_equal 1, transition.fetch("version")
+    assert_equal "n/a", transition.fetch("from_backend")
+    assert_equal BACKEND, transition.fetch("to_backend")
+
+    terminal_handoff = transition.fetch("terminal_handoff")
+    assert_equal "completed-batch-coordination-not-applicable", terminal_handoff.fetch("contract")
+    assert_equal input.fetch("batch_id"), terminal_handoff.fetch("batch_id")
+    assert_equal "single_operator", terminal_handoff.fetch("mode")
+    assert_equal "repository workflow seam declares coordination_backend: n/a",
+                 terminal_handoff.fetch("rationale")
+    assert_equal input.fetch("coordination_status").fetch("source"), terminal_handoff.fetch("source")
+    assert_equal input.fetch("coordination_status").fetch("completed_at"), terminal_handoff.fetch("completed_at")
+    assert_equal(
+      input.fetch("expected_targets").sort_by do |target|
+        [target.fetch("type") == "pull_request" ? 0 : 1, target.fetch("host").downcase,
+         target.fetch("repo").downcase, target.fetch("number")]
+      end,
+      terminal_handoff.fetch("targets")
+    )
+    assert_equal input.fetch("workflow_config_revisions"), result.fetch("source_input").fetch("workflow_config_revisions")
+  end
+
+  def test_trusted_base_refresh_fails_closed_without_authenticated_transition
+    input = backend_transition_input
+
+    result = assess_input(
+      input,
+      coordination_verifier: ->(**_keywords) { nil }
+    )
+
+    refute result.fetch("eligible")
+    assert_equal(
+      [
+        "coordination backend activation requires authenticated reconciliation of the existing non-backend terminal handoff"
+      ],
+      result.fetch("blockers")
+    )
+    assert_equal input.fetch("coordination_status"), result.fetch("source_input").fetch("coordination_status")
+    assert_equal input.fetch("workflow_config_revisions"), result.fetch("source_input").fetch("workflow_config_revisions")
   end
 
   def test_cli_reads_the_repository_coordination_backend_seam

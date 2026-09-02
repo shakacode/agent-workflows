@@ -183,6 +183,7 @@ PARENT_RECONCILIATION_RULE = "After terminal batch handoffs, parent reconciliati
 PARENT_RECONCILIATION_FORWARD_REFERENCE = "This reconciliation is the post-batch/pre-release-or-archive gate below."
 RELEASE_AUTHORITY_RECONCILIATION_RULE = "Coordinated release may pass this reconciliation gate only under separately established release authority; reconciliation never grants release or merge authority."
 OBSOLETE_RELEASE_AUTHORITY_RECONCILIATION_RULE = "may authorize a coordinated release action"
+COORDINATION_BACKEND_TRANSITION_RULE = "If a trusted-base or workflow-config refresh activates the private backend after a batch began under `n/a`, keep the original no-backend provenance explicit. Either record an authenticated transition for the same batch and lane identities, or stop with the exact repair action `coordination backend activation requires authenticated reconciliation of the existing non-backend terminal handoff`; do not fabricate a private-backend terminal snapshot for the original `n/a` run."
 TERMINAL_FOLLOW_UP_EVIDENCE_RULE = "A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref."
 UNRESOLVED_HANDOFF_NON_CLEAN_RULE = "Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state."
 OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
@@ -2501,6 +2502,14 @@ class GoalCompletionContractTest < Minitest::Test
     assert_includes pressure_checks,
                     "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions.",
                     "parent pressure fixture must pin completed-batch reconciliation"
+  end
+
+  def test_coordination_backend_doc_requires_explicit_transition_handoff_on_trusted_base_refresh
+    docs = read_repo_file(File.join(ROOT, "docs/coordination-backend.md"))
+
+    assert_squished_includes docs,
+                             COORDINATION_BACKEND_TRANSITION_RULE,
+                             "docs/coordination-backend.md"
   end
 
   def test_completed_batch_audit_parser_dependency_is_explicit_in_both_companion_skills

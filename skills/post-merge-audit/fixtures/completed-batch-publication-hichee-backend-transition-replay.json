@@ -1,0 +1,24 @@
+{
+  "contract": "completed-batch-publication-transition-replay",
+  "version": 1,
+  "baseline_fixture": "completed-batch-publication-hichee-terminal.json",
+  "workflow_config_revisions": {
+    "from": "https://github.com/shakacode/agent-workflows/blob/a48205ad26c3ef76c51dc27806f301ef1a5d3330/.agents/agent-workflow.yml",
+    "to": "https://github.com/shakacode/agent-workflows/blob/327057ca49510340d3553a1e93643f5afac1e13d/.agents/agent-workflow.yml"
+  },
+  "coordination_status": {
+    "contract": "completed-batch-coordination-not-applicable",
+    "version": 1,
+    "batch_id": "hc-b-20260730-backend-closeout",
+    "mode": "single_operator",
+    "rationale": "repository workflow seam declares coordination_backend: n/a",
+    "source": "https://github.com/shakacode/agent-workflows/blob/a48205ad26c3ef76c51dc27806f301ef1a5d3330/.agents/agent-workflow.yml",
+    "completed_at": "2026-07-31T11:40:00Z",
+    "targets": [
+      {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10049},
+      {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10048},
+      {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10036},
+      {"host": "github.com", "repo": "shakacode/hichee", "type": "pull_request", "number": 10026}
+    ]
+  }
+}
