@@ -108,6 +108,8 @@ module GeneratedArtifactDrift
     stdout.split("\0")
   end
 
+  # Keep these schema/path checks aligned with `bin/agent-workflow-seam-doctor`.
+  # The helper stays dependency-free by mirroring the same validation rules here.
   def policy_errors(declarations)
     return ["expected a nonempty list"] unless declarations.is_a?(Array) && !declarations.empty?
 
