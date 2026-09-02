@@ -2098,6 +2098,167 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   end
 end
 
+class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
+  include AgentWorkflowSeamDoctorTestHelpers
+
+  RUBOCOP_METRICS = %w[
+    Metrics/AbcSize
+    Metrics/BlockLength
+    Metrics/ClassLength
+    Metrics/CyclomaticComplexity
+    Metrics/MethodLength
+    Metrics/ModuleLength
+    Metrics/ParameterLists
+    Metrics/PerceivedComplexity
+  ].freeze
+  ESLINT_LIMITS = %w[
+    complexity
+    max-lines
+    max-lines-per-function
+    max-params
+    max-depth
+    max-statements
+  ].freeze
+
+  def test_no_recognized_linter_config_is_one_non_failing_advice_line
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+
+      json, json_status = run_doctor(root, "--json")
+      text, text_status = run_doctor(root)
+
+      assert json_status.success?, json
+      assert text_status.success?, text
+      assert_equal(
+        [{ "message" => "No recognized RuboCop or ESLint config found." }],
+        JSON.parse(json).fetch("advice")
+      )
+      assert_equal 1, text.lines.grep(/No recognized RuboCop or ESLint config found/).length
+    end
+  end
+
+  def test_rubocop_disabled_metrics_are_recommendations_with_snippets
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      File.write(
+        File.join(root, ".rubocop.yml"),
+        RUBOCOP_METRICS.to_h { |rule| [rule, { "Enabled" => false }] }.to_yaml
+      )
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      payload = JSON.parse(out)
+      assert_equal "PASS", payload.fetch("status")
+      assert_empty payload.fetch("issues")
+      rubocop = payload.fetch("advice").fetch(0)
+      assert_equal "RuboCop", rubocop.fetch("linter")
+      assert_equal ".rubocop.yml", rubocop.fetch("config")
+      assert_empty rubocop.fetch("enforced")
+      assert_equal(RUBOCOP_METRICS, rubocop.fetch("recommendations").map { |item| item.fetch("rule") })
+      assert(rubocop.fetch("recommendations").all? { |item| item.fetch("state") == "disabled" })
+      assert rubocop.fetch("recommendations").all? do |item|
+        item.fetch("suggestion").include?(item.fetch("rule")) && item.fetch("suggestion").include?("Max:")
+      end
+
+      text, text_status = run_doctor(root)
+      assert text_status.success?, text
+      assert_includes text, "ADVICE RuboCop (.rubocop.yml): 0 enforced, 8 missing/disabled"
+      assert_includes text, "disabled Metrics/AbcSize; suggested config:"
+      assert_includes text, "Metrics/AbcSize:\n  Enabled: true\n  Max: 17"
+    end
+  end
+
+  def test_rubocop_enabled_metrics_report_enforced_values_without_recommendations
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      config = RUBOCOP_METRICS.each_with_index.to_h do |rule, index|
+        [rule, { "Enabled" => true, "Max" => index + 10 }]
+      end
+      File.write(File.join(root, ".rubocop.yml"), config.to_yaml)
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      rubocop = JSON.parse(out).fetch("advice").fetch(0)
+      assert_equal RUBOCOP_METRICS.zip((10..17).to_a).map { |rule, value| { "rule" => rule, "value" => value } },
+                   rubocop.fetch("enforced")
+      assert_empty rubocop.fetch("recommendations")
+    end
+  end
+
+  def test_eslint_flat_config_reports_enforced_disabled_and_missing_limits
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        export default [{
+          rules: {
+            complexity: ["error", 8],
+            "max-lines": ["warn", { max: 240, skipBlankLines: true }],
+            "max-params": "off"
+          }
+        }];
+      JAVASCRIPT
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      eslint = JSON.parse(out).fetch("advice").fetch(0)
+      assert_equal "ESLint", eslint.fetch("linter")
+      assert_equal "eslint.config.js", eslint.fetch("config")
+      assert_equal(
+        [{ "rule" => "complexity", "value" => 8 }, { "rule" => "max-lines", "value" => 240 }],
+        eslint.fetch("enforced")
+      )
+      expected_recommendations = ESLINT_LIMITS - %w[complexity max-lines]
+      assert_equal(expected_recommendations, eslint.fetch("recommendations").map { |item| item.fetch("rule") })
+      assert_equal "disabled", eslint.fetch("recommendations").find { |item| item["rule"] == "max-params" }
+                                                              .fetch("state")
+      assert(eslint.fetch("recommendations").all? { |item| item.fetch("suggestion").include?(item.fetch("rule")) })
+    end
+  end
+
+  def test_policy_overrides_thresholds_and_suppresses_recommendations
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "lint_advice" => {
+            "thresholds" => { "rubocop" => { "Metrics/AbcSize" => 22 } },
+            "suppress" => ["rubocop.Metrics/BlockLength"]
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+      File.write(
+        File.join(root, ".rubocop.yml"),
+        RUBOCOP_METRICS.to_h { |rule| [rule, { "Enabled" => false }] }.to_yaml
+      )
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      rubocop = JSON.parse(out).fetch("advice").fetch(0)
+      recommendations = rubocop.fetch("recommendations")
+      refute_includes recommendations.map { |item| item.fetch("rule") }, "Metrics/BlockLength"
+      abc = recommendations.find { |item| item.fetch("rule") == "Metrics/AbcSize" }
+      assert_includes abc.fetch("suggestion"), "Max: 22"
+    end
+  end
+
+  def test_source_repo_advice_names_disabled_metrics_and_links_existing_cleanup_issue
+    rubocop = AgentDoctor::LinterAdvice.call(SOURCE_REPO_ROOT).find { |item| item["linter"] == "RuboCop" }
+
+    assert_equal(RUBOCOP_METRICS, rubocop.fetch("recommendations").map { |item| item.fetch("rule") })
+    assert_includes rubocop.fetch("note"), "https://github.com/shakacode/agent-workflows/issues/309"
+  end
+end
+
 class AgentWorkflowSeamDoctorPlaceholderTest < Minitest::Test
   include AgentWorkflowSeamDoctorTestHelpers
 

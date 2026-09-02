@@ -13,6 +13,7 @@ require "shellwords"
 require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
 require_relative "agent_doctor/hosted_qa_policy"
+require_relative "agent_doctor/linter_advice"
 writing_style_resolver = File.expand_path("agent-workflow-writing-style", __dir__)
 unless File.file?(writing_style_resolver)
   warn "agent-workflow-seam-doctor: missing required companion agent-workflow-writing-style; " \
@@ -2377,18 +2378,37 @@ module AgentWorkflowSeamDoctor
     "unresolved executable placeholder #{placeholder} in #{location}:#{line_number}"
   end
 
-  def format_text(issues)
-    if issues.empty?
-      "PASS agent workflow seam is complete\n"
-    else
-      out = +"FAIL agent workflow seam has #{issues.length} issue(s)\n"
-      issues.each { |issue| out << "- #{issue}\n" }
-      out
+  def format_text(issues, advice: [])
+    out = if issues.empty?
+            +"PASS agent workflow seam is complete\n"
+          else
+            failure = +"FAIL agent workflow seam has #{issues.length} issue(s)\n"
+            issues.each { |issue| failure << "- #{issue}\n" }
+            failure
+          end
+    advice.each do |item|
+      if item["message"]
+        out << "ADVICE #{item.fetch('message')}\n"
+        next
+      end
+
+      recommendations = item.fetch("recommendations")
+      out << "ADVICE #{item.fetch('linter')} (#{item.fetch('config')}): " \
+             "#{item.fetch('enforced').length} enforced, #{recommendations.length} missing/disabled\n"
+      item.fetch("enforced").each do |limit|
+        out << "- enforced #{limit.fetch('rule')}: #{limit.fetch('value')}\n"
+      end
+      recommendations.each do |recommendation|
+        out << "- #{recommendation.fetch('state')} #{recommendation.fetch('rule')}; suggested config:\n" \
+               "#{recommendation.fetch('suggestion')}\n"
+      end
+      out << "- #{item.fetch('note')}\n" if item["note"]
     end
+    out
   end
 
-  def format_json(issues)
-    payload = { "status" => issues.empty? ? "PASS" : "FAIL", "issues" => issues }
+  def format_json(issues, advice: [])
+    payload = { "status" => issues.empty? ? "PASS" : "FAIL", "issues" => issues, "advice" => advice }
     "#{JSON.pretty_generate(payload)}\n"
   end
 end
@@ -2450,6 +2470,7 @@ if $PROGRAM_NAME == __FILE__
            else
              AgentWorkflowSeamDoctor.check(root, shared_roots: options.fetch(:shared_roots))
            end
-  print(options[:json] ? AgentWorkflowSeamDoctor.format_json(issues) : AgentWorkflowSeamDoctor.format_text(issues))
+  advice = AgentDoctor::LinterAdvice.call(root)
+  print(options[:json] ? AgentWorkflowSeamDoctor.format_json(issues, advice:) : AgentWorkflowSeamDoctor.format_text(issues, advice:))
   exit(issues.empty? ? 0 : 1)
 end
