@@ -49,6 +49,9 @@ class WorkerExecutionContractTest < Minitest::Test
                     "worker execution must stay smaller than the duplicated source blocks it replaces"
     assert_includes @component, "It emits a committed implementation head and replayable evidence."
     assert_includes @component, "worker-execution-handoff v1"
+    assert_equal 1, @component.scan("[Task Review Loop](pr-batch-task-review.md)").length
+    assert_includes squish(@component), "it owns task review and fix rounds"
+    refute_includes @component, "cap_adjudication"
   end
 
   def test_workflow_and_skill_are_routes_not_mirrors

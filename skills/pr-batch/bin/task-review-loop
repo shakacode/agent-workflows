@@ -1,0 +1,491 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "json"
+
+load File.expand_path("../../../bin/validate-review-findings", __dir__)
+
+module TaskReviewLoop
+  OPEN_FINDING_DISPOSITIONS = %w[must_fix needs_decision should_fix unknown].freeze
+  TOP_LEVEL_KEYS = %w[
+    cap_adjudication
+    contract
+    expected_current_head_sha
+    finding_controls
+    identity
+    open_findings
+    replacement_evidence
+    review_package
+    review_state
+    rounds
+    task_brief
+    version
+    worker_report
+  ].freeze
+  IDENTITY_KEYS = %w[batch_id lane_id plan_digest plan_id task_id].freeze
+  TASK_BRIEF_KEYS = %w[
+    digest global_constraints identity interfaces requirements resolved_ambiguities
+  ].freeze
+  WORKER_REPORT_KEYS = %w[
+    base_sha brief_digest changed_paths commits concerns current_implementer_id digest head_sha
+    identity initial_implementer_id open_context_needs status verification
+  ].freeze
+  REVIEW_PACKAGE_KEYS = %w[
+    base_sha brief_digest commit_list diff_stat digest exact_diff expected_current_head_sha head_sha
+    identity implementer_id prior_round_digest reviewer_id scope worker_report_digest
+  ].freeze
+  ROUND_KEYS = %w[
+    addressed_finding_ids base_sha digest head_sha implementer_id kind new_consequential_finding_ids
+    open_finding_ids package_digest prior_round_digest review_findings reviewer_id number
+  ].freeze
+  ARTIFACT_KEYS = %w[byte_count digest path].freeze
+  EXACT_DIFF_KEYS = %w[byte_count digest path truncated].freeze
+  OPEN_FINDINGS_KEYS = %w[byte_count digest ids path].freeze
+  FINDING_CONTROL_KEYS = %w[cap_piercing finding_id load_bearing].freeze
+  REPLACEMENT_KEYS = %w[
+    evidence ownership_reconciled prior_implementer_id prior_instance_stopped reason replacement_implementer_id round
+  ].freeze
+  CAP_KEYS = %w[coordinator_id findings round].freeze
+  CAP_RECORD_REQUIRED_KEYS = %w[disposition evidence finding_id].freeze
+  CAP_RECORD_OPTIONAL_KEYS = %w[authority_ref tracking_ref].freeze
+  VERIFICATION_KEYS = %w[command outcome status].freeze
+  REPORT_STATUSES = %w[done done_with_concerns needs_context blocked].freeze
+  VERIFICATION_STATUSES = %w[passed failed not_run UNKNOWN].freeze
+  REPLACEMENT_REASONS = %w[continuation_unavailable implementer_unavailable bounded_escalation].freeze
+  CAP_DISPOSITIONS = %w[disproven waived deferred blocked].freeze
+
+  module_function
+
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.each_with_object({}) { |key, result| result[key] = canonicalize(value.fetch(key)) }
+    when Array
+      value.map { |entry| canonicalize(entry) }
+    else
+      value
+    end
+  end
+
+  def record_digest(record)
+    payload = record.reject { |key, _value| key == "digest" }
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(payload)))}"
+  end
+
+  def valid_record_digest?(record)
+    record.is_a?(Hash) && record["digest"] == record_digest(record)
+  end
+
+  def digest?(value)
+    value.is_a?(String) && value.match?(/\Asha256:[0-9a-f]{64}\z/)
+  end
+
+  def non_empty_string?(value)
+    value.is_a?(String) && !value.strip.empty? && value.strip != "UNKNOWN"
+  end
+
+  def string_array?(value, allow_empty: true)
+    value.is_a?(Array) && (allow_empty || !value.empty?) && value.all? { |entry| non_empty_string?(entry) }
+  end
+
+  def exact_keys?(object, required, optional = [])
+    object.is_a?(Hash) && (required - object.keys).empty? && (object.keys - required - optional).empty?
+  end
+
+  def identity_shape?(identity)
+    exact_keys?(identity, IDENTITY_KEYS) &&
+      %w[batch_id lane_id plan_id task_id].all? { |key| non_empty_string?(identity[key]) } &&
+      digest?(identity["plan_digest"])
+  end
+
+  def artifact_shape?(artifact, keys = ARTIFACT_KEYS)
+    exact_keys?(artifact, keys) && non_empty_string?(artifact["path"]) && digest?(artifact["digest"]) &&
+      artifact["byte_count"].is_a?(Integer) && artifact["byte_count"].positive?
+  end
+
+  def verification_shape?(verification)
+    exact_keys?(verification, VERIFICATION_KEYS) && non_empty_string?(verification["command"]) &&
+      VERIFICATION_STATUSES.include?(verification["status"]) && non_empty_string?(verification["outcome"])
+  end
+
+  def task_brief_shape?(brief)
+    exact_keys?(brief, TASK_BRIEF_KEYS) && identity_shape?(brief["identity"]) && digest?(brief["digest"]) &&
+      string_array?(brief["requirements"], allow_empty: false) && string_array?(brief["global_constraints"]) &&
+      string_array?(brief["interfaces"]) && string_array?(brief["resolved_ambiguities"])
+  end
+
+  def worker_report_shape?(report)
+    exact_keys?(report, WORKER_REPORT_KEYS) && identity_shape?(report["identity"]) &&
+      digest?(report["brief_digest"]) && digest?(report["digest"]) &&
+      non_empty_string?(report["initial_implementer_id"]) && non_empty_string?(report["current_implementer_id"]) &&
+      REPORT_STATUSES.include?(report["status"]) && full_sha?(report["base_sha"]) && full_sha?(report["head_sha"]) &&
+      report["commits"].is_a?(Array) && report["commits"].all? { |sha| full_sha?(sha) } &&
+      string_array?(report["changed_paths"]) && report["changed_paths"].uniq == report["changed_paths"] &&
+      report["verification"].is_a?(Array) && report["verification"].all? { |item| verification_shape?(item) } &&
+      string_array?(report["concerns"]) && string_array?(report["open_context_needs"])
+  end
+
+  def review_package_shape?(package)
+    exact_keys?(package, REVIEW_PACKAGE_KEYS) && identity_shape?(package["identity"]) &&
+      digest?(package["brief_digest"]) && digest?(package["worker_report_digest"]) && digest?(package["digest"]) &&
+      %w[task fix].include?(package["scope"]) && full_sha?(package["base_sha"]) && full_sha?(package["head_sha"]) &&
+      full_sha?(package["expected_current_head_sha"]) && non_empty_string?(package["implementer_id"]) &&
+      non_empty_string?(package["reviewer_id"]) && package["commit_list"].is_a?(Array) &&
+      package["commit_list"].all? { |sha| full_sha?(sha) } && non_empty_string?(package["diff_stat"]) &&
+      artifact_shape?(package["exact_diff"], EXACT_DIFF_KEYS) &&
+      [true, false].include?(package.dig("exact_diff", "truncated")) &&
+      (package["prior_round_digest"].nil? || digest?(package["prior_round_digest"]))
+  end
+
+  def round_shape?(round)
+    exact_keys?(round, ROUND_KEYS) && round["number"].is_a?(Integer) && round["number"].between?(0, 5) &&
+      %w[initial_review fix_re_review].include?(round["kind"]) && digest?(round["package_digest"]) &&
+      full_sha?(round["base_sha"]) && full_sha?(round["head_sha"]) && non_empty_string?(round["implementer_id"]) &&
+      non_empty_string?(round["reviewer_id"]) &&
+      (round["prior_round_digest"].nil? || digest?(round["prior_round_digest"])) &&
+      artifact_shape?(round["review_findings"]) && string_array?(round["addressed_finding_ids"]) &&
+      string_array?(round["open_finding_ids"]) && string_array?(round["new_consequential_finding_ids"]) &&
+      [round["addressed_finding_ids"], round["open_finding_ids"], round["new_consequential_finding_ids"]].all? do |ids|
+        ids.uniq == ids
+      end && digest?(round["digest"])
+  end
+
+  def cap_record_shape?(record)
+    exact_keys?(record, CAP_RECORD_REQUIRED_KEYS, CAP_RECORD_OPTIONAL_KEYS) &&
+      non_empty_string?(record["finding_id"]) && CAP_DISPOSITIONS.include?(record["disposition"]) &&
+      string_array?(record["evidence"], allow_empty: false) &&
+      (!record.key?("tracking_ref") || non_empty_string?(record["tracking_ref"])) &&
+      (!record.key?("authority_ref") || non_empty_string?(record["authority_ref"]))
+  end
+
+  def closed_shape?(input)
+    return false unless exact_keys?(input, TOP_LEVEL_KEYS) && %w[pending complete].include?(input["review_state"])
+    return false unless input["contract"] == "task-review-loop" && input["version"] == 1
+    return false unless identity_shape?(input["identity"]) && full_sha?(input["expected_current_head_sha"])
+    return false unless task_brief_shape?(input["task_brief"]) && worker_report_shape?(input["worker_report"])
+    return false unless review_package_shape?(input["review_package"])
+    return false unless input["rounds"].is_a?(Array) && input["rounds"].all? { |round| round_shape?(round) }
+    return false unless input["open_findings"].nil? ||
+                        artifact_shape?(input["open_findings"], OPEN_FINDINGS_KEYS) &&
+                        string_array?(input["open_findings"]["ids"]) &&
+                        input["open_findings"]["ids"].uniq == input["open_findings"]["ids"]
+    return false unless input["finding_controls"].is_a?(Array) && input["finding_controls"].all? do |control|
+      exact_keys?(control, FINDING_CONTROL_KEYS) && non_empty_string?(control["finding_id"]) &&
+      [true, false].include?(control["load_bearing"]) && [true, false].include?(control["cap_piercing"])
+    end
+    return false unless input["replacement_evidence"].is_a?(Array) && input["replacement_evidence"].all? do |record|
+      exact_keys?(record, REPLACEMENT_KEYS) && record["round"].is_a?(Integer) && record["round"].between?(1, 5) &&
+      non_empty_string?(record["prior_implementer_id"]) && non_empty_string?(record["replacement_implementer_id"]) &&
+      REPLACEMENT_REASONS.include?(record["reason"]) && record["prior_instance_stopped"] == true &&
+      record["ownership_reconciled"] == true && string_array?(record["evidence"], allow_empty: false)
+    end
+
+    cap = input["cap_adjudication"]
+    cap.nil? || exact_keys?(cap, CAP_KEYS) && cap["round"] == 5 && non_empty_string?(cap["coordinator_id"]) &&
+      cap["findings"].is_a?(Array) && cap["findings"].all? { |record| cap_record_shape?(record) }
+  end
+
+  def full_sha?(value)
+    value.is_a?(String) && value.match?(/\A[0-9a-f]{40}\z/)
+  end
+
+  def same_identity?(expected, actual)
+    expected.is_a?(Hash) && actual == expected
+  end
+
+  def independent?(implementer, reviewer)
+    return false unless [implementer, reviewer].all? { |identity| identity.is_a?(String) && !identity.strip.empty? }
+
+    implementer.strip.downcase(:fold) != reviewer.strip.downcase(:fold)
+  end
+
+  def same_actor?(left, right)
+    [left, right].all? { |identity| identity.is_a?(String) && !identity.strip.empty? } &&
+      left.strip.downcase(:fold) == right.strip.downcase(:fold)
+  end
+
+  def replacement_evidence_valid?(record, round_number, prior_implementer, replacement_implementer)
+    record.is_a?(Hash) && record["round"] == round_number &&
+      same_actor?(record["prior_implementer_id"], prior_implementer) &&
+      same_actor?(record["replacement_implementer_id"], replacement_implementer) &&
+      record["prior_instance_stopped"] == true && record["ownership_reconciled"] == true &&
+      record["evidence"].is_a?(Array) && !record["evidence"].empty? &&
+      record["evidence"].all? { |entry| entry.is_a?(String) && !entry.strip.empty? }
+  end
+
+  def load_artifact(reference, label)
+    return [nil, "#{label}-reference-invalid"] unless reference.is_a?(Hash)
+
+    path = reference["path"]
+    return [nil, "#{label}-path-invalid"] unless path.is_a?(String) && !path.strip.empty? && path != "UNKNOWN"
+
+    bytes = File.binread(path)
+    return [nil, "#{label}-byte-count-mismatch"] unless reference["byte_count"] == bytes.bytesize
+
+    digest = "sha256:#{Digest::SHA256.hexdigest(bytes)}"
+    return [nil, "#{label}-digest-mismatch"] unless reference["digest"] == digest
+
+    [bytes, nil]
+  rescue SystemCallError
+    [nil, "#{label}-unreadable"]
+  end
+
+  def load_findings(reference, label)
+    bytes, artifact_error = load_artifact(reference, label)
+    return [nil, artifact_error] if artifact_error
+
+    document = JSON.parse(bytes)
+    failures = ValidateReviewFindings.validate_document(document, label)
+    return [nil, "#{label}-invalid"] unless failures.empty?
+
+    [document, nil]
+  rescue JSON::ParserError
+    [nil, "#{label}-invalid"]
+  end
+
+  def validate_cap_adjudication(adjudication, open_ids)
+    return ["cap-adjudication-required"] unless adjudication.is_a?(Hash)
+
+    errors = []
+    records = adjudication.fetch("findings")
+    adjudicated_ids = records.map { |record| record.fetch("finding_id") }
+    unless adjudication["round"] == 5 && adjudicated_ids.sort == open_ids.sort &&
+           adjudicated_ids.uniq == adjudicated_ids
+      errors << "cap-adjudication-incomplete"
+    end
+    records.each do |record|
+      unless CAP_DISPOSITIONS.include?(record["disposition"])
+        errors << "cap-adjudication-disposition-invalid"
+        next
+      end
+
+      errors << "cap-adjudication-evidence-required" unless string_array?(record["evidence"], allow_empty: false)
+      if record["disposition"] == "deferred" && !non_empty_string?(record["tracking_ref"])
+        errors << "cap-deferred-tracking-required"
+      end
+      if record["disposition"] == "waived" && !non_empty_string?(record["authority_ref"])
+        errors << "cap-waiver-authority-required"
+      end
+    end
+    errors
+  end
+
+  def validate(input)
+    return ["input-object-required"] unless input.is_a?(Hash)
+    return ["contract-version-invalid"] unless input["contract"] == "task-review-loop" && input["version"] == 1
+    return ["input-schema-invalid"] unless closed_shape?(input)
+
+    errors = []
+    identity = input["identity"]
+    brief = input["task_brief"]
+    report = input["worker_report"]
+    package = input["review_package"]
+    rounds = input.fetch("rounds", [])
+    round = rounds.last
+
+    if !rounds.is_a?(Array) || rounds.length > 6 || rounds.each_with_index.any? do |entry, index|
+      !entry.is_a?(Hash) || entry["number"] != index ||
+      entry["kind"] != (index.zero? ? "initial_review" : "fix_re_review")
+    end
+      errors << "round-cap-exceeded"
+    end
+
+    errors << "task-brief-invalid" unless brief.is_a?(Hash) && valid_record_digest?(brief)
+    errors << "worker-report-invalid" unless report.is_a?(Hash) && valid_record_digest?(report)
+    errors << "review-package-invalid" unless package.is_a?(Hash) && valid_record_digest?(package)
+    errors << "task-brief-foreign" unless brief.is_a?(Hash) && same_identity?(identity, brief["identity"])
+    errors << "worker-report-foreign" unless report.is_a?(Hash) && same_identity?(identity, report["identity"])
+    errors << "review-package-foreign" unless package.is_a?(Hash) && same_identity?(identity, package["identity"])
+
+    if brief.is_a?(Hash) && report.is_a?(Hash) && report["brief_digest"] != brief["digest"]
+      errors << "worker-report-brief-digest-mismatch"
+    end
+    if brief.is_a?(Hash) && report.is_a?(Hash) && package.is_a?(Hash)
+      errors << "review-package-brief-digest-mismatch" unless package["brief_digest"] == brief["digest"]
+      errors << "review-package-report-digest-mismatch" unless package["worker_report_digest"] == report["digest"]
+    end
+
+    expected_head = input["expected_current_head_sha"]
+    unless full_sha?(expected_head) && package.is_a?(Hash) && package["expected_current_head_sha"] == expected_head &&
+           package["head_sha"] == expected_head && report.is_a?(Hash) && report["head_sha"] == expected_head
+      errors << "review-package-stale-head"
+    end
+    errors << "review-package-base-sha-invalid" unless package.is_a?(Hash) && full_sha?(package["base_sha"])
+    if package.is_a?(Hash)
+      errors << "reviewer-not-independent" unless independent?(package["implementer_id"], package["reviewer_id"])
+      errors << "review-package-truncated" unless package.dig("exact_diff", "truncated") == false
+      _diff, diff_error = load_artifact(package["exact_diff"], "exact-diff")
+      errors << diff_error if diff_error
+      prior_round = input["review_state"] == "complete" ? rounds[-2] : rounds[-1]
+      expected_prior_digest = prior_round&.[]("digest")
+      unless package["prior_round_digest"] == expected_prior_digest
+        errors << "review-package-prior-round-digest-mismatch"
+      end
+      expected_scope = prior_round ? "fix" : "task"
+      errors << "review-package-scope-invalid" unless package["scope"] == expected_scope
+      expected_base = prior_round ? prior_round["head_sha"] : report&.[]("base_sha")
+      errors << "review-package-base-mismatch" unless package["base_sha"] == expected_base
+    end
+
+    if report.is_a?(Hash) && package.is_a?(Hash) && !same_actor?(
+      report["current_implementer_id"], package["implementer_id"]
+    )
+      errors << "current-implementer-mismatch"
+    end
+
+    if rounds.is_a?(Array) && !rounds.empty? && report.is_a?(Hash)
+      errors << "initial-implementer-mismatch" unless same_actor?(
+        report["initial_implementer_id"], rounds.first["implementer_id"]
+      )
+      errors << "current-implementer-mismatch" unless same_actor?(
+        report["current_implementer_id"], rounds.last["implementer_id"]
+      )
+      rounds.each_cons(2) do |prior_round, current_round|
+        errors << "prior-round-digest-mismatch" unless current_round["prior_round_digest"] == prior_round["digest"]
+        next if same_actor?(prior_round["implementer_id"], current_round["implementer_id"])
+
+        evidence = input.fetch("replacement_evidence", []).find do |record|
+          replacement_evidence_valid?(
+            record,
+            current_round["number"],
+            prior_round["implementer_id"],
+            current_round["implementer_id"]
+          )
+        end
+        errors << "worker-replacement-evidence-required" unless evidence
+      end
+
+      implementers = [report["initial_implementer_id"], report["current_implementer_id"], package&.[]("implementer_id")]
+      implementers.concat(rounds.filter_map { |entry| entry["implementer_id"] if entry.is_a?(Hash) })
+      reviewers = [package&.[]("reviewer_id")]
+      reviewers.concat(rounds.filter_map { |entry| entry["reviewer_id"] if entry.is_a?(Hash) })
+      if reviewers.compact.any? { |reviewer| implementers.compact.any? { |implementer| same_actor?(reviewer, implementer) } }
+        errors << "reviewer-not-independent"
+      end
+
+      rounds.each do |review_round|
+        errors << "review-round-digest-mismatch" unless valid_record_digest?(review_round)
+        findings_document, findings_error = load_findings(review_round["review_findings"], "review-findings")
+        if findings_error
+          errors << findings_error
+          next
+        end
+
+        findings = findings_document.fetch("review_findings")
+        derived_open_ids = findings.filter_map do |finding|
+          finding["id"] if OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
+        end
+        derived_addressed_ids = findings.filter_map do |finding|
+          finding["id"] unless OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
+        end
+        unless review_round["open_finding_ids"] == derived_open_ids &&
+               review_round["addressed_finding_ids"] == derived_addressed_ids
+          errors << "round-finding-outcome-mismatch"
+        end
+      end
+    end
+
+    if input["review_state"] == "complete"
+      errors << "review-round-missing" unless round.is_a?(Hash)
+      if round.is_a?(Hash)
+        errors << "review-round-package-mismatch" unless package.is_a?(Hash) && round["package_digest"] == package["digest"]
+        errors << "reviewer-not-independent" unless independent?(round["implementer_id"], round["reviewer_id"])
+      end
+
+      open_document, open_error = load_findings(input["open_findings"], "open-findings")
+      errors << open_error if open_error
+      if open_document && input["open_findings"].is_a?(Hash)
+        open_records = open_document.fetch("review_findings")
+        actual_open_ids = open_records.map { |finding| finding["id"] }
+        errors << "open-finding-ids-mismatch" unless input["open_findings"]["ids"] == actual_open_ids
+        latest_document, = load_findings(round["review_findings"], "review-findings") if round.is_a?(Hash)
+        if latest_document
+          latest_open_records = latest_document.fetch("review_findings").select do |finding|
+            OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
+          end
+          errors << "open-findings-round-mismatch" unless open_records == latest_open_records
+        end
+        controls = input["finding_controls"]
+        control_ids = controls.is_a?(Array) ? controls.filter_map { |control| control["finding_id"] if control.is_a?(Hash) } : []
+        errors << "finding-controls-mismatch" unless control_ids == actual_open_ids && control_ids.uniq == control_ids
+        unless controls.is_a?(Array) && controls.all? do |control|
+          control.is_a?(Hash) && [true, false].include?(control["load_bearing"]) &&
+          [true, false].include?(control["cap_piercing"])
+        end
+          errors << "finding-controls-invalid"
+        end
+
+        consequential_ids = open_document.fetch("review_findings").filter_map do |finding|
+          finding["id"] if finding["consequential"] == true || %w[P0 P1].include?(finding["severity"])
+        end
+        declared_new = round.is_a?(Hash) ? round.fetch("new_consequential_finding_ids", []) : []
+        errors << "new-consequential-finding-invalid" unless (declared_new - consequential_ids).empty?
+
+        if round.is_a?(Hash) && round["number"] == 5 && !actual_open_ids.empty?
+          errors.concat(validate_cap_adjudication(input["cap_adjudication"], actual_open_ids))
+        end
+      end
+    end
+
+    errors.compact.uniq
+  end
+
+  def reduce(input)
+    errors = validate(input)
+    unless errors.empty?
+      return decision("blocked", false, errors.sort)
+    end
+
+    if input["review_state"] == "complete"
+      open_ids = input.dig("open_findings", "ids")
+      if open_ids == []
+        decision("task_complete", true, ["review-clean"])
+      elsif input.fetch("rounds").last["number"] == 5
+        blocking_reasons = cap_blocking_reasons(input)
+        if blocking_reasons.empty?
+          decision("task_complete", true, ["cap-adjudicated"])
+        else
+          decision("blocked", false, blocking_reasons)
+        end
+      else
+        reasons = ["open-findings-require-fix"]
+        latest_round = input.fetch("rounds").last
+        reasons.unshift("consequential-new-breakage") unless latest_round.fetch("new_consequential_finding_ids").empty?
+        decision("fix_required", false, reasons)
+      end
+    else
+      decision("review_eligible", false, ["exact-review-package-current"])
+    end
+  end
+
+  def cap_blocking_reasons(input)
+    document, = load_findings(input["open_findings"], "open-findings")
+    findings = document.fetch("review_findings")
+    reasons = []
+    reasons << "p0-finding-open" if findings.any? { |finding| finding["severity"] == "P0" }
+    controls = input.fetch("finding_controls")
+    reasons << "cap-piercing-finding-open" if controls.any? { |control| control["cap_piercing"] }
+    reasons << "load-bearing-finding-open" if controls.any? { |control| control["load_bearing"] }
+    adjudications = input.dig("cap_adjudication", "findings")
+    reasons << "cap-adjudicated-blocked" if adjudications.any? { |record| record["disposition"] == "blocked" }
+    reasons
+  end
+
+  def decision(status, dependent_task_permitted, reasons)
+    {
+      "contract" => "task-review-loop-decision",
+      "version" => 1,
+      "status" => status,
+      "dependent_task_permitted" => dependent_task_permitted,
+      "reasons" => reasons
+    }
+  end
+end
+
+begin
+  input = JSON.parse($stdin.read)
+  puts JSON.generate(TaskReviewLoop.reduce(input))
+rescue JSON::ParserError
+  puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["malformed-json"]))
+end

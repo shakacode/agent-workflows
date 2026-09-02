@@ -21,6 +21,9 @@ own base integration, conflict resolution, final validation, PR publication,
 review convergence, hosted CI, readiness, merge, production, promotion, or
 release.
 
+After handoff, run the [Task Review Loop](pr-batch-task-review.md); it owns task
+review and fix rounds.
+
 ## Input Contract
 
 Consume one lane record with known values for:
