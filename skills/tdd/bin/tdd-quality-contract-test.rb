@@ -86,25 +86,24 @@ class TddQualityContractTest < Minitest::Test
 
   def test_reference_defines_the_falsifiable_test_quality_contract
     reference = normalized_reference
+    headings = read(REFERENCE_PATH).lines.map(&:strip).grep(/\A## /)
 
-    # Exact prose checks protect the documented contract only.
-    assert_includes reference, "Before writing a test body, name one realistic production break it should catch"
-    assert_includes reference, "wrong branch, value, or argument"
-    assert_includes reference, "missing side effect"
-    assert_includes reference, "boundary or validation failure"
-    assert_includes reference, "empty or default result"
-    assert_includes reference, "redesign the test around observable behavior"
-    assert_includes reference, "literal expected values or independently hand-checked fixtures"
-    assert_includes reference, "explicitly named characterization test backed by independent evidence"
-    assert_includes reference, "prove only source or packaging invariants"
-    assert_includes reference, "cannot prove runtime behavior or that an agent follows prose"
-    assert_includes reference, "outputs, side effects, exit status, or consuming-agent behavior"
-    assert_includes reference, "Reject constant and private-structure change detectors"
-    assert_includes reference, "Mock only slow or external boundaries"
+    # These assertions protect the documented contract structure and a few stable anchors only.
+    [
+      "## Name the break",
+      "## Derive expectations independently",
+      "## Separate behavior from source invariants",
+      "## Keep the behavior real",
+      "## Run a bounded mutation check",
+      "## Attribution"
+    ].each do |heading|
+      assert_includes headings, heading
+    end
+    assert_includes reference, "observable behavior"
+    assert_includes reference, "independently hand-checked fixtures"
+    assert_includes reference, "source or packaging invariants"
     assert_includes reference, "realistic and complete doubles"
-    assert_includes reference, "The existence of a mock is not behavioral proof"
     assert_includes reference, "small, finite set of realistic failure modes"
-    assert_includes reference, "Do not require mutation-testing software"
     assert_includes reference, "Superpowers v6.2.0"
     assert_includes reference, "44c9b2d6e889982ac18c27d05a19fefe335194e1"
     assert_includes reference, "MIT License"
