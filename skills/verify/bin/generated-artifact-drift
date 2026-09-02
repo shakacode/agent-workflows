@@ -1,0 +1,197 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "optparse"
+require "open3"
+require "pathname"
+require "yaml"
+
+module GeneratedArtifactDrift
+  class Error < StandardError; end
+
+  module_function
+
+  def run(argv)
+    options = { root: Dir.pwd, changed_files: [] }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: generated-artifact-drift [--root DIR] [--base-ref REF | --changed-file PATH ...]"
+      opts.on("--root DIR", "Repository root (default: current directory)") { |value| options[:root] = value }
+      opts.on("--base-ref REF", "Compare REF...HEAD plus index and working tree paths") do |value|
+        options[:base_ref] = value
+      end
+      opts.on("--changed-file PATH", "Supply a changed path directly; repeatable") do |value|
+        options[:changed_files] << value
+      end
+    end
+    parser.parse!(argv)
+
+    policy_path = File.join(File.expand_path(options.fetch(:root)), ".agents", "agent-workflow.yml")
+    yaml = File.read(policy_path, encoding: "UTF-8")
+    config = YAML.safe_load(yaml, aliases: false) || {}
+    return 0 unless config.is_a?(Hash) && config.key?("generated_artifacts")
+
+    declarations = config.fetch("generated_artifacts")
+    validation_errors = generated_artifact_duplicate_errors(yaml) + policy_errors(declarations)
+    unless validation_errors.empty?
+      raise Error, "invalid generated_artifacts policy: #{validation_errors.join('; ')}"
+    end
+
+    if options[:base_ref] && !options.fetch(:changed_files).empty?
+      raise Error, "use either --base-ref or --changed-file, not both"
+    end
+
+    if options[:base_ref]
+      options[:changed_files] = changed_files_from_git(options.fetch(:root), options.fetch(:base_ref))
+    elsif options.fetch(:changed_files).empty?
+      raise Error, "a declared generated_artifacts policy requires --base-ref or --changed-file"
+    end
+
+    failures = []
+    advisories = []
+    changed_files = options.fetch(:changed_files)
+    declarations.each_with_index do |declaration, index|
+      next unless changed_files.include?(declaration["source"])
+
+      unless declaration["golden_test"].is_a?(String) && !declaration["golden_test"].strip.empty?
+        failures << "FAIL generated-artifact drift gate: source #{declaration['source'].inspect} changed, but " \
+                    "generated_artifacts[#{index}].golden_test is not declared. " \
+                    "Add the repo-owned golden test path before verification can pass."
+        next
+      end
+      next unless (declaration.fetch("mirrors") & changed_files).empty?
+
+      mirrors = declaration.fetch("mirrors").sort.map(&:inspect).join(", ")
+      advisories << "ADVISORY acknowledgment-required: generated-artifact source " \
+                    "#{declaration['source'].inspect} changed, but none of its declared mirrors changed: #{mirrors}. " \
+                    "Update a mirror or record why no mirror change is needed in verification evidence."
+    end
+    failures.each { |failure| warn failure }
+    advisories.each { |advisory| puts advisory }
+    failures.empty? ? 0 : 1
+  rescue Psych::Exception, SystemCallError => e
+    warn "generated-artifact drift gate could not read the repository seam: #{e.message}"
+    2
+  rescue Error => e
+    warn "generated-artifact drift gate: #{e.message}"
+    2
+  rescue OptionParser::ParseError => e
+    warn e.message
+    warn parser
+    64
+  end
+
+  def changed_files_from_git(root, base_ref)
+    if base_ref.empty? || base_ref.include?("\0") || base_ref.include?("\n")
+      raise Error, "--base-ref must be a nonempty single-line Git revision"
+    end
+
+    _stdout, stderr, status = Open3.capture3(
+      "git", "-C", File.expand_path(root), "rev-parse", "--verify", "--quiet", "--end-of-options", "#{base_ref}^{commit}"
+    )
+    raise Error, "could not resolve --base-ref #{base_ref.inspect}: #{stderr.strip}" unless status.success?
+
+    [
+      git_changed_paths(root, "diff", "--name-only", "--no-renames", "-z", "#{base_ref}...HEAD", "--"),
+      git_changed_paths(root, "diff", "--name-only", "--no-renames", "-z", "--cached", "--"),
+      git_changed_paths(root, "diff", "--name-only", "--no-renames", "-z", "--"),
+      git_changed_paths(root, "ls-files", "--others", "--exclude-standard", "-z", "--")
+    ].flatten.uniq
+  end
+
+  def git_changed_paths(root, *arguments)
+    stdout, stderr, status = Open3.capture3("git", "-C", File.expand_path(root), *arguments)
+    raise Error, "could not inspect changed paths: #{stderr.strip}" unless status.success?
+
+    stdout.force_encoding(Encoding::UTF_8)
+    raise Error, "Git returned a changed path that is not valid UTF-8" unless stdout.valid_encoding?
+
+    stdout.split("\0")
+  end
+
+  def policy_errors(declarations)
+    return ["expected a nonempty list"] unless declarations.is_a?(Array) && !declarations.empty?
+
+    errors = declarations.each_with_index.flat_map do |declaration, index|
+      declaration_errors(declaration, index)
+    end
+    sources = declarations.filter_map { |entry| entry["source"] if entry.is_a?(Hash) }
+    errors << "source paths must be unique" if sources.length != sources.uniq.length
+    errors
+  end
+
+  def generated_artifact_duplicate_errors(yaml)
+    duplicate_key_errors(Psych.parse_stream(yaml), "$", []).select do |error|
+      error.start_with?("$.generated_artifacts ") || error == '$ contains duplicate key "generated_artifacts"'
+    end
+  end
+
+  def duplicate_key_errors(node, path, errors)
+    return errors unless node.respond_to?(:children) && node.children.is_a?(Array)
+
+    if node.is_a?(Psych::Nodes::Mapping)
+      seen = {}
+      node.children.each_slice(2) do |key_node, value_node|
+        key = key_node.respond_to?(:value) ? key_node.value : nil
+        if key.nil?
+          errors << "#{path} contains a non-scalar mapping key"
+        elsif seen.key?(key)
+          errors << "#{path} contains duplicate key #{key.inspect}"
+        else
+          seen[key] = true
+        end
+        duplicate_key_errors(value_node, "#{path}.#{key}", errors)
+      end
+    else
+      node.children.each { |child| duplicate_key_errors(child, path, errors) }
+    end
+    errors
+  end
+
+  def declaration_errors(declaration, index)
+    prefix = "generated_artifacts[#{index}]"
+    return ["#{prefix} must be a mapping"] unless declaration.is_a?(Hash)
+
+    errors = []
+    allowed_keys = %w[source mirrors golden_test]
+    unknown_keys = declaration.keys.reject { |key| allowed_keys.include?(key) }
+    errors << "#{prefix} contains unknown key(s): #{unknown_keys.map(&:inspect).join(', ')}" unless unknown_keys.empty?
+    errors.concat(path_errors(declaration["source"], "#{prefix}.source"))
+
+    mirrors = declaration["mirrors"]
+    if !mirrors.is_a?(Array) || mirrors.empty?
+      errors << "#{prefix}.mirrors must be a nonempty list of repository-relative paths"
+    else
+      mirrors.each_with_index do |mirror, mirror_index|
+        errors.concat(path_errors(mirror, "#{prefix}.mirrors[#{mirror_index}]"))
+      end
+      errors << "#{prefix}.mirrors must not contain duplicate paths" if mirrors.length != mirrors.uniq.length
+      errors << "#{prefix}.source must not also be a mirror" if mirrors.include?(declaration["source"])
+    end
+
+    if declaration.key?("golden_test")
+      errors.concat(path_errors(declaration["golden_test"], "#{prefix}.golden_test"))
+    end
+    errors
+  end
+
+  def path_errors(value, label)
+    unless value.is_a?(String) && !value.empty? && value.valid_encoding?
+      return ["#{label} must be a nonempty repository-relative path"]
+    end
+    if value.include?("\0") || value.include?("\n") || value.include?("\r")
+      return ["#{label} must not contain control characters"]
+    end
+
+    path = Pathname.new(value)
+    if value == "." || value.include?("\\") || path.absolute? || path.cleanpath.to_s != value
+      return ["#{label} must be a canonical repository-relative path"]
+    end
+    return ["#{label} must not contain '..' traversal"] if path.each_filename.include?("..")
+
+    []
+  rescue ArgumentError
+    ["#{label} must be a canonical repository-relative path"]
+  end
+end
+
+exit GeneratedArtifactDrift.run(ARGV) if $PROGRAM_NAME == __FILE__

@@ -15,14 +15,16 @@ Use `/verify` for local pre-PR checks. Use `/run-ci` when you need `.agents/bin/
 2. Resolve `BASE_BRANCH` from `.agents/agent-workflow.yml` key `base_branch`, then inspect the current branch diff
    with `git status --short`, `git diff --name-only "origin/${BASE_BRANCH}...HEAD"`, and
    `git diff --stat "origin/${BASE_BRANCH}...HEAD"`.
-3. Decide the required verification set that covers the changed surface area using the **Scope Guide** below. Always
+3. Run the [generated-artifact drift gate](#generated-artifact-drift-gate). Preserve any acknowledgment-required
+   advisory in the verification evidence and record the author's acknowledgment or explanation.
+4. Decide the required verification set that covers the changed surface area using the **Scope Guide** below. Always
    include `.agents/bin/lint` when present, and always include `.agents/bin/validate` before
    creating a commit, even when the changed surface is documentation-only, because that gate can scan all files of its
    language, not just changed or staged ones, so docs-only commits can still expose pre-existing offenses that CI will
    catch.
-4. Run each command in order and stop on the first failure. Report the failing command, the relevant error output, and the next fix to attempt.
-5. For formatting failures (auto-fixable formatter or lint offenses), run the repo's documented autofix command or `.agents/bin/lint` mode when it supports fixes; do not manually edit formatting-only changes.
-6. After one or more edits for a failure, restart at the failed command and continue forward. Track a loop counter per
+5. Run each command in order and stop on the first failure. Report the failing command, the relevant error output, and the next fix to attempt.
+6. For formatting failures (auto-fixable formatter or lint offenses), run the repo's documented autofix command or `.agents/bin/lint` mode when it supports fixes; do not manually edit formatting-only changes.
+7. After one or more edits for a failure, restart at the failed command and continue forward. Track a loop counter per
    command:
    - Increment the counter when the same command fails on the same first item (test name, lint offense, or formatter
      file) as the previous run.
@@ -31,7 +33,32 @@ Use `/verify` for local pre-PR checks. Use `/run-ci` when you need `.agents/bin/
    - Stop immediately and report a regression if a later fix causes a command that previously passed to fail again on
      the same file, symbol, or test item. Ask the user how to proceed rather than attempting a blind revert.
    - Do not claim a failure is fixed until the command passes locally.
-7. Finish with the exact commands run and their pass/fail status.
+8. Finish with the exact commands run and their pass/fail status.
+
+## Generated-Artifact Drift Gate
+
+`generated_artifacts` is an optional repository policy list. Each entry has one literal `source` path, a nonempty
+`mirrors` path list, and an optional `golden_test` path. All paths are canonical repository-relative paths. The seam
+doctor validates this shape. A missing `golden_test` remains structurally valid because the gate fails only when that
+entry's `source` changes.
+
+Resolve `VERIFY_SKILL_DIR` from an explicit environment value, the loaded skill's base directory, or the repo-local
+`.agents/skills/verify` copy. Stop with a precise missing-helper error if none contains the executable. Then run:
+
+```bash
+repo_root="$(git rev-parse --show-toplevel)"
+"${VERIFY_SKILL_DIR}/bin/generated-artifact-drift" --root "$repo_root" --base-ref "origin/${BASE_BRANCH}"
+```
+
+The helper combines the committed branch diff with staged, unstaged, and untracked paths. It compares path sets only.
+It never compares a source template with rendered mirror content.
+
+- No `generated_artifacts` declaration produces no output and exits successfully.
+- A changed source without `golden_test` fails and names the source and missing declaration.
+- A changed source with no changed mirror exits successfully but prints an `ADVISORY acknowledgment-required` line.
+  Copy that line into the verification evidence. Follow it with `Acknowledgment:` and either the reason that no mirror
+  update is needed or the mirror update that resolves the advisory.
+- Any malformed declaration or unavailable diff evidence fails closed. Do not replace the helper with guessed paths.
 
 ## Default Verification Order
 
@@ -88,6 +115,8 @@ Use this concise summary:
 ```text
 Verification:
 - PASS git diff --check "origin/${BASE_BRANCH}...HEAD"
+- ADVISORY acknowledgment-required: <exact generated-artifact advisory, when emitted>
+  Acknowledgment: <why no mirror update is needed, or which mirror was updated>
 - FAIL <repo formatter check>
 
 Next fix:
