@@ -206,11 +206,11 @@ module CloseoutEvidenceReplay
   end
 
   def replay(text, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
-    # A PR body is untrusted input and may carry invalid bytes. Scrub once at the entry point so
-    # every downstream regex is safe: an undecodable body must replay to a verdict, not abort the
-    # gate with a stack trace. U+FFFD is not an authority marker, so scrubbing cannot manufacture
-    # an accepted reference.
-    text = text.to_s.scrub
+    # A PR body is untrusted input and may carry invalid bytes. Reject undecodable UTF-8 before
+    # parsing so corrupt evidence cannot become authoritative after replacement-character scrubbing.
+    text = text.to_s.dup.force_encoding(Encoding::UTF_8)
+    return invalid_utf8_replay unless text.valid_encoding?
+
     qa_v1_markers = marker_bodies(text, "qa-evidence v1")
     qa_v2_markers = marker_bodies(text, "qa-evidence v2")
     applicable_v2_markers = qa_v2_markers.select do |marker|
@@ -1371,6 +1371,26 @@ module CloseoutEvidenceReplay
       "missing" => ["exactly one hosted-qa-evidence v1 marker is required"],
       "errors" => [],
       "marker_count" => marker_count
+    }
+  end
+
+  def invalid_utf8_replay
+    reason = "input contains invalid UTF-8"
+    qa = unknown(reason)
+    hosted_qa = {
+      "verdict" => "UNKNOWN",
+      "marker_version" => 1,
+      "fields" => {},
+      "criteria" => [],
+      "missing" => [reason],
+      "errors" => []
+    }
+    priority = priority_unknown(reason)
+    {
+      "overall_verdict" => overall_verdict([qa, hosted_qa, priority]),
+      "qa_evidence" => qa,
+      "hosted_qa_evidence" => hosted_qa,
+      "priority_finding_dispositions" => priority
     }
   end
 

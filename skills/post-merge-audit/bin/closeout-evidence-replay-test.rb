@@ -1637,6 +1637,17 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     refute_nil data.dig("qa_evidence", "verdict")
   end
 
+  def test_replay_rejects_invalid_utf8_in_otherwise_valid_hosted_evidence
+    body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", "run-report-\xFF")
+    body.force_encoding("UTF-8")
+
+    data = run_replay(body)
+
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", data.fetch("hosted_qa_evidence").fetch("verdict")
+    assert_includes data.fetch("hosted_qa_evidence").fetch("missing"), "input contains invalid UTF-8"
+  end
+
   def test_durable_urls_reject_every_loopback_spelling
     # Dotted-quad is one spelling; inet_aton also accepts short, decimal, hex, and octal forms
     # that resolve to the same loopback address, and rejecting only the dotted-quad left the
