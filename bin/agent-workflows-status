@@ -98,10 +98,20 @@ module AgentWorkflowsStatus
 
     file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
     begin
-      return nil unless file.stat.file?
+      opened = file.stat
+      return nil unless opened.file?
 
       file.binmode
-      file.read
+      bytes = file.read
+      file.rewind
+      # Same binding the installer's own metadata reader uses: reject a file whose identity or
+      # content moved under the handle mid-read.
+      final = file.stat
+      unless final.file? && final.dev == opened.dev && final.ino == opened.ino && file.read == bytes
+        raise "invalid metadata #{path}: changed while being read"
+      end
+
+      bytes
     ensure
       file.close
     end
@@ -222,14 +232,15 @@ module AgentWorkflowsStatus
   # ancestor could have been redirected wholesale, and O_NOFOLLOW guards only the final
   # component; ordinary version reporting still works there, so a legitimately symlinked agent
   # home stays usable for everything except sourcing a digest.
-  def publishable_runtime_manifest_digests(status, target, metadata)
+  def publishable_runtime_manifest_digests(status, target_redirected, metadata)
     return nil if status == "CHECK_FAILED"
-    return nil if target && AgentWorkflowsDeliveryState.symlinked_target_component(target)
+    return nil if target_redirected
 
     runtime_manifest_digests(metadata)
   end
 
-  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
+  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil,
+                     checked_remote: false, reason: nil, delivery_state: nil, target_redirected: true)
     payload = {
       "status" => status,
       "host" => host,
@@ -245,7 +256,7 @@ module AgentWorkflowsStatus
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
       "native" => delivery_state&.fetch("native", nil),
       "flat" => delivery_state&.fetch("flat", nil),
-      "runtime_manifest_digests" => publishable_runtime_manifest_digests(status, target, metadata)
+      "runtime_manifest_digests" => publishable_runtime_manifest_digests(status, target_redirected, metadata)
     }
     payload["superpowers"] = delivery_state.fetch("superpowers") if delivery_state&.key?("superpowers")
     payload
@@ -295,6 +306,9 @@ module AgentWorkflowsStatus
     end
 
     host, target = resolve_host_and_target(options.fetch(:host), options[:target])
+    # Resolved before the read, so publishing a trust anchor is decided on the path state that
+    # gated that read rather than on state observed afterwards.
+    target_redirected = !AgentWorkflowsDeliveryState.symlinked_target_component(target).nil?
     begin
       metadata = read_metadata(target)
     rescue RuntimeError, SystemCallError, JSON::ParserError, TypeError => e
@@ -367,7 +381,8 @@ module AgentWorkflowsStatus
       metadata:,
       available_revision: revision,
       checked_remote: options.fetch(:fetch),
-      delivery_state: delivery
+      delivery_state: delivery,
+      target_redirected:
     )
   rescue ArgumentError, RuntimeError, SystemCallError, JSON::ParserError, TypeError => e
     status_payload("CHECK_FAILED", target: options[:target], source: options[:source], host: options[:host], reason: e.message)
