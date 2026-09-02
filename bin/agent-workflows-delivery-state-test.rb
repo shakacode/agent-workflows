@@ -1615,13 +1615,7 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
   end
 
   def managed_path_fingerprint(path)
-    stat = File.lstat(path)
-    mode = stat.mode & 0o7777
-    if stat.directory?
-      Digest::SHA256.hexdigest(JSON.generate(["directory", mode]))
-    else
-      Digest::SHA256.hexdigest(JSON.generate(["file", mode, Digest::SHA256.file(path).hexdigest]))
-    end
+    AgentWorkflowsDeliveryState.managed_path_fingerprint(path)
   end
 
   def write_managed_bin_copy(target, source, contents)
@@ -2538,8 +2532,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
       refute status.success?, output
       assert_equal "ambiguous", payload.dig("bin", "state")
+      # One cause, named once, while the entries it hides stay classified.
       assert_equal [doctor], payload.dig("bin", "blocking")
-      assert_empty payload.dig("bin", "missing")
+      assert_equal ["agent_doctor/autonomous_merge_policy.rb", "agent_doctor/renderer.rb"],
+                   payload.dig("bin", "missing")
     end
   end
 
@@ -2620,6 +2616,28 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     # query. Pinning it here removes the drift that duplication would invite.
     assert_equal AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT,
                  AgentWorkflowsDeliveryState::DELIVERY_STATE_HELPER_TIMEOUT_FALLBACK
+  end
+
+  def test_partition_holds_behind_an_ancestor_conflict
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor = File.join(target, "bin/agent_doctor")
+      FileUtils.rm_rf(doctor)
+      File.symlink(File.join(source, "bin/agent_doctor"), doctor)
+      bin_root = File.join(target, "bin")
+
+      payload, status, output = check_managed_bin(target, source)
+      bin = payload.fetch("bin")
+
+      refute status.success?, output
+      # Entries hidden behind a conflicted ancestor stay in the partition the
+      # payload documents rather than disappearing from both halves of it.
+      assert_equal fingerprints.keys.sort,
+                   (bin.fetch("paths").map { |path| path.delete_prefix("#{bin_root}/") } +
+                    bin.fetch("missing")).sort
+      assert_equal [doctor], bin.fetch("blocking")
+    end
   end
 
   def test_empty_managed_bin_fingerprints_fail_closed_for_a_copy_install

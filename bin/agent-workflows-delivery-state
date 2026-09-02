@@ -12,6 +12,10 @@ require "tmpdir"
 module AgentWorkflowsDeliveryState
   SUPERPOWERS_MARKETPLACES = %w[openai-curated openai-curated-remote superpowers-dev].freeze
   MANAGED_BIN_COPY_FINGERPRINTS = "managed_bin_copy_fingerprints"
+  # Built here, at load, because check fans out threads that all reach the memo:
+  # lazily initializing the lock would itself be the race it exists to prevent.
+  @doctor_timeout_budgets = {}
+  @doctor_timeout_budget_lock = Mutex.new
   MANAGED_DOCTOR_SUBDIRECTORY = "agent_doctor"
   MANAGED_DOCTOR_OWNERSHIP_MARKERS = %w[.agent-workflows-managed .agent-stack-managed].freeze
   MANAGED_DOCTOR_MARKER = ".agent-workflows-managed"
@@ -35,8 +39,6 @@ module AgentWorkflowsDeliveryState
   # though this path reaches the metadata on its own.
   def doctor_timeout_budget(target)
     key = File.expand_path(target)
-    @doctor_timeout_budgets ||= {}
-    @doctor_timeout_budget_lock ||= Mutex.new
     @doctor_timeout_budget_lock.synchronize do
       return @doctor_timeout_budgets[key] if @doctor_timeout_budgets.key?(key)
 
@@ -74,12 +76,10 @@ module AgentWorkflowsDeliveryState
     loaded = File.join(__dir__, name)
     return true unless same_file?(loaded, File.join(bin_root, name))
 
+    # No recorded digest is no attestation, and with a fallback for the one
+    # value this buys us, refusing costs nothing. A map that records other
+    # entries but omits this module is exactly the case worth refusing.
     digest = fingerprints[name]
-    # Nothing recorded for this module means there is no attestation to hold it
-    # to, the same unrecorded state the rest of this map degrades to. Refusing
-    # here instead would let unreadable metadata disable unrelated reporting.
-    return true if digest.nil?
-
     digest.is_a?(String) && managed_path_fingerprint(loaded) == digest.downcase
   end
 
@@ -1015,10 +1015,8 @@ module AgentWorkflowsDeliveryState
     missing = []
     unowned_paths = []
     fingerprints.sort.each do |name, digest|
-      if (ancestor = managed_bin_ancestor_conflict(bin_root, name))
-        unowned_paths << ancestor
-        next
-      end
+      ancestor = managed_bin_ancestor_conflict(bin_root, name)
+      unowned_paths << ancestor if ancestor
 
       path = File.join(bin_root, name)
       unless File.symlink?(path) || File.exist?(path)
@@ -1027,6 +1025,9 @@ module AgentWorkflowsDeliveryState
       end
 
       present << path
+      # The ancestor already blocks; judging the entry through it would add a
+      # second path to chase for one cause.
+      next if ancestor
       next if stack_owned && doctor_tree_entry?(name)
       # The installer accepts an empty doctor root and restores its contents and
       # mode wholesale, so its recorded mode is not judged in that state.
