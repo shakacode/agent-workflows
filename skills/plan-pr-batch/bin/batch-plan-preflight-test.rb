@@ -2447,7 +2447,7 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def test_safe_installed_pack_fixture_accepts_and_actually_reruns_its_fixed_sibling
-    with_isolated_pack("batch-plan-preflight-safe-pack") do |_root, _pack, fixture_helper, _fixture_gate|
+    with_isolated_pack("batch-plan-preflight-safe-pack") do |_root, _pack, fixture_helper, fixture_gate|
       result, stderr, status = evaluate(input_for, helper: fixture_helper)
 
       assert status.success?, stderr
@@ -2462,6 +2462,16 @@ class BatchPlanPreflightTest < Minitest::Test
       refute mismatch_status.success?, "The fixture pack must rerun its own fixed sibling, not trust the caller."
       assert_equal ["stage-dependency-replay-mismatch"], violation_codes(mismatch)
       assert_empty mismatch.dig("launch", "eligible_lane_ids")
+
+      # Bind execution to this pack's sibling rather than the live installed
+      # one: replacing only the fixture sibling, at the same owner and mode,
+      # must change the outcome.
+      File.write(fixture_gate, "#!/usr/bin/env ruby\n# frozen_string_literal: true\n\nexit 1\n")
+      File.chmod(0o755, fixture_gate)
+      stub, _stub_stderr, stub_status = evaluate(input_for, helper: fixture_helper)
+
+      refute stub_status.success?
+      assert_equal ["stage-dependency-replay-execution-failed"], violation_codes(stub)
     end
   end
 
@@ -2623,16 +2633,20 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def test_live_installed_pack_helper_and_sibling_are_left_untouched
+    live = [HELPER, STAGE_DEPENDENCY_GATE]
+    before = live.to_h { |path| [path, [Digest::SHA256.file(path).hexdigest, File.lstat(path).mode]] }
+
     with_isolated_pack("batch-plan-preflight-live-pack-guard") do |_root, _pack, fixture_helper, fixture_gate|
       File.chmod(0o777, fixture_gate)
       evaluate(input_for, helper: fixture_helper)
+    end
 
-      assert_path_exists HELPER
-      assert_path_exists STAGE_DEPENDENCY_GATE
-      assert_predicate File.lstat(HELPER), :file?
-      assert_predicate File.lstat(STAGE_DEPENDENCY_GATE), :file?
-      assert_equal 0, File.lstat(HELPER).mode & 0o022
-      assert_equal 0, File.lstat(STAGE_DEPENDENCY_GATE).mode & 0o022
+    live.each do |path|
+      assert_path_exists path
+      assert_predicate File.lstat(path), :file?
+      assert_equal 0, File.lstat(path).mode & 0o022, "#{path} must keep no group/other write bit"
+      assert_equal before.fetch(path), [Digest::SHA256.file(path).hexdigest, File.lstat(path).mode],
+                   "#{path} content and mode must be untouched by the adversarial fixtures"
     end
   end
 end
