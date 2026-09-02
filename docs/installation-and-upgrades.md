@@ -488,8 +488,12 @@ digest="$(printf '%s' "$status" |
 
 Read the digest only through `agent-workflows-status`. It opens
 `<target>/.agent-workflows-install.json` with `O_NOFOLLOW`, so a metadata path
-replaced by a symlink is refused rather than followed, and it withholds the
-digests entirely on `CHECK_FAILED`. Reading the file directly with `jq`, `cat`,
+replaced by a symlink is refused rather than followed. It also withholds the
+digests entirely on `CHECK_FAILED`, and for a target reached through a symlinked
+ancestor, since `O_NOFOLLOW` guards only the final path component and a
+redirected home could otherwise supply the expected value. Point `--target` at
+the real agent home; a symlinked home still reports version and upgrade state
+normally, it just publishes no digest. Reading the file directly with `jq`, `cat`,
 or any ordinary tool follows a planted symlink and can hand the gate an expected
 digest chosen by whoever planted it, which is exactly the trust the claim is
 supposed to carry. Do not put the helper in a pipeline under `set -o pipefail`

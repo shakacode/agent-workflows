@@ -217,6 +217,18 @@ module AgentWorkflowsStatus
     digests.is_a?(Hash) && !digests.empty? ? digests : nil
   end
 
+  # Publish the trust anchor only from installation state this helper could actually vouch for.
+  # CHECK_FAILED means it could not check the install. A target reached through a symlinked
+  # ancestor could have been redirected wholesale, and O_NOFOLLOW guards only the final
+  # component; ordinary version reporting still works there, so a legitimately symlinked agent
+  # home stays usable for everything except sourcing a digest.
+  def publishable_runtime_manifest_digests(status, target, metadata)
+    return nil if status == "CHECK_FAILED"
+    return nil if target && AgentWorkflowsDeliveryState.symlinked_target_component(target)
+
+    runtime_manifest_digests(metadata)
+  end
+
   def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
     payload = {
       "status" => status,
@@ -233,9 +245,7 @@ module AgentWorkflowsStatus
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
       "native" => delivery_state&.fetch("native", nil),
       "flat" => delivery_state&.fetch("flat", nil),
-      # Withheld on CHECK_FAILED: an install this helper could not check is not installation
-      # state a coordinator should source a verified-installed-pack digest from.
-      "runtime_manifest_digests" => (status == "CHECK_FAILED" ? nil : runtime_manifest_digests(metadata))
+      "runtime_manifest_digests" => publishable_runtime_manifest_digests(status, target, metadata)
     }
     payload["superpowers"] = delivery_state.fetch("superpowers") if delivery_state&.key?("superpowers")
     payload

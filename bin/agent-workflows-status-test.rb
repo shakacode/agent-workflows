@@ -332,6 +332,35 @@ class AgentWorkflowsStatusTest < Minitest::Test
     end
   end
 
+  def test_symlinked_target_ancestor_withholds_runtime_manifest_digests
+    Dir.mktmpdir("agent-workflows-status-test") do |root|
+      real_home = File.join(root, "real-home")
+      linked_home = File.join(root, "linked-home")
+      FileUtils.mkdir_p(real_home)
+      File.symlink(real_home, linked_home)
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        metadata = {
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "",
+          "managed_runtime_manifest_digests" => { "autonomous-merge" => "a" * 64 }
+        }
+        write_metadata(real_home, metadata)
+
+        direct, direct_status = run_status({}, "--target", real_home, "--host", "claude", "--json")
+        linked, linked_status = run_status({}, "--target", linked_home, "--host", "claude", "--json")
+
+        assert_equal 0, direct_status.exitstatus, direct
+        assert_equal 0, linked_status.exitstatus, linked
+        assert_equal({ "autonomous-merge" => "a" * 64 },
+                     JSON.parse(direct).fetch("runtime_manifest_digests"), direct)
+        assert_equal "UP_TO_DATE", JSON.parse(linked).fetch("status"), linked
+        assert_nil JSON.parse(linked).fetch("runtime_manifest_digests"), linked
+      end
+    end
+  end
+
   def test_companion_status_reports_delivery_and_native_state
     Dir.mktmpdir("agent-workflows-status-test") do |target|
       Dir.mktmpdir("agent-workflows-status-source") do |source|
