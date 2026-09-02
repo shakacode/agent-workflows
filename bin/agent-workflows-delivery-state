@@ -625,7 +625,7 @@ module AgentWorkflowsDeliveryState
     Dir.children(skills_path).each_with_object({}) do |name, paths|
       path = File.join(skills_path, name)
       stat = File.lstat(path)
-      paths[[stat.dev, stat.ino]] = path
+      paths[path] = [stat.dev, stat.ino]
     rescue SystemCallError
       next
     end
@@ -721,11 +721,14 @@ module AgentWorkflowsDeliveryState
     end
     snapshot_backed = snapshot_backed_names.to_h { |name| [name, true] }
     # Two recorded names can resolve to one installed entry, for example a case-only
-    # rename recorded on a case-insensitive volume. Classify each entry once so the
-    # migration never stages the same directory twice, and let any recorded name that
-    # proves ownership own it. Report the entry under its real spelling on disk so a
-    # retained staging directory restores the exact path that was moved.
+    # rename recorded on a case-insensitive volume. Use filesystem identity to find
+    # that entry, then key it by its real directory path: distinct hard-linked
+    # directory entries can share an identity and must not be collapsed. This also
+    # preserves the installed spelling if staging later has to restore the entry.
     installed_paths = installed_skill_paths(skills_path)
+    installed_paths_by_identity = installed_paths.each_with_object(Hash.new { |hash, key| hash[key] = [] }) do |(path, identity), paths|
+      paths[identity] << path
+    end
     entries = {}
     names.each do |name|
       path = File.join(target, "skills", name)
@@ -736,8 +739,11 @@ module AgentWorkflowsDeliveryState
       rescue SystemCallError
         next
       end
-      key = [stat.dev, stat.ino]
-      entry = (entries[key] ||= { path: installed_paths.fetch(key, path), owned: false })
+      identity = [stat.dev, stat.ino]
+      candidates = installed_paths_by_identity.fetch(identity, [])
+      installed_path = candidates.find { |candidate| File.basename(candidate) == name } ||
+                       candidates.find { |candidate| File.basename(candidate).casecmp?(name) } || path
+      entry = (entries[installed_path] ||= { path: installed_path, owned: false })
 
       fingerprint_owned = legacy_flat && recorded_skill_copy_fingerprint_matches?(path, metadata, name)
       # Names carried only by a fingerprint have no entry in the recorded revision,
@@ -755,10 +761,10 @@ module AgentWorkflowsDeliveryState
                           fingerprint_owned || (name_snapshot && matches_directory_snapshot?(path, name_snapshot, name))
                         end
     end
-    # An installed entry that no recorded name resolves to is not installer-owned.
-    # Compare by filesystem entry rather than by name so a case-only alias cannot
-    # land in this list and in `entries` at the same time.
-    blocking = legacy_flat ? installed_paths.reject { |key, _| entries.key?(key) }.values : []
+    # An installed directory entry that no recorded name resolves to is not
+    # installer-owned. Entries use their real paths, so case aliases deduplicate while
+    # distinct hard links remain independently visible here.
+    blocking = legacy_flat ? installed_paths.keys.reject { |path| entries.key?(path) } : []
     entries.each_value do |entry|
       (entry.fetch(:owned) ? removable : blocking) << entry.fetch(:path)
     end

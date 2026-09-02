@@ -1699,6 +1699,78 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_hard_linked_symlink_alias_remains_a_blocking_extra
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      write_codex_native_state(target)
+      skills_path = File.join(target, "skills")
+      FileUtils.mkdir_p(skills_path)
+      alpha = File.join(skills_path, "alpha")
+      beta = File.join(skills_path, "beta")
+      extra = File.join(skills_path, "extra")
+      injection = File.join(tmp, "shared-symlink-identity.rb")
+      File.symlink(File.join(source, "skills/alpha"), alpha)
+      File.symlink(File.join(source, "skills/beta"), beta)
+      File.symlink(File.join(source, "skills/alpha"), extra)
+      # macOS rejects hard links to symlinks. Inject the shared lstat identity
+      # deterministically while keeping two distinct directory entries.
+      File.write(injection, <<~RUBY)
+        class << File
+          alias_method :lstat_without_shared_identity_fixture, :lstat
+
+          def lstat(path)
+            if File.expand_path(path) == ENV.fetch("QA_SHARED_IDENTITY_ALIAS")
+              lstat_without_shared_identity_fixture(ENV.fetch("QA_SHARED_IDENTITY_OWNER"))
+            else
+              lstat_without_shared_identity_fixture(path)
+            end
+          end
+        end
+
+        class << Dir
+          alias_method :children_without_shared_identity_fixture, :children
+
+          def children(path)
+            entries = children_without_shared_identity_fixture(path)
+            return entries unless File.expand_path(path) == ENV.fetch("QA_SHARED_IDENTITY_ROOT")
+
+            %w[alpha beta extra]
+          end
+        end
+      RUBY
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "symlink",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => revision
+      )
+
+      out, _err, status = run_state_with_env(
+        {
+          "RUBYOPT" => "-r#{injection}",
+          "QA_SHARED_IDENTITY_ALIAS" => extra,
+          "QA_SHARED_IDENTITY_OWNER" => alpha,
+          "QA_SHARED_IDENTITY_ROOT" => skills_path
+        },
+        "check", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal "ambiguous", flat.fetch("state")
+      assert_equal [extra], flat.fetch("blocking")
+      assert File.symlink?(alpha)
+      assert File.symlink?(extra)
+      assert File.symlink?(beta)
+    end
+  end
+
   def test_case_only_alias_is_reported_under_its_installed_spelling
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       skip "requires a case-insensitive filesystem" unless case_insensitive_filesystem?(tmp)
