@@ -32,12 +32,12 @@ reproduction explains the failure.
    gh run list --all --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,attempt,conclusion,headSha,event,workflowName,number,createdAt,url
    gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
    gh api repos/<OWNER>/<REPO>/actions/runs/<RUN_ID> --jq '{event: .event, path: .path, head_sha: .head_sha, run_attempt: .run_attempt}'
-   gh api repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/jobs --jq '.jobs[] | {name: .name, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}'
+   gh api repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs --jq '.jobs[] | {name: .name, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}'
    gh run view <RUN_ID> --attempt <N> --log
    ```
 
-   Use the run payload for event/configuration selection, the job payload for
-   job-level identity and runner labels, and the logs for any
+   Use the run payload for event/configuration selection, the attempt-specific
+   jobs payload for job-level identity and runner labels, and the logs for any
    workflow-dispatch inputs, matrix values, runner image, toolchain version, or
    other configuration selection the workflow prints. If a required dimension
    is still unavailable after those lookups, record it as `UNKNOWN`.
@@ -49,10 +49,11 @@ reproduction explains the failure.
    missed as same-commit hosted history.
    A run's `conclusion` is also the aggregate result across every job in that
    run, not the specific job named in the failure identity. Key candidate
-   runs off that job's own result instead—`gh run view <RUN_ID> --attempt <N>
-   --json jobs` and match by job name—so an unrelated job's failure or pass
-   is never substituted for the failure identity's own history, and a
-   retried run's earlier attempt is not silently dropped to the latest one.
+   runs off that job's own result instead—`gh api
+   repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs` and match by
+   job name—so an unrelated job's failure or pass is never substituted for
+   the failure identity's own history, and a retried run's earlier attempt is
+   not silently dropped to the latest one.
 
    - The equivalence predicate is mechanically evaluable only when the
      required dimensions above are known: event, inputs, matrix, runner image,

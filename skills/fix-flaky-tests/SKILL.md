@@ -129,7 +129,16 @@ commit, and check earlier attempts of a retried run — `gh run view`'s
  ```bash
  gh run list --all --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,attempt,conclusion,headSha,event,workflowName,number,createdAt,url
  gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
+ gh api repos/<OWNER>/<REPO>/actions/runs/<RUN_ID> --jq '{event: .event, path: .path, head_sha: .head_sha, run_attempt: .run_attempt}'
+ gh run view <RUN_ID> --attempt <N> --log
  ```
+
+Use the run payload for event/configuration selection, the attempt-specific
+jobs output for job-level identity and runner labels, and the per-attempt
+logs for any workflow-dispatch inputs, matrix values, runner image, toolchain
+version, or other configuration selection the workflow prints. If any of
+those required dimensions are still unavailable after those lookups, record
+them as `UNKNOWN` rather than inferring equivalence from job names alone.
 
 - `attempt` is the count of attempts, not a signal by itself; when a listed
   run's `attempt` is greater than 1, check its earlier attempts too.
