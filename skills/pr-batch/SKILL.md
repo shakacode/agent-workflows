@@ -546,15 +546,17 @@ outside the human-authored prompt in the Batch Plan, manifest, and coordination
 backend.
 The readable prompt is not standalone coordinator scope. For `copy-paste`,
 deliver the exact generated goal prompt with an exact immutable plan-state
-reference plus its exact `batch_plan_binding`; never rely on rendered clipboard
-text to preserve the frozen Batch Plan bytes. For `host-native-user-task`,
-deliver the exact plan bytes through a byte-preserving handoff envelope or use
-the same immutable-reference path. The receiving coordinator must resolve the
-plan state and reverify that immutable binding before preflight, every dispatch,
-and worker start. Multi-target groups remain one coordinator launch with
-one target per internal worker lane; the plan or reference preserves every
-target, lane, dependency, and ownership assignment without expanding the
-human-readable prompt.
+reference plus its exact `batch_plan_binding`; when `coordination_backend: n/a`
+leaves no durable reference, fall back to a byte-preserving inline handoff
+envelope carrying the exact plan bytes and the same `batch_plan_binding`; never
+rely on rendered clipboard text to preserve the frozen Batch Plan bytes. For
+`host-native-user-task`, deliver the exact plan bytes through a byte-preserving
+handoff envelope or use the same immutable-reference path. The receiving
+coordinator must resolve the plan state and reverify that immutable binding
+before preflight, every dispatch, and worker start. Multi-target groups remain
+one coordinator launch with one target per internal worker lane; the plan or
+reference preserves every target, lane, dependency, and ownership assignment
+without expanding the human-readable prompt.
 The resolved canonical workflow owns launcher provenance, telemetry, recurring
 wake translation, manifest grammar, and merge-planning policy. Keep those
 machine contracts out of the generated prompt. When the canonical workflow is

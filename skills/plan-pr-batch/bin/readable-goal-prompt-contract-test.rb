@@ -155,15 +155,16 @@ class ReadableGoalPromptContractTest < Minitest::Test
       mutated = surfaces.transform_values(&:dup)
       replaced = mutated.fetch(path).sub!(
         pin_pattern,
-        "For `copy-paste`, deliver the exact generated goal prompt with the complete Batch Plan " \
-        "or an exact durable plan-state reference plus its exact `batch_plan_binding`."
+        "For `copy-paste`, deliver the exact generated goal prompt with an exact immutable plan-state " \
+        "reference plus its exact `batch_plan_binding`; never rely on rendered clipboard text to preserve " \
+        "the frozen Batch Plan bytes."
       )
       refute_nil replaced, "#{path} mutation did not replace the copy-paste handoff"
 
       error = assert_raises(RuntimeError, path) do
         GoalPromptDriftContract.check_copy_paste_handoff!(mutated)
       end
-      assert_includes error.message, "#{path} copy-paste immutable-reference count is 0, expected 1"
+      assert_includes error.message, "#{path} copy-paste handoff count is 0, expected 1"
     end
   end
 
@@ -199,9 +200,9 @@ class ReadableGoalPromptContractTest < Minitest::Test
     normalized = @plan_skill.gsub(/\s+/, " ")
 
     assert_includes normalized,
-                    "With no explicit request, record `copy-paste` and deliver the prompt plus its exact immutable plan-state reference."
+                    "With no explicit request, record `copy-paste` and deliver the prompt plus its exact immutable plan-state reference, or a byte-preserving inline handoff envelope when `coordination_backend: n/a` leaves no durable reference."
     assert_includes normalized,
-                    "The portable `copy-paste` path must carry the exact immutable plan-state reference"
+                    "The portable `copy-paste` path must carry the exact immutable plan-state reference or, when `coordination_backend: n/a` leaves no durable reference, a byte-preserving inline handoff envelope carrying the exact plan bytes and the same `batch_plan_binding`"
     assert_includes normalized,
                     "A created task receives the exact generated goal prompt and either the exact plan bytes in a byte-preserving handoff envelope or the exact immutable plan-state reference in the same initial handoff"
     refute_includes normalized, "deliver the prompt plus its plan or reference"

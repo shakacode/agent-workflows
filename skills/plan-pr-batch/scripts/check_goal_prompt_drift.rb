@@ -81,7 +81,9 @@ module GoalPromptDriftContract
   REPOSITORY_NAME_PATTERN_PIN = 'REPOSITORY_NAME_PATTERN = /\A[A-Za-z0-9._-]{1,100}\z/'
   COPY_PASTE_IMMUTABLE_REFERENCE_PIN =
     "For `copy-paste`, deliver the exact generated goal prompt with an exact immutable plan-state " \
-    "reference plus its exact `batch_plan_binding`; never rely on rendered clipboard text to preserve " \
+    "reference plus its exact `batch_plan_binding`; when `coordination_backend: n/a` leaves no " \
+    "durable reference, fall back to a byte-preserving inline handoff envelope carrying the exact " \
+    "plan bytes and the same `batch_plan_binding`; never rely on rendered clipboard text to preserve " \
     "the frozen Batch Plan bytes."
 
   RESUME_SNIPPET = <<~TEXT.chomp
@@ -305,7 +307,7 @@ module GoalPromptDriftContract
       count = visible_text.scan(pin).length
       next if count == 1
 
-      fail!("#{path} copy-paste immutable-reference count is #{count}, expected 1")
+      fail!("#{path} copy-paste handoff count is #{count}, expected 1")
     end
   end
 

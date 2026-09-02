@@ -409,9 +409,11 @@ omit the queue summary and note that queue state is unavailable.
    Do not launch workers yet.
 9. When the user says to run it, use `$pr-batch`. For `copy-paste`, deliver the
    exact generated goal prompt with an exact immutable plan-state reference plus
-   its exact `batch_plan_binding`; never rely on rendered clipboard text to
-   preserve the frozen Batch Plan bytes. Reverify that
-   immutable binding before preflight, every dispatch, and worker start. A
+   its exact `batch_plan_binding`; when `coordination_backend: n/a` leaves no
+   durable reference, fall back to a byte-preserving inline handoff envelope
+   carrying the exact plan bytes and the same `batch_plan_binding`; never rely
+   on rendered clipboard text to preserve the frozen Batch Plan bytes. Reverify
+   that immutable binding before preflight, every dispatch, and worker start. A
    multi-target group remains one coordinator launch with one target per worker
    lane; the plan or reference preserves its complete scope.
    If the preceding step was `$spec`, go to step 2 first so `$plan-pr-batch`
