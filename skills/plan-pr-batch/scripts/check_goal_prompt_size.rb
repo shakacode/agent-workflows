@@ -148,6 +148,7 @@ plan_skill = read_repo_file("skills/plan-pr-batch/SKILL.md")
 pr_batch_skill = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill = read_repo_file("skills/triage/SKILL.md")
 prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
+source_checkout = ENV[SOURCE_CHECKOUT_ENV] == "1"
 
 prompt_intake_handoff = extract_markdown_section(
   prompt_intake,
@@ -192,7 +193,6 @@ launcher_record = extract_markdown_section(
   "## Launcher Run Record",
   "prompt intake"
 )
-require_phrases(launcher_record, LAUNCHER_RECORD_FIELDS, "canonical launcher run record")
 require_phrases(
   launcher_record,
   [
@@ -217,8 +217,30 @@ require_phrases(
     "`auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine `ask`",
     "machine-only `merge_authority: none`"
   ],
-  "canonical launcher run record"
+  "launcher run record"
 )
+require_phrases(launcher_record, LAUNCHER_RECORD_FIELDS, "launcher run record")
+
+if source_checkout
+  launcher_record_contract = read_repo_file("docs/github-task-prompts-and-run-records.md")
+  require_phrases(launcher_record_contract, LAUNCHER_RECORD_FIELDS, "canonical launcher run record")
+  require_phrases(
+    launcher_record_contract,
+    [
+      "one exact canonical `record_destination` in the durable Batch Plan",
+      "Each execution publishes exactly one `agent-launcher-run-record:v1` comment or durable record at that destination",
+      "one compact visible state, one collapsed details block, and one unique entry per planned lane",
+      "Reruns append a new outer record instead of replacing history",
+      "`lane_id`, dispatcher, `instance_id`, and launch token",
+      "A deterministic launch token is not unique across reruns and never substitutes for `run_id`",
+      "does not inject outer identity, destination, or replay values into the helper",
+      "not applicable — trusted-ad-hoc-override",
+      "That worker-start value is immutable for the remainder of the run",
+      "append a directly timestamped object to `workflow_versions.later_observations`"
+    ],
+    "canonical launcher run record"
+  )
+end
 
 codex_prompt = "/goal\n#{prompts.fetch('plan-pr-batch')}"
 
@@ -239,7 +261,7 @@ end
 begin
   GoalPromptDriftContract.check!(
     repo_root: REPO_ROOT,
-    source_checkout: ENV[SOURCE_CHECKOUT_ENV] == "1"
+    source_checkout: source_checkout
   )
 rescue RuntimeError => e
   abort_with_failure(e.message)

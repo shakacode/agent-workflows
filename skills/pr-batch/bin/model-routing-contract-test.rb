@@ -1108,24 +1108,44 @@ class ModelRoutingContractTest < Minitest::Test
     end
 
     prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
-    launcher_record = extract_markdown_section(prompt_intake, "## Launcher Run Record")
-    refute_includes launcher_record, "## Trust Handoff"
-    assert_includes launcher_record, "Model at prompt creation: <observed value or UNKNOWN>"
-    assert_includes launcher_record, "Model observed by worker: <observed value or UNKNOWN>"
-    assert_includes launcher_record, "Workflow at prompt creation: <version or UNKNOWN>"
-    assert_includes launcher_record, "Workflow observed at worker start: <version or UNKNOWN>"
-    assert_includes launcher_record, "Later workflow observations: <timestamped append-only entries or none>"
-    assert_includes launcher_record, "Launched at: <timestamp or pending>"
-    assert_includes launcher_record, "Run ID: <immutable unique per-execution run_id>"
-    assert_includes launcher_record,
+    intake_record = extract_markdown_section(prompt_intake, "## Launcher Run Record")
+    refute_includes intake_record, "## Trust Handoff"
+    run_record_docs = read_repo_file("docs/github-task-prompts-and-run-records.md")
+    compact_record = run_record_docs[/^## Compact record\n.*?(?=^## )/m]
+    launcher_contract = run_record_docs[/^## Launcher composition boundary\n.*?(?=^## )/m]
+    refute_nil compact_record
+    refute_nil launcher_contract
+
+    assert_includes compact_record, "Model at prompt creation:"
+    assert_includes compact_record, "Model observed by worker:"
+    assert_includes compact_record, "Workflow at prompt creation"
+    assert_includes compact_record, "Workflow observed at worker start"
+    assert_includes compact_record, "Later workflow observations:"
+    assert_includes compact_record, "Launched at:"
+    assert_includes compact_record, "Run ID:"
+    assert_includes compact_record, "Record destination:"
+    assert_includes compact_record, "Batch Plan binding:"
+    assert_includes compact_record, "Replay identity:"
+    assert_includes normalized(launcher_contract), "one unique entry per planned lane"
+    assert_includes launcher_contract, "never substitutes for `run_id`"
+    assert_includes run_record_docs, "field-granular `UNKNOWN`"
+
+    assert_includes intake_record, "Model at prompt creation: <observed value or UNKNOWN>"
+    assert_includes intake_record, "Model observed by worker: <observed value or UNKNOWN>"
+    assert_includes intake_record, "Workflow at prompt creation: <version or UNKNOWN>"
+    assert_includes intake_record, "Workflow observed at worker start: <version or UNKNOWN>"
+    assert_includes intake_record, "Later workflow observations: <timestamped append-only entries or none>"
+    assert_includes intake_record, "Launched at: <timestamp or pending>"
+    assert_includes intake_record, "Run ID: <immutable unique per-execution run_id>"
+    assert_includes intake_record,
                     "Record destination: <exact issue or pull-request work-item URL authorized for every lane, or existing durable plan/backend destination authorized for every lane>"
-    assert_includes launcher_record,
+    assert_includes intake_record,
                     "Batch Plan binding: <SHA-256 of exact delivered UTF-8 plan bytes, or immutable reference plus exact revision/content digest>"
-    assert_includes launcher_record,
+    assert_includes intake_record,
                     "Replay identity: <existing lane_id, dispatcher, instance_id, and launch token>"
-    assert_includes normalized(launcher_record), "one entry for every planned target lane"
-    assert_includes launcher_record, "field by field"
-    assert_includes launcher_record, "does not block launch"
+    assert_includes normalized(intake_record), "one entry for every planned target lane"
+    assert_includes intake_record, "field by field"
+    assert_includes intake_record, "does not block launch"
   end
 
   def test_dispatcher_helper_is_portable_unsigned_and_preserves_dispatcher_fencing
