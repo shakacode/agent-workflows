@@ -89,5 +89,54 @@
   ],
   "expected_user_messages": [
     "What changed: PR #383 is blocked waiting for its retained validator. Owner route: PR #383 (https://github.com/shakacode/agent-workflows/pull/383); runner Conductor/Claude; open workspace `la-paz` in Conductor; thread `aw-pr383-harbor`; session `claude-session-pr383`; there is no Codex sidebar task to find and the cross-app deep link is unavailable; branch `codex/ruby-packaging-design` at head `e2ab23a74875d18d9d6589131244009a6ed4a005`; this Codex task cannot navigate to or message that session. Action needed: none. Next: The coordinator will follow up with the owner and report only a material blocker or route change, a terminal result, a real decision, or release of the waiting work."
+  ],
+  "variants": [
+    {
+      "id": "untitled-codex-child-task",
+      "input": {
+        "work_item": "PR #383",
+        "role": "maker",
+        "runner": "Codex",
+        "thread_handle": "aw-pr383-harbor",
+        "task_title": null,
+        "task_id": "019feb28-f6a7-7e53-992e-09fa93633f10",
+        "deep_link": "codex://threads/019feb28-f6a7-7e53-992e-09fa93633f10"
+      },
+      "expected_fallback_title": "PR #383 maker — aw-pr383-harbor",
+      "expected_owner_route": "Owner route: PR #383 maker — aw-pr383-harbor; runner Codex; task ID `019feb28-f6a7-7e53-992e-09fa93633f10`; open codex://threads/019feb28-f6a7-7e53-992e-09fa93633f10."
+    },
+    {
+      "id": "stale-claim-session-cross-repository",
+      "input": {
+        "claim": {
+          "repo": "shakacode/agent-workflows",
+          "target": "383",
+          "session_id": "stale-session"
+        },
+        "heartbeat": {
+          "target": "shakacode/agent-workflows#383",
+          "session_id": "live-session"
+        },
+        "claim_session_task": {
+          "repository": "acme/unrelated",
+          "work_item": "17"
+        },
+        "heartbeat_session_task": {
+          "repository": "shakacode/agent-workflows",
+          "work_item": "383"
+        }
+      },
+      "expected_owner_route": "Owner route: inconsistent — the active claim session resolves to `acme/unrelated#17`, but the live heartbeat session resolves to `shakacode/agent-workflows#383`; the coordinator owns bounded follow-up and will repair the binding.",
+      "forbidden_owner_link": "codex://threads/stale-session"
+    },
+    {
+      "id": "owner-unreachable",
+      "input": {
+        "claim": null,
+        "heartbeat": null,
+        "host_task": null
+      },
+      "expected_owner_route": "Owner route: unavailable — no consistent task, workspace, or session can be navigated or messaged; the coordinator owns bounded follow-up."
+    }
   ]
 }

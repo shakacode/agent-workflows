@@ -316,6 +316,37 @@ class UserFacingCoordinationContractTest < Minitest::Test
       assert_includes message, host_task.fetch("url")
       assert_includes message, host_task.fetch("head")
     end
+
+    variants = replay.fetch("variants").to_h { |variant| [variant.fetch("id"), variant] }
+    untitled = variants.fetch("untitled-codex-child-task")
+    untitled_input = untitled.fetch("input")
+    fallback_title = [
+      untitled_input.fetch("work_item"),
+      untitled_input.fetch("role"),
+      "—",
+      untitled_input.fetch("thread_handle")
+    ].join(" ")
+    assert_nil untitled_input.fetch("task_title")
+    assert_equal untitled.fetch("expected_fallback_title"), fallback_title
+    assert_includes untitled.fetch("expected_owner_route"), fallback_title
+    assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("task_id")
+    assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("deep_link")
+
+    inconsistent = variants.fetch("stale-claim-session-cross-repository")
+    inconsistent_input = inconsistent.fetch("input")
+    refute_equal inconsistent_input.dig("claim", "session_id"),
+                 inconsistent_input.dig("heartbeat", "session_id")
+    refute_equal inconsistent_input.dig("claim", "repo"),
+                 inconsistent_input.dig("claim_session_task", "repository")
+    assert_equal inconsistent_input.dig("claim", "repo"),
+                 inconsistent_input.dig("heartbeat_session_task", "repository")
+    assert_includes inconsistent.fetch("expected_owner_route"), "Owner route: inconsistent"
+    refute_includes inconsistent.fetch("expected_owner_route"), inconsistent.fetch("forbidden_owner_link")
+
+    unavailable = variants.fetch("owner-unreachable")
+    assert(unavailable.fetch("input").values.all?(&:nil?))
+    assert_includes unavailable.fetch("expected_owner_route"), "Owner route: unavailable"
+    assert_includes unavailable.fetch("expected_owner_route"), "coordinator owns bounded follow-up"
   end
 
   def test_ambiguity_guard_synthesizes_ownership_without_raw_events
