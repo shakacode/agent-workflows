@@ -29,6 +29,7 @@ PROTECTED_PREFIXES = ["Work item:", "Safety gates:", "Merge authority:"].freeze
 CLAUDE_RUNTIME_MECHANICS = [
   %r{(?<![[:alnum:]_/$])/(?:code-review|loop)\b},
   /\bClaude (?:Agent|Workflow)\b/,
+  /\b(?:Agent|Workflow) (?:tool|subagents?|workers?)\b/,
   /\bisolation:[ \t]*['"]worktree['"]/
 ].freeze
 CODEX_RUNTIME_MECHANICS = [
@@ -118,6 +119,8 @@ def unsupported_for_prompt_host?(text, prompt_host)
   when "claude"
     text.match?(%r{(?<![[:alnum:]_/$])/simplify\b}) ||
       runtime_mechanic?(text, CODEX_RUNTIME_MECHANICS)
+  else
+    true
   end
 end
 
@@ -157,9 +160,10 @@ def convert(prompt, source_host, source_mode, target_host, preferred_route)
   converted = rewrite_host_mechanics(converted, target_host)
 
   return converted unless source_mode == "legacy-goal"
+  return converted unless source_host == "codex" && target_host == "claude"
 
   body = converted.sub(%r{\AUse [/$]pr-batch\b}) do |invocation|
-    invocation.sub(%r{[/$]}, target_host == "codex" ? "$" : "/")
+    invocation.sub(%r{[/$]}, "/")
   end
   headers_for(target_host, "batch", preferred_route, ending) + body
 end
@@ -168,6 +172,7 @@ def converted_prompt_compatible?(prompt, target_host)
   has_goal_wrapper = prompt.match?(GOAL_WRAPPER)
   header_text = has_goal_wrapper ? prompt.sub(GOAL_WRAPPER, "") : prompt
   header_lines = header_text.lines.first(4).map { |line| line.delete_suffix("\n").delete_suffix("\r") }
+  return false unless header_lines.all? { |line| line.match?(CANONICAL_HEADER) }
   return false unless header_lines.map { |line| line.split(": ", 2).first } == HEADER_NAMES
 
   metadata = header_lines.to_h { |line| line.split(": ", 2) }
@@ -185,9 +190,7 @@ def converted_prompt_compatible?(prompt, target_host)
   named_mechanics = skill_mechanics(body, "/") + skill_mechanics(body, "$")
   return false if (named_mechanics - SKILL_NAMES).any?
 
-  declarations = prompt.lines.count { |line| line.match?(BATCH_TARGET_LIKE) }
-  targets = prompt.scan(/^Batch size target: (codex|claude);/).flatten
-  declarations == targets.length && targets.length <= 1 && (targets.empty? || targets.first == target_host)
+  batch_target_error(prompt, target_host).nil?
 end
 
 def verified_conversion(prompt, source_host, source_mode, target_host, preferred_route, active_host)
@@ -213,16 +216,21 @@ def validate_cross_host_mechanics(body, prompt_host, active_host)
   emit_error("unsupported-host-mechanic", active_host) if unsupported_supported_mechanic
 end
 
-def validate_batch_target(prompt, prompt_host, active_host)
+def batch_target_error(prompt, prompt_host)
   declarations = prompt.lines.count { |line| line.match?(BATCH_TARGET_LIKE) }
   targets = prompt.scan(/^Batch size target: (codex|claude|generic);/).flatten
-  emit_error("invalid-batch-size-target", active_host) if targets.length != declarations
-  emit_error("duplicate-batch-size-target", active_host) if targets.length > 1
+  return "invalid-batch-size-target" if targets.length != declarations
+  return "duplicate-batch-size-target" if targets.length > 1
 
   expected_target = prompt_host == "portable" ? "generic" : prompt_host
-  return unless targets.any? && targets.first != expected_target
+  return "contradictory-batch-size-target" if targets.any? && targets.first != expected_target
 
-  emit_error("contradictory-batch-size-target", active_host)
+  nil
+end
+
+def validate_batch_target(prompt, prompt_host, active_host)
+  error = batch_target_error(prompt, prompt_host)
+  emit_error(error, active_host) if error
 end
 
 options = { active_hosts: [] }

@@ -2063,13 +2063,11 @@ Use this prompt after filling the route placeholders:
 ```text
 Prompt host: portable
 Prompt mode: batch
-Preferred route: default
+Preferred route: <model/class>/<effort>
 Route requirement: advisory
 Use the pr-batch skill to recover and continue this in-flight batch.
 Continue the existing goal; do not clear it or start a new batch.
 
-Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Treat model/effort as advisory during recovery. Preserve unavailable observations
 as UNKNOWN and continue with the same ownership, fencing, validation, and review
 gates.

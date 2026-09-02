@@ -93,8 +93,6 @@ CONTINUATION_COMPATIBILITY_METADATA = <<~TEXT
 TEXT
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
-COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
-OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
 PROMPT_HOST_METADATA_LINE = "Prompt host: <codex|claude|portable>"
 PROMPT_MODE_METADATA_LINE = "Prompt mode: <goal|direct|batch>"
 PREFERRED_ROUTE_METADATA_LINE = "Preferred route: <model/class>/<effort>|default"

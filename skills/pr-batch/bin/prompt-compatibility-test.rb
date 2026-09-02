@@ -320,6 +320,7 @@ class PromptCompatibilityTest < Minitest::Test
       ["#{fixture('codex-to-claude.txt')}Use $address-review after QA.\n", "claude"],
       ["#{fixture('codex-to-claude.txt')}Use $scw:pr-batch for this route.\n", "claude"],
       ["#{fixture('claude-to-codex.txt')}Use Claude Agent with isolation: 'worktree'.\n", "codex"],
+      ["#{fixture('claude-to-codex.txt')}Dispatch each lane with the Agent tool.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Run /code-review before closeout.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Use /loop to monitor CI.\n", "codex"],
       ["#{fixture('codex-to-claude.txt')}Call spawn_agent with sandbox_permissions: use_default.\n", "claude"]
@@ -343,6 +344,12 @@ class PromptCompatibilityTest < Minitest::Test
       section = workflow[/^### #{Regexp.escape(heading)}\n(?<body>.*?)(?=^### |\z)/m, :body]
       prompt = section&.match(/```text\n(?<prompt>.*?)```/m)&.[](:prompt)
       refute_nil prompt, heading
+      if heading == "Model-Routing Recovery Prompt"
+        assert_includes prompt, "Preferred route: <model/class>/<effort>"
+        refute_includes prompt, "Coordinator model/effort preference:"
+        refute_includes prompt, "Observed host/model/effort:"
+        prompt = prompt.sub("Preferred route: <model/class>/<effort>", "Preferred route: sol/high")
+      end
 
       %w[codex claude].each do |active_host|
         result, stderr, status = run_helper(prompt, active_host:)
