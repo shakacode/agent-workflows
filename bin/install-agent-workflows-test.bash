@@ -184,7 +184,7 @@ test_delivery_state_helper_unit_suite() {
 }
 
 test_codex_host_install_writes_helpers_and_metadata() {
-  local tmp target ruby_bin
+  local tmp target ruby_bin prompt_output
   tmp="$(mktemp -d)"
   target="$tmp/codex-home"
   ruby_bin="$(ruby -rrbconfig -e 'print RbConfig.ruby')"
@@ -208,6 +208,17 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/docs/user-facing-coordination.md"
   assert_file "$target/docs/writing-style.md"
   assert_file "$target/docs/writing-style-asd-ste100.md"
+  assert_file "$target/docs/host-adapter/contract.md"
+  assert_file "$target/docs/schemas/prompt-compatibility-v1.schema.json"
+  cmp -s "$target/docs/host-adapter/contract.md" "$ROOT/docs/host-adapter/contract.md" || \
+    fail "Codex copy install changed the prompt compatibility contract"
+  cmp -s "$target/docs/schemas/prompt-compatibility-v1.schema.json" \
+    "$ROOT/docs/schemas/prompt-compatibility-v1.schema.json" || \
+    fail "Codex copy install changed the prompt compatibility schema"
+  prompt_output="$("$target/skills/pr-batch/bin/prompt-compatibility" --active-host codex \
+    < "$target/skills/pr-batch/fixtures/prompt-compatibility/portable.txt")"
+  ruby -rjson -e 'result = JSON.parse(ARGV.fetch(0)); abort result.inspect unless result["decision"] == "portable"' \
+    "$prompt_output" || fail "Codex flat install could not classify its portable prompt"
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflow-writing-style"
@@ -261,12 +272,16 @@ test_codex_host_install_writes_helpers_and_metadata() {
     fingerprints = metadata.fetch("managed_pack_doc_copy_fingerprints")
     provenance_fingerprint = fingerprints["execution-provenance-schema.md"]
     preset_fingerprint = fingerprints["writing-style-asd-ste100.md"]
+    contract_fingerprint = fingerprints["host-adapter/contract.md"]
+    prompt_schema_fingerprint = fingerprints["schemas/prompt-compatibility-v1.schema.json"]
     abort metadata.inspect unless metadata["host"] == "codex" &&
                                   metadata["mode"] == "copy" &&
                                   metadata["delivery_mode"] == "flat" &&
                                   metadata["source_revision"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
                                   provenance_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/) &&
-                                  preset_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/)
+                                  preset_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/) &&
+                                  contract_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/) &&
+                                  prompt_schema_fingerprint.to_s.match?(/\A[0-9a-f]{64}\z/)
   ' "$target/.agent-workflows-install.json"
 }
 
@@ -469,6 +484,8 @@ test_plugin_companion_installs_non_skill_assets_and_records_mode() {
     assert_file "$target/docs/coordination-backend.md"
     assert_file "$target/docs/writing-style.md"
     assert_file "$target/docs/writing-style-asd-ste100.md"
+    assert_file "$target/docs/host-adapter/contract.md"
+    assert_file "$target/docs/schemas/prompt-compatibility-v1.schema.json"
     assert_file "$target/bin/agent-workflow-seam-doctor"
     assert_file "$target/bin/agent-workflows-status"
     assert_file "$target/bin/agent-workflows-doctor"
@@ -4692,6 +4709,8 @@ test_installation_docs_describe_managed_coordination_doc_fingerprints() {
   assert_contains "$docs" 'managed_pack_doc_copy_fingerprints'
   assert_contains "$docs" 'including every installed'
   assert_contains "$docs" '<target>/docs/solutions/*'
+  assert_contains "$docs" '<target>/docs/host-adapter/contract.md'
+  assert_contains "$docs" '<target>/docs/schemas/prompt-compatibility-v1.schema.json'
   assert_contains "$docs" 'installer refuses to'
   assert_contains "$docs" 'replace a modified'
   assert_contains "$changelog" 'Copy-install fingerprints'
@@ -7103,7 +7122,7 @@ test_installed_doctor_initializes_consumer_repo() {
 }
 
 test_claude_host_install_uses_claude_home_when_target_is_omitted() {
-  local tmp
+  local tmp prompt_output
   tmp="$(mktemp -d)"
 
   CLAUDE_HOME="$tmp/.claude" "$ROOT/bin/install-agent-workflows" --host claude >"$tmp/install-agent-workflows-test.out"
@@ -7118,6 +7137,12 @@ test_claude_host_install_uses_claude_home_when_target_is_omitted() {
   assert_file "$tmp/.claude/docs/coordination-backend.md"
   assert_file "$tmp/.claude/docs/review-finding-schema.md"
   assert_file "$tmp/.claude/docs/agent-workflows-model-routing.md"
+  assert_file "$tmp/.claude/docs/host-adapter/contract.md"
+  assert_file "$tmp/.claude/docs/schemas/prompt-compatibility-v1.schema.json"
+  prompt_output="$("$tmp/.claude/skills/pr-batch/bin/prompt-compatibility" --active-host claude \
+    < "$tmp/.claude/skills/pr-batch/fixtures/prompt-compatibility/portable.txt")"
+  ruby -rjson -e 'result = JSON.parse(ARGV.fetch(0)); abort result.inspect unless result["decision"] == "portable"' \
+    "$prompt_output" || fail "Claude flat install could not classify its portable prompt"
   assert_file "$tmp/.claude/docs/solutions/README.md"
   assert_file "$tmp/.claude/bin/agent-workflows-status"
   assert_file "$tmp/.claude/bin/agent-workflows-doctor"
@@ -7192,6 +7217,12 @@ test_symlink_mode_links_skills_workflows_and_helpers() {
   assert_symlink "$target/docs/user-facing-coordination.md"
   assert_symlink "$target/docs/writing-style.md"
   assert_symlink "$target/docs/writing-style-asd-ste100.md"
+  [[ -d "$target/docs/host-adapter" && ! -L "$target/docs/host-adapter" ]] || \
+    fail "expected real docs/host-adapter directory"
+  [[ -d "$target/docs/schemas" && ! -L "$target/docs/schemas" ]] || \
+    fail "expected real docs/schemas directory"
+  assert_symlink "$target/docs/host-adapter/contract.md"
+  assert_symlink "$target/docs/schemas/prompt-compatibility-v1.schema.json"
   ruby_bin="$(ruby -rrbconfig -e 'print RbConfig.ruby')"
   mkdir -p "$tmp/repo/.agents" "$tmp/home"
   printf 'writing_style: asd-ste100\n' > "$tmp/repo/.agents/agent-workflow.yml"
@@ -7286,6 +7317,40 @@ test_install_replaces_solutions_directory_symlink_without_following_pack_named_c
     else
       assert_symlink "$target/docs/solutions/$solution_name"
     fi
+  done
+}
+
+test_install_replaces_prompt_contract_directory_symlinks_without_following_children() {
+  local tmp target external_docs managed_dir file_name mode
+  tmp="$(mktemp -d)"
+
+  for managed_dir in host-adapter schemas; do
+    if [[ "$managed_dir" = host-adapter ]]; then
+      file_name="contract.md"
+    else
+      file_name="prompt-compatibility-v1.schema.json"
+    fi
+    for mode in copy symlink; do
+      target="$tmp/$managed_dir-$mode-home"
+      external_docs="$tmp/external-$managed_dir-$mode"
+      mkdir -p "$target/docs" "$external_docs"
+      printf 'external sentinel\n' > "$external_docs/$file_name"
+      ln -s "$external_docs" "$target/docs/$managed_dir"
+
+      "$ROOT/bin/install-agent-workflows" --host codex --target "$target" \
+        --mode "$mode" >"$tmp/install-$managed_dir-$mode.out"
+
+      [[ -d "$target/docs/$managed_dir" && ! -L "$target/docs/$managed_dir" ]] || \
+        fail "$mode install did not replace docs/$managed_dir with a real directory"
+      grep -qxF 'external sentinel' "$external_docs/$file_name" || \
+        fail "$mode install changed an external docs/$managed_dir child"
+      if [[ "$mode" = copy ]]; then
+        cmp -s "$target/docs/$managed_dir/$file_name" "$ROOT/docs/$managed_dir/$file_name" || \
+          fail "copy install did not install docs/$managed_dir/$file_name"
+      else
+        assert_symlink "$target/docs/$managed_dir/$file_name"
+      fi
+    done
   done
 }
 
@@ -8732,6 +8797,7 @@ main() {
     test_symlink_mode_replaces_docs_directory_symlink
     test_install_replaces_docs_directory_symlink_without_following_pack_named_children
     test_install_replaces_solutions_directory_symlink_without_following_pack_named_children
+    test_install_replaces_prompt_contract_directory_symlinks_without_following_children
     test_copy_mode_after_symlink_mode_does_not_delete_source_docs
     test_symlink_mode_refuses_unmanaged_live_and_dangling_doctor_links_before_mutation
     test_symlink_mode_replaces_recorded_prior_source_doctor_link

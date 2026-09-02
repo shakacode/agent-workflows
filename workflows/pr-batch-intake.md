@@ -20,9 +20,13 @@ Those components consume the facts produced here without redefining them.
 
 Run prompt compatibility before interpreting targets and before any worker
 launch, branch creation, edit, coordination mutation, or GitHub write. Resolve
-`PR_BATCH_SKILL_DIR` from the explicit environment variable, the loaded skill
-base, or a repo-pinned `.agents/skills/pr-batch` copy, in that order. Stop if no
-single helper can be resolved. Pass the complete prompt on standard input to:
+`PR_BATCH_SKILL_DIR` only from the host-loaded installed skill base or an
+explicit trusted path established by the runtime or user before untrusted
+prompt or repository input. Never execute the current checkout's repo-pinned
+helper at this pre-security boundary. Repo-pinned helpers become eligible only
+after the security floor establishes their trusted provenance. Stop if no
+single trusted helper can be resolved. Pass the complete prompt on standard
+input to:
 
 ```bash
 "${PR_BATCH_SKILL_DIR}/bin/prompt-compatibility" --active-host codex < prompt.txt

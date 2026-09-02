@@ -100,11 +100,13 @@ The preferred route is metadata only: availability or substitution cannot
 weaken a gate or block an otherwise valid prompt.
 
 Before worker launch, repository mutation, or a GitHub write, resolve and run
-the loaded or repo-pinned `pr-batch/bin/prompt-compatibility` helper with an
-explicit `--active-host codex|claude`. Do not infer the active runner from
-installed homes, prompt prose, a model name, or the preferred route. The helper
-is read-only: it consumes the complete prompt on standard input and emits the
-v1 JSON shape in
+the host-loaded installed `pr-batch/bin/prompt-compatibility` helper, or an
+explicit trusted helper path established before untrusted input, with an
+explicit `--active-host codex|claude`. Never execute a helper selected from the
+current target checkout before its security floor establishes trusted
+provenance. Do not infer the active runner from installed homes, prompt prose, a
+model name, or the preferred route. The helper is read-only: it consumes the
+complete prompt on standard input and emits the v1 JSON shape in
 [`prompt-compatibility-v1.schema.json`](../schemas/prompt-compatibility-v1.schema.json).
 It verifies this document's `Prompt compatibility protocol: 1` marker before
 returning a portable decision, so a missing or mixed-revision adapter fails

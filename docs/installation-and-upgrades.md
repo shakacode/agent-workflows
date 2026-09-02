@@ -474,6 +474,8 @@ The installer writes:
 - `<target>/docs/user-facing-coordination.md`
 - `<target>/docs/writing-style.md`
 - `<target>/docs/writing-style-asd-ste100.md`
+- `<target>/docs/host-adapter/contract.md`
+- `<target>/docs/schemas/prompt-compatibility-v1.schema.json`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflow-writing-style`
@@ -496,8 +498,9 @@ The metadata file records host, artifact mode, skill delivery mode, source
 clone, pack version, source revision, branch, remote, and install time. Copy
 installs also record `managed_skill_copy_fingerprints`,
 `managed_pack_doc_copy_fingerprints`, and `managed_pack_root_copy_fingerprints`,
-including every installed `<target>/docs/solutions/*` document and the
-third-party notice. On repeat installation, these fingerprints
+including every installed prompt-compatibility contract, schema, and
+`<target>/docs/solutions/*` document, plus the third-party notice. On repeat
+installation, these fingerprints
 prove that an installed managed copy has not been edited even when the recorded
 Git object is unavailable; an exact recorded-revision or current-source match is
 the backward-compatible fallback for older metadata. The installer refuses to

@@ -2,22 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://shakacode.com/schemas/prompt-compatibility-v1.schema.json",
   "title": "Prompt compatibility decision v1",
-  "oneOf": [
-    {
+  "$defs": {
+    "success": {
       "type": "object",
       "required": [
-        "contract",
-        "version",
-        "decision",
-        "active_host",
-        "prompt_host",
-        "prompt_mode",
-        "preferred_route",
-        "route_requirement",
-        "execute_allowed",
-        "stop_required",
-        "adapter_contract",
-        "prompt",
+        "contract", "version", "decision", "active_host", "prompt_host",
+        "prompt_mode", "preferred_route", "route_requirement",
+        "execute_allowed", "stop_required", "adapter_contract", "prompt",
         "converted_prompt"
       ],
       "properties": {
@@ -33,28 +24,128 @@
         "route_requirement": { "const": "advisory" },
         "execute_allowed": { "type": "boolean" },
         "stop_required": { "type": "boolean" },
-        "adapter_contract": {
-          "type": ["string", "null"]
-        },
+        "adapter_contract": { "type": ["string", "null"] },
         "prompt": { "type": ["string", "null"] },
         "converted_prompt": { "type": ["string", "null"] }
-      },
-      "additionalProperties": false
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "allOf": [
+        { "$ref": "#/$defs/success" },
+        {
+          "properties": {
+            "decision": { "const": "compatible" },
+            "execute_allowed": { "const": true },
+            "stop_required": { "const": false },
+            "adapter_contract": { "const": null },
+            "prompt": { "type": "string" },
+            "converted_prompt": { "const": null }
+          },
+          "oneOf": [
+            {
+              "properties": {
+                "active_host": { "const": "codex" },
+                "prompt_host": { "const": "codex" },
+                "prompt_mode": { "enum": ["goal", "direct", "batch", "legacy-goal"] }
+              }
+            },
+            {
+              "properties": {
+                "active_host": { "const": "claude" },
+                "prompt_host": { "const": "claude" },
+                "prompt_mode": { "enum": ["direct", "batch"] }
+              }
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/success" },
+        {
+          "properties": {
+            "decision": { "const": "portable" },
+            "prompt_host": { "const": "portable" },
+            "prompt_mode": { "enum": ["direct", "batch"] },
+            "execute_allowed": { "const": true },
+            "stop_required": { "const": false },
+            "adapter_contract": { "const": "docs/host-adapter/contract.md" },
+            "prompt": { "type": "string" },
+            "converted_prompt": { "const": null }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    {
+      "allOf": [
+        { "$ref": "#/$defs/success" },
+        {
+          "properties": {
+            "decision": { "const": "conversion-required" },
+            "prompt_host": { "enum": ["codex", "claude"] },
+            "execute_allowed": { "const": false },
+            "stop_required": { "const": true },
+            "adapter_contract": { "const": null },
+            "prompt": { "const": null },
+            "converted_prompt": { "type": "string", "minLength": 1 }
+          },
+          "oneOf": [
+            {
+              "properties": {
+                "active_host": { "const": "claude" },
+                "prompt_host": { "const": "codex" },
+                "prompt_mode": { "enum": ["goal", "direct", "batch", "legacy-goal"] }
+              }
+            },
+            {
+              "properties": {
+                "active_host": { "const": "codex" },
+                "prompt_host": { "const": "claude" },
+                "prompt_mode": { "enum": ["direct", "batch"] }
+              }
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
     },
     {
       "type": "object",
       "required": [
-        "contract",
-        "version",
-        "error",
-        "active_host",
-        "execute_allowed",
+        "contract", "version", "error", "active_host", "execute_allowed",
         "stop_required"
       ],
       "properties": {
         "contract": { "const": "prompt-compatibility" },
         "version": { "const": 1 },
-        "error": { "type": "string", "minLength": 1 },
+        "error": {
+          "enum": [
+            "adapter-contract-unavailable",
+            "ambiguous-active-host",
+            "contradictory-batch-size-target",
+            "contradictory-host-mechanic",
+            "duplicate-batch-size-target",
+            "empty-prompt-body",
+            "host-mode-wrapper-mismatch",
+            "invalid-batch-size-target",
+            "invalid-encoding",
+            "invalid-metadata",
+            "invalid-preferred-route",
+            "non-advisory-route",
+            "protected-field-host-mechanic",
+            "unrecognized-prompt",
+            "unsafe-conversion",
+            "unsupported-host-mechanic",
+            "unsupported-host-mode",
+            "unsupported-prompt-host",
+            "unsupported-prompt-mode"
+          ]
+        },
         "active_host": { "type": "string" },
         "execute_allowed": { "const": false },
         "stop_required": { "const": true }
