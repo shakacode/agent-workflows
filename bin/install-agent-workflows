@@ -1899,6 +1899,14 @@ prepare_metadata() {
       echo "The source pack's runtime trust library raised an unexpected error; fix the pack and retry." >&2
       return 68
     fi
+    # The child loads source-pack code, which can also write to stdout at load time or from an
+    # at_exit hook. Accept only the two shapes the writer may record, so contaminated output
+    # fails the install instead of being stored as a digest that no reader will ever accept.
+    if [[ -n "$runtime_manifest_digest" && ! "$runtime_manifest_digest" =~ ^[0-9a-f]{64}$ ]]; then
+      echo "RUNTIME_DIGEST_FAILED: the autonomous-merge runtime manifest digest from $repo_root was not a bare 64-character lowercase hexadecimal value." >&2
+      echo "The source pack's runtime trust library wrote unexpected output; fix the pack and retry." >&2
+      return 68
+    fi
   fi
 
   prepared_metadata_attestation="$(ruby -rjson -rdigest -rfind -rfiddle/import -rsecurerandom -e '

@@ -4667,6 +4667,31 @@ test_symlink_metadata_omits_runtime_manifest_digests() {
     fail "symlink install recorded runtime manifest digests: $recorded"
 }
 
+test_contaminated_runtime_digest_output_fails_before_managed_mutation() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  # The runtime trust library is loaded, so anything it prints lands on the child's stdout.
+  printf '\nputs "stray output"\n' >> "$source/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb"
+  git -C "$source" add -A
+  git -C "$source" commit --quiet -m "runtime library writes to stdout"
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 68 ]] || fail "contaminated runtime digest output exited $status: $output"
+  assert_contains "$output" "RUNTIME_DIGEST_FAILED"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || \
+    fail "contaminated runtime digest output wrote install metadata"
+  [[ ! -e "$target/LICENSE" && ! -e "$target/skills" && ! -e "$target/bin" ]] || \
+    fail "contaminated runtime digest output installed managed content"
+}
+
 test_invalid_runtime_manifest_digest_entry_fails_before_managed_mutation() {
   local tmp target metadata pristine variant output status metadata_before target_paths_before
   tmp="$(mktemp -d)"
@@ -8782,6 +8807,7 @@ main() {
     test_symlink_metadata_omits_runtime_manifest_digests
     test_incomplete_runtime_closure_installs_without_a_runtime_manifest_digest
     test_invalid_runtime_manifest_digest_entry_fails_before_managed_mutation
+    test_contaminated_runtime_digest_output_fails_before_managed_mutation
   )
 
   local test_name
