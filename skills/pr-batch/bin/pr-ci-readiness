@@ -35,6 +35,8 @@ require "time"
 module PrCiReadiness
   class Error < StandardError; end
 
+  DRAFT_HEAD_VALIDATION_CHECK = "validate (draft head)"
+
   module_function
 
   # Parse a `gh pr checks --json name,state,bucket,link,workflow` payload into rows.
@@ -84,7 +86,9 @@ module PrCiReadiness
   end
 
   def non_draft_head_rows(rows)
-    rows.reject { |row| row.is_a?(Hash) && row["name"].to_s.end_with?(" (draft head)") }
+    rows.reject do |row|
+      row.is_a?(Hash) && row["name"].to_s == DRAFT_HEAD_VALIDATION_CHECK
+    end
   end
 
   # Preserve required cancellations unless a current row with the exact same

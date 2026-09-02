@@ -59,7 +59,7 @@ class PrCiReadinessTest < Minitest::Test
 
   def test_draft_head_failure_does_not_block_integration_success
     out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
-                                 { "name" => "validate (draft head)", "bucket" => "fail" },
+                                 { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "fail" },
                                  { "name" => "validate", "bucket" => "pass" }
                                ])
     assert_equal "READY", out["verdict"]
@@ -69,7 +69,7 @@ class PrCiReadinessTest < Minitest::Test
   def test_only_draft_head_rows_is_unknown
     out = PrCiReadiness.assess(
       pr_number: 1, required_used: true,
-      rows: [{ "name" => "validate (draft head)", "bucket" => "pass" }]
+      rows: [{ "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "pass" }]
     )
     assert_equal "UNKNOWN", out["verdict"]
   end
@@ -79,13 +79,14 @@ class PrCiReadinessTest < Minitest::Test
       source: "github.actions.exact_head", head_sha: "a" * 40, complete: true,
       rows: [
         { "name" => "validate (draft head)", "bucket" => "fail" },
+        { "name" => "security (draft head)", "bucket" => "fail" },
         { "name" => "validate (draft head extra)", "bucket" => "fail" }
       ],
       checked_at: "2026-09-02T00:00:00Z"
     )
     names = scope["rows"].map { |row| row["name"] }
     assert_equal "NOT_READY", scope["state"]
-    assert_equal ["validate (draft head extra)"], names
+    assert_equal ["security (draft head)", "validate (draft head extra)"], names
   end
 
   def test_same_context_current_pass_supersedes_cancelled_history
