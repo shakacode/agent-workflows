@@ -136,7 +136,8 @@ module TaskReviewLoop
       digest?(report["brief_digest"]) && digest?(report["digest"]) &&
       non_empty_string?(report["initial_implementer_id"]) && non_empty_string?(report["current_implementer_id"]) &&
       REPORT_STATUSES.include?(report["status"]) && full_sha?(report["base_sha"]) && full_sha?(report["head_sha"]) &&
-      report["commits"].is_a?(Array) && report["commits"].all? { |sha| full_sha?(sha) } &&
+      report["commits"].is_a?(Array) && !report["commits"].empty? &&
+      report["commits"].all? { |sha| full_sha?(sha) } && report["commits"].uniq == report["commits"] &&
       string_array?(report["changed_paths"]) && report["changed_paths"].uniq == report["changed_paths"] &&
       report["verification"].is_a?(Array) && report["verification"].all? { |item| verification_shape?(item) } &&
       string_array?(report["concerns"]) && string_array?(report["open_context_needs"])
@@ -148,7 +149,8 @@ module TaskReviewLoop
       %w[task fix].include?(package["scope"]) && full_sha?(package["base_sha"]) && full_sha?(package["head_sha"]) &&
       full_sha?(package["expected_current_head_sha"]) && non_empty_string?(package["implementer_id"]) &&
       non_empty_string?(package["reviewer_id"]) && package["commit_list"].is_a?(Array) &&
-      package["commit_list"].all? { |sha| full_sha?(sha) } && non_empty_string?(package["diff_stat"]) &&
+      !package["commit_list"].empty? && package["commit_list"].all? { |sha| full_sha?(sha) } &&
+      package["commit_list"].uniq == package["commit_list"] && non_empty_string?(package["diff_stat"]) &&
       artifact_shape?(package["exact_diff"], EXACT_DIFF_KEYS) &&
       [true, false].include?(package.dig("exact_diff", "truncated")) &&
       (package["prior_round_digest"].nil? || digest?(package["prior_round_digest"]))
@@ -191,7 +193,7 @@ module TaskReviewLoop
       [true, false].include?(control["load_bearing"]) && [true, false].include?(control["cap_piercing"])
     end
     return false unless input["replacement_evidence"].is_a?(Array) && input["replacement_evidence"].all? do |record|
-      exact_keys?(record, REPLACEMENT_KEYS) && record["round"].is_a?(Integer) && record["round"].between?(1, 5) &&
+      exact_keys?(record, REPLACEMENT_KEYS) && record["round"].is_a?(Integer) && record["round"].between?(0, 5) &&
       non_empty_string?(record["prior_implementer_id"]) && non_empty_string?(record["replacement_implementer_id"]) &&
       REPLACEMENT_REASONS.include?(record["reason"]) && record["prior_instance_stopped"] == true &&
       record["ownership_reconciled"] == true && string_array?(record["evidence"], allow_empty: false)
@@ -229,6 +231,17 @@ module TaskReviewLoop
     left_key && right_key && left_key == right_key
   end
 
+  def ordered_subsequence?(needles, haystack)
+    cursor = 0
+    needles.all? do |needle|
+      offset = haystack[cursor..]&.index(needle)
+      next false unless offset
+
+      cursor += offset + 1
+      true
+    end
+  end
+
   def replacement_evidence_valid?(record, round_number, prior_implementer, replacement_implementer)
     record.is_a?(Hash) && record["round"] == round_number &&
       same_actor?(record["prior_implementer_id"], prior_implementer) &&
@@ -236,6 +249,29 @@ module TaskReviewLoop
       record["prior_instance_stopped"] == true && record["ownership_reconciled"] == true &&
       record["evidence"].is_a?(Array) && !record["evidence"].empty? &&
       record["evidence"].all? { |entry| entry.is_a?(String) && !entry.strip.empty? }
+  end
+
+  def expected_replacement_transitions(report, package, rounds, review_state)
+    transitions = []
+    if rounds.empty?
+      unless same_actor?(report["initial_implementer_id"], package["implementer_id"])
+        transitions << [0, report["initial_implementer_id"], package["implementer_id"]]
+      end
+      return transitions
+    end
+
+    unless same_actor?(report["initial_implementer_id"], rounds.first["implementer_id"])
+      transitions << [0, report["initial_implementer_id"], rounds.first["implementer_id"]]
+    end
+    rounds.each_cons(2) do |prior_round, current_round|
+      next if same_actor?(prior_round["implementer_id"], current_round["implementer_id"])
+
+      transitions << [current_round["number"], prior_round["implementer_id"], current_round["implementer_id"]]
+    end
+    if review_state == "pending" && !same_actor?(rounds.last["implementer_id"], package["implementer_id"])
+      transitions << [rounds.last["number"] + 1, rounds.last["implementer_id"], package["implementer_id"]]
+    end
+    transitions
   end
 
   def load_artifact(reference, label)
@@ -313,6 +349,12 @@ module TaskReviewLoop
       end
     end
     errors
+  end
+
+  def validate_cap_state(adjudication, open_ids)
+    return adjudication.nil? ? [] : ["cap-adjudication-unexpected"] if open_ids.empty?
+
+    validate_cap_adjudication(adjudication, open_ids)
   end
 
   def validate_pending_open_findings(input, round, identity)
@@ -397,6 +439,13 @@ module TaskReviewLoop
              package_commits.last == package["head_sha"] && report_commits.last == report["head_sha"]
         errors << "review-package-commit-list-mismatch"
       end
+      if package["scope"] == "task" && package_commits != report_commits
+        errors << "review-package-commit-list-mismatch"
+      end
+      round_heads = rounds.filter_map { |entry| entry["head_sha"] if entry.is_a?(Hash) }
+      unless ordered_subsequence?(round_heads, report_commits)
+        errors << "worker-report-round-heads-mismatch"
+      end
     end
 
     expected_head = input["expected_current_head_sha"]
@@ -419,6 +468,9 @@ module TaskReviewLoop
       end
       expected_scope = prior_round ? "fix" : "task"
       errors << "review-package-scope-invalid" unless package["scope"] == expected_scope
+      if input["review_state"] == "pending" && prior_round && prior_round["open_finding_ids"].empty?
+        errors << "fix-round-without-open-findings"
+      end
       expected_base = prior_round ? prior_round["head_sha"] : report&.[]("base_sha")
       errors << "review-package-base-mismatch" unless package["base_sha"] == expected_base
     end
@@ -441,10 +493,32 @@ module TaskReviewLoop
       end
     end
 
+    if rounds.is_a?(Array) && rounds.empty? && report.is_a?(Hash) && package.is_a?(Hash) && !same_actor?(
+      report["initial_implementer_id"], package["implementer_id"]
+    )
+      evidence = input.fetch("replacement_evidence", []).find do |record|
+        replacement_evidence_valid?(
+          record,
+          0,
+          report["initial_implementer_id"],
+          package["implementer_id"]
+        )
+      end
+      errors << "worker-replacement-evidence-required" unless evidence
+    end
+
     if rounds.is_a?(Array) && !rounds.empty? && report.is_a?(Hash)
-      errors << "initial-implementer-mismatch" unless same_actor?(
-        report["initial_implementer_id"], rounds.first["implementer_id"]
-      )
+      unless same_actor?(report["initial_implementer_id"], rounds.first["implementer_id"])
+        evidence = input.fetch("replacement_evidence", []).find do |record|
+          replacement_evidence_valid?(
+            record,
+            0,
+            report["initial_implementer_id"],
+            rounds.first["implementer_id"]
+          )
+        end
+        errors << "worker-replacement-evidence-required" unless evidence
+      end
       if input["review_state"] == "complete"
         errors << "current-implementer-mismatch" unless same_actor?(
           report["current_implementer_id"], rounds.last["implementer_id"]
@@ -465,6 +539,7 @@ module TaskReviewLoop
       rounds.each_cons(2) do |prior_round, current_round|
         errors << "prior-round-digest-mismatch" unless current_round["prior_round_digest"] == prior_round["digest"]
         errors << "review-round-base-chain-mismatch" unless current_round["base_sha"] == prior_round["head_sha"]
+        errors << "fix-round-without-open-findings" if prior_round["open_finding_ids"].empty?
         next if same_actor?(prior_round["implementer_id"], current_round["implementer_id"])
 
         evidence = input.fetch("replacement_evidence", []).find do |record|
@@ -532,6 +607,24 @@ module TaskReviewLoop
       end
     end
 
+    if rounds.is_a?(Array) && report.is_a?(Hash) && package.is_a?(Hash)
+      transitions = expected_replacement_transitions(report, package, rounds, input["review_state"])
+      evidence = input.fetch("replacement_evidence", [])
+      evidence_matches = evidence.map do |record|
+        transitions.count do |number, prior_implementer, replacement_implementer|
+          replacement_evidence_valid?(record, number, prior_implementer, replacement_implementer)
+        end
+      end
+      expected_matches = transitions.map do |number, prior_implementer, replacement_implementer|
+        evidence.count do |record|
+          replacement_evidence_valid?(record, number, prior_implementer, replacement_implementer)
+        end
+      end
+      if evidence_matches.any? { |count| count != 1 } || expected_matches.any? { |count| count > 1 }
+        errors << "worker-replacement-evidence-foreign"
+      end
+    end
+
     if input["review_state"] == "complete"
       errors << "review-round-missing" unless round.is_a?(Hash)
       if round.is_a?(Hash)
@@ -579,8 +672,8 @@ module TaskReviewLoop
         declared_new = round.is_a?(Hash) ? round.fetch("new_consequential_finding_ids", []) : []
         errors << "new-consequential-finding-invalid" unless (declared_new - consequential_ids).empty?
 
-        if round.is_a?(Hash) && round["number"] == 5 && !actual_open_ids.empty?
-          errors.concat(validate_cap_adjudication(input["cap_adjudication"], actual_open_ids))
+        if round.is_a?(Hash) && round["number"] == 5
+          errors.concat(validate_cap_state(input["cap_adjudication"], actual_open_ids))
         end
       end
     end

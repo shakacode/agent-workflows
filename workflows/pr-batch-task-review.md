@@ -92,10 +92,12 @@ diff stat, and prior-round digest.
 
 Capture the complete diff in a readable artifact. Set its raw-byte digest and
 byte count and set `truncated` to false. For initial review, use `scope: task`,
-the task base, and a null prior-round digest. For re-review, use `scope: fix`,
+the task base, the worker report's full ordered commit list, and a null
+prior-round digest. For re-review, use `scope: fix`,
 the head seen by the preceding review as the diff base, and that preceding
-round's digest. Never use `HEAD~1` as a substitute for the accepted task or fix
-base.
+round's digest. Its commit list is the current suffix of the worker report,
+which retains every completed round head in order. Never use `HEAD~1` as a
+substitute for the accepted task or fix base.
 
 The helper rejects an unreadable, empty, stale, truncated, digest-mismatched,
 foreign-task, wrong-scope, or incorrectly chained package. Base and head must
@@ -148,11 +150,14 @@ replacement is justified, dispatch a fresh implementer with only the brief,
 durable report, and open findings. Record `replacement_evidence` with the prior
 and replacement identities, reason, stopped-prior-instance proof, reconciled
 ownership proof, and durable evidence references. No two implementers may own
-the task concurrently.
+the task concurrently. Use replacement round `0` when ownership changes before
+the initial review package; later replacement records use the fix-round number.
 
 An open finding before round five reduces to `fix_required`. Consequential new
 breakage from the fix diff joins the open set and adds
 `consequential-new-breakage` to the decision. It does not reset the counter.
+A clean review ends the task-local loop; a fix round without findings from the
+immediately preceding review is invalid.
 
 ## Five-Round Cap
 
