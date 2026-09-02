@@ -213,7 +213,7 @@ Where GraphQL is unavailable, page the REST endpoint and sum — same answer, on
 request per 100 commits:
 
 ```bash
-set -o pipefail
+set -euo pipefail
 N=$(gh api "repos/${REPO}/pulls/${PR}/commits" --paginate --jq 'length' \
   | awk '{s+=$1} END {print s}')
 ```
@@ -549,18 +549,20 @@ Revert **one PR** when all of the following hold:
 
 - no edge of **any** type names its lane as a `from`; and
 - the union of the file sets across the PR's **entire landed range** is disjoint
-  from the file set of every other landed commit in the closure on `BASE`; and
-- no other landed commit in the closure depends on symbols, files, or schema
-  any commit in that range introduced.
+  from the file set of every later landed commit on `BASE`; and
+- no later landed commit on `BASE` depends on symbols, files, or schema any
+  commit in that range introduced.
 
 Compare whole ranges, not individual commits: a later commit that depends on any
 one member of a rebased series depends on the PR, and testing member-by-member
 can find each individual commit "independent" while the PR as a whole is not.
 
-Otherwise **unwind the closure**: the suspect PR's range plus every closure
-unit that depends on it, transitively — whether that unit landed before or
-after the suspect PR. A dependent PR contributes its whole landed range, and a
-direct commit stands on its own, per
+If a declared `edit` or `validation_open` edge selects a unit that landed before
+the suspect PR, keep it in the closure even though it is not part of the later-
+commit comparison above. Otherwise **unwind the closure**: the suspect PR's
+range plus every closure unit that depends on it, transitively — whether that
+unit landed before or after the suspect PR. A dependent PR contributes its
+whole landed range, and a direct commit stands on its own, per
 [Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr).
 If any input to that test is `UNKNOWN`, take the wider scope or stop for the
 operator. A too-wide revert is a review problem; a too-narrow revert leaves the
@@ -572,7 +574,11 @@ commits it should compare against.
 
 ## 2. Revert Order
 
-Revert in **reverse landing order**: newest in-scope commit first, oldest last.
+Revert in **reverse dependency order**: every dependent unit comes out before
+the unit it depends on. In the common case where dependency order and landing
+order line up, that is reverse landing order: newest in-scope commit first,
+oldest last. If a dependency-selected unit landed before the suspect PR, keep
+it ahead of the predecessor it depends on so the dependency is removed first.
 Every intermediate commit on the revert branch should be a state the code could
 plausibly have been in. Forward order does not merely conflict more — it
 produces intermediate trees that git reports as successful and that are
@@ -758,9 +764,9 @@ git revert --continue --no-edit
 git revert --abort
 ```
 
-Revert every commit in every in-scope PR's landed list, newest to oldest. For a
-rebase-merged PR that is N commits; for a squash or merge PR it is exactly one,
-regardless of how many commits the PR contained.
+Revert every commit in every in-scope PR's landed list in reverse dependency
+order. For a rebase-merged PR that is N commits; for a squash or merge PR it is
+exactly one, regardless of how many commits the PR contained.
 
 **Give each PR's range to a single `git revert` invocation.** Do not loop
 one-SHA-at-a-time. `git revert` is a sequencer: handed a range it queues every
@@ -789,9 +795,10 @@ once, queues them in `.git/sequencer/todo`, and `--continue` resumes through the
 queue. It is also why the list is built with `--first-parent`, never with a
 `A..B` range.
 
-Run one such invocation per in-scope PR, taking the PRs newest-first. Keep `-m`
-scoped to a single merge commit; never hand a mixed-shape set to one invocation
-and rely on `-m` applying correctly across it.
+Run one such invocation per in-scope PR, taking the PRs in reverse dependency
+order. When dependency order and landing order line up, that is newest-first.
+Keep `-m` scoped to a single merge commit; never hand a mixed-shape set to one
+invocation and rely on `-m` applying correctly across it.
 
 Confirm the list's shape rather than assuming it. The classifier in section 1
 already labelled every commit; the list handed to the bare form must be
@@ -839,10 +846,11 @@ spanning several PRs runs one invocation per PR in series, so aborting the
 second one leaves the first PR's revert commits sitting on the branch. This is a
 consequence of the one-invocation-per-PR structure, not of `--abort` itself.
 
-Do not try to resume from that state. Re-running the closure newest-first hits
-the already-reverted PR and stops with `nothing to commit, working tree clean`
-and a nonzero status, before reaching the PRs that still need reverting —
-verified. It looks like an inexplicable failure and it hides the remaining work.
+Do not try to resume from that state. Re-running the closure in reverse
+dependency order hits the already-reverted PR and stops with `nothing to commit,
+working tree clean` and a nonzero status, before reaching the PRs that still
+need reverting — verified. It looks like an inexplicable failure and it hides
+the remaining work.
 
 Abandon the whole branch and rebuild it, which is safe precisely because the
 branch is disposable at this point — it holds nothing but revert commits and has
@@ -1217,18 +1225,24 @@ fi
 agent-coord release "${RELEASE_ARGS[@]}"
 ```
 
-Where an array is not available, the two forms are separate commands, never one
-command with an optionally-empty flag:
+Where an array is not available, branch on `NAMED_SUCCESSOR` and `EVIDENCE_URL`
+independently so all four valid combinations stay valid:
 
 ```bash
-# a named successor exists
-agent-coord release --terminal superseded --pr-state "${PR_STATE}" \
-  --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}" \
-  --evidence-url "${EVIDENCE_URL}"
+if [ -n "${NAMED_SUCCESSOR:-}" ]; then
+  TERMINAL=superseded
+else
+  TERMINAL=abandoned
+fi
 
-# no named successor exists
-agent-coord release --terminal abandoned --pr-state "${PR_STATE}" \
-  --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}"
+if [ -n "${EVIDENCE_URL:-}" ]; then
+  agent-coord release --terminal "${TERMINAL}" --pr-state "${PR_STATE}" \
+    --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}" \
+    --evidence-url "${EVIDENCE_URL}"
+else
+  agent-coord release --terminal "${TERMINAL}" --pr-state "${PR_STATE}" \
+    --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}"
+fi
 ```
 
 - Use `superseded` when a named successor — a new lane, issue, or PR — will
@@ -1370,12 +1384,13 @@ An agent **may not**, without an explicit operator decision:
 8. If you turn on `rerere` for the closure, capture `RERERE_PRIOR` first and
    restore it on **every** exit path — merged repair included, not only
    abandonment.
-9. Revert **every commit in every in-scope list**, newest first, by handing the
-   whole list to one `git revert` invocation (`-m 1` on a merge commit, alone).
-   On conflict: resolve and `--continue`, or `--abort` and re-scope — never
-   `--skip`, and never leave a partial sequence. Abandoning a multi-PR closure
-   also needs `git checkout -B "${REVERT_BRANCH}" "${BASE_TIP}"`, because
-   `--abort` only cancels the invocation it is run from.
+9. Revert **every commit in every in-scope list** in reverse dependency order,
+   by handing each whole list to one `git revert` invocation (`-m 1` on a
+   merge commit, alone). Within each list, `git revert` still queues newest
+   first on its own. On conflict: resolve and `--continue`, or `--abort` and
+   re-scope — never `--skip`, and never leave a partial sequence. Abandoning a
+   multi-PR closure also needs `git checkout -B "${REVERT_BRANCH}" "${BASE_TIP}"`,
+   because `--abort` only cancels the invocation it is run from.
 10. Classify every conflicting hunk as dependent or independent; stop and
     re-scope if an independent hunk cannot be preserved.
 11. Validate the branch, and diff the final tree against `PRE_BATCH_SHA`.
