@@ -218,6 +218,8 @@ module AgentWorkflowsStatus
   end
 
   def with_superpowers_delivery_state(delivery, host, target)
+    return delivery if delivery&.key?("superpowers")
+
     superpowers = superpowers_delivery_state(host, target)
     superpowers ? (delivery || {}).merge(superpowers) : delivery
   end
@@ -252,8 +254,8 @@ module AgentWorkflowsStatus
 
   def stable_managed_surface_error(target, metadata)
     fields = {
-      "managed helper" => ["managed_bin_helper_copy_fingerprints", "bin"],
-      "managed pack document" => ["managed_pack_doc_copy_fingerprints", "docs"]
+      "managed helper" => %w[managed_bin_helper_copy_fingerprints bin],
+      "managed pack document" => %w[managed_pack_doc_copy_fingerprints docs]
     }
     fields.each do |label, (field, directory)|
       fingerprints = metadata[field]

@@ -154,14 +154,15 @@ The installer copies:
 - selected `bin/*` helpers to `<target>/bin/`;
 - install metadata to `<target>/.agent-workflows-install.json`.
 
-The default `--delivery-mode flat` installs those skills directly. When the
-native `scw` plugin is enabled, retain the installer-managed companion assets
-without a second flat skill tree:
+The default `--delivery-mode flat` installs those skills directly. With the
+release-pinned Claude native `scw` plugin enabled, complete the
+[exact-release bootstrap](docs/release-channel.md#install-update-and-roll-back)
+before retaining the companion assets without a second flat skill tree:
 
 ```bash
-bin/install-agent-workflows \
-  --host codex \
-  --release vX.Y.Z \
+"$source/bin/install-agent-workflows" \
+  --host claude --source "$source" \
+  --release "$release" \
   --delivery-mode plugin-companion
 ```
 
@@ -193,12 +194,14 @@ Add and install the Claude Code marketplace plugin with:
 /plugin install scw@agent-workflows
 ```
 
-Add and install the Codex marketplace plugin with:
-
-```bash
-codex plugin marketplace add shakacode/agent-workflows --ref vX.Y.Z
-codex plugin add scw@agent-workflows
-```
+For stable Codex skills, use the verified
+[copy bootstrap](docs/release-channel.md#install-update-and-roll-back).
+The current native Codex URL route is **development/unverified**: marketplace
+`--ref` pins only the catalog, while the `scw` entry separately fetches the
+default branch without a plugin ref or SHA. Stable companion assets do not
+make that native plugin stable. See
+[Native Plugin Paths](docs/installation-and-upgrades.md#native-plugin-paths)
+for the explicitly development-only route.
 
 The manifests point at the existing `./skills/` tree; native installation does
 not copy helper binaries, write

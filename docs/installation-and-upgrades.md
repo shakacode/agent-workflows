@@ -137,27 +137,25 @@ Install the Claude Code plugin from the repository marketplace:
 /plugin install scw@agent-workflows
 ```
 
-The Claude plugin deliberately omits an explicit `version`. Claude therefore
-uses the Git commit SHA as the plugin version, so every commit on the
-marketplace's tracked branch is updateable without maintaining duplicate
-release numbers. Enable auto-update for the `agent-workflows` marketplace in
-Claude's **Plugins → Marketplaces** UI when the installation should follow that
-branch automatically; third-party marketplace auto-update is disabled by
-default. Claude checks after startup and may delay the check by up to ten
-minutes. Run `/reload-plugins` to load an installed update in the current
-session, or start a new session.
+The Claude plugin deliberately omits an explicit `version`, so Claude identifies
+plugin revisions by their Git commit SHA. Stable installations must pin the
+marketplace to the exact release tag; enable branch auto-update only for an
+explicit development installation.
 
-For Codex, point the current marketplace or plugin-source flow at this cloned or
-released source pack and select `scw`:
+For stable Codex skills, use the verified
+[copy bootstrap](release-channel.md#install-update-and-roll-back).
+The current native Codex URL route is **development/unverified**, not a stable
+release install. Only if you deliberately want that development route:
 
 ```bash
-codex plugin marketplace add shakacode/agent-workflows --ref vX.Y.Z
+codex plugin marketplace add shakacode/agent-workflows
 codex plugin add scw@agent-workflows
 ```
 
 The Codex catalog lives at `.agents/plugins/marketplace.json`. Its URL source
 lets Codex cache the repository root as the plugin root without duplicating or
-relocating `skills/`.
+relocating `skills/`. Marketplace `--ref` pins only catalog metadata: this URL
+entry has no plugin ref or SHA, so Codex separately fetches its default branch.
 
 Existing Codex native-plugin users must first remove the old `agent-workflows`
 plugin entry, refresh its marketplace, and reinstall it as `scw`. Do not keep
@@ -172,21 +170,27 @@ Native manifests are deliberately source-pack metadata: consumer repository
 commands, labels, branches, changelog rules, CI policy, and review gates still
 come from that repository's `AGENTS.md` seam and `.agents/` contract.
 
-Both examples pin the marketplace's first fetch to the immutable release:
-Claude appends the tag to the GitHub shorthand while Codex uses `--ref`. If a
-host version cannot pin the initial add, use the copy-mode stable installer or
-stop with `UNKNOWN`; do not execute a mutable branch first. See
+Claude appends the tag to the GitHub shorthand and loads the plugin from the
+pinned marketplace's relative source. If a host version cannot pin that initial
+add, use the copy-mode stable installer or stop with `UNKNOWN`; do not execute
+a mutable branch first. This does not apply to the current Codex URL entry. See
 [Stable Release Channel](release-channel.md).
 
 ## Native Plugin And Host Installer Boundaries
 
 The native paths do not replace installer-managed companion assets. With the
-native `scw` plugin enabled, install those assets without flat skills:
+release-pinned Claude native `scw` plugin enabled, first follow the
+[exact-release bootstrap](release-channel.md#install-update-and-roll-back).
+In its final `"$source/bin/install-agent-workflows"` invocation, select
+`--host claude` and add `--delivery-mode plugin-companion` to
+install those assets without flat skills. Do not run an installer from a mutable
+clone before completing the bootstrap.
 
-```bash
-bin/install-agent-workflows --host claude --release vX.Y.Z --delivery-mode plugin-companion
-bin/install-agent-workflows --host codex --release vX.Y.Z --delivery-mode plugin-companion
-```
+A stable companion receipt covers only copied assets; it does not make the
+native Codex plugin stable.
+The current Codex URL plugin remains development/unverified regardless of the
+companion channel. For stable Codex skills, disable the native plugin and use
+the verified flat copy bootstrap instead.
 
 Native plugin installation does not install helper binaries on `PATH`, write
 `<target>/.agent-workflows-install.json`, or participate in status and upgrade
@@ -249,12 +253,13 @@ lifecycle state. Model/effort values are advisory preferences, while any
 host/model/effort observations are optional, host-exposed metadata with
 field-granular `UNKNOWN` for unavailable values.
 
-Install companion assets for an already-enabled native plugin:
+After the exact-release bootstrap, install companion assets for an
+already-enabled release-pinned Claude native plugin:
 
 ```bash
-bin/install-agent-workflows \
-  --host codex \
-  --release vX.Y.Z \
+"$source/bin/install-agent-workflows" \
+  --host claude --source "$source" \
+  --release "$release" \
   --delivery-mode plugin-companion
 ```
 

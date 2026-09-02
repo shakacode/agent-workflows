@@ -48,12 +48,19 @@ throughout.
 
 ### Route A — Flat Installer (Used In This Guide)
 
-Clone the pack once, then install it into the agent host you use:
+For a human-reviewed stable installation, use the
+[exact-release bootstrap](release-channel.md#install-update-and-roll-back).
+It verifies an immutable annotated release tag and its approval receipt before
+copying content. Use the installed agent home as the `--shared` root in Step 2.
+
+The captured walkthrough below deliberately uses the **development channel**:
+it follows your mutable source clone and does not imply stable release approval.
+Clone the pack once, then opt in explicitly:
 
 ```bash
 git clone https://github.com/shakacode/agent-workflows "$HOME/src/agent-workflows"
 cd "$HOME/src/agent-workflows"
-bin/install-agent-workflows --host codex
+bin/install-agent-workflows --host codex --channel development
 ```
 
 Use `--host claude` for Claude Code instead. The installer copies skills,
@@ -95,10 +102,10 @@ agent-workflows-status --host codex
 ```
 
 ```text
-UP_TO_DATE version=0.1.0 revision=c4b87520d9e4 delivery_mode=flat target=~/.codex
+UP_TO_DATE channel=development release_ref=none version=0.1.0 exact_commit=<full-commit> delivery_mode=flat target=~/.codex
 ```
 
-`UP_TO_DATE` means the installed pack matches your clone. The `revision` value
+`UP_TO_DATE` means the installed pack matches your clone. The `exact_commit` value
 will match whatever commit you cloned.
 
 That is the whole install. No signing keys, trust anchors, or extra setup are
@@ -111,17 +118,20 @@ If you would rather use your host's own plugin manager, install the pack as
 the `scw` plugin instead. In Claude Code, type two commands inside the host:
 
 ```text
-/plugin marketplace add shakacode/agent-workflows
+/plugin marketplace add shakacode/agent-workflows@vX.Y.Z
 /plugin install scw@agent-workflows
 ```
 
 Skills then appear under the plugin prefix — the `verify` skill used in
-Step 3 shows up as `/scw:verify`. In Codex, from your shell:
+Step 3 shows up as `/scw:verify`. Replace `vX.Y.Z` with the exact approved stable
+release; Claude's relative-source plugin comes from that pinned marketplace.
 
-```bash
-codex plugin marketplace add shakacode/agent-workflows
-codex plugin add scw@agent-workflows
-```
+For stable Codex skills, use the verified
+[copy bootstrap](release-channel.md#install-update-and-roll-back) in Route A.
+The current native Codex URL route is **development/unverified**: marketplace
+`--ref` does not pin the separately fetched plugin code. See
+[Native Plugin Paths](installation-and-upgrades.md#native-plugin-paths) if you
+deliberately want that development route.
 
 Two things to know about Route B:
 
@@ -130,9 +140,15 @@ Two things to know about Route B:
 - The plugin route delivers only the skills. It does not put the helper
   commands this guide uses (`agent-workflow-seam-doctor`,
   `agent-workflows-status`, `upgrade-agent-workflows`) on your `PATH`. To get
-  those alongside a native plugin, run the installer in companion mode
-  (`bin/install-agent-workflows --host <host> --delivery-mode plugin-companion`),
-  which installs the helpers without a second copy of the skills.
+  those alongside the enabled release-pinned Claude native `scw` plugin, first
+  follow the
+  [exact-release bootstrap](release-channel.md#install-update-and-roll-back).
+  In its final `"$source/bin/install-agent-workflows"` invocation, select
+  `--host claude` and add `--delivery-mode plugin-companion`.
+  This installs the helpers without a second copy of the skills; do not run an
+  installer from a mutable clone before completing the bootstrap.
+  A stable companion receipt covers only copied assets; it does not make the
+  native Codex plugin stable.
 
 See [Native Plugin Paths](installation-and-upgrades.md#native-plugin-paths)
 for the full details. The rest of this guide assumes Route A.
@@ -563,7 +579,9 @@ until you upgrade it. Two helper commands manage that lifecycle.
 clone. It prints one of four tokens, with matching exit codes so scripts can
 read it too: `UP_TO_DATE` (exit 0), `UPGRADE_AVAILABLE` (exit 1),
 `NOT_INSTALLED` (exit 2), and `CHECK_FAILED` (exit 3). By default it compares
-only local state; add `--fetch` to also check the remote for new commits.
+only local state; for this development walkthrough, add `--fetch` to also check
+the remote for new commits. Stable updates instead require an explicit
+`--release vX.Y.Z`; they never select the latest release automatically.
 
 Here is the day it matters, captured from a real run. The source clone has
 moved one commit ahead of the installed copy:
@@ -581,10 +599,15 @@ differ. To upgrade, run the upgrade helper and name the repository you
 adopted in Step 2 so its seam gets re-validated against the new pack:
 
 ```bash
-upgrade-agent-workflows --host codex --consumer-root ~/src/my-app
+upgrade-agent-workflows --host codex --channel development --consumer-root ~/src/my-app
 ```
 
-The helper updates the source clone (skipped with `--no-fetch` when the
+For a stable installation, use `--release vX.Y.Z` instead of
+`--channel development`, selecting a newer release to update or an older one to
+roll back. Neither operation implicitly changes channels; see the
+[rollback limits](release-channel.md#install-update-and-roll-back).
+
+The development helper updates the source clone (skipped with `--no-fetch` when the
 clone is already current), backs up the existing install, reinstalls with
 the same modes you originally chose, then re-runs the seam doctor for each
 `--consumer-root`. Add `--dry-run` first to print the same
@@ -622,7 +645,7 @@ list](installation-and-upgrades.md#troubleshooting):
 | `agent-workflows-status` prints `UPGRADE_AVAILABLE` | Run `upgrade-agent-workflows` as shown above, or manually update the source clone and reinstall. ([details](installation-and-upgrades.md#troubleshooting)) |
 | `Auto host detection found both Codex and Claude homes` | You have both hosts installed, so rerun the command with an explicit `--host codex` or `--host claude`. ([details](installation-and-upgrades.md#troubleshooting)) |
 | `DELIVERY_MODE_CONFLICT` | Both delivery routes are active and the pack refuses to guess which skill copy wins; keep exactly one — disable or remove the native `scw` plugin before a flat install, or use `--delivery-mode plugin-companion`. ([details](installation-and-upgrades.md#troubleshooting)) |
-| `invalid byte sequence in US-ASCII` or other `Encoding::` errors from a Ruby helper | An older install is running under a non-UTF-8 locale (`LANG=C` / `LC_ALL=C`, common in CI and headless agents); the pack's Ruby tools now read UTF-8 regardless of locale, so run `upgrade-agent-workflows --host <host>` to pick up the fix. ([details](installation-and-upgrades.md#troubleshooting)) |
+| `invalid byte sequence in US-ASCII` or other `Encoding::` errors from a Ruby helper | An older install is running under a non-UTF-8 locale (`LANG=C` / `LC_ALL=C`, common in CI and headless agents); select an explicit `--release vX.Y.Z` or `--channel development` with `upgrade-agent-workflows --host <host>`. ([details](installation-and-upgrades.md#troubleshooting)) |
 | The agent cannot find an installed skill | Check `agent-workflows-status --host <host>` says `UP_TO_DATE`, then restart the agent host so it reloads its skill directory. |
 
 ## Where To Go Next

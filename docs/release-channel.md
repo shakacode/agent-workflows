@@ -73,6 +73,9 @@ credential; unavailable, malformed, rate-limited, or mismatched evidence fails
 closed. Candidate files are extracted and copied only after this trust binding
 succeeds. A local tag or self-asserted receipt without that evidence fails
 closed.
+Run metadata is fetched for the receipt's exact positive run attempt, so a
+later rerun cannot substitute its result. Approval history remains bound to the
+same run; missing historical evidence still fails closed.
 Install metadata records `channel`, `release_ref`, `tag_object`, and the full
 peeled `source_revision`.
 
@@ -89,6 +92,24 @@ upgrade-agent-workflows --host codex --release vX.Y.Z
 Choose a newer tag to update or an older tag to roll back. The helper never
 selects “latest” and never changes between stable and development implicitly.
 
+In-place rollback requires a compatible instruction surface. If a skill or
+workflow root from the prior copy installation would remain active but is absent
+from the selected release, installation stops before replacing common files
+with `STABLE_INSTRUCTION_SURFACE_CONFLICT`. It also stops when the prior exact
+revision is unavailable for checking that inventory. The installer does not
+recursively delete these roots or discard user changes. Normal rollback with
+the same skill/workflow roots remains supported; unchanged obsolete managed
+documents and helpers are reconciled safely.
+
+For an incompatible rollback, install the selected release into a separate
+clean target with `--target /path/to/new-agent-home`, verify it, and explicitly
+configure the host to use that home. Preserve the previous home and do not load
+both instruction sets together. An explicit development-symlink to stable-copy
+reinstall remains supported when its managed skills fit the selected release.
+Omitted managed skill links, including links to uncommitted skills in the
+recorded development source, cause the same pre-replacement refusal. Unrelated
+user skill links are preserved; the source checkout is not modified.
+
 For deliberate branch-following development:
 
 ```bash
@@ -98,24 +119,27 @@ upgrade-agent-workflows --host codex --channel development
 
 ## Native Plugins
 
-Native host commands must also name the immutable ref. Do not first add a
-branch-backed marketplace and later ask it to switch revisions.
+Claude's relative-source native plugin can use the immutable marketplace ref.
+Do not first add a branch-backed marketplace and later ask it to switch revisions.
 
 ```text
 /plugin marketplace add shakacode/agent-workflows@vX.Y.Z
 /plugin install scw@agent-workflows
 ```
 
-```bash
-codex plugin marketplace add shakacode/agent-workflows --ref vX.Y.Z
-codex plugin add scw@agent-workflows
-```
+Claude's GitHub shorthand appends `@vX.Y.Z`. Confirm the host can pin the initial
+fetch before installation. If it cannot, use the copy-mode installer or stop
+with `UNKNOWN` rather than executing a mutable branch first.
 
-Claude's GitHub shorthand appends `@vX.Y.Z`; Codex uses `--ref vX.Y.Z`.
-Confirm the current host can pin the initial fetch before installation. If it
-cannot, use the copy-mode installer or stop with `UNKNOWN` rather than executing
-a mutable branch first.
+For stable Codex skills, use the verified
+[copy bootstrap](#install-update-and-roll-back). The current native Codex URL
+route is **development/unverified**: marketplace `--ref` pins only the catalog,
+not the separately fetched plugin code. The `scw` URL entry has no plugin ref or
+SHA and therefore fetches the default branch. A stable companion receipt covers
+only copied assets and does not make the native Codex plugin stable. Disable the
+native plugin before installing stable flat skills.
 
 Use `agent-workflows-status`, `agent-workflows-doctor`, and
 `agent-workflows-trust-audit --install-metadata <target>/.agent-workflows-install.json`
-to report the installed channel, release ref, and exact commit.
+to report the installed channel, release ref, and exact commit. In companion
+mode these describe the copied assets, not approval of the native plugin code.

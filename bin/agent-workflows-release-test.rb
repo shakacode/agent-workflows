@@ -284,6 +284,36 @@ class AgentWorkflowsReleaseTest < Minitest::Test
     end
   end
 
+  def test_verify_receipt_rejects_matching_provenance_from_another_workflow
+    with_release_repository("1.2.3") do |root, commit|
+      receipt_path = File.join(root, "release-receipt.json")
+      release_path = File.join(root, "github-release.json")
+      run_path = File.join(root, "github-workflow-run.json")
+      approvals_path = File.join(root, "github-workflow-approvals.json")
+      git(root, "tag", "-a", "v1.2.3", "-m", "workflow-bound release")
+      record_receipt(root, commit, git(root, "rev-parse", "refs/tags/v1.2.3"), receipt_path)
+      receipt = JSON.parse(File.read(receipt_path))
+      receipt.fetch("workflow")["path"] = ".github/workflows/other.yml"
+      File.write(receipt_path, JSON.generate(receipt))
+      write_github_release(release_path, receipt_path)
+      write_github_workflow_run(run_path, commit)
+      run = JSON.parse(File.read(run_path))
+      run["path"] = receipt.fetch("workflow").fetch("path")
+      File.write(run_path, JSON.generate(run))
+      write_github_approvals(approvals_path)
+
+      payload, status = run_json(
+        "verify-receipt", "--root", root, "--receipt", receipt_path,
+        "--repository", "shakacode/agent-workflows",
+        "--github-release", release_path, "--github-workflow-run", run_path,
+        "--github-workflow-approvals", approvals_path
+      )
+
+      assert_equal 2, status.exitstatus
+      assert_includes payload.fetch("reason"), "workflow run metadata"
+    end
+  end
+
   def test_verify_receipt_rejects_a_successful_run_without_approval_provenance
     with_release_repository("1.2.3") do |root, commit|
       receipt_path = File.join(root, "release-receipt.json")

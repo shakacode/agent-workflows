@@ -280,6 +280,7 @@ def verify_receipt(options)
   unless repository.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z}) &&
          github_workflow_run["id"] == workflow["run_id"] &&
          github_workflow_run["run_attempt"] == workflow["run_attempt"] &&
+         workflow["path"] == ".github/workflows/release.yml" &&
          github_workflow_run["path"] == workflow.fetch("path") &&
          github_workflow_run["event"] == "workflow_dispatch" &&
          github_workflow_run["status"] == "completed" &&

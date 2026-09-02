@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "fileutils"
+require "digest"
 require "json"
 require "minitest/autorun"
 require "open3"
@@ -10,6 +11,130 @@ require "tmpdir"
 ROOT = File.expand_path("..", __dir__)
 
 class UpgradeAgentWorkflowsTest < Minitest::Test
+  def test_stable_install_verifies_recorded_attempt_after_a_later_failed_rerun
+    with_release_repository do |source, target, commits|
+      install_stable(source, target, "v0.1.0")
+
+      assert_install_metadata(target, release_ref: "v0.1.0", revision: commits.fetch("v0.1.0"))
+    end
+  end
+
+  def test_explicit_stable_reinstall_converts_development_symlinks_to_copies
+    with_release_repository do |source, target, commits|
+      output, status = run_command(
+        File.join(source, "bin/install-agent-workflows"), "--target", target,
+        "--channel", "development", "--mode", "symlink"
+      )
+      assert status.success?, output
+      assert File.symlink?(File.join(target, "docs/release-channel.md"))
+      user_skill = File.join(target, "skills/user-owned")
+      File.symlink(File.join(File.dirname(target), "user-skill"), user_skill)
+
+      install_stable(source, target, "v0.1.0")
+
+      assert File.symlink?(user_skill), "unrelated user skill symlink was not preserved"
+      refute File.symlink?(File.join(target, "docs/release-channel.md"))
+      assert_equal "release one\n", File.read(File.join(target, "docs/release-channel.md"))
+      assert_equal "release two\n", File.read(File.join(source, "docs/release-channel.md"))
+      assert_install_metadata(target, release_ref: "v0.1.0", revision: commits.fetch("v0.1.0"))
+    end
+  end
+
+  def test_symlink_conversion_refuses_committed_and_uncommitted_omitted_managed_skills
+    with_release_repository(release_two_instruction_surface: "skills") do |source, target, _commits|
+      uncommitted = File.join(source, "skills/uncommitted-only")
+      FileUtils.mkdir_p(uncommitted)
+      File.write(File.join(uncommitted, "SKILL.md"), "uncommitted instructions\n")
+      output, status = run_command(
+        File.join(source, "bin/install-agent-workflows"), "--target", target,
+        "--channel", "development", "--mode", "symlink"
+      )
+      assert status.success?, output
+      metadata_path = File.join(target, ".agent-workflows-install.json")
+      prior_metadata = File.binread(metadata_path)
+
+      %w[release-two-only uncommitted-only].each do |name|
+        output, status = run_command(
+          File.join(source, "bin/install-agent-workflows"), "--target", target,
+          "--source", source, "--release", "v0.1.0"
+        )
+
+        assert_equal 65, status.exitstatus, output
+        assert_includes output, "STABLE_INSTRUCTION_SURFACE_CONFLICT"
+        assert_includes output, "skills/#{name}"
+        assert_equal prior_metadata, File.binread(metadata_path)
+        assert File.symlink?(File.join(target, "docs/release-channel.md"))
+        assert_equal "release two\n", File.read(File.join(target, "docs/release-channel.md"))
+        installed_skill = File.join(target, "skills", name)
+        assert File.symlink?(installed_skill)
+        File.unlink(installed_skill)
+      end
+    end
+  end
+
+  def test_rejected_obsolete_release_files_preserve_all_prior_content
+    with_release_repository(add_release_two_assets: true) do |source, target, _commits|
+      install_stable(source, target, "v0.1.1")
+      metadata_path = File.join(target, ".agent-workflows-install.json")
+      prior_metadata = File.binread(metadata_path)
+      %w[docs/release-two-only.md bin/agent-workflows-release-two-only].each do |relative|
+        obsolete = File.join(target, relative)
+        original = File.binread(obsolete)
+        File.write(obsolete, "user modification\n")
+
+        output, status = run_command(
+          File.join(source, "bin/install-agent-workflows"), "--target", target,
+          "--source", source, "--release", "v0.1.0"
+        )
+
+        assert_equal 65, status.exitstatus, output
+        assert_includes output, "MANAGED_SURFACE_RECONCILIATION_FAILED"
+        assert_equal "release two\n", File.read(File.join(target, "docs/release-channel.md"))
+        assert_equal prior_metadata, File.binread(metadata_path)
+        assert_equal "user modification\n", File.read(obsolete)
+        File.binwrite(obsolete, original)
+      end
+    end
+  end
+
+  def test_stable_reinstall_refuses_removed_instruction_roots_before_replacement
+    %w[skills workflows].each do |surface|
+      with_release_repository(release_two_instruction_surface: surface) do |source, target, _commits|
+        install_stable(source, target, "v0.1.1")
+        metadata_path = File.join(target, ".agent-workflows-install.json")
+        prior_metadata = File.binread(metadata_path)
+        newer_path = File.join(target, surface, "release-two-only")
+
+        output, status = run_command(
+          File.join(source, "bin/install-agent-workflows"), "--target", target,
+          "--source", source, "--release", "v0.1.0"
+        )
+
+        assert_equal 65, status.exitstatus, output
+        assert_includes output, "STABLE_INSTRUCTION_SURFACE_CONFLICT"
+        assert_includes output, "#{surface}/release-two-only"
+        assert_includes output, "separate clean target"
+        assert_equal "release two\n", File.read(File.join(target, "docs/release-channel.md"))
+        assert_equal prior_metadata, File.binread(metadata_path)
+        assert_path_exists newer_path
+      end
+    end
+  end
+
+  def test_stable_root_file_fingerprint_uses_selected_release_content
+    with_release_repository do |source, target, _commits|
+      File.write(File.join(source, "THIRD_PARTY-NOTICES.md"), "mutable development notices\n")
+
+      install_stable(source, target, "v0.1.0")
+
+      installed_notices = File.join(target, "THIRD_PARTY-NOTICES.md")
+      metadata = JSON.parse(File.read(File.join(target, ".agent-workflows-install.json")))
+      assert_equal git(source, "show", "v0.1.0:THIRD_PARTY-NOTICES.md"), File.read(installed_notices).strip
+      assert_equal Digest::SHA256.file(installed_notices).hexdigest,
+                   metadata.fetch("managed_pack_root_copy_fingerprints").fetch("THIRD_PARTY-NOTICES.md")
+    end
+  end
+
   def test_stable_upgrade_and_rollback_each_select_an_explicit_immutable_release
     with_release_repository do |source, target, commits|
       %w[codex claude].each do |host|
@@ -127,7 +252,7 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
 
   private
 
-  def with_release_repository(add_release_two_assets: false)
+  def with_release_repository(add_release_two_assets: false, release_two_instruction_surface: nil)
     Dir.mktmpdir("upgrade-agent-workflows-test") do |tmp|
       source = File.join(tmp, "source")
       target = File.join(tmp, "codex-home")
@@ -146,6 +271,14 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
       write_version(source, "0.1.1")
       File.write(File.join(source, "docs/release-channel.md"), "release two\n")
       add_release_two_only_assets(source) if add_release_two_assets
+      if release_two_instruction_surface
+        extra = File.join(source, release_two_instruction_surface, "release-two-only")
+        if release_two_instruction_surface == "skills"
+          FileUtils.mkdir_p(extra)
+          extra = File.join(extra, "SKILL.md")
+        end
+        File.write(extra, "newer release instructions\n")
+      end
       git(source, "add", ".")
       git(source, "commit", "--quiet", "-m", "release two")
       commit_two = git(source, "rev-parse", "HEAD")
@@ -185,6 +318,7 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
     )
       raise "missing pack document inventory insertion point"
     end
+
     File.write(installer, content)
   end
 
@@ -258,9 +392,10 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
             File.write(output, JSON.generate(payload))
           ' "$receipt" "$output" "$release"
           ;;
-        "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345")
+        "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345"|\
+        "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345/attempts/1")
           ruby -rjson -e '
-            receipt, output = ARGV
+            receipt, output, url = ARGV
             data = JSON.parse(File.read(receipt))
             workflow = data.fetch("workflow")
             payload = {
@@ -276,8 +411,12 @@ class UpgradeAgentWorkflowsTest < Minitest::Test
               "actor" => {"login" => workflow.fetch("actor"), "type" => "User"},
               "repository" => {"full_name" => workflow.fetch("repository"), "private" => false}
             }
+            unless url.end_with?("/attempts/1")
+              payload["run_attempt"] = 2
+              payload["conclusion"] = "failure"
+            end
             File.write(output, JSON.generate(payload))
-          ' "$receipt" "$output"
+          ' "$receipt" "$output" "$url"
           ;;
         "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345/approvals")
           ruby -rjson -e '

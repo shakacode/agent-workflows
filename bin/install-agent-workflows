@@ -1956,7 +1956,7 @@ prepare_metadata() {
                        end
     root_fingerprints = if mode == "copy"
                           name = "THIRD_PARTY-NOTICES.md"
-                          root_file = File.join(source, name)
+                          root_file = File.join(content_root, name)
                           unless File.file?(root_file) && !File.symlink?(root_file)
                             abort "missing pack root file while preparing install metadata: #{root_file}"
                           end
@@ -3825,6 +3825,7 @@ report_delivery_state_conflict() {
 materialize_stable_release() {
   local approvals_path discovered_commit discovered_tag_object github_api_base materialized_root receipt_path
   local receipt_url release_metadata_path release_metadata_url run_path run_url tag_ref workflow_run_id
+  local workflow_run_identity workflow_run_attempt run_attempt_url
 
   [[ "$release_ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
     echo "--release must be an exact vX.Y.Z tag, got: $release_ref" >&2
@@ -3881,27 +3882,31 @@ materialize_stable_release() {
     echo "Stable installation requires GitHub release provenance: $release_metadata_url" >&2
     exit 1
   fi
-  workflow_run_id="$(ruby -rjson -e '
+  workflow_run_identity="$(ruby -rjson -e '
     receipt = JSON.parse(File.read(ARGV.fetch(0)))
     run_id = receipt.dig("workflow", "run_id")
-    abort unless run_id.is_a?(Integer) && run_id.positive?
-    puts run_id
+    run_attempt = receipt.dig("workflow", "run_attempt")
+    abort unless [run_id, run_attempt].all? { |value| value.is_a?(Integer) && value.positive? }
+    puts "#{run_id}:#{run_attempt}"
   ' "$receipt_path" 2>/dev/null)" || {
     rm -rf "$materialized_temp_root"
     materialized_temp_root=""
-    echo "Stable release receipt lacks a valid workflow run ID" >&2
+    echo "Stable release receipt lacks a valid workflow run ID and attempt" >&2
     exit 1
   }
+  workflow_run_id="${workflow_run_identity%:*}"
+  workflow_run_attempt="${workflow_run_identity#*:}"
   run_path="$materialized_temp_root/github-workflow-run.json"
   run_url="$github_api_base/actions/runs/$workflow_run_id"
+  run_attempt_url="$run_url/attempts/$workflow_run_attempt"
   approvals_path="$materialized_temp_root/github-workflow-approvals.json"
   if ! curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
     --header 'Accept: application/vnd.github+json' \
     --header 'X-GitHub-Api-Version: 2022-11-28' \
-    --output "$run_path" "$run_url"; then
+    --output "$run_path" "$run_attempt_url"; then
     rm -rf "$materialized_temp_root"
     materialized_temp_root=""
-    echo "Stable installation requires GitHub workflow run provenance: $run_url" >&2
+    echo "Stable installation requires GitHub workflow run provenance: $run_attempt_url" >&2
     exit 1
   fi
   if ! curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
@@ -4058,6 +4063,72 @@ finalize_obsolete_stable_copy_files() {
   obsolete_managed_staging=()
 }
 
+verify_stable_instruction_surface() {
+  [[ "$channel" = "stable" && "$mode" = "copy" ]] || return 0
+  [[ "${install_metadata_binding_state:-}" = "present" ]] || return 0
+  require_install_metadata_binding
+  if ! ruby -rjson -ropen3 -e '
+    metadata_path, source, selected_root, target = ARGV
+    metadata = JSON.parse(File.binread(metadata_path))
+    abort "invalid prior installation metadata" unless metadata.is_a?(Hash)
+    prior_mode = metadata["mode"]
+    abort "invalid prior installation mode" unless %w[copy symlink].include?(prior_mode)
+    revision = metadata["source_revision"]
+    unless revision.is_a?(String) && revision.match?(/\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/i)
+      abort "prior exact revision is unavailable"
+    end
+    roots = [source, metadata["source"]].select { |root| root.is_a?(String) && !root.empty? }.uniq
+    prior_source = roots.find do |root|
+      Open3.capture3("git", "-C", root, "cat-file", "-e", "#{revision}^{commit}").last.success?
+    end
+    abort "prior exact revision cannot be read from a source clone" unless prior_source
+
+    %w[skills workflows].each do |surface|
+      next if surface == "workflows" && prior_mode == "symlink"
+      next if surface == "skills" && metadata.fetch("delivery_mode", "flat") != "flat"
+
+      output, _error, status = Open3.capture3(
+        "git", "-C", prior_source, "ls-tree", "-z", "--name-only", "#{revision}:#{surface}"
+      )
+      abort "prior #{surface} inventory is unavailable" unless status.success?
+      prior_names = output.split("\0")
+      if surface == "skills" && prior_mode == "copy"
+        fingerprints = metadata.fetch("managed_skill_copy_fingerprints", {})
+        abort "prior skill fingerprint inventory is invalid" unless fingerprints.is_a?(Hash)
+        prior_names |= fingerprints.keys
+      elsif surface == "skills"
+        installed_skills = File.join(target, "skills")
+        recorded_source = File.expand_path(metadata.fetch("source"))
+        if File.directory?(installed_skills)
+          Dir.children(installed_skills).each do |name|
+            path = File.join(installed_skills, name)
+            next unless File.symlink?(path)
+
+            linked_source = File.expand_path(File.readlink(path), installed_skills)
+            prior_names |= [name] if linked_source == File.join(recorded_source, "skills", name)
+          end
+        end
+      end
+      selected_names = Dir.children(File.join(selected_root, surface))
+      prior_names.each do |name|
+        unless name.is_a?(String) && name.match?(/\A[^\x00-\x1f\x7f\/]+\z/) && !%w[. ..].include?(name)
+          abort "invalid prior #{surface} path"
+        end
+        next if name.start_with?(".") || selected_names.include?(name)
+
+        path = File.join(target, surface, name)
+        next unless File.exist?(path) || File.symlink?(path)
+
+        abort "prior release instruction root remains installed: #{surface}/#{name}"
+      end
+    end
+  ' "$install_metadata_snapshot_path" "$source_root" "$repo_root" "$target"; then
+    echo "STABLE_INSTRUCTION_SURFACE_CONFLICT: preserved the prior installation; use a separate clean target for this release." >&2
+    return 65
+  fi
+  require_install_metadata_binding
+}
+
 reconcile_obsolete_stable_copy_files() {
   local obsolete_records kind name expected_digest destination attestation
   local original_parent original_parent_identity expected_identity staged move_status
@@ -4074,7 +4145,9 @@ reconcile_obsolete_stable_copy_files() {
     selected.shift
     selected_helpers = selected
     metadata = JSON.parse(File.binread(metadata_path))
-    abort unless metadata.is_a?(Hash) && metadata["mode"] == "copy"
+    abort unless metadata.is_a?(Hash)
+    exit if metadata["mode"] == "symlink"
+    abort unless metadata["mode"] == "copy"
     fields = {
       "doc" => ["managed_pack_doc_copy_fingerprints", selected_docs],
       "helper" => ["managed_bin_helper_copy_fingerprints", selected_helpers]
@@ -4543,6 +4616,8 @@ fi
 verify_pack_doc_destinations
 verify_install_destinations
 verify_third_party_notices_destination
+verify_stable_instruction_surface
+reconcile_obsolete_stable_copy_files
 prepare_metadata
 if ! verify_install_metadata_binding; then
   report_install_metadata_binding_changed
@@ -4577,7 +4652,6 @@ if [[ "$mode" = "copy" ]]; then
     fi
     install -m 0755 "$repo_root/bin/$helper" "$destination"
   done
-  reconcile_obsolete_stable_copy_files
 else
   if [[ -L "$target/bin/agent_doctor" ]] &&
      [[ "$(readlink "$target/bin/agent_doctor")" != "$repo_root/bin/agent_doctor" ]] &&

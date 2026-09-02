@@ -163,7 +163,12 @@ libraries provides no guarantee of token or cost savings, quality, or security.
    public GitHub release asset, successful exact-head release workflow run, and
    protected-environment approval before copying candidate content. The
    platform's normal user-skill installation mechanism is also available when
-   it can pin the same exact release.
+   it can pin the same exact release. For stable Codex skills, use this verified
+   [copy bootstrap](release-channel.md#install-update-and-roll-back): the current
+   native Codex URL route is **development/unverified**. Its marketplace `--ref`
+   does not pin the separately fetched plugin code, and stable companion assets
+   do not make the native plugin stable. Claude's pinned relative-source route
+   remains available; see [Native Plugin Paths](installation-and-upgrades.md#native-plugin-paths).
 
 3. **Initialize the consumer seam.** From the consumer repo, run:
 

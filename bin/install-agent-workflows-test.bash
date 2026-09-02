@@ -198,7 +198,7 @@ case "$url" in
       File.write(output, JSON.generate(payload))
     ' "$receipt" "$output" "$release_ref"
     ;;
-  "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345")
+  "https://api.github.com/repos/shakacode/agent-workflows/actions/runs/12345/attempts/1")
     ruby -rjson -e '
       receipt, output = ARGV
       data = JSON.parse(File.read(receipt))
@@ -8853,18 +8853,70 @@ test_stable_install_accepts_linked_worktree_and_rejects_non_git_source() {
 }
 
 test_stable_copy_bootstrap_materializes_exact_ref_before_installer_execution() {
+  # Ruby checks literal shell variables in the documentation, without expansion.
+  # shellcheck disable=SC2016
   ruby -e '
     ARGV.each do |path|
       text = File.read(path)
       clone = text.index("git clone --no-checkout") or abort "#{path}: missing no-checkout copy bootstrap"
       checkout = text.index(%q[git -C "$source" checkout --detach "$release"]) or
         abort "#{path}: missing exact detached release checkout"
-      install = text.index(%q["$source/bin/install-agent-workflows"]) or
+      # Inline references to the final command are not installer execution.
+      install = text.index(/^[ \t]*"\$source\/bin\/install-agent-workflows"/) or
         abort "#{path}: missing source-qualified stable installer"
       abort "#{path}: mutable installer runs before exact release checkout" unless clone < checkout && checkout < install
     end
   ' "$ROOT/README.md" "$ROOT/docs/adoption.md" "$ROOT/docs/installation-and-upgrades.md" "$ROOT/docs/release-channel.md" || \
     fail "stable copy bootstrap does not lead with exact-ref materialization"
+  # Ruby checks the literal bound installer path used in the companion guidance.
+  # shellcheck disable=SC2016
+  ruby -e '
+    ARGV.each do |path|
+      text = File.read(path)
+      heading = if File.basename(path) == "getting-started.md"
+                  "Two things to know about Route B:"
+                else
+                  "## Native Plugin And Host Installer Boundaries"
+                end
+      section = text.split(heading, 2).fetch(1).split("\n## ", 2).first
+      bootstrap = section.index("(release-channel.md#install-update-and-roll-back)")
+      installer = section.index(%q["$source/bin/install-agent-workflows"])
+      unless bootstrap && installer && bootstrap < installer && section.include?("--delivery-mode plugin-companion")
+        abort "#{path}: companion install must first bind its executable through the exact-release bootstrap"
+      end
+      unless section.include?("--host claude") && !section.include?("--host codex") &&
+             section.gsub(/\s+/, " ").include?("does not make the native Codex plugin stable")
+        abort "#{path}: stable companion guidance must distinguish native Codex skills from copied assets"
+      end
+    end
+  ' "$ROOT/docs/getting-started.md" "$ROOT/docs/installation-and-upgrades.md" || \
+    fail "native companion guidance lacks a bootstrap-bound installer"
+  # Ruby checks literal documentation text, without shell expansion.
+  # shellcheck disable=SC2016
+  ruby -e '
+    ARGV.each do |path|
+      text = File.read(path)
+      if text.match?(/^codex plugin marketplace add .*--ref/)
+        abort "#{path}: marketplace ref alone must not be offered as a stable Codex plugin install"
+      end
+      text.scan(/```bash\n(.*?)```/m).flatten.each do |example|
+        if example.include?("--host codex") && example.include?("--release") &&
+           example.include?("--delivery-mode plugin-companion")
+          abort "#{path}: stable Codex example must install verified flat skills, not only companion assets"
+        end
+      end
+      unless text.include?("development/unverified") &&
+             text.match?(/\((?:docs\/)?release-channel\.md#install-update-and-roll-back\)|\(#install-update-and-roll-back\)/)
+        abort "#{path}: native Codex guidance must label the URL route and direct stable users to the copy bootstrap"
+      end
+      next if File.basename(path) == "adoption.md"
+
+      unless text.include?("/plugin marketplace add shakacode/agent-workflows@vX.Y.Z")
+        abort "#{path}: retain the pinned Claude marketplace route"
+      end
+    end
+  ' "$ROOT/README.md" "$ROOT/docs/adoption.md" "$ROOT/docs/getting-started.md" "$ROOT/docs/installation-and-upgrades.md" "$ROOT/docs/release-channel.md" || \
+    fail "native Codex guidance confuses marketplace metadata with pinned plugin code"
 }
 
 test_stable_install_rejects_malformed_missing_lightweight_and_version_mismatched_refs() {
