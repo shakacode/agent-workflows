@@ -1963,8 +1963,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
   def test_unrecorded_doctor_tree_does_not_inventory_unexpected_entries
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)
-      # Only top-level helpers recorded: this install never managed the tree.
-      managed_bin_metadata(target, source, fingerprints.reject { |name, _| name.include?("/") })
+      # Only top-level helpers recorded, the root key included: this install
+      # never managed the doctor tree at all.
+      helpers_only = fingerprints.reject { |name, _| name.include?("/") || name == "agent_doctor" }
+      managed_bin_metadata(target, source, helpers_only)
       File.write(File.join(target, "bin/agent_doctor/intruder.rb"), "foreign\n")
 
       payload, status, output = check_managed_bin(target, source)
@@ -2259,6 +2261,41 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
       refute status.success?, output
       assert_includes payload.dig("bin", "blocking"), deleted
+    end
+  end
+
+  def test_bare_doctor_root_key_still_manages_the_tree
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      # Metadata recording the doctor root but none of its files still means
+      # this install manages that tree, so its guards must stay active.
+      managed_bin_metadata(target, source, fingerprints.reject { |name, _| name.include?("/") })
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(File.join(source, "bin/agent_doctor/renderer.rb"), "renderer v2\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [doctor_root], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_stack_owned_tree_that_moved_forward_stays_compatible
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # Stack-owned: the installer accepts this tree on its module line and
+      # replaces it, so a module already matching the current source is owned.
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "agent-stack-module-v1:agent_doctor\n")
+      moved = "renderer v2\n"
+      File.write(File.join(source, "bin/agent_doctor/renderer.rb"), moved)
+      File.write(File.join(doctor_root, "renderer.rb"), moved)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
     end
   end
 

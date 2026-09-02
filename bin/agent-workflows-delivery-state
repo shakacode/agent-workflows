@@ -701,6 +701,9 @@ module AgentWorkflowsDeliveryState
   def managed_doctor_tree_attested?(bin_root, fingerprints)
     doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
     return false unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+    # A stack-owned tree is attested by its module line, which is the same
+    # evidence the installer accepts before rsync replaces the tree.
+    return true if stack_owned_managed_doctor_tree?(doctor_root)
 
     marker = File.join(doctor_root, MANAGED_DOCTOR_MARKER)
     return false if File.symlink?(marker) || !File.file?(marker)
@@ -713,13 +716,23 @@ module AgentWorkflowsDeliveryState
     false
   end
 
+  # The doctor tree is recorded as its root plus the paths beneath it; every
+  # other recorded name is a top-level helper the installer rewrites directly.
+  def doctor_tree_entry?(name)
+    name == MANAGED_DOCTOR_SUBDIRECTORY || name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/")
+  end
+
+  def top_level_helper_entry?(name)
+    !name.include?("/") && name != MANAGED_DOCTOR_SUBDIRECTORY
+  end
+
   def managed_bin_copy_owned?(path:, source:, name:, digest:, doctor_attested: false)
     actual = managed_path_fingerprint(path)
     return false unless actual
     return true if actual == digest.downcase
 
     source_path = File.join(source, "bin", name)
-    if name.include?("/") || name == MANAGED_DOCTOR_SUBDIRECTORY
+    unless top_level_helper_entry?(name)
       # The doctor tree earns the current-source fallback only under a marker
       # that attests it, so the recorded map going stale mid-install does not
       # make the installer refuse the bytes it just wrote.
@@ -781,7 +794,7 @@ module AgentWorkflowsDeliveryState
   end
 
   def managed_doctor_marker_conflict(bin_root, source, fingerprints)
-    return nil unless fingerprints.keys.any? { |name| name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/") }
+    return nil unless fingerprints.keys.any? { |name| doctor_tree_entry?(name) }
 
     doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
     return nil unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
@@ -928,7 +941,7 @@ module AgentWorkflowsDeliveryState
     end
 
     doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
-    manages_doctor_tree = fingerprints.keys.any? { |name| name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/") }
+    manages_doctor_tree = fingerprints.keys.any? { |name| doctor_tree_entry?(name) }
     if manages_doctor_tree && File.directory?(doctor_root) && !File.symlink?(doctor_root) &&
        !(File.readable?(doctor_root) && File.executable?(doctor_root))
       return {
