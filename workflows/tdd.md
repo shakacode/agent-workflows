@@ -11,13 +11,18 @@ Use this workflow to move in small, verified behavior slices:
 RED -> GREEN -> REFACTOR -> repeat
 ```
 
+Before writing or changing tests, mocks, or test helpers, apply
+[Writing Good Tests](../skills/tdd/references/writing-good-tests.md).
+
 ## Core Loop
 
 1. Choose one observable behavior.
    - For a bug fix, first express the reported failure as one failing regression test.
    - For a feature or behavior change, start with the smallest user-visible or public-interface behavior.
    - Prefer tests through public interfaces and real code paths over tests coupled to private implementation details.
+   - Before writing the test body, name a realistic production break it should catch. If only an intentional source or private-structure change would fail it, redesign the test around observable behavior.
 2. RED: write one failing test.
+   - Use literal expected values or independently hand-checked fixtures when practical. Do not compute expectations through the implementation or helper under test, except in an explicitly named characterization test with independent evidence.
    - Run the new test with the repo's narrowest relevant test invocation. Start from `.agents/bin/test` when present, then narrow using the repo's test framework convention.
    - Confirm the test fails for the right reason: the missing behavior or reproduced bug.
    - If it fails because of a typo, missing import, bad fixture, or harness problem, fix the test setup before touching production code.
@@ -38,6 +43,9 @@ RED -> GREEN -> REFACTOR -> repeat
 - Never refactor while RED.
 - Never batch-write all tests before implementation; use vertical slices.
 - Never claim a bug is fixed without evidence: prefer a regression test that failed before the fix and passes after it.
+- Exact source, text, path, and mirror checks prove source or packaging invariants only. For a behavior claim, execute the artifact or pressure-test its consumer when practical.
+- Preserve real side effects needed by the behavior. Mock only slow or external boundaries, use realistic complete doubles, and do not treat a mock's existence as behavioral proof.
+- Before completion, choose a small finite set of realistic failure modes for the changed behavior and confirm the relevant test fails for them. This bounded mutation check needs no mutation-testing software.
 - Only when a direct automated regression test is not practical, document why, then use the closest useful local verification through `.agents/bin/test` or the repo's documented manual surface to capture before and after behavior.
 - Before handoff or PR creation, run `.agents/bin/validate` in addition to the targeted tests used during the loop.
 
