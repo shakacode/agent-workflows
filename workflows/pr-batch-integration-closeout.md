@@ -470,18 +470,18 @@ includes this evidence block:
 ```markdown
 ### QA Evidence
 
-- QA lane: <agent id, branch/worktree, claim status, last heartbeat status; required QA needs concrete owner/worktree; only private claim/heartbeat may be UNKNOWN>
+- QA lane: <agent id, branch/worktree, claim/heartbeat status; required QA needs a concrete owner/worktree; only private coordination may be UNKNOWN>
 - Scope checked: <changed areas, PRs, release phase, and why this QA depth was enough>
 - Tested at: <PR/head SHA(s), audited range, or "not applicable: no PR/code changes">
 - Automated checks: <commands, CI links, or "covered by worker validation: ...">
 - Manual checks: <workflow/app smoke checks, screenshots, or "not applicable: ...">
 - User-visible UI change: <yes | no>
-- Visual evidence: <durable before/after URL(s), destination, and paint check; blocked human-attachment paths; or reasoned "not applicable: no user-visible UI change">
+- Visual evidence: <durable URL(s), destination, and paint check; blocked reason and remedy; or reasoned not applicable>
 - Interaction change: <yes | no; yes requires clip/measured substitute, no requires reasoned not applicable>
 - Interaction evidence: <durable clip URL, exact measured_substitute with labeled before/after/tolerance values and units, or reasoned "not applicable: ...">
 - Visual fix: <yes | no; yes requires observed unfixed failure, no requires reasoned not applicable>
 - Negative control: <observed unfixed failure, or reasoned "not applicable: no visual fix">
-- Performance evidence: <repo performance-seam result with source=<stable command/report/ref>, baseline_value=<number><unit>, and candidate_value=<number><unit> plus bundle_hygiene/measured_metric classification; non-byte bundle_hygiene names metric_name=<bundle/asset shape metric>; measured_metric names metric_name=<runtime/user metric>; or reasoned "not applicable: ...">
+- Performance evidence: <repo-seam source, baseline/candidate values and units, bundle_hygiene or measured_metric classification, and required metric_name; or reasoned not applicable>
 - Findings: <none, fixed in PR(s), waived with link, or follow-up recommended with tracking outcome/link>
 - QA required: <yes | no>
 - QA required rationale: <one-line reason for the decision and selected QA depth>
@@ -508,6 +508,7 @@ automated_checks: <commands, CI links, or covered-by-worker-validation note>
 manual_checks: <manual smoke checks or not applicable>
 user_visible_ui_change: <yes | no>
 visual_evidence_destination: <github_pr | linked_tracker | repo_artifact_store | human_attachment_pending | not_applicable>
+visual_evidence_blocked_reason: <uploader_absent | uploader_denied | no_configured_store | upload_failed: reason>
 visual_evidence: <durable: before/after https URL(s) | blocked: human attachment required; prepared local artifacts: absolute paths | not applicable: reason>
 paint_check: <passed: painted/rendered target inspected | not applicable: reason>
 interaction_change: <yes | no>
@@ -525,6 +526,9 @@ process_gap_disposition: <script | schema | checklist+replay | park | not applic
 For `required: no`, record `status: not_applicable` and
 `release_blocking: not_applicable`. Replay treats any other terminal pair as an
 inconsistent omission record and returns `UNKNOWN`.
+
+Use `visual_evidence_blocked_reason` only with `human_attachment_pending`;
+missing or extra values replay as `UNKNOWN`.
 
 Historical `qa-evidence v1` receipts remain replayable for backward
 compatibility. Do not emit v1 for new closeout evidence. The presence of any v2

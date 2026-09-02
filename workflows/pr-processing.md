@@ -973,12 +973,34 @@ For each user-visible UI change:
    destination and contain its reviewer-visible HTTPS URL.
 3. GitHub documents no public REST or GraphQL attachment-upload route. Do not
    depend on an undocumented direct-upload endpoint unless the repository has
-   explicitly configured and verified that integration. If no authenticated UI
-   uploader or configured integration is available, prepare clearly named local
+   explicitly configured and verified that integration. This is a constraint on
+   GitHub's API, not a statement that agents cannot attach images: a host whose
+   browser tooling can set a file input on an authenticated github.com session
+   completes the UI upload flow normally. Before recording a blocked upload,
+   resolve which state applies, because the remedies differ. Record the matching
+   `visual_evidence_blocked_reason` and state its remedy in the handoff:
+   - `uploader_absent` — the host exposes no file-input upload tool at all. A
+     host that has one must run the lane, or a human attaches the artifacts.
+   - `uploader_denied` — the tool exists but the host's permission policy
+     refused the call. A worker cannot lift this at runtime and must not try;
+     a human pre-provisions the permission before the lane launches.
+   - `no_configured_store` — no linked tracker or repo artifact destination is
+     configured or reachable. Configure one, or a human attaches the artifacts.
+   - `upload_failed: reason` — an available uploader was exercised and failed.
+     Name the observed failure; a retry or a human attachment resolves it.
+
+   When none of these apply the uploader is usable: perform the upload, record a
+   durable destination, and omit `visual_evidence_blocked_reason` entirely.
+
+   If no authenticated UI uploader or configured integration is available,
+   prepare clearly named local
    before/after artifacts and report their absolute paths, but record
-   `human_attachment_pending` and keep QA/release readiness `blocked` until a
-   human attaches them and the receipt contains the resulting durable GitHub
-   URL. A local absolute or relative path (`./`, `../`, `~/`, Windows
+   `human_attachment_pending` with the matching
+   `visual_evidence_blocked_reason` and keep QA/release readiness `blocked`
+   until a human attaches them and the receipt contains the resulting durable
+   GitHub URL. Report the blocked reason in the handoff in plain language, with
+   the remedy, rather than only asserting that evidence was unavailable.
+   A local absolute or relative path (`./`, `../`, `~/`, Windows
    slash/backslash forms), a plain local media filename, `file:` URL,
    inaccessible private blob/camo URL, “captured locally”, or any
    blank/unpainted capture token never satisfies a durable visual-evidence
