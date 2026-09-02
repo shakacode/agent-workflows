@@ -642,27 +642,34 @@ module AgentWorkflowsDeliveryState
     nil
   end
 
-  # Fold the executable bit into the value the way directory_fingerprint already
-  # does for skill trees, so a chmod-only change to an installed command cannot
-  # pass as unmodified.
-  def managed_file_fingerprint(path)
-    return nil unless File.file?(path) && !File.symlink?(path)
+  # Cover the exact permission mode, not just the executable bit, because the
+  # doctor tree's ownership marker hashes the exact mode: anything coarser lets
+  # status call an install clean that the installer then refuses. Directories
+  # carry a mode too, so a recorded entry may be either kind and a type change
+  # mismatches for free.
+  def managed_path_fingerprint(path)
+    stat = File.lstat(path)
+    return nil if stat.symlink?
 
-    executable = (File.stat(path).mode & 0o111).positive?
-    Digest::SHA256.hexdigest(JSON.generate(["file", executable, Digest::SHA256.file(path).hexdigest]))
+    mode = stat.mode & 0o7777
+    if stat.directory?
+      Digest::SHA256.hexdigest(JSON.generate(["directory", mode]))
+    elsif stat.file?
+      Digest::SHA256.hexdigest(JSON.generate(["file", mode, Digest::SHA256.file(path).hexdigest]))
+    end
+  rescue SystemCallError
+    # An unreadable managed copy cannot be proven owned, so it stays blocking.
+    nil
   end
 
   def managed_bin_copy_owned?(path:, source:, name:, digest:)
-    actual = managed_file_fingerprint(path)
+    actual = managed_path_fingerprint(path)
     return false unless actual
     return true if actual == digest.downcase
 
     # A copy that already matches the current source is what the installer would
     # write anyway, so it stays owned across a source that moved forward.
-    actual == managed_file_fingerprint(File.join(source, "bin", name))
-  rescue SystemCallError
-    # An unreadable managed copy cannot be proven owned, so it stays blocking.
-    false
+    actual == managed_path_fingerprint(File.join(source, "bin", name))
   end
 
   # The installer's ownership marker only tolerates a doctor tree it can verify
@@ -705,7 +712,7 @@ module AgentWorkflowsDeliveryState
       next if MANAGED_DOCTOR_OWNERSHIP_MARKERS.include?(relative)
 
       if File.directory?(entry) && !File.symlink?(entry)
-        next if recorded.any? { |name| name.start_with?("#{relative}/") }
+        next if recorded.include?(relative) || recorded.any? { |name| name.start_with?("#{relative}/") }
 
         unexpected << entry
         Find.prune

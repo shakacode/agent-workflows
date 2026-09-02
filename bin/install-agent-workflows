@@ -1916,10 +1916,14 @@ prepare_metadata() {
                        else
                          {}
                        end
-    # Mirrors AgentWorkflowsDeliveryState.managed_file_fingerprint: the recorded
-    # value covers the executable bit as well as the content.
-    managed_file_fingerprint = lambda do |file, executable|
-      Digest::SHA256.hexdigest(JSON.generate(["file", executable, Digest::SHA256.file(file).hexdigest]))
+    # Mirrors AgentWorkflowsDeliveryState.managed_path_fingerprint: the recorded
+    # value covers the exact permission mode as well as the content, and a
+    # managed directory carries its mode too.
+    managed_file_fingerprint = lambda do |file, mode|
+      Digest::SHA256.hexdigest(JSON.generate(["file", mode, Digest::SHA256.file(file).hexdigest]))
+    end
+    managed_directory_fingerprint = lambda do |directory|
+      Digest::SHA256.hexdigest(JSON.generate(["directory", File.stat(directory).mode & 0o7777]))
     end
     bin_fingerprints = if mode == "copy"
                          entries = {}
@@ -1931,9 +1935,12 @@ prepare_metadata() {
 
                            # Helpers land through install -m 0755 regardless of
                            # the source mode, so record what the install writes.
-                           entries[name] = managed_file_fingerprint.call(helper, true)
+                           entries[name] = managed_file_fingerprint.call(helper, 0o755)
                          end
                          doctor_root = File.join(source, "bin", "agent_doctor")
+                         # The install chmods the destination root to the source
+                         # root mode, and rsync -a preserves modes below it.
+                         entries["agent_doctor"] = managed_directory_fingerprint.call(doctor_root)
                          Find.find(doctor_root) do |entry|
                            next if entry == doctor_root
 
@@ -1941,14 +1948,16 @@ prepare_metadata() {
                            # Ownership markers are written after the copy and are
                            # excluded from it, so they are never managed content.
                            next if %w[.agent-workflows-managed .agent-stack-managed].include?(relative)
-                           next if File.directory?(entry) && !File.symlink?(entry)
+                           if File.directory?(entry) && !File.symlink?(entry)
+                             entries["agent_doctor/#{relative}"] = managed_directory_fingerprint.call(entry)
+                             next
+                           end
                            unless File.file?(entry) && !File.symlink?(entry)
                              abort "unsupported pack doctor entry while preparing install metadata: #{entry}"
                            end
 
-                           # rsync -a preserves the source mode for the tree.
                            entries["agent_doctor/#{relative}"] =
-                             managed_file_fingerprint.call(entry, (File.stat(entry).mode & 0o111).positive?)
+                             managed_file_fingerprint.call(entry, File.stat(entry).mode & 0o7777)
                          end
                          entries.sort.to_h
                        else

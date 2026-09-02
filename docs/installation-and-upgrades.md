@@ -469,9 +469,11 @@ before retrying.
 `managed_bin_copy_fingerprints` keys are paths relative to `<target>/bin`, so
 `agent-workflows-status` reports a modified managed executable or runtime module
 as `CHECK_FAILED` with the offending paths under `bin.blocking` instead of
-`UP_TO_DATE`. Each recorded value covers the executable bit as well as the file
-content, so removing the executable bit from an installed command is reported
-too. Because `rsync --delete` owns the whole `<target>/bin/agent_doctor` tree,
+`UP_TO_DATE`. Each recorded value covers the exact permission mode as
+well as the file content, and the managed `<target>/bin/agent_doctor` directory
+itself is recorded with its mode, so a permission-only change is reported too.
+This matches the ownership marker the installer verifies over that tree, which
+also hashes exact modes. Because `rsync --delete` owns the whole `<target>/bin/agent_doctor` tree,
 an unrecorded entry there is reported as well, matching the refusal the
 installer's ownership marker already raises; the two ownership markers
 themselves are never recorded and never block. A missing top-level helper stays

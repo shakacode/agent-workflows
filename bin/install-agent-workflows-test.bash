@@ -340,6 +340,65 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
 }
 
 
+test_copy_install_refuses_a_mode_only_managed_doctor_module_change() {
+  local tmp source target output status module_path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  module_path="$target/bin/agent_doctor/renderer.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  # 0644 -> 0600 crosses no execute-bit boundary and keeps the file readable.
+  chmod 0600 "$module_path"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for a mode-only doctor change: $output"
+  assert_contains "$output" "$module_path"
+
+  set +e
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/refused.out" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install accepted a mode-only doctor module change"
+
+  chmod 0644 "$module_path"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+}
+
+test_copy_install_refuses_a_managed_doctor_root_mode_change() {
+  local tmp source target output status doctor_root
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  doctor_root="$target/bin/agent_doctor"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  chmod 0700 "$doctor_root"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for a doctor root mode change: $output"
+  assert_contains "$output" "$doctor_root"
+
+  set +e
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/refused.out" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install accepted a doctor root mode change"
+
+  chmod 0755 "$doctor_root"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+}
+
 test_copy_install_reports_a_missing_managed_doctor_module() {
   local tmp source target output status module_path
   tmp="$(mktemp -d)"
@@ -525,14 +584,19 @@ test_copy_metadata_records_managed_bin_copy_fingerprints() {
       digest = fingerprints[name]
       abort "missing managed bin fingerprint for #{name}: #{fingerprints.keys.inspect}" unless digest
       installed = File.join(target, "bin", name)
-      executable = (File.stat(installed).mode & 0o111).positive?
+      mode = File.stat(installed).mode & 0o7777
       expected = Digest::SHA256.hexdigest(
-        JSON.generate(["file", executable, Digest::SHA256.file(installed).hexdigest])
+        JSON.generate(["file", mode, Digest::SHA256.file(installed).hexdigest])
       )
       abort "recorded fingerprint does not match #{installed}" unless expected == digest
       abort "content-only digest recorded for #{installed}" if
         Digest::SHA256.file(installed).hexdigest == digest
     end
+    doctor_root = File.join(target, "bin/agent_doctor")
+    expected_root = Digest::SHA256.hexdigest(
+      JSON.generate(["directory", File.stat(doctor_root).mode & 0o7777])
+    )
+    abort "doctor root fingerprint missing or wrong" unless fingerprints["agent_doctor"] == expected_root
     abort "recorded a marker file" if fingerprints.key?("agent_doctor/.agent-workflows-managed")
   ' "$target/.agent-workflows-install.json" "$target" || fail "copy install recorded no usable managed bin fingerprints"
 }
@@ -8942,6 +9006,8 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_copy_install_refuses_a_mode_only_managed_doctor_module_change
+    test_copy_install_refuses_a_managed_doctor_root_mode_change
     test_copy_install_reports_a_missing_managed_doctor_module
     test_copy_install_restores_a_fully_removed_doctor_tree
     test_copy_install_refuses_a_chmod_only_managed_helper_change

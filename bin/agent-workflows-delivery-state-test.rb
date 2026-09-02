@@ -1612,8 +1612,14 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
-  def managed_file_fingerprint(body, executable)
-    Digest::SHA256.hexdigest(JSON.generate(["file", executable, Digest::SHA256.hexdigest(body)]))
+  def managed_path_fingerprint(path)
+    stat = File.lstat(path)
+    mode = stat.mode & 0o7777
+    if stat.directory?
+      Digest::SHA256.hexdigest(JSON.generate(["directory", mode]))
+    else
+      Digest::SHA256.hexdigest(JSON.generate(["file", mode, Digest::SHA256.file(path).hexdigest]))
+    end
   end
 
   def write_managed_bin_copy(target, source, contents)
@@ -1622,10 +1628,18 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       [File.join(target, "bin", relative), File.join(source, "bin", relative)].each do |path|
         FileUtils.mkdir_p(File.dirname(path))
         File.write(path, body)
+        FileUtils.chmod(0o644, path)
       end
-      fingerprints[relative] = managed_file_fingerprint(body, false)
+      fingerprints[relative] = managed_path_fingerprint(File.join(target, "bin", relative))
     end
     fingerprints
+  end
+
+  def record_managed_doctor_root(target, source, fingerprints)
+    [File.join(target, "bin/agent_doctor"), File.join(source, "bin/agent_doctor")].each do |path|
+      FileUtils.chmod(0o755, path) if File.directory?(path)
+    end
+    fingerprints.merge("agent_doctor" => managed_path_fingerprint(File.join(target, "bin/agent_doctor")))
   end
 
   def managed_bin_metadata(target, source, fingerprints, overrides = {})
@@ -1651,13 +1665,14 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
   end
 
   def managed_bin_fixture_fingerprints(target, source)
-    write_managed_bin_copy(
+    fingerprints = write_managed_bin_copy(
       target,
       source,
       "agent-workflows-status" => "status helper\n",
       "agent_doctor/autonomous_merge_policy.rb" => "policy library\n",
       "agent_doctor/renderer.rb" => "renderer\n"
     )
+    record_managed_doctor_root(target, source, fingerprints)
   end
 
   def managed_bin_fixture(tmp)
@@ -1898,6 +1913,37 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
       assert status.success?, output
       assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_mode_change_inside_the_executable_boundary_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      # 0644 -> 0600 keeps the file readable and crosses no execute-bit
+      # boundary, but the installer's marker hashes the exact mode.
+      module_path = File.join(target, "bin/agent_doctor/renderer.rb")
+      FileUtils.chmod(0o600, module_path)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [module_path], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_managed_doctor_root_mode_change_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor = File.join(target, "bin/agent_doctor")
+      FileUtils.chmod(0o700, doctor)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [doctor], payload.dig("bin", "blocking")
     end
   end
 
