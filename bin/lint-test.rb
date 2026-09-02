@@ -2,10 +2,12 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "date"
 require "fileutils"
 require "json"
 require "open3"
 require "tmpdir"
+require "yaml"
 load File.expand_path("lint", __dir__)
 
 class LintCommandTest < Minitest::Test
@@ -14,6 +16,7 @@ class LintCommandTest < Minitest::Test
   WRAPPER = File.join(ROOT, ".agents/bin/lint")
   WORKFLOW = File.join(ROOT, ".github/workflows/lint.yml")
   VALIDATE = File.join(ROOT, "bin/validate")
+  YAML_TIMESTAMP_CLASSES = [Date, Time].freeze
 
   def test_missing_tool_message_points_to_lint_setup_guidance
     message = LintRunner.new.send(:missing_tool_message, "yamllint")
@@ -150,6 +153,7 @@ class LintCommandTest < Minitest::Test
     assert File.file?(WORKFLOW), "expected a dedicated lint workflow"
 
     workflow = File.read(WORKFLOW)
+    assert_lint_workflow_checkout_contract(workflow)
     assert_includes workflow, "name: Lint"
     assert_includes workflow, "pull_request:"
     assert_includes workflow, "push:"
@@ -160,11 +164,46 @@ class LintCommandTest < Minitest::Test
     assert_includes workflow, "bin/lint --version markdownlint-cli2"
     assert_includes workflow, "bin/lint --version yamllint"
     assert_includes workflow, "sha256sum --check"
-    assert_includes workflow, "persist-credentials: false"
-    assert_includes workflow, "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
     assert_includes workflow, "ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b"
     assert_includes workflow, "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020"
-    assert_includes workflow, "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
+    assert_includes workflow, "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
+  end
+
+  def test_ci_checkout_contract_does_not_pin_one_historical_revision
+    workflow = File.read(WORKFLOW).sub(
+      %r{actions/checkout@[0-9a-f]{40}},
+      "actions/checkout@#{'a' * 40}"
+    )
+
+    assert_lint_workflow_checkout_contract(workflow)
+    assert_includes File.read(VALIDATE), "ruby bin/repository-security-policy-test.rb"
+  end
+
+  def test_ci_checkout_contract_matches_policy_aliases_and_yaml_features
+    case_variant = File.read(WORKFLOW).sub("actions/checkout@", "Actions/Checkout@")
+    assert_lint_workflow_checkout_contract(case_variant)
+
+    anchored = File.read(WORKFLOW).sub(
+      "      - name: Checkout repository",
+      "      - &checkout\n        name: Checkout repository"
+    ).sub("      - name: Set up Ruby", "      - *checkout\n      - name: Set up Ruby")
+    assert_lint_workflow_checkout_contract(anchored)
+  end
+
+  def test_ci_checkout_precedes_the_first_repository_dependent_lint_command
+    workflow = File.read(WORKFLOW)
+    checkout = workflow.match(
+      /^      - name: Checkout repository\n(?:        .*\n)+?          persist-credentials: false\n/
+    ).to_s
+    refute_empty checkout
+    misplaced = workflow.sub(checkout, "").sub(
+      "      - name: Install binary linters",
+      "#{checkout}\n      - name: Install binary linters"
+    )
+
+    assert_raises(Minitest::Assertion) do
+      assert_lint_workflow_checkout_contract(misplaced)
+    end
   end
 
   def test_validation_and_contributor_docs_expose_the_lint_command
@@ -190,6 +229,34 @@ class LintCommandTest < Minitest::Test
   end
 
   private
+
+  def assert_lint_workflow_checkout_contract(workflow)
+    steps = YAML.safe_load(
+      workflow,
+      permitted_classes: YAML_TIMESTAMP_CLASSES,
+      aliases: true
+    ).dig("jobs", "lint", "steps")
+    # RepositorySecurityPolicyTest owns immutable action-reference validation;
+    # this contract owns checkout ordering and credential persistence.
+    checkout_index = steps.index do |step|
+      checkout_action_reference?(step["uses"])
+    end
+    lint_index = steps.index do |step|
+      step["run"].is_a?(String) && step["run"].match?(%r{\bbin/lint\b})
+    end
+
+    refute_nil checkout_index, "expected the lint workflow to check out the repository"
+    refute_nil lint_index, "expected the lint workflow to run the canonical lint command"
+    assert_operator checkout_index, :<, lint_index
+    assert_equal false, steps.fetch(checkout_index).dig("with", "persist-credentials")
+  end
+
+  def checkout_action_reference?(reference)
+    return false unless reference.is_a?(String)
+
+    identity, separator, action_ref = reference.partition("@")
+    separator == "@" && !action_ref.empty? && identity.casecmp?("actions/checkout")
+  end
 
   def install_fake_linters(directory)
     source = <<~'RUBY'
