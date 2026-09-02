@@ -47,14 +47,7 @@ module UntrustedContributorIntakePreflight
   GH_NOT_FOUND = "GH_NOT_FOUND"
   GH_COMMAND_UNAVAILABLE = "GH_COMMAND_UNAVAILABLE"
   GH_UNCLASSIFIED = "GH_UNCLASSIFIED"
-  GH_OPERATIONAL_REASON_CODES = [
-    GH_AUTHENTICATION,
-    GH_RATE_LIMIT,
-    GH_NETWORK_TRANSPORT,
-    GH_NOT_FOUND,
-    GH_COMMAND_UNAVAILABLE,
-    GH_UNCLASSIFIED
-  ].freeze
+  # Signature order defines precedence: the first matching category wins.
   GH_FAILURE_SIGNATURES = [
     [GH_AUTHENTICATION, [
       "authentication failed",
@@ -129,8 +122,6 @@ module UntrustedContributorIntakePreflight
   end
 
   def blocked_gh_operational(reason_code)
-    blocked(METADATA_BLOCKED) unless GH_OPERATIONAL_REASON_CODES.include?(reason_code)
-
     blocked("#{METADATA_BLOCKED}; reason_code=#{reason_code}")
   end
 
