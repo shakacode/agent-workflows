@@ -19,6 +19,11 @@ module AgentWorkflowsDeliveryState
   MANAGED_DOCTOR_STACK_MARKER_LINE = "agent-stack-module-v1:agent_doctor"
   MANAGED_DOCTOR_OWNERSHIP_MODULE = "agent_doctor/install_ownership.rb"
   MANAGED_DOCTOR_TIMEOUT_MODULE = "agent_doctor/timeout_budget.rb"
+  # Mirrors AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT, and used
+  # only when the installed module cannot be verified and so must not be run.
+  # Carrying it here is what lets verification fail closed without taking the
+  # Codex query, and the reporting built on it, down too. A test pins the pair.
+  DELIVERY_STATE_HELPER_TIMEOUT_FALLBACK = 5.0
   # Top-level helpers land through `install -m 0755` whatever the source mode.
   MANAGED_HELPER_INSTALL_MODE = 0o755
 
@@ -29,12 +34,24 @@ module AgentWorkflowsDeliveryState
   # and requiring a modified copy would execute it, so it is verified here even
   # though this path reaches the metadata on its own.
   def doctor_timeout_budget(target)
+    key = File.expand_path(target)
+    @doctor_timeout_budgets ||= {}
+    @doctor_timeout_budget_lock ||= Mutex.new
+    @doctor_timeout_budget_lock.synchronize do
+      return @doctor_timeout_budgets[key] if @doctor_timeout_budgets.key?(key)
+
+      @doctor_timeout_budgets[key] = resolve_doctor_timeout_budget(target)
+    end
+  end
+
+  def resolve_doctor_timeout_budget(target)
     # Unreadable metadata leaves nothing to verify against; it must not take
     # this query, and the unrelated reporting that depends on it, down with it.
     recorded = begin
       recorded_bin_copy_fingerprints(read_metadata(target))
     rescue JSON::ParserError, SystemCallError
-      :unrecorded
+      # Metadata we cannot read is metadata we cannot verify against.
+      :invalid
     end
     # A map that exists but cannot be trusted is not permission to load: only
     # an absent one leaves nothing to verify against.
@@ -201,9 +218,7 @@ module AgentWorkflowsDeliveryState
   def codex_marketplace_output(target, marketplace)
     executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
     budget = doctor_timeout_budget(target)
-    return [nil, "agent doctor timeout budget is unavailable"] unless budget
-
-    default_timeout = budget::DELIVERY_STATE_HELPER_DEFAULT.to_s
+    default_timeout = (budget ? budget::DELIVERY_STATE_HELPER_DEFAULT : DELIVERY_STATE_HELPER_TIMEOUT_FALLBACK).to_s
     timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", default_timeout))
     return [nil, "invalid Codex plugin state timeout"] unless timeout_seconds.positive?
 
@@ -672,7 +687,9 @@ module AgentWorkflowsDeliveryState
 
     fingerprints = metadata.fetch(MANAGED_BIN_COPY_FINGERPRINTS)
     return :invalid unless fingerprints.is_a?(Hash)
-    return :unrecorded if fingerprints.empty?
+    # Every copy install records the helpers and the doctor root, so an empty
+    # map is not a state the installer can produce.
+    return :invalid if fingerprints.empty?
     return :invalid unless fingerprints.all? do |name, digest|
       valid_bin_copy_name?(name) && valid_copy_fingerprint_digest?(digest)
     end

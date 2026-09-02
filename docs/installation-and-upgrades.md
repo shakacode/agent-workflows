@@ -467,33 +467,36 @@ the original installed content or move personal content to a distinct path
 before retrying.
 
 `managed_bin_copy_fingerprints` keys are paths relative to `<target>/bin`, so
-`agent-workflows-status` reports a modified managed executable or runtime module
-as `CHECK_FAILED` with the offending paths under `bin.blocking` instead of
-`UP_TO_DATE`. Each recorded value covers the exact permission mode as
-well as the file content, and the managed `<target>/bin/agent_doctor` directory
+`agent-workflows-status` reports a modified managed executable or runtime
+module as `CHECK_FAILED` with the offending paths under `bin.blocking` instead
+of `UP_TO_DATE`. Each recorded value covers the exact permission mode as well
+as the file content, and the managed `<target>/bin/agent_doctor` directory
 itself is recorded with its mode, so a permission-only change is reported too.
 This matches the ownership marker the installer verifies over that tree, which
 also hashes exact modes; that marker is itself checked, so an install whose
-doctor tree is otherwise unchanged but whose marker is missing its attestation,
-corrupted, or replaced by a symlink is reported rather than left to fail at the
-next install. With no marker at all the installer adopts the tree only when it
-already equals the current source, and the report says the same. A managed doctor module is owned only by its recorded
-fingerprint: matching the current source is not enough there, because the
-marker still attests the recorded contents. Because `rsync --delete` owns the whole `<target>/bin/agent_doctor` tree,
-an unrecorded entry there is reported as well, matching the refusal the
-installer's ownership marker already raises. The two ownership markers are
-never recorded as managed copies, so they are never reported as unexpected
-entries, but a marker that is corrupted or replaced by a symlink or a directory
-does block, because the installer refuses that install. A missing top-level helper stays
-non-blocking because the installer simply rewrites it, but a missing module
-inside a partly populated `<target>/bin/agent_doctor` is reported: the
-installer's ownership marker verifies that tree as a whole and refuses an
-install it can no longer match, so the file cannot be restored in place. A tree
-that is entirely absent or empty short-circuits that marker check and is
-reinstalled normally, so it stays non-blocking. Installs that predate the key
-keep their previous behavior until the next install refreshes the metadata. This delivery-state map is separate from the
-`verified-installed-pack` runtime digest an autonomous merge gate verifies; that
-digest is an expected-identity claim, not an install-integrity report. The status and upgrade helpers use the metadata so they can run
+doctor tree is otherwise unchanged but whose marker is missing its
+attestation, corrupted, or replaced by a symlink is reported rather than left
+to fail at the next install. With no marker at all the installer adopts the
+tree only when it already equals the current source, and the report says the
+same. A managed doctor module is owned only by its recorded fingerprint:
+matching the current source is not enough there, because the marker still
+attests the recorded contents. Because `rsync --delete` owns the whole
+`<target>/bin/agent_doctor` tree, an unrecorded entry there is reported as
+well, matching the refusal the installer's ownership marker already raises.
+The two ownership markers are never recorded as managed copies, so they are
+never reported as unexpected entries, but a marker that is corrupted or
+replaced by a symlink or a directory does block, because the installer refuses
+that install. A missing top-level helper stays non-blocking because the
+installer simply rewrites it, but a missing module inside a partly populated
+`<target>/bin/agent_doctor` is reported: the installer's ownership marker
+verifies that tree as a whole and refuses an install it can no longer match,
+so the file cannot be restored in place. A tree that is entirely absent or
+empty short-circuits that marker check and is reinstalled normally, so it
+stays non-blocking. Installs that predate the key keep their previous behavior
+until the next install refreshes the metadata. This delivery-state map is
+separate from the `verified-installed-pack` runtime digest an autonomous merge
+gate verifies; that digest is an expected-identity claim, not an
+install-integrity report. The status and upgrade helpers use the metadata so they can run
 from either the source clone or the installed host.
 
 ## Status Checks

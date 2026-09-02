@@ -2615,6 +2615,28 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_timeout_fallback_matches_the_doctor_budget
+    # The fallback exists so verification can refuse without disabling the Codex
+    # query. Pinning it here removes the drift that duplication would invite.
+    assert_equal AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT,
+                 AgentWorkflowsDeliveryState::DELIVERY_STATE_HELPER_TIMEOUT_FALLBACK
+  end
+
+  def test_empty_managed_bin_fingerprints_fail_closed_for_a_copy_install
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, _fingerprints = managed_bin_fixture(tmp)
+      # No copy install can record an empty map: it always holds the helpers
+      # and the doctor root, so an empty one cannot be trusted as legacy.
+      managed_bin_metadata(target, source, {})
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "unknown", payload.dig("bin", "state")
+      assert_includes payload.fetch("reason"), "managed bin copy fingerprints"
+    end
+  end
+
   def test_symlink_mode_metadata_ignores_managed_bin_fingerprints
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)
