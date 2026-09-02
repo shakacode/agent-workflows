@@ -17,6 +17,8 @@ module AgentWorkflowsDeliveryState
   MANAGED_DOCTOR_SUBDIRECTORY = "agent_doctor"
   MANAGED_DOCTOR_OWNERSHIP_MARKERS = %w[.agent-workflows-managed .agent-stack-managed].freeze
   MANAGED_DOCTOR_MARKER = ".agent-workflows-managed"
+  # Top-level helpers land through `install -m 0755` whatever the source mode.
+  MANAGED_HELPER_INSTALL_MODE = 0o755
 
   module_function
 
@@ -649,6 +651,10 @@ module AgentWorkflowsDeliveryState
   # status call an install clean that the installer then refuses. Directories
   # carry a mode too, so a recorded entry may be either kind and a type change
   # mismatches for free.
+  def managed_file_fingerprint_value(mode, content_digest)
+    Digest::SHA256.hexdigest(JSON.generate(["file", mode, content_digest]))
+  end
+
   def managed_path_fingerprint(path)
     stat = File.lstat(path)
     return nil if stat.symlink?
@@ -657,7 +663,7 @@ module AgentWorkflowsDeliveryState
     if stat.directory?
       Digest::SHA256.hexdigest(JSON.generate(["directory", mode]))
     elsif stat.file?
-      Digest::SHA256.hexdigest(JSON.generate(["file", mode, Digest::SHA256.file(path).hexdigest]))
+      managed_file_fingerprint_value(mode, Digest::SHA256.file(path).hexdigest)
     end
   rescue SystemCallError
     # An unreadable managed copy cannot be proven owned, so it stays blocking.
@@ -673,9 +679,18 @@ module AgentWorkflowsDeliveryState
     # source content is refused by the installer however new it looks here.
     return false if name.include?("/") || name == MANAGED_DOCTOR_SUBDIRECTORY
 
-    # A helper that already matches the current source is what the installer
-    # would write anyway, so it stays owned across a source that moved forward.
-    actual == managed_path_fingerprint(File.join(source, "bin", name))
+    # A helper that already matches what the installer would write stays owned
+    # across a source that moved forward. That is the source's content at the
+    # mode `install -m 0755` writes, not the source file's own mode, which the
+    # recorded fingerprint normalizes the same way.
+    source_path = File.join(source, "bin", name)
+    return false unless File.file?(source_path) && !File.symlink?(source_path)
+
+    actual == managed_file_fingerprint_value(
+      MANAGED_HELPER_INSTALL_MODE, Digest::SHA256.file(source_path).hexdigest
+    )
+  rescue SystemCallError
+    false
   end
 
   # The installer refuses an install whose doctor ownership marker is the wrong

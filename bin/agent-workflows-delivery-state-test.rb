@@ -1626,10 +1626,12 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
   def write_managed_bin_copy(target, source, contents)
     fingerprints = {}
     contents.each do |relative, body|
+      # Match what a real install produces: helpers at 0755, tree files at 0644.
+      mode = relative.include?("/") ? 0o644 : 0o755
       [File.join(target, "bin", relative), File.join(source, "bin", relative)].each do |path|
         FileUtils.mkdir_p(File.dirname(path))
         File.write(path, body)
-        FileUtils.chmod(0o644, path)
+        FileUtils.chmod(mode, path)
       end
       fingerprints[relative] = managed_path_fingerprint(File.join(target, "bin", relative))
     end
@@ -1734,13 +1736,38 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       source, target, fingerprints = managed_bin_fixture(tmp)
       managed_bin_metadata(target, source, fingerprints)
       moved = "status helper v2\n"
+      helper = File.join(target, "bin/agent-workflows-status")
       File.write(File.join(source, "bin/agent-workflows-status"), moved)
-      File.write(File.join(target, "bin/agent-workflows-status"), moved)
+      File.write(helper, moved)
+      # What the installer would write: source content at 0755.
+      FileUtils.chmod(0o755, helper)
 
       payload, status, output = check_managed_bin(target, source)
 
       assert status.success?, output
       assert_equal "present", payload.dig("bin", "state")
+    end
+  end
+
+  def test_helper_fallback_uses_the_installed_mode_not_the_source_mode
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      moved = "status helper v2\n"
+      source_helper = File.join(source, "bin/agent-workflows-status")
+      helper = File.join(target, "bin/agent-workflows-status")
+      File.write(source_helper, moved)
+      # A source revision that carries the helper at 0644 still installs it at
+      # 0755, so an installed helper already in that state is owned.
+      FileUtils.chmod(0o644, source_helper)
+      File.write(helper, moved)
+      FileUtils.chmod(0o755, helper)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "present", payload.dig("bin", "state")
+      assert_empty payload.dig("bin", "blocking")
     end
   end
 
@@ -1866,7 +1893,8 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       managed_bin_metadata(target, source, fingerprints)
       helper = File.join(target, "bin/agent-workflows-status")
       before = File.binread(helper)
-      FileUtils.chmod(0o755, helper)
+      # Dropping the executable bit leaves an installed command that cannot run.
+      FileUtils.chmod(0o644, helper)
 
       payload, status, output = check_managed_bin(target, source)
 
