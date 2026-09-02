@@ -9,6 +9,7 @@ require "tempfile"
 
 SCRIPT = File.expand_path("help-request-lifecycle", __dir__)
 FIXTURE = File.expand_path("../fixtures/help-request-lifecycle-replay.json", __dir__)
+LIBRARY = File.expand_path("../lib/help_request_lifecycle", __dir__)
 
 class HelpRequestLifecycleTest < Minitest::Test
   def run_lifecycle(input: FIXTURE, now: "2026-08-26T00:44:31Z", max_open_seconds: 14_400, require_phase: nil, lane: nil)
@@ -42,6 +43,42 @@ class HelpRequestLifecycleTest < Minitest::Test
 
     assert_predicate status, :success?, stderr
     assert_equal false, result.fetch("phase_gate").fetch("allowed")
+  end
+
+  def test_cli_default_comes_from_the_shared_lifecycle_constant
+    input = Tempfile.new(["help-request-lifecycle-default", ".json"])
+    input.write(JSON.generate(
+                  "events" => [{
+                    "event_id" => "request-1",
+                    "type" => "help_requested",
+                    "reason" => "permission",
+                    "at" => "2026-08-23T05:48:18Z"
+                  }]
+                ))
+    input.flush
+    override = Tempfile.new(["help-request-lifecycle-default-override", ".rb"])
+    override.write(<<~RUBY)
+      require #{LIBRARY.dump}
+      HelpRequestLifecycle.send(:remove_const, :DEFAULT_MAX_OPEN_SECONDS)
+      HelpRequestLifecycle.const_set(:DEFAULT_MAX_OPEN_SECONDS, 1)
+    RUBY
+    override.flush
+
+    stdout, stderr, status = Open3.capture3(
+      { "RUBYOPT" => "-r#{override.path}" },
+      RbConfig.ruby,
+      SCRIPT,
+      "--input", input.path,
+      "--now", "2026-08-23T05:48:20Z"
+    )
+    result = JSON.parse(stdout)
+
+    assert_predicate status, :success?, stderr
+    assert_equal 1, result.fetch("max_open_seconds")
+    assert_equal "blocked-user-input", result.fetch("status")
+  ensure
+    input&.close!
+    override&.close!
   end
 
   def test_open_request_in_another_lane_does_not_block_this_lane
@@ -90,6 +127,51 @@ class HelpRequestLifecycleTest < Minitest::Test
     transition = result.fetch("prohibited_phase_transitions").fetch(0)
     assert_equal "phase-review", transition.fetch("event_id")
     assert_equal "request-unlaned", transition.fetch("request_id")
+  ensure
+    input&.close!
+  end
+
+  def test_prohibited_transition_names_the_most_recent_matching_unlaned_request
+    input = Tempfile.new(["help-request-lifecycle-multiple-unlaned", ".json"])
+    input.write(JSON.generate(
+                  "events" => [
+                    {
+                      "event_id" => "request-unlaned-1",
+                      "batch_id" => "batch-1",
+                      "type" => "help_requested",
+                      "reason" => "permission",
+                      "at" => "2026-08-23T05:48:18Z"
+                    },
+                    {
+                      "event_id" => "request-unlaned-2",
+                      "batch_id" => "batch-1",
+                      "type" => "help_requested",
+                      "reason" => "permission",
+                      "at" => "2026-08-23T05:48:19Z"
+                    },
+                    {
+                      "event_id" => "phase-review",
+                      "batch_id" => "batch-1",
+                      "lane" => "review",
+                      "type" => "phase.changed",
+                      "phase" => "review",
+                      "at" => "2026-08-23T05:48:30Z"
+                    }
+                  ]
+                ))
+    input.flush
+
+    result, stderr, status = run_lifecycle(
+      input: input.path,
+      now: "2026-08-23T05:49:00Z",
+      lane: "review"
+    )
+
+    assert_predicate status, :success?, stderr
+    transitions = result.fetch("prohibited_phase_transitions")
+    request_ids = transitions.map { |row| row.fetch("request_id") }
+    assert_equal ["request-unlaned-2"], request_ids
+    assert(transitions.all? { |row| row.fetch("event_id") == "phase-review" })
   ensure
     input&.close!
   end

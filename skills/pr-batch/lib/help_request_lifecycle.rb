@@ -6,6 +6,7 @@ module HelpRequestLifecycle
   class InputError < StandardError; end
 
   VERSION = 1
+  DEFAULT_MAX_OPEN_SECONDS = 14_400
   RESOLUTION_TYPES = {
     "help_request.resolved" => "resolved",
     "help_request.declined" => "declined"
@@ -131,7 +132,7 @@ module HelpRequestLifecycle
     phase = optional_string(event["phase"] || event["new_phase"])
     return unless PROHIBITED_PERMISSION_PHASES.include?(phase)
 
-    request = requests.values.find do |candidate|
+    request = requests.values.reverse.find do |candidate|
       blocking_permission_request?(candidate) &&
         (candidate["lane"].nil? || candidate.fetch("scope_key") == request_scope_key(event))
     end

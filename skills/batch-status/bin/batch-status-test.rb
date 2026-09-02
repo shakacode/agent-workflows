@@ -227,6 +227,14 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_batch_status_default_comes_from_the_shared_lifecycle_constant
+    source = File.read(SCRIPT)
+
+    assert_includes source,
+                    "help_request_max_open_seconds: HelpRequestLifecycle::DEFAULT_MAX_OPEN_SECONDS"
+    refute_match(/^DEFAULT_HELP_REQUEST_MAX_OPEN_SECONDS\s*=/, source)
+  end
+
   def test_batch_mode_does_not_turn_a_released_claim_into_a_current_task_link
     batch_coordination = {
       "batches" => [{
@@ -404,6 +412,14 @@ class BatchStatusTest < Minitest::Test
       assert_equal 1, failure_count
       assert(payload.fetch("items").all? { |item| item.fetch("help_request_lifecycle").fetch("status") == "UNKNOWN" })
     end
+  end
+
+  def test_lane_help_request_replay_is_cached_across_targets
+    source = File.read(SCRIPT)
+
+    assert_includes source, "lane_help_request_lifecycles = {}"
+    assert_includes source, "lane_cache_key = [batch_id, lane]"
+    assert_includes source, "lane_help_request_lifecycles[lane_cache_key] ||= help_request_lifecycle("
   end
 
   def test_batch_lookup_requires_the_resolved_exact_id

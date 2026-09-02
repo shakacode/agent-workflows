@@ -7,7 +7,13 @@ require "time"
 
 require_relative "../lib/help_request_lifecycle"
 
-options = { input: "-", max_open_seconds: 14_400, now: Time.now, require_phase: nil, lane: nil }
+options = {
+  input: "-",
+  max_open_seconds: HelpRequestLifecycle::DEFAULT_MAX_OPEN_SECONDS,
+  now: Time.now,
+  require_phase: nil,
+  lane: nil
+}
 phase_gate_requested = ARGV.any? do |argument|
   argument == "--require-phase" || argument.start_with?("--require-phase=")
 end

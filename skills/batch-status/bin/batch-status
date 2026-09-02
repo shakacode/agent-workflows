@@ -10,7 +10,6 @@ require_relative "../../pr-batch/lib/help_request_lifecycle"
 
 UNKNOWN = "UNKNOWN"
 DEFAULT_TIMEOUT_SECONDS = 20
-DEFAULT_HELP_REQUEST_MAX_OPEN_SECONDS = 14_400
 
 def present_string(value)
   value.is_a?(String) && !value.strip.empty? ? value.strip : nil
@@ -167,7 +166,7 @@ options = {
   targets: [],
   timeout: DEFAULT_TIMEOUT_SECONDS,
   now: Time.now.utc,
-  help_request_max_open_seconds: DEFAULT_HELP_REQUEST_MAX_OPEN_SECONDS
+  help_request_max_open_seconds: HelpRequestLifecycle::DEFAULT_MAX_OPEN_SECONDS
 }
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: batch-status [--batch-id ID] [--repo OWNER/REPO] [--pr N | --issue N | --target OWNER/REPO#N] [--json]"
@@ -251,6 +250,7 @@ batch_unknowns = []
 resolved_batch_ids = []
 batch_payloads = {}
 help_request_lifecycles = {}
+lane_help_request_lifecycles = {}
 options[:batch_ids].each do |batch_id|
   unless helper
     batch_unknowns << "batch #{batch_id}: bounded agent-coordination helper unavailable"
@@ -410,7 +410,8 @@ items = requests.map do |request|
       max_open_seconds: options.fetch(:help_request_max_open_seconds)
     )
     lifecycle = if lane
-                  help_request_lifecycle(
+                  lane_cache_key = [batch_id, lane]
+                  lane_help_request_lifecycles[lane_cache_key] ||= help_request_lifecycle(
                     batch_payloads[batch_id],
                     now: options.fetch(:now),
                     max_open_seconds: options.fetch(:help_request_max_open_seconds),
