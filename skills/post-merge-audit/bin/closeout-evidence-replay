@@ -103,7 +103,7 @@ module CloseoutEvidenceReplay
       opts.on("--require-visual-evidence-v2", "Fail when current UI evidence lacks the durable visual-evidence v2 contract") do
         options[:require_visual_evidence_v2] = true
       end
-      opts.on("--require-qa-supersession", "Require an explicit PR-body QA supersession marker") do
+      opts.on("--require-qa-supersession", "Require a QA supersession marker replacing stale PR-body evidence") do
         options[:require_qa_supersession] = true
       end
       opts.on("-h", "--help", "Show this help") { options[:help] = true }
@@ -250,7 +250,7 @@ module CloseoutEvidenceReplay
     qa_fields = qa_evidence.fetch("fields", {})
     missing << "qa_evidence" if qa_evidence.fetch("verdict", "UNKNOWN") == "UNKNOWN"
     if qa_evidence.fetch("marker_count", 0) != 1
-      missing << "exactly one qa-evidence v2 marker is required"
+      missing << "exactly one qa-evidence marker is required"
     else
       missing << "qa_evidence.marker_version" unless qa_evidence.fetch("marker_version", nil) == 2
       missing << "head_sha.qa_evidence_mismatch" unless qa_fields.fetch("head_sha", "").downcase == head_sha

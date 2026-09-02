@@ -99,7 +99,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes out, "Fail when priority evidence is missing or explicitly not_applicable"
     assert_includes out, "Fail when current UI evidence lacks the durable visual-evidence v2 contract"
     assert_includes out, "hosted-qa-evidence v1"
-    assert_includes out, "Require an explicit PR-body QA supersession marker"
+    assert_includes out, "Require a QA supersession marker replacing stale PR-body evidence"
   end
 
   def test_qa_supersession_requires_expected_head_sha
@@ -1816,7 +1816,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
     supersession = replay.fetch("qa_evidence_supersession")
     assert_equal "UNKNOWN", replay.fetch("overall_verdict")
-    assert_includes supersession.fetch("missing"), "exactly one qa-evidence v2 marker is required"
+    assert_includes supersession.fetch("missing"), "exactly one qa-evidence marker is required"
     refute_includes supersession.fetch("missing"), "head_sha.qa_evidence_mismatch"
     refute_includes supersession.fetch("missing"), "required.qa_evidence_mismatch"
   end
