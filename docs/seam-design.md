@@ -112,12 +112,13 @@ companion_path_conventions:
     companion_glob: react_on_rails/sig/**/{name}.rbs
 ```
 
-Templates are canonical repository-relative paths. A complete segment `**`
+Templates are canonical repository-relative paths. A non-terminal `**/`
+component captures zero or more complete path segments. A terminal `**`
 captures one or more path segments, `*` captures one segment, and a named
 placeholder such as `{name}` captures text within one segment. Each pair must
 use the same `**`, `*`, and named placeholder tokens so the companion path is
-deterministic. Adjacent named placeholders in one segment are invalid because
-they have no deterministic capture boundary; separate them with literal text.
+deterministic. A source segment may contain at most one named placeholder;
+literal separators do not make multiple unrestricted captures unambiguous.
 
 When a declared or actively reserved source path matches and the resolved companion exists,
 `batch-plan-preflight` emits `companion-path-omitted` unless that lane lists or
