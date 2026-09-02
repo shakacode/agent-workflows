@@ -17,6 +17,8 @@ module AgentWorkflowsDeliveryState
   MANAGED_DOCTOR_SUBDIRECTORY = "agent_doctor"
   MANAGED_DOCTOR_OWNERSHIP_MARKERS = %w[.agent-workflows-managed .agent-stack-managed].freeze
   MANAGED_DOCTOR_MARKER = ".agent-workflows-managed"
+  MANAGED_DOCTOR_STACK_MARKER = ".agent-stack-managed"
+  MANAGED_DOCTOR_STACK_MARKER_LINE = "agent-stack-module-v1:agent_doctor"
   # Top-level helpers land through `install -m 0755` whatever the source mode.
   MANAGED_HELPER_INSTALL_MODE = 0o755
 
@@ -704,13 +706,24 @@ module AgentWorkflowsDeliveryState
     return nil unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
 
     marker = File.join(doctor_root, MANAGED_DOCTOR_MARKER)
-    return marker if File.symlink?(marker)
-    return nil unless File.exist?(marker)
-    return marker unless File.file?(marker)
+    stack_marker = File.join(doctor_root, MANAGED_DOCTOR_STACK_MARKER)
+    # Mirror prepare_workflow_doctor_copy_destination's precedence: both marker
+    # shapes are refused before either one is read, the workflows marker's
+    # attestation decides when it is present, and the stack marker's line is the
+    # fallback for a tree agent-stack owns.
+    return marker if managed_marker_shape_conflict?(marker)
+    return stack_marker if managed_marker_shape_conflict?(stack_marker)
 
-    AgentDoctor::InstallOwnership.verify(doctor_root, marker) ? nil : marker
+    return AgentDoctor::InstallOwnership.verify(doctor_root, marker) ? nil : marker if File.file?(marker)
+    return nil unless File.file?(stack_marker)
+
+    File.readlines(stack_marker, chomp: true).include?(MANAGED_DOCTOR_STACK_MARKER_LINE) ? nil : stack_marker
   rescue SystemCallError
     doctor_root
+  end
+
+  def managed_marker_shape_conflict?(path)
+    File.symlink?(path) || (File.exist?(path) && !File.file?(path))
   end
 
   # The installer's ownership marker only tolerates a doctor tree it can verify

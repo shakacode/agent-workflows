@@ -2058,6 +2058,59 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_symlinked_stack_ownership_marker_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+      stack_marker = File.join(doctor_root, ".agent-stack-managed")
+      File.symlink(File.join(source, "bin/agent-workflows-status"), stack_marker)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [stack_marker], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_non_file_stack_ownership_marker_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      stack_marker = File.join(target, "bin/agent_doctor/.agent-stack-managed")
+      FileUtils.mkdir_p(stack_marker)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [stack_marker], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_stack_ownership_marker_line_is_the_fallback_when_the_workflows_marker_is_absent
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      stack_marker = File.join(target, "bin/agent_doctor/.agent-stack-managed")
+      File.write(stack_marker, "not the stack module line\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [stack_marker], payload.dig("bin", "blocking")
+
+      File.write(stack_marker, "agent-stack-module-v1:agent_doctor\n")
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
   def test_valid_doctor_ownership_marker_stays_compatible
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)
