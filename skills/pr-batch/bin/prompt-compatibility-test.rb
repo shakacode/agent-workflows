@@ -4,7 +4,9 @@
 require "json"
 require "json_schemer"
 require "minitest/autorun"
+require "fileutils"
 require "open3"
+require "tmpdir"
 
 class PromptCompatibilityTest < Minitest::Test
   HELPER = File.expand_path("prompt-compatibility", __dir__)
@@ -51,6 +53,29 @@ class PromptCompatibilityTest < Minitest::Test
     [JSON.parse(stdout), stderr, status, stdout]
   end
 
+  def run_helper_from_isolated_skill_copy(prompt, active_host:)
+    Dir.mktmpdir do |tmpdir|
+      skill_root = File.join(tmpdir, "skills", "pr-batch")
+      bin_dir = File.join(skill_root, "bin")
+      docs_dir = File.join(skill_root, "docs", "host-adapter")
+      FileUtils.mkdir_p(bin_dir)
+      FileUtils.mkdir_p(docs_dir)
+      FileUtils.cp(HELPER, File.join(bin_dir, "prompt-compatibility"))
+      FileUtils.cp(File.expand_path("../docs/host-adapter/contract.md", __dir__),
+                   File.join(docs_dir, "contract.md"))
+
+      stdout, stderr, status = Open3.capture3(
+        "ruby",
+        File.join(bin_dir, "prompt-compatibility"),
+        "--active-host",
+        active_host,
+        stdin_data: prompt
+      )
+
+      [JSON.parse(stdout), stderr, status, stdout]
+    end
+  end
+
   def assert_decision(result, expected)
     assert_equal expected, result.fetch("decision")
     assert_includes DECISIONS, result.fetch("decision")
@@ -73,6 +98,19 @@ class PromptCompatibilityTest < Minitest::Test
     prompt = fixture("portable.txt")
 
     result, stderr, status = run_helper(prompt, active_host: "claude")
+
+    assert status.success?, stderr
+    assert_decision result, "portable"
+    assert_equal true, result.fetch("execute_allowed")
+    assert_equal "docs/host-adapter/contract.md", result.fetch("adapter_contract")
+    assert_equal prompt, result.fetch("prompt")
+    assert_nil result.fetch("converted_prompt")
+  end
+
+  def test_portable_prompt_uses_the_skill_local_contract_copy_when_repo_docs_are_missing
+    prompt = fixture("portable.txt")
+
+    result, stderr, status = run_helper_from_isolated_skill_copy(prompt, active_host: "claude")
 
     assert status.success?, stderr
     assert_decision result, "portable"
@@ -303,6 +341,18 @@ class PromptCompatibilityTest < Minitest::Test
         refute_includes stdout, marker
       end
     end
+  end
+
+  def test_batch_size_target_rejects_item_counts_above_the_declared_cap
+    prompt = fixture("claude-to-codex.txt")
+             .sub("Batch size target: claude;wave: 1/1", "Batch size target: claude;wave: 5/11")
+
+    result, stderr, status = run_helper(prompt, active_host: "claude")
+
+    refute status.success?
+    assert_empty stderr
+    assert_equal "invalid-batch-size-target", result.fetch("error")
+    refute result.key?("decision")
   end
 
   def test_legacy_goal_validates_batch_targets_before_execution_or_conversion

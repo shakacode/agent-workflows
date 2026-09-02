@@ -4,9 +4,12 @@
 require "json"
 require "optparse"
 
-CONTRACT_PATH = File.expand_path("../../../docs/host-adapter/contract.md", __dir__)
 CONTRACT_REFERENCE = "docs/host-adapter/contract.md"
 CONTRACT_PROTOCOL = "Prompt compatibility protocol: 1"
+CONTRACT_PATHS = [
+  File.expand_path("../../../docs/host-adapter/contract.md", __dir__),
+  File.expand_path("../docs/host-adapter/contract.md", __dir__)
+].freeze
 HEADER_NAMES = ["Prompt host", "Prompt mode", "Preferred route", "Route requirement"].freeze
 RESERVED_HEADER_LIKE =
   /^[ \t]*(?:Prompt[ \t._-]+(?:host|mode)|Preferred[ \t._-]+route|Route[ \t._-]+requirement)(?:[ \t]*(?::+|=)|[ \t]+[^\r\n]+)/i
@@ -270,7 +273,11 @@ def batch_target_error(prompt, prompt_host)
   if wave_line
     wave_match = wave_line.chomp.match(%r{\ABatch size target: (codex|claude|generic);wave: (\d+)/(\d+)\z})
     return "invalid-batch-size-target" unless wave_match
-    return "invalid-batch-size-target" if wave_match[2].to_i > max_batch_wave_capacity(expected_target)
+
+    wave_cap = wave_match[2].to_i
+    wave_items = wave_match[3].to_i
+    return "invalid-batch-size-target" if wave_cap > max_batch_wave_capacity(expected_target)
+    return "invalid-batch-size-target" if wave_items > wave_cap
   end
 
   nil
@@ -358,7 +365,9 @@ if complete_headers
   validate_batch_target(prompt, prompt_host, active_host)
 
   if prompt_host == "portable"
-    contract_available = File.file?(CONTRACT_PATH) && File.read(CONTRACT_PATH).include?(CONTRACT_PROTOCOL)
+    contract_available = CONTRACT_PATHS.any? do |path|
+      File.file?(path) && File.read(path).include?(CONTRACT_PROTOCOL)
+    end
     emit_error("adapter-contract-unavailable", active_host) unless contract_available
     result = decision_result(
       "portable",
