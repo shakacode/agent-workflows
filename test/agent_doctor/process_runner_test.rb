@@ -101,7 +101,7 @@ class AgentDoctorProcessRunnerTest < Minitest::Test
         File.open(gate_path, File::RDWR | File::CREAT, 0o600) do |gate|
           gate.flock(File::LOCK_EX)
           process_runner.define_singleton_method(:monotonic) do
-            current_tick = ticks.shift || current_tick + 0.25
+            current_tick = ticks.shift || current_tick + 0.05
             if current_tick >= 5.0 && !gate_released
               gate.flock(File::LOCK_UN)
               gate_released = true
