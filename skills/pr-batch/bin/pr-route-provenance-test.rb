@@ -133,6 +133,48 @@ class PrRouteProvenanceTest < Minitest::Test
     assert_includes error.message, "exactly one ordered managed section"
   end
 
+  def test_managed_section_replacement_preserves_backslashes_literally
+    document = fixture("authorized-fallback-valid")
+    document["execution_provenance"]["mismatch_reason"] = 'Host returned C:\\1\\route.'
+    section = PrRouteProvenance.render([document])
+    old_section = PrRouteProvenance.render([fixture("unbound-exact-route-valid")])
+
+    updated = PrRouteProvenance.apply_to_body("Before\n#{old_section}\nAfter", section)
+
+    assert_includes updated, 'Host returned C:\\1\\route.'
+    assert_equal "Before\n#{section}\nAfter", updated
+  end
+
+  def test_agent_details_insertion_ignores_fenced_examples_and_balances_nested_disclosures
+    section = PrRouteProvenance.render([fixture("bound-exact-match-valid")])
+    body = <<~MARKDOWN
+      Human summary.
+
+      <details>
+      <summary>Agent details</summary>
+
+      ```markdown
+      <details>
+      <summary>Agent details</summary>
+      quoted template
+      </details>
+      ```
+
+      <details>
+      <summary>Nested evidence</summary>
+      Nested human telemetry.
+      </details>
+
+      </details>
+    MARKDOWN
+
+    updated = PrRouteProvenance.apply_to_body(body, section)
+
+    assert_operator updated.index(PrRouteProvenance::START_MARKER), :>, updated.index("Nested human telemetry.")
+    assert_operator updated.index(PrRouteProvenance::END_MARKER), :<, updated.rindex("</details>")
+    assert_equal 1, updated.scan(PrRouteProvenance::START_MARKER).length
+  end
+
   def test_apply_reads_fresh_body_updates_it_and_verifies_exact_readback
     github = FakeGitHub.new("Human prose.")
     document = fixture("bound-exact-match-valid")

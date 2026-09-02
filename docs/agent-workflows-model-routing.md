@@ -514,6 +514,9 @@ observed binding must use the schema's `unbound-exact-route` mismatch and
 literal `UNKNOWN` tuple. An
 invalid receipt that labels such a route `bound-exact-match` is rejected rather
 than rendered as satisfied. Requested-route prose is never an input fallback.
+The single integration owner serializes `apply` calls; do not run concurrent
+PR-body updates because the GitHub REST update has no optimistic concurrency
+guard.
 
 ### Evidence Status
 

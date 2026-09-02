@@ -10,7 +10,6 @@ load File.expand_path("../../../bin/validate-execution-provenance", __dir__)
 module PrRouteProvenance
   START_MARKER = "<!-- agent-workflows-route-provenance:start -->"
   END_MARKER = "<!-- agent-workflows-route-provenance:end -->"
-  AGENT_DETAILS_OPENING = "<details>\n<summary>Agent details</summary>"
   MAX_WAVE_ROWS = 20
   MAX_COMMIT_ROWS = 20
   MEASUREMENT_DISPOSITIONS = {
@@ -77,12 +76,12 @@ module PrRouteProvenance
     section = render_receipts(receipts)
     current_body = github.read_pr_body
     expected_body = apply_to_body(current_body, section)
+    validate_applied_body!(expected_body)
     changed = expected_body != current_body
     github.update_pr_body(expected_body) if changed
     readback = github.read_pr_body
     raise Error, "PR body readback did not match the generated managed-section update" unless readback == expected_body
 
-    validate_applied_body!(readback)
     { "changed" => changed, "body" => readback }
   end
 
@@ -157,24 +156,55 @@ module PrRouteProvenance
       raise Error, "PR body must contain zero or exactly one ordered managed section"
     end
 
-    body.sub(/#{Regexp.escape(START_MARKER)}.*?#{Regexp.escape(END_MARKER)}/m, section)
+    body.sub(/#{Regexp.escape(START_MARKER)}.*?#{Regexp.escape(END_MARKER)}/m) { section }
   end
 
   def insert_new_section(body, section)
-    openings = body.scan(AGENT_DETAILS_OPENING).length
-    raise Error, "PR body must contain at most one canonical Agent details disclosure" if openings > 1
-
-    if openings == 1
-      opening_index = body.index(AGENT_DETAILS_OPENING)
-      closing_index = body.index("</details>", opening_index + AGENT_DETAILS_OPENING.length)
-      raise Error, "canonical Agent details disclosure is missing </details>" unless closing_index
-
+    closing_index = agent_details_closing_index(body)
+    if closing_index
       before = body[0...closing_index]
       after = body[closing_index..]
       return "#{before}#{section_separator(before)}#{section}\n#{after}"
     end
 
     "#{body}#{section_separator(body)}#{section}"
+  end
+
+  def agent_details_closing_index(body)
+    lines = body.each_line.to_a
+    stack = []
+    canonical = []
+    fence = nil
+    offset = 0
+
+    lines.each_with_index do |line, index|
+      stripped = line.strip
+      if fence
+        fence = nil if stripped.match?(/\A#{Regexp.escape(fence.fetch(:character))}{#{fence.fetch(:length)},}\s*\z/)
+      elsif (opening_fence = stripped.match(/\A(?<fence>`{3,}|~{3,})/))
+        token = opening_fence[:fence]
+        fence = { character: token[0], length: token.length }
+      elsif stripped == "<details>"
+        entry = {
+          canonical: lines[index + 1]&.strip == "<summary>Agent details</summary>",
+          closing_index: nil
+        }
+        stack << entry
+        canonical << entry if entry.fetch(:canonical)
+      elsif stripped == "</details>"
+        entry = stack.pop
+        entry[:closing_index] = offset if entry
+      end
+      offset += line.length
+    end
+
+    raise Error, "PR body must contain at most one canonical Agent details disclosure" if canonical.length > 1
+    return if canonical.empty?
+
+    closing_index = canonical.first.fetch(:closing_index)
+    raise Error, "canonical Agent details disclosure is missing a balanced </details>" unless closing_index
+
+    closing_index
   end
 
   def section_separator(text)
