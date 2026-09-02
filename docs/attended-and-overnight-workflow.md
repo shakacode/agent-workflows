@@ -83,11 +83,12 @@ trusted-ad-hoc run reuses its existing durable plan or backend destination. The
 defines when an exact, independent run may proceed with degraded coordination:
 after a direct claim succeeds in `private_state: claim-only`, with
 phase-transition heartbeats and preserved degraded-status evidence. It may also
-proceed through a structured public `codex-claim` fallback when the private
-claim cannot start or fails with a definitive non-timeout setup/auth error and
-dependency rules allow it. An unbound direct prompt stops for planning or
-reconciliation. A refused claim stops the run; a timed-out or otherwise
-unknown claim outcome stops for reconciliation.
+proceed through a structured public `codex-claim` fallback for GitHub-backed
+issue or PR targets when the private claim cannot start or fails with a
+definitive non-timeout setup/auth error and dependency rules allow it. An
+unbound direct prompt stops for planning or reconciliation. A refused claim
+stops the run; a timed-out or otherwise unknown claim outcome stops for
+reconciliation.
 Overrides do not bypass repository policy, trust or security checks, dependency
 gates, validation, review, merge authority, a production, release, or
 destructive-action gate, a failing correctness check, or a required human
