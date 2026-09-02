@@ -284,8 +284,10 @@ the PR is behind the current base, the coordinator reconciles the base
 instead of waiting — a stale branch never clears on its own. If only the CI
 check has not reported `READY`, the coordinator waits
 (`waiting-on-checks-or-review`) instead of starting the walkthrough. The
-walkthrough itself is not approval: if the
-diff changes or a gate starts failing in the meantime, the merge question is
+walkthrough itself is not approval: before asking that final question, the
+coordinator re-checks the diff, the ordinary gates, and the same
+current-integration checklist (base and CI) — if the diff changed, a gate
+started failing, or that checklist no longer passes, the merge question is
 withheld and the walkthrough restarts or stops.
 
 Invoke the skill in your agent host from the adopted repository, naming one

@@ -150,8 +150,9 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
      policy.
    - Before an `ask` walkthrough, apply the canonical current-integration gate
      from `pr-batch-integration-closeout.md`: resolve the exact head and current
-     base, then require that the head contains that base and that exact-head CI
-     has normalized successful state `READY` under `pr-ci-readiness` v2. This
+     base, then require that the head contains that base and that exact-head
+     `pr-ci-readiness` v2 aggregate `verdict` — not an individual scope's
+     `state` — has normalized successful state `READY`. This
      checklist does not claim or
      consume the later machine `current-integration-evidence` contract. Raw
      provider status strings and GitHub conflict or mergeability metadata are

@@ -140,7 +140,10 @@ class IntegrationCloseoutContractTest < Minitest::Test
     # this PR (a large unrelated batch-merge landed concurrently); raised with
     # real headroom over current combined content rather than to the bare
     # minimum, matching the per-file ceiling policy above.
-    assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 405_000
+    aggregate_bytes = @component.bytesize + @workflow.bytesize + @skill.bytesize
+    assert_operator aggregate_bytes, :<, 405_000
+    assert_operator 405_000 - aggregate_bytes, :>=, 500,
+                    "aggregate closeout documentation headroom under its byte ceiling"
     assert_includes @component, "worker-execution-handoff v1"
     assert_includes @component, "one replayable target ledger and human-first handoff"
     assert_includes @component, "current-head closeout gates"

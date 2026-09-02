@@ -102,9 +102,16 @@ class PrWalkthroughContractTest < Minitest::Test
       position
     end
     positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+
+    # The canonical gate and its restatement in pr-monitoring must both name
+    # the aggregate `verdict`, not merely a normalized-READY claim that a
+    # per-scope `state == READY` regression could also satisfy.
+    assert_includes ask_gate, "its aggregate `verdict` equal to `READY`, not an individual scope's `state`"
+    assert_includes monitoring, "aggregate `verdict` — not an individual scope's `state` — has normalized"
+
     assert_includes monitoring, "resolve the exact head and current base"
     assert_includes monitoring,
-                    "exact-head CI has normalized successful state `READY` under `pr-ci-readiness` v2"
+                    "aggregate `verdict` — not an individual scope's `state` — has normalized successful state `READY`"
     assert_includes monitoring, "normalized successful state `READY`"
     assert_includes monitoring, "`waiting-on-checks-or-review`"
     assert_includes monitoring,
@@ -161,6 +168,27 @@ class PrWalkthroughContractTest < Minitest::Test
                  skill.scan("behind-base banner routing to Integration And PR Publication step 3").length
     assert_equal 2, skill.scan("whenever ancestry fails, regardless of CI").length
     assert_equal 2, skill.scan("only when ancestry passed and CI itself is not `READY`").length
+
+    # Both caller blocks (step 4, and its restatement in Set Expectations)
+    # must state the ancestry route before the CI-only route, and phrase the
+    # CI-only route as conditional on ancestry having passed — a phrase-count
+    # check alone would still pass a regression that swapped or decoupled them.
+    establish_start = skill.index("## Establish The Exact Change")
+    build_map_start = skill.index("## Build The Walkthrough Map", establish_start)
+    set_expectations_start = skill.index("## Set Expectations", build_map_start)
+    present_one_change_start = skill.index("## Present One Change", set_expectations_start)
+    step4 = skill[establish_start...build_map_start]
+    set_expectations = skill[set_expectations_start...present_one_change_start]
+
+    [step4, set_expectations].each_with_index do |block, i|
+      label = i.zero? ? "step 4" : "Set Expectations"
+      ancestry_route_position = block.index("behind-base banner routing to Integration And PR Publication step 3")
+      ci_route_position = block.index("only when ancestry passed and CI itself is not `READY`")
+      assert ancestry_route_position, "#{label}: expected the ancestry route"
+      assert ci_route_position, "#{label}: expected the CI-only route"
+      assert_operator ancestry_route_position, :<, ci_route_position,
+                      "#{label}: ancestry route must be stated before the CI-only route"
+    end
   end
 
   def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component
