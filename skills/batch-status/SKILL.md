@@ -130,14 +130,21 @@ Report one row per lane:
 - **lane** — lane id or target ref.
 - **Owner route** — render the shared
   [cross-task blocker owner route](../../docs/user-facing-coordination.md#cross-task-blocker-owner-route)
-  from the collector's existing coordination fields plus the host's task or
-  workspace lookup. Include the holder, runner, visible task or workspace,
-  stable identity, and work-item link. For Codex, include the collector's
-  `codex_deep_link` only when its verified machine and session binding permit
-  it. For Conductor/Claude, name the workspace and session and say when there is
-  no Codex sidebar task or cross-app link. Validate claim, heartbeat, target,
-  workspace, branch, and session consistency. Use `Owner route: inconsistent`
-  or `Owner route: unavailable` when required, with coordinator-owned bounded
+  from the collector's `owner_route` object plus the host-provided task or
+  workspace lookup. The collector owns claim, heartbeat, target, branch, and
+  session joining; use its `binding_status` and normalized fields instead of
+  rejoining coordination records in the prompt. The host lookup means a task
+  or workspace listing exposed by the current app. It is not coordination
+  evidence. If the host does not expose that lookup, render the route as
+  unavailable.
+  Include the holder, runner, visible task or workspace, stable identity, and
+  work-item link. Never infer a holder or runner from a branch name or model
+  request. For Codex, include `codex_deep_link` only when its verified machine
+  and session binding permit it. The link opens the task only on
+  `codex_deep_link_machine_id`; never present it as a cross-machine link. For
+  Conductor/Claude, name the workspace and session and say when there is no
+  Codex sidebar task or cross-app link. Use `Owner route: inconsistent` or
+  `Owner route: unavailable` when required, with coordinator-owned bounded
   follow-up. In routine output, do not print raw PID, process-group ID (PGID),
   lease, or queue-position telemetry.
 - **heartbeat** — last status and its age, or `UNKNOWN`.

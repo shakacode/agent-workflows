@@ -130,14 +130,12 @@ HUMAN_STATUS_OWNED_PREREQUISITE_EVIDENCE_RULE = "For an owned target, `What chan
                                                  "before the final merge question."
 HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE = "At closeout/archive completion, place the three labeled parts before, not " \
                                       "instead of, the existing mandatory closeout handoff."
-HUMAN_STATUS_OWNER_ROUTE_RULE = "When an actionable user-facing blocker depends on another task or runner, " \
+HUMAN_STATUS_OWNER_ROUTE_RULE = "When an HST-v1 actionable user-facing blocker depends on another task or runner, " \
                                 "include `Owner route:` inside `What changed:`."
-HUMAN_STATUS_OWNER_ROUTE_UNAVAILABLE_RULE = "Missing or unreachable evidence renders exactly " \
-                                            "`Owner route: unavailable`, and the coordinator owns bounded follow-up."
-HUMAN_STATUS_OWNER_ROUTE_INCONSISTENT_RULE = "Contradictory, stale, or cross-repository evidence must fail closed " \
-                                             "as `Owner route: inconsistent`"
-HUMAN_STATUS_OWNER_ROUTE_COALESCING_RULE = "Coalesce unchanged blocker messages using a material fingerprint of " \
-                                           "blocker state and rendered owner-route fields."
+HUMAN_STATUS_OWNER_ROUTE_UNAVAILABLE_RULE = "Missing evidence uses exactly `Owner route: unavailable`"
+HUMAN_STATUS_OWNER_ROUTE_INCONSISTENT_RULE = "contradictory evidence uses `Owner route: inconsistent`"
+HUMAN_STATUS_OWNER_ROUTE_COALESCING_RULE = "Emit only when the HST-v1 actionability gate passes and the fingerprint " \
+                                           "of blocker state plus every normalized rendered route field differs"
 READY_PREREQUISITE_ASK_GATE_RULE = "If a prerequisite PR is otherwise ready and only its human review and merge " \
                                    "decision remains under `merge_authority: ask`, report `blocked-user-input` " \
                                    "without consuming external-blocker retries or starting monitoring."

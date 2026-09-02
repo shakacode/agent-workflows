@@ -120,10 +120,14 @@ preserve one exact question and manual resume instructions.
 
 ## Cross-Task Blocker Owner Route
 
-When a user-facing blocker depends on another task or runner, put a canonical
-`Owner route:` in `What changed:` after the blocker summary. Build it from the
-existing claim, heartbeat, batch or lane record, live work item and head, and
-the host's task or workspace lookup. Do not require a new coordination schema.
+When an HST-v1 actionable user-facing blocker depends on another task or
+runner, put a canonical `Owner route:` in `What changed:` after the blocker
+summary. A route or fingerprint change does not make a routine wait actionable.
+Build the route from the existing claim, heartbeat, batch or lane record, live
+work item and head, and the host's task or workspace lookup. The host lookup is
+a task or workspace listing exposed by the current app. It is not coordination
+evidence. When the host does not expose that lookup, the route is unavailable.
+Do not require a new coordination schema.
 The route must identify:
 
 - the work item and its pull-request or issue URL;
@@ -146,21 +150,24 @@ in Conductor.
 Validate the route before showing it. The active claim and heartbeat must agree
 on the owner, repository-qualified work item, runner or host, branch, thread
 handle, session, and instance when those fields are recorded. The resolved task
-must match the repository, work item, workspace, branch, and session. A
-contradictory, stale, or
-cross-repository binding must fail closed as `Owner route: inconsistent`; do
-not offer its link as the owner. Missing or unreachable route evidence renders
-`Owner route: unavailable`. In both cases, say what cannot be navigated or
-messaged and that the coordinator owns bounded follow-up. Ask the user only
-when a separate decision or action is truly required.
+must match the repository, work item, workspace, branch, and session.
+A contradictory, stale, or cross-repository binding must fail closed as
+`Owner route: inconsistent`; do not offer its link as the owner. Missing or
+unreachable route evidence renders exactly `Owner route: unavailable`. In both
+cases, say what cannot be navigated or messaged and that the coordinator owns
+bounded follow-up. Ask the user only when a separate decision or action is
+truly required.
 
 Coalesce unchanged blocker messages by a material fingerprint of the blocker
-state and the rendered owner-route fields. Changes only to a process identifier
-(PID), process-group ID (PGID), lease, queue position, timestamp, or other raw
-telemetry do not change that fingerprint. Keep those values in durable
-diagnostics and show them only for an explicit technical or diagnostic status
-request. Emit another routine message only when the blocker or route changes,
-becomes terminal, requires a real decision, or releases waiting work.
+state and every normalized field in the validated, rendered owner route.
+Changes only to a process identifier (PID), process-group ID (PGID), lease,
+queue position, timestamp, or other raw telemetry do not change that
+fingerprint. Keep those values in durable diagnostics and show them only for an
+explicit technical or diagnostic status request. Emit only when the HST-v1
+actionability gate passes and the fingerprint differs from the prior emitted
+message. The actionable checkpoint can be a terminal result, a real decision,
+exhausted blocker intervention, readiness for review or approval, or release of
+waiting work.
 
 This contract changes presentation only. It does not weaken ownership,
 validator isolation, security, exact-head, quality assurance (QA), review, or

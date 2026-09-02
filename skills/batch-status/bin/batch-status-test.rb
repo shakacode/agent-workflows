@@ -14,12 +14,26 @@ class BatchStatusTest < Minitest::Test
   def test_pr_status_returns_codex_runner_machine_and_thread_deep_link
     coordination = {
       "scope" => { "kind" => "target", "repo" => "shakacode/agent-workflows", "target" => "362" },
-      "claims" => [{ "agent_id" => "worker-362", "status" => "active" }],
+      "claims" => [{
+        "agent_id" => "worker-362",
+        "status" => "active",
+        "repo" => "shakacode/agent-workflows",
+        "target" => "362",
+        "branch" => "codex/status-362",
+        "host" => "codex",
+        "thread_handle" => "aw-362",
+        "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10",
+        "instance_id" => "instance-362"
+      }],
       "heartbeats" => [{
         "agent_id" => "worker-362",
         "host" => "codex",
         "machine_id" => "kona",
+        "target" => "shakacode/agent-workflows#362",
+        "branch" => "codex/status-362",
+        "thread_handle" => "aw-362",
         "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10",
+        "instance_id" => "instance-362",
         "session_source" => "codex_thread_id",
         "status" => "in_progress",
         "liveness" => "live"
@@ -45,6 +59,66 @@ class BatchStatusTest < Minitest::Test
       assert_equal "019feb28-f6a7-7e53-992e-09fa93633f10", row.fetch("thread_id")
       assert_equal "codex://threads/019feb28-f6a7-7e53-992e-09fa93633f10", row.fetch("codex_deep_link")
       assert_equal "kona", row.fetch("codex_deep_link_machine_id")
+      route = row.fetch("owner_route")
+      assert_equal "consistent", route.fetch("binding_status")
+      assert_empty route.fetch("binding_issues")
+      assert_equal "shakacode/agent-workflows#362", route.dig("work_item", "ref")
+      assert_equal "https://github.com/shakacode/agent-workflows/pull/362", route.dig("work_item", "url")
+      assert_equal "worker-362", route.fetch("holder")
+      assert_equal "codex/status-362", route.fetch("branch")
+      assert_equal "aw-362", route.fetch("thread_handle")
+      assert_equal "instance-362", route.fetch("instance_id")
+      assert_equal "required", route.fetch("host_task_lookup")
+    end
+  end
+
+  def test_owner_route_fails_closed_when_claim_and_heartbeat_bindings_disagree
+    coordination = {
+      "claims" => [{
+        "agent_id" => "worker-362",
+        "status" => "active",
+        "repo" => "acme/unrelated",
+        "target" => "362",
+        "branch" => "codex/current",
+        "host" => "codex",
+        "session_id" => "claim-session"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "worker-362",
+        "target" => "shakacode/agent-workflows#362",
+        "branch" => "codex/stale",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "session_id" => "heartbeat-session",
+        "session_source" => "codex_thread_id",
+        "status" => "in_progress"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "pr", number: 362) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--pr", "362",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      route = JSON.parse(stdout).fetch("items").first.fetch("owner_route")
+      assert_equal "inconsistent", route.fetch("binding_status")
+      assert_includes route.fetch("binding_issues"), "claim repository mismatch"
+      assert_includes route.fetch("binding_issues"), "claim/heartbeat branch mismatch"
+      assert_includes route.fetch("binding_issues"), "claim/heartbeat session_id mismatch"
+      assert_equal "UNKNOWN", route.fetch("runner")
+      assert_equal "UNKNOWN", route.fetch("branch")
+      assert_equal "UNKNOWN", route.fetch("session_id")
+      assert_equal "UNKNOWN", route.fetch("codex_deep_link")
+      unknowns = JSON.parse(stdout).fetch("items").first.fetch("unknowns")
+      assert_includes unknowns, "owner route: claim repository mismatch"
+      assert_includes unknowns, "owner route: claim/heartbeat branch mismatch"
+      assert_includes unknowns, "owner route: claim/heartbeat session_id mismatch"
     end
   end
 

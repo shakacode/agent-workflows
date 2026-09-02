@@ -1260,36 +1260,16 @@ notification wording.
 - An explicit technical or diagnostic status request may return exact telemetry.
   Expand identifiers on first use, retain exact values, and mark unavailable
   meanings `UNKNOWN` rather than translating them speculatively.
-- When an actionable user-facing blocker depends on another task or runner,
-  include `Owner route:` inside `What changed:`. Resolve it from the existing
-  claim, heartbeat, batch or lane record, live work item and head, and the
-  host's task or workspace lookup; do not require a new coordination schema.
-  It identifies the work item and URL, runner, visible task or workspace,
-  stable workspace or log location when exposed, thread handle, stable task,
-  thread, or session identifier, supported deep link or explicit cross-app
-  unavailability, and the branch and exact head when relevant. It also says
-  whether the current task can navigate to or message the owner.
-- A Codex route includes the verified task ID and deep link. An untitled task
-  uses the deterministic `<work item> <role> — <thread handle>` fallback. A
-  Conductor/Claude route includes the Conductor workspace and session identity;
-  without a cross-app deep link, say that there is no Codex sidebar task to
-  find and name the Conductor workspace to open. Missing or unreachable
-  evidence renders exactly `Owner route: unavailable`, and the coordinator
-  owns bounded follow-up.
-- Validate route consistency before rendering it. The active claim and
-  heartbeat agree on the owner, repository-qualified work item, runner or host,
-  branch, thread handle, session, and instance when recorded. The resolved task
-  matches the repository, work item, workspace, branch, and session.
-  Contradictory, stale, or cross-repository evidence must fail closed as
-  `Owner route: inconsistent`; do not render the stale link as authoritative.
-  The coordinator owns bounded follow-up and asks the user only when a separate
-  decision or action is truly required.
-- Coalesce unchanged blocker messages using a material fingerprint of blocker
-  state and rendered owner-route fields. A changed process identifier (PID),
-  process-group ID (PGID), lease, queue position, timestamp, or other raw
-  telemetry does not change the fingerprint. Keep raw telemetry in durable
-  diagnostics. Emit again only when the blocker or route changes, becomes
-  terminal, requires a real decision, or releases waiting work.
+- Canonical owner-route rules: [Cross-Task Blocker Owner Route](../docs/user-facing-coordination.md#cross-task-blocker-owner-route).
+  When an HST-v1 actionable user-facing blocker depends on another task or
+  runner, include `Owner route:` inside `What changed:`. Missing evidence uses
+  exactly `Owner route: unavailable`; contradictory evidence uses
+  `Owner route: inconsistent`.
+- A route or material-fingerprint change does not make a routine wait
+  actionable. Emit only when the HST-v1 actionability gate passes and the
+  fingerprint of blocker state plus every normalized rendered route field
+  differs from the prior emitted message. Keep raw process and queue telemetry
+  in durable diagnostics.
 - At closeout/archive completion, place the three labeled parts before, not
   instead of, the existing mandatory closeout handoff. Preserve every item of
   required handoff evidence and exact `Conversation status:` line, which remains

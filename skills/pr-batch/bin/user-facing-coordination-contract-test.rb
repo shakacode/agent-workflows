@@ -217,38 +217,47 @@ class UserFacingCoordinationContractTest < Minitest::Test
   end
 
   def test_cross_task_blockers_have_a_validated_owner_route
-    [DOC, WORKFLOW].each do |path|
-      text = normalized(path)
-      assert_includes text, "Owner route:", path
-      assert_includes text, "work item", path
-      assert_includes text, "runner", path
-      assert_includes text, "stable workspace or log location", path
-      assert_includes text, "thread handle", path
-      assert_includes text, "task, thread, or session identifier", path
-      assert_includes text, "branch and exact head", path
-      assert_includes text, "Owner route: unavailable", path
-      assert_includes text, "Owner route: inconsistent", path
-      assert_includes text, "no Codex sidebar task", path
-      assert_includes text, "coordinator owns bounded follow-up", path
-    end
+    doc = normalized(DOC)
+    assert_includes doc, "Owner route:"
+    assert_includes doc, "work item"
+    assert_includes doc, "runner"
+    assert_includes doc, "stable workspace or log location"
+    assert_includes doc, "thread handle"
+    assert_includes doc, "task, thread, or session identifier"
+    assert_includes doc, "branch and exact head"
+    assert_includes doc, "Owner route: unavailable"
+    assert_includes doc, "Owner route: inconsistent"
+    assert_includes doc, "no Codex sidebar task"
+    assert_includes doc, "coordinator owns bounded follow-up"
+
+    workflow = normalized(WORKFLOW)
+    assert_includes workflow, "Canonical owner-route rules:"
+    assert_includes workflow, "Cross-Task Blocker Owner Route"
+    assert_includes workflow, "HST-v1 actionable"
+    assert_includes workflow, "Owner route: unavailable"
+    assert_includes workflow, "Owner route: inconsistent"
 
     batch_status = normalized(BATCH_STATUS)
     assert_includes batch_status, "Owner route", BATCH_STATUS
-    assert_includes batch_status, "collector's existing coordination fields", BATCH_STATUS
-    assert_includes batch_status, "task or workspace lookup", BATCH_STATUS
+    assert_includes batch_status, "collector's `owner_route` object", BATCH_STATUS
+    assert_includes batch_status, "host-provided task or workspace lookup", BATCH_STATUS
     assert_includes batch_status, "do not print raw PID, process-group ID (PGID), lease, or queue-position", BATCH_STATUS
   end
 
   def test_owner_route_consistency_fails_closed_without_weakening_gates
-    [DOC, WORKFLOW].each do |path|
-      text = normalized(path)
-      assert_includes text, "claim and heartbeat", path
-      assert_includes text, "repository, work item, workspace, branch, and session", path
-      assert_includes text, "fail closed", path
-      assert_includes text, "validator isolation", path
-      assert_includes text, "exact-head", path
-      assert_includes text, "merge gates", path
-    end
+    doc = normalized(DOC)
+    assert_includes doc, "claim and heartbeat"
+    assert_includes doc, "repository, work item, workspace, branch, and session"
+    assert_includes doc, "fail closed"
+    assert_includes doc, "validator isolation"
+    assert_includes doc, "exact-head"
+    assert_includes doc, "merge gates"
+
+    workflow = normalized(WORKFLOW)
+    assert_includes workflow, "This boundary changes presentation only."
+    assert_includes workflow, "validator isolation"
+    assert_includes workflow, "exact-head evidence"
+    assert_includes workflow, "merge gates"
   end
 
   def test_pr383_owner_route_replay_is_actionable_and_coalesced
@@ -262,7 +271,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
     replayed_emissions = observations.map do |observation|
       changed = observation.fetch("material_fingerprint") != previous_fingerprint
       previous_fingerprint = observation.fetch("material_fingerprint")
-      changed
+      changed && !observation["actionable_checkpoint"].nil?
     end
     assert_equal observations.map { |observation| observation.fetch("emit_user_message") }, replayed_emissions
     assert_equal 2, replayed_emissions.count(true)
@@ -275,6 +284,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
                  observations[1].dig("durable_diagnostics", "log")
     refute_equal observations[1].dig("durable_diagnostics", "log"),
                  observations[2].dig("durable_diagnostics", "log")
+    assert_equal "bounded_retries_exhausted", observations[0].fetch("actionable_checkpoint")
+    assert_nil observations[1].fetch("actionable_checkpoint")
+    assert_equal "bounded_retry_exhausted_after_log_rotation", observations[2].fetch("actionable_checkpoint")
 
     messages = replay.fetch("expected_user_messages")
     message = messages.first
@@ -302,16 +314,23 @@ class UserFacingCoordinationContractTest < Minitest::Test
       claim = observation.fetch("claim")
       heartbeat = observation.fetch("heartbeat")
       host_task = observation.fetch("host_task")
+      navigation = observation.fetch("navigation")
       fingerprint_source = [
         "#{claim.fetch('repo')}##{claim.fetch('target')}",
         observation.fetch("blocker_state"),
+        claim.fetch("agent_id"),
         heartbeat.fetch("host"),
         heartbeat.fetch("workspace"),
         heartbeat.fetch("thread_handle"),
         heartbeat.fetch("session_id"),
+        host_task.fetch("url"),
         heartbeat.fetch("branch"),
         host_task.fetch("head"),
-        observation.dig("durable_diagnostics", "log")
+        observation.dig("durable_diagnostics", "log"),
+        "codex_sidebar_task=#{navigation.fetch('codex_sidebar_task')}",
+        "cross_app_deep_link=#{navigation.fetch('cross_app_deep_link')}",
+        "current_task_can_navigate=#{navigation.fetch('current_task_can_navigate')}",
+        "current_task_can_message=#{navigation.fetch('current_task_can_message')}"
       ].join("|")
       assert_equal "sha256:#{Digest::SHA256.hexdigest(fingerprint_source)}",
                    observation.fetch("material_fingerprint")
@@ -345,6 +364,10 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes untitled.fetch("expected_owner_route"), fallback_title
     assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("task_id")
     assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("deep_link")
+    assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("work_item_url")
+    assert untitled_input.fetch("current_task_can_navigate")
+    assert untitled_input.fetch("current_task_can_message")
+    assert_includes untitled.fetch("expected_owner_route"), "can navigate to and message the owner"
 
     inconsistent = variants.fetch("stale-claim-session-cross-repository")
     inconsistent_input = inconsistent.fetch("input")
