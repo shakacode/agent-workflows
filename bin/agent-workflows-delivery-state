@@ -700,6 +700,14 @@ module AgentWorkflowsDeliveryState
   # The bin root and every managed subdirectory below it must be a real
   # directory. A symlink or a plain file there hides every entry beneath it, so
   # it has to block rather than let those entries read as merely missing.
+  # Filesystem paths are bytes, and a filename that is not valid UTF-8 is legal
+  # on Linux. Reporting one raw makes JSON.pretty_generate raise, which would
+  # lose the very details the report exists to carry, so scrub for display.
+  # These strings are only ever printed, never used to address a file again.
+  def reportable_path(path)
+    path.dup.force_encoding(Encoding::UTF_8).scrub
+  end
+
   def readable_directory?(path)
     File.readable?(path) && File.executable?(path)
   end
@@ -988,8 +996,8 @@ module AgentWorkflowsDeliveryState
     bin_root = File.join(target, "bin")
     if (conflict = managed_bin_directory_conflict(bin_root))
       return {
-        "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [bin_root],
-        "reason" => "managed bin root is #{conflict}: #{bin_root}",
+        "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [reportable_path(bin_root)],
+        "reason" => "managed bin root is #{conflict}: #{reportable_path(bin_root)}",
         "guidance" => "The listed path was preserved. Restore the managed bin directory or move it aside, then rerun."
       }
     end
@@ -999,8 +1007,8 @@ module AgentWorkflowsDeliveryState
     if manages_doctor_tree && File.directory?(doctor_root) && !File.symlink?(doctor_root) &&
        !readable_directory?(doctor_root)
       return {
-        "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [doctor_root],
-        "reason" => "managed doctor root cannot be read: #{doctor_root}",
+        "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [reportable_path(doctor_root)],
+        "reason" => "managed doctor root cannot be read: #{reportable_path(doctor_root)}",
         "guidance" => "Restore read and search permission on the listed directory, or move it aside so the " \
                       "installer reinstalls the tree, then rerun."
       }
@@ -1038,8 +1046,8 @@ module AgentWorkflowsDeliveryState
     # An attested tree is the one the marker now covers, which after an upgrade is
     # the tree the installer just wrote, additions included.
     unexpected = stack_owned || doctor_attested ? [] : unexpected_managed_doctor_entries(bin_root, fingerprints)
-    unowned = (unowned_paths + unexpected).uniq.sort
-    unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort
+    unowned = (unowned_paths + unexpected).uniq.sort.map { |path| reportable_path(path) }
+    unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort.map { |path| reportable_path(path) }
     if unowned.empty? && unrestorable.empty? &&
        (marker = managed_doctor_marker_conflict(bin_root, source, fingerprints, attested: doctor_attested))
       unowned = [marker]
@@ -1053,7 +1061,12 @@ module AgentWorkflowsDeliveryState
             else
               "present"
             end
-    payload = { "state" => state, "paths" => present.sort, "missing" => missing.sort, "blocking" => blocking }
+    payload = {
+      "state" => state,
+      "paths" => present.sort.map { |path| reportable_path(path) },
+      "missing" => missing.sort.map { |name| reportable_path(name) },
+      "blocking" => blocking
+    }
     return payload if blocking.empty?
 
     clauses = []
@@ -1067,10 +1080,10 @@ module AgentWorkflowsDeliveryState
     payload["guidance"] = if unowned.any? && unrestorable.any?
                             "The listed paths were preserved. Restore them to their recorded pack revision " \
                             "or move/remove them manually, and restore the missing doctor modules or move " \
-                            "#{doctor_root} aside so the installer reinstalls the tree, then rerun."
+                            "#{reportable_path(doctor_root)} aside so the installer reinstalls the tree, then rerun."
                           elsif unrestorable.any?
                             "Restore the listed files from their recorded pack revision, or move " \
-                            "#{doctor_root} aside so the installer reinstalls the tree, then rerun."
+                            "#{reportable_path(doctor_root)} aside so the installer reinstalls the tree, then rerun."
                           else
                             "The listed paths were preserved. Restore them to their recorded pack revision " \
                             "or move/remove them manually, then rerun."

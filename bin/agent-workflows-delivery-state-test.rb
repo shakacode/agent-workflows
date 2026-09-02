@@ -2640,6 +2640,22 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_report_paths_survive_a_non_utf8_filename
+    # A filename that is not valid UTF-8 is legal on Linux, and reporting one
+    # raw makes JSON.pretty_generate raise, losing the whole payload. This
+    # exercises the helper directly because macOS rejects such names at
+    # creation time (Errno::EILSEQ), so the filesystem cannot host the case.
+    raw = "/target/bin/agent_doctor/bad\xFFname.rb".dup.force_encoding(Encoding::ASCII_8BIT)
+
+    assert_raises(JSON::GeneratorError) { JSON.pretty_generate("blocking" => [raw]) }
+
+    reported = AgentWorkflowsDeliveryState.reportable_path(raw)
+    payload = JSON.pretty_generate("blocking" => [reported])
+
+    assert_includes payload, "bad"
+    assert_equal [reported], JSON.parse(payload).fetch("blocking")
+  end
+
   def test_empty_managed_bin_fingerprints_fail_closed_for_a_copy_install
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, _fingerprints = managed_bin_fixture(tmp)
