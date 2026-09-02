@@ -695,15 +695,19 @@ module AgentWorkflowsDeliveryState
     removable = []
     legacy_flat = metadata && prior_delivery_mode == "flat"
     fingerprint_names = recorded_fingerprints ? recorded_fingerprints.keys : []
-    # A flat copy taken from a dirty checkout records the committed revision plus an
-    # exact fingerprint per installed skill, so the revision tree alone under-reports
-    # what the installer owns. Union the recorded fingerprint keys into the inventory
-    # while tracking which names the revision itself actually carries.
+    # A copy receipt fingerprints every skill the flat install placed, so it is the
+    # complete inventory of what the installer owns. The recorded revision is only a
+    # verification snapshot for the names both sources agree on: a dirty checkout can
+    # add a skill the revision lacks, and can delete one the revision still carries.
     snapshot_backed_names, names, snapshot = if legacy_flat && recorded_revision_unavailable
                                                [[], fingerprint_names, nil]
                                              elsif legacy_flat
                                                revision_names, revision_snapshot = skill_names(source, metadata)
-                                               [revision_names, revision_names | fingerprint_names, revision_snapshot]
+                                               if recorded_fingerprints
+                                                 [revision_names & fingerprint_names, fingerprint_names, revision_snapshot]
+                                               else
+                                                 [revision_names, revision_names, revision_snapshot]
+                                               end
                                              else
                                                [[], collision_names, nil]
                                              end

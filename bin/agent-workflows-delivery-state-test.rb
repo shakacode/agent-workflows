@@ -1575,6 +1575,54 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_revision_skill_absent_from_the_copy_receipt_cannot_be_removed
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      # The dirty checkout deletes a committed skill and adds an uncommitted one,
+      # so the copy receipt records "beta" and "gamma" but never "alpha".
+      committed_alpha = File.join(tmp, "committed-alpha")
+      FileUtils.cp_r(File.join(source, "skills/alpha"), committed_alpha)
+      FileUtils.remove_entry(File.join(source, "skills/alpha"))
+      FileUtils.mkdir_p(File.join(source, "skills/gamma"))
+      File.write(File.join(source, "skills/gamma/SKILL.md"), "gamma — uncommitted\n")
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      fingerprints = %w[beta gamma].to_h do |name|
+        installed = File.join(target, "skills", name)
+        FileUtils.cp_r(File.join(source, "skills", name), installed)
+        [name, AgentWorkflowsDeliveryState.directory_fingerprint(installed)]
+      end
+      # An unrelated personal directory the installer preserved, whose contents
+      # happen to match the committed revision exactly.
+      unrelated = File.join(target, "skills/alpha")
+      FileUtils.cp_r(committed_alpha, unrelated)
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => revision,
+        "managed_skill_copy_fingerprints" => fingerprints
+      )
+
+      out, _err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal [unrelated], flat.fetch("blocking")
+      assert_equal "alpha — portable\n", File.read(File.join(unrelated, "SKILL.md"))
+      assert_path_exists File.join(target, "skills/beta/SKILL.md")
+      assert_path_exists File.join(target, "skills/gamma/SKILL.md")
+    end
+  end
+
   def test_revision_only_case_alias_is_not_both_owned_and_extra
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       skip "requires a case-insensitive filesystem" unless case_insensitive_filesystem?(tmp)
