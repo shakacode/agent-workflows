@@ -199,11 +199,112 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
-  def test_unreadable_companion_policy_rejects_without_backtrace
+  def test_shared_policy_dates_do_not_block_preflight
+    Dir.mktmpdir("batch-plan-date-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        policy_date: 2026-01-01
+        companion_path_conventions: []
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_unrelated_tagged_policy_value_does_not_block_companion_contract
+    Dir.mktmpdir("batch-plan-tagged-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        unrelated: !ruby/object:Object {}
+        companion_path_conventions: []
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_unrelated_malformed_policy_does_not_block_preflight
+    Dir.mktmpdir("batch-plan-unrelated-malformed-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), "base_branch: [\n")
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_unrelated_malformed_policy_does_not_hide_valid_companion_contract
+    Dir.mktmpdir("batch-plan-valid-companion-malformed-sibling") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        base_branch: [
+        companion_path_conventions: []
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_malformed_declared_companion_policy_fails_closed
+    Dir.mktmpdir("batch-plan-malformed-companion-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        "companion_path_conventions: [\n"
+      )
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_duplicate_companion_policy_keys_fail_closed
+    policies = {
+      "top-level" => <<~YAML,
+        companion_path_conventions: []
+        companion_path_conventions: []
+      YAML
+      "entry" => <<~YAML
+        companion_path_conventions:
+          - source_glob: lib/**/{name}.rb
+            source_glob: other/**/{name}.rb
+            companion_glob: sig/**/{name}.rbs
+      YAML
+    }
+
+    policies.each do |label, yaml|
+      Dir.mktmpdir("batch-plan-duplicate-companion-policy") do |root|
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), yaml)
+
+        result, _stderr, status = evaluate(input_for, chdir: root)
+
+        refute status.success?, label
+        assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                        "companion-path-conventions-invalid", label
+      end
+    end
+  end
+
+  def test_unreadable_shared_policy_does_not_block_preflight
     Dir.mktmpdir("batch-plan-unreadable-companion") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
       policy = File.join(root, ".agents", "agent-workflow.yml")
-      File.write(policy, "companion_path_conventions: []\n")
+      File.write(policy, "base_branch: main\n")
       File.chmod(0o000, policy)
       skip "filesystem does not enforce unreadable mode" if File.readable?(policy)
 
@@ -214,11 +315,10 @@ class BatchPlanPreflightTest < Minitest::Test
         chdir: root
       )
 
-      refute status.success?
+      assert status.success?
       assert_empty stderr
       result = JSON.parse(stdout)
-      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                      "companion-path-conventions-invalid"
+      assert_empty result.fetch("violations")
     ensure
       File.chmod(0o644, policy) if policy && File.exist?(policy)
     end

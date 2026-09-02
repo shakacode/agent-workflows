@@ -506,7 +506,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      If the companion exists but the lane neither lists nor actively reserves
      it, record the nonfatal `companion-path-omitted` advisory in the Batch Plan
      and compact goal `Scope`. Never add the path automatically. Invalid pairs
-     reject preflight; an absent key preserves existing behavior.
+     or duplicate companion-contract keys reject preflight; an absent key and
+     unrelated unreadable or malformed shared policy preserve existing behavior.
      After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
      A rejected result launches no
      worker; an accepted result permits only its eligible lanes and keeps its

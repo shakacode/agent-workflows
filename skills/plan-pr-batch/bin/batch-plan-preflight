@@ -734,19 +734,83 @@ module BatchPlanPreflight
     config_path = File.join(repo_root, ".agents", "agent-workflow.yml")
     return [[], []] unless File.file?(config_path)
 
-    config = YAML.safe_load(File.read(config_path, encoding: "UTF-8"), aliases: false) || {}
-    return invalid_companion_path_conventions unless config.is_a?(Hash)
-    return [[], []] unless config.key?("companion_path_conventions")
+    yaml = File.read(config_path, encoding: "UTF-8")
+    key_state, value_node = companion_policy_node(yaml)
+    return [[], []] if key_state == :absent
+    return invalid_companion_path_conventions if key_state == :invalid
 
-    conventions = config["companion_path_conventions"]
-    return invalid_companion_path_conventions unless conventions.is_a?(Array) &&
-                                                     conventions.all? do |convention|
-                                                       valid_companion_path_convention?(convention)
-                                                     end
+    conventions = companion_conventions_from_node(value_node)
+    return invalid_companion_path_conventions unless conventions&.all? do |convention|
+      valid_companion_path_convention?(convention)
+    end
 
     [[], conventions]
-  rescue Psych::Exception, SystemCallError
-    invalid_companion_path_conventions
+  rescue SystemCallError
+    [[], []]
+  end
+
+  def companion_policy_node(yaml)
+    companion_policy_node_from_stream(Psych.parse_stream(yaml))
+  rescue Psych::Exception
+    companion_policy_fragment_node(yaml)
+  end
+
+  def companion_policy_node_from_stream(stream)
+    documents = stream.children
+    root = documents.one? ? documents.first.root : nil
+    return [:absent, nil] unless root.is_a?(Psych::Nodes::Mapping)
+
+    matching_values = root.children.each_slice(2).filter_map do |key, value|
+      value if key.is_a?(Psych::Nodes::Scalar) && key.value == "companion_path_conventions"
+    end
+    return [:absent, nil] if matching_values.empty?
+    return [:invalid, nil] unless matching_values.one?
+
+    [:present, matching_values.first]
+  end
+
+  def companion_policy_fragment_node(yaml)
+    lines = yaml.to_s.lines
+    starts = lines.each_index.select { |index| companion_policy_key_line?(lines[index]) }
+    return [:absent, nil] if starts.empty?
+    return [:invalid, nil] unless starts.one?
+
+    finish = ((starts.first + 1)...lines.length).find do |index|
+      line = lines[index]
+      !line.strip.empty? && !line.lstrip.start_with?("#") && line.match?(/\A\S/)
+    end
+    fragment = lines[starts.first...(finish || lines.length)].join
+    state, node = companion_policy_node_from_stream(Psych.parse_stream(fragment))
+    state == :present ? [state, node] : [:invalid, nil]
+  rescue Psych::Exception
+    [:invalid, nil]
+  end
+
+  def companion_policy_key_line?(line)
+    line.match?(/\A(?:companion_path_conventions|["']companion_path_conventions["'])\s*:/)
+  end
+
+  def companion_conventions_from_node(node)
+    return unless node.is_a?(Psych::Nodes::Sequence)
+
+    conventions = node.children.map { |entry| companion_convention_from_node(entry) }
+    conventions unless conventions.any?(&:nil?)
+  end
+
+  def companion_convention_from_node(entry)
+    return unless entry.is_a?(Psych::Nodes::Mapping)
+
+    pairs = entry.children.each_slice(2).to_a
+    return unless pairs.length == 2 && pairs.flatten.all? { |node| yaml_string_scalar?(node) }
+
+    keys = pairs.map { |key, _value| key.value }
+    return unless keys.uniq.length == keys.length && keys.sort == %w[companion_glob source_glob]
+
+    pairs.to_h { |key, value| [key.value, value.value] }
+  end
+
+  def yaml_string_scalar?(node)
+    node.is_a?(Psych::Nodes::Scalar) && [nil, "tag:yaml.org,2002:str"].include?(node.tag)
   end
 
   def invalid_companion_path_conventions
@@ -754,7 +818,7 @@ module BatchPlanPreflight
       "companion-path-conventions-invalid",
       ".agents/agent-workflow.yml#companion_path_conventions",
       "Companion path conventions must be a list of exact source_glob and companion_glob pairs " \
-      "with matching **, *, and named placeholder tokens."
+      "with unique keys and matching, unambiguous **, *, and named placeholder tokens."
     )], []]
   end
 

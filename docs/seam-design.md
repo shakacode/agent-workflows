@@ -122,8 +122,10 @@ they have no deterministic capture boundary; separate them with literal text.
 When a declared or actively reserved source path matches and the resolved companion exists,
 `batch-plan-preflight` emits `companion-path-omitted` unless that lane lists or
 actively reserves the companion. The advisory does not add the path or change
-collision, reservation, or eligibility results. An invalid configured pair
-or unreadable policy rejects preflight instead of being ignored.
+collision, reservation, or eligibility results. A present malformed companion
+contract, including duplicate keys, rejects preflight instead of being ignored.
+Unrelated malformed or unreadable shared policy behaves as no convention, so
+this optional advisory cannot become a new global dispatch blocker.
 
 Each `companion-path-omitted` advisory includes `source_path` and
 `companion_path` fields naming the mapped pair.
