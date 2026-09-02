@@ -81,6 +81,58 @@ class HelpRequestLifecycleTest < Minitest::Test
     override&.close!
   end
 
+  def test_exact_duplicate_event_is_idempotent
+    event = {
+      "event_id" => "request-1",
+      "batch_id" => "batch-1",
+      "lane" => "review",
+      "type" => "help_requested",
+      "reason" => "permission",
+      "at" => "2026-08-23T05:48:18Z"
+    }
+    input = Tempfile.new(["help-request-lifecycle-duplicate", ".json"])
+    input.write(JSON.generate("events" => [event, event.dup]))
+    input.flush
+
+    result, stderr, status = run_lifecycle(input: input.path, now: "2026-08-23T05:49:00Z")
+
+    assert_predicate status, :success?, stderr
+    request_ids = result.fetch("requests").map { |request| request.fetch("request_id") }
+    assert_equal ["request-1"], request_ids
+    assert_equal "request-1", result.fetch("blocking_request_id")
+  ensure
+    input&.close!
+  end
+
+  def test_conflicting_duplicate_event_id_fails_closed
+    input = Tempfile.new(["help-request-lifecycle-conflicting-duplicate", ".json"])
+    input.write(JSON.generate(
+                  "events" => [
+                    {
+                      "event_id" => "request-1",
+                      "type" => "help_requested",
+                      "reason" => "permission",
+                      "at" => "2026-08-23T05:48:18Z"
+                    },
+                    {
+                      "event_id" => "request-1",
+                      "type" => "help_requested",
+                      "reason" => "review",
+                      "at" => "2026-08-23T05:48:18Z"
+                    }
+                  ]
+                ))
+    input.flush
+
+    result, stderr, status = run_lifecycle(input: input.path, now: "2026-08-23T05:49:00Z")
+
+    assert_equal 1, status.exitstatus, stderr
+    assert_equal "UNKNOWN", result.fetch("status")
+    assert_match(/duplicate event_id request-1 has conflicting payload/, result.fetch("error"))
+  ensure
+    input&.close!
+  end
+
   def test_open_request_in_another_lane_does_not_block_this_lane
     result, stderr, status = run_lifecycle(require_phase: "implementation", lane: "qa")
 
@@ -172,6 +224,75 @@ class HelpRequestLifecycleTest < Minitest::Test
     request_ids = transitions.map { |row| row.fetch("request_id") }
     assert_equal ["request-unlaned-2"], request_ids
     assert(transitions.all? { |row| row.fetch("event_id") == "phase-review" })
+  ensure
+    input&.close!
+  end
+
+  def test_laned_request_matches_a_target_only_phase_transition
+    input = Tempfile.new(["help-request-lifecycle-target-only-transition", ".json"])
+    input.write(JSON.generate(
+                  "events" => [
+                    {
+                      "event_id" => "request-review",
+                      "batch_id" => "batch-1",
+                      "lane" => "review",
+                      "target" => "issue:462",
+                      "type" => "help_requested",
+                      "reason" => "permission",
+                      "at" => "2026-08-23T05:48:18Z"
+                    },
+                    {
+                      "event_id" => "phase-review",
+                      "batch_id" => "batch-1",
+                      "target" => "462",
+                      "type" => "phase.changed",
+                      "phase" => "review",
+                      "at" => "2026-08-23T05:48:30Z"
+                    }
+                  ]
+                ))
+    input.flush
+
+    result, stderr, status = run_lifecycle(input: input.path, now: "2026-08-23T05:49:00Z")
+
+    assert_predicate status, :success?, stderr
+    transition = result.fetch("prohibited_phase_transitions").fetch(0)
+    assert_equal "phase-review", transition.fetch("event_id")
+    assert_equal "request-review", transition.fetch("request_id")
+  ensure
+    input&.close!
+  end
+
+  def test_target_match_does_not_override_conflicting_lanes
+    input = Tempfile.new(["help-request-lifecycle-conflicting-lanes", ".json"])
+    input.write(JSON.generate(
+                  "events" => [
+                    {
+                      "event_id" => "request-review",
+                      "batch_id" => "batch-1",
+                      "lane" => "review",
+                      "target" => "issue:462",
+                      "type" => "help_requested",
+                      "reason" => "permission",
+                      "at" => "2026-08-23T05:48:18Z"
+                    },
+                    {
+                      "event_id" => "phase-docs",
+                      "batch_id" => "batch-1",
+                      "lane" => "docs",
+                      "target" => "issue:462",
+                      "type" => "phase.changed",
+                      "phase" => "review",
+                      "at" => "2026-08-23T05:48:30Z"
+                    }
+                  ]
+                ))
+    input.flush
+
+    result, stderr, status = run_lifecycle(input: input.path, now: "2026-08-23T05:49:00Z")
+
+    assert_predicate status, :success?, stderr
+    assert_empty result.fetch("prohibited_phase_transitions")
   ensure
     input&.close!
   end

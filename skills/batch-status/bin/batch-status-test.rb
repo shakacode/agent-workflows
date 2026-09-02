@@ -133,6 +133,34 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_batch_lane_without_name_remains_explicitly_unknown
+    coordination = {
+      "batches" => [{
+        "batch_id" => "aw-b",
+        "repo" => "shakacode/agent-workflows",
+        "lanes" => [{
+          "owner" => "worker-186",
+          "targets" => ["issue:186"]
+        }]
+      }],
+      "events" => []
+    }
+    target_coordination = {
+      "claims" => [{ "agent_id" => "worker-186", "status" => "active" }],
+      "heartbeats" => []
+    }
+
+    with_fake_batch_commands(coordination:, target_coordination:) do |env|
+      stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, SCRIPT, "--batch-id", "aw-b", "--json")
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      assert_equal "UNKNOWN", row.fetch("lane")
+      assert_includes row.fetch("unknowns"), "batch lane: registration and claim metadata unavailable"
+      assert_includes row.fetch("unknowns"), "help-request lifecycle: lane unavailable for target-scoped replay"
+    end
+  end
+
   def test_target_status_does_not_leak_an_unscoped_batch_request
     request_id = "20260823T054818.000000Z-help4846"
     target_coordination = {

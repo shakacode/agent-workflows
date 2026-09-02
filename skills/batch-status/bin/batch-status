@@ -388,6 +388,7 @@ items = requests.map do |request|
   heartbeat = holder && heartbeats.find { |candidate| candidate.is_a?(Hash) && candidate["agent_id"] == holder }
   batch_id = request[:batch_id] || present_string(claim["batch_id"])
   lane = request[:lane] || present_string(claim["lane"])
+  unknowns << "batch lane: registration and claim metadata unavailable" if batch_id && !lane
   lifecycle = { "status" => UNKNOWN, "error" => "batch id unavailable for target-scoped replay" }
   if batch_id
     unless batch_payloads.key?(batch_id)
@@ -441,7 +442,7 @@ items = requests.map do |request|
 
   {
     "batch_id" => batch_id || UNKNOWN,
-    "lane" => lane || "#{repo}##{number}",
+    "lane" => lane || (batch_id ? UNKNOWN : "#{repo}##{number}"),
     "target" => {
       "repo" => repo,
       "number" => number,

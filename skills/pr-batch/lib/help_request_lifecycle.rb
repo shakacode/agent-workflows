@@ -86,14 +86,19 @@ module HelpRequestLifecycle
 
   def ordered_events(events)
     ids = {}
-    ordered = events.each_with_index.map do |event, index|
+    ordered = []
+    events.each_with_index do |event, index|
       raise InputError, "event #{index} must be an object" unless event.is_a?(Hash)
 
       event_id = required_string(event, "event_id")
-      raise InputError, "duplicate event_id #{event_id}" if ids.key?(event_id)
+      if ids.key?(event_id)
+        next if ids.fetch(event_id) == event
 
-      ids[event_id] = true
-      [event_time(event), index, event]
+        raise InputError, "duplicate event_id #{event_id} has conflicting payload"
+      end
+
+      ids[event_id] = event
+      ordered << [event_time(event), index, event]
     end
     ordered.sort_by { |at, index, _event| [at, index] }.map(&:last)
   end
@@ -109,7 +114,7 @@ module HelpRequestLifecycle
       "lane" => optional_string(event["lane"]),
       "agent_id" => optional_string(event["agent_id"]),
       "message" => optional_string(event["message"]),
-      "scope_key" => request_scope_key(event)
+      "scope_keys" => request_scope_keys(event)
     }
   end
 
@@ -134,7 +139,7 @@ module HelpRequestLifecycle
 
     request = requests.values.reverse.find do |candidate|
       blocking_permission_request?(candidate) &&
-        (candidate["lane"].nil? || candidate.fetch("scope_key") == request_scope_key(event))
+        request_matches_transition?(candidate, event)
     end
     return unless request
 
@@ -153,11 +158,21 @@ module HelpRequestLifecycle
     raise InputError, "request #{request['request_id']} has a future timestamp" if age.negative?
 
     request["age_seconds"] = age
-    request.delete("scope_key")
+    request.delete("scope_keys")
   end
 
   def blocking_permission_request?(request)
     request["state"] == "open" && request["reason"] == "permission"
+  end
+
+  def request_matches_transition?(request, event)
+    request_lane = request["lane"]
+    return true unless request_lane
+
+    event_lane = optional_string(event["lane"])
+    return request_lane == event_lane if event_lane
+
+    !(request.fetch("scope_keys") & request_scope_keys(event)).empty?
   end
 
   def terminal_for_request?(events, request, lane:)
@@ -198,15 +213,17 @@ module HelpRequestLifecycle
     }
   end
 
-  def request_scope_key(event)
+  def request_scope_keys(event)
     batch_id = optional_string(event["batch_id"]) || "UNKNOWN"
+    keys = []
     lane = optional_string(event["lane"])
-    return [batch_id, "lane", lane] if lane
+    keys << [batch_id, "lane", lane] if lane
 
     target = optional_string(event["target"])
-    return [batch_id, "target", target.sub(/\A(?:issue|pr):/, "")] if target
+    keys << [batch_id, "target", target.sub(/\A(?:issue|pr):/, "")] if target
 
-    [batch_id, "unscoped"]
+    keys << [batch_id, "unscoped"] if keys.empty?
+    keys
   end
 
   def event_time(event)
