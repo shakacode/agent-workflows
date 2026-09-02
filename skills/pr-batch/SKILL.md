@@ -424,11 +424,11 @@ Before implementation or worker launch, produce:
 13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
-After any target-specific invocation line, each pasteable batch prompt must put
-`Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` near the top.
-Derive `<PROJECT>` with the abbreviation rule in **Required Interview** above,
-and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
-local shell when creating the prompt.
+After any target-specific invocation line, each pasteable batch prompt keeps
+the canonical `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block
+near the top. Resolve it through
+[Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection)
+without reinterpreting its verified intake facts.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
 from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short

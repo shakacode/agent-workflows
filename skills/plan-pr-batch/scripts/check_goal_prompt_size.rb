@@ -283,7 +283,7 @@ READY_ITEM_DONE_WHEN_LINE =
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
-CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>"
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
   merge_authority:<none|ask|auto_merge_when_gates_pass>
@@ -309,11 +309,9 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   CONTINUATION_BATCH_TITLE_LINE,
   CONTINUATION_INVOCATION_LINE,
   CONTINUATION_THREAD_HANDLE_LINE,
-  "After fail-closed target extraction and source verification, apply the same",
-  "title rule: include `<ID?>` only for exactly one verified source issue, even",
-  "alongside PR or ad-hoc execution targets; omit it for zero or multiple verified",
-  "source issues. Evidence, blocker, dependency, next-action, comment, and example",
-  "refs are not targets and cannot supply title identifiers.",
+  "After fail-closed target extraction and source verification, apply canonical",
+  "[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)",
+  "unchanged; this continuation entrypoint does not redefine title eligibility.",
   "Otherwise, after exact target and lane resolution, derive one",
   "top-level `Thread handle:` using the normal `<batch-short>-<lane>-<word>` rule:",
   "use the resumed lane id or owner slug for exactly one resumed lane; use literal",
@@ -744,13 +742,8 @@ required_skill_rule_phrases = [
   "After the target-specific invocation line",
   "Batch title:",
   "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
-  "metadata only; it does not create an executable Linear lane",
-  "optional `repo_prefix`",
-  "`origin` remote after stripping",
-  "repository root basename",
-  "invalid configured `repo_prefix`",
-  "do not silently fall back",
-  "date +'%m-%d %H:%M'",
+  "pr-batch-intake.md#verified-batch-title-selection",
+  "verified title facts unchanged",
   "Goal prompt character count: N characters (target: codex|claude|generic)",
   "Batch size target:",
   "Model/effort routing",
@@ -785,6 +778,20 @@ required_skill_rule_phrases = [
   "Keep bulky evidence",
   "outside the prompt",
   "AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb"
+]
+
+required_prompt_intake_title_phrases = [
+  "## Verified Batch Title Selection",
+  "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
+  "metadata only; it does not create an executable Linear lane",
+  "optional `repo_prefix`",
+  "remote after stripping `.git`",
+  "repository root basename",
+  "configured `repo_prefix` is a blocker; do not silently fall back",
+  "date +'%m-%d %H:%M'",
+  "exactly one issue",
+  "zero or multiple verified source issues",
+  "Render exactly one empty line immediately before and after the `Batch title:`"
 ]
 
 required_codex_prompt_phrases = [
@@ -972,6 +979,11 @@ end
 
 # These phrases live in the broader skill rules, not necessarily inside the prompt fence.
 require_phrases(skill_text, required_skill_rule_phrases, "SKILL.md prompt-sizing rules")
+require_phrases(
+  prompt_intake_text,
+  required_prompt_intake_title_phrases,
+  "workflows/pr-batch-intake.md verified batch-title rules"
+)
 
 require_occurrence_count(
   skill_text,

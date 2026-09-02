@@ -1081,32 +1081,11 @@ independent review route or `none`. Keep it separate from the future
 The Lane Card `route` field carries preferred model/effort and observed
 host/model/effort/UNKNOWN separately.
 
-Use this goal prompt shape:
-Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
-`date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
-Resolve `<PROJECT>` from the optional `repo_prefix` in
-`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII
-letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
-deterministically from the repository name: use the basename of the `origin`
-remote after stripping `.git`, or the repository root basename when `origin` is
-unavailable; for a multi-segment name take the first character of each of the
-first six `-`, `_`, or space-separated segments, and for a single-segment name
-take its first 4 characters or the whole name when shorter, then uppercase the
-result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` ->
-`SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid
-configured `repo_prefix` is a blocker; do not silently fall back.
-Fill the optional `<A?>` slot with A, B, C, etc. only when creating multiple
-batch prompts; omit it for a single batch prompt.
-The issue-bearing shapes are
-`Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
-for GitHub and
-`Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
-for Linear. Consume the intake component's canonical
-[Verified Source-Issue Title Metadata](pr-batch-intake.md#verified-source-issue-title-metadata)
-without redefining its provider verification, cardinality, or safety rules.
-Render exactly one empty line immediately before and after the
-`Batch title:` line. Keep the target-specific invocation above that title block
-and `Thread handle:` below it.
+Use this goal prompt shape. Resolve the title block through canonical
+[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
+and consume its verified intake facts unchanged. This compatibility workflow
+preserves the exact prompt template below without redefining prefix,
+identifier, trust, time, or spacing selection.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
 from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
@@ -2153,9 +2132,9 @@ target list for each batch:
 
 <!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
 
-Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule from
-[Plan To Goal Handoff](#plan-to-goal-handoff), and run
-`date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
+Before filling the `Batch title:` line, consume canonical
+[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
+without reinterpreting its verified title facts.
 Preserve exactly one trusted persisted coordinator continuation handle when it
 can be verified. Otherwise, after exact target and lane resolution, derive one
 top-level `Thread handle:` using the normal `<batch-short>-<lane>-<word>` rule:
@@ -2170,18 +2149,16 @@ infer a handle from free-form text.
 ```text
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
 
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>.
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>
 
 Thread handle: <batch-short>-<lane>-<word>
 HST-v1
 
 First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
 
-After fail-closed target extraction and source verification, apply the same
-title rule: include `<ID?>` only for exactly one verified source issue, even
-alongside PR or ad-hoc execution targets; omit it for zero or multiple verified
-source issues. Evidence, blocker, dependency, next-action, comment, and example
-refs are not targets and cannot supply title identifiers.
+After fail-closed target extraction and source verification, apply canonical
+[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
+unchanged; this continuation entrypoint does not redefine title eligibility.
 
 If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact PR/issue list. Do not broaden to all open PRs, labels, milestones, or inferred related work unless I explicitly ask for discovery.
 
