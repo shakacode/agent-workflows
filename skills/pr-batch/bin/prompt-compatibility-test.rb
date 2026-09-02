@@ -264,20 +264,21 @@ class PromptCompatibilityTest < Minitest::Test
   end
 
   def test_whitespace_only_body_fails_closed
-    prompt = <<~PROMPT
+    header = <<~PROMPT
       Prompt host: codex
       Prompt mode: batch
       Preferred route: default
       Route requirement: advisory
-
     PROMPT
 
-    result, stderr, status = run_helper(prompt, active_host: "codex")
+    ["\n", "\u00A0\u2003\n"].each do |body|
+      result, stderr, status = run_helper(header + body, active_host: "codex")
 
-    refute status.success?
-    assert_empty stderr
-    assert_equal "empty-prompt-body", result.fetch("error")
-    refute result.key?("decision")
+      refute status.success?
+      assert_empty stderr
+      assert_equal "empty-prompt-body", result.fetch("error")
+      refute result.key?("decision")
+    end
   end
 
   def test_goal_mode_is_rejected_for_non_codex_prompt_hosts
@@ -347,7 +348,8 @@ class PromptCompatibilityTest < Minitest::Test
       ["#{fixture('claude-to-codex.txt')}Run /pr-review-toolkit:review-pr before closeout.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Use /loop to monitor CI.\n", "codex"],
       ["#{fixture('codex-to-claude.txt')}Call spawn_agent with sandbox_permissions: use_default.\n", "claude"],
-      ["#{fixture('claude-to-codex.txt')}Set \"sandbox_permissions\": \"require_escalated\".\n", "codex"]
+      ["#{fixture('claude-to-codex.txt')}Set \"sandbox_permissions\": \"require_escalated\".\n", "codex"],
+      ["#{fixture('codex-to-claude.txt')}Set `sandbox_permissions`: `require_escalated`.\n", "claude"]
     ]
 
     prompts.each do |prompt, active_host|

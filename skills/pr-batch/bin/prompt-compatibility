@@ -36,7 +36,7 @@ CLAUDE_RUNTIME_MECHANICS = [
 ].freeze
 CODEX_RUNTIME_MECHANICS = [
   /\b(?:spawn_agent|send_message|followup_task|wait_agent)\b/,
-  /\bsandbox_permissions["']?[ \t]*:[ \t]*["']?(?:require_escalated|use_default)["']?\b/
+  /\bsandbox_permissions["'`]?[ \t]*:[ \t]*["'`]?(?:require_escalated|use_default)\b["'`]?/
 ].freeze
 GOAL_WRAPPER = %r{\A/goal\r?\n}
 LEGACY_CODEX = %r{\A/goal\r?\nUse \$pr-batch(?:\s|\z)}
@@ -288,7 +288,7 @@ if complete_headers
   valid_wrapper = prompt_host == "codex" && prompt_mode == "goal" ? has_goal_wrapper : !has_goal_wrapper
   emit_error("host-mode-wrapper-mismatch", active_host) unless valid_wrapper
 
-  emit_error("empty-prompt-body", active_host) if body.strip.empty?
+  emit_error("empty-prompt-body", active_host) if body.match?(/\A[[:space:]]*\z/)
 
   if prompt_host == "portable" &&
      (skill_mechanics(body, "/").any? || skill_mechanics(body, "$").any? ||
