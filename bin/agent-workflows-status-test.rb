@@ -420,6 +420,12 @@ class AgentWorkflowsStatusTest < Minitest::Test
       File.symlink(real_home, linked_home)
       Dir.mktmpdir("agent-workflows-status-source") do |source|
         File.write(File.join(source, "VERSION"), "9.9.9\n")
+        doctor_root = File.join(real_home, "bin/agent_doctor")
+        FileUtils.mkdir_p(doctor_root)
+        File.write(
+          File.join(doctor_root, ".agent-workflows-managed"),
+          "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+        )
         metadata = {
           "version" => "9.9.9",
           "source" => source,
