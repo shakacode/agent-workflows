@@ -919,7 +919,7 @@ class PushDownstreamScaffoldTest < Minitest::Test
     policy: {
       "base_branch" => "main",
       "follow_up_prefix" => "Follow-up:",
-      "review_gate" => "AI reviewers are advisory.",
+      "review_gate" => "n/a",
       "approval_exempt" => "docs and workflow text.",
       "coordination_backend" => "public claim-comment fallback.",
       "changelog" => "CHANGELOG.md; user-visible changes only.",
@@ -1112,7 +1112,7 @@ class PushDownstreamScaffoldTest < Minitest::Test
       policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")), aliases: false)
       assert_equal "develop", policy.fetch("base_branch")
       assert_equal "Custom:", policy.fetch("follow_up_prefix")
-      assert_equal "AI reviewers are advisory.", policy.fetch("review_gate")
+      assert_equal "n/a", policy.fetch("review_gate")
       assert_equal "# Rich Claude rules\n\nKeep me.\n", File.read(File.join(root, "CLAUDE.md"))
       assert_equal ["existing CLAUDE.md preserved; consolidate it to import @AGENTS.md"], result.follow_ups
     end
@@ -1273,7 +1273,7 @@ class PushDownstreamScaffoldTest < Minitest::Test
     end
   end
 
-  def test_apply_scaffold_migrates_legacy_agents_policy_values
+  def test_apply_scaffold_migrates_legacy_agents_policy_values_but_not_unexecutable_review_gate_prose
     Dir.mktmpdir("push-downstream-scaffold") do |root|
       File.write(File.join(root, "AGENTS.md"), <<~MARKDOWN)
         # AGENTS.md
@@ -1300,13 +1300,13 @@ class PushDownstreamScaffoldTest < Minitest::Test
       assert_equal "redact TOKEN and SECRET.", policy.fetch("secret_redaction_patterns")
       assert_equal "Follow-up:", policy.fetch("follow_up_prefix")
       assert_equal "CHANGELOG.md; keep a changelog.", policy.fetch("changelog")
-      assert_equal "codex review.", policy.fetch("review_gate")
+      assert_equal "n/a", policy.fetch("review_gate")
       assert_equal "docs.", policy.fetch("approval_exempt")
       assert_equal "private backend.", policy.fetch("coordination_backend")
     end
   end
 
-  def test_apply_scaffold_migrates_multiline_legacy_policy_values
+  def test_apply_scaffold_migrates_multiline_legacy_policy_values_but_not_unexecutable_review_gate_prose
     Dir.mktmpdir("push-downstream-scaffold") do |root|
       File.write(File.join(root, "AGENTS.md"), <<~MARKDOWN)
         # AGENTS.md
@@ -1325,7 +1325,7 @@ class PushDownstreamScaffoldTest < Minitest::Test
       PushDownstream.reconcile_scaffold(root, CONTRACT)
 
       policy = YAML.safe_load(File.read(File.join(root, ".agents/agent-workflow.yml")), aliases: false)
-      assert_equal "primary review. secondary review for risky changes.", policy.fetch("review_gate")
+      assert_equal "n/a", policy.fetch("review_gate")
       assert_equal "- docs - workflow text", policy.fetch("approval_exempt")
     end
   end

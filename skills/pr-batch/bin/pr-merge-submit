@@ -3,7 +3,8 @@
 
 # Submit one merge-assured PR against the reviewed GitHub host, base, base SHA,
 # and head when GitHub may require a merge queue. Every run requires a fresh,
-# integrity-bound eligible merge-assurance receipt before mutation.
+# integrity-bound eligible merge-assurance receipt and a freshly replayed
+# configured-review receipt before mutation.
 
 require "json"
 require "digest"
@@ -19,6 +20,7 @@ require "uri"
 require "yaml"
 
 load File.expand_path("merge-assurance", __dir__) unless defined?(MergeAssurance)
+load File.expand_path("configured-review-gate", __dir__) unless defined?(ConfiguredReviewGate)
 require_relative "../lib/current_integration_evidence"
 
 module PrMergeSubmit
@@ -160,8 +162,9 @@ module PrMergeSubmit
       }
     GRAPHQL
 
-    def initialize(system_tools: {})
+    def initialize(system_tools: {}, configured_review_replayer: nil)
       @system_tools = system_tools
+      @configured_review_replayer = configured_review_replayer || method(:default_configured_review_replay)
     end
 
     def run(argv)
@@ -205,12 +208,13 @@ module PrMergeSubmit
       options = {
         method: nil, subject: nil, body: nil, repo: nil, host: nil,
         expected_head: nil, expected_base: nil, merge_assurance_receipt: nil,
+        configured_review_receipt: nil,
         help: false, pr: nil
       }
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
-                      "--merge-assurance-receipt FILE [options]"
+                      "--merge-assurance-receipt FILE --configured-review-receipt FILE [options]"
         opts.on("--repo REPO", "GitHub repository in OWNER/REPO form") { |value| options[:repo] = value }
         opts.on("--host HOST", "Exact GitHub hostname, with an optional port") { |value| options[:host] = value }
         opts.on("--expected-head SHA", "Exact PR head SHA already cleared by readiness gates") do |value|
@@ -221,6 +225,9 @@ module PrMergeSubmit
         end
         opts.on("--merge-assurance-receipt FILE", "Fresh eligible merge-assurance receipt") do |value|
           options[:merge_assurance_receipt] = value
+        end
+        opts.on("--configured-review-receipt FILE", "Fresh READY configured-review receipt") do |value|
+          options[:configured_review_receipt] = value
         end
         opts.on("--method METHOD", METHODS, "Direct method; merge queue configuration controls queued merges") do |value|
           options[:method] = value
@@ -259,10 +266,11 @@ module PrMergeSubmit
       OptionParser.new do |opts|
         opts.banner = "Usage: pr-merge-submit <pr-number> --repo OWNER/REPO --host HOST " \
                       "--expected-head SHA --expected-base BRANCH --method METHOD " \
-                      "--merge-assurance-receipt FILE [options]"
+                      "--merge-assurance-receipt FILE --configured-review-receipt FILE [options]"
         opts.separator "        --subject SUBJECT  Direct merge commit subject"
         opts.separator "        --body BODY        Direct merge commit body"
         opts.separator "        --merge-assurance-receipt FILE  Fresh eligible v2 receipt"
+        opts.separator "        --configured-review-receipt FILE  Fresh exact-head review receipt"
       end
     end
 
@@ -280,6 +288,7 @@ module PrMergeSubmit
       end
       raise Error, "--method is required" unless METHODS.include?(options[:method])
       raise Error, "--merge-assurance-receipt is required" if options[:merge_assurance_receipt].to_s.empty?
+      raise Error, "--configured-review-receipt is required" if options[:configured_review_receipt].to_s.empty?
 
       reject_leading_at!(options, :subject)
       reject_leading_at!(options, :body)
@@ -322,8 +331,14 @@ module PrMergeSubmit
         raise Error, "merge-assurance receipt evidence digest mismatch"
       end
 
-      evidence = receipt["evidence"]
-      now = Time.now.utc
+      validate_merge_assurance_receipt_current!(receipt, options)
+      receipt
+    rescue Errno::ENOENT, Errno::EACCES => e
+      raise Error, "merge-assurance receipt is unavailable: #{e.message}"
+    end
+
+    def validate_merge_assurance_receipt_current!(receipt, options, now = Time.now.utc)
+      evidence = receipt.fetch("evidence")
       validate_receipt_evidence!(receipt, evidence)
       validate_receipt_freshness!(receipt, now)
       reassessed = MergeAssurance.assess(
@@ -352,8 +367,6 @@ module PrMergeSubmit
 
       validate_receipt_option_bindings!(receipt, options)
       receipt
-    rescue Errno::ENOENT, Errno::EACCES => e
-      raise Error, "merge-assurance receipt is unavailable: #{e.message}"
     end
 
     def validate_receipt_evidence!(receipt, evidence)
@@ -473,29 +486,42 @@ module PrMergeSubmit
       ) || {}
       raise Error, "trusted-base policy is not a mapping" unless config.is_a?(Hash)
 
+      review_gate = trusted_review_gate_classification(config)
       seam = config["merge_submission"]
-      return { "mode" => "direct", "source" => "portable_default" } if seam.nil?
+      if seam.nil?
+        return {
+          "mode" => "direct", "source" => "portable_default", "review_gate" => review_gate
+        }
+      end
 
       validate_merge_submission_mapping!(seam)
       if %w[direct merge_queue_only].include?(seam["mode"])
-        return { "mode" => seam["mode"], "source" => "trusted_base" }
+        return {
+          "mode" => seam["mode"], "source" => "trusted_base", "review_gate" => review_gate
+        }
       end
 
       guarded_direct = seam.fetch("guarded_direct")
-      guard_identity, trusted_guard_bytes = load_trusted_guard_identity!(
-        base_sha, guarded_direct.fetch("executable")
-      )
-      {
+      result = {
         "mode" => seam["mode"],
         "source" => "trusted_base",
+        "review_gate" => review_gate,
         "guarded_direct" => {
           "executable" => guarded_direct.fetch("executable"),
           "method" => guarded_direct.fetch("method"),
-          "non_atomic_base" => guarded_direct.fetch("non_atomic_base").dup,
-          "identity" => guard_identity,
-          "trusted_bytes" => trusted_guard_bytes
+          "non_atomic_base" => guarded_direct.fetch("non_atomic_base").dup
         }
       }
+      if review_gate == "not_applicable"
+        guard_identity, trusted_guard_bytes = load_trusted_guard_identity!(
+          base_sha, guarded_direct.fetch("executable")
+        )
+        result.fetch("guarded_direct").merge!(
+          "identity" => guard_identity,
+          "trusted_bytes" => trusted_guard_bytes
+        )
+      end
+      result
     rescue Psych::Exception => e
       raise Error, "trusted-base merge-submission policy is invalid YAML: #{e.message.lines.first.to_s.strip}"
     end
@@ -538,6 +564,13 @@ module PrMergeSubmit
       return if valid_non_atomic_rationale?(rationale)
 
       raise Error, "merge_submission.guarded_direct.non_atomic_base.rationale must be nonempty, resolved single-line prose"
+    end
+
+    def trusted_review_gate_classification(config)
+      return "not_applicable" if config["review_gate"] == "n/a"
+      return "structured" if config["review_gate"].is_a?(Hash) && config.dig("review_gate", "version") == 1
+
+      "invalid"
     end
 
     def valid_guard_executable?(value)
@@ -829,7 +862,7 @@ module PrMergeSubmit
         if mode == "direct"
           raise Error, direct_queue_configuration_error
         end
-        return existing_queue_result(pull_request, options) if exact_queue?(pull_request, options)
+        return verified_existing_queue_result(pull_request, options) if exact_queue?(pull_request, options)
 
         raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof"
       end
@@ -840,7 +873,7 @@ module PrMergeSubmit
       if pull_request["isMergeQueueEnabled"] == true
         raise Error, direct_queue_configuration_error if mode == "direct"
 
-        return enqueue_result(pull_request, options)
+        return enqueue_result(options)
       end
       unless pull_request["isMergeQueueEnabled"] == false
         raise Error, "PR merge-queue state is missing or UNKNOWN"
@@ -899,6 +932,16 @@ module PrMergeSubmit
       unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil? &&
              refreshed["isMergeQueueEnabled"] == false
         raise Error, "PR merge-queue state became missing, inconsistent, or UNKNOWN before direct submission"
+      end
+
+      replay_configured_review_gate!(options)
+      refreshed = revalidate_mutation_assurance!(options)
+      if refreshed["isInMergeQueue"] == true || refreshed["isMergeQueueEnabled"] == true
+        raise Error, direct_queue_configuration_error
+      end
+      unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil? &&
+             refreshed["isMergeQueueEnabled"] == false
+        raise Error, "PR merge-queue state became missing, inconsistent, or UNKNOWN after configured-review replay"
       end
 
       stdout, stderr, status = run_gh(
@@ -986,7 +1029,7 @@ module PrMergeSubmit
       }.reject { |_key, value| value.nil? || value == "" }
     end
 
-    def guarded_direct_result(options)
+    def guarded_direct_result(options, refreshed: nil)
       policy = @merge_submission.fetch("guarded_direct")
       unless options[:method] == policy["method"]
         raise Error, "--method #{options[:method]} does not match trusted-base guarded-direct method #{policy['method']}"
@@ -994,22 +1037,23 @@ module PrMergeSubmit
 
       # Narrow the acknowledged non-atomic-base window immediately before the
       # repository guard. A queue enabled in the meantime remains canonical.
-      refreshed = fetch_pr(options)
+      refreshed ||= fetch_pr(options)
       validate_receipt_live_bindings!(refreshed, options)
       validate_pr!(refreshed, options)
       if refreshed["isInMergeQueue"] == true
-        return existing_queue_result(refreshed, options) if exact_queue?(refreshed, options)
+        return verified_existing_queue_result(refreshed, options) if exact_queue?(refreshed, options)
 
         raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof before guarded-direct submission"
       end
       unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil?
         raise UnknownOutcome, "PR merge-queue membership became inconsistent or UNKNOWN before guarded-direct submission"
       end
-      return enqueue_result(refreshed, options) if refreshed["isMergeQueueEnabled"] == true
+      return enqueue_result(options, live_rechecked: true) if refreshed["isMergeQueueEnabled"] == true
       unless refreshed["isMergeQueueEnabled"] == false
         raise UnknownOutcome, "PR merge-queue state became missing or UNKNOWN before guarded-direct submission"
       end
 
+      validate_guarded_direct_review_gate!
       validate_live_guard!(policy.fetch("executable"), policy.fetch("trusted_bytes"))
       guard_stdout, guard_stderr, guard_status = run_guard(policy, options)
       diagnostics = failure_output(guard_stdout, guard_stderr)
@@ -1051,6 +1095,20 @@ module PrMergeSubmit
       }
     end
 
+    def validate_guarded_direct_review_gate!
+      case @merge_submission["review_gate"]
+      when "not_applicable"
+        nil
+      when "structured"
+        raise Error, "structured review_gate cannot be enforced adjacent to a consumer-owned " \
+                     "guarded-direct mutation; use direct submission or implement an explicit " \
+                     "mutation-adjacent consumer protocol"
+      else
+        raise Error, "guarded-direct submission requires trusted-base review_gate: n/a; missing or " \
+                     "legacy review policy is not executable"
+      end
+    end
+
     def run_guard(policy, options)
       args = [
         "--repo", options[:repo],
@@ -1081,6 +1139,16 @@ module PrMergeSubmit
         )
         policy.fetch("identity")["interpreter"] = interpreter_identity if interpreter_identity
         begin
+          replay_configured_review_gate!(options)
+          # The direct and enqueue routes revalidate after replay; this route
+          # launches a mutation-capable consumer guard, so it must too. Replay
+          # itself makes live requests and can outlast the receipt's freshness.
+          post_replay = revalidate_mutation_assurance!(options)
+          unless post_replay["isInMergeQueue"] == false && post_replay["mergeQueueEntry"].nil? &&
+                 post_replay["isMergeQueueEnabled"] == false
+            raise UnknownOutcome, "PR merge-queue state became missing, inconsistent, or UNKNOWN " \
+                                  "after configured-review replay"
+          end
           guard_result = run_process(
             guarded_direct_environment(options),
             *launch_command, *args,
@@ -1315,12 +1383,70 @@ module PrMergeSubmit
       queue_result(pull_request, entry, options, reconciled:)
     end
 
-    def enqueue_result(pull_request, options)
+    def verified_existing_queue_result(pull_request, options)
+      validate_merge_queue_review_gate!
+      replay_configured_review_gate!(options)
+      existing_queue_result(pull_request, options)
+    end
+
+    def enqueue_result(options, live_rechecked: false)
+      unless live_rechecked || @merge_submission.fetch("mode") != "merge_queue_or_guarded_direct"
+        refreshed = fetch_pr(options)
+        validate_receipt_live_bindings!(refreshed, options)
+        validate_pr!(refreshed, options)
+        if refreshed["isInMergeQueue"] == true
+          return verified_existing_queue_result(refreshed, options) if exact_queue?(refreshed, options)
+
+          raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof before enqueue"
+        end
+        unless refreshed["isInMergeQueue"] == false && refreshed["mergeQueueEntry"].nil?
+          raise UnknownOutcome, "PR merge-queue membership became inconsistent or UNKNOWN before enqueue"
+        end
+
+        if refreshed["isMergeQueueEnabled"] == false
+          if @merge_submission.fetch("mode") == "merge_queue_or_guarded_direct"
+            return guarded_direct_result(options, refreshed: refreshed)
+          end
+
+          raise Error, "queue-disabled submission is unsupported by the trusted-base merge_submission " \
+                       "policy; configure mode: direct, configure an explicit repository-owned guarded-direct " \
+                       "exception, or enable the repository merge queue"
+        end
+        unless refreshed["isMergeQueueEnabled"] == true
+          raise UnknownOutcome, "PR merge-queue state became missing or UNKNOWN before enqueue"
+        end
+      end
+
+      validate_merge_queue_review_gate!
+      replay_configured_review_gate!(options)
+      post_replay = revalidate_mutation_assurance!(options)
+      if post_replay["isInMergeQueue"] == true
+        return existing_queue_result(post_replay, options) if exact_queue?(post_replay, options)
+
+        raise UnknownOutcome, "PR reports merge-queue membership but lacks strict proof after configured-review replay"
+      end
+      unless post_replay["isInMergeQueue"] == false && post_replay["mergeQueueEntry"].nil?
+        raise UnknownOutcome, "PR merge-queue membership became inconsistent or UNKNOWN after configured-review replay"
+      end
+
+      if post_replay["isMergeQueueEnabled"] == false
+        if @merge_submission.fetch("mode") == "merge_queue_or_guarded_direct"
+          return guarded_direct_result(options, refreshed: post_replay)
+        end
+
+        raise Error, "queue-disabled submission is unsupported by the trusted-base merge_submission " \
+                     "policy; configure mode: direct, configure an explicit repository-owned guarded-direct " \
+                     "exception, or enable the repository merge queue"
+      end
+      unless post_replay["isMergeQueueEnabled"] == true
+        raise UnknownOutcome, "PR merge-queue state became missing or UNKNOWN after configured-review replay"
+      end
+
       stdout, stderr, status = run_gh(
         "api", "graphql",
         "-H", GRAPHQL_FEATURE_HEADER,
         "-f", "query=#{ENQUEUE_MUTATION}",
-        "-f", "pullRequestId=#{pull_request.fetch('id')}",
+        "-f", "pullRequestId=#{post_replay.fetch('id')}",
         "-f", "expectedHeadOid=#{options[:expected_head]}",
         host: options[:host],
         mutation: true
@@ -1379,6 +1505,19 @@ module PrMergeSubmit
       end
 
       raise UnknownOutcome, "merge-queue submission returned an entry but live membership could not be confirmed"
+    end
+
+    def validate_merge_queue_review_gate!
+      case @merge_submission["review_gate"]
+      when "not_applicable"
+        nil
+      when "structured"
+        raise Error, "structured review_gate cannot be durably enforced by Merge Queue; " \
+                     "use direct submission or configure review_gate: n/a"
+      else
+        raise Error, "Merge Queue requires trusted-base review_gate: n/a; missing or legacy review " \
+                     "policy is not executable"
+      end
     end
 
     def queue_result(pull_request, entry, options, reconciled: false)
@@ -1477,6 +1616,74 @@ module PrMergeSubmit
         pull_request["baseRefName"] == options[:expected_base] &&
         pull_request["headRefOid"].to_s.casecmp?(options[:expected_head]) &&
         valid_merge_commit_oid?(pull_request.dig("mergeCommit", "oid"))
+    end
+
+    def replay_configured_review_gate!(options)
+      current_integration = @merge_assurance_receipt.dig("bindings", "current_integration")
+      result = @configured_review_replayer.call(
+        options:,
+        receipt_path: File.expand_path(options.fetch(:configured_review_receipt)),
+        repo_root: @repo_root,
+        base_sha: @merge_assurance_receipt.dig("bindings", "base", "sha"),
+        current_integration:
+      )
+      unless result.is_a?(Hash) && result["verdict"] == "READY" && result["mutation_eligible"] == true
+        blockers = Array(result&.[]("blockers")).filter_map { |item| item["code"] if item.is_a?(Hash) }
+        raise Error, "configured review gate is not READY#{blockers.empty? ? '' : ": #{blockers.join(', ')}"}"
+      end
+
+      @configured_review_replay = result
+    rescue ConfiguredReviewGate::Error, Errno::ENOENT, Errno::EACCES, JSON::ParserError => e
+      raise Error, "configured review receipt replay failed: #{e.message.lines.first.to_s.strip}"
+    end
+
+    def revalidate_mutation_assurance!(options)
+      validate_merge_assurance_receipt_current!(@merge_assurance_receipt, options)
+      refreshed = fetch_pr(options)
+      validate_receipt_live_bindings!(refreshed, options)
+      validate_pr!(refreshed, options)
+      refreshed
+    end
+
+    def default_configured_review_replay(
+      options:, receipt_path:, repo_root:, base_sha:, current_integration:
+    )
+      receipt = PrMergeSubmit.parse_json!(
+        File.read(receipt_path, encoding: "UTF-8"), "configured-review receipt"
+      )
+      policy, policy_source = ConfiguredReviewGate::TrustedPolicy.load(repo_root:, base_sha:)
+      reviewed_base_sha = receipt.dig("bindings", "base_sha")
+      client = ConfiguredReviewGate::GitHubClient.new(
+        host: options.fetch(:host), repo: options.fetch(:repo),
+        pull_request_number: options.fetch(:pr).to_i, policy:, reviewed_base_sha:
+      )
+      settled_result = ConfiguredReviewGate::LiveEvaluator.new(
+        client:, policy:, policy_source:,
+        expected_base_sha: base_sha,
+        expected_head_sha: options.fetch(:expected_head),
+        wait_seconds: configured_review_replay_wait_seconds(receipt),
+        poll_seconds: 10
+      ).run
+      return settled_result unless settled_result["verdict"] == "READY"
+
+      ConfiguredReviewGate.replay(
+        receipt:, policy:, policy_source:,
+        snapshot: settled_result.fetch("receipt").fetch("evidence"),
+        settled: true, trusted_live: true, current_integration:
+      )
+    end
+
+    def configured_review_replay_wait_seconds(configured_review_receipt, now = Time.now.utc)
+      configured_review_issued_at = Time.iso8601(configured_review_receipt.fetch("issued_at").to_s)
+      merge_assurance_issued_at = Time.iso8601(@merge_assurance_receipt.fetch("issued_at").to_s)
+      remaining = [
+        ConfiguredReviewGate::MAX_RECEIPT_AGE_SECONDS - (now - configured_review_issued_at),
+        MergeAssurance::MAX_EVIDENCE_AGE_SECONDS - (now - merge_assurance_issued_at),
+        120
+      ].min
+      [remaining.floor, 0].max
+    rescue ArgumentError, KeyError, TypeError
+      raise Error, "configured review replay freshness budget is unavailable"
     end
 
     def valid_merge_commit_oid?(oid)

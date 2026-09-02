@@ -15,10 +15,42 @@ PRIVATE_COORDINATION_BACKEND = "agent-coord private backend"
 load SCRIPT
 
 module AgentWorkflowSeamDoctorTestHelpers
+  REVIEW_GATE_POLICY = {
+    "version" => 1,
+    "reviewers" => [
+      {
+        "id" => "claude",
+        "check_name" => "claude-review",
+        "producer" => {
+          "app_slug" => "github-actions",
+          "workflow_path" => ".github/workflows/claude-code-review.yml",
+          "event" => "pull_request"
+        },
+        "artifact" => {
+          "actors" => %w[claude claude[bot]],
+          "kinds" => %w[pull_request_review review_thread],
+          "completion" => {
+            "mode" => "producer_check"
+          }
+        }
+      }
+    ],
+    "require_current_head" => true,
+    "artifact_settlement" => {
+      "required" => true,
+      "quiet_period_seconds" => 30
+    },
+    "thread_disposition" => {
+      "required" => true,
+      "marker" => "configured-review-disposition:"
+    },
+    "failure_policy" => "block",
+    "fallback" => { "mode" => "disabled" }
+  }.freeze
   POLICY = {
     "base_branch" => "main",
     "follow_up_prefix" => "Follow-up:",
-    "review_gate" => "AI reviewers are advisory; merge gate is green checks plus resolved threads.",
+    "review_gate" => REVIEW_GATE_POLICY,
     "approval_exempt" => "docs and workflow text when portable.",
     "coordination_backend" => "public claim-comment fallback.",
     "changelog" => "CHANGELOG.md; user-visible changes only.",
@@ -163,6 +195,10 @@ module AgentWorkflowSeamDoctorTestHelpers
       "executable" => ".agents/bin/selected-hosted-ci-receipts",
       "credential_env" => ["HOSTED_CI_TOKEN"]
     }
+  end
+
+  def structured_review_gate_policy
+    Marshal.load(Marshal.dump(REVIEW_GATE_POLICY))
   end
 
   def coordination_backend_contract(*allowed_identifiers)
@@ -378,6 +414,283 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       refute status.success?
       assert_includes out, "missing policy key: review_gate"
+    end
+  end
+
+  def test_review_gate_rejects_an_unknown_schema_version_and_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      values = POLICY.merge(
+        "review_gate" => {
+          "version" => 999,
+          "made_up" => true
+        }
+      )
+      write_policy(root, values)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid review_gate policy: must be explicit n/a or a closed version 1 mapping"
+      assert_includes out, 'invalid review_gate policy: contains unknown key "made_up"'
+    end
+  end
+
+  def test_review_gate_rejects_an_incomplete_version_one_mapping
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("review_gate" => { "version" => 1 }))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      %w[
+        reviewers require_current_head artifact_settlement thread_disposition
+        failure_policy fallback
+      ].each do |key|
+        assert_includes out, "invalid review_gate policy: is missing key #{key.inspect}"
+      end
+    end
+  end
+
+  def test_review_gate_rejects_weakened_top_level_gate_values
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "review_gate" => {
+            "version" => 1,
+            "reviewers" => [],
+            "require_current_head" => false,
+            "artifact_settlement" => "optional",
+            "thread_disposition" => "optional",
+            "failure_policy" => "waive",
+            "fallback" => { "mode" => "silent" }
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid review_gate policy: reviewers must be a nonempty array"
+      assert_includes out, "invalid review_gate policy: require_current_head must be true"
+      assert_includes out, "invalid review_gate policy: artifact_settlement must be a closed mapping"
+      assert_includes out, "invalid review_gate policy: thread_disposition must be a closed mapping"
+      assert_includes out, 'invalid review_gate policy: failure_policy must be "block"'
+      assert_includes out, "invalid review_gate policy: fallback mode is invalid"
+    end
+  end
+
+  def test_review_gate_rejects_malformed_nested_contracts
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      gate = structured_review_gate_policy
+      gate["reviewers"] = [
+        {
+          "id" => "Bad ID",
+          "artifact" => { "actors" => [], "kinds" => ["invented"] },
+          "extra" => true
+        }
+      ]
+      gate["artifact_settlement"] = {
+        "required" => false,
+        "quiet_period_seconds" => 0,
+        "extra" => true
+      }
+      gate["thread_disposition"] = {
+        "required" => false,
+        "marker" => "",
+        "extra" => true
+      }
+      gate["fallback"] = {
+        "mode" => "named_attested_check",
+        "triggers" => ["success"],
+        "reviewer" => { "id" => "fallback" }
+      }
+      write_policy(root, POLICY.merge("review_gate" => gate))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, 'invalid review_gate policy: reviewers[0] contains unknown key "extra"'
+      assert_includes out, 'invalid review_gate policy: reviewers[0] is missing key "check_name"'
+      assert_includes out, "invalid review_gate policy: reviewers[0].id is invalid"
+      assert_includes out, "invalid review_gate policy: reviewers[0].artifact.actors must be a nonempty array of logins"
+      assert_includes out, "invalid review_gate policy: reviewers[0].artifact.kinds contains an invalid kind"
+      assert_includes out, "invalid review_gate policy: artifact_settlement keys must be exactly: quiet_period_seconds, required"
+      assert_includes out, "invalid review_gate policy: artifact_settlement.required must be true"
+      assert_includes out, "invalid review_gate policy: artifact_settlement.quiet_period_seconds must be between 1 and 119"
+      assert_includes out, "invalid review_gate policy: thread_disposition keys must be exactly: marker, required"
+      assert_includes out, "invalid review_gate policy: thread_disposition.required must be true"
+      assert_includes out, "invalid review_gate policy: thread_disposition.marker must be a nonempty single-line string"
+      assert_includes out, "invalid review_gate policy: fallback.triggers contains an invalid trigger"
+      assert_includes out, 'invalid review_gate policy: fallback.reviewer is missing key "check_name"'
+    end
+  end
+
+  def test_review_gate_rejects_non_string_nested_mapping_keys_without_crashing
+    fixtures = {
+      "reviewers[0].producer" => ->(gate) { gate.dig("reviewers", 0, "producer")[1] = "bad" },
+      "reviewers[0].artifact" => ->(gate) { gate.dig("reviewers", 0, "artifact")[1] = "bad" },
+      "reviewers[0].artifact.completion" => lambda do |gate|
+        gate.dig("reviewers", 0, "artifact", "completion")[1] = "bad"
+      end,
+      "artifact_settlement" => ->(gate) { gate["artifact_settlement"][1] = "bad" },
+      "thread_disposition" => ->(gate) { gate["thread_disposition"][1] = "bad" },
+      "fallback" => ->(gate) { gate["fallback"][1] = "bad" }
+    }
+
+    fixtures.each do |path, mutate|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        gate = structured_review_gate_policy
+        mutate.call(gate)
+        write_policy(root, POLICY.merge("review_gate" => gate))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, path
+        assert_includes out, "invalid review_gate policy: #{path} keys must be strings", path
+        refute_includes out, "comparison of", path
+      end
+    end
+  end
+
+  def test_review_gate_rejects_duplicate_reviewer_identity_or_check_name
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      gate = structured_review_gate_policy
+      duplicate = Marshal.load(Marshal.dump(gate.fetch("reviewers").first))
+      duplicate["artifact"]["actors"] = ["another-reviewer"]
+      gate["reviewers"] << duplicate
+      write_policy(root, POLICY.merge("review_gate" => gate))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, 'invalid review_gate policy: duplicate reviewer id "claude"'
+      assert_includes out, 'invalid review_gate policy: duplicate reviewer check_name "claude-review"'
+    end
+  end
+
+  def test_review_gate_rejects_settlement_period_that_cannot_fit_the_mutation_replay_budget
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      gate = structured_review_gate_policy
+      gate.fetch("artifact_settlement")["quiet_period_seconds"] = 120
+      write_policy(root, POLICY.merge("review_gate" => gate))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      "invalid review_gate policy: artifact_settlement.quiet_period_seconds must be between 1 and 119"
+    end
+  end
+
+  def test_review_gate_rejects_fallback_identity_or_check_name_reused_from_a_primary
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      gate = structured_review_gate_policy
+      gate["fallback"] = {
+        "mode" => "named_attested_check",
+        "triggers" => ["rate_limited"],
+        "reviewer" => Marshal.load(Marshal.dump(gate.fetch("reviewers").first))
+      }
+      write_policy(root, POLICY.merge("review_gate" => gate))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, 'invalid review_gate policy: fallback.reviewer duplicates primary reviewer id "claude"'
+      assert_includes out,
+                      'invalid review_gate policy: fallback.reviewer duplicates primary reviewer check_name "claude-review"'
+    end
+  end
+
+  def test_review_gate_rejects_issue_comments_as_exact_head_artifacts
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      gate = structured_review_gate_policy
+      gate.dig("reviewers", 0, "artifact")["kinds"] = ["issue_comment"]
+      write_policy(root, POLICY.merge("review_gate" => gate))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid review_gate policy: reviewers[0].artifact.kinds contains an invalid kind"
+    end
+  end
+
+  def test_review_gate_rejects_duplicate_top_level_yaml_key
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      File.write(
+        File.join(root, ".agents/agent-workflow.yml"),
+        "#{POLICY.to_yaml}review_gate: n/a\n"
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, 'invalid review_gate policy: $ contains duplicate key "review_gate"'
+    end
+  end
+
+  def test_review_gate_rejects_duplicate_nested_yaml_key
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      yaml = POLICY.to_yaml.sub(
+        "    check_name: claude-review\n",
+        "    check_name: claude-review\n    check_name: shadow-review\n"
+      )
+      File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out,
+                      'invalid review_gate policy: $.review_gate.reviewers contains duplicate key "check_name"'
+    end
+  end
+
+  def test_review_gate_accepts_a_closed_version_one_contract_or_explicit_n_a
+    [structured_review_gate_policy, "n/a"].each do |review_gate|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("review_gate" => review_gate))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        assert status.success?, out
+      end
+    end
+  end
+
+  def test_review_gate_rejects_legacy_prose_because_it_has_no_executable_cohort
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(root, POLICY.merge("review_gate" => "AI reviewers are advisory."))
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, "invalid review_gate policy: must be explicit n/a or a closed version 1 mapping"
     end
   end
 
@@ -1150,8 +1463,8 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
         "coordination_backend" => PRIVATE_COORDINATION_BACKEND,
         "coordination_backend_contract" => coordination_backend_contract(PRIVATE_COORDINATION_BACKEND)
       ).to_yaml.sub(
-        "  version: 1\n",
-        "  version: 1\n  version: 2\n"
+        "coordination_backend_contract:\n  version: 1\n",
+        "coordination_backend_contract:\n  version: 1\n  version: 2\n"
       )
       File.write(File.join(root, ".agents/agent-workflow.yml"), yaml)
       write_skill(root, "No commands here.\n")
@@ -1251,6 +1564,8 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     assert_equal PRIVATE_COORDINATION_BACKEND, config.fetch("coordination_backend")
     assert_equal coordination_backend_contract(PRIVATE_COORDINATION_BACKEND),
                  config.fetch("coordination_backend_contract")
+    expected_review_gate = structured_review_gate_policy
+    assert_equal expected_review_gate, config.fetch("review_gate")
   end
 
   def test_incomplete_untrusted_contributor_intake_policy_fails
@@ -1401,15 +1716,43 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
 
       write_policy(
         root,
-        POLICY.merge("merge_submission" => { "mode" => "merge_queue_only" })
+        POLICY.merge(
+          "review_gate" => "n/a",
+          "merge_submission" => { "mode" => "merge_queue_only" }
+        )
       )
       queue_out, queue_status = run_doctor(root)
       assert queue_status.success?, queue_out
 
       write_script(root, "merge-pr-after-checks", "exec true\n")
-      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_policy(
+        root,
+        POLICY.merge("review_gate" => "n/a", "merge_submission" => guarded_direct_policy)
+      )
       guarded_out, guarded_status = run_doctor(root)
       assert guarded_status.success?, guarded_out
+    end
+  end
+
+  def test_structured_review_gate_rejects_submission_modes_without_an_enforceable_route
+    {
+      "merge_queue_only" => { "mode" => "merge_queue_only" },
+      "merge_queue_or_guarded_direct" => guarded_direct_policy
+    }.each do |mode, merge_submission|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_script(root, "merge-pr-after-checks", "exec true\n") if mode == "merge_queue_or_guarded_direct"
+        write_policy(root, POLICY.merge("merge_submission" => merge_submission))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, mode
+        assert_includes out,
+                        "structured review_gate is incompatible with " \
+                        "merge_submission.mode: #{mode}",
+                        mode
+      end
     end
   end
 
@@ -1515,7 +1858,10 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   def test_guarded_direct_merge_submission_requires_tracked_executable_git_mode
     with_repo do |root|
       write_valid_binstub_contract(root)
-      write_policy(root, POLICY.merge("merge_submission" => guarded_direct_policy))
+      write_policy(
+        root,
+        POLICY.merge("review_gate" => "n/a", "merge_submission" => guarded_direct_policy)
+      )
       write_skill(root, "No commands here.\n")
       guard = write_script(root, "merge-pr-after-checks", "exec true\n")
       relative_guard = ".agents/bin/merge-pr-after-checks"

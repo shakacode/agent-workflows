@@ -145,6 +145,28 @@ module AgentWorkflowSeamDoctor
   GUARDED_DIRECT_KEYS = %w[executable method non_atomic_base].freeze
   NON_ATOMIC_BASE_KEYS = %w[acknowledged rationale].freeze
   MERGE_METHODS = %w[merge rebase squash].freeze
+  REVIEW_GATE_POLICY_KEY = "review_gate"
+  REVIEW_GATE_KEYS = %w[
+    version reviewers require_current_head artifact_settlement thread_disposition
+    failure_policy fallback
+  ].freeze
+  REVIEW_GATE_FALLBACK_MODES = %w[disabled named_attested_check].freeze
+  REVIEW_GATE_REVIEWER_KEYS = %w[id check_name producer artifact].freeze
+  REVIEW_GATE_PRODUCER_KEYS = %w[app_slug workflow_path event].freeze
+  REVIEW_GATE_ARTIFACT_KEYS = %w[actors kinds completion].freeze
+  REVIEW_GATE_ARTIFACT_REQUIRED_KEYS = %w[actors kinds].freeze
+  REVIEW_GATE_COMPLETION_KEYS = %w[mode].freeze
+  REVIEW_GATE_ARTIFACT_KINDS = %w[pull_request_review review_thread].freeze
+  REVIEW_GATE_SETTLEMENT_KEYS = %w[required quiet_period_seconds].freeze
+  REVIEW_GATE_MAX_SETTLEMENT_QUIET_PERIOD_SECONDS = 119
+  REVIEW_GATE_THREAD_DISPOSITION_KEYS = %w[required marker].freeze
+  REVIEW_GATE_FALLBACK_KEYS = %w[mode triggers reviewer].freeze
+  REVIEW_GATE_FALLBACK_TRIGGERS = %w[
+    missing stale failed cancelled timed_out action_required unknown
+    rate_limited quota_exhausted capacity_unavailable
+  ].freeze
+  REVIEW_GATE_ID_PATTERN = /\A[a-z][a-z0-9_-]{0,63}\z/
+  REVIEW_GATE_ACTOR_PATTERN = /\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?\z/
   GUARDED_DIRECT_EXECUTABLE = %r{\A\.agents/bin/[A-Za-z0-9_.-]+\z}
   SELECTED_HOSTED_CI_POLICY_KEY = "selected_hosted_ci_receipts"
   SELECTED_HOSTED_CI_POLICY_KEYS = %w[credential_env executable].freeze
@@ -1775,10 +1797,16 @@ module AgentWorkflowSeamDoctor
     end
 
     issues.concat(coordination_backend_policy_issues(yaml))
+    review_gate_issues = review_gate_policy_issues(config, yaml)
+    issues.concat(review_gate_issues)
     issues.concat(writing_style_policy_issues(root, config, yaml))
     issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
-    issues.concat(merge_submission_policy_issues(root, config))
+    merge_submission_issues = merge_submission_policy_issues(root, config)
+    issues.concat(merge_submission_issues)
+    if review_gate_issues.empty? && merge_submission_issues.empty?
+      issues.concat(review_gate_merge_submission_policy_issues(config))
+    end
     issues.concat(selected_hosted_ci_receipts_policy_issues(root, config))
     issues.concat(hosted_qa_policy_issues(root, yaml))
     if config.key?("autonomous_merge")
@@ -1791,6 +1819,222 @@ module AgentWorkflowSeamDoctor
     issues
   rescue Psych::Exception
     ["invalid policy config: #{POLICY_CONFIG}"]
+  end
+
+  def review_gate_policy_issues(config, yaml)
+    review_gate = config[REVIEW_GATE_POLICY_KEY]
+    errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
+      error == '$ contains duplicate key "review_gate"' ||
+        error.start_with?("$.review_gate ") || error.start_with?("$.review_gate.")
+    end
+    return errors.map { |error| "invalid review_gate policy: #{error}" } if review_gate == "n/a"
+
+    unless review_gate.is_a?(Hash) && review_gate["version"] == 1
+      errors << "must be explicit n/a or a closed version 1 mapping"
+    end
+    if review_gate.is_a?(Hash)
+      review_gate.keys.reject { |key| REVIEW_GATE_KEYS.include?(key) }.each do |key|
+        errors << "contains unknown key #{key.inspect}"
+      end
+      REVIEW_GATE_KEYS.reject { |key| review_gate.key?(key) }.each do |key|
+        errors << "is missing key #{key.inspect}"
+      end
+      if review_gate.key?("reviewers") &&
+         (!review_gate["reviewers"].is_a?(Array) || review_gate["reviewers"].empty?)
+        errors << "reviewers must be a nonempty array"
+      elsif review_gate["reviewers"].is_a?(Array)
+        review_gate["reviewers"].each_with_index do |reviewer, index|
+          errors.concat(review_gate_reviewer_errors(reviewer, "reviewers[#{index}]"))
+        end
+        errors.concat(review_gate_duplicate_reviewer_errors(review_gate["reviewers"]))
+      end
+      if review_gate.key?("require_current_head") && review_gate["require_current_head"] != true
+        errors << "require_current_head must be true"
+      end
+      if review_gate.key?("artifact_settlement")
+        errors.concat(review_gate_settlement_errors(review_gate["artifact_settlement"]))
+      end
+      if review_gate.key?("thread_disposition")
+        errors.concat(review_gate_thread_disposition_errors(review_gate["thread_disposition"]))
+      end
+      if review_gate.key?("failure_policy") && review_gate["failure_policy"] != "block"
+        errors << 'failure_policy must be "block"'
+      end
+      if review_gate["fallback"].is_a?(Hash)
+        errors.concat(review_gate_fallback_errors(review_gate["fallback"]))
+        errors.concat(
+          review_gate_fallback_primary_conflict_errors(
+            review_gate["fallback"], review_gate["reviewers"]
+          )
+        )
+      elsif review_gate.key?("fallback")
+        errors << "fallback must be a closed mapping"
+      end
+    end
+    errors.map { |error| "invalid review_gate policy: #{error}" }
+  end
+
+  def review_gate_merge_submission_policy_issues(config)
+    review_gate = config[REVIEW_GATE_POLICY_KEY]
+    merge_submission = config[MERGE_SUBMISSION_POLICY_KEY]
+    return [] unless review_gate.is_a?(Hash) && merge_submission.is_a?(Hash)
+
+    mode = merge_submission["mode"]
+    return [] unless %w[merge_queue_only merge_queue_or_guarded_direct].include?(mode)
+
+    [
+      "structured review_gate is incompatible with merge_submission.mode: #{mode}; " \
+      "pr-merge-submit cannot enforce it on any configured submission route"
+    ]
+  end
+
+  def review_gate_reviewer_errors(reviewer, path)
+    return ["#{path} must be a closed mapping"] unless reviewer.is_a?(Hash)
+
+    errors = []
+    reviewer.keys.reject { |key| REVIEW_GATE_REVIEWER_KEYS.include?(key) }.each do |key|
+      errors << "#{path} contains unknown key #{key.inspect}"
+    end
+    REVIEW_GATE_REVIEWER_KEYS.reject { |key| reviewer.key?(key) }.each do |key|
+      errors << "#{path} is missing key #{key.inspect}"
+    end
+    unless reviewer["id"].is_a?(String) && reviewer["id"].match?(REVIEW_GATE_ID_PATTERN)
+      errors << "#{path}.id is invalid"
+    end
+    unless valid_review_gate_single_line?(reviewer["check_name"])
+      errors << "#{path}.check_name must be a nonempty single-line string"
+    end
+    errors.concat(review_gate_producer_errors(reviewer["producer"], "#{path}.producer")) if reviewer.key?("producer")
+    errors.concat(review_gate_artifact_errors(reviewer["artifact"], "#{path}.artifact")) if reviewer.key?("artifact")
+    errors
+  end
+
+  def review_gate_duplicate_reviewer_errors(reviewers)
+    errors = []
+    { "id" => "reviewer id", "check_name" => "reviewer check_name" }.each do |key, label|
+      counts = reviewers.filter_map { |reviewer| reviewer[key] if reviewer.is_a?(Hash) }.tally
+      counts.select { |_value, count| count > 1 }.each_key do |value|
+        errors << "duplicate #{label} #{value.inspect}"
+      end
+    end
+    errors
+  end
+
+  def review_gate_artifact_errors(artifact, path)
+    return ["#{path} must be a closed mapping"] unless artifact.is_a?(Hash)
+
+    errors = []
+    if artifact.keys.all? { |key| key.is_a?(String) }
+      unknown_keys = artifact.keys - REVIEW_GATE_ARTIFACT_KEYS
+      missing_keys = REVIEW_GATE_ARTIFACT_REQUIRED_KEYS - artifact.keys
+      errors << "#{path} contains unknown keys: #{unknown_keys.sort.join(', ')}" unless unknown_keys.empty?
+      errors << "#{path} is missing keys: #{missing_keys.sort.join(', ')}" unless missing_keys.empty?
+    else
+      errors << "#{path} keys must be strings"
+    end
+    actors = artifact["actors"]
+    unless actors.is_a?(Array) && !actors.empty? && actors.all? do |actor|
+             actor.is_a?(String) && actor.match?(REVIEW_GATE_ACTOR_PATTERN)
+           end
+      errors << "#{path}.actors must be a nonempty array of logins"
+    end
+    kinds = artifact["kinds"]
+    unless kinds.is_a?(Array) && !kinds.empty? &&
+           kinds.all? { |kind| REVIEW_GATE_ARTIFACT_KINDS.include?(kind) }
+      errors << "#{path}.kinds contains an invalid kind"
+    end
+    completion = artifact["completion"]
+    if completion.is_a?(Hash)
+      errors.concat(review_gate_mapping_key_errors(completion, REVIEW_GATE_COMPLETION_KEYS, "#{path}.completion"))
+      errors << "#{path}.completion.mode must be producer_check" unless completion["mode"] == "producer_check"
+    elsif artifact.key?("completion")
+      errors << "#{path}.completion must be a closed mapping"
+    end
+    errors
+  end
+
+  def review_gate_producer_errors(producer, path)
+    return ["#{path} must be a closed mapping"] unless producer.is_a?(Hash)
+
+    errors = review_gate_mapping_key_errors(producer, REVIEW_GATE_PRODUCER_KEYS, path)
+    errors << "#{path}.app_slug must be a nonempty single-line string" unless
+      valid_review_gate_single_line?(producer["app_slug"])
+    workflow_path = producer["workflow_path"]
+    unless workflow_path.is_a?(String) && workflow_path.match?(%r{\A\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml\z})
+      errors << "#{path}.workflow_path must name a workflow under .github/workflows"
+    end
+    errors << "#{path}.event must be a nonempty single-line string" unless
+      valid_review_gate_single_line?(producer["event"])
+    errors
+  end
+
+  def review_gate_settlement_errors(settlement)
+    return ["artifact_settlement must be a closed mapping"] unless settlement.is_a?(Hash)
+
+    errors = review_gate_mapping_key_errors(settlement, REVIEW_GATE_SETTLEMENT_KEYS, "artifact_settlement")
+    errors << "artifact_settlement.required must be true" unless settlement["required"] == true
+    seconds = settlement["quiet_period_seconds"]
+    unless seconds.is_a?(Integer) && seconds.between?(1, REVIEW_GATE_MAX_SETTLEMENT_QUIET_PERIOD_SECONDS)
+      errors << "artifact_settlement.quiet_period_seconds must be between 1 and " \
+                "#{REVIEW_GATE_MAX_SETTLEMENT_QUIET_PERIOD_SECONDS}"
+    end
+    errors
+  end
+
+  def review_gate_thread_disposition_errors(disposition)
+    return ["thread_disposition must be a closed mapping"] unless disposition.is_a?(Hash)
+
+    errors = review_gate_mapping_key_errors(disposition, REVIEW_GATE_THREAD_DISPOSITION_KEYS, "thread_disposition")
+    errors << "thread_disposition.required must be true" unless disposition["required"] == true
+    unless valid_review_gate_single_line?(disposition["marker"])
+      errors << "thread_disposition.marker must be a nonempty single-line string"
+    end
+    errors
+  end
+
+  def review_gate_fallback_errors(fallback)
+    mode = fallback["mode"]
+    return ["fallback mode is invalid"] unless REVIEW_GATE_FALLBACK_MODES.include?(mode)
+
+    expected_keys = mode == "disabled" ? ["mode"] : REVIEW_GATE_FALLBACK_KEYS
+    errors = review_gate_mapping_key_errors(fallback, expected_keys, "fallback")
+    return errors if mode == "disabled"
+
+    triggers = fallback["triggers"]
+    unless triggers.is_a?(Array) && !triggers.empty? &&
+           triggers.all? { |trigger| REVIEW_GATE_FALLBACK_TRIGGERS.include?(trigger) }
+      errors << "fallback.triggers contains an invalid trigger"
+    end
+    errors.concat(review_gate_reviewer_errors(fallback["reviewer"], "fallback.reviewer"))
+    errors
+  end
+
+  def review_gate_fallback_primary_conflict_errors(fallback, reviewers)
+    return [] unless fallback["mode"] == "named_attested_check" &&
+                     fallback["reviewer"].is_a?(Hash) && reviewers.is_a?(Array)
+
+    fallback_reviewer = fallback.fetch("reviewer")
+    primary_reviewers = reviewers.select { |reviewer| reviewer.is_a?(Hash) }
+    errors = []
+    { "id" => "id", "check_name" => "check_name" }.each do |key, label|
+      value = fallback_reviewer[key]
+      next unless value.is_a?(String)
+      next unless primary_reviewers.any? { |reviewer| reviewer[key] == value }
+
+      errors << "fallback.reviewer duplicates primary reviewer #{label} #{value.inspect}"
+    end
+    errors
+  end
+
+  def review_gate_mapping_key_errors(mapping, expected_keys, path)
+    return ["#{path} keys must be strings"] unless mapping.keys.all? { |key| key.is_a?(String) }
+    return [] if mapping.keys.sort == expected_keys.sort
+
+    ["#{path} keys must be exactly: #{expected_keys.sort.join(', ')}"]
+  end
+
+  def valid_review_gate_single_line?(value)
+    value.is_a?(String) && !value.strip.empty? && !value.match?(/[\0\r\n]/)
   end
 
   def writing_style_policy_issues(root, config, yaml)
