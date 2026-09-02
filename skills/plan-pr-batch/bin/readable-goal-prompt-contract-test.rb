@@ -267,8 +267,8 @@ class ReadableGoalPromptContractTest < Minitest::Test
     [@plan_skill, @triage_skill].each do |text|
       normalized = text.gsub(/\s+/, " ")
       assert_includes normalized,
-                      "Start a new task with the fenced goal prompt, its Batch Plan or exact durable " \
-                      "plan-state reference, and the exact batch_plan_binding."
+                      "Start a new task with the fenced goal prompt, its exact immutable plan-state " \
+                      "reference, and the exact batch_plan_binding."
       assert_includes normalized, "Next: Paste all three into that task"
     end
   end
