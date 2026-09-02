@@ -534,6 +534,23 @@ class CoordinationTelemetryContractTest < Minitest::Test
     end
   end
 
+  def test_closeout_qa_and_triage_capacity_reads_are_scoped_to_applicability
+    closeout = read_repo_file(INTEGRATION_CLOSEOUT_PATH).gsub(/\s+/, " ")
+    guide = read_repo_file(PR_BATCH_DOC_PATH).gsub(/\s+/, " ")
+
+    assert_includes closeout,
+                    "For `coordination_not_applicable`, the one controller owns the QA lane in its durable local " \
+                    "batch record instead: keep the stable owner, scope label, and branch/worktree ownership, and " \
+                    "make no lane declaration, claim, or heartbeat call. The bullets below are " \
+                    "`coordination_required` only:",
+                    INTEGRATION_CLOSEOUT_PATH
+    assert_includes guide,
+                    "For `coordination_not_applicable` it reads none of them and keeps the one controlled serial " \
+                    "group, so the rest of this paragraph and the unavailable- capacity stop below apply only to " \
+                    "`coordination_required`.",
+                    PR_BATCH_DOC_PATH
+  end
+
   def test_cancellation_and_relaunch_have_a_not_applicable_path
     local_stop_rule =
       "For `coordination_not_applicable`, the one controller stops its own workers from controller-local state"

@@ -198,9 +198,12 @@ Use `$triage` when the coordinator wants the generated equivalent of a manual
 release or batch snapshot: all open issues and PRs, dependency edges, live
 coordination state, and a capacity-aware split into implementation groups.
 
-`$triage` is not a fixed-lane batch planner. It must read the current
+`$triage` is not a fixed-lane batch planner. For `coordination_required`, it
+must read the current
 `agent-coord` capacity profiles, inbox config, claims, and heartbeats before
-phase 2. The group count is derived by summing registered
+phase 2. For `coordination_not_applicable` it reads none of them and keeps the
+one controlled serial group, so the rest of this paragraph and the unavailable-
+capacity stop below apply only to `coordination_required`. The group count is derived by summing registered
 `max_concurrent_batches`, bounding that total by enabled inboxes, and subtracting
 live, blocked, and reserved lanes. If any of those inputs cannot be verified,
 phase 2 stops instead of inventing a group count. The value is never committed in

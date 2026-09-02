@@ -440,7 +440,11 @@ Bootstrap never executes the candidate verifier. The candidate verifier must
 already implement the ordered criterion argument and receipt contract; review
 and focused repository tests must establish that before landing it.
 
-Coordinate QA with the same primitives as other batch lanes:
+Coordinate QA with the same primitives as other batch lanes. For
+`coordination_not_applicable`, the one controller owns the QA lane in its
+durable local batch record instead: keep the stable owner, scope label, and
+branch/worktree ownership, and make no lane declaration, claim, or heartbeat
+call. The bullets below are `coordination_required` only:
 
 - The coordinator declares the QA lane in private batch state when the backend is
   available, for example as lane `qa` or the nearest backend-supported
