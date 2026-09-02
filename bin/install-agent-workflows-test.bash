@@ -340,6 +340,32 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
 }
 
 
+test_fresh_copy_install_reports_up_to_date_from_recorded_fingerprints() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+
+  # A clean install must verify against its own recorded fingerprints, with
+  # every managed bin entry present and nothing blocking.
+  set +e
+  output="$("$target/bin/agent-workflows-status" --host codex --target "$target" --source "$source" --json 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "fresh install did not report UP_TO_DATE: $output"
+  ruby -rjson -e '
+    payload = JSON.parse(ARGV.fetch(0))
+    abort payload.inspect unless payload.fetch("status") == "UP_TO_DATE" &&
+                                 payload.dig("bin", "state") == "present" &&
+                                 payload.dig("bin", "blocking").empty? &&
+                                 payload.dig("bin", "missing").empty?
+  ' "$output" || fail "fresh install did not verify its own recorded bin fingerprints"
+}
+
 test_copy_install_refuses_a_mode_only_managed_doctor_module_change() {
   local tmp source target output status module_path
   tmp="$(mktemp -d)"
@@ -572,6 +598,10 @@ test_copy_metadata_records_managed_bin_copy_fingerprints() {
 
   ruby -rdigest -rjson -e '
     metadata_path, target = ARGV
+    # The installer writes these values and the delivery-state module recomputes
+    # them, in different languages. Comparing against the module pins the two
+    # formulas together: drift on either side fails here.
+    load File.join(target, "bin", "agent-workflows-delivery-state")
     metadata = JSON.parse(File.read(metadata_path))
     fingerprints = metadata.fetch("managed_bin_copy_fingerprints")
     %w[
@@ -584,18 +614,13 @@ test_copy_metadata_records_managed_bin_copy_fingerprints() {
       digest = fingerprints[name]
       abort "missing managed bin fingerprint for #{name}: #{fingerprints.keys.inspect}" unless digest
       installed = File.join(target, "bin", name)
-      mode = File.stat(installed).mode & 0o7777
-      expected = Digest::SHA256.hexdigest(
-        JSON.generate(["file", mode, Digest::SHA256.file(installed).hexdigest])
-      )
+      expected = AgentWorkflowsDeliveryState.managed_path_fingerprint(installed)
       abort "recorded fingerprint does not match #{installed}" unless expected == digest
       abort "content-only digest recorded for #{installed}" if
         Digest::SHA256.file(installed).hexdigest == digest
     end
     doctor_root = File.join(target, "bin/agent_doctor")
-    expected_root = Digest::SHA256.hexdigest(
-      JSON.generate(["directory", File.stat(doctor_root).mode & 0o7777])
-    )
+    expected_root = AgentWorkflowsDeliveryState.managed_path_fingerprint(doctor_root)
     abort "doctor root fingerprint missing or wrong" unless fingerprints["agent_doctor"] == expected_root
     abort "recorded a marker file" if fingerprints.key?("agent_doctor/.agent-workflows-managed")
   ' "$target/.agent-workflows-install.json" "$target" || fail "copy install recorded no usable managed bin fingerprints"
@@ -9006,6 +9031,7 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_fresh_copy_install_reports_up_to_date_from_recorded_fingerprints
     test_copy_install_refuses_a_mode_only_managed_doctor_module_change
     test_copy_install_refuses_a_managed_doctor_root_mode_change
     test_copy_install_reports_a_missing_managed_doctor_module

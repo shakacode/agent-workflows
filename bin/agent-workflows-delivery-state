@@ -723,9 +723,15 @@ module AgentWorkflowsDeliveryState
     unexpected
   end
 
-  # Copy installs own every file the pack writes below <target>/bin. Missing
-  # entries stay non-blocking so the installer can restore them; modified,
+  # Copy installs own every file the pack writes below <target>/bin. Modified,
   # relinked, and type-changed entries block so no owned byte is overwritten.
+  #
+  # "paths" and "missing" partition the recorded entries by whether they exist
+  # on disk, the way the flat skill inventory reports them, and "blocking" is an
+  # orthogonal judgment layered over both: an entry that exists but is unowned
+  # appears in "paths" and "blocking", and a missing doctor module the installer
+  # cannot restore in place appears in "missing" and "blocking". Read "blocking"
+  # alone for what refuses an install; it is not a subset of either list.
   def managed_bin_copy_state(target:, source:, metadata:)
     fingerprints = recorded_bin_copy_fingerprints(metadata)
     if fingerprints == :invalid
@@ -747,10 +753,10 @@ module AgentWorkflowsDeliveryState
 
     present = []
     missing = []
-    blocking = []
+    unowned_paths = []
     fingerprints.sort.each do |name, digest|
       if (ancestor = managed_bin_ancestor_conflict(bin_root, name))
-        blocking << ancestor
+        unowned_paths << ancestor
         next
       end
 
@@ -761,9 +767,9 @@ module AgentWorkflowsDeliveryState
       end
 
       present << path
-      blocking << path unless managed_bin_copy_owned?(path:, source:, name:, digest:)
+      unowned_paths << path unless managed_bin_copy_owned?(path:, source:, name:, digest:)
     end
-    unowned = (blocking + unexpected_managed_doctor_entries(bin_root, fingerprints)).uniq.sort
+    unowned = (unowned_paths + unexpected_managed_doctor_entries(bin_root, fingerprints)).uniq.sort
     unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort
     blocking = (unowned + unrestorable).uniq.sort
 
@@ -953,6 +959,9 @@ module AgentWorkflowsDeliveryState
   end
 
   def check(host:, target:, source:, delivery_mode:)
+    # The bin inventory walks the managed doctor tree and hashes every recorded
+    # copy, with no dependency on the host queries, so overlap that work.
+    bin_query = Thread.new { managed_bin_copy_inventory(target: target, source: source) }
     host_queries = [Thread.new { ["native", native_state(host, target)] }]
     host_queries << Thread.new { ["superpowers", superpowers_state(host, target)] } if host == "codex"
     host_state = host_queries.map(&:value).to_h
@@ -964,7 +973,7 @@ module AgentWorkflowsDeliveryState
       delivery_mode: delivery_mode,
       collision_names: collision_names
     )
-    bin = managed_bin_copy_inventory(target: target, source: source)
+    bin = bin_query.value
     native_compatible = native["state"] == (delivery_mode == "plugin-companion" ? "active" : "inactive")
     compatible = native_compatible && flat["state"] != "unknown" && flat["blocking"].empty? &&
                  bin["state"] != "unknown" && bin["blocking"].empty?

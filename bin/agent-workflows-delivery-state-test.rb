@@ -1947,6 +1947,32 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_bin_paths_and_missing_partition_recorded_entries_with_blocking_layered_over_both
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      tampered = File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb")
+      File.write(tampered, "policy library\n# tampered\n")
+      deleted = File.join(target, "bin/agent_doctor/renderer.rb")
+      FileUtils.rm_f(deleted)
+
+      payload, status, output = check_managed_bin(target, source)
+      bin = payload.fetch("bin")
+
+      refute status.success?, output
+      # paths and missing partition the recorded entries by existence...
+      assert_equal fingerprints.keys.sort,
+                   (bin.fetch("paths").map { |path| path.delete_prefix("#{File.join(target, 'bin')}/") } +
+                    bin.fetch("missing")).sort
+      assert_empty bin.fetch("paths").map { |path| path.delete_prefix("#{File.join(target, 'bin')}/") } &
+                   bin.fetch("missing")
+      # ...and blocking is layered over both, naming one of each here.
+      assert_equal [tampered, deleted].sort, bin.fetch("blocking")
+      assert_includes bin.fetch("paths"), tampered
+      assert_includes bin.fetch("missing"), "agent_doctor/renderer.rb"
+    end
+  end
+
   def test_symlinked_managed_bin_copy_blocks_the_delivery_check
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)
