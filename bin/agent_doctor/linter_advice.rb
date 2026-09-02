@@ -221,7 +221,8 @@ module AgentDoctor
       source = exported_javascript_expression(source)
       return [] unless source
 
-      javascript_object_bodies(source).filter_map do |config_body|
+      javascript_config_bodies(source).filter_map do |entry|
+        config_body = entry.fetch(:body)
         expression = eslint_rule_expression(config_body, "rules")
         next unless expression
 
@@ -231,7 +232,23 @@ module AgentDoctor
         rules_body, = javascript_object_body(expression, opening_index)
         next unless rules_body
 
-        { body: rules_body, scope: javascript_scope(config_body) }
+        { body: rules_body, scope: entry[:scope] }
+      end
+    end
+
+    def javascript_config_bodies(source, inherited_scope = nil)
+      javascript_object_bodies(source).flat_map do |config_body|
+        scope = javascript_scope(config_body) || inherited_scope
+        entries = [{ body: config_body, scope: scope }]
+        overrides = eslint_rule_expression(config_body, "overrides")
+        opening_index = overrides&.index(/\S/)
+        next entries unless opening_index && overrides[opening_index] == "["
+
+        ending_index = javascript_array_end(overrides, opening_index)
+        next entries unless ending_index
+
+        nested = overrides[(opening_index + 1)...ending_index]
+        entries + javascript_config_bodies(nested, scope)
       end
     end
 

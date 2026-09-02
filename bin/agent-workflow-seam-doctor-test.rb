@@ -2412,6 +2412,22 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
       assert_equal "disabled", disabled.fetch("state")
       assert_equal '["spec/**"]', disabled.fetch("scope")
     end
+
+    with_repo do |root|
+      File.write(File.join(root, ".eslintrc.cjs"), <<~JAVASCRIPT)
+        module.exports = {
+          rules: { complexity: ["error", 10] },
+          overrides: [{ files: ["test/**"], rules: { complexity: "off" } }]
+        };
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_includes eslint.fetch("enforced"), { "rule" => "complexity", "value" => 10 }
+      disabled = eslint.fetch("recommendations").find { |item| item["rule"] == "complexity" }
+      assert_equal "disabled", disabled.fetch("state")
+      assert_equal '["test/**"]', disabled.fetch("scope")
+    end
   end
 
   def test_eslint_uses_last_setting_for_the_same_scope
