@@ -2216,8 +2216,8 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
       )
       expected_recommendations = ESLINT_LIMITS - %w[complexity max-lines]
       assert_equal(expected_recommendations, eslint.fetch("recommendations").map { |item| item.fetch("rule") })
-      assert_equal "disabled", eslint.fetch("recommendations").find { |item| item["rule"] == "max-params" }
-                                     .fetch("state")
+      max_params = eslint.fetch("recommendations").find { |item| item["rule"] == "max-params" }
+      assert_equal "disabled", max_params.fetch("state")
       assert(eslint.fetch("recommendations").all? { |item| item.fetch("suggestion").include?(item.fetch("rule")) })
     end
   end
