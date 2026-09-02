@@ -2281,7 +2281,8 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
         export default [{ rules: {
           complexity: "error",
           "max-params": ["warn"],
-          "max-depth": ["error", { maximum: 6 }]
+          "max-depth": ["error", { maximum: 6 }],
+          "max-lines": ["error", { ignore: { generated: true }, max: 275 }]
         } }];
       JAVASCRIPT
 
@@ -2290,6 +2291,7 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
       assert_equal(
         [
           { "rule" => "complexity", "value" => 20 },
+          { "rule" => "max-lines", "value" => 275 },
           { "rule" => "max-params", "value" => 3 },
           { "rule" => "max-depth", "value" => 6 }
         ],
@@ -2483,6 +2485,32 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
 
     assert_equal(RUBOCOP_METRICS, rubocop.fetch("recommendations").map { |item| item.fetch("rule") })
     assert_includes rubocop.fetch("note"), "https://github.com/shakacode/agent-workflows/issues/309"
+  end
+
+  def test_rubocop_inheritance_boundary_is_visible
+    with_repo do |root|
+      File.write(File.join(root, ".rubocop.yml"), "inherit_from: .rubocop_todo.yml\n")
+
+      rubocop = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_includes rubocop.fetch("note"), "Inherited RuboCop settings are not resolved"
+    end
+  end
+
+  def test_invalid_eslint_encoding_cannot_change_seam_status
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      File.binwrite(File.join(root, "eslint.config.js"), "export default []; // \xFF\n")
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      payload = JSON.parse(out)
+      assert_equal "PASS", payload.fetch("status")
+      assert_empty payload.fetch("issues")
+      assert_includes payload.fetch("advice").fetch(0).fetch("note"), "Could not inspect linter settings"
+    end
   end
 
   def test_invalid_rubocop_structure_cannot_change_seam_status

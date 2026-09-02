@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
 require "json"
 require "yaml"
 
@@ -94,8 +93,12 @@ module AgentDoctor
         "enforced" => enforced,
         "recommendations" => recommendations
       }
-      result["note"] = "Re-enabling this repository's RuboCop metrics is tracked in #{SOURCE_REPO_URL}." if
-        agent_workflows_repo?(root)
+      notes = []
+      notes << "Inherited RuboCop settings are not resolved; recommendations reflect only #{relative_path}." if
+        config.key?("inherit_from") || config.key?("inherit_gem")
+      notes << "Re-enabling this repository's RuboCop metrics is tracked in #{SOURCE_REPO_URL}." if
+        recommendations.any? && agent_workflows_repo?(root)
+      result["note"] = notes.join(" ") unless notes.empty?
       result
     rescue ArgumentError, EncodingError, Psych::Exception, SystemCallError, TypeError => e
       {
@@ -108,8 +111,9 @@ module AgentDoctor
     end
 
     def agent_workflows_repo?(root)
-      out, status = Open3.capture2("git", "-C", root, "remote", "get-url", "origin", err: File::NULL)
-      status.success? && out.match?(%r{(?:github\.com[:/])shakacode/agent-workflows(?:\.git)?\s*\z})
+      File.open(File.join(root, "README.md"), encoding: "UTF-8", &:readline).chomp == "# ShakaCode Agent Workflows"
+    rescue EncodingError, EOFError, SystemCallError
+      false
     end
 
     def eslint_config_paths(root)
@@ -579,14 +583,28 @@ module AgentDoctor
       return [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)] if
         expression.match?(/\A(?:["'](?:error|warn)["']|[12])(?:\W|\z)/)
 
-      match = expression.match(
-        /\A\[\s*(?<severity>["'](?:error|warn|off)["']|[012])\s*(?:,\s*(?:(?<value>\d+)|\{(?<options>[^}]*)\}))?\s*\]/m
-      )
+      match = expression.match(/\A\[\s*(?<severity>["'](?:error|warn|off)["']|[012])\s*/)
       return [:missing, nil] unless match
       return [:disabled, nil] if match[:severity].match?(/(?:off|0)/)
 
-      value = match[:value] || match[:options]&.match(/["']?(?:max|maximum)["']?\s*:\s*(\d+)/)&.captures&.first
-      value ? [:enforced, value.to_i] : [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)]
+      remainder = expression[match.end(0)..].lstrip
+      return [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)] if remainder.start_with?("]")
+      return [:missing, nil] unless remainder.start_with?(",")
+
+      option = remainder[1..].lstrip
+      numeric = option.match(/\A\d+/)
+      return [:enforced, numeric[0].to_i] if numeric
+      return [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)] if option.start_with?("]")
+      return [:missing, nil] unless option.start_with?("{")
+
+      options, = javascript_object_body(option, 0)
+      return [:missing, nil] unless options
+
+      configured = eslint_rule_expression(options, "max") || eslint_rule_expression(options, "maximum")
+      return [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)] unless configured
+
+      value = configured.match(/\A\s*(\d+)/)
+      value ? [:enforced, value[1].to_i] : [:invalid, nil]
     end
 
     def eslint_setting(value, rule)
