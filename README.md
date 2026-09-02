@@ -107,8 +107,8 @@ reasoning-effort values are advisory preferences; hosts may report observed
 host/model/effort fields when available and otherwise record field-granular
 `UNKNOWN` without blocking execution.
 
-For ShakaCode-specific full-stack tooling (`agent-stack sync` and
-`agent-stack doctor`), see
+For ShakaCode-specific full-stack tooling (`agent-stack sync`,
+`agent-stack doctor`, and the installed dashboard lifecycle command), see
 [Full Stack Contributor Setup](docs/installation-and-upgrades.md#full-stack-contributor-setup)
 and [Full Stack Doctor](docs/installation-and-upgrades.md#full-stack-doctor).
 The generic workflow-pack install does not require that stack.
