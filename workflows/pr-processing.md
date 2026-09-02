@@ -2575,6 +2575,6 @@ its explicit follow-up `merge_authority`. The new batch still runs normal target
 intake, planning, security, dependency, coordination, and dispatch gates.
 
 Set the generated prompt's `merge_authority` to the active audit task's explicit
-value when present; otherwise use `auto_merge_when_gates_pass`. Reject a prompt
+value when present; otherwise use `none`. Reject a prompt
 with a placeholder, missing issue URL, or `UNKNOWN` target and return it to the
 audit coordinator for corrected issue accounting.

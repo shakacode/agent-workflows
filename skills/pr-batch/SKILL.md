@@ -754,7 +754,7 @@ security, dependency, and dispatch gates for those issue targets; the audit
 handoff supplies targets, not launch authority or readiness evidence.
 
 Set the generated prompt's `merge_authority` to the active audit task's explicit
-value when present; otherwise use `auto_merge_when_gates_pass`. A prompt with a
+value when present; otherwise use `none`. A prompt with a
 placeholder, missing issue URL, or `UNKNOWN` target returns to the audit
 coordinator for corrected issue accounting instead of launching.
 

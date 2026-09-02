@@ -543,7 +543,7 @@ identity. After issue accounting, emit one ready copy-paste `$pr-batch` prompt
 whose target list contains every unique linked or created issue URL exactly once
 and no unresolved placeholder. Set the generated prompt's `merge_authority` to
 the active audit task's explicit value when present; otherwise use
-`auto_merge_when_gates_pass`.
+`none`.
 
 Independent checker and advisory-auditor runs still stop after drafting
 fingerprinted issue entries. Only the coordinator performs issue search,

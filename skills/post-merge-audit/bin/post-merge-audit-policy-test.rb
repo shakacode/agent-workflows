@@ -17,7 +17,10 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_OUTSTANDING_TRACKING_GATE = "A coordinator-owned audit may return `follow-ups-remain` only after every outstanding finding is bound to an exact durable issue URL, covered by an explicit report-only/no-issue instruction, or named in a precise issue-creation blocker with its failed operation, error, and retry action."
   REQUIRED_CHANGELOG_TRACKING_RULE = "A changelog-only audit creates or reuses one bundled changelog issue; recommending `/update-changelog` is supplementary and never substitutes for durable tracking."
   REQUIRED_FOLLOW_UP_PROMPT_RULE = "After issue accounting, emit one ready copy-paste `$pr-batch` prompt whose target list contains every unique linked or created issue URL exactly once and no unresolved placeholder."
-  REQUIRED_FOLLOW_UP_AUTHORITY_RULE = "Set the generated prompt's `merge_authority` to the active audit task's explicit value when present; otherwise use `auto_merge_when_gates_pass`."
+  REQUIRED_FOLLOW_UP_AUTHORITY_RULE = "Set the generated prompt's `merge_authority` to the active audit task's explicit value when present; otherwise use `none`."
+  FORBIDDEN_FOLLOW_UP_AUTHORITY_DEFAULT = "otherwise use `auto_merge_when_gates_pass`"
+  REQUIRED_CHANGELOG_CLASSIFICATION_RULE = "**Needs changelog update**: user-visible change is missing from the repo's changelog; create or reuse one bundled changelog issue as durable tracking and recommend `/update-changelog` when useful."
+  REQUIRED_CHANGELOG_OUTPUT_RULE = "Missing changelog candidates, bound to one created or reused bundled changelog issue, with a recommendation to run `/update-changelog` when useful."
   REQUIRED_NON_ACTIONABLE_NOISE_RULE = "Do not create issue noise for duplicate, resolved, `OK`, explicitly waived or deferred, or report-only findings."
   REQUIRED_BLOCKED_CREATION_RULE = "When issue creation is blocked, do not invent an issue URL or emit a target placeholder; preserve the finding fingerprint, exact failed operation and error, and one retry action in the issue accounting, receipt disposition, `Action needed:`, and `Next:` output."
   REQUIRED_REPORT_ONLY_RULE = "An explicit report-only/no-issue instruction suppresses issue creation and follow-up prompt generation for that finding, and the final accounting records the instruction as its disposition evidence."
@@ -247,7 +250,16 @@ class PostMergeAuditPolicyTest < Minitest::Test
       ].each do |rule|
         assert_includes text, rule, "#{relative_path} should pin #{rule.inspect}"
       end
+      refute_includes text, FORBIDDEN_FOLLOW_UP_AUTHORITY_DEFAULT,
+                      "#{relative_path} must not silently enable autonomous merge"
     end
+  end
+
+  def test_changelog_dispositions_require_durable_tracking_in_every_skill_section
+    text = File.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+
+    assert_includes text, REQUIRED_CHANGELOG_CLASSIFICATION_RULE
+    assert_includes text, REQUIRED_CHANGELOG_OUTPUT_RULE
   end
 
   def test_follow_up_prompt_is_executable_and_preserved_by_pr_batch
@@ -271,6 +283,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should preserve the audited follow-up target set and authority"
       assert_includes text, REQUIRED_FOLLOW_UP_AUTHORITY_RULE,
                       "#{relative_path} should resolve follow-up merge authority without placeholders"
+      refute_includes text, FORBIDDEN_FOLLOW_UP_AUTHORITY_DEFAULT,
+                      "#{relative_path} must not silently enable autonomous merge"
     end
   end
 

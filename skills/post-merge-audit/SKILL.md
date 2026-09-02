@@ -325,7 +325,9 @@ Classify each PR:
 
 - **OK**: no credible release risk found.
 - **Needs maintainer question**: a decision cannot be made safely from evidence.
-- **Needs changelog update**: user-visible change is missing from the repo's changelog; recommend `/update-changelog`.
+- **Needs changelog update**: user-visible change is missing from the repo's
+  changelog; create or reuse one bundled changelog issue as durable tracking and
+  recommend `/update-changelog` when useful.
 - **Needs follow-up issue**: non-blocking work remains valuable and is actionable after release.
 - **Needs fix PR**: a real defect, missing test, missing compatibility note, or bad interaction should be fixed before release.
 - **Needs revert consideration**: the merge appears risky enough that reverting may be safer than patching. The downstream procedure is [Unwinding A Bad Agent Merge](../../docs/revert-runbook.md), which covers revert scope, order, bookkeeping, and the operator-authority rule. Reference it in the child issue; it is a runbook for the operator, not a gate on this audit, and it never blocks or alters audit completion.
@@ -407,7 +409,7 @@ final archive status share the same durable identity. After issue accounting,
 emit one ready copy-paste `$pr-batch` prompt whose target list contains every
 unique linked or created issue URL exactly once and no unresolved placeholder.
 Set the generated prompt's `merge_authority` to the active audit task's explicit
-value when present; otherwise use `auto_merge_when_gates_pass`.
+value when present; otherwise use `none`.
 
 Independent checker and advisory-auditor runs remain draft-only. They return
 fingerprinted issue entries to the coordinator and never create issues or
@@ -615,7 +617,8 @@ Return high-risk findings first, then:
 1. Review-gate violations, including PRs merged before requested reviews finished, before actionable review findings were triaged, or with AI review systems incorrectly counted as approval gates.
 2. QA coverage findings, including missing, stale, insufficiently scoped, or
    still-`UNKNOWN` required QA evidence.
-3. Missing changelog candidates, with a single recommendation to run `/update-changelog` when any are found.
+3. Missing changelog candidates, bound to one created or reused bundled
+   changelog issue, with a recommendation to run `/update-changelog` when useful.
 4. Cross-PR interaction risks.
 5. A deduped issue plan with parent/child recommendations, fingerprints, and
    issue-creation accounting: parent issue URL if created, child issue URLs,
