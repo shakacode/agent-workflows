@@ -104,7 +104,7 @@ module ConciseHistoryCheck
                       ["PR evidence did not replay to a terminal verdict"]
                     else
                       []
-    end
+                    end
     message_lines = commit_message.lines.map(&:strip)
     trailer_start = terminal_trailer_start(message_lines, options[:provenance_trailers])
     trailer_lines = message_lines.drop(trailer_start)
