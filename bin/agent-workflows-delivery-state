@@ -573,7 +573,7 @@ module AgentWorkflowsDeliveryState
     return unless metadata&.fetch("mode", nil) == "copy"
 
     fingerprints = metadata.fetch("managed_skill_copy_fingerprints", nil)
-    return unless fingerprints.is_a?(Hash) && !fingerprints.empty?
+    return unless fingerprints.is_a?(Hash)
     return unless fingerprints.all? do |name, digest|
       valid_name = name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
       valid_digest = digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/i)

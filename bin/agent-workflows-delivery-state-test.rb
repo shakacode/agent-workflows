@@ -1623,6 +1623,45 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_empty_copy_receipt_cannot_remove_revision_skills
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      committed_skills = File.join(tmp, "committed-skills")
+      FileUtils.cp_r(File.join(source, "skills"), committed_skills)
+      FileUtils.rm_rf(File.join(source, "skills"))
+      FileUtils.mkdir_p(File.join(source, "skills"))
+      write_codex_native_state(target)
+      FileUtils.mkdir_p(File.join(target, "skills"))
+      %w[alpha beta].each do |name|
+        FileUtils.cp_r(File.join(committed_skills, name), File.join(target, "skills", name))
+      end
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => revision,
+        "managed_skill_copy_fingerprints" => {}
+      )
+
+      out, _err, status = run_state(
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal "ambiguous", flat.fetch("state")
+      assert_equal %w[alpha beta].map { |name| File.join(target, "skills", name) }, flat.fetch("blocking").sort
+      assert_equal "alpha — portable\n", File.read(File.join(target, "skills/alpha/SKILL.md"))
+      assert_equal "beta\n", File.read(File.join(target, "skills/beta/SKILL.md"))
+    end
+  end
+
   def test_revision_only_case_alias_is_not_both_owned_and_extra
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       skip "requires a case-insensitive filesystem" unless case_insensitive_filesystem?(tmp)

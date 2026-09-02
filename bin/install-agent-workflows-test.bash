@@ -4614,6 +4614,43 @@ test_flat_copy_migrates_uncommitted_skill_to_companion_with_recorded_revision() 
   ' "$modified_target/.agent-workflows-install.json"
 }
 
+test_empty_copy_receipt_preserves_revision_matching_target_skill() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$tmp/committed-pr-batch" "$target/skills"
+  cp -R "$source/skills/pr-batch/." "$tmp/committed-pr-batch/"
+  cp -R "$tmp/committed-pr-batch" "$target/skills/pr-batch"
+  find "$source/skills" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/flat.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata.fetch("managed_skill_copy_fingerprints") == {}
+    abort metadata.inspect unless metadata["source_revision"].match?(/\A[0-9a-f]{40}\z/)
+  ' "$target/.agent-workflows-install.json"
+  write_native_scw_state codex "$target"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "empty copy receipt authorized removing a preserved target skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  cmp -s "$tmp/committed-pr-batch/SKILL.md" "$target/skills/pr-batch/SKILL.md" || \
+    fail "blocked empty-receipt migration changed the preserved target skill"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$target/.agent-workflows-install.json"
+}
+
 test_hidden_source_skill_entry_is_never_recorded_or_migrated() {
   local tmp source target output status
   tmp="$(mktemp -d)"
@@ -8734,6 +8771,7 @@ main() {
     test_repeat_flat_copy_install_uses_fingerprints_without_git_history
     test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history
     test_flat_copy_migrates_uncommitted_skill_to_companion_with_recorded_revision
+    test_empty_copy_receipt_preserves_revision_matching_target_skill
     test_hidden_source_skill_entry_is_never_recorded_or_migrated
     test_inherited_dotglob_does_not_change_the_installed_skill_set
     test_inherited_dotglob_does_not_change_the_symlinked_skill_set
