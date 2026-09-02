@@ -50,6 +50,37 @@ class AutonomousMergeEvidenceTest < Minitest::Test
     assert_equal(2, calls.count { |path| path.include?("/timeline?per_page=100&page=2") })
   end
 
+  def test_collect_preserves_decision_comment_author_type
+    api = lambda do |path|
+      case path
+      when "repos/example/repo/pulls/7"
+        pull_detail(changed_files: 1)
+      when "repos/example/repo/issues/7/timeline?per_page=100&page=1"
+        []
+      when "repos/example/repo/pulls/7/files?per_page=100&page=1"
+        [file("lib/file.rb")]
+      when "repos/example/repo/pulls/7/commits?per_page=100&page=1"
+        [{ "sha" => "c" * 40 }]
+      when "repos/example/repo/pulls/7/reviews?per_page=100&page=1"
+        []
+      when "repos/example/repo/issues/7/comments?per_page=100&page=1"
+        [{
+          "id" => 1,
+          "html_url" => "https://github.com/example/repo/pull/7#issuecomment-1",
+          "created_at" => "2026-07-25T12:00:00Z",
+          "body" => "comment",
+          "user" => { "login" => "claude[bot]", "type" => "Bot" }
+        }]
+      else
+        raise "unexpected API path #{path}"
+      end
+    end
+
+    objective = AutonomousMergeEvidence.collect(repo: "example/repo", pr_number: 7, api:)
+
+    assert_equal "Bot", objective.fetch("decision_comments").first.fetch("author_type")
+  end
+
   def test_head_movement_during_collection_is_unknown
     reads = 0
     api = lambda do |path|
