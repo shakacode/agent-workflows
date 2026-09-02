@@ -902,9 +902,13 @@ module AgentWorkflowsDeliveryState
   # ownership marker already refuses to reinstall over an unrecorded entry
   # there. Report that conflict here so status sees it before the install does.
   def unexpected_managed_doctor_entries(bin_root, fingerprints)
+    # Ask whether this install manages the tree, the way every other doctor
+    # check does. Metadata recorded while the tree was empty holds only the
+    # root key, and everything found under it is then unrecorded by definition.
+    return [] unless fingerprints.keys.any? { |name| doctor_tree_entry?(name) }
+
     prefix = "#{MANAGED_DOCTOR_SUBDIRECTORY}/"
     recorded = fingerprints.keys.select { |name| name.start_with?(prefix) }.map { |name| name.delete_prefix(prefix) }
-    return [] if recorded.empty?
 
     doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
     return [] unless File.directory?(doctor_root) && !File.symlink?(doctor_root)

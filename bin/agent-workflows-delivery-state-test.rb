@@ -2264,6 +2264,24 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_metadata_recorded_with_an_empty_tree_still_sees_new_doctor_files
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # An install whose source tree was empty records the root key alone, so
+      # anything found under it afterwards is unrecorded by definition.
+      FileUtils.rm_f(Dir.glob(File.join(doctor_root, "*.rb")))
+      managed_bin_metadata(target, source, fingerprints.reject { |name, _| name.include?("/") })
+      intruder = File.join(doctor_root, "intruder.rb")
+      File.write(intruder, "foreign\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_includes payload.dig("bin", "blocking"), intruder
+    end
+  end
+
   def test_bare_doctor_root_key_still_manages_the_tree
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)
@@ -2276,7 +2294,10 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       payload, status, output = check_managed_bin(target, source)
 
       refute status.success?, output
-      assert_equal [doctor_root], payload.dig("bin", "blocking")
+      # The guards are active: under metadata that recorded only the root, the
+      # tree's files are unrecorded, and naming them beats naming the tree.
+      assert_equal [File.join(doctor_root, "autonomous_merge_policy.rb"), File.join(doctor_root, "renderer.rb")],
+                   payload.dig("bin", "blocking")
     end
   end
 
