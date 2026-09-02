@@ -230,6 +230,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
   def test_terminal_handoffs_name_one_unambiguous_next_step_or_archive
     contract = normalized(DOC)
     assert_includes contract, "A durable issue, receipt, or blocker list is evidence, not a next step."
+    assert_includes contract,
+                    "Preserve any required receipt before the closing stack: the Unblock Block when the status is not clean, then the final `Conversation status:` line."
+    refute_includes contract, "receipt immediately before the final `Conversation status:` line"
     assert_includes contract, "`Next: Archive this task.`"
     assert_includes contract,
                     "state the smallest action that clears the blocker and whether to reply here or start a new task"

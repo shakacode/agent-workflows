@@ -637,6 +637,10 @@ detailed policy belongs in the canonical workflow.
 
 Use the canonical [Batch Handoff Format](../../workflows/pr-batch-integration-closeout.md#batch-handoff-format) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
 
+## Unblock Block
+
+Use the canonical [Unblock Block](../../workflows/pr-batch-unblock.md#unblock-block) whenever a final batch handoff stops non-clean. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+
 ## Coordination State
 
 Use [.agents/workflows/pr-processing.md](../../workflows/pr-processing.md) as the
