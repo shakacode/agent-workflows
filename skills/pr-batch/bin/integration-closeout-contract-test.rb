@@ -282,7 +282,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     normalized_gate = ask_gate.gsub(/\s+/, " ")
     normalized_monitoring = @pr_monitoring.gsub(/\s+/, " ")
     normalized_walkthrough = @pr_walkthrough.gsub(/\s+/, " ")
-    prompt_gate = "- ask:I=head>=base+CI=READY;I?$pr-walkthrough(large|complex=full):wait;" \
+    prompt_gate = "- ask:I=head>=base+V=READY;I?$pr-walkthrough(large|complex=full):wait;" \
                   "refresh;chg=>redo/stop;ordinary|I fail=>stop;ask iff same clean"
     ancestry_command = 'git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
 
@@ -322,6 +322,9 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes normalized_monitoring, "`DIRTY`, conflicted, or behind branches are not ready."
     assert_includes normalized_monitoring,
                     "Current-integration readiness is separate from refreshed ordinary readiness."
+    assert_includes normalized_monitoring,
+                    "A proven-behind-ancestry result is the one exception: route it to " \
+                    "`pr-batch-integration-closeout.md`'s Integration And PR Publication step 3"
     assert_includes normalized_walkthrough,
                     "Do not infer success from a provider-specific status string or GitHub conflict/mergeability metadata"
 
@@ -339,6 +342,8 @@ class IntegrationCloseoutContractTest < Minitest::Test
 
     assert_includes continuation_prompt, ancestry_command
     assert_includes continuation_prompt, "exact-head `pr-ci-readiness` v2 aggregate `verdict` `READY`"
+    assert_includes continuation_prompt,
+                    "a proven-behind ancestry result routes to Integration And PR Publication step 3"
     assert_includes continuation_prompt,
                     "If current-integration readiness fails on refresh, stop even when the base and diff are unchanged."
   end

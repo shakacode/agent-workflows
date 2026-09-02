@@ -158,7 +158,8 @@ class PrWalkthroughContractTest < Minitest::Test
     # in both places this skill describes the caller's failed-checklist result.
     assert_equal 2, skill.scan("that gate's applicable hard-failure banner").length
     assert_includes skill, "when CI itself is not `READY`, or a"
-    assert_includes skill, "behind-base banner when only ancestry fails"
+    assert_equal 2, skill.scan("behind-base banner routing to Integration And PR Publication step 3").length
+    assert_includes skill, "when only ancestry fails"
   end
 
   def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component

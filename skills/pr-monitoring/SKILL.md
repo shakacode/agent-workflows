@@ -157,7 +157,11 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
      provider status strings and GitHub conflict or mergeability metadata are
      not portable success values. Missing, stale, mismatched, non-successful,
      unrecognized, future, or `UNKNOWN` facts remain
-     `waiting-on-checks-or-review` and do not start a walkthrough.
+     `waiting-on-checks-or-review` and do not start a walkthrough. A
+     proven-behind-ancestry result is the one exception: route it to
+     `pr-batch-integration-closeout.md`'s Integration And PR Publication step
+     3 for base reconciliation instead — that state never clears through
+     `waiting-on-checks-or-review` polling.
 
 5. **Apply authority.**
    - `auto_merge_when_gates_pass`: merge only if ordinary readiness and the

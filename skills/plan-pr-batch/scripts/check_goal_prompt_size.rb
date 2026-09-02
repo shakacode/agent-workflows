@@ -279,7 +279,7 @@ TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
 GOAL_PROMPT_FALLBACK_LINE =
   "- Resolve `$pr-batch`; load state before preflight; " \
   "persist pre-resume/launch; preflight issue/PR only"
-ASK_WALKTHROUGH_PROMPT_LINE = "- ask:I=head>=base+CI=READY;I?$pr-walkthrough(large|complex=full):wait;" \
+ASK_WALKTHROUGH_PROMPT_LINE = "- ask:I=head>=base+V=READY;I?$pr-walkthrough(large|complex=full):wait;" \
                               "refresh;chg=>redo/stop;ordinary|I fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
 READY_ITEM_DONE_WHEN_LINE =
