@@ -270,6 +270,21 @@ class IntegrationCloseoutContractTest < Minitest::Test
                     "`Conversation status: Follow-ups remain — <each exact action or blocker>.` line."
   end
 
+  def test_small_single_repo_batches_can_use_the_compact_terminal_structure
+    batch_handoff = route_after(@component, "Batch Handoff Format")
+    closeout = route_after(@component, "Coordinator Closeout Lane")
+
+    assert_includes batch_handoff, "compact_terminal_structure_max_lanes"
+    assert_includes batch_handoff, "compact terminal structure"
+    assert_includes batch_handoff, "single-repo batches"
+    assert_includes batch_handoff, "required receipts"
+
+    assert_includes batch_handoff, "Larger or multi-repo batches keep the split form."
+    assert_includes closeout, "compact terminal structure"
+    assert_includes closeout, "single-repo batches"
+    assert_includes closeout, "required receipt"
+  end
+
   def test_sibling_components_remain_outside_the_boundary
     refute_match(/^## Release Mode Preflight$/, @component)
     refute_match(/^### Accelerated RC Auto-Merge$/, @component)

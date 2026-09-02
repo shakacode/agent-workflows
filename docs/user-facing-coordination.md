@@ -172,8 +172,11 @@ user-visible message counts in exactly one bucket of the closeout marker.
   correction that changes nothing for the reader is recorded in exactly one
   durable place — the PR description's `Agent details` decision log when the
   target has a PR, otherwise the final handoff's FYI / decisions made section.
-- **Unchanged closing stack:** `OC-v1` collapses no closing structure; that
-  consolidation is tracked in
+- **Compact terminal structure:** single-repo batches at or below
+  `compact_terminal_structure_max_lanes` may collapse the Lane Card, `Next:`,
+  `Action needed:`, required receipt, and exact `Conversation status:` into
+  one human-readable terminal structure; larger or multi-repo batches keep the
+  existing split closing stack. That consolidation is tracked in
   [issue 484](https://github.com/shakacode/agent-workflows/issues/484).
 
 At closeout, report a shadow-only `coordinator-narration-volume v1` marker of

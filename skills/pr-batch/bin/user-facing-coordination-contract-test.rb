@@ -3,6 +3,7 @@
 
 require "minitest/autorun"
 require "json"
+require "yaml"
 
 class UserFacingCoordinationContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
@@ -20,6 +21,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   SPEC = "skills/spec/SKILL.md"
   PLAN_ISSUE_TRIAGE = "skills/plan-issue-triage/SKILL.md"
   QA_STRESS = "skills/qa-stress/SKILL.md"
+  CLOSE_BATCH = "skills/close-batch/SKILL.md"
   README = "README.md"
   SKILL_GUIDE = "docs/skills.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
@@ -306,6 +308,19 @@ class UserFacingCoordinationContractTest < Minitest::Test
     post_merge = normalized(POST_MERGE_AUDIT)
     refute_includes post_merge,
                     "emits only its verified compact receipt reference plus the final `Conversation status` line"
+  end
+
+  def test_compact_terminal_structure_threshold_is_explicit
+    policy = YAML.safe_load(File.read(File.join(ROOT, ".agents", "agent-workflow.yml")), aliases: false)
+    assert_equal 2, policy.fetch("compact_terminal_structure_max_lanes")
+
+    [DOC, WORKFLOW, PR_BATCH, CLOSE_BATCH].each do |path|
+      text = normalized(path)
+      assert_includes text.downcase, "compact terminal structure", path
+      assert_includes text, "compact_terminal_structure_max_lanes", path
+      assert_includes text, "single-repo batches", path
+      assert_includes text, "required receipt", path
+    end
   end
 
   def test_close_session_consumes_the_shared_model
