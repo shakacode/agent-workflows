@@ -13,6 +13,22 @@ CAPACITY_WORKFLOW = File.join(ROOT, "workflows/pr-batch-capacity-admission.md")
 
 load HELPER
 
+class FailSecondAdmissionWriteStore < HeavyRootAdmission::Store
+  attr_reader :failed_state
+
+  private
+
+  def write_state(state)
+    @write_count = @write_count.to_i + 1
+    if @write_count == 2
+      @failed_state = Marshal.load(Marshal.dump(state))
+      raise HeavyRootAdmission::Error, "simulated bound-state persistence failure"
+    end
+
+    super
+  end
+end
+
 class HeavyRootAdmissionTest < Minitest::Test
   def run_helper(*arguments)
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, HELPER, *arguments)
@@ -26,11 +42,42 @@ class HeavyRootAdmissionTest < Minitest::Test
     JSON.generate([RbConfig.ruby, scanner])
   end
 
-  def test_two_claimants_racing_for_one_slot_admit_exactly_one
-    Dir.mktmpdir("heavy-root-admission-test") do |state_dir|
+  def launch_arguments(state_dir, token:, owner: "maker", lane: "issue-604-maker", host: "M5", ceiling: 1,
+                       scan_command: scanner_command(state_dir), command: [RbConfig.ruby, "-e", "exit 0"],
+                       worktree: state_dir, log: File.join(state_dir, "#{token}.log"), **options)
+    arguments = [
+      "launch", "--state-dir", state_dir, "--host", host,
+      "--owner", owner, "--lane", lane, "--worktree", worktree,
+      "--command-class", options.fetch(:command_class, "validator"),
+      "--launch-token", token, "--ceiling", ceiling.to_s,
+      "--scan-command-json", scan_command,
+      "--command-json", JSON.generate(command), "--log", log, "--json"
+    ]
+    arguments.concat(["--ttl", options.fetch(:ttl).to_s]) if options.key?(:ttl)
+    arguments.concat(["--scan-timeout", options.fetch(:scan_timeout).to_s]) if options.key?(:scan_timeout)
+    arguments
+  end
+
+  def run_launch(state_dir, **options)
+    run_helper(*launch_arguments(state_dir, **options))
+  end
+
+  def wait_until(timeout: 3)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    until yield
+      return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.01
+    end
+    true
+  end
+
+  def test_two_launches_racing_for_one_slot_execute_exactly_one_command
+    Dir.mktmpdir("heavy-root-admission-launch-race-test") do |state_dir|
       scanner = File.join(state_dir, "scan.rb")
       File.write(scanner, "require 'json'; puts JSON.generate(roots: [])\n")
       scan_command = JSON.generate([RbConfig.ruby, scanner])
+      result_path = File.join(state_dir, "executed.txt")
       ready = Queue.new
       start = Queue.new
 
@@ -38,23 +85,27 @@ class HeavyRootAdmissionTest < Minitest::Test
         Thread.new do
           ready << true
           start.pop
+          command = JSON.generate(
+            [RbConfig.ruby, "-e", "File.open(ARGV.fetch(0), 'a') { |f| f.puts(ARGV.fetch(1)) }", result_path, claimant]
+          )
           stdout, stderr, status = Open3.capture3(
             RbConfig.ruby,
             HELPER,
-            "reserve",
+            "launch",
             "--state-dir", state_dir,
             "--host", "M5",
             "--owner", claimant,
             "--lane", "issue-604-#{claimant}",
-            "--worktree", "/tmp/#{claimant}",
+            "--worktree", state_dir,
             "--command-class", "validator",
             "--launch-token", "launch-#{claimant}",
             "--ceiling", "1",
-            "--ttl", "30",
             "--scan-command-json", scan_command,
+            "--command-json", command,
+            "--log", File.join(state_dir, "#{claimant}.log"),
             "--json"
           )
-          { stdout: stdout, stderr: stderr, status: status.exitstatus }
+          { claimant: claimant, stdout: stdout, stderr: stderr, status: status.exitstatus }
         end
       end
 
@@ -63,16 +114,156 @@ class HeavyRootAdmissionTest < Minitest::Test
       results = attempts.map(&:value)
 
       assert_equal [0, 3], results.map { |result| result.fetch(:status) }.sort,
-                   "one claimant must reserve the only slot and one must be denied: #{results.inspect}"
+                   "one helper-owned launch must win and one must be denied: #{results.inspect}"
 
-      winner = JSON.parse(results.find { |result| result.fetch(:status).zero? }.fetch(:stdout))
-      loser = JSON.parse(results.find { |result| result.fetch(:status) == 3 }.fetch(:stdout))
-      losing_owner_lanes = loser.fetch("current_owners").map { |row| row.fetch("lane") }
+      winner_result = results.find { |result| result.fetch(:status).zero? }
+      loser_result = results.find { |result| result.fetch(:status) == 3 }
+      winner = JSON.parse(winner_result.fetch(:stdout))
+      loser = JSON.parse(loser_result.fetch(:stdout))
 
-      assert_equal "reserved", winner.fetch("decision")
+      assert_equal "launched", winner.fetch("decision")
+      assert_equal "bound", winner.dig("reservation", "status")
       assert_equal "capacity-full", loser.fetch("reason")
-      assert_equal [winner.dig("reservation", "lane")], losing_owner_lanes
-      assert_match(/reservation.*released/i, loser.fetch("retry_when"))
+      assert_equal(
+        [winner.dig("reservation", "lane")],
+        loser.fetch("current_owners").map { |row| row.fetch("lane") }
+      )
+      assert(
+        wait_until do
+          !HeavyRootAdmission.process_target_live?(winner.dig("reservation", "pid")) &&
+            !HeavyRootAdmission.process_target_live?(-winner.dig("reservation", "pgid"))
+        end,
+        "the winning helper-owned command did not reach terminal"
+      )
+      sleep 0.05
+      assert File.exist?(result_path), "the winning helper-owned command did not execute"
+      assert_equal [winner_result.fetch(:claimant)], File.readlines(result_path, chomp: true)
+    end
+  end
+
+  def test_bound_state_persistence_failure_aborts_the_gated_root_and_recovers_after_ttl
+    Dir.mktmpdir("heavy-root-admission-persist-failure-test") do |state_dir|
+      result_path = File.join(state_dir, "executed.txt")
+      options = {
+        state_dir: state_dir,
+        host: "m5",
+        owner: "maker",
+        lane: "issue-604-maker",
+        worktree: state_dir,
+        command_class: "validator",
+        launch_token: "failed-launch",
+        ceiling: 1,
+        ttl: 1,
+        scan_timeout: 5,
+        scan_command_json: scanner_command(state_dir),
+        command: [RbConfig.ruby, "-e", "File.write(ARGV.fetch(0), 'executed')", result_path],
+        log: File.join(state_dir, "failed-launch.log")
+      }
+      failing_store = FailSecondAdmissionWriteStore.new(state_dir: state_dir, host: "m5")
+
+      error = assert_raises(HeavyRootAdmission::Error) do
+        HeavyRootAdmission.launch(options, store: failing_store)
+      end
+      assert_match(/simulated bound-state persistence failure/, error.message)
+
+      attempted = failing_store.failed_state.fetch("reservations").fetch(0)
+      pid = attempted.fetch("pid")
+      pgid = attempted.fetch("pgid")
+      refute HeavyRootAdmission.process_target_live?(pid), "the gated PID survived failed persistence"
+      refute HeavyRootAdmission.process_target_live?(-pgid), "the gated process group survived failed persistence"
+      refute File.exist?(result_path), "the command ran before its bound state was durable"
+      refute File.exist?(options.fetch(:log)), "the gated child opened a writer before its bound state was durable"
+
+      state_path = Dir[File.join(state_dir, "host-*.json")].fetch(0)
+      persisted = JSON.parse(File.read(state_path, encoding: "UTF-8")).fetch("reservations").fetch(0)
+      assert_equal "reserved", persisted.fetch("status")
+      refute persisted.key?("pid")
+      refute persisted.key?("pgid")
+
+      recovery_store = HeavyRootAdmission::Store.new(
+        state_dir: state_dir,
+        host: "m5",
+        clock: -> { Time.now.utc + 2 }
+      )
+      recovery = HeavyRootAdmission.launch(
+        options.merge(launch_token: "recovery-launch", log: File.join(state_dir, "recovery.log")),
+        store: recovery_store
+      )
+      assert_equal "launched", recovery.fetch("decision")
+      assert_equal ["failed-launch"], recovery.fetch("recovered_prelaunch_tokens")
+      assert wait_until { File.exist?(result_path) }, "fresh launch did not execute after bounded recovery"
+      recovery_reservation = recovery.fetch("reservation")
+      assert(
+        wait_until do
+          !HeavyRootAdmission.process_target_live?(recovery_reservation.fetch("pid")) &&
+            !HeavyRootAdmission.process_target_live?(-recovery_reservation.fetch("pgid"))
+        end,
+        "recovery launch did not reach terminal"
+      )
+    end
+  end
+
+  def test_external_reserve_and_bind_commands_cannot_authorize_a_launch
+    Dir.mktmpdir("heavy-root-admission-legacy-cli-test") do |state_dir|
+      reserve = run_helper(
+        "reserve", "--state-dir", state_dir, "--host", "M5",
+        "--owner", "maker", "--lane", "issue-604-maker",
+        "--worktree", state_dir, "--command-class", "validator",
+        "--launch-token", "legacy-reserve", "--ceiling", "1",
+        "--scan-command-json", scanner_command(state_dir), "--json"
+      )
+      bind = run_helper(
+        "bind", "--state-dir", state_dir, "--host", "M5",
+        "--launch-token", "legacy-reserve", "--pid", Process.pid.to_s,
+        "--pgid", Process.getpgrp.to_s, "--json"
+      )
+
+      assert_equal 64, reserve.fetch(:status), reserve.inspect
+      assert_equal 64, bind.fetch(:status), bind.inspect
+      assert_match(/expected command: launch or release/i, reserve.fetch(:stderr))
+      assert_match(/expected command: launch or release/i, bind.fetch(:stderr))
+      assert_empty Dir[File.join(state_dir, "host-*.json")],
+                   "legacy commands must not create pre-launch state"
+    end
+  end
+
+  def test_lost_launch_receipt_requires_same_token_reconciliation
+    Dir.mktmpdir("heavy-root-admission-lost-receipt-test") do |state_dir|
+      token = "lost-receipt-launch"
+      result_path = File.join(state_dir, "executed.txt")
+      read_end, write_end = IO.pipe
+      read_end.close
+      error_path = File.join(state_dir, "helper.stderr")
+      error_log = File.open(error_path, "w")
+      helper_pid = Process.spawn(
+        RbConfig.ruby,
+        HELPER,
+        *launch_arguments(
+          state_dir,
+          token: token,
+          owner: "maker-#{'x' * (128 * 1024)}",
+          command: [RbConfig.ruby, "-e", "File.write(ARGV.fetch(0), 'executed')", result_path]
+        ),
+        out: write_end,
+        err: error_log
+      )
+      write_end.close
+      error_log.close
+      _waited_pid, status = Process.wait2(helper_pid)
+
+      refute status.success?, "the helper unexpectedly delivered a receipt to a closed output pipe"
+      assert wait_until { File.exist?(result_path) }, "the bound command did not execute before receipt loss"
+      state_path = Dir[File.join(state_dir, "host-*.json")].fetch(0)
+      reservation = JSON.parse(File.read(state_path, encoding: "UTF-8")).fetch("reservations").fetch(0)
+      assert_equal "bound", reservation.fetch("status")
+      assert_equal token, reservation.fetch("launch_token")
+
+      capacity_workflow = File.read(CAPACITY_WORKFLOW, encoding: "UTF-8")
+      assert_includes capacity_workflow, "A missing receipt or any nonzero `launch` outcome is `UNKNOWN`"
+      assert_includes capacity_workflow, "reconcile the same launch token"
+    ensure
+      write_end&.close unless write_end&.closed?
+      error_log&.close unless error_log&.closed?
     end
   end
 
@@ -80,35 +271,24 @@ class HeavyRootAdmissionTest < Minitest::Test
     Dir.mktmpdir("heavy-root-admission-bind-test") do |state_dir|
       token = "launch-bound-root"
       scan_command = scanner_command(state_dir)
-      reserve = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "maker", "--lane", "issue-604-maker",
-        "--worktree", "/tmp/maker", "--command-class", "validator",
-        "--launch-token", token, "--ceiling", "1",
-        "--scan-command-json", scan_command, "--json"
+      launch = run_launch(
+        state_dir,
+        token: token,
+        scan_command: scan_command,
+        command: [RbConfig.ruby, "-e", "sleep 30"]
       )
-      assert_equal 0, reserve.fetch(:status), reserve.inspect
+      assert_equal 0, launch.fetch(:status), launch.inspect
+      bound_reservation = JSON.parse(launch.fetch(:stdout)).fetch("reservation")
+      pid = bound_reservation.fetch("pid")
+      pgid = bound_reservation.fetch("pgid")
 
-      pid = Process.spawn(RbConfig.ruby, "-e", "sleep 30", pgroup: true)
       begin
-        bind = run_helper(
-          "bind", "--state-dir", state_dir, "--host", "M5",
-          "--launch-token", token, "--pid", pid.to_s, "--pgid", pid.to_s, "--json"
-        )
-        assert_equal 0, bind.fetch(:status), bind.inspect
-        bound_reservation = JSON.parse(bind.fetch(:stdout)).fetch("reservation")
         assert_equal "bound", bound_reservation.fetch("status")
         refute_empty bound_reservation.fetch("pid_start_identity")
 
-        reserve_replay = run_helper(
-          "reserve", "--state-dir", state_dir, "--host", "M5",
-          "--owner", "maker", "--lane", "issue-604-maker",
-          "--worktree", "/tmp/maker", "--command-class", "validator",
-          "--launch-token", token, "--ceiling", "1",
-          "--scan-command-json", scan_command, "--json"
-        )
-        assert_equal 3, reserve_replay.fetch(:status), reserve_replay.inspect
-        replay_payload = JSON.parse(reserve_replay.fetch(:stdout))
+        launch_replay = run_launch(state_dir, token: token, scan_command: scan_command)
+        assert_equal 3, launch_replay.fetch(:status), launch_replay.inspect
+        replay_payload = JSON.parse(launch_replay.fetch(:stdout))
         assert_equal "already-bound", replay_payload.fetch("reason")
         assert_equal pid, replay_payload.dig("reservation", "pid")
         assert_match(/do not relaunch/i, replay_payload.fetch("retry_when"))
@@ -121,8 +301,10 @@ class HeavyRootAdmissionTest < Minitest::Test
         assert_equal 1, premature.fetch(:status), premature.inspect
         assert_match(/still live/i, premature.fetch(:stderr))
       ensure
-        Process.kill("TERM", pid)
-        Process.wait(pid)
+        HeavyRootAdmission.signal_process_group("TERM", pgid)
+        wait_until do
+          !HeavyRootAdmission.process_target_live?(pid) && !HeavyRootAdmission.process_target_live?(-pgid)
+        end
       end
 
       missing_cleanup = run_helper(
@@ -140,45 +322,14 @@ class HeavyRootAdmissionTest < Minitest::Test
       assert_equal 0, release.fetch(:status), release.inspect
       assert_equal "released", JSON.parse(release.fetch(:stdout)).dig("reservation", "status")
 
-      replacement = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "next-maker", "--lane", "issue-605-maker",
-        "--worktree", "/tmp/next-maker", "--command-class", "validator",
-        "--launch-token", "launch-next", "--ceiling", "1",
-        "--scan-command-json", scan_command, "--json"
+      replacement = run_launch(
+        state_dir,
+        token: "launch-next",
+        owner: "next-maker",
+        lane: "issue-605-maker",
+        scan_command: scan_command
       )
       assert_equal 0, replacement.fetch(:status), replacement.inspect
-    end
-  end
-
-  def test_bind_reports_process_group_permission_failure_as_blocked
-    Dir.mktmpdir("heavy-root-admission-bind-permission-test") do |state_dir|
-      token = "launch-permission-failure"
-      reserve = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "maker", "--lane", "issue-604-maker",
-        "--worktree", "/tmp/maker", "--command-class", "validator",
-        "--launch-token", token, "--ceiling", "1",
-        "--scan-command-json", scanner_command(state_dir), "--json"
-      )
-      assert_equal 0, reserve.fetch(:status), reserve.inspect
-
-      original_getpgid = Process.method(:getpgid)
-      pgid = Process.getpgrp
-      Process.define_singleton_method(:getpgid) { |_pid| raise Errno::EPERM, "Operation not permitted" }
-      status = nil
-      stdout, stderr = capture_io do
-        status = HeavyRootAdmission.main(
-          ["bind", "--state-dir", state_dir, "--host", "M5", "--launch-token", token,
-           "--pid", Process.pid.to_s, "--pgid", pgid.to_s, "--json"]
-        )
-      end
-
-      assert_equal 1, status
-      assert_empty stdout
-      assert_match(/BLOCKED:.*process group.*not permitted/i, stderr)
-    ensure
-      Process.define_singleton_method(:getpgid, original_getpgid) if original_getpgid
     end
   end
 
@@ -237,44 +388,6 @@ class HeavyRootAdmissionTest < Minitest::Test
     ), "the exact bound PID and PGID identify one scanned root"
   end
 
-  def test_expired_prelaunch_token_is_recovered_but_cannot_be_reused
-    Dir.mktmpdir("heavy-root-admission-expiry-test") do |state_dir|
-      scan_command = scanner_command(state_dir)
-      first = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "crashed-maker", "--lane", "issue-604-crashed-maker",
-        "--worktree", "/tmp/crashed-maker", "--command-class", "validator",
-        "--launch-token", "stale-launch", "--ceiling", "1", "--ttl", "1",
-        "--scan-command-json", scan_command, "--json"
-      )
-      assert_equal 0, first.fetch(:status), first.inspect
-
-      sleep 1.1
-
-      reused = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "crashed-maker", "--lane", "issue-604-crashed-maker",
-        "--worktree", "/tmp/crashed-maker", "--command-class", "validator",
-        "--launch-token", "stale-launch", "--ceiling", "1",
-        "--scan-command-json", scan_command, "--json"
-      )
-      assert_equal 3, reused.fetch(:status), reused.inspect
-      reused_payload = JSON.parse(reused.fetch(:stdout))
-      assert_equal "expired-launch-token", reused_payload.fetch("reason")
-      assert_equal ["stale-launch"], reused_payload.fetch("recovered_prelaunch_tokens")
-      assert_match(/new launch token/i, reused_payload.fetch("retry_when"))
-
-      recovered = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "recovery-maker", "--lane", "issue-604-recovery-maker",
-        "--worktree", "/tmp/recovery-maker", "--command-class", "validator",
-        "--launch-token", "fresh-launch", "--ceiling", "1",
-        "--scan-command-json", scan_command, "--json"
-      )
-      assert_equal 0, recovered.fetch(:status), recovered.inspect
-    end
-  end
-
   def test_unverified_live_root_blocks_admission_instead_of_being_treated_as_stale
     Dir.mktmpdir("heavy-root-admission-unverified-test") do |state_dir|
       scan_command = scanner_command(
@@ -291,12 +404,14 @@ class HeavyRootAdmissionTest < Minitest::Test
           }
         ]
       )
-      attempt = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M1",
-        "--owner", "new-maker", "--lane", "issue-604-new-maker",
-        "--worktree", "/tmp/new-maker", "--command-class", "validator",
-        "--launch-token", "launch-new", "--ceiling", "2",
-        "--scan-command-json", scan_command, "--json"
+      attempt = run_launch(
+        state_dir,
+        token: "launch-new",
+        host: "M1",
+        owner: "new-maker",
+        lane: "issue-604-new-maker",
+        ceiling: 2,
+        scan_command: scan_command
       )
 
       assert_equal 1, attempt.fetch(:status), attempt.inspect
@@ -310,7 +425,8 @@ class HeavyRootAdmissionTest < Minitest::Test
     assert File.file?(CAPACITY_WORKFLOW), "missing canonical capacity-admission component"
     capacity_workflow = File.read(CAPACITY_WORKFLOW, encoding: "UTF-8")
 
-    %w[bin/heavy-root-admission reserve bind release --ceiling --scan-command-json --no-writer-cleanup].each do |term|
+    %w[bin/heavy-root-admission launch release --ceiling --scan-command-json --command-json --log
+       --no-writer-cleanup].each do |term|
       assert_includes capacity_workflow, term
     end
     assert_includes capacity_workflow, "ssh <m1-alias> 'zsh -lc"
@@ -338,21 +454,17 @@ class HeavyRootAdmissionTest < Minitest::Test
   def test_launch_token_replay_rejects_different_lane_metadata
     Dir.mktmpdir("heavy-root-admission-token-test") do |state_dir|
       scan_command = scanner_command(state_dir)
-      first = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "maker", "--lane", "issue-604-maker",
-        "--worktree", "/tmp/maker", "--command-class", "validator",
-        "--launch-token", "unique-launch", "--ceiling", "2",
-        "--scan-command-json", scan_command, "--json"
-      )
+      first = run_launch(state_dir, token: "unique-launch", ceiling: 2, scan_command: scan_command)
       assert_equal 0, first.fetch(:status), first.inspect
 
-      conflict = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "other-maker", "--lane", "issue-999-other-maker",
-        "--worktree", "/tmp/other-maker", "--command-class", "review",
-        "--launch-token", "unique-launch", "--ceiling", "2",
-        "--scan-command-json", scan_command, "--json"
+      conflict = run_launch(
+        state_dir,
+        token: "unique-launch",
+        owner: "other-maker",
+        lane: "issue-999-other-maker",
+        command_class: "review",
+        ceiling: 2,
+        scan_command: scan_command
       )
 
       assert_equal 1, conflict.fetch(:status), conflict.inspect
@@ -363,23 +475,21 @@ class HeavyRootAdmissionTest < Minitest::Test
   def test_bound_reservation_and_its_verified_live_root_count_as_one_occupant
     Dir.mktmpdir("heavy-root-admission-dedup-test") do |state_dir|
       empty_scan = scanner_command(state_dir)
-      reserve = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M1",
-        "--owner", "first-maker", "--lane", "pr-425-validator",
-        "--worktree", "/tmp/pr-425", "--command-class", "validator",
-        "--launch-token", "launch-first", "--ceiling", "2",
-        "--scan-command-json", empty_scan, "--json"
+      first = run_launch(
+        state_dir,
+        token: "launch-first",
+        host: "M1",
+        owner: "first-maker",
+        lane: "pr-425-validator",
+        ceiling: 2,
+        scan_command: empty_scan,
+        command: [RbConfig.ruby, "-e", "sleep 30"]
       )
-      assert_equal 0, reserve.fetch(:status), reserve.inspect
+      assert_equal 0, first.fetch(:status), first.inspect
+      first_reservation = JSON.parse(first.fetch(:stdout)).fetch("reservation")
+      live_groups = [first_reservation]
 
-      pid = Process.spawn(RbConfig.ruby, "-e", "sleep 30", pgroup: true)
       begin
-        bind = run_helper(
-          "bind", "--state-dir", state_dir, "--host", "M1",
-          "--launch-token", "launch-first", "--pid", pid.to_s, "--pgid", pid.to_s, "--json"
-        )
-        assert_equal 0, bind.fetch(:status), bind.inspect
-
         live_scan = scanner_command(
           state_dir,
           roots: [
@@ -389,33 +499,41 @@ class HeavyRootAdmissionTest < Minitest::Test
               lane: "pr-425-validator",
               worktree: "/tmp/pr-425",
               command_class: "validator",
-              pid: pid,
-              pgid: pid
+              pid: first_reservation.fetch("pid"),
+              pgid: first_reservation.fetch("pgid")
             }
           ]
         )
-        second = run_helper(
-          "reserve", "--state-dir", state_dir, "--host", "M1",
-          "--owner", "second-maker", "--lane", "pr-610-validator",
-          "--worktree", "/tmp/pr-610", "--command-class", "validator",
-          "--launch-token", "launch-second", "--ceiling", "2",
-          "--scan-command-json", live_scan, "--json"
+        second = run_launch(
+          state_dir,
+          token: "launch-second",
+          host: "M1",
+          owner: "second-maker",
+          lane: "pr-610-validator",
+          ceiling: 2,
+          scan_command: live_scan,
+          command: [RbConfig.ruby, "-e", "sleep 30"]
         )
         assert_equal 0, second.fetch(:status), second.inspect
+        live_groups << JSON.parse(second.fetch(:stdout)).fetch("reservation")
 
-        third = run_helper(
-          "reserve", "--state-dir", state_dir, "--host", "M1",
-          "--owner", "third-maker", "--lane", "pr-999-review",
-          "--worktree", "/tmp/pr-999", "--command-class", "review",
-          "--launch-token", "launch-third", "--ceiling", "2",
-          "--scan-command-json", live_scan, "--json"
+        third = run_launch(
+          state_dir,
+          token: "launch-third",
+          host: "M1",
+          owner: "third-maker",
+          lane: "pr-999-review",
+          command_class: "review",
+          ceiling: 2,
+          scan_command: live_scan
         )
         assert_equal 3, third.fetch(:status), third.inspect
         owners = JSON.parse(third.fetch(:stdout)).fetch("current_owners")
         assert_equal %w[pr-425-validator pr-610-validator], owners.map { |row| row.fetch("lane") }.sort
       ensure
-        Process.kill("TERM", pid)
-        Process.wait(pid)
+        live_groups.each do |reservation|
+          HeavyRootAdmission.signal_process_group("TERM", reservation.fetch("pgid"))
+        end
       end
     end
   end
@@ -427,12 +545,12 @@ class HeavyRootAdmissionTest < Minitest::Test
         ceiling: 0,
         retry_when: "M1 load is normalized and memory pressure is healthy"
       )
-      attempt = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M1",
-        "--owner", "maker", "--lane", "issue-604-maker",
-        "--worktree", "/tmp/maker", "--command-class", "validator",
-        "--launch-token", "launch-policy", "--ceiling", "2",
-        "--scan-command-json", scan_command, "--json"
+      attempt = run_launch(
+        state_dir,
+        token: "launch-policy",
+        host: "M1",
+        ceiling: 2,
+        scan_command: scan_command
       )
 
       assert_equal 3, attempt.fetch(:status), attempt.inspect
@@ -446,19 +564,21 @@ class HeavyRootAdmissionTest < Minitest::Test
   def test_host_alias_case_does_not_create_a_second_lock_domain
     Dir.mktmpdir("heavy-root-admission-host-test") do |state_dir|
       scan_command = scanner_command(state_dir)
-      first = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M1",
-        "--owner", "first-maker", "--lane", "pr-425-validator",
-        "--worktree", "/tmp/first", "--command-class", "validator",
-        "--launch-token", "launch-first", "--ceiling", "1",
-        "--scan-command-json", scan_command, "--json"
+      first = run_launch(
+        state_dir,
+        token: "launch-first",
+        host: "M1",
+        owner: "first-maker",
+        lane: "pr-425-validator",
+        scan_command: scan_command
       )
-      second = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "m1",
-        "--owner", "second-maker", "--lane", "pr-610-validator",
-        "--worktree", "/tmp/second", "--command-class", "validator",
-        "--launch-token", "launch-second", "--ceiling", "1",
-        "--scan-command-json", scan_command, "--json"
+      second = run_launch(
+        state_dir,
+        token: "launch-second",
+        host: "m1",
+        owner: "second-maker",
+        lane: "pr-610-validator",
+        scan_command: scan_command
       )
 
       assert_equal 0, first.fetch(:status), first.inspect
@@ -497,12 +617,11 @@ class HeavyRootAdmissionTest < Minitest::Test
       scan_command = JSON.generate([RbConfig.ruby, scanner])
 
       started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      attempt = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "maker", "--lane", "issue-604-maker",
-        "--worktree", "/tmp/maker", "--command-class", "validator",
-        "--launch-token", "launch-with-descendant", "--ceiling", "1",
-        "--scan-timeout", "1", "--scan-command-json", scan_command, "--json"
+      attempt = run_launch(
+        state_dir,
+        token: "launch-with-descendant",
+        scan_timeout: 1,
+        scan_command: scan_command
       )
       elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
 
@@ -515,12 +634,10 @@ class HeavyRootAdmissionTest < Minitest::Test
 
   def test_malformed_scan_command_json_is_reported_as_usage_error
     Dir.mktmpdir("heavy-root-admission-scan-command-json-test") do |state_dir|
-      attempt = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "maker", "--lane", "issue-604-maker",
-        "--worktree", "/tmp/maker", "--command-class", "validator",
-        "--launch-token", "malformed-scan-command", "--ceiling", "1",
-        "--scan-command-json", "[\"unterminated", "--json"
+      attempt = run_launch(
+        state_dir,
+        token: "malformed-scan-command",
+        scan_command: "[\"unterminated"
       )
 
       assert_equal 64, attempt.fetch(:status), attempt.inspect
@@ -534,12 +651,10 @@ class HeavyRootAdmissionTest < Minitest::Test
     Dir.mktmpdir("heavy-root-admission-scan-roots-test") do |state_dir|
       scanner = File.join(state_dir, "scan-without-roots.rb")
       File.write(scanner, "require 'json'; puts JSON.generate({})\n")
-      attempt = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "maker", "--lane", "issue-604-maker",
-        "--worktree", "/tmp/maker", "--command-class", "validator",
-        "--launch-token", "missing-roots", "--ceiling", "1",
-        "--scan-command-json", JSON.generate([RbConfig.ruby, scanner]), "--json"
+      attempt = run_launch(
+        state_dir,
+        token: "missing-roots",
+        scan_command: JSON.generate([RbConfig.ruby, scanner])
       )
 
       assert_equal 1, attempt.fetch(:status), attempt.inspect
@@ -555,12 +670,13 @@ class HeavyRootAdmissionTest < Minitest::Test
         state_dir,
         roots: [{ verified: true, owner: "maker", lane: "issue-604-maker", pid: Process.pid }]
       )
-      attempt = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "other-maker", "--lane", "issue-604-other-maker",
-        "--worktree", "/tmp/other-maker", "--command-class", "validator",
-        "--launch-token", "missing-provenance", "--ceiling", "2",
-        "--scan-command-json", scan_command, "--json"
+      attempt = run_launch(
+        state_dir,
+        token: "missing-provenance",
+        owner: "other-maker",
+        lane: "issue-604-other-maker",
+        ceiling: 2,
+        scan_command: scan_command
       )
 
       assert_equal 1, attempt.fetch(:status), attempt.inspect
@@ -627,18 +743,12 @@ class HeavyRootAdmissionTest < Minitest::Test
         { write: true, report: nil }
       end
 
-      attempt = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "maker", "--lane", "issue-604-maker",
-        "--worktree", "/tmp/maker", "--command-class", "validator",
-        "--launch-token", "fresh-token", "--ceiling", "1",
-        "--scan-command-json", scanner_command(state_dir), "--json"
-      )
+      attempt = run_launch(state_dir, token: "fresh-token")
 
       assert_equal 0, attempt.fetch(:status), attempt.inspect
       payload = JSON.parse(attempt.fetch(:stdout))
-      assert_equal "reserved", payload.fetch("decision")
-      assert_equal 1, payload.fetch("occupied_after_reservation")
+      assert_equal "launched", payload.fetch("decision")
+      assert_equal 1, payload.fetch("occupied_after_launch")
 
       state_path = Dir[File.join(state_dir, "host-*.json")].fetch(0)
       persisted = JSON.parse(File.read(state_path, encoding: "UTF-8"))
@@ -652,12 +762,12 @@ class HeavyRootAdmissionTest < Minitest::Test
   def test_a_launch_token_remains_single_use_after_its_terminal_record_is_pruned
     Dir.mktmpdir("heavy-root-admission-single-use-token-test") do |state_dir|
       scan_command = scanner_command(state_dir)
-      first = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "first-maker", "--lane", "issue-604-first-maker",
-        "--worktree", "/tmp/first-maker", "--command-class", "validator",
-        "--launch-token", "single-use-token", "--ceiling", "1",
-        "--scan-command-json", scan_command, "--json"
+      first = run_launch(
+        state_dir,
+        token: "single-use-token",
+        owner: "first-maker",
+        lane: "issue-604-first-maker",
+        scan_command: scan_command
       )
       assert_equal 0, first.fetch(:status), first.inspect
 
@@ -676,12 +786,13 @@ class HeavyRootAdmissionTest < Minitest::Test
       end
       assert_empty retained
 
-      reused = run_helper(
-        "reserve", "--state-dir", state_dir, "--host", "M5",
-        "--owner", "other-maker", "--lane", "issue-999-other-maker",
-        "--worktree", "/tmp/other-maker", "--command-class", "review",
-        "--launch-token", "single-use-token", "--ceiling", "1",
-        "--scan-command-json", scan_command, "--json"
+      reused = run_launch(
+        state_dir,
+        token: "single-use-token",
+        owner: "other-maker",
+        lane: "issue-999-other-maker",
+        command_class: "review",
+        scan_command: scan_command
       )
 
       assert_equal 3, reused.fetch(:status), reused.inspect

@@ -20,7 +20,8 @@ PR-batch skill pack. The operator or consumer policy supplies, per host:
   case-normalized so aliases such as `M1` and `m1` share one lock domain);
 - a bounded whole-host scanner command that returns JSON with a `roots` array
   and may lower the current ceiling from live load/memory policy;
-- owner/task, lane, worktree, command class, and a unique launch token; and
+- owner/task, lane, worktree, command class, unique launch token, shell-free
+  root command argv, and durable log path; and
 - the short pre-launch reservation TTL.
 
 When this optional component is enabled, the consumer `AGENTS.md` policy
@@ -51,38 +52,45 @@ the reservation. A scanner may return nonnegative `ceiling` and human-readable
 `--ceiling`, so a live policy observation can reduce but never silently expand
 the configured maximum.
 
-## Reserve, Launch, Bind, Release
+## Launch And Release
 
 1. On the host that will execute the root, run `bin/heavy-root-admission
-   reserve` with `--state-dir`, `--host`, `--owner`, `--lane`, `--worktree`,
-   `--command-class`, `--launch-token`, `--ceiling`, and
-   `--scan-command-json`. The helper holds a host-local file lock only while it
-   runs the bounded scan, recovers expired pre-launch records, counts live roots
-   plus active reservations, and persists its decision.
-   That lock includes the scan duration, so a concurrent bind or release may
+   launch` with `--state-dir`, `--host`, `--owner`, `--lane`, `--worktree`,
+   `--command-class`, `--launch-token`, `--ceiling`,
+   `--scan-command-json`, `--command-json`, and `--log`. Both command values are
+   JSON argv arrays resolved from trusted consumer seams; the helper never runs
+   them through a shell. It holds the host-local lock while it scans, counts
+   verified live roots plus active reservations, and performs the bounded
+   launch transaction. That lock includes the scan duration, so release may
    wait up to `--scan-timeout`; keep the timeout at the smallest reliable value.
-2. Launch only when the decision is `reserved` (exit 0). A `capacity-full`
-   decision (exit 3) names the owning tasks/lanes and says to retry after a live
-   root or reservation reaches terminal/no-writer cleanup and releases. Do not
-   poll raw PIDs or launch anyway.
-3. Start the root in a traceable process group, retain its durable log, then
-   immediately run `bin/heavy-root-admission bind` with the same state
-   directory, host, and launch token plus the real `--pid` and `--pgid`. Binding
-   verifies the local process and process group and records the root process's
-   start identity so later PID reuse is not mistaken for that root. A bound
-   reservation does not expire automatically. Replaying `reserve` for that token returns an
-   `already-bound` denial and never authorizes another launch.
-4. Preserve the process and descendants to natural terminal. Verify the exact
-   terminal outcome and complete no-writer cleanup, including descendants,
-   loggers, open repository writers, and Git locks. Only then run
+2. While still holding the lock, the helper persists a short-lived pre-launch
+   reservation, creates a child in its own process group, and keeps that child
+   blocked on a private permit pipe. The child does not change directory, open
+   the log, or execute the root command yet. The helper captures the real
+   PID/PGID and process start identity, persists the bound reservation, and only
+   then permits the child to open the log and `exec` the argv. A failure before
+   the bound write closes the pipe and reaps the gated group; it never leaves an
+   untracked root or repository/log writer. The durable pre-launch record then
+   expires normally so another coordinator can recover it with a fresh token.
+3. Only an intact receipt with decision `launched` (exit 0) confirms that the
+   helper executed the transaction. An intact `capacity-full` decision (exit 3)
+   names owning tasks/lanes and says when to retry. Do not poll raw PIDs, invoke
+   the command separately, or treat any pre-launch reservation as external
+   launch permission. The old public `reserve` and `bind` commands are invalid.
+4. Preserve the helper-owned process and descendants to natural terminal.
+   Verify the exact terminal outcome and complete no-writer cleanup, including
+   descendants, loggers, open repository writers, and Git locks. Only then run
    `bin/heavy-root-admission release` with `--terminal-outcome` and
    `--no-writer-cleanup`. Release refuses a live PID or PGID.
 
-A crashed claimant's unbound reservation expires after the bounded TTL. The
-next claimant recovers it while holding the same lock, but must use a new launch
-token and repeat the whole-host scan. Launch tokens are single-use for the life
-of the state directory: hashed tombstones reject a token even after its
-detailed record is pruned. Released and expired detail records are retained for
+A crashed helper's gated child sees the permit pipe close and exits without
+opening the log or executing the root. A reservation still in `reserved` state
+expires after the bounded TTL. A reservation already persisted as `bound` must
+instead follow the same-token reconciliation and cleanup path below. The next
+claimant recovers an expired pre-launch reservation while holding the same lock,
+but must use a new launch token and repeat the whole-host scan. Launch tokens are single-use
+for the life of the state directory: hashed tombstones reject a token even after
+its detailed record is pruned. Released and expired detail records are retained for
 at most one hour and the newest 128 records per host, whichever bound is reached
 first. Active records are never pruned. An expired record never authorizes
 killing or ignoring an unverified live root. A bound record remains occupied
@@ -92,18 +100,18 @@ read the stored lane, launch token, PID/PGID, and start identity, perform a
 fresh verified whole-host scan, confirm natural terminal and zero descendants,
 loggers, writers, and Git locks, then run the same `release` command. Release
 does not require the original claimant identity. It still fails closed for an
-ambiguous live process group; it does not auto-expire a bound root. A reused PID
+ambiguous live process group; it does not auto-expire a bound root. PID reuse
 with a different recorded start identity is not treated as the original root.
 
 ## Remote M1 Pattern
 
-Run the entire reserve/bind/release sequence on M1 itself. A lock or state file
+Run the entire launch/release sequence on M1 itself. A lock or state file
 on M5 cannot coordinate another process that independently admits work on M1.
 Use the repository's configured non-interactive login-shell transport; with an
 operator-configured alias the shape is:
 
 ```text
-ssh <m1-alias> 'zsh -lc '\''<resolved-pr-batch-dir>/bin/heavy-root-admission reserve <M1 policy inputs>'\'''
+ssh <m1-alias> 'zsh -lc '\''<resolved-pr-batch-dir>/bin/heavy-root-admission launch <M1 policy and root-command inputs>'\'''
 ```
 
 This shows the transport shape, not a string-interpolation template. Resolve
@@ -111,18 +119,29 @@ the command from trusted seam values and shell-escape every dynamic argument
 separately before assembling the remote command; never interpolate task, PR,
 title, or branch text directly.
 
-Launch the remote root non-interactively with a durable remote log and captured
-PID/PGID, then invoke `bind` through the same login-shell form on M1. After its
-natural terminal and remote no-writer cleanup, invoke `release` there as well.
-Record the remote host, task/lane, worktree, command, launch token, PID/PGID,
-log, terminal outcome, and cleanup receipt. Never reserve on M5 for work that
-will execute on M1.
+The helper launches the remote root non-interactively, records its PID/PGID,
+and redirects it to the durable remote `--log`. After natural terminal and
+remote no-writer cleanup, invoke `release` through the same login-shell form on
+M1. Record the remote host, task/lane, worktree, command, launch token,
+PID/PGID, log, terminal outcome, and cleanup receipt. Never admit on M5 for work
+that will execute on M1.
 
 ## Status And Recovery
 
-Treat exit 0 as the only launch permission. Exit 3 is a normal capacity denial;
-show its owner/task rows and exact retry condition. Exit 1 or 64 is an unknown
-or invalid admission attempt and launches nothing. Preserve the state directory
-for replay across coordinator restarts. The mechanism is optional: a
+Treat an intact exit 0 receipt with decision `launched` as confirmation that the
+helper launched and durably bound the root. An intact exit 3 receipt with reason
+`capacity-full` is a normal denial; show its owner/task rows and exact retry
+condition. Exit 64 is invalid CLI input rejected before the launch transaction
+and launches nothing.
+
+A missing receipt or any nonzero `launch` outcome is `UNKNOWN` once valid
+launch inputs entered the transaction. Do not retry the command or mint a fresh
+token. First reconcile the same launch token against the host-local state. A
+bound record means the root may be live and must be monitored through terminal,
+no-writer cleanup, and release. A reserved record must reach bounded expiry and
+recovery. Only when no active reservation remains for the token and a fresh
+corrected whole-host scan proves no matching root may a coordinator use a fresh
+token. Preserve the state
+directory for replay across coordinator restarts. The mechanism is optional: a
 single-operator or serial workflow may omit it, but must not claim atomic
 multi-coordinator admission without using the host-local contract.

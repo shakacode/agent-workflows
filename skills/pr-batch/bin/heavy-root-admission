@@ -15,6 +15,8 @@ module HeavyRootAdmission
   MAX_TTL = 300
   DEFAULT_SCAN_TIMEOUT = 15
   MAX_SCAN_TIMEOUT = 60
+  LAUNCH_SETUP_TIMEOUT = 5
+  LAUNCH_ABORT_TIMEOUT = 2
   TERMINAL_RETENTION_SECONDS = 3600
   MAX_TERMINAL_RESERVATIONS = 128
   TERMINAL_STATUSES = %w[released expired].freeze
@@ -66,11 +68,19 @@ module HeavyRootAdmission
         now = @clock.call.utc
         remember_existing_launch_tokens!(state)
         pruned_count = HeavyRootAdmission.prune_terminal_reservations!(state, now)
-        result = yield(state, now)
-        write_state(state) if result.fetch(:write, false) || pruned_count.positive?
-        report = result.fetch(:report)
-        report["pruned_terminal_reservations"] = pruned_count if report.is_a?(Hash) && pruned_count.positive?
-        report
+        result = nil
+        begin
+          persist = -> { write_state(state) }
+          result = yield(state, now, persist)
+          report = result.fetch(:report)
+          write_state(state) if result.fetch(:write, false) || pruned_count.positive?
+          result[:after_write]&.call
+          report["pruned_terminal_reservations"] = pruned_count if report.is_a?(Hash) && pruned_count.positive?
+          report
+        rescue StandardError
+          result&.fetch(:on_failure, nil)&.call
+          raise
+        end
       ensure
         lock&.flock(File::LOCK_UN)
       end
@@ -213,14 +223,7 @@ module HeavyRootAdmission
   end
 
   def scan_capacity(command_json, timeout_seconds)
-    command = begin
-      JSON.parse(command_json)
-    rescue JSON::ParserError => e
-      raise UsageError, "--scan-command-json must be valid JSON: #{e.message}"
-    end
-    unless command.is_a?(Array) && command.any? && command.all? { |part| part.is_a?(String) && !part.empty? }
-      raise UsageError, "--scan-command-json must be a nonempty JSON array of command arguments"
-    end
+    command = parse_command_argv(command_json, "--scan-command-json")
 
     stdin, stdout, stderr, waiter = Open3.popen3(*command, pgroup: true)
     stdin.close
@@ -342,9 +345,7 @@ module HeavyRootAdmission
       "owner" => :owner,
       "lane" => :lane,
       "worktree" => :worktree,
-      "command_class" => :command_class,
-      "intended_pid" => :intended_pid,
-      "intended_pgid" => :intended_pgid
+      "command_class" => :command_class
     }.all? { |field, option| reservation[field] == options[option] }
   end
 
@@ -386,40 +387,148 @@ module HeavyRootAdmission
     process_target_live?(pid) || process_target_live?(-pgid)
   end
 
-  def reserve(options)
-    store = Store.new(state_dir: options.fetch(:state_dir), host: options.fetch(:host))
-    store.locked_update do |state, now|
+  def parse_command_argv(command_json, option_name)
+    command = begin
+      JSON.parse(command_json)
+    rescue JSON::ParserError => e
+      raise UsageError, "#{option_name} must be valid JSON: #{e.message}"
+    end
+    unless command.is_a?(Array) && command.any? && command.all? { |part| part.is_a?(String) && !part.empty? }
+      raise UsageError, "#{option_name} must be a nonempty JSON array of command arguments"
+    end
+
+    command
+  end
+
+  class PendingLaunch
+    attr_reader :pid, :pgid, :pid_start_identity
+
+    def initialize(command:, worktree:, log_path:, setup_timeout: LAUNCH_SETUP_TIMEOUT)
+      @committed = false
+      permit_reader, @permit_writer = IO.pipe
+      @ready_reader, ready_writer = IO.pipe
+      @pid = fork do
+        @permit_writer.close
+        @ready_reader.close
+        begin
+          Process.setpgid(0, 0)
+          ready_writer.write("1")
+          ready_writer.close
+          permitted = permit_reader.read(1)
+          permit_reader.close
+          exit!(125) unless permitted == "1"
+
+          Dir.chdir(worktree)
+          log = File.open(log_path, File::WRONLY | File::CREAT | File::APPEND, 0o600)
+          $stdin.reopen(File::NULL)
+          $stdout.reopen(log)
+          $stderr.reopen(log)
+          exec(*command)
+        rescue StandardError => e
+          begin
+            ready_writer.write("0") unless ready_writer.closed?
+          rescue IOError, SystemCallError
+            nil
+          end
+          warn "heavy-root-admission child setup failed: #{e.class}: #{e.message}"
+          exit!(126)
+        end
+      end
+      permit_reader.close
+      ready_writer.close
+      await_ready!(setup_timeout)
+      @pgid = Process.getpgid(@pid)
+      raise Error, "prepared root PID #{@pid} did not enter its own process group" unless @pgid == @pid
+
+      @pid_start_identity = HeavyRootAdmission.process_start_identity(@pid)
+      raise Error, "could not capture a stable start identity for prepared root PID #{@pid}" unless @pid_start_identity
+    rescue StandardError
+      abort!
+      raise
+    ensure
+      @ready_reader&.close unless @ready_reader&.closed?
+    end
+
+    def commit!
+      @permit_writer.write("1")
+      @permit_writer.close
+      @committed = true
+      Process.detach(@pid)
+      true
+    rescue Errno::ECHILD
+      @committed = true
+      true
+    end
+
+    def abort!
+      return true unless @pid
+      return true if @committed
+
+      @permit_writer&.close unless @permit_writer&.closed?
+      return true if wait_for_exit(LAUNCH_ABORT_TIMEOUT)
+
+      terminate("TERM")
+      return true if wait_for_exit(LAUNCH_ABORT_TIMEOUT)
+
+      terminate("KILL")
+      return true if wait_for_exit(LAUNCH_ABORT_TIMEOUT)
+
+      raise Error, "could not reap gated root PID #{@pid} / PGID #{@pgid || @pid}; process state is unknown"
+    end
+
+    private
+
+    def await_ready!(timeout_seconds)
+      readable = IO.select([@ready_reader], nil, nil, timeout_seconds)
+      raise Error, "prepared root PID #{@pid} did not become ready within #{timeout_seconds}s" unless readable
+
+      ready = @ready_reader.read(1)
+      raise Error, "prepared root PID #{@pid} failed before binding" unless ready == "1"
+    end
+
+    def wait_for_exit(timeout_seconds)
+      deadline = HeavyRootAdmission.monotonic_now + timeout_seconds
+      loop do
+        return true if Process.waitpid(@pid, Process::WNOHANG)
+        return false if HeavyRootAdmission.monotonic_now >= deadline
+
+        sleep 0.01
+      end
+    rescue Errno::ECHILD
+      true
+    end
+
+    def terminate(signal)
+      HeavyRootAdmission.signal_process_group(signal, @pgid || @pid)
+      Process.kill(signal, @pid) if HeavyRootAdmission.process_target_live?(@pid)
+    rescue Errno::ESRCH
+      nil
+    end
+  end
+
+  def launch(options, store: nil)
+    store ||= Store.new(state_dir: options.fetch(:state_dir), host: options.fetch(:host))
+    pending = nil
+    store.locked_update do |state, now, persist|
       recovered = expire_stale_prelaunch!(state, now)
       active = state.fetch("reservations").select { |reservation| active_reservation?(reservation) }
       existing = active.find { |reservation| reservation["launch_token"] == options.fetch(:launch_token) }
       if existing
         unless reservation_identity_matches?(existing, options)
-          raise Error, "launch token belongs to different owner, lane, worktree, command class, or intended PID/PGID metadata"
+          raise Error, "launch token belongs to different owner, lane, worktree, or command class"
         end
 
-        if existing["status"] == "bound"
-          next({
-            write: recovered.any?,
-            report: {
-              "version" => VERSION,
-              "decision" => "denied",
-              "reason" => "already-bound",
-              "host" => options.fetch(:host),
-              "launch_token" => options.fetch(:launch_token),
-              "reservation" => existing,
-              "retry_when" => "do not relaunch; wait for the bound PID/PGID to reach terminal/no-writer cleanup and release",
-              "recovered_prelaunch_tokens" => recovered
-            }
-          })
-        end
-
+        reason = existing["status"] == "bound" ? "already-bound" : "prelaunch-in-progress"
         next({
           write: recovered.any?,
           report: {
             "version" => VERSION,
-            "decision" => "reserved",
-            "replayed" => true,
+            "decision" => "denied",
+            "reason" => reason,
+            "host" => options.fetch(:host),
+            "launch_token" => options.fetch(:launch_token),
             "reservation" => existing,
+            "retry_when" => "do not relaunch; wait for terminal/no-writer cleanup or bounded pre-launch recovery",
             "recovered_prelaunch_tokens" => recovered
           }
         })
@@ -442,7 +551,7 @@ module HeavyRootAdmission
             "reason" => reason,
             "host" => options.fetch(:host),
             "launch_token" => options.fetch(:launch_token),
-            "retry_when" => "run a fresh whole-host scan and reserve with a new launch token",
+            "retry_when" => "run a fresh whole-host scan and launch with a new launch token",
             "recovered_prelaunch_tokens" => recovered
           }
         })
@@ -484,108 +593,49 @@ module HeavyRootAdmission
         "worktree" => options.fetch(:worktree),
         "command_class" => options.fetch(:command_class),
         "launch_token" => options.fetch(:launch_token),
-        "intended_pid" => options[:intended_pid],
-        "intended_pgid" => options[:intended_pgid],
         "status" => "reserved",
         "created_at" => iso8601(now),
         "expires_at" => iso8601(now + options.fetch(:ttl))
-      }.compact
+      }
       unless store.remember_launch_token!(options.fetch(:launch_token))
-        raise Error, "launch token was previously seen; reserve with a new launch token"
+        raise Error, "launch token was previously seen; launch with a new launch token"
       end
 
       state.fetch("reservations") << reservation
+      persist.call
+
+      pending = PendingLaunch.new(
+        command: options.fetch(:command),
+        worktree: options.fetch(:worktree),
+        log_path: options.fetch(:log)
+      )
+      reservation["status"] = "bound"
+      reservation["pid"] = pending.pid
+      reservation["pgid"] = pending.pgid
+      reservation["pid_start_identity"] = pending.pid_start_identity
+      reservation["bound_at"] = iso8601(now)
+      reservation["prelaunch_expires_at"] = reservation.delete("expires_at")
+      reservation["log"] = options.fetch(:log)
+      reservation["command_argv_sha256"] = Digest::SHA256.hexdigest(JSON.generate(options.fetch(:command)))
 
       {
         write: true,
+        after_write: -> { pending.commit! },
+        on_failure: -> { pending.abort! },
         report: {
           "version" => VERSION,
-          "decision" => "reserved",
-          "replayed" => false,
+          "decision" => "launched",
           "reservation" => reservation,
           "ceiling" => effective_ceiling,
           "configured_ceiling" => options.fetch(:ceiling),
-          "occupied_after_reservation" => occupancy + 1,
+          "occupied_after_launch" => occupancy + 1,
           "recovered_prelaunch_tokens" => recovered
         }
       }
     end
-  end
-
-  def bind(options)
-    Store.new(state_dir: options.fetch(:state_dir), host: options.fetch(:host)).locked_update do |state, now|
-      recovered = expire_stale_prelaunch!(state, now)
-      reservation = state.fetch("reservations").find do |candidate|
-        active_reservation?(candidate) && candidate["launch_token"] == options.fetch(:launch_token)
-      end
-      unless reservation
-        next({
-          write: recovered.any?,
-          report: {
-            "version" => VERSION,
-            "decision" => "denied",
-            "reason" => "no-active-reservation",
-            "host" => options.fetch(:host),
-            "launch_token" => options.fetch(:launch_token),
-            "recovered_prelaunch_tokens" => recovered
-          }
-        })
-      end
-
-      if reservation["status"] == "bound"
-        unless reservation["pid"] == options.fetch(:pid) && reservation["pgid"] == options.fetch(:pgid)
-          raise Error, "launch token is already bound to PID #{reservation['pid']} / PGID #{reservation['pgid']}"
-        end
-
-        next({
-          write: recovered.any?,
-          report: { "version" => VERSION, "decision" => "bound", "replayed" => true,
-                    "reservation" => reservation, "recovered_prelaunch_tokens" => recovered }
-        })
-      end
-
-      unless process_target_live?(options.fetch(:pid))
-        raise Error, "PID #{options.fetch(:pid)} is not live; reservation remains pre-launch"
-      end
-
-      actual_pgid = Process.getpgid(options.fetch(:pid))
-      unless actual_pgid == options.fetch(:pgid)
-        raise Error, "PID #{options.fetch(:pid)} belongs to PGID #{actual_pgid}, not #{options.fetch(:pgid)}"
-      end
-
-      pid_start_identity = process_start_identity(options.fetch(:pid))
-      unless pid_start_identity
-        raise Error, "could not capture a stable start identity for PID #{options.fetch(:pid)}"
-      end
-
-      if reservation["intended_pid"] && reservation["intended_pid"] != options.fetch(:pid)
-        raise Error, "reservation intended PID #{reservation['intended_pid']}, not #{options.fetch(:pid)}"
-      end
-      if reservation["intended_pgid"] && reservation["intended_pgid"] != options.fetch(:pgid)
-        raise Error, "reservation intended PGID #{reservation['intended_pgid']}, not #{options.fetch(:pgid)}"
-      end
-
-      reservation["status"] = "bound"
-      reservation["pid"] = options.fetch(:pid)
-      reservation["pgid"] = options.fetch(:pgid)
-      reservation["pid_start_identity"] = pid_start_identity
-      reservation["bound_at"] = iso8601(now)
-      reservation["prelaunch_expires_at"] = reservation.delete("expires_at")
-      {
-        write: true,
-        report: {
-          "version" => VERSION,
-          "decision" => "bound",
-          "replayed" => false,
-          "reservation" => reservation,
-          "recovered_prelaunch_tokens" => recovered
-        }
-      }
-    end
-  rescue Errno::ESRCH
-    raise Error, "PID #{options.fetch(:pid)} terminated before its reservation could be bound"
-  rescue Errno::EPERM => e
-    raise Error, "PID #{options.fetch(:pid)} process group could not be inspected: #{e.message}"
+  rescue StandardError
+    pending&.abort!
+    raise
   end
 
   def release(options)
@@ -635,10 +685,10 @@ module HeavyRootAdmission
     raise UsageError, "#{option} must be a positive integer"
   end
 
-  def parse_reserve(argv)
+  def parse_launch(argv)
     options = { ttl: DEFAULT_TTL, scan_timeout: DEFAULT_SCAN_TIMEOUT, json: false }
     parser = OptionParser.new do |opts|
-      opts.banner = "Usage: heavy-root-admission reserve [options]"
+      opts.banner = "Usage: heavy-root-admission launch [options]"
       opts.on("--state-dir PATH") { |value| options[:state_dir] = value }
       opts.on("--host NAME") { |value| options[:host] = value }
       opts.on("--owner OWNER") { |value| options[:owner] = value }
@@ -646,14 +696,14 @@ module HeavyRootAdmission
       opts.on("--worktree PATH") { |value| options[:worktree] = value }
       opts.on("--command-class CLASS") { |value| options[:command_class] = value }
       opts.on("--launch-token TOKEN") { |value| options[:launch_token] = value }
-      opts.on("--intended-pid PID") { |value| options[:intended_pid] = positive_integer(value, "--intended-pid") }
-      opts.on("--intended-pgid PGID") { |value| options[:intended_pgid] = positive_integer(value, "--intended-pgid") }
       opts.on("--ceiling COUNT") { |value| options[:ceiling] = positive_integer(value, "--ceiling") }
       opts.on("--ttl SECONDS") { |value| options[:ttl] = positive_integer(value, "--ttl", maximum: MAX_TTL) }
       opts.on("--scan-timeout SECONDS") do |value|
         options[:scan_timeout] = positive_integer(value, "--scan-timeout", maximum: MAX_SCAN_TIMEOUT)
       end
       opts.on("--scan-command-json JSON") { |value| options[:scan_command_json] = value }
+      opts.on("--command-json JSON") { |value| options[:command_json] = value }
+      opts.on("--log PATH") { |value| options[:log] = value }
       opts.on("--json") { options[:json] = true }
       opts.on("-h", "--help") do
         puts opts
@@ -663,36 +713,17 @@ module HeavyRootAdmission
     parser.parse!(argv)
     raise UsageError, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
 
-    required = %i[state_dir host owner lane worktree command_class launch_token ceiling scan_command_json]
+    required = %i[state_dir host owner lane worktree command_class launch_token ceiling scan_command_json command_json log]
     required.each do |key|
       raise UsageError, "--#{key.to_s.tr('_', '-')} is required" if options[key].to_s.strip.empty?
     end
     options[:host] = canonical_host(options.fetch(:host))
-    options
-  end
+    options[:worktree] = File.expand_path(options.fetch(:worktree))
+    options[:log] = File.expand_path(options.fetch(:log))
+    raise UsageError, "--worktree must be an existing directory" unless File.directory?(options.fetch(:worktree))
+    raise UsageError, "--log parent directory must exist" unless File.directory?(File.dirname(options.fetch(:log)))
 
-  def parse_bind(argv)
-    options = { json: false }
-    parser = OptionParser.new do |opts|
-      opts.banner = "Usage: heavy-root-admission bind [options]"
-      opts.on("--state-dir PATH") { |value| options[:state_dir] = value }
-      opts.on("--host NAME") { |value| options[:host] = value }
-      opts.on("--launch-token TOKEN") { |value| options[:launch_token] = value }
-      opts.on("--pid PID") { |value| options[:pid] = positive_integer(value, "--pid") }
-      opts.on("--pgid PGID") { |value| options[:pgid] = positive_integer(value, "--pgid") }
-      opts.on("--json") { options[:json] = true }
-      opts.on("-h", "--help") do
-        puts opts
-        exit 0
-      end
-    end
-    parser.parse!(argv)
-    raise UsageError, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
-
-    %i[state_dir host launch_token pid pgid].each do |key|
-      raise UsageError, "--#{key.to_s.tr('_', '-')} is required" if options[key].to_s.strip.empty?
-    end
-    options[:host] = canonical_host(options.fetch(:host))
+    options[:command] = parse_command_argv(options.fetch(:command_json), "--command-json")
     options
   end
 
@@ -726,7 +757,7 @@ module HeavyRootAdmission
   def emit(report, json:)
     if json
       puts JSON.generate(report)
-    elsif %w[reserved bound released].include?(report["decision"])
+    elsif %w[launched released].include?(report["decision"])
       puts "#{report['decision'].upcase} #{report.dig('reservation', 'host')} " \
            "#{report.dig('reservation', 'lane')} token=#{report.dig('reservation', 'launch_token')}"
     else
@@ -741,20 +772,17 @@ module HeavyRootAdmission
   def main(argv)
     command = argv.shift
     options, report = case command
-                      when "reserve"
-                        parsed = parse_reserve(argv)
-                        [parsed, reserve(parsed)]
-                      when "bind"
-                        parsed = parse_bind(argv)
-                        [parsed, bind(parsed)]
+                      when "launch"
+                        parsed = parse_launch(argv)
+                        [parsed, launch(parsed)]
                       when "release"
                         parsed = parse_release(argv)
                         [parsed, release(parsed)]
                       else
-                        raise UsageError, "expected command: reserve, bind, or release"
+                        raise UsageError, "expected command: launch or release"
                       end
     emit(report, json: options.fetch(:json))
-    %w[reserved bound released].include?(report["decision"]) ? 0 : 3
+    %w[launched released].include?(report["decision"]) ? 0 : 3
   rescue OptionParser::ParseError, UsageError => e
     warn "USAGE: #{e.message}"
     64
