@@ -238,7 +238,9 @@ Before any later `implementation` or `review` phase transition for that lane,
 replay the batch event history with
 `skills/pr-batch/bin/help-request-lifecycle --lane <lane> --require-phase <phase>`.
 Exit 2 is a hard stop naming the open permission request; do not write the phase
-transition. The default age ceiling is 14,400 seconds and can be configured with
+transition. An open permission request with no lane context is conservatively
+included in every lane-scoped replay rather than treated as permission to
+advance. The default age ceiling is 14,400 seconds and can be configured with
 `--max-open-seconds`. At or beyond the ceiling, close the lane as
 `blocked-user-input` and put the original request id in the `lane_closed`
 event's `evidence`; do not substitute a later generic blocker such as

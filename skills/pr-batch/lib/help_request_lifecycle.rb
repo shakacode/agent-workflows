@@ -38,7 +38,9 @@ module HelpRequestLifecycle
     end
 
     request_rows = requests.values
-    request_rows = request_rows.select { |request| request["lane"] == lane } if lane
+    if lane
+      request_rows = request_rows.select { |request| request["lane"].nil? || request["lane"] == lane }
+    end
     request_rows.sort_by! { |request| [request.fetch("requested_at"), request.fetch("request_id")] }
     if lane
       request_ids = request_rows.to_h { |request| [request.fetch("request_id"), true] }

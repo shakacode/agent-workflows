@@ -52,6 +52,33 @@ class HelpRequestLifecycleTest < Minitest::Test
     assert_nil result.fetch("blocking_request_id")
   end
 
+  def test_unlaned_permission_request_blocks_a_lane_scoped_phase_conservatively
+    input = Tempfile.new(["help-request-lifecycle-unlaned", ".json"])
+    input.write(JSON.generate(
+                  "events" => [{
+                    "event_id" => "request-unlaned",
+                    "batch_id" => "batch-1",
+                    "type" => "help_requested",
+                    "reason" => "permission",
+                    "at" => "2026-08-23T05:48:18Z"
+                  }]
+                ))
+    input.flush
+
+    result, stderr, status = run_lifecycle(
+      input: input.path,
+      now: "2026-08-23T05:49:00Z",
+      lane: "review",
+      require_phase: "review"
+    )
+
+    assert_equal 2, status.exitstatus, stderr
+    assert_equal "request-unlaned", result.fetch("blocking_request_id")
+    assert_nil result.fetch("blocking_request").fetch("lane")
+  ensure
+    input&.close!
+  end
+
   def test_motivating_replay_names_the_oldest_open_permission_request
     result, stderr, status = run_lifecycle
 
