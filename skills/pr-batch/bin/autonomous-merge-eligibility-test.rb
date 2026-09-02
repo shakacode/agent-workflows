@@ -237,6 +237,31 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal "autonomous-merge-eligible", enforced.fetch("verdict")
   end
 
+  def test_stale_approval_satisfiable_is_reported_as_a_shadow_gate
+    result = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(1),
+        reviews: [review("APPROVED", "1" * 40)]
+      ).tap do |input|
+        input.fetch("objective")["branch_protection"] = {
+          "required_pull_request_reviews" => {
+            "required_approving_review_count" => 1,
+            "dismiss_stale_reviews" => false,
+            "require_last_push_approval" => false
+          },
+          "enforce_admins" => false,
+          "required_status_checks" => {
+            "contexts" => ["ci"]
+          }
+        }
+      end
+    end
+
+    assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+    assert_equal ["stale-approval-satisfiable"], result.fetch("shadow_triggered_gates")
+  end
+
   def test_missing_submitted_review_head_is_shadow_unknown_until_graduation
     reviews = [review("COMMENTED", nil)]
 
@@ -1688,24 +1713,26 @@ class AutonomousMergeEligibilityTest < Minitest::Test
                      raw_file
                    end
                  when "repos/example/repo/pulls/1/commits?per_page=100&page=1"
-                   objective.fetch("commits")
-                 when "repos/example/repo/pulls/1/reviews?per_page=100&page=1"
-                   objective.fetch("reviews")
-                 when "repos/example/repo/issues/1/comments?per_page=100&page=1"
-                   objective.fetch("decision_comments").map do |comment|
+                  objective.fetch("commits")
+                when "repos/example/repo/pulls/1/reviews?per_page=100&page=1"
+                  objective.fetch("reviews")
+                when "repos/example/repo/issues/1/comments?per_page=100&page=1"
+                  objective.fetch("decision_comments").map do |comment|
                      author = comment.fetch("author")
                      {
                        "id" => comment.fetch("id"),
                        "html_url" => comment.fetch("url"),
                        "created_at" => comment.fetch("created_at"),
                        "body" => comment.fetch("body"),
-                       "user" => author == "__deleted__" ? nil : { "login" => author }
-                     }
-                   end
-                 else
-                   warn "unexpected GitHub API path: #{request}"
-                   exit 1
-                 end
+                      "user" => author == "__deleted__" ? nil : { "login" => author }
+                    }
+                  end
+                when "repos/example/repo/branches/main/protection"
+                  objective.fetch("branch_protection")
+                else
+                  warn "unexpected GitHub API path: #{request}"
+                  exit 1
+                end
       payload = JSON.generate(response)
       invalid_field = ENV["AUTONOMOUS_MERGE_TEST_INVALID_UTF8_FIELD"]
       if invalid_field == "filename" && request == "repos/example/repo/pulls/1/files?per_page=100&page=1"
@@ -1827,6 +1854,18 @@ class AutonomousMergeEligibilityTest < Minitest::Test
         "test_current_base_sha" => base_sha,
         "test_candidate_oid" => "d" * 40,
         "test_candidate_tree" => "e" * 40,
+        "branch_protection_complete" => true,
+        "branch_protection" => {
+          "required_pull_request_reviews" => {
+            "required_approving_review_count" => 1,
+            "dismiss_stale_reviews" => true,
+            "require_last_push_approval" => true
+          },
+          "enforce_admins" => false,
+          "required_status_checks" => {
+            "contexts" => ["ci"]
+          }
+        },
         "files_complete" => true,
         "files" => files,
         "commits_complete" => true,

@@ -2994,6 +2994,24 @@ class MergeAssuranceTest < Minitest::Test
     assert_empty eligible_mutations
   end
 
+  def test_autonomous_stale_approval_shadow_gate_survives_the_receipt_path
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    autonomous["shadow_triggered_gates"] = ["stale-approval-satisfiable"]
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci,
+      autonomous_result: autonomous,
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible")
+    assert_equal(
+      ["stale-approval-satisfiable"],
+      result.dig("evidence", "autonomous_result", "shadow_triggered_gates")
+    )
+  end
+
   def test_autonomous_safe_class_and_rollback_assessment_must_be_compatible_known_enums
     mutations = {
       "unknown-safe-class" => ->(result) { result["safe_class"] = "future-safe-class" },

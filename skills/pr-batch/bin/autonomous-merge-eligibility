@@ -182,6 +182,16 @@ unless objective_shape_errors.empty?
     policy_provenance: "git:#{base_sha.strip}"
   )
 end
+branch_protection = nil
+if objective["branch_protection_complete"] == true
+  begin
+    branch_protection = AutonomousMergeEvidence.normalize_branch_protection(objective["branch_protection"])
+  rescue AutonomousMergeEvidence::CollectionError => e
+    objective_errors << e.message
+  end
+else
+  objective_errors << "branch protection evidence is incomplete"
+end
 valid_files = objective.fetch("files").all? do |file|
   file.is_a?(Hash) && file["path"].is_a?(String) && !file["path"].strip.empty? &&
     file["additions"].is_a?(Integer) && file["additions"] >= 0 &&
@@ -438,6 +448,18 @@ unless reviewed_heads_limit == portable_reviewed_heads_limit
                head_sha: reported_head_sha, policy_provenance:)
 end
 reviewed_heads_triggered = metrics.fetch("reviewed_heads") > effective_reviewed_heads_limit
+if branch_protection
+  required_reviews = branch_protection.fetch("required_pull_request_reviews")
+  stale_approving_review_exists = objective.fetch("reviews").any? do |review|
+    review.fetch("state") == "APPROVED" &&
+      review["commit_id"].is_a?(String) &&
+      review["commit_id"].downcase != head_sha
+  end
+  stale_approval_satisfiable = required_reviews.fetch("dismiss_stale_reviews") == false &&
+                               required_reviews.fetch("require_last_push_approval") == false &&
+                               stale_approving_review_exists
+  shadow_triggered_gates << "stale-approval-satisfiable" if stale_approval_satisfiable
+end
 if reviewed_heads_mode == "enforced"
   triggered_gates << "reviewed-heads-limit" if reviewed_heads_triggered
   if missing_review_head
@@ -453,6 +475,8 @@ else
   emit_unknown("invalid reviewed-heads calibration disposition",
                head_sha: reported_head_sha, policy_provenance:)
 end
+shadow_triggered_gates.uniq!
+shadow_triggered_gates.sort!
 triggered_gates.uniq!
 triggered_gates.sort!
 safe_class = semantic["safe_class"]

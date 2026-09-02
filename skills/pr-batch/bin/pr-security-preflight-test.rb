@@ -38,6 +38,33 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_pr_targets_report_merge_feasibility_branch_protection_and_stale_approval_defect
+    with_fake_gh("merge-feasibility-stale-approval") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      assert status.success?, out
+      assert_includes out, "Merge feasibility preflight: infeasible"
+      assert_includes out, "Acting identity: justin808"
+      assert_includes out, "PR author: justin808"
+      assert_includes out, "Required approving review count: 1"
+      assert_includes out, "Self-approval: impossible"
+      assert_includes out, "dismiss_stale_reviews: false"
+      assert_includes out, "require_last_push_approval: false"
+      assert_includes out, "permissions.admin: true"
+      assert_includes out, "enforce_admins: false"
+      assert_includes out, "Required status checks: ci"
+      assert_includes out, "stale-approval-satisfiable"
+      assert_includes out, "Expected terminal: ready-human-review-required"
+    end
+  end
+
   def test_missing_repo_config_uses_env_global_config
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")
@@ -3239,7 +3266,7 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "merge-feasibility-stale-approval" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
       JSON
@@ -3335,9 +3362,9 @@ class PrSecurityPreflightTest < Minitest::Test
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
       JSON
           fi
-        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "merge-feasibility-stale-approval" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","baseRefName":"main","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
       JSON
         elif [ "$mode" = "truncated-timeline-warning-diff" ]; then
           cat <<'JSON'
@@ -3527,14 +3554,37 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123/reviews?per_page=100" ]; then
-        if [ "$mode" = "metadata-bot-review" ]; then
+        if [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "merge-feasibility-stale-approval" ]; then
           cat <<JSON
-      [[{"id":801,"html_url":"https://github.com/owner/repo/pull/123#pullrequestreview-801","user":{"login":"coderabbitai[bot]"},"body":"${blocked_review_body}"}]]
+      [[{"id":801,"html_url":"https://github.com/owner/repo/pull/123#pullrequestreview-801","user":{"login":"coderabbitai[bot]"},"state":"APPROVED","commit_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","body":"${blocked_review_body}"}]]
       JSON
         else
           printf '[[]]'
         fi
         exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+        if [ "$mode" = "merge-feasibility-stale-approval" ]; then
+          printf '{"login":"justin808"}'
+          exit 0
+        fi
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo" ]; then
+        if [ "$mode" = "merge-feasibility-stale-approval" ]; then
+          printf '{"permissions":{"admin":true},"default_branch":"main"}'
+          exit 0
+        fi
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/branches/main/protection" ]; then
+        if [ "$mode" = "merge-feasibility-stale-approval" ]; then
+          cat <<'JSON'
+      {"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":false,"require_last_push_approval":false},"enforce_admins":false,"required_status_checks":{"contexts":["ci"]}}
+      JSON
+          exit 0
+        fi
       fi
 
       if [ "$mode" = "repo-local-maintainer-targets" ] && [ "$1" = "api" ] && [ "$2" = "repos/acme/widgets/collaborators/maintainer-login/permission" ]; then
@@ -3576,7 +3626,7 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<'JSON'
       [[{"filename":"skills/pr-batch/bin/new-contract-test.rb","previous_filename":"skills/pr-batch/bin/old-contract-test.rb"}]]
       JSON
-        elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "merge-feasibility-stale-approval" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           printf '[[{"filename":"docs/safe.md"}]]'
         else
           printf '[[{"filename":".github/workflows/test.yml"}]]'
@@ -3631,7 +3681,7 @@ class PrSecurityPreflightTest < Minitest::Test
       +safe docs
       DIFF
           exit 0
-        elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "merge-feasibility-stale-approval" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'DIFF'
       diff --git a/docs/safe.md b/docs/safe.md
       index 0000000..1111111 100644
