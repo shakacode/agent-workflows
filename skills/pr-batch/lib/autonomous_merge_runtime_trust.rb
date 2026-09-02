@@ -311,6 +311,11 @@ module AutonomousMergeRuntimeTrust
     return [nil, false] unless status.success?
 
     [bytes, true]
+  rescue ReplayTimeout
+    # Cleanup already ran and produced the evidence carried by this error, so
+    # the ensure below must not tear the same group down a second time.
+    reaped = true
+    raise
   ensure
     writer.close unless writer.nil? || writer.closed?
     reader&.close
