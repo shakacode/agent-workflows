@@ -25,7 +25,6 @@ module HelpRequestLifecycle
     events = events.select { |event| event["lane"] == lane } if lane
     events.each do |event|
       event_id = required_string(event, "event_id")
-      raise InputError, "duplicate event_id #{event_id}" if requests.key?(event_id)
 
       case event["type"]
       when "help_requested"
@@ -110,12 +109,15 @@ module HelpRequestLifecycle
     request_id = required_string(event, "evidence")
     request = requests[request_id]
     raise InputError, "resolution #{resolution_event_id} references unknown request #{request_id}" unless request
-    raise InputError, "request #{request_id} already #{request['state']}" unless request["state"] == "open"
     unless request.fetch("scope_key") == request_scope_key(event)
       raise InputError, "resolution #{resolution_event_id} does not match request #{request_id} lane"
     end
 
-    request["state"] = RESOLUTION_TYPES.fetch(event.fetch("type"))
+    resolved_state = RESOLUTION_TYPES.fetch(event.fetch("type"))
+    return if request["state"] == resolved_state
+    raise InputError, "request #{request_id} already #{request['state']}" unless request["state"] == "open"
+
+    request["state"] = resolved_state
     request["resolution_event_id"] = resolution_event_id
     request["resolved_at"] = event_time(event).utc.iso8601
     request["resolution_message"] = optional_string(event["message"])

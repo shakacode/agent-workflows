@@ -118,6 +118,67 @@ class HelpRequestLifecycleTest < Minitest::Test
     input&.close!
   end
 
+  def test_matching_resolution_retries_are_idempotent
+    input = replay_with(
+      {
+        "event_id" => "resolution-1",
+        "batch_id" => "ror-a-issue-4846-20260817",
+        "lane" => "review",
+        "type" => "help_request.resolved",
+        "at" => "2026-08-23T05:50:00Z",
+        "evidence" => "20260823T054818.000000Z-help4846"
+      },
+      {
+        "event_id" => "resolution-retry",
+        "batch_id" => "ror-a-issue-4846-20260817",
+        "lane" => "review",
+        "type" => "help_request.resolved",
+        "at" => "2026-08-23T05:51:00Z",
+        "evidence" => "20260823T054818.000000Z-help4846"
+      }
+    )
+
+    result, stderr, status = run_lifecycle(input: input.path)
+
+    assert_predicate status, :success?, stderr
+    request = result.fetch("requests").find do |item|
+      item.fetch("request_id") == "20260823T054818.000000Z-help4846"
+    end
+    assert_equal "resolved", request.fetch("state")
+    assert_equal "resolution-1", request.fetch("resolution_event_id")
+  ensure
+    input&.close!
+  end
+
+  def test_conflicting_resolution_outcomes_fail_closed
+    input = replay_with(
+      {
+        "event_id" => "resolution-1",
+        "batch_id" => "ror-a-issue-4846-20260817",
+        "lane" => "review",
+        "type" => "help_request.resolved",
+        "at" => "2026-08-23T05:50:00Z",
+        "evidence" => "20260823T054818.000000Z-help4846"
+      },
+      {
+        "event_id" => "decline-1",
+        "batch_id" => "ror-a-issue-4846-20260817",
+        "lane" => "review",
+        "type" => "help_request.declined",
+        "at" => "2026-08-23T05:51:00Z",
+        "evidence" => "20260823T054818.000000Z-help4846"
+      }
+    )
+
+    result, stderr, status = run_lifecycle(input: input.path, require_phase: "review")
+
+    assert_equal 2, status.exitstatus, stderr
+    assert_equal "UNKNOWN", result.fetch("status")
+    assert_includes result.fetch("error"), "already resolved"
+  ensure
+    input&.close!
+  end
+
   def test_coordinator_can_resolve_an_unlaned_worker_request_for_the_same_target
     input = Tempfile.new(["help-request-lifecycle-unlaned", ".json"])
     input.write(JSON.generate(
@@ -177,11 +238,45 @@ class HelpRequestLifecycleTest < Minitest::Test
     input&.close!
   end
 
+  def test_invalid_now_returns_unknown_json_without_a_backtrace
+    stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby,
+      SCRIPT,
+      "--input", FIXTURE,
+      "--now", "not-a-date"
+    )
+
+    assert_equal 1, status.exitstatus
+    assert_equal "UNKNOWN", JSON.parse(stdout).fetch("status")
+    assert_includes stderr, "not-a-date"
+    refute_includes stderr, "help-request-lifecycle:"
+  end
+
+  def test_unknown_replay_blocks_a_required_phase
+    input = Tempfile.new(["help-request-lifecycle-invalid", ".json"])
+    input.write(JSON.generate(
+                  "events" => [{
+                    "event_id" => "request-1",
+                    "type" => "help_requested",
+                    "at" => "2026-08-23T05:48:18Z"
+                  }]
+                ))
+    input.flush
+
+    result, stderr, status = run_lifecycle(input: input.path, require_phase: "implementation")
+
+    assert_equal 2, status.exitstatus, stderr
+    assert_equal "UNKNOWN", result.fetch("status")
+    assert_includes result.fetch("error"), "missing reason"
+  ensure
+    input&.close!
+  end
+
   private
 
-  def replay_with(event)
+  def replay_with(*events)
     payload = JSON.parse(File.read(FIXTURE))
-    payload.fetch("events").insert(1, event)
+    payload.fetch("events").insert(1, *events)
     file = Tempfile.new(["help-request-lifecycle", ".json"])
     file.write(JSON.generate(payload))
     file.flush

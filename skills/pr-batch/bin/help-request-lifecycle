@@ -42,7 +42,7 @@ begin
      result.fetch("phase_gate").fetch("blocked_phases", []).include?(options.fetch(:require_phase))
     exit 2
   end
-rescue OptionParser::ParseError, JSON::ParserError, HelpRequestLifecycle::InputError, SystemCallError => e
+rescue ArgumentError, OptionParser::ParseError, JSON::ParserError, HelpRequestLifecycle::InputError, SystemCallError => e
   puts JSON.generate(
     "contract" => "help-request-lifecycle",
     "version" => HelpRequestLifecycle::VERSION,
@@ -50,5 +50,5 @@ rescue OptionParser::ParseError, JSON::ParserError, HelpRequestLifecycle::InputE
     "error" => e.message
   )
   warn e.message
-  exit 1
+  exit(options[:require_phase] ? 2 : 1)
 end

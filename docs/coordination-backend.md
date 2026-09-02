@@ -231,7 +231,8 @@ append-only lifecycle event `help_request.resolved` or
 records do not add to the four typed operational-signal kinds. A failed or
 unavailable resolution write leaves the request open. Legacy `help_requested`
 events need no migration because their existing `event_id` becomes the request
-id.
+id. Repeating the same resolution outcome is idempotent; contradictory answer
+events make the replay `UNKNOWN` and keep later gated phases blocked.
 
 Before any later `implementation` or `review` phase transition for that lane,
 replay the batch event history with

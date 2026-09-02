@@ -263,6 +263,7 @@ options[:batch_ids].each do |batch_id|
     "status", "--batch-id", batch_id, "--json"
   )
   if batch_error
+    batch_payloads[batch_id] = nil
     batch_unknowns << "batch #{batch_id}: #{batch_error}"
     next
   end
@@ -323,7 +324,7 @@ options[:batch_ids].each do |batch_id|
         coordination_target: parsed_target.fetch(:coordination_target),
         expected_owner: owner,
         batch_id: resolved_batch_id,
-        lane: present_string(lane["name"]) || UNKNOWN
+        lane: present_string(lane["name"])
       }
     end
   end
@@ -385,7 +386,9 @@ items = requests.map do |request|
         "status", "--batch-id", batch_id, "--json"
       )
       if batch_error
-        batch_unknowns << "batch #{batch_id}: #{batch_error}"
+        batch_payloads[batch_id] = nil
+        message = "batch #{batch_id}: #{batch_error}"
+        batch_unknowns << message unless batch_unknowns.include?(message)
       else
         batch_payloads[batch_id] = batch_payload
       end
@@ -395,12 +398,16 @@ items = requests.map do |request|
       now: options.fetch(:now),
       max_open_seconds: options.fetch(:help_request_max_open_seconds)
     )
-    lifecycle = help_request_lifecycle(
-      batch_payloads[batch_id],
-      now: options.fetch(:now),
-      max_open_seconds: options.fetch(:help_request_max_open_seconds),
-      lane: lane
-    )
+    lifecycle = if lane
+                  help_request_lifecycle(
+                    batch_payloads[batch_id],
+                    now: options.fetch(:now),
+                    max_open_seconds: options.fetch(:help_request_max_open_seconds),
+                    lane: lane
+                  )
+                else
+                  { "status" => UNKNOWN, "error" => "lane unavailable for target-scoped replay" }
+                end
     unknowns << "help-request lifecycle: #{lifecycle['error']}" if lifecycle["status"] == UNKNOWN
   end
   record = holder ? (heartbeat || claim) : {}
