@@ -22,6 +22,13 @@ module CloseoutEvidenceReplay
   VALID_VISUAL_DESTINATIONS = %w[
     github_pr linked_tracker repo_artifact_store human_attachment_pending not_applicable
   ].freeze
+  # A blocked upload must name which state it is in, because the remedies differ:
+  # uploader_absent needs a host with an uploader, uploader_denied needs a human to
+  # pre-provision the permission, and no_configured_store needs a configured destination.
+  VALID_VISUAL_BLOCKED_REASONS = %w[
+    uploader_absent uploader_denied no_configured_store
+  ].freeze
+  UPLOAD_FAILED_REASON = /\Aupload_failed:\s*\S/
   # private-user-images.githubusercontent.com is deliberately excluded because copied signed URLs expire.
   DURABLE_GITHUB_EVIDENCE_HOSTS = %w[
     github.com
@@ -406,6 +413,7 @@ module CloseoutEvidenceReplay
     unless destination.empty? || VALID_VISUAL_DESTINATIONS.include?(destination)
       missing << "visual_evidence_destination"
     end
+    validate_visual_blocked_reason(fields, destination, missing)
     missing << "interaction_change" unless interaction_change.empty? || VALID_QA_REQUIRED.include?(interaction_change)
     missing << "visual_fix" unless visual_fix.empty? || VALID_QA_REQUIRED.include?(visual_fix)
     missing << "performance_impact" unless performance_impact.empty? || VALID_PERFORMANCE_IMPACTS.include?(performance_impact)
@@ -477,6 +485,21 @@ module CloseoutEvidenceReplay
     validate_interaction_evidence(interaction_change, interaction_evidence, missing)
     validate_negative_control(visual_fix, negative_control, missing)
     validate_performance_evidence(performance_impact, performance_evidence, missing)
+  end
+
+  def valid_visual_blocked_reason?(value)
+    VALID_VISUAL_BLOCKED_REASONS.include?(value) || UPLOAD_FAILED_REASON.match?(value)
+  end
+
+  # Required for human_attachment_pending and omitted otherwise, so a durable receipt
+  # cannot carry a stale blocked reason that contradicts the destination it records.
+  def validate_visual_blocked_reason(fields, destination, missing)
+    reason = fields.fetch("visual_evidence_blocked_reason", "")
+    if destination == "human_attachment_pending"
+      missing << "visual_evidence_blocked_reason" unless valid_visual_blocked_reason?(reason)
+    elsif fields.key?("visual_evidence_blocked_reason")
+      missing << "visual_evidence_blocked_reason.unexpected"
+    end
   end
 
   def validate_durable_visual_evidence(evidence, destination, missing)

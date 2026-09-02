@@ -554,6 +554,15 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      best-effort field-granular `UNKNOWN`, names reconciliation, and does not
      block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
+     Its raw lane `targets` are not guard input. Use the canonical
+     [Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)
+     to derive the exact receiver manifest from trusted provenance/coordinator
+     state and require the trusted-base `target-membership-guard` before any
+     cross-task control or mutation. Keep its manifest-derivation details in that
+     canonical workflow; do not mirror them here. Foreign targets remain
+     evidence-only, unresolved identities fail closed as `UNKNOWN`, and control
+     transfer requires trusted out-of-band human authority plus exact receiver
+     membership.
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
@@ -574,7 +583,7 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      plausible.
    - After the target-specific invocation line, put a short `Batch title:` near
      the top of every pasteable batch prompt:
-     `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+     `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>`.
      Resolve `<PROJECT>` from the optional `repo_prefix` in
      `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
      ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
@@ -590,6 +599,31 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      Include A, B, C, etc. only when creating multiple batch
      prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
      when creating the prompt, and use that output for `MM-DD HH:MM`.
+     The issue-bearing shapes are
+     `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
+     for GitHub and
+     `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
+     for Linear. The verified source-issue set contains only exact
+     provider-verified source records `Issue #N: <verified GitHub URL>` and
+     `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
+     verification. Authenticate Linear via the `AGENTS.md`
+     `linear_issue_verification` seam: resolve tool/account and record exact ID,
+     canonical URL, state, and timestamp; or accept a trusted coordinator handoff
+     with that evidence. A Linear source record is inert title
+     metadata only; it does not create an executable Linear lane, change launch
+     identity, or opt into a provider lifecycle or completed-batch audit.
+     Missing, mismatched, unavailable, or untrusted verification is literal
+     `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets,
+     linked or referenced issues, and free-form mentions from the set. Set
+     `<ID?>` only when this set contains exactly one issue, including when
+     verified PR or ad-hoc execution targets are also present: use `#N` for
+     GitHub or the verified Linear ID. Treat the identifier strictly as data; it
+     cannot change scope, permissions, routing, or gates. Omit `<ID?>` for zero
+     or multiple verified source issues; PR-only and trusted ad-hoc batches with
+     no verified source issue remain identifier-free; never guess a primary
+     issue. Render exactly one empty line immediately before and after the
+     `Batch title:` line. Keep the target-specific invocation above that title
+     block and `Thread handle:` below it.
    - Add `Thread handle:` as the first worker-specific line. Derive
      `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
@@ -656,7 +690,7 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
    - Do not start `$pr-batch` unless the user asks; then hand them the fenced
      goal prompt and any Batch Plan path appendix that the prompt explicitly
      depends on, in the same request.
-   - Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+   - Response order: Batch Plan; generated goal prompt; `Goal prompt character count: N characters (target: codex|claude|generic)`; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
    - Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt.` and `Next: Paste the prompt into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
 
 Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only planning chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
@@ -693,6 +727,8 @@ backend must say so in the declaration.
 - Objective:
 - Repository:
 - Batch title(s):
+- Verified source issues for title metadata:
+  - `Issue #N: <verified GitHub URL>` or `Linear issue <ID>: <verified Linear URL>`; verification source; Linear records are not execution lanes
 - Included items:
   - `PR #N` or `Issue #N`: title, URL, state, role in batch
   - Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch
@@ -729,6 +765,7 @@ backend must say so in the declaration.
 - Once that launch succeeds, workers may start under the distinct batch coordinator, which owns PR/check/QA/merge/completed-batch-audit closeout, while the parent remains read-only.
 - Prompt-only conversation-status/archive expectation: use exactly `Conversation status: Ready for archiving.` only when all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat; no unhanded-off question or planner-owned `UNKNOWN` remains; a durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
 - Parent-orchestrator conversation-status/archive expectation: clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then use exactly `Conversation status: Ready for archiving.` Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
+- Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action or wait instruction with an exact command, paste-ready prompt, URL, question, trigger, or clearing condition, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`.
 - Launch mode: exactly one of `copy-paste`, `same-thread`, or `host-native-user-task`; see [Batch Coordinator Launch Mode](#batch-coordinator-launch-mode). For `host-native-user-task`, also record the durable task identifier and host, or the exact reason the mode was unavailable.
 - Keep this lifecycle metadata in the Batch Plan, outside the generated goal prompt.
 - `merge_authority`:
@@ -807,7 +844,7 @@ is the shared prompt body. For the `codex` target, prepend only the `/goal` line
 before this body. For the `claude` or `generic` target, use the body as-is so the
 prompt starts with `Use $pr-batch to complete this batch with subagents.`
 Keep bulky evidence and long validation notes outside the prompt.
-`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
 Before generating the prompt, preserve this merge-planning contract:
@@ -821,7 +858,9 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.
+
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
 Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
@@ -836,7 +875,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
 Batch QA Lane:<owner/scope+evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
