@@ -86,15 +86,40 @@ class AgentDoctorProcessRunnerTest < Minitest::Test
   end
 
   def test_helper_completing_after_meaningful_share_of_workflow_budget_is_successful
-    ticks = [0.0, 1.0, 3.0, 5.0]
-    process_runner = runner(timeout: AgentDoctor::TimeoutBudget::WORKFLOW_STATUS_DEFAULT)
-    process_runner.define_singleton_method(:monotonic) { ticks.shift || 5.0 }
+    Dir.mktmpdir do |directory|
+      gate_path = File.join(directory, "completion-gate")
+      child_pid = nil
+      spawn = lambda do |*arguments|
+        child_pid = Process.spawn(*arguments)
+      end
+      ticks = [0.0, 1.0, 3.0, 5.0]
+      current_tick = nil
+      gate_released = false
+      process_runner = runner(timeout: AgentDoctor::TimeoutBudget::WORKFLOW_STATUS_DEFAULT, spawn: spawn)
 
-    result = process_runner.capture([RbConfig.ruby, "-e", 'STDOUT.write("ok")'])
+      begin
+        File.open(gate_path, File::RDWR | File::CREAT, 0o600) do |gate|
+          gate.flock(File::LOCK_EX)
+          process_runner.define_singleton_method(:monotonic) do
+            current_tick = ticks.shift || current_tick + 0.25
+            if current_tick >= 5.0 && !gate_released
+              gate.flock(File::LOCK_UN)
+              gate_released = true
+            end
+            current_tick
+          end
+          script = 'File.open(ARGV.fetch(0)) { |gate| gate.flock(File::LOCK_SH) }; STDOUT.write("ok")'
 
-    assert_equal "ok", result[:stdout]
-    assert_equal 0, result[:exit]
-    assert_nil result[:failure]
+          result = process_runner.capture([RbConfig.ruby, "-e", script, gate_path])
+
+          assert_equal "ok", result[:stdout]
+          assert_equal 0, result[:exit]
+          assert_nil result[:failure]
+        end
+      ensure
+        kill_and_reap(child_pid)
+      end
+    end
   end
 
   def test_timeout_terminates_descendant_process_group
@@ -214,6 +239,25 @@ class AgentDoctorProcessRunnerTest < Minitest::Test
       sleep 0.02
     end
     false
+  end
+
+  def kill_and_reap(pid)
+    return unless pid
+
+    begin
+      return if Process.waitpid(pid, Process::WNOHANG)
+    rescue Errno::ECHILD
+      return
+    end
+
+    begin
+      Process.kill("KILL", pid)
+    rescue Errno::ESRCH
+      nil
+    end
+    Process.waitpid(pid)
+  rescue Errno::ECHILD
+    nil
   end
 
   def process_running?(pid, proc_root: "/proc")
