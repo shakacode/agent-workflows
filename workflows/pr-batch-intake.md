@@ -190,8 +190,9 @@ Use this durable Lane Card field grammar:
 `Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN`.
 
 The fenced prompt is not standalone coordinator state. For `copy-paste`, deliver
-an exact immutable plan-state reference plus its `batch_plan_binding`; never rely
-on rendered clipboard text to preserve the frozen Batch Plan bytes. For
+the exact generated goal prompt with an exact immutable plan-state reference
+plus its exact `batch_plan_binding`; never rely on rendered clipboard text to
+preserve the frozen Batch Plan bytes. For
 `host-native-user-task`, deliver the exact plan bytes through a byte-preserving
 handoff envelope or use the same immutable-reference path. The new coordinator must reverify that
 binding before preflight, every dispatch, and worker start. Do not report a

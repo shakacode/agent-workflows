@@ -544,12 +544,14 @@ batch item count only. Keep file-touch evidence, workflow-contract details,
 Lane Cards, dispatch data, coordination diagnostics, and other derived state
 outside the human-authored prompt in the Batch Plan, manifest, and coordination
 backend.
-The readable prompt is not standalone coordinator scope. A copy-paste or
-host-native coordinator launch must also receive the complete Batch Plan for
-its group or an exact durable plan-state reference that it can resolve before
-preflight or dispatch, plus the exact `batch_plan_binding` from the canonical
-Launcher Run Record. It must reverify that immutable binding before preflight,
-every dispatch, and worker start. Multi-target groups remain one coordinator launch with
+The readable prompt is not standalone coordinator scope. For `copy-paste`,
+deliver the exact generated goal prompt with an exact immutable plan-state
+reference plus its exact `batch_plan_binding`; never rely on rendered clipboard
+text to preserve the frozen Batch Plan bytes. For `host-native-user-task`,
+deliver the exact plan bytes through a byte-preserving handoff envelope or use
+the same immutable-reference path. The receiving coordinator must resolve the
+plan state and reverify that immutable binding before preflight, every dispatch,
+and worker start. Multi-target groups remain one coordinator launch with
 one target per internal worker lane; the plan or reference preserves every
 target, lane, dependency, and ownership assignment without expanding the
 human-readable prompt.

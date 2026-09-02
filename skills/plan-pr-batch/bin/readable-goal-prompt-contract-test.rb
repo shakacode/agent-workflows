@@ -136,6 +136,37 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes error.message, "skills/triage/SKILL.md canonical issue creation count is 0, expected 1"
   end
 
+  def test_copy_paste_handoff_drift_rejects_inline_plan_alternatives_on_every_active_surface
+    surfaces = {
+      "workflows/pr-batch-intake.md" => @prompt_intake,
+      "skills/plan-pr-batch/SKILL.md" => @plan_skill,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "docs/pr-batch-skills.md" => @source_docs,
+      "workflows/pr-processing.md" => @workflow
+    }
+
+    assert_respond_to GoalPromptDriftContract, :check_copy_paste_handoff!
+    GoalPromptDriftContract.check_copy_paste_handoff!(surfaces)
+
+    pin_pattern = Regexp.new(
+      Regexp.escape(GoalPromptDriftContract::COPY_PASTE_IMMUTABLE_REFERENCE_PIN).gsub("\\ ", "\\s+")
+    )
+    surfaces.each_key do |path|
+      mutated = surfaces.transform_values(&:dup)
+      replaced = mutated.fetch(path).sub!(
+        pin_pattern,
+        "For `copy-paste`, deliver the exact generated goal prompt with the complete Batch Plan " \
+        "or an exact durable plan-state reference plus its exact `batch_plan_binding`."
+      )
+      refute_nil replaced, "#{path} mutation did not replace the copy-paste handoff"
+
+      error = assert_raises(RuntimeError, path) do
+        GoalPromptDriftContract.check_copy_paste_handoff!(mutated)
+      end
+      assert_includes error.message, "#{path} copy-paste immutable-reference count is 0, expected 1"
+    end
+  end
+
   def test_all_canonical_surfaces_share_one_readable_prompt
     assert_equal 1, @prompts.values.uniq.length
     assert_equal EXPECTED_PROMPT, @prompts.values.first
@@ -162,6 +193,19 @@ class ReadableGoalPromptContractTest < Minitest::Test
       assert_includes normalized, "same readable prompt vocabulary for every host"
       assert_includes normalized, "outside the human-authored prompt"
     end
+  end
+
+  def test_plan_pr_batch_copy_paste_requires_the_immutable_reference
+    normalized = @plan_skill.gsub(/\s+/, " ")
+
+    assert_includes normalized,
+                    "With no explicit request, record `copy-paste` and deliver the prompt plus its exact immutable plan-state reference."
+    assert_includes normalized,
+                    "The portable `copy-paste` path must carry the exact immutable plan-state reference"
+    assert_includes normalized,
+                    "A created task receives the exact generated goal prompt and either the exact plan bytes in a byte-preserving handoff envelope or the exact immutable plan-state reference in the same initial handoff"
+    refute_includes normalized, "deliver the prompt plus its plan or reference"
+    refute_includes normalized, "complete Batch Plan"
   end
 
   def test_machine_none_renders_as_human_ask_without_changing_durable_authority
@@ -258,7 +302,7 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "`batch_plan_binding`",
       "workers never race GitHub read-modify-write updates",
       "split the trust boundaries into separate runs",
-      "complete Batch Plan for that coordinator group or an exact durable plan-state reference",
+      "exact immutable plan-state reference plus its exact `batch_plan_binding`",
       "multi-target group remains one coordinator launch with one target per worker lane"
     ].each { |phrase| assert_includes normalized, phrase }
   end

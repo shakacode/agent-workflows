@@ -79,6 +79,10 @@ module GoalPromptDriftContract
     "target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; " \
     "its repository must match the target, while a PR-origin target also requires the exact target PR number."
   REPOSITORY_NAME_PATTERN_PIN = 'REPOSITORY_NAME_PATTERN = /\A[A-Za-z0-9._-]{1,100}\z/'
+  COPY_PASTE_IMMUTABLE_REFERENCE_PIN =
+    "For `copy-paste`, deliver the exact generated goal prompt with an exact immutable plan-state " \
+    "reference plus its exact `batch_plan_binding`; never rely on rendered clipboard text to preserve " \
+    "the frozen Batch Plan bytes."
 
   RESUME_SNIPPET = <<~TEXT.chomp
     Resume batch processing now.
@@ -293,6 +297,18 @@ module GoalPromptDriftContract
     fail!("batch-plan-preflight repository-name pattern count is #{pattern_count}, expected 1")
   end
 
+  def check_copy_paste_handoff!(surfaces)
+    pin = COPY_PASTE_IMMUTABLE_REFERENCE_PIN.gsub(/\s+/, " ")
+
+    surfaces.each do |path, text|
+      visible_text = text.gsub(/<!--.*?-->/m, "").gsub(/\s+/, " ")
+      count = visible_text.scan(pin).length
+      next if count == 1
+
+      fail!("#{path} copy-paste immutable-reference count is #{count}, expected 1")
+    end
+  end
+
   def check!(repo_root:, source_checkout:)
     workflow = read(repo_root, "workflows/pr-processing.md")
     skills = {
@@ -315,6 +331,15 @@ module GoalPromptDriftContract
     source_docs = read(repo_root, "docs/pr-batch-skills.md") if source_checkout
     routing_surfaces["docs/pr-batch-skills.md"] = source_docs if source_checkout
     routing_surfaces.each { |path, text| check_routes!(text, path) }
+
+    copy_paste_surfaces = {
+      "workflows/pr-processing.md" => workflow,
+      "skills/plan-pr-batch/SKILL.md" => skills.fetch("skills/plan-pr-batch/SKILL.md"),
+      "skills/pr-batch/SKILL.md" => skills.fetch("skills/pr-batch/SKILL.md")
+    }
+    copy_paste_surfaces["workflows/pr-batch-intake.md"] = prompt_intake if prompt_intake
+    copy_paste_surfaces["docs/pr-batch-skills.md"] = source_docs if source_docs
+    check_copy_paste_handoff!(copy_paste_surfaces)
 
     check_host_caps!(
       {

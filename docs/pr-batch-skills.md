@@ -407,10 +407,10 @@ omit the queue summary and note that queue state is unavailable.
    `merge_authority: none` remains outside the normal human prompt.
    Host budget changes item count, not prompt vocabulary.
    Do not launch workers yet.
-9. When the user says to run it, use `$pr-batch` with the fenced goal prompt
-   and the complete Batch Plan for that coordinator group or an exact durable
-   plan-state reference it can resolve before preflight or dispatch, plus the
-   exact `batch_plan_binding` from the Launcher Run Record. Reverify that
+9. When the user says to run it, use `$pr-batch`. For `copy-paste`, deliver the
+   exact generated goal prompt with an exact immutable plan-state reference plus
+   its exact `batch_plan_binding`; never rely on rendered clipboard text to
+   preserve the frozen Batch Plan bytes. Reverify that
    immutable binding before preflight, every dispatch, and worker start. A
    multi-target group remains one coordinator launch with one target per worker
    lane; the plan or reference preserves its complete scope.

@@ -323,19 +323,17 @@ LAUNCH_MODE_SKILL_CLAUSES = {
   "requires capability and explicit consent" => "only when the host exposes a qualifying task-creation " \
                                                 "capability **and** the user explicitly asked for a task to be created",
   "capability alone is not authority" => "The capability existing is never sufficient authority to create one",
-  "defaults to copy-paste without a request" => "With no explicit request, record `copy-paste` and deliver the prompt",
-  "copy-paste carries complete plan state" => "complete Batch Plan for that coordinator group, or an exact durable " \
-                                               "plan-state reference that the new coordinator can resolve before " \
-                                               "preflight or dispatch",
+  "defaults to copy-paste without a request" => "With no explicit request, record `copy-paste` and deliver the prompt plus its exact immutable plan-state reference",
+  "copy-paste carries immutable plan state" => "exact immutable plan-state reference plus its exact `batch_plan_binding`; never rely on rendered clipboard text to preserve the frozen Batch Plan bytes",
   "prompt alone is not coordinator scope" => "The readable prompt is the trusted work-item pointer, not the " \
                                                "complete coordinator scope",
-  "launch waits for resolvable plan state" => "A launch is not successful until the coordinator receives the " \
-                                               "complete Batch Plan for its group or an exact durable plan-state " \
-                                               "reference and can resolve that state before any worker launch",
-  "multi-target scope remains complete" => "for a multi-target group, the plan or reference is what preserves " \
+  "launch waits for resolvable plan state" => "A launch is not successful until the coordinator receives and can " \
+                                               "resolve the plan state before any worker launch",
+  "multi-target scope remains complete" => "for a multi-target group, the reference or envelope is what preserves " \
                                             "every target, lane, dependency, and ownership assignment",
-  "host-native initial handoff carries both" => "A created task receives the exact generated goal prompt and complete " \
-                                                 "Batch Plan or exact durable plan-state reference in the same initial handoff",
+  "host-native initial handoff carries both" => "A created task receives the exact generated goal prompt and either " \
+                                                 "the exact plan bytes in a byte-preserving handoff envelope or the " \
+                                                 "exact immutable plan-state reference in the same initial handoff",
   "applies the planned title" => "Apply the resolved `Task name:` as its visible title at creation, or " \
                                  "through the host's rename capability",
   "forbids auto-titling while a capability exists" => "do not leave the visible title to prompt auto-titling " \
@@ -358,11 +356,9 @@ LAUNCH_MODE_WORKFLOW_CLAUSES = {
   "unresolved provisional ids are UNKNOWN" => "a provisional identifier that never resolves is `UNKNOWN` and a " \
                                               "follow-up, not a silent success",
   "the task is user-owned and visible" => "that appears in the user's normal task UI",
-  "copy-paste carries complete plan state" => "complete Batch Plan for that coordinator group, or an exact durable " \
-                                               "plan-state reference that the new coordinator can resolve before " \
-                                               "preflight or dispatch",
-  "host-native carries the same plan state" => "seeded with the exact generated goal prompt and the same complete " \
-                                                "Batch Plan or exact durable plan-state reference",
+  "copy-paste carries immutable plan state" => "exact immutable plan-state reference plus its exact `batch_plan_binding`; never rely on rendered clipboard text to preserve the frozen Batch Plan bytes",
+  "host-native carries the same plan state" => "seeded with the exact generated goal prompt and either the exact " \
+                                                "plan bytes in a byte-preserving handoff envelope or the same immutable-reference path",
   "launch waits for plan resolution" => "a launch is not successful until the coordinator receives and can " \
                                          "resolve the plan state before any worker launch",
   "multi-target scope remains complete" => "A multi-target group depends on that plan state to preserve every " \

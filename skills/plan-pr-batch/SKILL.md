@@ -696,37 +696,40 @@ Record exactly one launch mode in the Batch Plan, outside the generated goal
 prompt. The canonical lifecycle rules live in
 [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle).
 
-- `copy-paste` — deliver the exact generated goal prompt together with the
-  complete Batch Plan for that coordinator group, or an exact durable
-  plan-state reference that the new coordinator can resolve before preflight
-  or dispatch, plus the exact `batch_plan_binding` from the canonical Launcher
-  Run Record. The coordinator reverifies that immutable binding before
-  preflight, every dispatch, and worker start. This is the portable default and the fallback whenever a richer
-  mode is unavailable.
+- `copy-paste` — this is the portable default and the fallback whenever a richer
+  mode is unavailable. For `copy-paste`, deliver the exact generated goal prompt
+  with an exact immutable plan-state reference plus its exact
+  `batch_plan_binding`; never rely on rendered clipboard text to preserve the
+  frozen Batch Plan bytes. The coordinator resolves the reference and reverifies
+  that immutable binding before preflight, every dispatch, and worker start.
 - `same-thread` — continue in the current chat as the batch coordinator. This is
   the same-chat self-launch described above, and it takes the lifecycle
   transition rules that go with it.
 - `host-native-user-task` — ask the host to create a separate user-owned task,
-  seeded with the exact generated goal prompt and the same complete Batch Plan
-  or exact durable plan-state reference, that appears in the user's normal task
-  UI.
+  seeded with the exact generated goal prompt and either the exact plan bytes in
+  a byte-preserving handoff envelope or the same immutable-reference path, that
+  appears in the user's normal task UI.
 
 Select `host-native-user-task` only when the host exposes a qualifying
 task-creation capability **and** the user explicitly asked for a task to be
 created. The capability existing is never sufficient authority to create one;
 never create a user-visible task merely because the host can. With no explicit
-request, record `copy-paste` and deliver the prompt plus its plan or reference.
+request, record `copy-paste` and deliver the prompt plus its exact immutable
+plan-state reference.
 
 The readable prompt is the trusted work-item pointer, not the complete
 coordinator scope. A launch is not successful until the coordinator receives
-the complete Batch Plan for its group or an exact durable plan-state reference
-and can resolve that state before any worker launch. This is required for every
-group; for a multi-target group, the plan or reference is what preserves every
-target, lane, dependency, and ownership assignment.
+and can resolve the plan state before any worker launch. The portable
+`copy-paste` path must carry the exact immutable plan-state reference; the
+`host-native-user-task` path may carry the byte-preserving handoff envelope or
+the same immutable-reference path. This is required for every group; for a
+multi-target group, the reference or envelope is what preserves every target,
+lane, dependency, and ownership assignment.
 
-A created task receives the exact generated goal prompt and complete Batch Plan
-or exact durable plan-state reference in the same initial handoff, plus its
-exact `batch_plan_binding`, the saved
+A created task receives the exact generated goal prompt and either the exact
+plan bytes in a byte-preserving handoff envelope or the exact immutable
+plan-state reference in the same initial handoff, plus its exact
+`batch_plan_binding`, the saved
 repository project, the host's normal isolated-worktree default for Git
 repositories unless the user explicitly requests the saved checkout, and the
 user's configured default model/effort unless the user explicitly requests an
