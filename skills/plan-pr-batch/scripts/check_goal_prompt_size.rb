@@ -86,6 +86,7 @@ BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wav
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
 COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
 OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
+MERGE_AUTHORITY_PROMPT_LINE = "merge_authority:<none|ask|auto_merge_when_gates_pass>"
 PLANNING_PASS_ASSESSMENT_FIELD = "Planning-pass model/effort assessment:"
 PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES = [
   PLANNING_PASS_ASSESSMENT_FIELD,
@@ -112,7 +113,7 @@ CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
   "#{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
   "overlap=>integration advisory;deps/resv/UNKNOWN=>coord".freeze
 WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
-MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
+MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> i; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
 MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory."
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
@@ -131,14 +132,15 @@ TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
                                      "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
                                      "live=<replay/ref>; " \
                                      "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
-GOAL_MODE_COMPACT_CONTRACT = "GMCC-v4:CI@head/configured-reviewers " \
-                             "pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>" \
+GOAL_MODE_COMPACT_CONTRACT = "GMCC-v5:CI@head/configured-reviewers " \
+                             "pending|missing|untriaged|failed|threads open|UNKNOWN=>" \
                              "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
                              "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
-                             "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;" \
-                             "auto=>exact verdict/head/sorted-gates/rollback; " \
-                             "merge iff autonomous-merge-eligible OR human-approved-for-current-head+" \
-                             "durable-decision(proven-human+merge-authority);else ready-human-review-required|" \
+                             "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
+                             "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
+                             "auto=>exact verdict/head/sorted-gates/rollback;" \
+                             "merge iff autonomous-merge-eligible|human-approved-for-current-head+" \
+                             "durable-decision(proven+merge-authority);else ready-human-review-required|" \
                              "autonomous-merge-evidence-unknown;merge+close PR/target/issue."
 GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an " \
                                 "overall Goal-mode terminal state; pending, missing, or untriaged current-head " \
@@ -156,7 +158,9 @@ GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-chec
                                 "available, preserve exact manual resume instructions. A batch with 5 PRs, 3 " \
                                 "pending hosted checks, and clean " \
                                 "review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when " \
-                                "`merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done " \
+                                "`merge_authority` does not allow merging. `ask` starts the owned-target walkthrough; " \
+                                "external refs require the user to merge or authorize target addition, with " \
+                                "`blocked-user-input` and no retry/watch. With `auto_merge_when_gates_pass`, done " \
                                 "requires ordinary readiness plus `autonomous-merge-eligible`, or " \
                                 "`human-approved-for-current-head` whose exact live verdict/head, exact sorted " \
                                 "gate set, rollback disposition, and durable proven-human decision with verified " \
@@ -165,16 +169,17 @@ GOAL_MODE_CANONICAL_EXPANSION = "Goal Mode Completion Contract: `waiting-on-chec
                                 "the PR, target, and issue."
 GOAL_MODE_REQUIRED_SEMANTICS = [
   "CI@head/configured-reviewers pending|missing|untriaged",
-  "threads unresolved",
+  "threads open",
   "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE",
   "poll/fix",
   "auto-clear=>watch(same:0wake,delta:gates)",
   "fallback:4x15m+exp/4h|manual",
   "stop clear/done/term/budget/user",
-  "no auth=>ready-no-merge-authority",
+  "noauth=>ready-no-merge-authority",
+  "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch",
   "auto=>exact verdict/head/sorted-gates/rollback",
-  "merge iff autonomous-merge-eligible OR human-approved-for-current-head",
-  "durable-decision(proven-human+merge-authority)",
+  "merge iff autonomous-merge-eligible|human-approved-for-current-head",
+  "durable-decision(proven+merge-authority)",
   "else ready-human-review-required|autonomous-merge-evidence-unknown",
   "merge+close PR/target/issue"
 ].freeze
@@ -211,7 +216,7 @@ HUMAN_STATUS_CONTRACT_PHRASES = [
   "merge gates"
 ].freeze
 MIXED_DISPATCH_POLICY_LINES = <<~TEXT.chomp
-  Dispatch implementation:preferred remote@balanced/medium;fallback remote@strongest/high;auth y;pending/active
+  Dispatch i:preferred remote@balanced/medium;fallback remote@strongest/high;auth y;pending/active
   Dispatch qa-review:preferred remote@strongest/high;fallback none;auth n;pending/active
 TEXT
 SPLIT_ROUTE_GROUP_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
@@ -316,7 +321,11 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.",
   "If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll.",
   "Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage.",
-  "GMCC-v4 compatibility fallback:",
+  "report `blocked-user-input` without consuming external-blocker retries or starting monitoring",
+  "For an owned target, start the exact-diff walkthrough before asking the final merge question.",
+  "For an external dependency-only reference, instruct the user either to merge it and reply only after it is merged, or to explicitly authorize adding it as a target",
+  "a reply or merge decision alone does not clear the prerequisite or authorize its merge.",
+  "GMCC-v5 compatibility fallback:",
   "reuse or create one bounded current-thread monitor before handoff and do not create a duplicate",
   "Use at most four 15-minute fast-window polls followed by exponential backoff capped at four hours",
   "On each wake, refresh live blocker evidence and resume if a blocker clears.",
@@ -1043,6 +1052,12 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
+  MERGE_AUTHORITY_PROMPT_LINE,
+  1,
+  "triage generated-prompt merge-authority contract"
+)
+require_occurrence_count(
+  triage_prompt_contract_text,
   GOAL_PROMPT_LAUNCH_LINE,
   1,
   "triage generated-prompt launch contract"
@@ -1269,18 +1284,18 @@ bulky_items = (1..12).map do |number|
 end.join("\n")
 
 first_ready_item = <<~ITEM.chomp
-  - Target: Issue #1: https://github.com/acme/x/issues/1
-    Original: n/a.
-    Goal: Guard.
-    Notes: impl.
+  - Target: Issue #1: https://github.com/a/x/issues/1
+    Original: n/a
+    Goal:G
+    Notes: i
     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 ITEM
 
 second_ready_item = <<~ITEM.chomp
-  - Target: Issue #2: https://github.com/acme/x/issues/2
-    Original: n/a.
-    Goal: Route.
-    Notes: QA.
+  - Target: Issue #2: https://github.com/a/x/issues/2
+    Original: n/a
+    Goal:R
+    Notes: q
     Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale.
 ITEM
 
