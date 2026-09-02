@@ -206,7 +206,7 @@ COMPLETED_BATCH_ACCEPTED_DEFERRAL_DECISION = "The accepted-deferral input is exa
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER = "completed-batch-audit marker invalid"
 COMPLETED_BATCH_AUDIT_INVALID_MARKER_RULE = "If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line."
 PARENT_AUDIT_HANDOFF_RULE = "The completed-batch audit handoff is an always-applicable parent-reconciliation surface for every batch, independent of all target-level `n/a` decisions. The durable coordinator-owned handoff records audit status, verdict, verified scope evidence, checker evidence, findings, and follow-ups/dispositions. Missing handoff, or missing or `UNKNOWN` audit status or verdict, blocks both coordinated release and parent archive. #{COMPLETED_BATCH_AUDIT_RELEASE_ARCHIVE_RULE} #{COMPLETED_BATCH_AUDIT_EXACT_REPLAY_RULE} #{COMPLETED_BATCH_AUDIT_IDENTITY_SCOPE_RULE} #{COMPLETED_BATCH_AUDIT_TERMINAL_DISPOSITION_RULE} #{TERMINAL_FOLLOW_UP_EVIDENCE_RULE} #{UNRESOLVED_HANDOFF_NON_CLEAN_RULE} #{OUTSTANDING_MARKER_FINDINGS_RULE} The parent only reconciles this handoff; it never reruns or owns the audit.".freeze
-BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>."
+BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
 PLAN_PR_BATCH_CODEX_GOAL_LINE = "/goal\n"
 PLAN_PR_BATCH_INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents.\n"
 CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.\n"
