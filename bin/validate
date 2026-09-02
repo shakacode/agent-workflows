@@ -153,6 +153,7 @@ bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
 ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/batch-status/bin/batch-status-test.rb
+ruby skills/pr-batch/bin/target-membership-guard-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
 ruby skills/pr-batch/bin/security-floor-contract-test.rb
 ruby skills/pr-batch/bin/writing-style-contract-test.rb

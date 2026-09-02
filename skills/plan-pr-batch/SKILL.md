@@ -546,6 +546,15 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      best-effort field-granular `UNKNOWN`, names reconciliation, and does not
      block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
+     Its raw lane `targets` are not guard input. Use the canonical
+     [Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)
+     to derive the exact receiver manifest from trusted provenance/coordinator
+     state and require the trusted-base `target-membership-guard` before any
+     cross-task control or mutation. Keep its manifest-derivation details in that
+     canonical workflow; do not mirror them here. Foreign targets remain
+     evidence-only, unresolved identities fail closed as `UNKNOWN`, and control
+     transfer requires trusted out-of-band human authority plus exact receiver
+     membership.
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
