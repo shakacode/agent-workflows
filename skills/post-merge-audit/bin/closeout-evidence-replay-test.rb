@@ -1821,7 +1821,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     refute_includes supersession.fetch("missing"), "required.qa_evidence_mismatch"
   end
 
-  def test_present_qa_supersession_is_fail_closed_without_requirement_flag
+  def test_present_qa_supersession_is_fail_closed_in_current_head_mode_without_requirement_flag
     final_head_sha = "2222222222222222222222222222222222222222"
     evidence = v2_marker(
       "head_sha" => final_head_sha,
@@ -1839,6 +1839,28 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "UNKNOWN", replay.fetch("overall_verdict")
     assert_includes replay.fetch("qa_evidence_supersession").fetch("missing"),
                     "required.qa_evidence_mismatch"
+  end
+
+  def test_preserved_qa_supersession_does_not_poison_historical_replay
+    historical_head_sha = "1111111111111111111111111111111111111111"
+    evidence = v2_marker(
+      "head_sha" => historical_head_sha,
+      "tested_at" => "historical PR head #{historical_head_sha}"
+    ) + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: 2222222222222222222222222222222222222222
+      required: no
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(evidence)
+
+    assert_equal "SATISFIED", replay.fetch("overall_verdict")
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "NOT_APPLICABLE", supersession.fetch("verdict")
+    assert_equal "qa supersession was not requested for historical replay",
+                 supersession.fetch("reason")
   end
 
   def test_qa_supersession_rejects_unexpected_fields_and_case_mismatched_required

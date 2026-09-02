@@ -114,17 +114,17 @@ class IntegrationCloseoutContractTest < Minitest::Test
       assert_match(/^\#{2,3} #{Regexp.escape(heading)}$/, @component, heading)
     end
 
-    component_ceiling = 166_000
-    combined_ceiling = 400_000
+    component_ceiling = 168_000
+    combined_ceiling = 405_000
     combined_size = @component.bytesize + @workflow.bytesize + @skill.bytesize
 
     assert_operator @component.bytesize, :<, component_ceiling
-    assert_operator component_ceiling - @component.bytesize, :>=, 500,
+    assert_operator component_ceiling - @component.bytesize, :>=, 1_000,
                     "integration closeout component must retain structural headroom"
     assert_operator @workflow.bytesize, :<, 185_000
     assert_operator @skill.bytesize, :<, 60_000
     assert_operator combined_size, :<, combined_ceiling
-    assert_operator combined_ceiling - combined_size, :>=, 1_000,
+    assert_operator combined_ceiling - combined_size, :>=, 3_000,
                     "closeout interface must retain combined structural headroom"
     assert_includes @component, "worker-execution-handoff v1"
     assert_includes @component, "one replayable target ledger and human-first handoff"

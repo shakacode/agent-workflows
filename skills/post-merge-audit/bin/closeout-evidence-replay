@@ -222,6 +222,10 @@ module CloseoutEvidenceReplay
   end
 
   def replay_qa_supersession_markers(markers, qa_evidence:, expected_head_sha: nil, required: false)
+    if expected_head_sha.nil? && !required
+      return qa_supersession_not_applicable("qa supersession was not requested for historical replay")
+    end
+
     if markers.empty?
       return qa_supersession_unknown("qa-evidence-supersession v1 marker missing") if required
 

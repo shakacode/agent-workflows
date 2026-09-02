@@ -986,8 +986,8 @@ The closeout lane is:
    the PR body, handoff comment, or saved evidence file when QA or
    priority-disposition replay is part of the readiness claim. For each PR,
    re-fetch the final full SHA and reclassify QA after all pushes. Later commits
-   invalidate evidence: rerun affected QA and refresh `Tested at`, `head_sha`,
-   and the classification together.
+   invalidate evidence. Never update the evidence marker alone: rerun affected
+   QA and refresh `Tested at`, `head_sha`, and the classification together.
    Run the helper separately for that PR or target with
    `--expected-head-sha <full-final-head-SHA>`. Add
    `--require-visual-evidence-v2` in the same invocation for every current
