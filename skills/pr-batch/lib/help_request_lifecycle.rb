@@ -132,7 +132,8 @@ module HelpRequestLifecycle
     return unless PROHIBITED_PERMISSION_PHASES.include?(phase)
 
     request = requests.values.find do |candidate|
-      blocking_permission_request?(candidate) && candidate.fetch("scope_key") == request_scope_key(event)
+      blocking_permission_request?(candidate) &&
+        (candidate["lane"].nil? || candidate.fetch("scope_key") == request_scope_key(event))
     end
     return unless request
 

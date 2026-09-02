@@ -55,13 +55,25 @@ class HelpRequestLifecycleTest < Minitest::Test
   def test_unlaned_permission_request_blocks_a_lane_scoped_phase_conservatively
     input = Tempfile.new(["help-request-lifecycle-unlaned", ".json"])
     input.write(JSON.generate(
-                  "events" => [{
-                    "event_id" => "request-unlaned",
-                    "batch_id" => "batch-1",
-                    "type" => "help_requested",
-                    "reason" => "permission",
-                    "at" => "2026-08-23T05:48:18Z"
-                  }]
+                  "events" => [
+                    {
+                      "event_id" => "request-unlaned",
+                      "batch_id" => "batch-1",
+                      "target" => "issue:462",
+                      "type" => "help_requested",
+                      "reason" => "permission",
+                      "at" => "2026-08-23T05:48:18Z"
+                    },
+                    {
+                      "event_id" => "phase-review",
+                      "batch_id" => "batch-1",
+                      "lane" => "review",
+                      "target" => "issue:462",
+                      "type" => "phase.changed",
+                      "phase" => "review",
+                      "at" => "2026-08-23T05:48:30Z"
+                    }
+                  ]
                 ))
     input.flush
 
@@ -75,6 +87,9 @@ class HelpRequestLifecycleTest < Minitest::Test
     assert_equal 2, status.exitstatus, stderr
     assert_equal "request-unlaned", result.fetch("blocking_request_id")
     assert_nil result.fetch("blocking_request").fetch("lane")
+    transition = result.fetch("prohibited_phase_transitions").fetch(0)
+    assert_equal "phase-review", transition.fetch("event_id")
+    assert_equal "request-unlaned", transition.fetch("request_id")
   ensure
     input&.close!
   end
