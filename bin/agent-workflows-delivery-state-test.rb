@@ -2280,6 +2280,42 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_stack_owned_tree_exempts_changed_and_unexpected_entries
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "agent-stack-module-v1:agent_doctor\n")
+      # rsync --delete replaces the whole tree, so none of this can refuse the
+      # install: changed bytes, a changed mode, and an unrecorded file.
+      File.write(File.join(doctor_root, "renderer.rb"), "locally changed\n")
+      FileUtils.chmod(0o600, File.join(doctor_root, "autonomous_merge_policy.rb"))
+      File.write(File.join(doctor_root, "intruder.rb"), "foreign\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_a_tampered_helper_still_blocks_under_a_stack_owned_tree
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "agent-stack-module-v1:agent_doctor\n")
+      # The exemption covers the doctor tree only; helpers are still ours.
+      helper = File.join(target, "bin/agent-workflows-status")
+      File.write(helper, "status helper\n# tampered\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [helper], payload.dig("bin", "blocking")
+    end
+  end
+
   def test_stack_owned_tree_that_moved_forward_stays_compatible
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)

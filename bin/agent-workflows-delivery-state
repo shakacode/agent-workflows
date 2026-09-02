@@ -953,6 +953,10 @@ module AgentWorkflowsDeliveryState
     end
 
     doctor_attested = manages_doctor_tree && managed_doctor_tree_attested?(bin_root, fingerprints)
+    # A stack-owned tree belongs to agent-stack: the installer accepts it on the
+    # module line and rsync --delete replaces it whole, so nothing inside it is
+    # ours to preserve and none of its differences can refuse an install.
+    stack_owned = manages_doctor_tree && stack_owned_managed_doctor_tree?(doctor_root)
     present = []
     missing = []
     unowned_paths = []
@@ -969,13 +973,15 @@ module AgentWorkflowsDeliveryState
       end
 
       present << path
+      next if stack_owned && doctor_tree_entry?(name)
       # The installer accepts an empty doctor root and restores its contents and
       # mode wholesale, so its recorded mode is not judged in that state.
       next if name == MANAGED_DOCTOR_SUBDIRECTORY && empty_managed_directory?(path)
 
       unowned_paths << path unless managed_bin_copy_owned?(path:, source:, name:, digest:, doctor_attested:)
     end
-    unowned = (unowned_paths + unexpected_managed_doctor_entries(bin_root, fingerprints)).uniq.sort
+    unexpected = stack_owned ? [] : unexpected_managed_doctor_entries(bin_root, fingerprints)
+    unowned = (unowned_paths + unexpected).uniq.sort
     unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort
     if unowned.empty? && unrestorable.empty? &&
        (marker = managed_doctor_marker_conflict(bin_root, source, fingerprints))
