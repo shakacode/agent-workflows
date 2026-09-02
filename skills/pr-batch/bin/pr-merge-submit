@@ -780,16 +780,32 @@ module PrMergeSubmit
       end
 
       validate_receipt_base_sha!(pull_request)
-      validate_current_integration_live!(pull_request, bindings.fetch("current_integration"))
+      validate_current_integration_live!(
+        pull_request,
+        bindings.fetch("current_integration"),
+        method: options.fetch(:method)
+      )
       validate_receipt_option_bindings!(@merge_assurance_receipt, options)
     end
 
-    def validate_current_integration_live!(pull_request, integration)
+    def validate_current_integration_live!(pull_request, integration, method:)
       decision = integration.dig("reuse", "decision")
       return if decision == "base-unchanged"
 
       unless decision == "reuse-exact-head"
         raise Error, "merge-assurance receipt current integration is not reusable"
+      end
+
+      queue_submission = pull_request["isMergeQueueEnabled"] == true &&
+                         pull_request["isInMergeQueue"] == false &&
+                         @merge_submission && @merge_submission.fetch("mode") != "direct"
+      if queue_submission
+        raise Error, "merge queue submission cannot consume merge-shaped current-integration reuse evidence; " \
+                     "fresh-integration-required"
+      end
+      if method == "rebase"
+        raise Error, "rebase submission cannot consume merge-shaped current-integration reuse evidence; " \
+                     "fresh-integration-required"
       end
 
       expected = integration.fetch("candidate")
