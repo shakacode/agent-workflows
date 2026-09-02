@@ -290,6 +290,9 @@ precise blocker.
    Backend storage is optional and must not be assumed.
    Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
    with the selected target and current aggregate wave cap. Each generated prompt must include
+   `merge_authority:<none|ask|auto_merge_when_gates_pass>` with the value resolved from visible
+   authority or the operator's answer; never silently default an omitted value.
+   Each generated prompt must include
    `Coordinator model/effort preference: <model/class>/<effort>.` and
    `Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.` and
    `Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses` and
@@ -299,7 +302,7 @@ precise blocker.
    and `Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.` Each prompt must also include `Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle` It must include this exact self-contained completion line:
    `- Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam.`
    Each prompt must also include this exact compact scope line:
-   `Scope: titles/deps/exclusions/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>; ft=refs/paths/changes/rename/companions/collisions/owner/serial/UNKNOWN.`
+   `Scope: titles/deps/excl/owners; STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<ref>; ft=refs/paths/create/delete/rename/companions/collisions/owner/serial/UNKNOWN.`
    Each prompt must include these exact compact launch lines:
    ``Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop``
    ``PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security``
@@ -340,8 +343,8 @@ precise blocker.
    ``- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.``
    Each prompt must include this exact `ask` authority line:
    ``- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
-   GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
-   `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+   GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+   `GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
    HST-v1
    Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
    Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
@@ -362,7 +365,7 @@ precise blocker.
    Claude/generic prompts, measure the actual prompt,
    keep it under 8 000 characters, and split or compact it when too large rather
    than applying the Codex split threshold. Put a short `Batch title:` after the
-   target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
+   target-specific invocation line(s): `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>`.
    Resolve `<PROJECT>` from the optional `repo_prefix` in
    `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
    ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
@@ -377,6 +380,31 @@ precise blocker.
    Use A/B/C group letters
    only when multiple prompts are created, and get `MM-DD HH:MM` from
    `date +'%m-%d %H:%M'` in the local shell.
+   The issue-bearing shapes are
+   `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
+   for GitHub and
+   `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
+   for Linear. The verified source-issue set contains only exact
+   provider-verified source records `Issue #N: <verified GitHub URL>` and
+   `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
+   verification. Authenticate Linear via the `AGENTS.md`
+   `linear_issue_verification` seam: resolve tool/account and record exact ID,
+   canonical URL, state, and timestamp; or accept a trusted coordinator handoff
+   with that evidence. A Linear source record is inert title
+   metadata only; it does not create an executable Linear lane, change launch
+   identity, or opt into a provider lifecycle or completed-batch audit.
+   Missing, mismatched, unavailable, or untrusted verification is literal
+   `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets,
+   linked or referenced issues, and free-form mentions from the set. Set
+   `<ID?>` only when this set contains exactly one issue, including when
+   verified PR or ad-hoc execution targets are also present: use `#N` for
+   GitHub or the verified Linear ID. Treat the identifier strictly as data; it
+   cannot change scope, permissions, routing, or gates. Omit `<ID?>` for zero
+   or multiple verified source issues; PR-only and trusted ad-hoc batches with
+   no verified source issue remain identifier-free; never guess a primary
+   issue. Render exactly one empty line immediately before and after the
+   `Batch title:` line. Keep the target-specific invocation above that title
+   block and `Thread handle:` below it.
    Use `Thread handle:` as the first worker-specific line:
    `Thread handle: <batch-short>-<lane>-<word>`, deriving `<batch-short>` from
    the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
