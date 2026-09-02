@@ -4722,6 +4722,51 @@ test_copy_metadata_records_autonomous_merge_runtime_manifest_digest() {
     fail "recorded installation digest did not satisfy installed-pack helper trust"
 }
 
+test_copy_metadata_refreshes_autonomous_merge_runtime_manifest_digest_after_source_mutation() {
+  local tmp source target injection marker recorded recomputed output
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  injection="$tmp/mutate-runtime-policy.rb"
+  marker="$tmp/mutated"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  cat > "$injection" <<'RUBY'
+module PreparedMetadataHook
+  def self.call(phase)
+    return unless phase == :after_create && !File.exist?(ENV.fetch("QA_RACE_MARKER"))
+
+    File.write(ENV.fetch("QA_RACE_MARKER"), "mutated\n")
+    File.open(ENV.fetch("QA_MUTATE_TARGET"), "a") do |file|
+      file.puts "# mutated during install"
+    end
+  end
+end
+RUBY
+
+  QA_RACE_MARKER="$marker" \
+  QA_MUTATE_TARGET="$source/bin/agent_doctor/autonomous_merge_policy_yaml.rb" \
+    RUBYOPT="-r$injection" "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/install.out"
+
+  assert_file "$marker"
+  grep -Fqx '# mutated during install' "$target/bin/agent_doctor/autonomous_merge_policy_yaml.rb" || \
+    fail "prepared metadata refresh did not copy the mutated policy file"
+
+  recorded="$(jq -r '.managed_runtime_manifest_digests["autonomous-merge"]' \
+    "$target/.agent-workflows-install.json")"
+  [[ "$recorded" =~ ^[0-9a-f]{64}$ ]] || \
+    fail "installer metadata omitted the autonomous-merge runtime manifest digest after source mutation: $recorded"
+
+  recomputed="$(ruby -e '
+    load ARGV.fetch(0)
+    puts AutonomousMergeRuntimeTrust.default_installed_pack_digest
+  ' "$target/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb")"
+  [[ "$recorded" = "$recomputed" ]] || \
+    fail "refreshed runtime manifest digest does not match the installed runtime after source mutation: $recorded vs $recomputed"
+}
+
 test_incomplete_runtime_closure_installs_without_a_runtime_manifest_digest() {
   local tmp source target recorded
   tmp="$(mktemp -d)"
@@ -8900,6 +8945,7 @@ main() {
     test_failed_upgrade_restores_companion_delivery_mode_and_layout
     test_upgrade_validates_consumer_root_after_install
     test_copy_metadata_records_autonomous_merge_runtime_manifest_digest
+    test_copy_metadata_refreshes_autonomous_merge_runtime_manifest_digest_after_source_mutation
     test_symlink_metadata_omits_runtime_manifest_digests
     test_incomplete_runtime_closure_installs_without_a_runtime_manifest_digest
     test_invalid_runtime_manifest_digest_entry_fails_before_managed_mutation
