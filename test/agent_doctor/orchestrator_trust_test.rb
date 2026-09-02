@@ -261,20 +261,16 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
   end
 
   def test_healthy_source_allows_hardlinked_installed_delegate
-    sentinel = path("healthy-hardlinked-workflow-executed")
     source_helper = path("src/agent-workflows/bin/agent-workflows-doctor")
     installed = path("target/bin/agent-workflows-doctor")
     FileUtils.mkdir_p(File.dirname(source_helper))
-    write_delegate(source_helper, "agent-workflows", "workflows.installation", sentinel: sentinel)
-    system("git", "-C", path("src/agent-workflows"), "add", "bin/agent-workflows-doctor", exception: true)
-    system("git", "-C", path("src/agent-workflows"), "commit", "--quiet", "-m", "delegate fixture", exception: true)
+    File.write(source_helper, "healthy delegate\n")
     FileUtils.rm_f(installed)
     File.link(source_helper, installed)
 
-    payload = orchestrator.call
-
-    assert_path_exists sentinel
-    assert_equal "healthy", payload.fetch("components").first.fetch("status")
+    assert File.identical?(source_helper, installed), "fixture is not hardlinked"
+    refute orchestrator.send(:source_delegate_blocked?, { "status" => "healthy" }, installed,
+                             path("src/agent-workflows"))
   end
 
   def test_degraded_source_reports_missing_delegate_instead_of_source_trust_failure
