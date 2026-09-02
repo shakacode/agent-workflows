@@ -93,7 +93,8 @@ module ValidateDocLinks
   # GitHub anchor slugs for every ATX heading outside fenced code blocks, in
   # document order, with the -1/-2 suffixes GitHub appends to duplicates.
   def heading_anchors(text)
-    seen = Hash.new(0)
+    next_suffix = Hash.new(0)
+    used = {}
     anchors = []
     each_prose_line(text) do |line, _number|
       match = HEADING_PATTERN.match(line)
@@ -102,9 +103,13 @@ module ValidateDocLinks
       slug = slugify(match[2])
       next if slug.empty?
 
-      count = seen[slug]
-      seen[slug] = count + 1
-      anchors << (count.zero? ? slug : "#{slug}-#{count}")
+      candidate = slug
+      while used[candidate]
+        next_suffix[slug] += 1
+        candidate = "#{slug}-#{next_suffix[slug]}"
+      end
+      used[candidate] = true
+      anchors << candidate
     end
     anchors
   end

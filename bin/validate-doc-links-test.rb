@@ -132,6 +132,12 @@ class ValidateDocLinksTest < Minitest::Test
     assert_equal %w[authority authority-1 authority-2], ValidateDocLinks.heading_anchors(text)
   end
 
+  def test_duplicate_heading_suffixes_skip_explicitly_occupied_slugs
+    text = "## Authority\n## Authority-1\n## Authority\n"
+
+    assert_equal %w[authority authority-1 authority-2], ValidateDocLinks.heading_anchors(text)
+  end
+
   def test_fenced_code_blocks_are_not_headings_and_do_not_contain_links
     text = <<~MARKDOWN
       # Real Heading
