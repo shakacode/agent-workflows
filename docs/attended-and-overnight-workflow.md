@@ -81,10 +81,13 @@ or PR URL when the target has a GitHub work-item surface; a wholly non-GitHub
 trusted-ad-hoc run reuses its existing durable plan or backend destination. The
 [default operating model](../workflows/pr-processing.md#default-operating-model)
 defines when an exact, independent run may proceed with degraded coordination:
-only after a direct claim succeeds, in `private_state: claim-only`, with
-phase-transition heartbeats and preserved degraded-status evidence. An unbound
-direct prompt stops for planning or reconciliation. A refused claim stops the
-run; a timed-out or otherwise unknown claim outcome stops for reconciliation.
+after a direct claim succeeds in `private_state: claim-only`, with
+phase-transition heartbeats and preserved degraded-status evidence. It may also
+proceed through a structured public `codex-claim` fallback when the private
+claim cannot start or fails with a definitive non-timeout setup/auth error and
+dependency rules allow it. An unbound direct prompt stops for planning or
+reconciliation. A refused claim stops the run; a timed-out or otherwise
+unknown claim outcome stops for reconciliation.
 Overrides do not bypass repository policy, trust or security checks, dependency
 gates, validation, review, merge authority, a production, release, or
 destructive-action gate, a failing correctness check, or a required human
