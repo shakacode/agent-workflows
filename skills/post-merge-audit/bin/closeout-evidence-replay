@@ -227,6 +227,7 @@ module CloseoutEvidenceReplay
 
       return qa_supersession_not_applicable("qa-evidence-supersession v1 marker missing")
     end
+    markers = current_head_markers(markers, expected_head_sha) if expected_head_sha
     return qa_supersession_marker_count_unknown(markers.length) unless markers.length == 1
 
     fields, duplicate_keys = parse_fields(markers.first)
@@ -244,9 +245,13 @@ module CloseoutEvidenceReplay
 
     qa_fields = qa_evidence.fetch("fields", {})
     missing << "qa_evidence" if qa_evidence.fetch("verdict", "UNKNOWN") == "UNKNOWN"
-    missing << "qa_evidence.marker_version" unless qa_evidence.fetch("marker_version", nil) == 2
-    missing << "head_sha.qa_evidence_mismatch" unless qa_fields.fetch("head_sha", "").downcase == head_sha
-    missing << "required.qa_evidence_mismatch" unless qa_fields.fetch("required", "") == qa_required
+    if qa_evidence.fetch("marker_count", 0) != 1
+      missing << "exactly one qa-evidence v2 marker is required"
+    else
+      missing << "qa_evidence.marker_version" unless qa_evidence.fetch("marker_version", nil) == 2
+      missing << "head_sha.qa_evidence_mismatch" unless qa_fields.fetch("head_sha", "").downcase == head_sha
+      missing << "required.qa_evidence_mismatch" unless qa_fields.fetch("required", "") == qa_required
+    end
     missing.uniq!
     fields["head_sha"] = head_sha if full_head_sha?(head_sha)
 

@@ -618,9 +618,10 @@ For the PR-description path, replay the freshly read PR body normally. If that
 body remains stale because the integration owner used the evidence-preserving
 comment path, read back only the newly published comment and run the same
 exact-head command with `--require-qa-supersession`. The flag is invalid without
-`--expected-head-sha`; replay requires exactly one
-`qa-evidence-supersession v1` marker, validates its exact field set, and checks
-that its head and QA-required classification match the adjacent replayable
+`--expected-head-sha`; replay filters preserved supersession history to that
+head, requires exactly one current-head `qa-evidence-supersession v1` marker,
+validates its exact field set, and checks that its head and QA-required
+classification match the adjacent replayable
 `qa-evidence v2` marker. Missing, duplicate, malformed, stale, or classification-mismatched
 supersession evidence returns `UNKNOWN`. Do not concatenate every historical
 review comment into this replacement replay.

@@ -1715,6 +1715,39 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal final_head_sha, supersession.fetch("fields").fetch("head_sha")
   end
 
+  def test_qa_supersession_uses_current_marker_from_preserved_history
+    stale_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    supersessions = <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{stale_head_sha}
+      required: yes
+      supersedes: pr_body
+      -->
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: yes
+      supersedes: pr_body
+      -->
+    MARKDOWN
+    evidence = v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) + supersessions
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "SATISFIED", replay.fetch("overall_verdict")
+    assert_equal "SATISFIED", supersession.fetch("verdict")
+    assert_equal 1, supersession.fetch("marker_count")
+    assert_equal final_head_sha, supersession.fetch("fields").fetch("head_sha")
+  end
+
   def test_qa_supersession_rejects_required_classification_mismatch
     final_head_sha = "2222222222222222222222222222222222222222"
     evidence = v2_marker(
@@ -1760,6 +1793,78 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "UNKNOWN", replay.fetch("overall_verdict")
     assert_equal "UNKNOWN", supersession.fetch("verdict")
     assert_includes supersession.fetch("missing"), "qa_evidence.marker_version"
+  end
+
+  def test_qa_supersession_reports_multiple_adjacent_v2_markers_without_false_mismatches
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) * 2 + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: yes
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_includes supersession.fetch("missing"), "exactly one qa-evidence v2 marker is required"
+    refute_includes supersession.fetch("missing"), "head_sha.qa_evidence_mismatch"
+    refute_includes supersession.fetch("missing"), "required.qa_evidence_mismatch"
+  end
+
+  def test_present_qa_supersession_is_fail_closed_without_requirement_flag
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: no
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(evidence, expected_head_sha: final_head_sha)
+
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_includes replay.fetch("qa_evidence_supersession").fetch("missing"),
+                    "required.qa_evidence_mismatch"
+  end
+
+  def test_qa_supersession_rejects_unexpected_fields_and_case_mismatched_required
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: Yes
+      supersedes: pr_body
+      note: unexpected
+      -->
+    MARKDOWN
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_includes supersession.fetch("errors"), "scalar keys must be exactly head_sha, required, supersedes"
+    assert_includes supersession.fetch("missing"), "required"
   end
 
   def test_required_qa_supersession_rejects_plain_exact_head_prose_and_marker
