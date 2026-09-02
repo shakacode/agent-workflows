@@ -8,6 +8,9 @@ require "time"
 require_relative "../lib/help_request_lifecycle"
 
 options = { input: "-", max_open_seconds: 14_400, now: Time.now, require_phase: nil, lane: nil }
+phase_gate_requested = ARGV.any? do |argument|
+  argument == "--require-phase" || argument.start_with?("--require-phase=")
+end
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: help-request-lifecycle [--input FILE|-] [--lane NAME] [--now ISO8601] [--max-open-seconds N] [--require-phase PHASE]"
   opts.on("--input FILE", "Read coordination events from FILE or stdin") { |value| options[:input] = value }
@@ -50,5 +53,5 @@ rescue ArgumentError, OptionParser::ParseError, JSON::ParserError, HelpRequestLi
     "error" => e.message
   )
   warn e.message
-  exit(options[:require_phase] ? 2 : 1)
+  exit(phase_gate_requested ? 2 : 1)
 end

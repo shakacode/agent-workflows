@@ -252,6 +252,19 @@ class HelpRequestLifecycleTest < Minitest::Test
     refute_includes stderr, "help-request-lifecycle:"
   end
 
+  def test_parse_failure_with_a_required_phase_still_fails_closed
+    stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby,
+      SCRIPT,
+      "--input", FIXTURE,
+      "--now", "not-a-date",
+      "--require-phase", "review"
+    )
+
+    assert_equal 2, status.exitstatus, stderr
+    assert_equal "UNKNOWN", JSON.parse(stdout).fetch("status")
+  end
+
   def test_unknown_replay_blocks_a_required_phase
     input = Tempfile.new(["help-request-lifecycle-invalid", ".json"])
     input.write(JSON.generate(
