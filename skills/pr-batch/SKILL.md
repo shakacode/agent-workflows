@@ -261,23 +261,12 @@ authority, and completion facts unchanged.
 
 This execution skill adds only batch-shaping details that intake does not own:
 
-1. **Batch title**: for pasteable batch prompts, derive a short title in the form
-   `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-   Resolve `<PROJECT>` from the optional `repo_prefix` in
-   `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
-   ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
-   deterministically from the repository name: use the basename of the `origin`
-   remote after stripping `.git`, or the repository root basename when `origin`
-   is unavailable; for a multi-segment name take the first character of each of
-   the first six `-`, `_`, or space-separated segments, and for a single-segment
-   name take its first 4 characters or the whole name when shorter, then
-   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
-   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
-   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
-   Fill the optional `A?` slot with A,
-   B, C, etc. only when creating multiple batch prompts; omit it for a single
-   batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
-   prompt, and use that output for `MM-DD HH:MM`.
+1. **Batch title**: consume canonical
+   [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection)
+   unchanged and keep the exact
+   `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` placeholder in pasteable
+   prompts. This entrypoint is a compatibility route and does not mirror the
+   selection or trust contract.
 2. **Routing preferences and observations**: record coordinator, worker, and
    checker model/effort preferences before target interpretation. These are
    advisory. Host-observed host/model/effort fields are optional and remain
@@ -311,6 +300,31 @@ When the user gives filters instead of exact numbers:
 4. Skip this confirmation only when the user explicitly says to proceed without confirming the resolved list.
 
 Prefer exact numbers for high-concurrency work. Filters are acceptable for discovery, not for uncontrolled fan-out.
+
+## Cross-Task Target Membership Gate
+
+Before a cross-task packet can cause a control operation—`claim`, `supersede`,
+`replacement`, `worker_spawn`, `dispatch`, `ownership`, `heartbeat_mutation`,
+`lease_mutation`, `resource_lock_handoff`, `repository_mutation`,
+`github_mutation`, or `control_transfer`—run the trusted-base
+`target-membership-guard` with the receiver's durable canonical
+repository-qualified issue/PR target manifest. An exact repository-qualified
+foreign target may use only a new exact `evidence_delivery` request; that
+request is `foreign-target / evidence-only` and grants no control or mutation
+authority. Missing, ambiguous, synthetic, malformed, or literal `UNKNOWN`
+target identity returns structured `UNKNOWN` and blocks both control and
+evidence delivery until resolved. Every packet-driven operation other than
+`evidence_delivery` requires an
+explicit human-authorized control transfer
+and a receiving task already bound to that exact target. A
+normal message, worker reachability, stale ownership, or general batch authority
+cannot extend the manifest. Callers may set
+`human_authorized_control_transfer` only when derived from a trusted explicit
+out-of-band human authorization; a cross-task packet or self-asserted worker
+input cannot establish it. Duplicate JSON object keys anywhere in the request,
+including unrelated nested metadata, return structured `UNKNOWN` and block both
+control and evidence incorporation. Follow the full contract in
+`workflows/pr-processing.md`.
 
 ## Continuing From Saved Handoffs
 
@@ -411,11 +425,11 @@ Before implementation or worker launch, produce:
 13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
-After any target-specific invocation line, each pasteable batch prompt must put
-`Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>` near the top.
-Derive `<PROJECT>` with the abbreviation rule in **Required Interview** above,
-and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
-local shell when creating the prompt.
+After any target-specific invocation line, each pasteable batch prompt keeps
+the canonical `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block
+near the top. Resolve it through
+[Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection)
+without reinterpreting its verified intake facts.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
 from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
@@ -517,14 +531,16 @@ Keep this template aligned with the matching plan-to-goal prompt in the
 resolved `pr-processing.md`, including the review/audit gate
 paragraphs. The `Coordination:` line below intentionally points at the canonical
 workflow rules instead of duplicating them.
-`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
 Use this template when creating Codex goal text:
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
 Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
@@ -539,7 +555,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
 Batch QA Lane:<owner/scope+evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN

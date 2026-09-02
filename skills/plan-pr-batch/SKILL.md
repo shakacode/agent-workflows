@@ -546,6 +546,15 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      best-effort field-granular `UNKNOWN`, names reconciliation, and does not
      block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
+     Its raw lane `targets` are not guard input. Use the canonical
+     [Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)
+     to derive the exact receiver manifest from trusted provenance/coordinator
+     state and require the trusted-base `target-membership-guard` before any
+     cross-task control or mutation. Keep its manifest-derivation details in that
+     canonical workflow; do not mirror them here. Foreign targets remain
+     evidence-only, unresolved identities fail closed as `UNKNOWN`, and control
+     transfer requires trusted out-of-band human authority plus exact receiver
+     membership.
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
@@ -564,24 +573,12 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      is heuristic: prefer host-exposed runtime signals over installed-home
      auto-detection, and choose `generic` when both Codex and Claude are
      plausible.
-   - After the target-specific invocation line, put a short `Batch title:` near
-     the top of every pasteable batch prompt:
-     `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-     Resolve `<PROJECT>` from the optional `repo_prefix` in
-     `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
-     ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
-     deterministically from the repository name: use the basename of the
-     `origin` remote after stripping `.git`, or the repository root basename
-     when `origin` is unavailable; for a multi-segment name take the first
-     character of each of the first six `-`, `_`, or space-separated segments,
-     and for a single-segment name take its first 4 characters or the whole name
-     when shorter, then uppercase the result (`agent-workflows` -> `AW`,
-     `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` ->
-     `WEB3`, `3d-tiles` -> `3T`). An invalid configured `repo_prefix` is a
-     blocker; do not silently fall back.
-     Include A, B, C, etc. only when creating multiple batch
-     prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
-     when creating the prompt, and use that output for `MM-DD HH:MM`.
+   - After the target-specific invocation line, render the exact
+     `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block through
+     canonical [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection).
+     This entrypoint preserves the prompt template below and consumes the
+     verified title facts unchanged; it does not redefine prefix, identifier,
+     trust, time, or spacing selection.
    - Add `Thread handle:` as the first worker-specific line. Derive
      `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
@@ -685,6 +682,8 @@ backend must say so in the declaration.
 - Objective:
 - Repository:
 - Batch title(s):
+- Verified source issues for title metadata:
+  - `Issue #N: <verified GitHub URL>` or `Linear issue <ID>: <verified Linear URL>`; verification source; Linear records are not execution lanes
 - Included items:
   - `PR #N` or `Issue #N`: title, URL, state, role in batch
   - Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch
@@ -800,7 +799,7 @@ is the shared prompt body. For the `codex` target, prepend only the `/goal` line
 before this body. For the `claude` or `generic` target, use the body as-is so the
 prompt starts with `Use $pr-batch to complete this batch with subagents.`
 Keep bulky evidence and long validation notes outside the prompt.
-`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
 Before generating the prompt, preserve this merge-planning contract:
@@ -814,7 +813,9 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-Batch title: <PROJECT> <A?> <MM-DD HH:MM> - <short title>.
+
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
 Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
@@ -829,7 +830,7 @@ Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<l
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
 Batch QA Lane:<owner/scope+evidence|none+rationale>
 Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
