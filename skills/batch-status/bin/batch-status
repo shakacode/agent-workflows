@@ -151,7 +151,8 @@ def owner_route_evidence(repo:, number:, url:, claim:, heartbeat:, holder:, expe
     "machine_id" => route_machine,
     "codex_deep_link" => route_link,
     "codex_deep_link_machine_id" => route_link == UNKNOWN ? UNKNOWN : route_machine,
-    "log_location" => present_string(route_record["log"]) || UNKNOWN,
+    # The current coordination payload does not expose a supported stable log path.
+    "log_location" => UNKNOWN,
     "host_task_lookup" => "required"
   }
 end
