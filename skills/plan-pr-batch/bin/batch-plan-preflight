@@ -106,11 +106,13 @@ module BatchPlanPreflight
     final_validation
     merge
   ].freeze
-  BACKEND_CAPS = {
-    "codex" => { "lanes" => 10, "risky" => 8 },
-    "claude" => { "lanes" => 5, "risky" => 3 },
-    "generic" => { "lanes" => 5, "risky" => 3 }
-  }.freeze
+  CAPACITY_ENVELOPE_KEYS = %w[hosts type version].freeze
+  CAPACITY_HOST_KEYS = %w[external_quota heavy_root id source worker].freeze
+  CAPACITY_SLOT_KEYS = %w[limit occupied].freeze
+  HEAVY_ROOT_BUDGET_KEYS = %w[admission limit].freeze
+  CAPACITY_SOURCES = %w[verified fallback].freeze
+  HEAVY_ROOT_ADMISSION = "heavy-root-admission/v1"
+  HOST_ID_PATTERN = /\A[a-z0-9][a-z0-9_.-]*\z/
 
   module_function
 
@@ -120,7 +122,8 @@ module BatchPlanPreflight
     item
   end
 
-  def result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: [], advisories: [])
+  def result(status, eligible_lane_ids, held_lane_ids, violations, completed_lane_ids: [], advisories: [],
+             held_reasons: {}, capacity: nil)
     {
       "type" => "batch-plan-preflight",
       "version" => 1,
@@ -128,10 +131,21 @@ module BatchPlanPreflight
       "launch" => {
         "eligible_lane_ids" => status == "accepted" ? eligible_lane_ids : [],
         "held_lane_ids" => status == "accepted" ? held_lane_ids : [],
-        "completed_lane_ids" => status == "accepted" ? completed_lane_ids : []
+        "completed_lane_ids" => status == "accepted" ? completed_lane_ids : [],
+        "held_reasons" => status == "accepted" ? held_reasons : {}
       },
+      "capacity" => capacity || empty_capacity_decision,
       "violations" => violations,
       "advisories" => advisories
+    }
+  end
+
+  def empty_capacity_decision
+    {
+      "type" => "per-host-capacity-decision",
+      "version" => 1,
+      "admitted_worker_slots" => 0,
+      "hosts" => []
     }
   end
 
@@ -150,9 +164,15 @@ module BatchPlanPreflight
     violations = plan_violations.dup
     advisories = []
     violations.concat(validate_unknown_decisions(input["plan"]))
+    infer_missing_lane_host = input["host_capacity"].nil?
+    host_capacity, capacity_violations = resolve_host_capacity(
+      input["host_capacity"],
+      lanes,
+      input.dig("plan", "backend")
+    )
+    violations.concat(capacity_violations)
     plan_violation_codes = plan_violations.map { |item| item["code"] }
     lane_ids_valid = !plan_violation_codes.include?("lane-id-invalid-or-duplicate")
-    changed_surfaces_valid = !plan_violation_codes.include?("changed-surfaces-invalid")
     stage_dependency_plan = input["stage_dependency_plan"]
     stage_dependency_plan_id = stage_dependency_plan["id"] if stage_dependency_plan.is_a?(Hash)
     completed_lane_ids = []
@@ -165,6 +185,15 @@ module BatchPlanPreflight
         stage_dependency_plan_id
       )
       violations.concat(lifecycle_violations)
+    end
+    if host_capacity && lane_ids_valid
+      violations.concat(validate_host_capacity_occupancy(
+                          host_capacity,
+                          lanes,
+                          active_lane_ids,
+                          blocked_lane_ids,
+                          infer_missing_lane_host
+                        ))
     end
     file_touch_violations = validate_file_touch_maps(input["file_touch_map"], lane_ids)
     violations.concat(file_touch_violations)
@@ -206,23 +235,15 @@ module BatchPlanPreflight
         )
       violations.concat(collision_violations)
       advisories = collision_advisories
-      if changed_surfaces_valid
-        violations.concat(validate_caps(
-                            input["plan"]["backend"],
-                            input["plan"]["active_wave"],
-                            lanes,
-                            effective_maps
-                          ))
-      end
     end
     violations.concat(validate_external_premises(input["plan"]["external_api_premises"], lane_ids))
     if lane_ids_valid
       violations.concat(validate_external_support(input["plan"]["external_api_premises"], lanes))
     end
     status = violations.empty? ? "accepted" : "rejected"
-    eligible_lane_ids, held_lane_ids =
+    eligible_lane_ids, held_lane_ids, held_reasons, capacity_decision =
       if status == "accepted"
-        launch_partition(
+        ready_lane_ids, gate_held_lane_ids = launch_partition(
           lanes,
           input["stage_dependency_gate"],
           input["plan"]["active_wave"],
@@ -231,8 +252,30 @@ module BatchPlanPreflight
           active_lane_ids,
           blocked_lane_ids
         )
+        apply_host_capacity(
+          lanes,
+          host_capacity,
+          ready_lane_ids,
+          gate_held_lane_ids,
+          active_lane_ids,
+          blocked_lane_ids,
+          input["plan"]["active_wave"],
+          infer_missing_lane_host,
+          input["plan"]["serialization_groups"]
+        )
       else
-        [[], []]
+        capacity_decision = if host_capacity
+                              capacity_decision_for_rejection(
+                                host_capacity,
+                                lanes,
+                                active_lane_ids,
+                                blocked_lane_ids,
+                                infer_missing_lane_host
+                              )
+                            else
+                              empty_capacity_decision
+                            end
+        [[], [], {}, capacity_decision]
       end
     result(
       status,
@@ -240,8 +283,149 @@ module BatchPlanPreflight
       held_lane_ids,
       violations,
       completed_lane_ids: completed_lane_ids.sort,
-      advisories: advisories
+      advisories: advisories,
+      held_reasons: held_reasons,
+      capacity: capacity_decision
     )
+  end
+
+  def resolve_host_capacity(raw_capacity, lanes, backend)
+    capacity_supplied = !raw_capacity.nil?
+    if raw_capacity.nil?
+      host_ids = lanes.filter_map { |lane| lane["host_id"] if valid_host_id?(lane["host_id"]) }.uniq
+      fallback_backend = BACKENDS.include?(backend) ? backend : "generic"
+      fallback_host_id = host_ids.length == 1 ? host_ids.first : "#{fallback_backend}-fallback"
+      raw_capacity = {
+        "type" => "per-host-capacity-envelope",
+        "version" => 1,
+        "hosts" => [{
+          "id" => fallback_host_id,
+          "source" => "fallback",
+          "worker" => { "limit" => 1, "occupied" => 0 },
+          "heavy_root" => { "limit" => 1, "admission" => HEAVY_ROOT_ADMISSION },
+          "external_quota" => { "limit" => 1, "occupied" => 0 }
+        }]
+      }
+    end
+
+    unless valid_host_capacity_envelope_shape?(raw_capacity)
+      return [nil, [violation(
+        "host-capacity-envelope-invalid",
+        "$.host_capacity",
+        "Provide per-host-capacity-envelope v1 with unique known hosts and valid independent " \
+        "worker, heavy-root, and external-quota budgets."
+      )]]
+    end
+
+    host_ids = raw_capacity.fetch("hosts").map { |host| host.fetch("id") }
+    lane_violations = lanes.filter_map.with_index do |lane, index|
+      host_id = effective_lane_host_id(lane, raw_capacity, infer_missing: !capacity_supplied)
+      unless host_ids.include?(host_id)
+        next violation(
+          "lane-host-capacity-unknown",
+          "$.plan.lanes[#{index}].host_id",
+          "Every lane must select one host declared by the capacity envelope.",
+          lane_ids: [lane["id"]].compact
+        )
+      end
+      next if !lane.key?("uses_external_quota") || [true, false].include?(lane["uses_external_quota"])
+
+      violation(
+        "lane-external-quota-invalid",
+        "$.plan.lanes[#{index}].uses_external_quota",
+        "uses_external_quota must be true or false when present.",
+        lane_ids: [lane["id"]].compact
+      )
+    end
+    [raw_capacity, lane_violations]
+  end
+
+  def valid_host_capacity_envelope_shape?(capacity)
+    return false unless capacity.is_a?(Hash) && capacity.keys.sort == CAPACITY_ENVELOPE_KEYS
+    return false unless capacity["type"] == "per-host-capacity-envelope" && capacity["version"] == 1
+
+    hosts = capacity["hosts"]
+    return false unless hosts.is_a?(Array) && !hosts.empty?
+    return false unless hosts.all? { |host| valid_capacity_host?(host) }
+
+    host_ids = hosts.map { |host| host.fetch("id") }
+    host_ids.uniq.length == host_ids.length
+  end
+
+  def valid_capacity_host?(host)
+    return false unless host.is_a?(Hash) && host.keys.sort == CAPACITY_HOST_KEYS
+    return false unless valid_host_id?(host["id"]) && CAPACITY_SOURCES.include?(host["source"])
+    return false unless valid_capacity_slot_budget?(host["worker"])
+    return false unless valid_capacity_slot_budget?(host["external_quota"])
+
+    heavy_root = host["heavy_root"]
+    return false unless heavy_root.is_a?(Hash) && heavy_root.keys.sort == HEAVY_ROOT_BUDGET_KEYS &&
+                        nonnegative_integer?(heavy_root["limit"]) &&
+                        heavy_root["admission"] == HEAVY_ROOT_ADMISSION
+    return true unless host["source"] == "fallback"
+
+    host.dig("worker", "limit") <= 1 && heavy_root["limit"] <= 1 &&
+      host.dig("external_quota", "limit") <= 1
+  end
+
+  def valid_host_id?(host_id)
+    host_id.is_a?(String) && host_id.match?(HOST_ID_PATTERN) && !host_id.casecmp?("UNKNOWN")
+  end
+
+  def valid_capacity_slot_budget?(budget)
+    budget.is_a?(Hash) && budget.keys.sort == CAPACITY_SLOT_KEYS &&
+      nonnegative_integer?(budget["limit"]) && nonnegative_integer?(budget["occupied"]) &&
+      budget["occupied"] <= budget["limit"]
+  end
+
+  def nonnegative_integer?(value)
+    value.is_a?(Integer) && value >= 0
+  end
+
+  def effective_lane_host_id(lane, capacity, infer_missing:)
+    return lane["host_id"] unless lane["host_id"].nil?
+    return nil unless infer_missing
+
+    hosts = capacity.fetch("hosts")
+    hosts.one? ? hosts.first.fetch("id") : nil
+  end
+
+  def validate_host_capacity_occupancy(capacity, lanes, active_lane_ids, blocked_lane_ids,
+                                       infer_missing_lane_host)
+    occupied_lane_ids = active_lane_ids + blocked_lane_ids
+    lanes_by_id = lanes.to_h { |lane| [lane["id"], lane] }
+    capacity.fetch("hosts").flat_map do |host|
+      host_id = host.fetch("id")
+      lifecycle_lanes = occupied_lane_ids.filter_map do |lane_id|
+        lane = lanes_by_id[lane_id]
+        lane_id if lane && effective_lane_host_id(
+          lane, capacity, infer_missing: infer_missing_lane_host
+        ) == host_id
+      end
+      quota_lifecycle_lanes = lifecycle_lanes.select do |lane_id|
+        lanes_by_id.fetch(lane_id)["uses_external_quota"] == true
+      end
+      worker_total = host.dig("worker", "occupied") + lifecycle_lanes.length
+      quota_total = host.dig("external_quota", "occupied") + quota_lifecycle_lanes.length
+      violations = []
+      if worker_total > host.dig("worker", "limit")
+        violations << violation(
+          "host-worker-capacity-overcommitted",
+          "$.host_capacity.hosts",
+          "Host #{host_id} has more occupied or lifecycle-held worker slots than its declared budget.",
+          lane_ids: lifecycle_lanes.sort
+        )
+      end
+      if quota_total > host.dig("external_quota", "limit")
+        violations << violation(
+          "host-external-quota-overcommitted",
+          "$.host_capacity.hosts",
+          "Host #{host_id} has more occupied external-quota slots than its declared budget.",
+          lane_ids: quota_lifecycle_lanes.sort
+        )
+      end
+      violations
+    end
   end
 
   def validate_plan(plan)
@@ -1064,58 +1248,188 @@ module BatchPlanPreflight
       end
     end
     lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
-    serialized_group_ids = Array(serialization_groups).filter_map do |group|
-      group["id"] if group.is_a?(Hash) && group["max_concurrency"] == 1
-    end
-    serialized_group_ids.uniq.sort.each do |group_id|
-      group_lane_ids = eligible.select do |lane_id|
-        lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
-      end.sort
+    serialized_group_ids(serialization_groups).sort_by(&:to_s).each do |group_id|
       group_occupied = (active_lane_ids + blocked_lane_ids).any? do |lane_id|
         lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
       end
-      held_group_lane_ids = group_occupied ? group_lane_ids : group_lane_ids.drop(1)
+      next unless group_occupied
+
+      held_group_lane_ids = eligible.select do |lane_id|
+        lanes_by_id.fetch(lane_id)["serialization_group"] == group_id
+      end
       held.concat(held_group_lane_ids)
       eligible -= held_group_lane_ids
     end
     [eligible.sort, held.sort]
   end
 
-  def validate_caps(backend, active_wave, lanes, maps)
-    return [] unless BACKEND_CAPS.key?(backend)
+  # An unoccupied max-concurrency-one group keeps every ready member here so
+  # host admission can pick the first member that fits the host budgets. Holding
+  # the lexically first member before admission would let an unaffordable lane
+  # starve a runnable sibling on every replay.
+  def serialized_group_ids(serialization_groups)
+    Array(serialization_groups).filter_map do |group|
+      group["id"] if group.is_a?(Hash) && group["max_concurrency"] == 1
+    end.uniq
+  end
 
-    lanes = lanes.select { |lane| lane["wave"] == active_wave }
-    active_lane_ids = lanes.to_h { |lane| [lane.fetch("id"), true] }
-    maps = maps.select { |lane_id, _map| active_lane_ids.key?(lane_id) }
-    caps = BACKEND_CAPS.fetch(backend)
-    violations = []
-    if lanes.length > caps.fetch("lanes")
-      violations << violation(
-        "backend-lane-cap-exceeded",
-        "$.plan.lanes",
-        "#{backend} permits at most #{caps.fetch('lanes')} lanes; received #{lanes.length}."
-      )
+  def apply_host_capacity(lanes, capacity, ready_lane_ids, gate_held_lane_ids, active_lane_ids,
+                          blocked_lane_ids, active_wave, infer_missing_lane_host,
+                          serialization_groups)
+    lanes_by_id = lanes.to_h { |lane| [lane.fetch("id"), lane] }
+    lifecycle_occupied_ids = active_lane_ids + blocked_lane_ids
+    group_ids = serialized_group_ids(serialization_groups)
+    hosts = capacity.fetch("hosts").sort_by { |host| host.fetch("id") }
+    host_states = hosts.to_h do |host|
+      host_id = host.fetch("id")
+      lifecycle_host_lane_ids = lifecycle_occupied_ids.select do |lane_id|
+        effective_lane_host_id(
+          lanes_by_id.fetch(lane_id), capacity, infer_missing: infer_missing_lane_host
+        ) == host_id
+      end
+      quota_lifecycle_count = lifecycle_host_lane_ids.count do |lane_id|
+        lanes_by_id.fetch(lane_id)["uses_external_quota"] == true
+      end
+      [host_id, {
+        lifecycle_occupied: lifecycle_host_lane_ids.length,
+        quota_lifecycle_occupied: quota_lifecycle_count,
+        available_workers: host.dig("worker", "limit") - host.dig("worker", "occupied") -
+          lifecycle_host_lane_ids.length,
+        available_quota: host.dig("external_quota", "limit") -
+          host.dig("external_quota", "occupied") - quota_lifecycle_count,
+        admitted: [],
+        admitted_quota: 0,
+        worker_held: [],
+        quota_held: [],
+        group_held: []
+      }]
     end
 
-    risky_lane_ids = lanes.filter_map do |lane|
-      lane.fetch("id") unless lane.fetch("changed_surfaces").empty?
+    admitted = []
+    capacity_held = []
+    held_reasons = {}
+    claimed_group_ids = []
+    host_decisions = hosts.map do |host|
+      host_id = host.fetch("id")
+      state = host_states.fetch(host_id)
+      ready_for_host = ready_lane_ids.select do |lane_id|
+        effective_lane_host_id(
+          lanes_by_id.fetch(lane_id), capacity, infer_missing: infer_missing_lane_host
+        ) == host_id
+      end.sort
+      ready_for_host.each do |lane_id|
+        lane = lanes_by_id.fetch(lane_id)
+        group_id = lane["serialization_group"]
+        serialized = group_ids.include?(group_id)
+        if serialized && claimed_group_ids.include?(group_id)
+          capacity_held << lane_id
+          held_reasons[lane_id] = "dependency-or-protected-gate"
+          state[:group_held] << lane_id
+        elsif state[:admitted].length >= state[:available_workers]
+          capacity_held << lane_id
+          held_reasons[lane_id] = "worker-budget-full"
+          state[:worker_held] << lane_id
+        elsif lane["uses_external_quota"] == true && state[:admitted_quota] >= state[:available_quota]
+          capacity_held << lane_id
+          held_reasons[lane_id] = "external-quota-full"
+          state[:quota_held] << lane_id
+        else
+          state[:admitted] << lane_id
+          state[:admitted_quota] += 1 if lane["uses_external_quota"] == true
+          claimed_group_ids << group_id if serialized
+          admitted << lane_id
+        end
+      end
+      gate_held_for_host = gate_held_lane_ids.select do |lane_id|
+        lane = lanes_by_id[lane_id]
+        lane && lane["wave"] == active_wave && effective_lane_host_id(
+          lane, capacity, infer_missing: infer_missing_lane_host
+        ) == host_id
+      end
+      next_lane_reason = if state[:worker_held].any?
+                           "worker-budget-full"
+                         elsif state[:quota_held].any?
+                           "external-quota-full"
+                         elsif gate_held_for_host.any? { |lane_id| blocked_lane_ids.include?(lane_id) }
+                           "ownership-or-lifecycle-blocked"
+                         elsif gate_held_for_host.any? || state[:group_held].any?
+                           "dependency-or-protected-gate"
+                         else
+                           "no-ready-work"
+                         end
+      {
+        "id" => host_id,
+        "source" => host.fetch("source"),
+        "worker" => host.fetch("worker").merge(
+          "lifecycle_occupied" => state[:lifecycle_occupied],
+          "available" => state[:available_workers],
+          "admitted" => state[:admitted].length
+        ),
+        "heavy_root" => host.fetch("heavy_root"),
+        "external_quota" => host.fetch("external_quota").merge(
+          "lifecycle_occupied" => state[:quota_lifecycle_occupied],
+          "available" => state[:available_quota],
+          "admitted" => state[:admitted_quota]
+        ),
+        "next_lane_reason" => next_lane_reason
+      }
     end
-    active_lane_ids.keys.combination(2) do |left_id, right_id|
-      next if colliding_paths(maps.fetch(left_id), maps.fetch(right_id)).empty?
 
-      risky_lane_ids.concat([left_id, right_id])
+    gate_held_lane_ids.each do |lane_id|
+      lane = lanes_by_id.fetch(lane_id)
+      held_reasons[lane_id] ||= if lane["wave"] != active_wave
+                                  "inactive-wave"
+                                elsif blocked_lane_ids.include?(lane_id)
+                                  "ownership-or-lifecycle-blocked"
+                                else
+                                  "dependency-or-protected-gate"
+                                end
     end
-    risky_lane_ids.uniq!
-    if risky_lane_ids.any? && lanes.length > caps.fetch("risky")
-      violations << violation(
-        "backend-risky-cap-exceeded",
-        "$.plan.lanes",
-        "#{backend} permits at most #{caps.fetch('risky')} lanes in a risky/shared active wave; " \
-        "received #{lanes.length}.",
-        lane_ids: lanes.map { |lane| lane.fetch("id") }.sort
-      )
-    end
-    violations
+    decision = {
+      "type" => "per-host-capacity-decision",
+      "version" => 1,
+      "admitted_worker_slots" => admitted.length,
+      "hosts" => host_decisions
+    }
+    [admitted.sort, (gate_held_lane_ids + capacity_held).uniq.sort, held_reasons.sort.to_h, decision]
+  end
+
+  def capacity_decision_for_rejection(capacity, lanes, active_lane_ids, blocked_lane_ids,
+                                      infer_missing_lane_host)
+    lanes_by_id = lanes.to_h { |lane| [lane["id"], lane] }
+    lifecycle_occupied_ids = active_lane_ids + blocked_lane_ids
+    {
+      "type" => "per-host-capacity-decision",
+      "version" => 1,
+      "admitted_worker_slots" => 0,
+      "hosts" => capacity.fetch("hosts").sort_by { |host| host.fetch("id") }.map do |host|
+        host_id = host.fetch("id")
+        lifecycle_host_lane_ids = lifecycle_occupied_ids.select do |lane_id|
+          lane = lanes_by_id[lane_id]
+          lane && effective_lane_host_id(
+            lane, capacity, infer_missing: infer_missing_lane_host
+          ) == host_id
+        end
+        {
+          "id" => host_id,
+          "source" => host.fetch("source"),
+          "worker" => host.fetch("worker").merge(
+            "lifecycle_occupied" => lifecycle_host_lane_ids.length,
+            "available" => 0,
+            "admitted" => 0
+          ),
+          "heavy_root" => host.fetch("heavy_root"),
+          "external_quota" => host.fetch("external_quota").merge(
+            "lifecycle_occupied" => lifecycle_host_lane_ids.count do |lane_id|
+              lanes_by_id.fetch(lane_id)["uses_external_quota"] == true
+            end,
+            "available" => 0,
+            "admitted" => 0
+          ),
+          "next_lane_reason" => "preflight-rejected"
+        }
+      end
+    }
   end
 
   def validate_external_support(premises, lanes)

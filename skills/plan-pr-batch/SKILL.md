@@ -355,25 +355,29 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      discovered mid-flight cannot safely redirect an active editor lane; the
      coordinator would have to abort the wave, release claims, and restart it,
      which is worse than waiting.
-   - Host-aware batch sizing: choose the prompt target before final lane
-     packing. An explicit user-requested paste destination wins over host
-     detection; otherwise use the detectable current host, or `generic` when
-     detection is ambiguous. Installed Codex/Claude homes prove install state,
-     not the active runtime.
-     After semantic dependency planning, default to these maximum independent lanes per
-     prompt or wave. Items with `UNKNOWN` path evidence remain serial discovery
-     lanes and are not counted in parallel wave limits.
-     - `codex`: up to 10 independent items, or 8 when any lane touches shared/risky
-       files, workflow/build/dependency/release surfaces, needs substantial QA,
-       or would exceed the Codex prompt limit.
-     - `claude`: up to 5 independent items, or 3 under the same risky/shared
-       conditions, because in-process Claude Code subagents share more of the
-       current runner's context, permission, and rate budget.
-     - `generic`: use the Claude-sized 5/3 limit unless the user explicitly
-       names a host with larger verified capacity.
-     Prefer a smaller first batch when live coordination, CI, approval, or quota
-     health is uncertain; put remaining independent work in later wave
-     prompts.
+   - Host-aware capacity sizing: choose the prompt target before rendering, but
+     do not turn `codex`, `claude`, or `generic` into a worker maximum. Installed
+     agent homes prove neither the active hosts nor their capacity.
+     After semantic dependency planning, emit the canonical
+     `per-host-capacity-envelope` v1 from `workflows/pr-processing.md`. Give every
+     lane in an explicit envelope a declared `host_id` and optional boolean
+     `uses_external_quota`. Only the no-envelope single-host fallback may infer
+     an omitted lane host; incompatible or multiple distinct assignments fail closed. For
+     each unique host, keep worker, heavy-root, and external-quota budgets
+     separate; count verified live ownership/reservations in `occupied`, use
+     `source: verified` only for verified capacity, and label a documented
+     conservative default `source: fallback` with at most one slot in each
+     budget. Missing or stale ownership,
+     dependency, or host facts remain `UNKNOWN` and fail closed.
+     Keep a ready queue larger than free worker capacity when useful. The
+     preflight deterministically admits up to the sum of independently free
+     per-host worker slots and holds overflow for replay after terminal lanes.
+     A `max_concurrency: 1` group still runs one member at a time; its slot goes
+     to the first member in host-then-lane order that fits its host's budgets.
+     It validates but does not reserve heavy-root capacity; route every broad
+     validator, test, review, or QA root through the host-local
+     `heavy-root-admission/v1` contract. Items with `UNKNOWN` path evidence stay
+     serial discovery lanes regardless of capacity.
    - Model/effort routing: keep the coordinator model/effort preference
      and independent-checker preference separate from every worker
      model/effort preference. Classify each implementation,
@@ -400,7 +404,7 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      blocker. Group lanes by model/effort preference,
      or dispatch-resolved class/effort route, for review and dispatch,
      but preserve lane ownership, dependencies, serial discovery,
-     active-reservation coordination, and wave caps; grouping never combines
+     active-reservation coordination, and per-host capacity; grouping never combines
      targets into one worker.
      Keep coordinator and worker requested preferences independent. If the
      dispatcher or runtime inherits or defaults to the coordinator route, record
@@ -466,7 +470,7 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      explicit env-var / loaded-skill / repo-local pinned-copy chain and pass a
      `batch-plan-preflight` v1 envelope on stdin to
      `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
-     owns schema, advisory-overlap reporting, backend-cap, QA, external-premise, active-wave, and
+     owns schema, advisory-overlap reporting, per-host capacity, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
      `lane_lifecycle_states` array. Advance max-one groups only from a separate
@@ -705,8 +709,11 @@ backend must say so in the declaration.
 - Batch manifest provenance: `pack_sha`, `coordinator_preference` model/effort,
   and each lane's `worker_preference` plus optional `observed_host` fields;
   name the registration evidence or the durable backend-`n/a` handoff.
-- Batch size target: `codex`, `claude`, or `generic`; max items per wave and
-  split rationale.
+- Prompt target: `codex`, `claude`, or `generic`; rendering and character-limit rationale.
+- Host capacity: selected host ids, the durable `per-host-capacity-envelope` v1
+  reference or documented fallback, free/limit worker slots per host, admitted
+  count, queued count, and any worker-budget, heavy-root, external-quota,
+  dependency, ownership, or `UNKNOWN` hold reason.
 - While the chat remains a planning chat, Planning-chat role: exactly one of `prompt-only` or `parent-orchestrator`.
 - Planning-chat role selector: default to `prompt-only`.
 - While the chat remains a planning chat, select `parent-orchestrator` only when the planner explicitly retains one or more cross-batch dependency, release, or shared-follow-up responsibilities.
@@ -821,7 +828,7 @@ PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
 Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
-Batch size target: <codex|claude|generic>;wave: <cap/items>
+Capacity:<id>=<free>/<limit>w,...;admit=<N>;queued=<N>;env=<ref>
 Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses

@@ -1,0 +1,33 @@
+{
+  "type": "per-host-capacity-refill-replay",
+  "version": 1,
+  "capacity": {
+    "type": "per-host-capacity-envelope",
+    "version": 1,
+    "hosts": [
+      {
+        "id": "m5",
+        "source": "verified",
+        "worker": { "limit": 1, "occupied": 0 },
+        "heavy_root": { "limit": 1, "admission": "heavy-root-admission/v1" },
+        "external_quota": { "limit": 1, "occupied": 0 }
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "lane-a", "host_id": "m5" },
+    { "id": "lane-b", "host_id": "m5" }
+  ],
+  "steps": [
+    {
+      "completed_lane_ids": [],
+      "expected_eligible_lane_ids": ["lane-a"],
+      "expected_held_lane_ids": ["lane-b"]
+    },
+    {
+      "completed_lane_ids": ["lane-a"],
+      "expected_eligible_lane_ids": ["lane-b"],
+      "expected_held_lane_ids": []
+    }
+  ]
+}

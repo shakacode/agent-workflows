@@ -599,30 +599,63 @@ At integration, apply consequence-aware care to intersections involving executab
 
 Record `Non-safety coordination override: <none|named stale/broken bookkeeping or coordination stop; durable reason/evidence>` in the Batch Plan and every affected Lane Card. A named override may set aside only that specifically evidenced non-safety stop; it cannot alter an issue-authored semantic dependency or bypass a correctness check, merge authority, security, production, release, or destructive-action gate. Missing or `UNKNOWN` reason/evidence is not an override.
 
-### Host-Aware Batch Sizing
+### Host-Aware Capacity Sizing
 
-After semantic dependency planning and before worker launch, choose a
-batch-size target. An explicit user-requested host, runner, or paste destination
-wins over host detection. If there is no explicit target, use the current host
-only when the runtime exposes a reliable signal; installed Codex/Claude homes
-prove install state, not the active runner. If the active host is ambiguous, use
-`generic`.
+After semantic dependency planning and before worker launch, build one
+`per-host-capacity-envelope` v1. Prompt destination (`codex`, `claude`, or
+`generic`) still controls rendering and character limits, but never imposes a
+worker maximum. Installed agent homes do not prove the active hosts or their
+capacity.
 
-Default maximum independent lanes per prompt or wave. Items with `UNKNOWN`
-path evidence stay serial discovery lanes until their real paths are known.
+The top-level `host_capacity` object has exactly `type`, `version`, and a
+nonempty `hosts` array. Each unique host record has this exact shape:
 
-- `codex`: up to 10 independent items, or 8 when any lane touches shared/risky files,
-  workflow/build/dependency/release surfaces, needs substantial QA, or would
-  exceed the Codex prompt limit or leave less than 300 characters of headroom.
-- `claude`: up to 5 independent items, or 3 under the same risky/shared conditions,
-  because in-process Claude Code subagents share more of the current runner's
-  context, permission, and rate budget.
-- `generic`: use the Claude-sized 5/3 limit unless the user explicitly names a
-  host with larger verified capacity.
+```json
+{
+  "id": "m5",
+  "source": "verified",
+  "worker": { "limit": 7, "occupied": 0 },
+  "heavy_root": { "limit": 2, "admission": "heavy-root-admission/v1" },
+  "external_quota": { "limit": 3, "occupied": 0 }
+}
+```
 
-Prefer a smaller first wave when coordination, CI, approval, or quota health is
-uncertain. Put additional independent work into later wave prompts instead of
-overfilling the active worker set.
+Host ids use lowercase letters, digits, dots, underscores, or hyphens and start
+with a letter or digit. `source` is exactly `verified` or `fallback`.
+A fallback-source host has at most one worker slot, one heavy-root policy slot,
+and one external-quota slot; nonnegative `occupied` values may not exceed their
+limits.
+`worker.occupied` and `external_quota.occupied` count
+live ownership or reservations outside the current plan. Separate durable
+`active` and `blocked` lifecycle rows from this plan are added by preflight, so
+the envelope must not double-count them. With an explicit envelope, every lane
+names one declared `host_id`; `uses_external_quota` is an optional boolean and
+defaults false.
+
+The planner may keep more ready lanes than currently fit. Preflight visits hosts
+and their ready lanes in lexical id order, admits no more than each host's free
+worker slots, applies the external-quota budget only to opted-in lanes, and
+holds the rest. A `max_concurrency: 1` serialization group still admits at most
+one member; the group slot goes to the first member reached in that same
+host-then-lane order that fits its host's budgets, so a member held for quota or
+worker pressure cannot starve a runnable sibling on every replay. Replaying the same plan after a lane becomes terminal refills
+the freed host slot; rebuilding or splitting the goal prompt is unnecessary.
+Semantic dependencies, lifecycle ownership, and unresolved `UNKNOWN` facts
+remain earlier fail-closed gates.
+
+`heavy_root.limit` is separate policy input for the host-local
+`heavy-root-admission/v1` contract. Batch-plan preflight validates
+and reports it but never performs or duplicates heavy-root reservation.
+
+When no envelope is supplied, preflight uses one documented fallback host with
+one worker, one heavy-root policy slot, and one external-quota slot, and reports
+`source: fallback`; it never labels that default measured capacity. A planner
+may omit lane `host_id` only on this no-envelope path, where preflight infers the
+single fallback host. One compatible declared host may name that fallback;
+incompatible or multiple distinct declared host assignments fail closed. A planner
+that cannot resolve ownership, dependencies, or a safe host assignment records
+`UNKNOWN` and stops instead of using fallback to bypass those gates. Items with
+`UNKNOWN` path evidence remain serial discovery lanes.
 
 ### Batch Plan Preflight
 
@@ -637,7 +670,7 @@ PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch
 ```
 
 This machine gate owns schema and launch scheduling, including advisory overlap reporting,
-backend-cap, QA, external-premise, required `plan.active_wave`, and max-one
+per-host capacity, QA, external-premise, required `plan.active_wave`, and max-one
 serialization enforcement. Do not reproduce those matrices in dispatcher or
 merge checks. Preserve real PR verified `pr-file-touch-map` results unchanged;
 encode explicit pre-PR paths as typed `planned-path-evidence` v1 records with
@@ -652,7 +685,10 @@ Supply separate ordinary durable
 `lane_lifecycle_states`; inline completion, duplicates, unknown identities, and
 unsupported states are invalid. A rejected result launches nothing; an accepted
 result permits only `launch.eligible_lane_ids` and leaves
-`launch.held_lane_ids` unlaunched.
+`launch.held_lane_ids` unlaunched. Capacity-held lanes include a compact
+`launch.held_reasons` entry, and the `capacity` decision reports each selected
+host's worker, heavy-root, and external-quota budgets without embedding a
+scheduler-state dump.
 
 The optional top-level `expansion_path_reservations` array is additive to v1;
 omitting it or providing an empty array preserves existing inputs. Each active
@@ -666,7 +702,7 @@ Presence is the active state; cancellation removes the record, so no independent
 status boolean or dependency edge is introduced. The preflight binds each record
 to known plan and lane identities, rejects malformed, `UNKNOWN`, noncanonical,
 duplicate, mismatched, completed-lane, or already-reflected reservations, and
-derives collision and risky-capacity inputs from the union of verified
+derives collision inputs from the union of verified
 `file_touch_map.paths` and active reservations. Scalar path reservations retain
 exact-path collision semantics; only typed rename reservations apply
 ancestor/descendant collision checks at both endpoints. Any reservation-derived
@@ -888,7 +924,7 @@ Collate lanes with matching complete worker model/effort routes for
 planning/dispatch review. A complete match includes the initial assignment,
 escalation assignment, evidence gate, and maximum escalation count. Never merge
 their ownership, claims, dependencies, serial discovery, active-reservation
-coordination, or wave caps. See
+coordination, or per-host capacity admission. See
 [Cost-Aware Agent Model Routing](../docs/agent-workflows-model-routing.md) for the portable role
 matrix, operating modes, verification matrix, and measurement guidance.
 
@@ -1089,7 +1125,7 @@ PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
 Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
-Batch size target: <codex|claude|generic>;wave: <cap/items>
+Capacity:<id>=<free>/<limit>w,...;admit=<N>;queued=<N>;env=<ref>
 Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
