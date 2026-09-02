@@ -153,13 +153,14 @@ class PrWalkthroughContractTest < Minitest::Test
   def test_hard_failure_banner_is_scoped_to_the_applicable_sub_case
     skill = File.read(SKILL).gsub(/\s+/, " ")
 
-    # An ancestry-only failure (base behind, CI itself READY) must not be
-    # reported as a CI failure — the caller has two distinct banners, quoted
-    # in both places this skill describes the caller's failed-checklist result.
+    # A proven-behind ancestry result must take precedence over a CI failure
+    # (not be masked by it) — the caller has two distinct banners, quoted in
+    # both places this skill describes the caller's failed-checklist result.
     assert_equal 2, skill.scan("that gate's applicable hard-failure banner").length
-    assert_includes skill, "when CI itself is not `READY`, or a"
-    assert_equal 2, skill.scan("behind-base banner routing to Integration And PR Publication step 3").length
-    assert_includes skill, "when only ancestry fails"
+    assert_equal 2,
+                 skill.scan("behind-base banner routing to Integration And PR Publication step 3").length
+    assert_equal 2, skill.scan("whenever ancestry fails, regardless of CI").length
+    assert_equal 2, skill.scan("only when ancestry passed and CI itself is not `READY`").length
   end
 
   def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component

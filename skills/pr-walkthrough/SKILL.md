@@ -37,12 +37,13 @@ responsibility to a worker, external task, or automation.
    `current-integration-evidence` contract.
    Missing, stale, mismatched, non-successful, unrecognized, future, or
    `UNKNOWN` facts return control to the caller with that gate's applicable
-   hard-failure banner — **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED
-   SUCCESSFUL STATE — NOT MERGE-READY.** in state `waiting-on-checks-or-review`
-   when CI itself is not `READY`, or a behind-base banner routing to
-   Integration And PR Publication step 3 (a proven-behind head never clears
-   through `waiting-on-checks-or-review` polling) when only ancestry fails —
-   without starting the walkthrough. A standalone walkthrough not invoked by that
+   hard-failure banner — a behind-base banner routing to Integration And PR
+   Publication step 3 (a proven-behind head never clears through
+   `waiting-on-checks-or-review` polling) whenever ancestry fails, regardless
+   of CI, or **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL
+   STATE — NOT MERGE-READY.** in state `waiting-on-checks-or-review` only
+   when ancestry passed and CI itself is not `READY` — without starting the
+   walkthrough. A standalone walkthrough not invoked by that
    gate (a user directly asking to be walked through a PR) never resolves
    ancestry or runs `pr-ci-readiness` itself — it has no checklist result to
    consult — so it reports current-integration readiness as not evaluated
@@ -111,12 +112,12 @@ never resolve ancestry or run `pr-ci-readiness` independently to manufacture
 a claim either way. An `ask` merge-authority caller must pass the gate in
 Establish The Exact Change above before reaching this step; a failed
 checklist there returns control to the caller with that gate's applicable
-hard-failure banner — **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED
-SUCCESSFUL STATE — NOT MERGE-READY.** in state `waiting-on-checks-or-review`
-when CI itself is not `READY`, or a behind-base banner routing to
-Integration And PR Publication step 3 when only ancestry fails — instead of
-starting the walkthrough, so this orientation step is never reached with a
-known failure to report.
+hard-failure banner — a behind-base banner routing to Integration And PR
+Publication step 3 whenever ancestry fails, regardless of CI, or
+**CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT
+MERGE-READY.** in state `waiting-on-checks-or-review` only when ancestry
+passed and CI itself is not `READY` — instead of starting the walkthrough,
+so this orientation step is never reached with a known failure to report.
 
 Do not explain every step in this opening. Tell the user that each step ends
 with a pause and that they can ask questions, request more or less depth,

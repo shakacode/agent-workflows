@@ -1612,8 +1612,10 @@ step 3 to reconcile the base — a proven-behind head does not clear through
 `READY` leads with **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED
 SUCCESSFUL STATE — NOT MERGE-READY.** No banner when both pass.
 
-Compact goals encode that checklist inline as `head>=base+CI=READY`; every
-other result waits without a walkthrough.
+The self-contained compact fallback encodes this checklist inline as
+`head>=base+V=READY` and waits on either failure without this gate's
+dual-banner distinction; if that wait persists, check whether ancestry
+specifically failed — it never clears through waiting alone.
 
 Immediately before starting the walkthrough, re-fetch and re-resolve both
 the live base and the exact head into fresh `TRUSTED_BASE_SHA`/
