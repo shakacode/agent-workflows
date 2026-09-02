@@ -4783,6 +4783,44 @@ test_inherited_dotglob_symlink_preflight_ignores_hidden_source_entry() {
     fail "symlink preflight changed an unrelated hidden target entry"
 }
 
+test_bash_env_globignore_does_not_change_the_installed_skill_set() {
+  local tmp source target bash_env
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  bash_env="$tmp/bash-env"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/globignore-fixture"
+  printf 'globignore fixture\n' > "$source/skills/globignore-fixture/SKILL.md"
+  printf 'GLOBIGNORE=%q\n' "$source/skills/globignore-fixture" > "$bash_env"
+
+  BASH_ENV="$bash_env" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat >"$tmp/flat.out"
+
+  assert_file "$target/skills/globignore-fixture/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata.fetch("managed_skill_copy_fingerprints").key?("globignore-fixture")
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_inherited_dotglob_preserves_hidden_workflow_copy() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/workflows/.hidden-fixture"
+  printf 'hidden workflow\n' > "$source/workflows/.hidden-fixture/notes.md"
+
+  env BASHOPTS=dotglob "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat >"$tmp/flat.out"
+
+  assert_file "$target/workflows/.hidden-fixture/notes.md"
+}
+
 test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
   local tmp source target recorded_fingerprint verified_fingerprint
   tmp="$(mktemp -d)"
@@ -8797,6 +8835,8 @@ main() {
     test_inherited_dotglob_does_not_change_the_installed_skill_set
     test_inherited_dotglob_does_not_change_the_symlinked_skill_set
     test_inherited_dotglob_symlink_preflight_ignores_hidden_source_entry
+    test_bash_env_globignore_does_not_change_the_installed_skill_set
+    test_inherited_dotglob_preserves_hidden_workflow_copy
     test_copy_metadata_fingerprint_matches_delivery_state_verifier
     test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
     test_repeat_copy_install_blocks_modified_solution_document

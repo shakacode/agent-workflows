@@ -1662,6 +1662,38 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_empty_copy_receipt_is_authoritative_without_recorded_revision
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      FileUtils.mkdir_p(File.join(source, "skills"))
+      write_codex_native_state(target)
+      installed = File.join(target, "skills/personal")
+      FileUtils.mkdir_p(installed)
+      File.write(File.join(installed, "SKILL.md"), "personal\n")
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => "unavailable",
+        "managed_skill_copy_fingerprints" => {}
+      )
+
+      out, _err, status = run_state(
+        "check", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal "ambiguous", flat.fetch("state")
+      assert_equal [installed], flat.fetch("blocking")
+      refute flat.key?("reason")
+    end
+  end
+
   def test_revision_only_case_alias_is_not_both_owned_and_extra
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       skip "requires a case-insensitive filesystem" unless case_insensitive_filesystem?(tmp)
@@ -1768,6 +1800,53 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       assert File.symlink?(alpha)
       assert File.symlink?(extra)
       assert File.symlink?(beta)
+    end
+  end
+
+  def test_skills_inventory_enumeration_race_is_unknown
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      injection = File.join(tmp, "fail-skills-enumeration.rb")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      write_codex_native_state(target)
+      skills_path = File.join(target, "skills")
+      FileUtils.mkdir_p(skills_path)
+      %w[alpha beta].each do |name|
+        File.symlink(File.join(source, "skills", name), File.join(skills_path, name))
+      end
+      File.write(injection, <<~RUBY)
+        class << Dir
+          alias_method :children_without_inventory_race_fixture, :children
+
+          def children(path)
+            raise Errno::ENOENT, path if File.expand_path(path) == ENV.fetch("QA_RACING_SKILLS_ROOT")
+
+            children_without_inventory_race_fixture(path)
+          end
+        end
+      RUBY
+      write_metadata(
+        target,
+        "host" => "codex",
+        "mode" => "symlink",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => revision
+      )
+
+      out, _err, status = run_state_with_env(
+        { "RUBYOPT" => "-r#{injection}", "QA_RACING_SKILLS_ROOT" => skills_path },
+        "check", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal "unknown", flat.fetch("state")
+      assert_equal [skills_path], flat.fetch("blocking")
+      assert_includes flat.fetch("reason"), "changed during inspection"
     end
   end
 

@@ -629,6 +629,8 @@ module AgentWorkflowsDeliveryState
     rescue SystemCallError
       next
     end
+  rescue SystemCallError
+    nil
   end
 
   def managed_flat_inventory(target:, source:, delivery_mode:, collision_names: [])
@@ -729,6 +731,14 @@ module AgentWorkflowsDeliveryState
     # directory entries can share an identity and must not be collapsed. This also
     # preserves the installed spelling if staging later has to restore the entry.
     installed_paths = installed_skill_paths(skills_path)
+    unless installed_paths
+      return {
+        "state" => "unknown",
+        "removable" => [],
+        "blocking" => [skills_path],
+        "reason" => "skills inventory changed during inspection: #{skills_path}"
+      }
+    end
     installed_paths_by_identity = installed_paths.each_with_object(Hash.new { |hash, key| hash[key] = [] }) do |(path, identity), paths|
       paths[identity] << path
     end
