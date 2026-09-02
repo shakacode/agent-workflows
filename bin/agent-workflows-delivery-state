@@ -8,7 +8,6 @@ require "find"
 require "open3"
 require "optparse"
 require "tmpdir"
-require_relative "agent_doctor/install_ownership"
 require_relative "agent_doctor/timeout_budget"
 
 module AgentWorkflowsDeliveryState
@@ -699,6 +698,16 @@ module AgentWorkflowsDeliveryState
   # shape or no longer attests the tree. Report the same conflict, but only when
   # nothing else already names one, so the marker never adds noise to a conflict
   # that is already reported against the file that caused it.
+  # install_ownership.rb is itself a fingerprinted managed copy, so requiring it
+  # eagerly would raise before the inventory could report it missing or broken.
+  # When it cannot load, the inventory has already named that file.
+  def doctor_install_ownership
+    require_relative "agent_doctor/install_ownership"
+    AgentDoctor::InstallOwnership
+  rescue LoadError, SyntaxError, StandardError
+    nil
+  end
+
   def managed_doctor_marker_conflict(bin_root, source, fingerprints)
     return nil unless fingerprints.keys.any? { |name| name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/") }
 
@@ -716,7 +725,10 @@ module AgentWorkflowsDeliveryState
     return marker if managed_marker_shape_conflict?(marker)
     return stack_marker if managed_marker_shape_conflict?(stack_marker)
 
-    return AgentDoctor::InstallOwnership.verify(doctor_root, marker) ? nil : marker if File.file?(marker)
+    ownership = doctor_install_ownership
+    return doctor_root unless ownership
+
+    return ownership.verify(doctor_root, marker) ? nil : marker if File.file?(marker)
 
     if File.file?(stack_marker)
       return File.readlines(stack_marker, chomp: true).include?(MANAGED_DOCTOR_STACK_MARKER_LINE) ? nil : stack_marker
@@ -726,9 +738,15 @@ module AgentWorkflowsDeliveryState
     # already equals the current source, so a source that has moved on since
     # this copy was installed leaves nothing that can adopt it.
     source_doctor_root = File.join(source, "bin", MANAGED_DOCTOR_SUBDIRECTORY)
-    AgentDoctor::InstallOwnership.compare(source_doctor_root, doctor_root) ? nil : doctor_root
+    ownership.compare(source_doctor_root, doctor_root) ? nil : doctor_root
   rescue SystemCallError
     doctor_root
+  end
+
+  def empty_managed_directory?(path)
+    File.directory?(path) && !File.symlink?(path) && Dir.empty?(path)
+  rescue SystemCallError
+    false
   end
 
   def managed_marker_shape_conflict?(path)
@@ -823,7 +841,8 @@ module AgentWorkflowsDeliveryState
     end
 
     doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
-    if File.directory?(doctor_root) && !File.symlink?(doctor_root) &&
+    manages_doctor_tree = fingerprints.keys.any? { |name| name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/") }
+    if manages_doctor_tree && File.directory?(doctor_root) && !File.symlink?(doctor_root) &&
        !(File.readable?(doctor_root) && File.executable?(doctor_root))
       return {
         "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [doctor_root],
@@ -849,6 +868,10 @@ module AgentWorkflowsDeliveryState
       end
 
       present << path
+      # The installer accepts an empty doctor root and restores its contents and
+      # mode wholesale, so its recorded mode is not judged in that state.
+      next if name == MANAGED_DOCTOR_SUBDIRECTORY && empty_managed_directory?(path)
+
       unowned_paths << path unless managed_bin_copy_owned?(path:, source:, name:, digest:)
     end
     unowned = (unowned_paths + unexpected_managed_doctor_entries(bin_root, fingerprints)).uniq.sort
@@ -877,10 +900,13 @@ module AgentWorkflowsDeliveryState
       clauses << "the installer cannot restore missing managed doctor modules in place: #{unrestorable.join(', ')}"
     end
     payload["reason"] = clauses.join("; ")
-    payload["guidance"] = if unrestorable.any?
+    payload["guidance"] = if unowned.any? && unrestorable.any?
+                            "The listed paths were preserved. Restore them to their recorded pack revision " \
+                            "or move/remove them manually, and restore the missing doctor modules or move " \
+                            "#{doctor_root} aside so the installer reinstalls the tree, then rerun."
+                          elsif unrestorable.any?
                             "Restore the listed files from their recorded pack revision, or move " \
-                            "#{File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)} aside so the installer " \
-                            "reinstalls the tree, then rerun."
+                            "#{doctor_root} aside so the installer reinstalls the tree, then rerun."
                           else
                             "The listed paths were preserved. Restore them to their recorded pack revision " \
                             "or move/remove them manually, then rerun."

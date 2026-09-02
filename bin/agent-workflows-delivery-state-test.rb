@@ -2139,6 +2139,62 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_emptied_doctor_root_with_a_changed_mode_stays_restorable
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # The installer accepts an empty destination and restores contents and
+      # mode, so the recorded root mode must not block that path.
+      FileUtils.rm_rf(doctor_root)
+      FileUtils.mkdir_p(doctor_root)
+      FileUtils.chmod(0o700, doctor_root)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_unreadable_doctor_root_is_ignored_when_the_tree_is_unmanaged
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      # Metadata that records only top-level helpers: this install never managed
+      # the doctor tree, so nothing about it should be judged.
+      helpers_only = fingerprints.reject { |name, _| name.include?("/") || name == "agent_doctor" }
+      managed_bin_metadata(target, source, helpers_only)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      FileUtils.chmod(0o000, doctor_root)
+
+      begin
+        payload, status, output = check_managed_bin(target, source)
+
+        assert status.success?, output
+        assert_empty payload.dig("bin", "blocking")
+      ensure
+        FileUtils.chmod(0o755, doctor_root)
+      end
+    end
+  end
+
+  def test_guidance_names_both_remedies_when_both_apply
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      helper = File.join(target, "bin/agent-workflows-status")
+      File.write(helper, "status helper\n# tampered\n")
+      FileUtils.rm_f(File.join(target, "bin/agent_doctor/renderer.rb"))
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      guidance = payload.fetch("guidance")
+      assert_includes guidance, "Restore them to their recorded pack revision"
+      assert_includes guidance, File.join(target, "bin/agent_doctor")
+    end
+  end
+
   def test_valid_doctor_ownership_marker_stays_compatible
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)
