@@ -256,6 +256,9 @@ read_installed_metadata_value() {
       end
       invalid_enum = (metadata.key?("host") && !%w[codex claude].include?(metadata["host"])) ||
                      (metadata.key?("mode") && !%w[copy symlink].include?(metadata["mode"]))
+      # These name and digest rules mirror valid_skill_copy_name?,
+      # valid_bin_copy_name?, and valid_copy_fingerprint_digest? in
+      # bin/agent-workflows-delivery-state. Tighten both together.
       invalid_fingerprints = %w[
         managed_skill_copy_fingerprints
         managed_pack_doc_copy_fingerprints

@@ -340,6 +340,57 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
 }
 
 
+test_status_and_installer_agree_on_doctor_marker_states() {
+  local tmp source state target marker module_path status_exit install_exit output
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  # The delivery-state helper mirrors prepare_workflow_doctor_copy_destination's
+  # marker precedence in another language. This asserts the invariant that
+  # actually matters rather than the implementations: for every marker state,
+  # status must predict whether the installer will accept the tree. If either
+  # side's precedence changes without the other, this fails loudly.
+  for state in valid corrupt symlink nonfile absent-advanced absent-matching; do
+    target="$tmp/codex-home-$state"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-$state.out"
+    marker="$target/bin/agent_doctor/.agent-workflows-managed"
+    module_path="$source/bin/agent_doctor/renderer.rb"
+
+    case "$state" in
+      valid) ;;
+      corrupt) printf 'agent-workflows-doctor-v1:%064d\n' 0 > "$marker" ;;
+      symlink) rm -f "$marker"; ln -s "$target/bin/agent-workflows-status" "$marker" ;;
+      nonfile) rm -f "$marker"; mkdir -p "$marker" ;;
+      absent-advanced)
+        rm -f "$marker"
+        cp "$module_path" "$tmp/renderer.original"
+        printf '# source advanced\n' >> "$module_path"
+        ;;
+      absent-matching) rm -f "$marker" ;;
+    esac
+
+    set +e
+    "$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" \
+      >"$tmp/status-$state.out" 2>&1
+    status_exit=$?
+    "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/reinstall-$state.out" 2>&1
+    install_exit=$?
+    set -e
+
+    [[ "$state" != "absent-advanced" ]] || cp "$tmp/renderer.original" "$module_path"
+
+    output="$(cat "$tmp/status-$state.out")"
+    if [[ "$status_exit" -eq 0 ]]; then
+      [[ "$install_exit" -eq 0 ]] || \
+        fail "$state: status accepted the tree but the installer refused it: $(cat "$tmp/reinstall-$state.out")"
+    else
+      [[ "$install_exit" -ne 0 ]] || fail "$state: status refused the tree but the installer accepted it: $output"
+    fi
+  done
+}
+
 test_installed_status_reports_a_removed_doctor_module_it_depends_on() {
   local tmp source target output status module_name module_path
   tmp="$(mktemp -d)"
@@ -9058,6 +9109,7 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_status_and_installer_agree_on_doctor_marker_states
     test_installed_status_reports_a_removed_doctor_module_it_depends_on
     test_fresh_copy_install_reports_up_to_date_from_recorded_fingerprints
     test_copy_install_refuses_a_mode_only_managed_doctor_module_change

@@ -608,6 +608,12 @@ module AgentWorkflowsDeliveryState
 
   # Managed bin entries are recorded as target-relative paths below <target>/bin,
   # so they allow separators that a skill directory name never carries.
+  #
+  # These rules are also enforced, inline and in another language, by
+  # read_installed_metadata_value in bin/install-agent-workflows, which rejects
+  # the same metadata before any managed mutation. Tighten both together: if
+  # they disagree, this helper and the installer disagree about which recorded
+  # metadata is safe to trust.
   def valid_bin_copy_name?(name)
     return false unless name.is_a?(String) && !name.empty? && !name.start_with?("/") && !name.include?("\0")
 
