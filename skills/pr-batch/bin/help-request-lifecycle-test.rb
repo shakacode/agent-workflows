@@ -549,6 +549,84 @@ class HelpRequestLifecycleTest < Minitest::Test
     input&.close!
   end
 
+  def test_batch_wide_closeout_does_not_cross_lanes
+    input = Tempfile.new(["help-request-lifecycle-batch-wide-closeout", ".json"])
+    input.write(JSON.generate(
+                  "events" => [
+                    {
+                      "event_id" => "request-review",
+                      "batch_id" => "batch-1",
+                      "lane" => "review",
+                      "type" => "help_requested",
+                      "reason" => "permission",
+                      "at" => "2026-08-23T05:48:18Z"
+                    },
+                    {
+                      "event_id" => "docs-closeout",
+                      "batch_id" => "batch-1",
+                      "lane" => "docs",
+                      "type" => "lane_closed",
+                      "status" => "blocked-user-input",
+                      "evidence" => "request-review",
+                      "at" => "2026-08-23T10:00:00Z"
+                    }
+                  ]
+                ))
+    input.flush
+
+    result, stderr, status = run_lifecycle(input: input.path, now: "2026-08-23T10:00:01Z")
+
+    assert_predicate status, :success?, stderr
+    assert_equal false, result.fetch("terminal_action").fetch("recorded")
+    assert_equal true, result.fetch("terminal_action").fetch("required")
+  ensure
+    input&.close!
+  end
+
+  def test_phase_changed_without_phase_fails_closed
+    input = Tempfile.new(["help-request-lifecycle-missing-phase", ".json"])
+    input.write(JSON.generate(
+                  "events" => [{
+                    "event_id" => "phase-review",
+                    "batch_id" => "batch-1",
+                    "type" => "phase.changed",
+                    "at" => "2026-08-23T05:48:30Z"
+                  }]
+                ))
+    input.flush
+
+    result, stderr, status = run_lifecycle(input: input.path, now: "2026-08-23T05:49:00Z")
+
+    assert_equal 1, status.exitstatus, stderr
+    assert_equal "UNKNOWN", result.fetch("status")
+    assert_match(/event missing phase/, result.fetch("error"))
+  ensure
+    input&.close!
+  end
+
+  def test_lane_closed_without_outcome_field_fails_closed
+    input = Tempfile.new(["help-request-lifecycle-missing-closeout-outcome", ".json"])
+    input.write(JSON.generate(
+                  "events" => [{
+                    "event_id" => "closeout-review",
+                    "batch_id" => "batch-1",
+                    "lane" => "review",
+                    "type" => "lane_closed",
+                    "evidence" => "request-review",
+                    "at" => "2026-08-23T10:00:00Z"
+                  }]
+                ))
+    input.flush
+
+    result, stderr, status = run_lifecycle(input: input.path, now: "2026-08-23T10:00:01Z")
+
+    assert_equal 1, status.exitstatus, stderr
+    assert_equal "UNKNOWN", result.fetch("status")
+    assert_match(/event missing (?:status|terminal)/, result.fetch("error"))
+  ensure
+    input&.close!
+  end
+
   def test_invalid_now_returns_unknown_json_without_a_backtrace
     stdout, stderr, status = Open3.capture3(
       RbConfig.ruby,

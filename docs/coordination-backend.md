@@ -249,6 +249,10 @@ the request. `batch-status` reports each known request's state and age from the
 same replay. Missing or invalid event history is `UNKNOWN`, never permission to
 advance.
 
+For lifecycle replay, `phase.changed` records the destination in `phase`.
+Lifecycle-aware `lane_closed` records the outcome in `status`; legacy history
+may use `terminal`. A record missing its applicable field is invalid.
+
 Backends that auto-emit `claim.acquired`, `claim.released`, and `phase.changed`
 own those lifecycle events; workers do not duplicate them. After terminal
 releases, run a read-only check only when the active backend advertises an

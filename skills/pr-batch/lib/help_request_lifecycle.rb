@@ -34,6 +34,7 @@ module HelpRequestLifecycle
       when "phase.changed"
         record_prohibited_transition!(requests, prohibited_transitions, event)
       when "lane_closed"
+        terminal_status(event)
         terminal_events << event
       end
     end
@@ -134,7 +135,7 @@ module HelpRequestLifecycle
   end
 
   def record_prohibited_transition!(requests, rows, event)
-    phase = optional_string(event["phase"] || event["new_phase"])
+    phase = required_string(event, "phase")
     return unless PROHIBITED_PERMISSION_PHASES.include?(phase)
 
     request = requests.values.reverse.find do |candidate|
@@ -177,11 +178,23 @@ module HelpRequestLifecycle
 
   def terminal_for_request?(events, request, lane:)
     events.any? do |event|
-      normalized_status = event["status"].to_s.downcase.tr("-", "_")
+      normalized_status = terminal_status(event).downcase.tr("-", "_")
       event_lane = optional_string(event["lane"])
-      lane_matches = lane.nil? || event_lane.nil? || event_lane == lane
+      lane_matches = if lane
+                       event_lane.nil? || event_lane == lane
+                     elsif request["lane"]
+                       event_lane == request["lane"]
+                     else
+                       true
+                     end
       event["evidence"] == request["request_id"] && normalized_status == "blocked_user_input" && lane_matches
     end
+  end
+
+  def terminal_status(event)
+    return required_string(event, "status") if event.key?("status")
+
+    required_string(event, "terminal")
   end
 
   def lifecycle_status(blocking_request, overdue)

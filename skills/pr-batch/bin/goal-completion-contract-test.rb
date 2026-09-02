@@ -213,6 +213,9 @@ CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
+BATCH_TITLE_MULTIPLE_PROMPT_SUFFIX_RULE =
+  "Fill the optional `<A?>` slot with A, B, C, etc. only when creating multiple batch prompts; " \
+  "omit it for a single batch prompt."
 GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>."
 LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>."
 BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
@@ -1663,6 +1666,8 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_batch_title_contract_uses_only_one_verified_source_issue_identifier
+    assert_squished_includes @workflow, BATCH_TITLE_MULTIPLE_PROMPT_SUFFIX_RULE, "workflows/pr-processing.md"
+
     {
       "workflows/pr-batch-intake.md" => @prompt_intake,
       "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,

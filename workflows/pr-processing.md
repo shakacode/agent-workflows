@@ -1095,6 +1095,8 @@ take its first 4 characters or the whole name when shorter, then uppercase the
 result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` ->
 `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid
 configured `repo_prefix` is a blocker; do not silently fall back.
+Fill the optional `<A?>` slot with A, B, C, etc. only when creating multiple
+batch prompts; omit it for a single batch prompt.
 The issue-bearing shapes are
 `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
 for GitHub and
