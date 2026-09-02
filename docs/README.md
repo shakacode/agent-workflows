@@ -84,5 +84,6 @@ useful technical references, but are secondary to the user journeys above.
 | Compound Engineering architecture decision | [ADR 0002: Compose Compound Engineering Inside Agent Workflows](adr/0002-compose-compound-engineering-inside-agent-workflows.md) |
 | Autonomous merge eligibility decision | [ADR 0003: Smarter Autonomous Merge Gates](adr/0003-smarter-autonomous-merge-gates.md) |
 | Superpowers architecture decision | [ADR 0004: Compose Superpowers Inside Agent Workflows](adr/0004-compose-superpowers-inside-agent-workflows.md) |
-| Component-owned stack doctor implementation plan | [Component-Owned Agent Stack Doctor Plan](plans/2026-07-12-001-feat-master-stack-doctor-plan.md) |
-| Portable dashboard lifecycle implementation plan | [Portable Dashboard Lifecycle Plan](plans/2026-07-13-001-feat-portable-dashboard-lifecycle-plan.md) |
+| Public technical implementation-plan archive | [Project Plans](../project/plans/README.md) |
+| Component-owned stack doctor implementation plan | [Component-Owned Agent Stack Doctor Plan](../project/plans/2026-07-12-001-feat-master-stack-doctor-plan.md) |
+| Portable dashboard lifecycle implementation plan | [Portable Dashboard Lifecycle Plan](../project/plans/2026-07-13-001-feat-portable-dashboard-lifecycle-plan.md) |
