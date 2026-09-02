@@ -676,13 +676,20 @@ the original lane's identifiers cannot produce the "genuinely new lane" the
 already-`done` path in section 3 requires — it reopens history against a lane
 whose first terminal event is immutable.
 
-The claim carries: the repository, `REPAIR_TARGET` as the canonical target, the
+Apply the applicability gate before this sequence. A
+`coordination_not_applicable` revert skips the bounded status check and the
+claim entirely, makes no backend call, and records ownership in the durable
+local handoff. A `coordination_required` revert against a trusted
+`coordination_backend: n/a` is a pre-launch stop: do not create the branch and
+do not proceed on the durable handoff alone.
+
+For `coordination_required` with a usable backend, the claim carries: the
+repository, `REPAIR_TARGET` as the canonical target, the
 repair batch and lane identifiers, the acting agent identity, and
 `REVERT_BRANCH`. Run the bounded status check first, then claim. As with every
 coordination command in section 3, this is *this* repo's `coordination_backend`
 seam rather than a portable requirement — a consumer repo claims through its own
-configured backend, and backend `n/a` skips the claim and records ownership in
-the durable handoff instead. No invocation is given here on purpose: it cannot
+configured backend. No invocation is given here on purpose: it cannot
 be exercised by the replay harness, and an unreplayable recipe in this document
 has a poor track record.
 
