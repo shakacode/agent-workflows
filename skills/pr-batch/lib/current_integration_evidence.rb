@@ -147,7 +147,10 @@ module CurrentIntegrationEvidence
     )
     raise Error, "GitHub current-integration query failed: #{stderr.lines.first.to_s.strip}" unless status.success?
 
-    payload = JSON.parse(stdout)
+    response = stdout.force_encoding(Encoding::UTF_8)
+    raise Error, "GitHub current-integration response is not valid UTF-8" unless response.valid_encoding?
+
+    payload = JSON.parse(response)
     unless Array(payload["errors"]).empty?
       raise Error, "GitHub current-integration query returned errors"
     end
@@ -174,7 +177,7 @@ module CurrentIntegrationEvidence
       "base_sha" => current_ref&.dig("target", "oid"),
       "candidate" => normalized_candidate
     }
-  rescue JSON::ParserError, TypeError => e
+  rescue JSON::ParserError, EncodingError, TypeError => e
     raise Error, "GitHub current-integration evidence is malformed: #{e.message}"
   rescue Errno::ENOENT
     raise Error, "GitHub CLI is unavailable"

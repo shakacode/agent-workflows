@@ -93,12 +93,28 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_live_collection_returns_structured_unknown_for_an_undecodable_payload
-    result = evaluate(gh_invalid_utf8_field: "filename") do |base_sha|
+    result = evaluate(
+      subprocess_env: { "LANG" => "C", "LC_ALL" => "C" },
+      gh_invalid_utf8_field: "filename"
+    ) do |base_sha|
       evidence(base_sha:, files: files(1))
     end
 
     assert_equal "UNKNOWN", result.fetch("verdict")
     assert_match(/malformed or invalid GitHub evidence/, result.fetch("evidence_failures").first)
+  end
+
+  def test_current_integration_decode_failure_returns_structured_unknown
+    result = evaluate(gh_invalid_utf8_field: "current_integration") do |base_sha|
+      evidence(base_sha:, files: files(1))
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_equal(
+      "current integration evidence is unavailable: " \
+      "GitHub current-integration response is not valid UTF-8",
+      result.fetch("evidence_failures").first
+    )
   end
 
   def test_live_collection_rejects_invalid_utf8_in_uninspected_comment_fields
@@ -1636,6 +1652,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       objective = JSON.parse(File.read(ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")))
       if ARGV.include?("graphql")
         response = {
+          "metadata" => "placeholder",
           "data" => {
             "repository" => {
               "pullRequest" => {
@@ -1657,7 +1674,12 @@ class AutonomousMergeEligibilityTest < Minitest::Test
             }
           }
         }
-        puts JSON.generate(response)
+        payload = JSON.generate(response)
+        if ENV["AUTONOMOUS_MERGE_TEST_INVALID_UTF8_FIELD"] == "current_integration"
+          payload = payload.b.sub("placeholder".b, "\xFF".b)
+        end
+        $stdout.write(payload)
+        $stdout.write("\n")
         exit
       end
 

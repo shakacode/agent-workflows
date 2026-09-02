@@ -127,7 +127,12 @@ module AutonomousMergeEvidence
       raise CollectionError, "GitHub API failed for #{path}: #{detail}"
     end
 
-    JSON.parse(stdout)
+    payload = stdout.force_encoding(Encoding::UTF_8)
+    unless payload.valid_encoding?
+      raise CollectionError, "malformed or invalid GitHub evidence: invalid UTF-8 response for #{path}"
+    end
+
+    JSON.parse(payload)
   rescue Errno::ENOENT
     raise CollectionError, "GitHub CLI is unavailable"
   end
