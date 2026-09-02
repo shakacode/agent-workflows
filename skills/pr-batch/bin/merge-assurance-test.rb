@@ -3773,6 +3773,67 @@ class MergeAssuranceTest < Minitest::Test
     assert_equal true, known_human_gate.fetch("eligible")
   end
 
+  # One overall autonomous replay deadline and honest cleanup reporting
+  # (issue #635).
+
+  def test_trusted_base_verification_time_is_charged_against_the_single_replay_deadline
+    replayed = autonomous_result("autonomous-merge-eligible")
+    verification_seconds = 0.4
+    captured_timeout = nil
+
+    result = replay_within_single_deadline(
+      replayed: replayed, verification_seconds: verification_seconds
+    ) do |timeout_seconds|
+      captured_timeout = timeout_seconds
+      [JSON.generate(replayed), "", successful_replay_status, false, true]
+    end
+
+    assert_equal replayed, result
+    refute_nil captured_timeout
+    assert_operator captured_timeout, :<=, 5 - verification_seconds
+    assert_operator captured_timeout, :>, 0
+  end
+
+  def test_replay_verification_that_exhausts_the_deadline_never_starts_the_replay_child
+    replayed = autonomous_result("autonomous-merge-eligible")
+    started_replay = false
+
+    error = assert_raises(MergeAssurance::Error) do
+      replay_within_single_deadline(replayed: replayed, verification_seconds: 1.2) do
+        started_replay = true
+        [JSON.generate(replayed), "", successful_replay_status, false, true]
+      end
+    end
+
+    refute started_replay, "the replay child must not start past the single deadline"
+    assert_includes error.message, "timed out"
+  end
+
+  def test_unconfirmed_replay_cleanup_is_distinguished_from_an_ordinary_timeout
+    replayed = autonomous_result("autonomous-merge-eligible")
+
+    error = assert_raises(MergeAssurance::Error) do
+      replay_within_single_deadline(replayed: replayed) do
+        ["", "", nil, true, false]
+      end
+    end
+
+    assert_includes error.message, "UNKNOWN"
+    refute_equal "autonomous eligibility replay timed out", error.message
+  end
+
+  def test_confirmed_cleanup_after_a_timeout_stays_an_ordinary_timeout
+    replayed = autonomous_result("autonomous-merge-eligible")
+
+    error = assert_raises(MergeAssurance::Error) do
+      replay_within_single_deadline(replayed: replayed) do
+        ["", "", nil, true, true]
+      end
+    end
+
+    assert_equal "autonomous eligibility replay timed out", error.message
+  end
+
   private
 
   def eligibility_artifact
@@ -4793,5 +4854,47 @@ class MergeAssuranceTest < Minitest::Test
       "head_sha" => HEAD_SHA,
       "diff_identity" => DIFF_IDENTITY
     }
+  end
+
+  def successful_replay_status
+    status = Object.new
+    status.define_singleton_method(:success?) { true }
+    status
+  end
+
+  # Drives replay_autonomous_result with authentication and replay both stubbed
+  # so the shared deadline is observable without touching a live validator.
+  def replay_within_single_deadline(replayed:, verification_seconds: 0, timeout_seconds: 5, &replay)
+    repo_root = Dir.mktmpdir("merge-assurance-replay-deadline", SAFE_TMP_PARENT)
+    semantic_path = File.join(@fake_gh_dir, "replay-deadline-semantic.json")
+    File.write(semantic_path, JSON.generate(autonomous_semantic_assessment))
+    original_helper = MergeAssurance.method(:authenticated_autonomous_replay_helper_path)
+    original_run = MergeAssurance.method(:run_autonomous_replay)
+
+    MergeAssurance.define_singleton_method(:authenticated_autonomous_replay_helper_path) do |**_arguments|
+      sleep verification_seconds if verification_seconds.positive?
+      SCRIPT
+    end
+    MergeAssurance.define_singleton_method(:run_autonomous_replay) do |_helper, _args, timeout_seconds:, **_options|
+      replay.call(timeout_seconds)
+    end
+
+    MergeAssurance.replay_autonomous_result(
+      repo_root:,
+      semantic_assessment: semantic_path,
+      trusted_helper_provenance: replayed.fetch("helper_provenance"),
+      trusted_git_executable: SYSTEM_GIT,
+      trusted_gh_executable: @fake_gh,
+      context: context("auto_merge_when_gates_pass"),
+      timeout_seconds: timeout_seconds
+    )
+  ensure
+    FileUtils.remove_entry(repo_root) if repo_root && File.exist?(repo_root)
+    if original_helper
+      MergeAssurance.define_singleton_method(
+        :authenticated_autonomous_replay_helper_path, original_helper
+      )
+    end
+    MergeAssurance.define_singleton_method(:run_autonomous_replay, original_run) if original_run
   end
 end

@@ -1144,6 +1144,14 @@ module BatchPlanPreflight
     Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 
+  # True only when this file is the program being executed, so tests can load
+  # the module and drive the bounded replay lifecycle directly.
+  def executed_as_main?
+    File.realpath($PROGRAM_NAME) == HELPER_PATH
+  rescue SystemCallError
+    false
+  end
+
   def complete_stage_dependency_gate?(gate, plan, lane_ids)
     expected_keys = %w[
       checker_verdict
@@ -1549,26 +1557,28 @@ module BatchPlanPreflight
   end
 end
 
-begin
-  parsed_input = JSON.parse($stdin.read)
-rescue JSON::ParserError
-  parsed_input = nil
-  output = BatchPlanPreflight.result(
-    "rejected", [], [],
-    [BatchPlanPreflight.violation("malformed-json", "$", "Input must be valid JSON.")]
-  )
+if BatchPlanPreflight.executed_as_main?
+  begin
+    parsed_input = JSON.parse($stdin.read)
+  rescue JSON::ParserError
+    parsed_input = nil
+    output = BatchPlanPreflight.result(
+      "rejected", [], [],
+      [BatchPlanPreflight.violation("malformed-json", "$", "Input must be valid JSON.")]
+    )
+  end
+  begin
+    output ||= BatchPlanPreflight.evaluate(parsed_input)
+  rescue KeyError, NoMethodError, TypeError, ArgumentError
+    output = BatchPlanPreflight.result(
+      "rejected", [], [],
+      [BatchPlanPreflight.violation(
+        "invalid-envelope",
+        "$",
+        "The v1 envelope is incomplete or contains malformed structured fields."
+      )]
+    )
+  end
+  puts JSON.generate(output)
+  exit(output["status"] == "accepted" ? 0 : 1)
 end
-begin
-  output ||= BatchPlanPreflight.evaluate(parsed_input)
-rescue KeyError, NoMethodError, TypeError, ArgumentError
-  output = BatchPlanPreflight.result(
-    "rejected", [], [],
-    [BatchPlanPreflight.violation(
-      "invalid-envelope",
-      "$",
-      "The v1 envelope is incomplete or contains malformed structured fields."
-    )]
-  )
-end
-puts JSON.generate(output)
-exit(output["status"] == "accepted" ? 0 : 1)
