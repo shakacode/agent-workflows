@@ -12,7 +12,7 @@ RED -> GREEN -> REFACTOR -> repeat
 ```
 
 Before writing or changing tests, mocks, or test helpers, apply
-[Writing Good Tests](../skills/tdd/references/writing-good-tests.md).
+[Writing Good Tests](references/writing-good-tests.md).
 
 ## Core Loop
 

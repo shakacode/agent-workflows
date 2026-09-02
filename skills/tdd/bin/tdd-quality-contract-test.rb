@@ -9,7 +9,8 @@ require "tmpdir"
 ROOT = File.expand_path("../../..", __dir__)
 SKILL_PATH = File.join(ROOT, "skills/tdd/SKILL.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/tdd.md")
-REFERENCE_PATH = File.join(ROOT, "skills/tdd/references/writing-good-tests.md")
+SKILL_REFERENCE_PATH = File.join(ROOT, "skills/tdd/references/writing-good-tests.md")
+WORKFLOW_REFERENCE_PATH = File.join(ROOT, "workflows/references/writing-good-tests.md")
 VALIDATE_PATH = File.join(ROOT, "bin/validate")
 NOTICE_PATH = File.join(ROOT, "THIRD_PARTY-NOTICES.md")
 
@@ -26,8 +27,8 @@ class TddQualityContractTest < Minitest::Test
     File.read(path, encoding: "UTF-8")
   end
 
-  def normalized_reference
-    read(REFERENCE_PATH).gsub(/\s+/, " ").strip
+  def normalized_reference(path = SKILL_REFERENCE_PATH)
+    read(path).gsub(/\s+/, " ").strip
   end
 
   def run_publisher_example(mutation)
@@ -60,9 +61,15 @@ class TddQualityContractTest < Minitest::Test
     validation = read(VALIDATE_PATH)
 
     # These assertions prove source and packaging invariants, not agent behavior.
-    assert_path_exists REFERENCE_PATH
+    assert_path_exists SKILL_REFERENCE_PATH
+    assert_path_exists WORKFLOW_REFERENCE_PATH
     assert_includes skill, "[Writing Good Tests](references/writing-good-tests.md)"
-    assert_includes workflow, "[Writing Good Tests](../skills/tdd/references/writing-good-tests.md)"
+    assert_includes workflow, "[Writing Good Tests](references/writing-good-tests.md)"
+    assert_equal normalized_reference,
+                 normalized_reference(WORKFLOW_REFERENCE_PATH).sub(
+                   "[third-party notice](../../THIRD_PARTY-NOTICES.md)",
+                   "[third-party notice](../../../THIRD_PARTY-NOTICES.md)"
+                 )
     [skill, workflow].each do |entrypoint|
       assert_includes entrypoint, "Before writing or changing tests, mocks, or test helpers, apply"
     end
@@ -86,7 +93,7 @@ class TddQualityContractTest < Minitest::Test
 
   def test_reference_defines_the_falsifiable_test_quality_contract
     reference = normalized_reference
-    headings = read(REFERENCE_PATH).lines.map(&:strip).grep(/\A## /)
+    headings = read(SKILL_REFERENCE_PATH).lines.map(&:strip).grep(/\A## /)
 
     # These assertions protect the documented contract structure and a few stable anchors only.
     [
@@ -110,11 +117,13 @@ class TddQualityContractTest < Minitest::Test
   end
 
   def test_substantial_adaptation_routes_to_the_complete_pack_notice
-    reference = read(REFERENCE_PATH)
+    reference = read(SKILL_REFERENCE_PATH)
+    workflow_reference = read(WORKFLOW_REFERENCE_PATH)
     notice = read(NOTICE_PATH)
 
     # These assertions prove source and packaging invariants, not license compliance.
     assert_includes reference, "[third-party notice](../../../THIRD_PARTY-NOTICES.md)"
+    assert_includes workflow_reference, "[third-party notice](../../THIRD_PARTY-NOTICES.md)"
     assert_includes notice, "## obra/superpowers"
     assert_includes notice, "Copyright (c) 2025 Jesse Vincent"
     assert_includes notice, "The above copyright notice and this permission notice"
