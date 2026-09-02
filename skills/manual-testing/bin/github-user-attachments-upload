@@ -1,0 +1,148 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Adapted from intercom/2x-skills' MIT-licensed upload.sh:
+# https://github.com/intercom/2x-skills/blob/main/plugins/pr-tools/skills/attach-github-assets/scripts/upload.sh
+# Copyright (c) 2026 Intercom. See THIRD_PARTY_NOTICES.md for the MIT notice.
+
+require "json"
+require "optparse"
+require "tempfile"
+require "uri"
+require_relative "../lib/bounded_command"
+
+module GitHubUserAttachmentsUpload
+  ENDPOINT = "https://uploads.github.com/user-attachments/assets"
+  CURL_STATUS_FORMAT = "\n%{http_code}" # rubocop:disable Style/FormatStringToken
+  ATTACHMENT_URL = %r{\Ahttps://github\.com/user-attachments/assets/[A-Za-z0-9_-]+\z}
+  TOKEN = /\A[A-Za-z0-9_]+\z/
+  REPOSITORY_ID = /\A[1-9][0-9]*\z/
+  REMOTE_PATTERNS = [
+    %r{\Ahttps://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?\z},
+    %r{\Agit@github\.com:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?\z},
+    %r{\Assh://git@github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?\z}
+  ].freeze
+  MIME_TYPES = {
+    ".png" => "image/png",
+    ".jpg" => "image/jpeg",
+    ".jpeg" => "image/jpeg",
+    ".gif" => "image/gif",
+    ".webp" => "image/webp",
+    ".svg" => "image/svg+xml",
+    ".mov" => "video/quicktime",
+    ".mp4" => "video/mp4",
+    ".webm" => "video/webm"
+  }.freeze
+
+  class Error < StandardError; end
+
+  module_function
+
+  def upload(file_path, repository_id: nil, runner: ManualTesting::BoundedCommand.new)
+    artifact = verified_artifact(file_path)
+    mime = MIME_TYPES[File.extname(artifact).downcase]
+    raise Error, "unsupported file type" unless mime
+
+    token = successful_output(runner, %w[gh auth token], "GitHub authentication").strip
+    raise Error, "GitHub authentication returned an unsafe token" unless token.match?(TOKEN)
+
+    resolved_repository_id = repository_id || detect_repository_id(runner)
+    raise Error, "repository id must be a positive integer" unless resolved_repository_id.to_s.match?(REPOSITORY_ID)
+
+    query = URI.encode_www_form(
+      "name" => File.basename(artifact),
+      "content_type" => mime,
+      "repository_id" => resolved_repository_id
+    )
+    Tempfile.create("github-user-attachments-header") do |header|
+      File.chmod(0o600, header.path)
+      header.write("Authorization: Bearer #{token}\n")
+      header.flush
+      response = successful_output(
+        runner,
+        [
+          "curl", "--silent", "--show-error",
+          "--request", "POST",
+          "--header", "Content-Type: application/octet-stream",
+          "--header", "Accept: application/json",
+          "--header", "X-GitHub-Api-Version: 2022-11-28",
+          "--header", "@#{header.path}",
+          "--data-binary", "@#{artifact}",
+          "--write-out", CURL_STATUS_FORMAT,
+          "#{ENDPOINT}?#{query}"
+        ],
+        "GitHub attachment upload"
+      )
+      body, status = response.split("\n", -1).then { |parts| [parts[0...-1].join("\n"), parts.last] }
+      raise Error, "GitHub attachment upload returned HTTP #{status}" unless status == "201"
+
+      url = JSON.parse(body).fetch("url", nil)
+      raise Error, "GitHub attachment upload returned an invalid URL" unless url.is_a?(String) && url.match?(ATTACHMENT_URL)
+
+      url
+    end
+  rescue JSON::ParserError
+    raise Error, "GitHub attachment upload returned malformed JSON"
+  end
+
+  def verified_artifact(path)
+    expanded = File.expand_path(path)
+    stat = File.lstat(expanded)
+    raise Error, "artifact must be a non-symlink regular file" unless stat.file? && !stat.symlink?
+
+    File.realpath(expanded)
+  rescue Errno::ENOENT, Errno::ENOTDIR, Errno::ELOOP
+    raise Error, "artifact must be an existing non-symlink regular file"
+  end
+
+  def detect_repository_id(runner)
+    remote = successful_output(
+      runner,
+      %w[git remote get-url origin],
+      "GitHub repository detection"
+    ).strip
+    owner_repo = REMOTE_PATTERNS.filter_map { |pattern| remote.match(pattern)&.[](1) }.first
+    raise Error, "origin is not an exact GitHub repository remote" unless owner_repo
+
+    successful_output(
+      runner,
+      ["gh", "api", "repos/#{owner_repo}", "--jq", ".id"],
+      "GitHub repository id lookup"
+    ).strip
+  end
+
+  def successful_output(runner, command, label)
+    result = runner.capture(command)
+    raise Error, "#{label} timed out" if result.timed_out
+    raise Error, "#{label} output exceeded the bounded limit" if result.output_too_large
+    raise Error, "#{label} failed" unless result.status&.success?
+
+    result.stdout
+  end
+
+  def parse_options(argv)
+    options = {}
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: github-user-attachments-upload [--repository-id ID] FILE"
+      opts.on("--repository-id ID") { |value| options[:repository_id] = value }
+      opts.on("-h", "--help") do
+        puts opts
+        exit 0
+      end
+    end
+    parser.parse!(argv)
+    raise OptionParser::InvalidArgument, "exactly one FILE is required" unless argv.length == 1
+
+    [options, argv.first]
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    options, file = GitHubUserAttachmentsUpload.parse_options(ARGV)
+    puts GitHubUserAttachmentsUpload.upload(file, **options)
+  rescue GitHubUserAttachmentsUpload::Error, OptionParser::ParseError => e
+    warn "github-user-attachments-upload: #{e.message}"
+    exit 1
+  end
+end

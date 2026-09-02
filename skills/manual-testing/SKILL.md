@@ -89,6 +89,37 @@ blocker. Do not fake a manual pass from static inspection.
      explicitly configured and verified that integration. That limits GitHub's
      API, not agents: a host whose browser tooling can set a file input on an
      authenticated github.com session completes the UI upload flow normally.
+     The portable direct-upload seam is enabled only when the trusted-base
+     `.agents/agent-workflow.yml` contains this exact closed mapping:
+
+     ```yaml
+     visual_evidence_uploader:
+       version: 1
+       provider: github_user_attachments
+       verified: true
+     ```
+
+     Resolve `MANUAL_TESTING_SKILL_DIR` through the explicit environment value,
+     the loaded skill directory, then a repo-local pinned
+     `.agents/skills/manual-testing` copy. Run its
+     `bin/configured-evidence-upload --repo-root <root> --trusted-base
+     <accepted-base-SHA> <file>` once per artifact. The helper invokes only the
+     fixed, trusted-base, byte-identical `.agents/bin/upload-evidence` wrapper,
+     passes the file as one argv value, bounds runtime/output, and accepts only
+     one exact `https://github.com/user-attachments/assets/<asset-id>` line.
+     The wrapper may delegate to
+     `bin/github-user-attachments-upload` from this skill as the MIT-attributed
+     reference implementation after the repository has deliberately verified
+     the undocumented endpoint. Never call that reference helper merely because
+     it is installed.
+
+     Omitted or malformed configuration, a missing/changed/unsafe wrapper or
+     file, unsupported type, authentication or upload failure, timeout,
+     non-201 response, extra output, or any other URL shape is an upload
+     failure, not durable evidence. Preserve `human_attachment_pending`, the
+     blocked QA/release state, and the matching blocked reason; never copy the
+     local path into a durable field. On success, use `github_pr` with the
+     returned URL and omit `visual_evidence_blocked_reason`.
      Record the matching `visual_evidence_blocked_reason`: `uploader_absent`
      (no upload tool exists), `uploader_denied` (the tool exists but the host
      permission policy refused the call, which only a human can pre-provision
