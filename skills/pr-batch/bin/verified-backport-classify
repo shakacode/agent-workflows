@@ -5,8 +5,14 @@ require "json"
 require_relative "../lib/verified_backport"
 
 begin
-  input = if ARGV.length <= 1
-            ARGV.empty? ? $stdin.read : File.read(ARGV.fetch(0), encoding: "UTF-8")
+  input = case ARGV.length
+          when 0
+            $stdin.read
+          when 1
+            File.read(ARGV.fetch(0), encoding: "UTF-8")
+          else
+            warn "usage: verified-backport-classify [input.json]"
+            exit 64
           end
 
   evidence = JSON.parse(input.to_s)

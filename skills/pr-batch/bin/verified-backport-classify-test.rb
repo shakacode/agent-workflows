@@ -53,6 +53,15 @@ class VerifiedBackportClassifyTest < Minitest::Test
     assert_includes result.fetch("reasons"), "invalid-contract"
   end
 
+  def test_extra_cli_args_fail_with_a_distinct_usage_error
+    stdout, stderr, status = Open3.capture3("ruby", HELPER, "first", "second")
+
+    refute status.success?
+    assert_equal "", stdout
+    assert_equal 64, status.exitstatus
+    assert_match(/usage: verified-backport-classify \[input\.json\]/, stderr)
+  end
+
   def test_schema_invalid_evidence_cannot_enter_the_fast_path
     evidence = fixture("react-on-rails-4677-exact-validation-focused")
     evidence.dig("source_evidence", "reviews", 0)["url"] = "http://example.com/self-attested-review"
