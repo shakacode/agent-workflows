@@ -197,7 +197,7 @@ module VerifiedBackport
                       %w[required not-required].include?(policy["current_head_review"]) &&
                       policy["checks"].is_a?(Array) && policy["checks"].all? { |item| nonempty_string?(item) }
     reasons << "target-policy-missing" unless explicit_policy
-    return unless policy["checks"].is_a?(Array)
+    return unless policy["checks"].is_a?(Array) && %w[required not-required].include?(policy["current_head_ci"])
 
     ci_policy_consistent = (policy["current_head_ci"] == "required" && !policy["checks"].empty?) ||
                            (policy["current_head_ci"] == "not-required" && policy["checks"].empty?)

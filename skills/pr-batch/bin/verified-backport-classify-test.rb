@@ -214,6 +214,18 @@ class VerifiedBackportClassifyTest < Minitest::Test
     refute result.fetch("target_gates_waived")
   end
 
+  def test_unknown_target_policy_is_missing_without_being_contradictory
+    evidence = fixture("react-on-rails-4677-exact-validation-focused")
+    evidence.fetch("target_requirements")["current_head_ci"] = "UNKNOWN"
+
+    result = classify(evidence)
+
+    assert_equal "ordinary-full", result.fetch("classification")
+    assert_includes result.fetch("reasons"), "target-policy-missing"
+    refute_includes result.fetch("reasons"), "contradictory-target-policy"
+    refute result.fetch("target_gates_waived")
+  end
+
   def test_semantic_replays_retain_full_scrutiny_and_surface_review_fixes
     fixture_names = %w[
       react-on-rails-4676-semantic-review-fix
@@ -284,6 +296,36 @@ class VerifiedBackportClassifyTest < Minitest::Test
       assert_includes result.fetch("reasons"), expected_reason, name
       assert_empty result.fetch("reused_evidence"), name
       refute result.fetch("target_gates_waived"), name
+    end
+  end
+
+  def test_invalid_utf8_input_reports_a_distinct_read_error
+    invalid_payload = JSON.generate(fixture("react-on-rails-4677-exact-validation-focused")).b + "\xFF".b
+
+    [
+      [
+        "standard input",
+        -> { Open3.capture3("ruby", HELPER, stdin_data: invalid_payload) },
+        /unable to read input from standard input: EncodingError: standard input contains invalid UTF-8/
+      ],
+      [
+        "input file",
+        lambda do
+          Dir.mktmpdir do |dir|
+            path = File.join(dir, "invalid-utf8.json")
+            File.binwrite(path, invalid_payload)
+            Open3.capture3("ruby", HELPER, path)
+          end
+        end,
+        /unable to read input file .*: EncodingError: input file .* contains invalid UTF-8/
+      ]
+    ].each do |label, runner, stderr_pattern|
+      stdout, stderr, status = runner.call
+
+      refute status.success?, label
+      assert_equal "", stdout, label
+      assert_equal 66, status.exitstatus, label
+      assert_match(stderr_pattern, stderr, label)
     end
   end
 
