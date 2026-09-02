@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "digest"
+require "fileutils"
 require "json"
 PINNED_JSON_SCHEMER_VERSION = File.read(File.expand_path("../../../.json-schemer-version", __dir__)).strip
 gem "json_schemer", PINNED_JSON_SCHEMER_VERSION
@@ -87,6 +88,46 @@ class TaskReviewLoopTest < Minitest::Test
       )
       assert helper_status.success?, helper_stderr
       assert_equal "blocked", JSON.parse(stdout).fetch("status")
+    end
+  end
+
+  def test_flat_install_refuses_an_unowned_schema_directory_symlink
+    Dir.mktmpdir("task-review-loop-install") do |directory|
+      target = File.join(directory, "agent-home")
+      external = File.join(directory, "external-schemas")
+      FileUtils.mkdir_p(File.join(target, "docs"))
+      Dir.mkdir(external)
+      sentinel = File.join(external, "keep.txt")
+      File.write(sentinel, "unowned\n")
+      File.symlink(external, File.join(target, "docs/schemas"))
+
+      _stdout, stderr, status = Open3.capture3(
+        INSTALLER,
+        "--host", "codex",
+        "--target", target,
+        "--mode", "copy",
+        "--delivery-mode", "flat"
+      )
+
+      refute status.success?
+      assert_includes stderr, "Refusing to replace unowned schema directory symlink"
+      assert File.symlink?(File.join(target, "docs/schemas"))
+      assert_equal "unowned\n", File.read(sentinel)
+    end
+  end
+
+  def test_missing_canonical_finding_validator_fails_closed_without_a_load_error
+    Dir.mktmpdir("task-review-loop-pinned") do |directory|
+      helper = File.join(directory, ".agents/skills/pr-batch/bin/task-review-loop")
+      FileUtils.mkdir_p(File.dirname(helper))
+      FileUtils.cp(HELPER, helper)
+
+      stdout, stderr, status = Open3.capture3(helper, stdin_data: "{}")
+
+      assert status.success?, stderr
+      assert_empty stderr
+      assert_equal "blocked", JSON.parse(stdout).fetch("status")
+      assert_equal ["validate-review-findings-unavailable"], JSON.parse(stdout).fetch("reasons")
     end
   end
 
@@ -330,6 +371,58 @@ class TaskReviewLoopTest < Minitest::Test
       output, = evaluate(non_independent_earlier_round_input(directory))
 
       assert_equal replay.fetch("expected"), output.slice(*replay.fetch("expected").keys)
+    end
+  end
+
+  def test_reviewer_independence_normalizes_unicode_whitespace
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      reviewer = "\u00a0IMPLEMENTER-A\u00a0"
+      package = with_digest(
+        input.fetch("review_package").merge("reviewer_id" => reviewer)
+             .reject { |key, _value| key == "digest" }
+      )
+      round = with_digest(
+        input.fetch("rounds").first.merge(
+          "package_digest" => package.fetch("digest"),
+          "reviewer_id" => reviewer
+        ).reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(input.merge("review_package" => package, "rounds" => [round]))
+
+      assert_equal "blocked", output.fetch("status")
+      assert_equal ["reviewer-not-independent"], output.fetch("reasons")
+    end
+  end
+
+  def test_deferred_review_finding_remains_open_until_cap_adjudication
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      deferred = finding("finding-deferred", disposition: "deferred", head_sha: HEAD_SHA)
+      path = write_findings(directory, "deferred-findings.json", [deferred])
+      reference = artifact(path)
+      round = with_digest(
+        input.fetch("rounds").first.merge(
+          "review_findings" => reference,
+          "open_finding_ids" => ["finding-deferred"]
+        ).reject { |key, _value| key == "digest" }
+      )
+      output, = evaluate(
+        input.merge(
+          "rounds" => [round],
+          "open_findings" => reference.merge("ids" => ["finding-deferred"]),
+          "finding_controls" => [{
+            "finding_id" => "finding-deferred",
+            "load_bearing" => false,
+            "cap_piercing" => false
+          }]
+        )
+      )
+
+      assert_equal "fix_required", output.fetch("status")
+      refute output.fetch("dependent_task_permitted")
+      assert_equal ["open-findings-require-fix"], output.fetch("reasons")
     end
   end
 

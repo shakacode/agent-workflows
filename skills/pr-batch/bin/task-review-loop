@@ -4,10 +4,23 @@
 require "digest"
 require "json"
 
-load File.expand_path("../../../bin/validate-review-findings", __dir__)
+finding_validator = File.expand_path("../../../bin/validate-review-findings", __dir__)
+unless File.file?(finding_validator)
+  puts JSON.generate(
+    "contract" => "task-review-loop-decision",
+    "version" => 1,
+    "status" => "blocked",
+    "dependent_task_permitted" => false,
+    "reasons" => ["validate-review-findings-unavailable"]
+  )
+  exit 0
+end
+load finding_validator
 
 module TaskReviewLoop
-  OPEN_FINDING_DISPOSITIONS = %w[must_fix needs_decision should_fix unknown].freeze
+  OPEN_FINDING_DISPOSITIONS = %w[
+    must_fix needs_decision should_fix deferred waived_by_maintainer unknown
+  ].freeze
   TOP_LEVEL_KEYS = %w[
     cap_adjudication
     contract
@@ -194,15 +207,23 @@ module TaskReviewLoop
     expected.is_a?(Hash) && actual == expected
   end
 
-  def independent?(implementer, reviewer)
-    return false unless [implementer, reviewer].all? { |identity| identity.is_a?(String) && !identity.strip.empty? }
+  def actor_key(identity)
+    return nil unless identity.is_a?(String)
 
-    implementer.strip.downcase(:fold) != reviewer.strip.downcase(:fold)
+    normalized = identity.unicode_normalize(:nfkc).gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
+    normalized.empty? ? nil : normalized.downcase(:fold)
+  end
+
+  def independent?(implementer, reviewer)
+    implementer_key = actor_key(implementer)
+    reviewer_key = actor_key(reviewer)
+    implementer_key && reviewer_key && implementer_key != reviewer_key
   end
 
   def same_actor?(left, right)
-    [left, right].all? { |identity| identity.is_a?(String) && !identity.strip.empty? } &&
-      left.strip.downcase(:fold) == right.strip.downcase(:fold)
+    left_key = actor_key(left)
+    right_key = actor_key(right)
+    left_key && right_key && left_key == right_key
   end
 
   def replacement_evidence_valid?(record, round_number, prior_implementer, replacement_implementer)

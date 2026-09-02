@@ -3488,9 +3488,8 @@ verify_pack_doc_destinations() {
   [[ ! -L "$target/docs" ]] || return 0
 
   for doc_name in "${pack_docs[@]}"; do
-    # Both delivery modes replace managed nested-directory symlinks without following them.
+    # Both delivery modes replace the managed solutions symlink without following it.
     [[ "$doc_name" == solutions/* && -L "$target/docs/solutions" ]] && continue
-    [[ "$doc_name" == schemas/* && -L "$target/docs/schemas" ]] && continue
     destination="$target/docs/$doc_name"
     source_path="$repo_root/docs/$doc_name"
     [[ -e "$destination" || -L "$destination" ]] || continue
@@ -3527,6 +3526,11 @@ verify_third_party_notices_destination() {
 
 verify_install_destinations() {
   local destination helper skill source_path
+
+  if [[ -L "$target/docs/schemas" ]]; then
+    echo "Refusing to replace unowned schema directory symlink: $target/docs/schemas" >&2
+    exit 1
+  fi
 
   if [[ "$mode" = "copy" ]]; then
     for destination in "$target/bin" "$target/workflows" "$target/docs" "$target/docs/solutions" \

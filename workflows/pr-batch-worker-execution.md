@@ -30,8 +30,9 @@ its task review and fix rounds.
 Consume one lane record with known values for:
 
 - the exact accepted target and stable coordination identity;
-- the accepted task brief with its exact identity and digest, lane goal,
-  non-goals, supported diagnosis, invariants, acceptance criteria, required
+- the accepted task brief with its exact identity and digest as the sole source
+  of the task goal and acceptance requirements;
+- execution controls for non-goals, supported diagnosis, invariants, required
   verification, stop conditions, and owned paths;
 - repository root, accepted base commit, worktree path, and branch name;
 - the latest dependency-gate permission for the requested action;

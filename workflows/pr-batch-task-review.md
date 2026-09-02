@@ -111,6 +111,9 @@ head SHA. A foreign identity or head fails closed.
 The round record classifies normalized finding ids as addressed, open, or new
 consequential breakage. The current `open_findings` artifact must match the
 open records in the latest round exactly.
+Reviewer-level `deferred` and `waived_by_maintainer` dispositions remain open
+inside this loop. Only the coordinator's evidence-backed cap adjudication can
+defer or waive them for task completion.
 
 The reviewer must be distinct from every implementer in the task after Unicode
 case folding and whitespace trimming. Implementer self-review is useful but
