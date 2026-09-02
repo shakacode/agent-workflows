@@ -1069,17 +1069,34 @@ class AgentRunRecordTest < Minitest::Test
     end
   end
 
-  def test_directory_flush_degrades_instead_of_failing_where_the_platform_refuses_it
+  def test_directory_flush_degrades_and_names_a_denied_directory
     skip "directory permissions do not constrain a privileged user" if Process.uid.zero?
 
     Dir.mktmpdir("agent-run-record-flush") do |directory|
       assert AgentRunRecord.fsync_directory(directory)
       FileUtils.chmod(0o000, directory)
       begin
-        refute AgentRunRecord.fsync_directory(directory)
+        _stdout, stderr = capture_io { refute AgentRunRecord.fsync_directory(directory) }
       ensure
         FileUtils.chmod(0o700, directory)
       end
+
+      assert_includes stderr, "cannot flush #{directory} for launch identity durability"
+    end
+  end
+
+  def test_identity_reads_refuse_a_symlink_at_the_identity_path
+    with_published_identity_fixture do |directory, _repo, _environment, identity|
+      target = File.join(directory, "symlink-target-identity.json")
+      File.write(target, "#{JSON.pretty_generate(identity)}\n", mode: "w", perm: 0o600)
+      identity_file = File.join(directory, "symlink-reader-identity.json")
+      File.symlink(target, identity_file)
+
+      error = assert_raises(AgentRunRecord::ContractError) do
+        AgentRunRecord.read_launch_identity(identity_file, "cannot read launch identity")
+      end
+
+      assert_includes error.message, "cannot read launch identity: launch identity must be a regular file"
     end
   end
 

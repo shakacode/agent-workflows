@@ -375,10 +375,13 @@ and every loser authenticates the published identity against its own immutable
 binding before reusing it. An interrupted launch therefore leaves only an
 unpublished candidate, which a later launch reaps on a bounded scan; once an
 identity is published, no retry can replace it or mint a different one. Every
-reader refuses an identity path that is not an owner-only regular file, so a
-symlink or a loosened mode fails the launch closed instead of being adopted.
+reader opens the identity once with `O_NOFOLLOW` and checks that one descriptor,
+so an identity path that is not an owner-only regular file fails the launch
+closed: a symlink or a loosened mode is refused rather than adopted, and the
+check cannot be raced by swapping the path between the check and the read.
 Platforms that do not expose a directory flush keep the single-creator guarantee
-and lose only the crash-durability upgrade; a real I/O error still fails closed.
+and lose only the crash-durability upgrade; a directory that denies the flush is
+reported as a durability warning, and a real I/O error still fails closed.
 
 - A retry of that helper launch reuses the same identity file and its helper
   evidence IDs, timestamps, configured-base binding, source, and selection

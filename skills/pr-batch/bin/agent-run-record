@@ -34,9 +34,19 @@ module AgentRunRecord
   IDENTITY_CANDIDATE_PREFIX = ".tmp-"
   IDENTITY_CANDIDATE_REAP_AGE_SECONDS = 3600
   IDENTITY_CANDIDATE_REAP_LIMIT = 64
-  DIRECTORY_FSYNC_UNSUPPORTED = %i[EACCES EBADF EINVAL EISDIR ENOTSUP EOPNOTSUPP EPERM]
+  DIRECTORY_FSYNC_UNSUPPORTED = %i[EBADF EINVAL EISDIR ENOTSUP EOPNOTSUPP]
                                 .filter_map { |name| Errno.const_get(name) if Errno.const_defined?(name) }
                                 .uniq.freeze
+  DIRECTORY_FSYNC_DENIED = %i[EACCES EPERM]
+                           .filter_map { |name| Errno.const_get(name) if Errno.const_defined?(name) }
+                           .uniq.freeze
+  # Identity files are opened once and checked through that one descriptor. A name-based
+  # stat followed by a name-based read leaves a window in which the checked file can be
+  # swapped for a symlink, so `O_NOFOLLOW` refuses a symlink in `open` itself.
+  IDENTITY_READ_FLAGS = File::RDONLY | (File.const_defined?(:NOFOLLOW) ? File::NOFOLLOW : 0)
+  IDENTITY_SYMLINK_ERRORS = %i[ELOOP EMLINK]
+                            .filter_map { |name| Errno.const_get(name) if Errno.const_defined?(name) }
+                            .uniq.freeze
 
   module_function
 
@@ -875,11 +885,15 @@ module AgentRunRecord
   end
 
   def verify_identity_candidate!(candidate_path, candidate)
-    stat = File.lstat(candidate_path)
-    unless stat.file? && (stat.mode & 0o077).zero?
-      raise ContractError, "launch identity candidate must be a private regular file"
+    written = File.open(candidate_path, IDENTITY_READ_FLAGS, encoding: "UTF-8") do |handle|
+      stat = handle.stat
+      unless stat.file? && (stat.mode & 0o077).zero?
+        raise ContractError, "launch identity candidate must be a private regular file"
+      end
+
+      handle.read
     end
-    return if File.read(candidate_path, encoding: "UTF-8") == "#{JSON.pretty_generate(candidate)}\n"
+    return if written == "#{JSON.pretty_generate(candidate)}\n"
 
     raise ContractError, "launch identity candidate is incomplete; refusing to publish a partial identity"
   end
@@ -934,23 +948,32 @@ module AgentRunRecord
     true
   rescue *DIRECTORY_FSYNC_UNSUPPORTED, NotImplementedError
     false
+  rescue *DIRECTORY_FSYNC_DENIED => e
+    # A denied flush is a directory misconfiguration, not an unsupported platform. The
+    # identity is already published, so name the problem instead of failing the launch.
+    warn "agent-run-record: cannot flush #{directory} for launch identity durability: #{e.message}"
+    false
   end
 
   def read_launch_identity(path, error_prefix)
-    stat = File.lstat(path)
-    unless stat.file?
-      raise ContractError, "#{error_prefix}: launch identity must be a regular file"
-    end
-    unless (stat.mode & 0o077).zero?
-      raise ContractError, "#{error_prefix}: launch identity must stay owner-only"
-    end
-    if stat.zero?
-      raise ContractError, "#{error_prefix}: launch identity is empty; publication did not complete"
-    end
+    identity = File.open(path, IDENTITY_READ_FLAGS, encoding: "UTF-8") do |handle|
+      stat = handle.stat
+      unless stat.file?
+        raise ContractError, "#{error_prefix}: launch identity must be a regular file"
+      end
+      unless (stat.mode & 0o077).zero?
+        raise ContractError, "#{error_prefix}: launch identity must stay owner-only"
+      end
+      if stat.zero?
+        raise ContractError, "#{error_prefix}: launch identity is empty; publication did not complete"
+      end
 
-    identity = JSON.parse(File.read(path, encoding: "UTF-8"))
+      JSON.parse(handle.read)
+    end
     object!(identity, "launch identity")
     identity
+  rescue *IDENTITY_SYMLINK_ERRORS
+    raise ContractError, "#{error_prefix}: launch identity must be a regular file"
   rescue JSON::ParserError, SystemCallError => e
     raise ContractError, "#{error_prefix}: #{e.message}"
   end
