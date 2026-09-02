@@ -443,7 +443,7 @@ module AgentWorkflowsDeliveryState
     stdout, stderr, status = Open3.capture3("git", "-C", root, *args)
     unless status.success?
       diagnostic = stderr.force_encoding("UTF-8").scrub.strip
-      warn("git #{args.first} failed in #{root}: #{diagnostic}") unless diagnostic.empty?
+      warn("git #{args.join(' ')} failed in #{root}: #{diagnostic}") unless diagnostic.empty?
       return nil
     end
 
