@@ -78,6 +78,10 @@ def sha256_digest?(value)
   value.is_a?(String) && value.match?(/\A[0-9a-f]{64}\z/)
 end
 
+def known_identity?(value)
+  value.is_a?(String) && !value.strip.empty? && !value.strip.casecmp?("UNKNOWN")
+end
+
 def persisted_decision?(decision, monitor_id)
   decision.is_a?(Hash) &&
     decision["contract"] == "goal-state-change-decision" &&
@@ -108,11 +112,12 @@ def persisted_state?(state)
   return false unless state.is_a?(Hash)
 
   required_keys = %w[
-    contract version monitor_id fingerprint blocker_state capability monitor_status limits polling_policy
+    contract version plan_identity monitor_id fingerprint blocker_state capability monitor_status limits polling_policy
     usage unchanged_runs probe_sequence last_observation_digest last_checked_at last_decision
   ]
   return false unless required_keys.all? { |key| state.key?(key) }
 
+  plan_identity = state["plan_identity"]
   monitor_id = state["monitor_id"]
   limits = state["limits"]
   polling_policy = state["polling_policy"]
@@ -124,6 +129,7 @@ def persisted_state?(state)
 
   state["contract"] == "goal-state-change-monitor-state" &&
     state["version"] == 1 &&
+    known_identity?(plan_identity) &&
     monitor_id.is_a?(String) && !monitor_id.empty? &&
     sha256_digest?(state["fingerprint"]) &&
     state["blocker_state"].is_a?(Hash) &&
@@ -199,6 +205,8 @@ fail_json("wrong-contract") unless observation["contract"] == "goal-state-change
 
 monitor_id = observation["monitor_id"]
 fail_json("invalid-monitor-id") unless monitor_id.is_a?(String) && !monitor_id.empty?
+plan_identity = observation["plan_identity"]
+fail_json("plan-identity-required") unless known_identity?(plan_identity)
 capability = observation["capability"]
 fail_json("invalid-capability") unless %w[deterministic-watcher model-polling-only unsupported].include?(capability)
 task_status = observation["task_status"]
@@ -277,6 +285,8 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
                end
              end
   fail_json("corrupt-persisted-state") if previous && !persisted_state?(previous)
+  fail_json("plan-identity-missing") if previous && !known_identity?(previous["plan_identity"])
+  fail_json("plan-identity-collision") if previous && previous["plan_identity"] != plan_identity
   fail_json("monitor-id-collision") if previous && previous["monitor_id"] != monitor_id
 
   legacy_digest_migrated = false
@@ -611,6 +621,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   state = {
     "contract" => "goal-state-change-monitor-state",
     "version" => 1,
+    "plan_identity" => plan_identity,
     "monitor_id" => monitor_id,
     "fingerprint" => fingerprint,
     "blocker_state" => normalized_blocker_state,
