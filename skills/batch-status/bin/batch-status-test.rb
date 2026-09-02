@@ -119,6 +119,51 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_owner_route_is_unavailable_when_the_work_item_url_is_missing
+    coordination = {
+      "claims" => [{
+        "agent_id" => "worker-362",
+        "status" => "active",
+        "repo" => "shakacode/agent-workflows",
+        "target" => "362",
+        "branch" => "codex/status-362",
+        "host" => "codex",
+        "thread_handle" => "aw-362",
+        "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "worker-362",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "target" => "shakacode/agent-workflows#362",
+        "branch" => "codex/status-362",
+        "thread_handle" => "aw-362",
+        "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10",
+        "session_source" => "codex_thread_id",
+        "status" => "in_progress",
+        "liveness" => "live"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "pr", number: 362, github_html_url: nil) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--pr", "362",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      route = row.fetch("owner_route")
+      assert_equal "unavailable", route.fetch("binding_status")
+      assert_includes route.fetch("missing_fields"), "work item url"
+      assert_includes row.fetch("unknowns"), "owner route unavailable: missing work item url"
+    end
+  end
+
   def test_owner_route_fails_closed_when_claim_and_heartbeat_bindings_disagree
     coordination = {
       "claims" => [{
@@ -166,6 +211,138 @@ class BatchStatusTest < Minitest::Test
       assert_includes unknowns, "owner route: claim repository mismatch"
       assert_includes unknowns, "owner route: claim/heartbeat branch mismatch"
       assert_includes unknowns, "owner route: claim/heartbeat session_id mismatch"
+    end
+  end
+
+  def test_owner_route_normalizes_host_case_before_comparison
+    coordination = {
+      "claims" => [{
+        "agent_id" => "worker-362",
+        "status" => "active",
+        "repo" => "shakacode/agent-workflows",
+        "target" => "362",
+        "branch" => "codex/status-362",
+        "host" => "Codex",
+        "thread_handle" => "aw-362",
+        "session_id" => "claim-session"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "worker-362",
+        "target" => "shakacode/agent-workflows#362",
+        "branch" => "codex/status-362",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "thread_handle" => "aw-362",
+        "session_id" => "claim-session",
+        "session_source" => "codex_thread_id",
+        "status" => "in_progress"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "pr", number: 362) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--pr", "362",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      route = JSON.parse(stdout).fetch("items").first.fetch("owner_route")
+      assert_equal "consistent", route.fetch("binding_status")
+      assert_empty route.fetch("binding_issues")
+      refute_includes route.fetch("missing_fields"), "claim/heartbeat host mismatch"
+      refute_includes JSON.parse(stdout).fetch("items").first.fetch("unknowns"), "owner route: claim/heartbeat host mismatch"
+    end
+  end
+
+  def test_owner_route_treats_unrecognized_runner_metadata_as_unavailable
+    coordination = {
+      "claims" => [{
+        "agent_id" => "worker-362",
+        "status" => "active",
+        "repo" => "shakacode/agent-workflows",
+        "target" => "362",
+        "branch" => "codex/status-362",
+        "host" => "mystery-runner",
+        "thread_handle" => "aw-362",
+        "session_id" => "claim-session"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "worker-362",
+        "target" => "shakacode/agent-workflows#362",
+        "branch" => "codex/status-362",
+        "host" => "mystery-runner",
+        "machine_id" => "kona",
+        "thread_handle" => "aw-362",
+        "session_id" => "claim-session",
+        "session_source" => "unknown_source",
+        "status" => "in_progress"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "pr", number: 362) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--pr", "362",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      route = JSON.parse(stdout).fetch("items").first.fetch("owner_route")
+      assert_equal "unavailable", route.fetch("binding_status")
+      assert_includes route.fetch("missing_fields"), "runner"
+      refute_includes route.fetch("binding_issues"), "runner metadata conflict"
+      refute_includes JSON.parse(stdout).fetch("items").first.fetch("unknowns"), "owner route: runner metadata conflict"
+    end
+  end
+
+  def test_malformed_claim_target_is_missing_not_inconsistent
+    coordination = {
+      "claims" => [{
+        "agent_id" => "worker-362",
+        "status" => "active",
+        "repo" => "shakacode/agent-workflows",
+        "target" => "not-a-target",
+        "branch" => "codex/status-362",
+        "host" => "codex",
+        "thread_handle" => "aw-362",
+        "session_id" => "claim-session"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "worker-362",
+        "target" => "shakacode/agent-workflows#362",
+        "branch" => "codex/status-362",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "thread_handle" => "aw-362",
+        "session_id" => "claim-session",
+        "session_source" => "codex_thread_id",
+        "status" => "in_progress"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "pr", number: 362) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--pr", "362",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      route = JSON.parse(stdout).fetch("items").first.fetch("owner_route")
+      assert_equal "unavailable", route.fetch("binding_status")
+      assert_includes route.fetch("missing_fields"), "claim target"
+      refute_includes route.fetch("binding_issues"), "claim work item mismatch"
+      refute_includes JSON.parse(stdout).fetch("items").first.fetch("unknowns"), "owner route: claim work item mismatch"
     end
   end
 
@@ -642,7 +819,8 @@ class BatchStatusTest < Minitest::Test
       assert_equal "UNKNOWN", row.fetch("holder")
       assert_equal "UNKNOWN", row.fetch("editor")
       assert_equal "UNKNOWN", row.fetch("codex_deep_link")
-      assert_includes row.fetch("unknowns"), "coordination holder: no active claim"
+      assert_equal "n/a", row.fetch("owner_route").fetch("binding_status")
+      assert_empty row.fetch("unknowns")
     end
   end
 
@@ -712,7 +890,7 @@ class BatchStatusTest < Minitest::Test
 
   private
 
-  def with_fake_commands(coordination:, github_kind:, number:)
+  def with_fake_commands(coordination:, github_kind:, number:, github_html_url: :default)
     Dir.mktmpdir("batch-status-test") do |dir|
       write_executable(File.join(dir, "agent-coord"), <<~RUBY)
         #!#{RbConfig.ruby}
@@ -724,7 +902,15 @@ class BatchStatusTest < Minitest::Test
         #!#{RbConfig.ruby}
         require "json"
         abort "unexpected argv: \#{ARGV.inspect}" unless ARGV == ["api", "repos/shakacode/agent-workflows/issues/#{number}"]
-        payload = { "state" => "open", "html_url" => "https://github.com/shakacode/agent-workflows/#{github_kind == 'pr' ? 'pull' : 'issues'}/#{number}" }
+        payload = { "state" => "open" }
+        case #{github_html_url.inspect}
+        when :default
+          payload["html_url"] = "https://github.com/shakacode/agent-workflows/#{github_kind == 'pr' ? 'pull' : 'issues'}/#{number}"
+        when nil
+          # Omit html_url.
+        else
+          payload["html_url"] = #{github_html_url.inspect}
+        end
         payload["pull_request"] = {} if #{github_kind.dump} == "pr"
         puts JSON.generate(payload)
       RUBY
