@@ -424,29 +424,31 @@ test_status_and_installer_agree_on_doctor_marker_states() {
 }
 
 test_installed_status_does_not_execute_a_modified_doctor_module() {
-  local tmp source target sentinel output status module_path
+  local tmp source module_name target sentinel output status module_path
   tmp="$(mktemp -d)"
   source="$tmp/source"
-  target="$tmp/codex-home"
-  sentinel="$tmp/executed"
-  module_path="$target/bin/agent_doctor/install_ownership.rb"
   mkdir -p "$source"
   new_source_repo "$source"
 
-  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  # The helper loads both of these while auditing the doctor tree, so a
+  # syntactically valid edit to either must be reported rather than run by the
+  # check that is meant to reject it.
+  for module_name in install_ownership.rb timeout_budget.rb; do
+    target="$tmp/codex-home-$module_name"
+    sentinel="$tmp/executed-$module_name"
+    module_path="$target/bin/agent_doctor/$module_name"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-$module_name.out"
+    printf '\nFile.write(%s, "executed\\n")\n' "\"$sentinel\"" >> "$module_path"
 
-  # The helper verifies the doctor tree using this module, so a syntactically
-  # valid edit must be reported rather than run by the check that audits it.
-  printf '\nFile.write(%s, "executed\\n")\n' "\"$sentinel\"" >> "$module_path"
+    set +e
+    output="$("$target/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+    status=$?
+    set -e
 
-  set +e
-  output="$("$target/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
-  status=$?
-  set -e
-
-  [[ "$status" -eq 3 ]] || fail "installed status exited $status for a modified ownership module: $output"
-  assert_contains "$output" "$module_path"
-  [[ ! -e "$sentinel" ]] || fail "the integrity check executed the module it was verifying"
+    [[ "$status" -eq 3 ]] || fail "installed status exited $status for a modified $module_name: $output"
+    assert_contains "$output" "$module_path"
+    [[ ! -e "$sentinel" ]] || fail "the integrity check executed $module_name while verifying it"
+  done
 }
 
 test_stack_owned_doctor_tree_restores_a_missing_module() {

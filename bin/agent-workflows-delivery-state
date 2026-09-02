@@ -18,19 +18,48 @@ module AgentWorkflowsDeliveryState
   MANAGED_DOCTOR_STACK_MARKER = ".agent-stack-managed"
   MANAGED_DOCTOR_STACK_MARKER_LINE = "agent-stack-module-v1:agent_doctor"
   MANAGED_DOCTOR_OWNERSHIP_MODULE = "agent_doctor/install_ownership.rb"
+  MANAGED_DOCTOR_TIMEOUT_MODULE = "agent_doctor/timeout_budget.rb"
   # Top-level helpers land through `install -m 0755` whatever the source mode.
   MANAGED_HELPER_INSTALL_MODE = 0o755
 
   module_function
 
-  # timeout_budget.rb is a fingerprinted managed copy like install_ownership.rb,
-  # so requiring it at load time would raise before the inventory could report
-  # it missing or broken. The inventory names that file either way.
-  def doctor_timeout_budget
+  # timeout_budget.rb is a fingerprinted managed copy like install_ownership.rb.
+  # Requiring it at load time would raise before the inventory could report it,
+  # and requiring a modified copy would execute it, so it is verified here even
+  # though this path reaches the metadata on its own.
+  def doctor_timeout_budget(target)
+    # Unreadable metadata leaves nothing to verify against; it must not take
+    # this query, and the unrelated reporting that depends on it, down with it.
+    fingerprints = begin
+      recorded = recorded_bin_copy_fingerprints(read_metadata(target))
+      recorded.is_a?(Hash) ? recorded : {}
+    rescue JSON::ParserError, SystemCallError
+      {}
+    end
+    return nil unless safe_to_load_managed_module?(File.join(target, "bin"), fingerprints, MANAGED_DOCTOR_TIMEOUT_MODULE)
+
     require_relative "agent_doctor/timeout_budget"
     AgentDoctor::TimeoutBudget
   rescue LoadError, SyntaxError, StandardError
     nil
+  end
+
+  # Safe when the module `require_relative` would load is not the file the map
+  # records, or when it is that file and still matches its fingerprint. Compare
+  # identity rather than paths: a target reached through a symlinked ancestor,
+  # such as macOS /var, spells the same file two ways.
+  def safe_to_load_managed_module?(bin_root, fingerprints, name)
+    loaded = File.join(__dir__, name)
+    return true unless same_file?(loaded, File.join(bin_root, name))
+
+    digest = fingerprints[name]
+    # Nothing recorded for this module means there is no attestation to hold it
+    # to, the same unrecorded state the rest of this map degrades to. Refusing
+    # here instead would let unreadable metadata disable unrelated reporting.
+    return true if digest.nil?
+
+    digest.is_a?(String) && managed_path_fingerprint(loaded) == digest.downcase
   end
 
   def normalized_plugin_source(value)
@@ -167,7 +196,7 @@ module AgentWorkflowsDeliveryState
 
   def codex_marketplace_output(target, marketplace)
     executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
-    budget = doctor_timeout_budget
+    budget = doctor_timeout_budget(target)
     return [nil, "agent doctor timeout budget is unavailable"] unless budget
 
     default_timeout = budget::DELIVERY_STATE_HELPER_DEFAULT.to_s
@@ -769,15 +798,7 @@ module AgentWorkflowsDeliveryState
   # verification runs. Auditing from outside the installed tree is the only
   # thing that would close it.
   def doctor_install_ownership(bin_root, fingerprints)
-    loaded = File.join(__dir__, MANAGED_DOCTOR_OWNERSHIP_MODULE)
-    # Guard only when the module `require_relative` would load is the same file
-    # the map records, which is the case when this script is the installed copy.
-    # Compare identity rather than paths: a target reached through a symlinked
-    # ancestor, such as macOS /var, spells the same file two ways.
-    if same_file?(loaded, File.join(bin_root, MANAGED_DOCTOR_OWNERSHIP_MODULE))
-      digest = fingerprints[MANAGED_DOCTOR_OWNERSHIP_MODULE]
-      return nil unless digest.is_a?(String) && managed_path_fingerprint(loaded) == digest.downcase
-    end
+    return nil unless safe_to_load_managed_module?(bin_root, fingerprints, MANAGED_DOCTOR_OWNERSHIP_MODULE)
 
     require_relative "agent_doctor/install_ownership"
     AgentDoctor::InstallOwnership
