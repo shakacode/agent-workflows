@@ -130,6 +130,14 @@ HUMAN_STATUS_OWNED_PREREQUISITE_EVIDENCE_RULE = "For an owned target, `What chan
                                                  "before the final merge question."
 HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE = "At closeout/archive completion, place the three labeled parts before, not " \
                                       "instead of, the existing mandatory closeout handoff."
+HUMAN_STATUS_OWNER_ROUTE_RULE = "When an actionable user-facing blocker depends on another task or runner, " \
+                                "include `Owner route:` inside `What changed:`."
+HUMAN_STATUS_OWNER_ROUTE_UNAVAILABLE_RULE = "Missing or unreachable evidence renders exactly " \
+                                            "`Owner route: unavailable`, and the coordinator owns bounded follow-up."
+HUMAN_STATUS_OWNER_ROUTE_INCONSISTENT_RULE = "Contradictory, stale, or cross-repository evidence must fail closed " \
+                                             "as `Owner route: inconsistent`"
+HUMAN_STATUS_OWNER_ROUTE_COALESCING_RULE = "Coalesce unchanged blocker messages using a material fingerprint of " \
+                                           "blocker state and rendered owner-route fields."
 READY_PREREQUISITE_ASK_GATE_RULE = "If a prerequisite PR is otherwise ready and only its human review and merge " \
                                    "decision remains under `merge_authority: ask`, report `blocked-user-input` " \
                                    "without consuming external-blocker retries or starting monitoring."
@@ -150,6 +158,10 @@ HUMAN_STATUS_REQUIRED_PHRASES = [
   HUMAN_STATUS_EXTERNAL_PREREQUISITE_RULE,
   HUMAN_STATUS_OWNED_PREREQUISITE_EVIDENCE_RULE,
   HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE,
+  HUMAN_STATUS_OWNER_ROUTE_RULE,
+  HUMAN_STATUS_OWNER_ROUTE_UNAVAILABLE_RULE,
+  HUMAN_STATUS_OWNER_ROUTE_INCONSISTENT_RULE,
+  HUMAN_STATUS_OWNER_ROUTE_COALESCING_RULE,
   "required handoff evidence and exact `Conversation status:` line",
   "security, ownership, retry, scope, continuous integration (CI), review, or merge gates"
 ].freeze

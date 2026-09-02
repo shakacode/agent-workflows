@@ -3,6 +3,7 @@
 
 require "minitest/autorun"
 require "json"
+require "digest"
 
 class UserFacingCoordinationContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
@@ -16,6 +17,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   PAUSE = "skills/pause/SKILL.md"
   POST_MERGE_AUDIT = "skills/post-merge-audit/SKILL.md"
   PR_MONITORING = "skills/pr-monitoring/SKILL.md"
+  BATCH_STATUS = "skills/batch-status/SKILL.md"
   PR_WALKTHROUGH = "skills/pr-walkthrough/SKILL.md"
   SPEC = "skills/spec/SKILL.md"
   PLAN_ISSUE_TRIAGE = "skills/plan-issue-triage/SKILL.md"
@@ -23,6 +25,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   README = "README.md"
   SKILL_GUIDE = "docs/skills.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
+  OWNER_ROUTE_REPLAY = "skills/pr-batch/fixtures/owner-route-pr383-replay.json"
   GMCC_V5 = "GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|" \
             "threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
             "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
@@ -210,6 +213,108 @@ class UserFacingCoordinationContractTest < Minitest::Test
       assert_includes text, "do not create or retain a heartbeat or monitor", path
       assert_includes text, "one exact question", path
       assert_includes text, "manual resume instructions", path
+    end
+  end
+
+  def test_cross_task_blockers_have_a_validated_owner_route
+    [DOC, WORKFLOW].each do |path|
+      text = normalized(path)
+      assert_includes text, "Owner route:", path
+      assert_includes text, "work item", path
+      assert_includes text, "runner", path
+      assert_includes text, "thread handle", path
+      assert_includes text, "task, thread, or session identifier", path
+      assert_includes text, "branch and exact head", path
+      assert_includes text, "Owner route: unavailable", path
+      assert_includes text, "Owner route: inconsistent", path
+      assert_includes text, "no Codex sidebar task", path
+      assert_includes text, "coordinator owns bounded follow-up", path
+    end
+
+    batch_status = normalized(BATCH_STATUS)
+    assert_includes batch_status, "Owner route", BATCH_STATUS
+    assert_includes batch_status, "collector's existing coordination fields", BATCH_STATUS
+    assert_includes batch_status, "task or workspace lookup", BATCH_STATUS
+    assert_includes batch_status, "do not print raw PID, process-group ID (PGID), lease, or queue-position", BATCH_STATUS
+  end
+
+  def test_owner_route_consistency_fails_closed_without_weakening_gates
+    [DOC, WORKFLOW].each do |path|
+      text = normalized(path)
+      assert_includes text, "claim and heartbeat", path
+      assert_includes text, "repository, work item, workspace, branch, and session", path
+      assert_includes text, "fail closed", path
+      assert_includes text, "validator isolation", path
+      assert_includes text, "exact-head", path
+      assert_includes text, "merge gates", path
+    end
+  end
+
+  def test_pr383_owner_route_replay_is_actionable_and_coalesced
+    replay = JSON.parse(File.read(File.join(ROOT, OWNER_ROUTE_REPLAY), encoding: "UTF-8"))
+    assert_equal "owner-route-replay-v1", replay.fetch("schema_version")
+    assert_equal 383, replay.dig("source", "pull_request")
+
+    observations = replay.fetch("observations")
+    assert_operator observations.length, :>, 1
+    previous_fingerprint = nil
+    replayed_emissions = observations.map do |observation|
+      changed = observation.fetch("material_fingerprint") != previous_fingerprint
+      previous_fingerprint = observation.fetch("material_fingerprint")
+      changed
+    end
+    assert_equal observations.map { |observation| observation.fetch("emit_user_message") }, replayed_emissions
+    assert_equal 1, replayed_emissions.count(true)
+    assert_equal 1, replay.fetch("expected_user_messages").length
+    assert_equal 1, observations.map { |observation| observation.fetch("material_fingerprint") }.uniq.length
+    assert_operator observations.map { |observation| observation.dig("durable_diagnostics", "pid") }.uniq.length, :>, 1
+
+    message = replay.fetch("expected_user_messages").first
+    [
+      "What changed:",
+      "Action needed: none.",
+      "Next:",
+      "Owner route:",
+      "https://github.com/shakacode/agent-workflows/pull/383",
+      "Conductor/Claude",
+      "workspace `la-paz`",
+      "aw-pr383-harbor",
+      "session `claude-session-pr383`",
+      "no Codex sidebar task",
+      "cross-app deep link is unavailable",
+      "codex/ruby-packaging-design",
+      "e2ab23a74875d18d9d6589131244009a6ed4a005"
+    ].each { |value| assert_includes message, value }
+    refute_match(/\bPID\b|\bPGID\b|\blease\b|queue position/i, message)
+
+    observations.each do |observation|
+      claim = observation.fetch("claim")
+      heartbeat = observation.fetch("heartbeat")
+      host_task = observation.fetch("host_task")
+      fingerprint_source = [
+        "#{claim.fetch('repo')}##{claim.fetch('target')}",
+        observation.fetch("blocker_state"),
+        heartbeat.fetch("host"),
+        heartbeat.fetch("workspace"),
+        heartbeat.fetch("thread_handle"),
+        heartbeat.fetch("session_id"),
+        heartbeat.fetch("branch"),
+        host_task.fetch("head")
+      ].join("|")
+      assert_equal "sha256:#{Digest::SHA256.hexdigest(fingerprint_source)}",
+                   observation.fetch("material_fingerprint")
+      assert_equal claim.fetch("agent_id"), heartbeat.fetch("agent_id")
+      assert_equal "#{claim.fetch('repo')}##{claim.fetch('target')}", heartbeat.fetch("target")
+      %w[branch host thread_handle session_id].each do |field|
+        assert_equal claim.fetch(field), heartbeat.fetch(field), "PR #383 #{field} binding drifted"
+      end
+      assert_equal claim.fetch("repo"), host_task.fetch("repository")
+      assert_equal claim.fetch("target"), host_task.fetch("work_item")
+      assert_equal heartbeat.fetch("workspace"), host_task.fetch("workspace")
+      assert_equal claim.fetch("branch"), host_task.fetch("branch")
+      assert_equal claim.fetch("session_id"), host_task.fetch("session_id")
+      assert_includes message, host_task.fetch("url")
+      assert_includes message, host_task.fetch("head")
     end
   end
 
