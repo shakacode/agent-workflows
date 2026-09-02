@@ -67,6 +67,15 @@ class PrWalkthroughContractTest < Minitest::Test
         position
       end
       positions.each_cons(2) { |before, after| assert_operator before, :<, after, path }
+
+      # The final-ask sentence itself must gate on current-integration
+      # readiness, not just ordinary readiness — a substring match alone
+      # would keep passing even if that condition were silently dropped.
+      assert_match(
+        /Ask one final merge decision only when the refreshed diff[^;]*ordinary readiness and current-integration readiness[^;]*clean[^;]*;/,
+        text,
+        "#{path}: final-ask sentence must require current-integration readiness, not just ordinary readiness"
+      )
     end
   end
 

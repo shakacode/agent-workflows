@@ -284,7 +284,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     normalized_walkthrough = @pr_walkthrough.gsub(/\s+/, " ")
     prompt_gate = "- ask:I=head>=base+CI=READY;I?$pr-walkthrough(large|complex=full):wait;" \
                   "refresh;chg=>redo/stop;ordinary|I fail=>stop;ask iff same clean"
-    ancestry_command = 'git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
+    ancestry_command = 'git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
 
     positions = [
       "Before entering this gate",
@@ -346,7 +346,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
   def test_ask_gate_sha_names_are_unified_with_earlier_resolved_facts
     ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
     normalized_gate = ask_gate.gsub(/\s+/, " ")
-    ancestry_command = 'git merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
+    ancestry_command = 'git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
 
     assert_includes ask_gate, ancestry_command
     assert_includes normalized_gate, "Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh"
@@ -369,15 +369,21 @@ class IntegrationCloseoutContractTest < Minitest::Test
                     "a scope can report `state: READY` while the top-level `verdict` is `NOT_READY` or `UNKNOWN`"
 
     assert_includes normalized_gate, "PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY."
-    assert_includes normalized_gate, "Trust ancestry's exit `1` only on a full, non-shallow checkout"
+    assert_includes normalized_gate,
+                    "Trust ancestry's exit `1` only when `git rev-parse --is-shallow-repository` reports `false`"
     assert_includes normalized_gate,
                     "any other nonzero exit is `UNKNOWN` per the missing-facts rule above, regardless of CI"
     assert_includes normalized_gate, "Emit a banner only on failure: proven-behind ancestry"
     assert_includes normalized_gate, "leads with **PR IS BEHIND THE CURRENT BASE"
     assert_includes normalized_gate, "adding **AND CI FAILED** if CI `verdict` also fails"
-    assert_includes normalized_gate, "clean ancestry with CI `verdict` not `READY` leads with"
+    assert_includes normalized_gate,
+                    "routes to [Integration And PR Publication](#integration-and-pr-publication) step 3"
+    assert_includes normalized_gate,
+                    "a proven-behind head does not clear through `waiting-on-checks-or-review` polling"
+    assert_includes normalized_gate, "Clean ancestry with CI `verdict` not `READY` leads with"
     assert_includes normalized_gate, "CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT MERGE-READY."
     assert_includes normalized_gate, "No banner when both pass."
+    assert_includes ask_gate, 'git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}"'
 
     behind_base_position = normalized_gate.index("PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY.")
     ci_banner_position = normalized_gate.index("CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE")
