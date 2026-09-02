@@ -1615,6 +1615,11 @@ SUCCESSFUL STATE — NOT MERGE-READY.** No banner when both pass.
 Compact goals encode that checklist inline as `head>=base+CI=READY`; every
 other result waits without a walkthrough.
 
+If `pr-ci-readiness` evidence collection took measurable time, re-run the
+ancestry command immediately before starting the walkthrough — the base can
+advance during that gap, and only the read taken right before the
+walkthrough starts may be trusted.
+
 When `merge_authority` is `ask` and every ordinary gate is clean,
 automatically start the exact-diff PR walkthrough before asking for merge
 approval. Use `$pr-walkthrough` when available; otherwise apply its read-only

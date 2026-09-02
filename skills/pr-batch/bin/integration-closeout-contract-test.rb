@@ -384,6 +384,10 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes normalized_gate, "CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT MERGE-READY."
     assert_includes normalized_gate, "No banner when both pass."
     assert_includes ask_gate, 'git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}"'
+    assert_includes normalized_gate,
+                    "re-run the ancestry command immediately before starting the walkthrough"
+    assert_operator normalized_gate.index("re-run the ancestry command immediately before starting"), :<,
+                    normalized_gate.index("automatically start the exact-diff PR walkthrough")
 
     behind_base_position = normalized_gate.index("PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY.")
     ci_banner_position = normalized_gate.index("CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE")
