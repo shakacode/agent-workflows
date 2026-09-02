@@ -13,6 +13,7 @@ require "shellwords"
 require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
 require_relative "agent_doctor/hosted_qa_policy"
+require_relative "../skills/pr-batch/lib/trust_config_shape"
 writing_style_resolver = File.expand_path("agent-workflow-writing-style", __dir__)
 unless File.file?(writing_style_resolver)
   warn "agent-workflow-seam-doctor: missing required companion agent-workflow-writing-style; " \
@@ -333,14 +334,22 @@ module AgentWorkflowSeamDoctor
   end
 
   def validate_trust_mapping!(trust)
-    trusted_bots = Array(trust.fetch("trusted_bots", [])).map { |login| normalized_trust_bot_login(login) }
-    metadata_bots = Array(trust.fetch("trusted_metadata_bots", [])).map { |login| normalized_trust_bot_login(login) }
+    trusted_bots = TrustConfigShape.strict_string_list(
+      trust.fetch("trusted_bots", []),
+      name: "trusted_bots"
+    ).map { |login| normalized_trust_bot_login(login) }
+    metadata_bots = TrustConfigShape.strict_string_list(
+      trust.fetch("trusted_metadata_bots", []),
+      name: "trusted_metadata_bots"
+    ).map { |login| normalized_trust_bot_login(login) }
     overlap = (trusted_bots & metadata_bots).sort
     return if overlap.empty?
 
     raise InitError,
           "invalid trust config: #{TRUST_CONFIG} bot(s) listed in both trusted_bots and " \
           "trusted_metadata_bots: #{overlap.join(', ')}"
+  rescue ArgumentError => e
+    raise InitError, e.message
   end
 
   def normalized_trust_bot_login(login)

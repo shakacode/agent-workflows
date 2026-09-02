@@ -2048,6 +2048,36 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_regular_check_rejects_malformed_trust_role_values_before_normalization
+    malformed_cases = [
+      ["trusted_bots", { "deploy" => true }],
+      ["trusted_bots", 42],
+      ["trusted_metadata_bots", ["deploy", 42]],
+      ["trusted_metadata_bots", [""]]
+    ]
+
+    malformed_cases.each do |key, value|
+      with_repo("agent-workflow-seam-doctor-trust-role-shape") do |root|
+        write_valid_binstub_contract(root)
+        write_skill(root, "No commands here.\n")
+        trust = {
+          "trusted_users" => [],
+          "trusted_bots" => [],
+          "trusted_metadata_bots" => [],
+          "trusted_teams" => []
+        }
+        trust[key] = value
+        File.write(File.join(root, ".agents/trusted-github-actors.yml"), trust.to_yaml)
+
+        out, status = run_doctor(root)
+
+        refute status.success?, out
+        assert_includes out, "FAIL agent workflow seam has 1 issue(s)"
+        assert_includes out, "#{key} must be a nonempty string or an array of nonempty strings"
+      end
+    end
+  end
+
   def test_regular_check_rejects_overlapping_trust_bot_roles
     with_repo do |root|
       write_valid_binstub_contract(root)

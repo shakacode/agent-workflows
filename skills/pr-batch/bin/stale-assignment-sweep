@@ -16,6 +16,7 @@ require "tempfile"
 require "time"
 require "timeout"
 require "yaml"
+require_relative "../lib/trust_config_shape"
 
 module StaleAssignmentSweep
   # Hidden markers let the sweep recognize its own prior nudge/release comments
@@ -256,7 +257,12 @@ module StaleAssignmentSweep
       raise Error, "expected a YAML mapping at the top level" unless data.is_a?(Hash) || data.nil?
 
       data ||= {}
-      @trusted_bots = Array(data["trusted_bots"]).map { |login| normalized_bot_login(login) }
+      @trusted_bots = TrustConfigShape.strict_string_list(data["trusted_bots"], name: "trusted_bots")
+                                      .map { |login| normalized_bot_login(login) }
+      # Validate the shared metadata-bot role shape too, even though this sweep
+      # only consults `trusted_bots`; malformed trust files should fail closed at
+      # every seam that consumes the shared config.
+      TrustConfigShape.strict_string_list(data["trusted_metadata_bots"], name: "trusted_metadata_bots")
       # `trusted_users` (humans) is intentionally not read here: the sweep treats
       # humans as sweepable, so `automation_login?` only consults `trusted_bots`
       # and the `[bot]` suffix. Parsing it would be a dead field.

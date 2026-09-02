@@ -896,6 +896,27 @@ class PushDownstreamAdapterTest < Minitest::Test
     assert_match(/bot\(s\) listed in both trusted_bots and trusted_metadata_bots: github-actions/, error.message)
   end
 
+  def test_resolve_contract_rejects_malformed_bot_role_values
+    presets = {
+      "defaults" => {
+        "trust" => {
+          "trusted_bots" => ["dependabot"],
+          "trusted_metadata_bots" => ["github-actions", 42]
+        }
+      }
+    }
+    repo = {
+      repo: "rsc", base_branch: "main", preset: nil,
+      overrides: { "trust" => {} }
+    }
+
+    error = assert_raises(ArgumentError) do
+      PushDownstream.resolve_contract(repo, presets)
+    end
+
+    assert_match(/trusted_metadata_bots must be a nonempty string or an array of nonempty strings/, error.message)
+  end
+
   def test_resolve_contract_unknown_preset_raises
     error = assert_raises(RuntimeError) do
       PushDownstream.resolve_contract(

@@ -299,6 +299,16 @@ class StaleAssignmentSweepTest < Minitest::Test
     refute_includes log, "DELETE"
   end
 
+  def test_malformed_trust_config_fails_closed_with_no_mutations
+    result, log = run_cli(apply: true, trust_file: "invalid-trust.yml")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    assert_includes result.fetch(:stdout), "UNRESOLVED"
+    assert_includes result.fetch(:stdout), "fail-closed: automation set unresolved"
+    refute_includes log, "/comments"
+    refute_includes log, "DELETE"
+  end
+
   # --- Fix E: closed/merged items are skipped ---------------------------
 
   def test_item_closed_between_listing_and_apply_is_not_swept
@@ -758,6 +768,17 @@ class StaleAssignmentSweepTest < Minitest::Test
           - helper
           - servicebot
           - claude
+        trusted_users:
+          - maintainer1
+      YAML
+    )
+    File.write(
+      File.join(dir, "invalid-trust.yml"),
+      <<~YAML
+        trusted_bots:
+          - app-runner
+        trusted_metadata_bots:
+          - 42
         trusted_users:
           - maintainer1
       YAML
