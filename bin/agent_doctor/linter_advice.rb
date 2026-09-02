@@ -310,6 +310,7 @@ module AgentDoctor
       character_class = false
       escaped = false
       previous = nil
+      depth = 0
       source.each_char.with_index do |character, index|
         if quote || regex
           quote, regex, character_class, escaped = javascript_literal_state(
@@ -322,8 +323,13 @@ module AgentDoctor
         elsif character == "/" && javascript_regex_start?(previous)
           regex = true
         elsif character == "{"
-          body, = javascript_object_body(source, index)
-          bodies << body if body
+          if depth.zero?
+            body, = javascript_object_body(source, index)
+            bodies << body if body
+          end
+          depth += 1
+        elsif character == "}"
+          depth -= 1 if depth.positive?
         end
         previous = character unless character.match?(/\s/) || quote || regex
       end
@@ -332,8 +338,43 @@ module AgentDoctor
 
     def javascript_scope(config_body)
       expression = eslint_rule_expression(config_body, "files")
-      match = expression&.match(/\A(\[[^\]]*\])/m)
-      match && match[1].gsub(/\s+/, " ")
+      opening_index = expression&.index(/\S/)
+      return unless opening_index && expression[opening_index] == "["
+
+      ending_index = javascript_array_end(expression, opening_index)
+      ending_index && expression[opening_index..ending_index].gsub(/\s+/, " ")
+    end
+
+    def javascript_array_end(source, opening_index)
+      depth = 0
+      quote = nil
+      regex = false
+      character_class = false
+      escaped = false
+      previous = nil
+      source.each_char.with_index do |character, index|
+        next if index < opening_index
+
+        if quote || regex
+          quote, regex, character_class, escaped = javascript_literal_state(
+            character, quote, regex, character_class, escaped
+          )
+          next
+        end
+
+        if ["\"", "'", "`"].include?(character)
+          quote = character
+        elsif character == "/" && javascript_regex_start?(previous)
+          regex = true
+        elsif character == "["
+          depth += 1
+        elsif character == "]"
+          depth -= 1
+          return index if depth.zero?
+        end
+        previous = character unless character.match?(/\s/) || quote || regex
+      end
+      nil
     end
 
     def strip_javascript_comments(source)

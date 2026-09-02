@@ -2229,6 +2229,7 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
       File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
         const unused = { rules: { complexity: ["error", 3] } };
         export default [{
+          settings: { tool: { rules: { complexity: ["error", 2] } } },
           rules: {
             // "max-lines": ["error", 100],
             "plugin/message": ["error", "\\\"complexity\\\": [\\\"error\\\", 2]"],
@@ -2382,7 +2383,7 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
       File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
         export default [
           { rules: { complexity: ["error", 10] } },
-          { files: ["test/**"], rules: { complexity: "off" } }
+          { files: ["**/*.[jt]s"], rules: { complexity: "off" } }
         ];
       JAVASCRIPT
 
@@ -2391,7 +2392,7 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
       assert_includes eslint.fetch("enforced"), { "rule" => "complexity", "value" => 10 }
       disabled = eslint.fetch("recommendations").find { |item| item["rule"] == "complexity" }
       assert_equal "disabled", disabled.fetch("state")
-      assert_equal '["test/**"]', disabled.fetch("scope")
+      assert_equal '["**/*.[jt]s"]', disabled.fetch("scope")
     end
 
     with_repo do |root|
