@@ -12,7 +12,7 @@ RESERVED_HEADER_LIKE =
   /^[ \t]*(?:Prompt[ \t._-]+(?:host|mode)|Preferred[ \t._-]+route|Route[ \t._-]+requirement)(?:[ \t]*(?::+|=)|[ \t]+[^\r\n]+)/i
 CANONICAL_HEADER = /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): [^\r\n]*\r?\n?\z/
 BATCH_TARGET_LIKE =
-  /^[ \t]*Batch[ \t._-]+size[ \t._-]+target(?:[ \t]*(?::|=)|[ \t]+(?=(?:codex|claude|generic)\b))/i
+  /^[ \t]*Batch[ \t._-]+size[ \t._-]+target\b/i
 SUPPORTED_HOSTS = %w[codex claude].freeze
 SUPPORTED_PROMPT_HOSTS = (SUPPORTED_HOSTS + ["portable"]).freeze
 SUPPORTED_MODES = %w[goal direct batch].freeze
@@ -28,7 +28,7 @@ PROTECTED_LABELS = %w[
 ].freeze
 PROTECTED_PREFIXES = ["Work item:", "Safety gates:", "Merge authority:"].freeze
 CLAUDE_RUNTIME_MECHANICS = [
-  %r{(?<![[:alnum:]_/$])/(?:code-review|loop)\b},
+  %r{(?<![[:alnum:]_/$])/(?:code-review|loop|resume)\b},
   %r{(?<![[:alnum:]_/$])/pr-review-toolkit:review-pr\b},
   /\bClaude (?:Agent|Workflow)\b/,
   /(?:\b(?:Agent|Workflow)\b|`(?:Agent|Workflow)`|(?:\*\*|\*|__|_)(?:Agent|Workflow)(?:\*\*|\*|__|_))\s+(?:tool|subagents?|workers?)\b/,

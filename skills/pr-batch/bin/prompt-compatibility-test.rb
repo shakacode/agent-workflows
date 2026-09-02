@@ -237,17 +237,21 @@ class PromptCompatibilityTest < Minitest::Test
       fixture("codex-to-claude.txt")
         .sub("Batch size target: codex;wave: 1/1", "Batch size target = codex;wave: 1/1"),
       fixture("codex-to-claude.txt")
-        .sub("Batch size target: codex;wave: 1/1", "Batch size target codex;wave: 1/1")
+        .sub("Batch size target: codex;wave: 1/1", "Batch size target codex;wave: 1/1"),
+      fixture("codex-to-claude.txt")
+        .sub("Batch size target: codex;wave: 1/1", "Batch size target banana;wave: 99/99")
     ]
 
     prompts.each do |prompt|
-      result, stderr, status, stdout = run_helper(prompt + marker, active_host: "claude")
+      %w[claude codex].each do |active_host|
+        result, stderr, status, stdout = run_helper(prompt + marker, active_host:)
 
-      refute status.success?
-      assert_empty stderr
-      assert_equal "invalid-batch-size-target", result.fetch("error")
-      refute result.key?("decision")
-      refute_includes stdout, marker
+        refute status.success?
+        assert_empty stderr
+        assert_equal "invalid-batch-size-target", result.fetch("error")
+        refute result.key?("decision")
+        refute_includes stdout, marker
+      end
     end
   end
 
@@ -255,7 +259,8 @@ class PromptCompatibilityTest < Minitest::Test
     prompts = [
       ["#{fixture('legacy-goal.txt')}Batch size target: claude;wave: 1/1\n", "contradictory-batch-size-target"],
       ["#{fixture('legacy-goal.txt')}Batch size target = codex;wave: 1/1\n", "invalid-batch-size-target"],
-      ["#{fixture('legacy-goal.txt')}Batch size target codex;wave: 1/1\n", "invalid-batch-size-target"]
+      ["#{fixture('legacy-goal.txt')}Batch size target codex;wave: 1/1\n", "invalid-batch-size-target"],
+      ["#{fixture('legacy-goal.txt')}Batch size target banana;wave: 99/99\n", "invalid-batch-size-target"]
     ]
 
     prompts.each do |prompt, expected_error|
@@ -356,6 +361,7 @@ class PromptCompatibilityTest < Minitest::Test
       ["#{fixture('codex-to-claude.txt')}Use $address-review after QA.\n", "claude"],
       ["#{fixture('codex-to-claude.txt')}Use $scw:pr-batch for this route.\n", "claude"],
       ["#{fixture('claude-to-codex.txt')}Use Claude Agent with isolation: 'worktree'.\n", "codex"],
+      ["#{fixture('claude-to-codex.txt')}Use /resume to continue the named session.\n", "codex"],
       [markdown_agent_prompt, "codex"],
       ["#{fixture('claude-to-codex.txt')}Dispatch each lane with the Agent tool.\n", "codex"],
       ["#{fixture('claude-to-codex.txt')}Dispatch each lane with the `Agent` tool.\n", "codex"],
