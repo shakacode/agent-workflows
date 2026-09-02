@@ -2380,6 +2380,26 @@ class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
     end
   end
 
+  def test_unsupported_javascript_numeric_literals_are_invalid_not_truncated
+    with_repo do |root|
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        export default [{ rules: {
+          "max-statements": ["error", 1e2],
+          "max-lines-per-function": ["error", { max: 0x100 }]
+        } }];
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      refute(eslint.fetch("enforced").any? do |item|
+        %w[max-statements max-lines-per-function].include?(item["rule"])
+      end)
+      states = eslint.fetch("recommendations").to_h { |item| [item.fetch("rule"), item.fetch("state")] }
+      assert_equal "invalid", states.fetch("max-statements")
+      assert_equal "invalid", states.fetch("max-lines-per-function")
+    end
+  end
+
   def test_eslint_preserves_global_and_scoped_override_results
     with_repo do |root|
       File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)

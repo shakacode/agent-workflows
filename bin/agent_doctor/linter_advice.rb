@@ -592,9 +592,12 @@ module AgentDoctor
       return [:missing, nil] unless remainder.start_with?(",")
 
       option = remainder[1..].lstrip
-      numeric = option.match(/\A\d+/)
-      return [:enforced, numeric[0].to_i] if numeric
       return [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)] if option.start_with?("]")
+
+      if option.match?(/\A[\d+.-]/)
+        numeric = javascript_decimal_integer(option)
+        return numeric ? [:enforced, numeric] : [:invalid, nil]
+      end
       return [:missing, nil] unless option.start_with?("{")
 
       options, = javascript_object_body(option, 0)
@@ -603,8 +606,13 @@ module AgentDoctor
       configured = eslint_rule_expression(options, "max") || eslint_rule_expression(options, "maximum")
       return [:enforced, ESLINT_RUNTIME_DEFAULTS.fetch(rule)] unless configured
 
-      value = configured.match(/\A\s*(\d+)/)
-      value ? [:enforced, value[1].to_i] : [:invalid, nil]
+      value = javascript_decimal_integer(configured)
+      value ? [:enforced, value] : [:invalid, nil]
+    end
+
+    def javascript_decimal_integer(source)
+      match = source.match(/\A\s*(\d+)\s*(?=[,\]}]|\z)/)
+      match && match[1].to_i
     end
 
     def eslint_setting(value, rule)
