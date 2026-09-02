@@ -100,8 +100,9 @@ jobs:
               >/dev/null
           }
           gate_unavailable() {
-            post_status failure "Advisory: configured-review gate unavailable on the trusted base"
+            # Annotate before posting, so the reason survives a failed status POST.
             echo "::error::${gate_bin} is $1 in the trusted base checkout (${REVIEW_GATE_BASE_SHA}); the gate never evaluated pull request ${REVIEW_GATE_PR}."
+            post_status failure "Advisory: configured-review gate unavailable on the trusted base"
             exit 1
           }
 

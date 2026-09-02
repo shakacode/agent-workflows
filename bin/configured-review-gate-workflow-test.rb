@@ -49,6 +49,14 @@ class ConfiguredReviewGateWorkflowTest < Minitest::Test
     refute_includes run.fetch(:stdout), UNSETTLED_DESCRIPTION
   end
 
+  def test_the_unavailable_annotation_survives_a_failed_status_post
+    run = execute_gate_step(helper: :missing, gh_exit_status: 1)
+
+    refute_equal 0, run.fetch(:exit_status)
+    assert_includes run.fetch(:stdout), "::error::"
+    assert_match(/missing/i, error_annotation(run))
+  end
+
   def test_a_helper_path_that_is_not_a_regular_file_reports_an_unavailable_gate
     run = execute_gate_step(helper: :directory)
 
@@ -113,7 +121,7 @@ class ConfiguredReviewGateWorkflowTest < Minitest::Test
 
   # Run the workflow step's real shell body against a stubbed `gh` and a
   # controllable helper so both branches are observed, not merely asserted about.
-  def execute_gate_step(helper:, helper_exit_status: 0)
+  def execute_gate_step(helper:, helper_exit_status: 0, gh_exit_status: 0)
     Dir.mktmpdir("configured-review-gate-workflow") do |sandbox|
       workspace = File.join(sandbox, "workspace")
       stub_bin = File.join(sandbox, "stub-bin")
@@ -128,6 +136,7 @@ class ConfiguredReviewGateWorkflowTest < Minitest::Test
         #!/usr/bin/env bash
         for argument in "$@"; do printf '%s\\n' "$argument"; done >> "$GATE_STATUS_LOG"
         printf '%s\\n' "--" >> "$GATE_STATUS_LOG"
+        exit #{gh_exit_status}
       STUB
       install_helper(File.join(workspace, GATE_RELATIVE_PATH), helper, helper_exit_status, helper_invocation_path)
 
