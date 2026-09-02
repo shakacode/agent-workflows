@@ -493,7 +493,10 @@ verifies that tree as a whole and refuses an install it can no longer match,
 so the file cannot be restored in place. A tree that is entirely absent or
 empty short-circuits that marker check and is reinstalled normally, so it
 stays non-blocking. Installs that predate the key keep their previous behavior
-until the next install refreshes the metadata. This delivery-state map is
+until the next install refreshes the metadata. A helper a newer revision of the
+pack introduces has no recorded fingerprint yet, so the installer refuses to
+overwrite a pre-existing file at that path unless it already matches the pack,
+the way it treats a pack document. This delivery-state map is
 separate from the `verified-installed-pack` runtime digest an autonomous merge
 gate verifies; that digest is an expected-identity claim, not an
 install-integrity report. The status and upgrade helpers use the metadata so they can run
