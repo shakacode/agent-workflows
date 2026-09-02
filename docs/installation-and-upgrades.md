@@ -474,10 +474,14 @@ content, so removing the executable bit from an installed command is reported
 too. Because `rsync --delete` owns the whole `<target>/bin/agent_doctor` tree,
 an unrecorded entry there is reported as well, matching the refusal the
 installer's ownership marker already raises; the two ownership markers
-themselves are never recorded and never block. A managed bin path that is
-missing stays non-blocking so the installer can restore it, and installs that
-predate the key keep their previous behavior until the next install refreshes
-the metadata. This delivery-state map is separate from the
+themselves are never recorded and never block. A missing top-level helper stays
+non-blocking because the installer simply rewrites it, but a missing module
+inside a partly populated `<target>/bin/agent_doctor` is reported: the
+installer's ownership marker verifies that tree as a whole and refuses an
+install it can no longer match, so the file cannot be restored in place. A tree
+that is entirely absent or empty short-circuits that marker check and is
+reinstalled normally, so it stays non-blocking. Installs that predate the key
+keep their previous behavior until the next install refreshes the metadata. This delivery-state map is separate from the
 `verified-installed-pack` runtime digest an autonomous merge gate verifies; that
 digest is an expected-identity claim, not an install-integrity report. The status and upgrade helpers use the metadata so they can run
 from either the source clone or the installed host.

@@ -665,6 +665,27 @@ module AgentWorkflowsDeliveryState
     false
   end
 
+  # The installer's ownership marker only tolerates a doctor tree it can verify
+  # whole. A completely empty or absent tree short-circuits that check and rsync
+  # restores it, but a partially populated one is refused, so a missing module
+  # there is not the restorable case that a missing top-level helper is.
+  def unrestorable_managed_doctor_paths(bin_root, missing, source)
+    # A recorded module the current source no longer ships is on its way out
+    # anyway: rsync --delete would remove it, so there is nothing to restore.
+    # This also keeps the installer's own post-rsync verification passing on an
+    # upgrade that drops a module, where the metadata is deliberately stale.
+    names = missing.select do |name|
+      name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/") && File.file?(File.join(source, "bin", name))
+    end
+    return [] if names.empty?
+
+    doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
+    return [] unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+    return [] if Dir.empty?(doctor_root)
+
+    names.map { |name| File.join(bin_root, name) }
+  end
+
   # rsync --delete owns the whole managed doctor tree, and the installer's
   # ownership marker already refuses to reinstall over an unrecorded entry
   # there. Report that conflict here so status sees it before the install does.
@@ -712,7 +733,8 @@ module AgentWorkflowsDeliveryState
     if (conflict = managed_bin_directory_conflict(bin_root))
       return {
         "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [bin_root],
-        "reason" => "managed bin root is #{conflict}"
+        "reason" => "managed bin root is #{conflict}: #{bin_root}",
+        "guidance" => "The listed path was preserved. Restore the managed bin directory or move it aside, then rerun."
       }
     end
 
@@ -734,7 +756,9 @@ module AgentWorkflowsDeliveryState
       present << path
       blocking << path unless managed_bin_copy_owned?(path:, source:, name:, digest:)
     end
-    blocking.concat(unexpected_managed_doctor_entries(bin_root, fingerprints))
+    unowned = (blocking + unexpected_managed_doctor_entries(bin_root, fingerprints)).uniq.sort
+    unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort
+    blocking = (unowned + unrestorable).uniq.sort
 
     state = if blocking.any?
               "ambiguous"
@@ -743,7 +767,24 @@ module AgentWorkflowsDeliveryState
             else
               "present"
             end
-    { "state" => state, "paths" => present.sort, "missing" => missing.sort, "blocking" => blocking.uniq.sort }
+    payload = { "state" => state, "paths" => present.sort, "missing" => missing.sort, "blocking" => blocking }
+    return payload if blocking.empty?
+
+    clauses = []
+    clauses << "refusing to replace modified, ambiguous, or unowned managed bin paths: #{unowned.join(', ')}" if unowned.any?
+    if unrestorable.any?
+      clauses << "the installer cannot restore missing managed doctor modules in place: #{unrestorable.join(', ')}"
+    end
+    payload["reason"] = clauses.join("; ")
+    payload["guidance"] = if unrestorable.any?
+                            "Restore the listed files from their recorded pack revision, or move " \
+                            "#{File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)} aside so the installer " \
+                            "reinstalls the tree, then rerun."
+                          else
+                            "The listed paths were preserved. Restore them to their recorded pack revision " \
+                            "or move/remove them manually, then rerun."
+                          end
+    payload
   end
 
   def recorded_skill_copy_fingerprint_matches?(path, metadata, skill_name)
@@ -927,10 +968,8 @@ module AgentWorkflowsDeliveryState
         flat["reason"]
       elsif flat["blocking"].any?
         "refusing to remove modified, ambiguous, or unowned skill paths: #{flat['blocking'].join(', ')}"
-      elsif bin["state"] == "unknown"
+      elsif bin["state"] == "unknown" || bin["blocking"].any?
         bin["reason"]
-      elsif bin["blocking"].any?
-        "refusing to replace modified, ambiguous, or unowned managed bin paths: #{bin['blocking'].join(', ')}"
       elsif native["state"] == "unknown"
         native["reason"]
       elsif delivery_mode == "flat"
@@ -939,8 +978,10 @@ module AgentWorkflowsDeliveryState
         "plugin-companion mode requires an enabled native scw plugin"
       end
     guidance =
-      if flat["blocking"].any? || bin["blocking"].any?
+      if flat["blocking"].any?
         "The listed paths were preserved. Restore them to their recorded pack revision or move/remove them manually, then rerun."
+      elsif bin["blocking"].any?
+        bin["guidance"]
       elsif bin["state"] == "unknown"
         "Repair the recorded managed bin fingerprints in the install metadata, or reinstall the pack, then rerun."
       elsif native["legacy"]

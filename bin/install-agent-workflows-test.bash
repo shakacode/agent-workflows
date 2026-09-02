@@ -340,6 +340,58 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
 }
 
 
+test_copy_install_reports_a_missing_managed_doctor_module() {
+  local tmp source target output status module_path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  module_path="$target/bin/agent_doctor/renderer.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  rm -f "$module_path"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for a missing doctor module: $output"
+  assert_contains "$output" "cannot restore missing managed doctor modules"
+  assert_contains "$output" "$module_path"
+
+  # The installer cannot repair this in place, and the reported guidance names
+  # the only remedy that works.
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install silently accepted a missing doctor module"
+  [[ ! -e "$module_path" ]] || fail "refused install restored the doctor module"
+
+  mv "$target/bin/agent_doctor" "$tmp/agent_doctor.aside"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  assert_file "$module_path"
+}
+
+test_copy_install_restores_a_fully_removed_doctor_tree() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  rm -rf "$target/bin/agent_doctor"
+
+  # An absent tree short-circuits the ownership marker check, so this stays a
+  # clean reinstall and status must not have blocked it.
+  "$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" >"$tmp/status.out"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  assert_file "$target/bin/agent_doctor/renderer.rb"
+}
+
 test_copy_install_refuses_a_chmod_only_managed_helper_change() {
   local tmp source target output status helper
   tmp="$(mktemp -d)"
@@ -8890,6 +8942,8 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_copy_install_reports_a_missing_managed_doctor_module
+    test_copy_install_restores_a_fully_removed_doctor_tree
     test_copy_install_refuses_a_chmod_only_managed_helper_change
     test_copy_install_refuses_an_unexpected_managed_doctor_entry
     test_copy_install_refuses_a_symlinked_managed_bin_root

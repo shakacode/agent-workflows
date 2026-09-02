@@ -1655,7 +1655,8 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
       target,
       source,
       "agent-workflows-status" => "status helper\n",
-      "agent_doctor/autonomous_merge_policy.rb" => "policy library\n"
+      "agent_doctor/autonomous_merge_policy.rb" => "policy library\n",
+      "agent_doctor/renderer.rb" => "renderer\n"
     )
   end
 
@@ -1664,13 +1665,7 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     target = File.join(tmp, "codex")
     FileUtils.mkdir_p(File.join(source, "skills"))
     FileUtils.mkdir_p(target)
-    fingerprints = write_managed_bin_copy(
-      target,
-      source,
-      "agent-workflows-status" => "status helper\n",
-      "agent_doctor/autonomous_merge_policy.rb" => "policy library\n"
-    )
-    [source, target, fingerprints]
+    [source, target, managed_bin_fixture_fingerprints(target, source)]
   end
 
   def test_unmodified_managed_bin_copies_stay_compatible
@@ -1733,16 +1728,81 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
-  def test_missing_managed_bin_copy_does_not_block_reinstallation
+  def test_missing_managed_bin_helper_does_not_block_reinstallation
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, fingerprints = managed_bin_fixture(tmp)
       managed_bin_metadata(target, source, fingerprints)
-      FileUtils.rm_f(File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb"))
+      FileUtils.rm_f(File.join(target, "bin/agent-workflows-status"))
 
       payload, status, output = check_managed_bin(target, source)
 
       assert status.success?, output
-      assert_equal ["agent_doctor/autonomous_merge_policy.rb"], payload.dig("bin", "missing")
+      assert_equal ["agent-workflows-status"], payload.dig("bin", "missing")
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_missing_doctor_module_blocks_because_the_installer_cannot_restore_it
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      deleted = File.join(target, "bin/agent_doctor/renderer.rb")
+      FileUtils.rm_f(deleted)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [deleted], payload.dig("bin", "blocking")
+      assert_includes payload.fetch("reason"), "cannot restore"
+      assert_includes payload.fetch("guidance"), File.join(target, "bin/agent_doctor")
+    end
+  end
+
+  def test_missing_doctor_module_the_source_dropped_stays_non_blocking
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      # rsync --delete would remove this module anyway, so there is nothing the
+      # installer needs to restore. This is also the shape the installer's own
+      # post-rsync verification sees during an upgrade that drops a module.
+      FileUtils.rm_f(File.join(source, "bin/agent_doctor/renderer.rb"))
+      FileUtils.rm_f(File.join(target, "bin/agent_doctor/renderer.rb"))
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+      assert_equal ["agent_doctor/renderer.rb"], payload.dig("bin", "missing")
+    end
+  end
+
+  def test_missing_doctor_modules_stay_non_blocking_when_the_tree_is_absent
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      # An absent tree short-circuits the installer's marker check, so rsync
+      # restores it and status must not block.
+      FileUtils.rm_rf(File.join(target, "bin/agent_doctor"))
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_missing_doctor_modules_stay_non_blocking_when_the_tree_is_empty
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor = File.join(target, "bin/agent_doctor")
+      FileUtils.rm_rf(doctor)
+      FileUtils.mkdir_p(doctor)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
       assert_empty payload.dig("bin", "blocking")
     end
   end
