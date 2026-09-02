@@ -794,6 +794,23 @@ class CoordinationTelemetryContractTest < Minitest::Test
     end
   end
 
+  def test_batch_qa_remains_a_checker_role_not_a_duplicate_coordination_lane
+    workflow = read_repo_file(WORKFLOW_PATH)
+    closeout = read_repo_file(INTEGRATION_CLOSEOUT_PATH)
+    plan_skill = read_repo_file(File.join(ROOT, "skills/plan-pr-batch/SKILL.md"))
+
+    refute_includes workflow, "Treat QA as an explicit batch lane when the Batch QA Lane section requires it;"
+    refute_includes closeout, "QA is a sibling lane to implementation and audit work:"
+    refute_includes plan_skill, "planned owner/lane"
+
+    expected_phrase = "QA is a checker/evidence role on the lane, not a second coordination lane with the same target."
+    [workflow, closeout].each do |text|
+      assert_includes text, expected_phrase
+    end
+
+    assert_includes plan_skill, "planned owner and checker role"
+  end
+
   def test_help_requested_reason_precedence_is_mutually_exclusive_everywhere
     workflow = read_repo_file(WORKFLOW_PATH)
     [

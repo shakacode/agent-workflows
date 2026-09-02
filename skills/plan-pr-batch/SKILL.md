@@ -270,8 +270,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      verified independent graph still contains every lane and emits `edges: []`
      in both artifacts; the lane array is never empty.
    - Apply `.agents/workflows/pr-processing.md` under **Batch QA Lane**. Record
-     whether QA is required, which subset qualifies, the planned owner/lane, and
-     final QA Evidence expectations. If QA is omitted for low-risk work, record
+     whether QA is required, which subset qualifies, the planned owner and checker role, and final QA Evidence expectations. If QA is omitted for
+     low-risk work, record
      `not required` plus the rationale. For batches that need post-merge replay,
      require the `qa-evidence v2` marker and any needed
      `priority-finding-dispositions v1` marker in the final evidence.
