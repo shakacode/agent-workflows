@@ -107,11 +107,17 @@ blocker. Do not fake a manual pass from static inspection.
      fixed, trusted-base, byte-identical `.agents/bin/upload-evidence` wrapper,
      passes the file as one argv value, bounds runtime/output, and accepts only
      one exact `https://github.com/user-attachments/assets/<asset-id>` line.
-     The wrapper may delegate to
-     `bin/github-user-attachments-upload` from this skill as the MIT-attributed
-     reference implementation after the repository has deliberately verified
-     the undocumented endpoint. Never call that reference helper merely because
-     it is installed.
+     It passes the resolved skill root as `MANUAL_TESTING_SKILL_DIR`, so a
+     deliberately verified wrapper can delegate to the MIT-attributed reference
+     implementation without a host-specific path:
+
+     ```bash
+     #!/usr/bin/env bash
+     set -euo pipefail
+     exec "${MANUAL_TESTING_SKILL_DIR:?}/bin/github-user-attachments-upload" "$@"
+     ```
+
+     Never call that reference helper merely because it is installed.
 
      Omitted or malformed configuration, a missing/changed/unsafe wrapper or
      file, unsupported type, authentication or upload failure, timeout,

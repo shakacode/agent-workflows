@@ -14,8 +14,10 @@ class ConfiguredEvidenceUploadTest < Minitest::Test
   def test_configured_trusted_wrapper_returns_attachment_url
     with_repo do |root|
       write_policy(root, configured: true)
+      expected_skill_root = File.expand_path("..", __dir__)
       write_wrapper(root, <<~RUBY)
         #!/usr/bin/env ruby
+        abort "manual-testing skill root missing" unless ENV["MANUAL_TESTING_SKILL_DIR"] == #{expected_skill_root.inspect}
         puts #{ATTACHMENT_URL.inspect}
       RUBY
       base_sha = commit!(root, "configure evidence uploader")

@@ -17,7 +17,7 @@ module ManualTesting
       @output_limit = output_limit
     end
 
-    def capture(command, chdir: nil)
+    def capture(command, chdir: nil, env: {})
       stdout_file = Tempfile.new("manual-testing-command-stdout")
       stderr_file = Tempfile.new("manual-testing-command-stderr")
       environment = {
@@ -26,7 +26,7 @@ module ManualTesting
         "RUBYOPT" => nil,
         "RUBYLIB" => nil,
         "ZDOTDIR" => nil
-      }
+      }.merge(env)
       spawn_options = {
         in: File::NULL,
         out: stdout_file.path,

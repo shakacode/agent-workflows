@@ -37,7 +37,12 @@ module ConfiguredEvidenceUpload
     end
 
     wrapper = verified_wrapper(repo_root, resolved_base)
-    result = bounded_capture([wrapper, artifact], chdir: repo_root, timeout: options.fetch(:timeout))
+    result = bounded_capture(
+      [wrapper, artifact],
+      chdir: repo_root,
+      timeout: options.fetch(:timeout),
+      env: { "MANUAL_TESTING_SKILL_DIR" => File.expand_path("..", __dir__) }
+    )
     fail_closed("configured uploader timed out") if result.timed_out
     fail_closed("configured uploader output exceeded #{OUTPUT_LIMIT_BYTES} bytes") if result.output_too_large
     fail_closed("configured uploader failed with exit #{exit_code(result.status)}") unless result.status&.success?
@@ -136,8 +141,8 @@ module ConfiguredEvidenceUpload
     result
   end
 
-  def bounded_capture(command, chdir:, timeout:)
-    ManualTesting::BoundedCommand.new(timeout:, output_limit: OUTPUT_LIMIT_BYTES).capture(command, chdir:)
+  def bounded_capture(command, chdir:, timeout:, env: {})
+    ManualTesting::BoundedCommand.new(timeout:, output_limit: OUTPUT_LIMIT_BYTES).capture(command, chdir:, env:)
   end
 
   def exact_attachment_url(stdout)

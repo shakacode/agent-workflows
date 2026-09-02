@@ -997,8 +997,9 @@ For each user-visible UI change:
    preserves the file as one argv value, bounds output/runtime, and accepts one
    exact `https://github.com/user-attachments/assets/<asset-id>` line. A
    deliberately verified consumer wrapper may delegate to the manual-testing
-   skill's MIT-attributed `bin/github-user-attachments-upload` reference
-   implementation. Its presence never enables the undocumented endpoint.
+   skill's MIT-attributed `bin/github-user-attachments-upload` reference through
+   the resolver-provided `MANUAL_TESTING_SKILL_DIR` environment value. Its
+   presence never enables the undocumented endpoint.
 
    Absent/malformed configuration, a missing/changed/unsafe wrapper or file,
    unsupported type, authentication or upload failure, timeout, non-201
