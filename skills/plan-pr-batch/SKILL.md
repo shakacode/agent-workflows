@@ -551,11 +551,20 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      best-effort field-granular `UNKNOWN`, names reconciliation, and does not
      block worker launch. Use the
      [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
+     Its raw lane `targets` are not guard input. Use the canonical
+     [Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)
+     to derive the exact receiver manifest from trusted provenance/coordinator
+     state and require the trusted-base `target-membership-guard` before any
+     cross-task control or mutation. Keep its manifest-derivation details in that
+     canonical workflow; do not mirror them here. Foreign targets remain
+     evidence-only, unresolved identities fail closed as `UNKNOWN`, and control
+     transfer requires trusted out-of-band human authority plus exact receiver
+     membership.
    - For PRs with review feedback, route the worker to use the repo review workflow before code changes.
    - For issues, define the expected deliverable: fix, investigation, reproduction, docs update, or no-PR audit.
 
 4. Output
-   <!-- prompt-size-check: scripts/check_goal_prompt_size.rb pins selected wording in this section. -->
+   <!-- The goal-prompt size and drift guards validate selected wording in this section. -->
    - Return a concise "Batch Plan" and a fenced "Goal Prompt for pr-batch".
    - Determine the prompt target only to select the Codex `/goal` wrapper and <!-- host-allow: codex-only -->
      the host-aware item cap. An explicit paste destination wins over host
@@ -588,8 +597,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      fields.
    - Do not start `$pr-batch` unless the user asks; then hand them the fenced
      goal prompt and its Batch Plan in the same request.
-   - Response order: Batch Plan; generated goal prompt; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
-   - Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt and its Batch Plan or exact durable plan-state reference.` and `Next: Paste both into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
+   - Response order: Batch Plan; generated goal prompt; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+   - Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt, its exact immutable plan-state reference, and the exact batch_plan_binding.` and `Next: Paste all three into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
 
 Use the canonical [Planning-Chat Lifecycle](../../workflows/pr-processing.md#planning-chat-lifecycle): a prompt-only planning chat may hand off stable planning state; a planning parent supervises worker execution and performs narrow read-only cross-batch reconciliation; batch coordinators execute and own live lanes and closeout.
 
@@ -624,6 +633,9 @@ backend must say so in the declaration.
 
 - Objective:
 - Repository:
+- Batch title(s): durable Batch Plan/task metadata only; apply the verified source-issue `<ID?>` rule from canonical [Plan To Goal Handoff](../../workflows/pr-batch-intake.md#plan-to-goal-handoff).
+- Verified source issues for title metadata:
+  - `Issue #N: <verified GitHub URL>` or `Linear issue <ID>: <verified Linear URL>`; include verification evidence; Linear records are not execution lanes.
 - Task name(s): deterministic repository, work-item, and purpose titles used by the human prompt and host UI.
 - Included items:
   - `PR #N` or `Issue #N`: title, URL, state, role in batch
@@ -661,6 +673,7 @@ backend must say so in the declaration.
 - Once that launch succeeds, workers may start under the distinct batch coordinator, which owns PR/check/QA/merge/completed-batch-audit closeout, while the parent remains read-only.
 - Prompt-only conversation-status/archive expectation: use exactly `Conversation status: Ready for archiving.` only when all prompts are delivered or registered and stable batch/lane/dependency/ownership state is durable outside the chat; no unhanded-off question or planner-owned `UNKNOWN` remains; a durably handed-off coordinator-owned worker state, including a worker `UNKNOWN`, does not block prompt-only archive; otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
 - Parent-orchestrator conversation-status/archive expectation: clean only when parent reconciliation has no OUTSTANDING follow-up or `UNKNOWN`; then use exactly `Conversation status: Ready for archiving.` Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and list each exact action or blocker.
+- Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action or wait instruction with an exact command, paste-ready prompt, URL, question, trigger, or clearing condition, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`.
 - Launch mode: exactly one of `copy-paste`, `same-thread`, or `host-native-user-task`; see [Batch Coordinator Launch Mode](#batch-coordinator-launch-mode). For `host-native-user-task`, also record the durable task identifier and host, or the exact reason the mode was unavailable.
 - Keep this lifecycle metadata in the Batch Plan, outside the generated goal prompt.
 - `merge_authority`:

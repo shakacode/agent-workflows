@@ -70,6 +70,42 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
     end
   end
 
+  def test_nested_workflow_pr_delta_blocks_reuse_even_when_base_delta_is_safe
+    with_repository(base_delta_path: "docs/guide.md", head_path: "template/.github/workflows/ci.yml") do |fixture|
+      result = collect(fixture)
+
+      assert_equal "fresh-integration-required", result.dig("reuse", "decision")
+      assert_equal ["pr-delta-high-risk"], result.dig("reuse", "reasons")
+    end
+  end
+
+  def test_root_and_nested_github_actions_paths_are_high_risk_in_both_deltas
+    paths = [
+      ".github/workflows/ci.yml",
+      ".github/actions/setup/action.yml",
+      "template/.github/workflows/ci.yml",
+      "template/.github/actions/setup/action.yml",
+      "template:v1/.github/workflows/ci.yml",
+      "template:v1/.github/actions/setup/action.yml"
+    ]
+
+    paths.each do |path|
+      with_repository(base_delta_path: "docs/guide.md", head_path: path) do |fixture|
+        result = collect(fixture)
+
+        assert_equal "fresh-integration-required", result.dig("reuse", "decision"), "PR delta: #{path}"
+        assert_equal ["pr-delta-high-risk"], result.dig("reuse", "reasons"), "PR delta: #{path}"
+      end
+
+      with_repository(base_delta_path: path, head_path: "docs/feature.md") do |fixture|
+        result = collect(fixture)
+
+        assert_equal "fresh-integration-required", result.dig("reuse", "decision"), "base delta: #{path}"
+        assert_equal ["base-delta-high-risk"], result.dig("reuse", "reasons"), "base delta: #{path}"
+      end
+    end
+  end
+
   def test_high_risk_base_delta_blocks_reuse_even_when_pr_delta_is_safe
     with_repository(base_delta_path: ".github/workflows/ci.yml", head_path: "docs/feature.md") do |fixture|
       result = collect(fixture)

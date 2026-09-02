@@ -9,6 +9,9 @@ require_relative "check_goal_prompt_drift"
 TEXT_FENCE = "```text\n"
 REPO_ROOT = File.expand_path("../../..", __dir__)
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
+CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
+CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
+GOAL_PROMPT_MIN_HEADROOM = 300
 
 EXPECTED_PROMPT = <<~TEXT
   Repository: OWNER/REPO
@@ -26,7 +29,7 @@ FORBIDDEN_PROMPT_FRAGMENTS = [
   "Manifest:",
   "Dispatch ",
   "Stage deps:",
-  "GMCC-v4:",
+  "GMCC-v5:",
   "HST-v1",
   "Batch QA Lane:",
   "Scope:",
@@ -239,6 +242,20 @@ if source_checkout
 end
 
 codex_prompt = "/goal\n#{prompts.fetch('plan-pr-batch')}"
+
+if codex_prompt.length >= CODEX_GOAL_PROMPT_CHAR_LIMIT
+  abort_with_failure("Codex goal prompt is #{codex_prompt.length} chars, must stay under #{CODEX_GOAL_PROMPT_CHAR_LIMIT}")
+end
+codex_headroom = CODEX_GOAL_PROMPT_CHAR_LIMIT - codex_prompt.length
+if codex_headroom < GOAL_PROMPT_MIN_HEADROOM
+  abort_with_failure("Codex goal prompt has #{codex_headroom} chars of headroom, must keep at least #{GOAL_PROMPT_MIN_HEADROOM}")
+end
+if prompts.fetch("plan-pr-batch").length >= CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT
+  abort_with_failure(
+    "Claude/generic goal prompt is #{prompts.fetch('plan-pr-batch').length} chars, " \
+    "must stay under #{CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT}"
+  )
+end
 
 begin
   GoalPromptDriftContract.check!(

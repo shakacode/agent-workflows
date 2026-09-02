@@ -348,8 +348,9 @@ precise blocker.
    persist or deliver both artifacts with stable planning state. Backend storage
    is optional and must not be assumed.
 
-   Use the shared prompt template from `$plan-pr-batch` and
-   `pr-processing.md`. The prompt carries only repository, exact work-item URL,
+   Use the shared prompt template from `$plan-pr-batch` and the canonical
+   [Plan To Goal Handoff](../../workflows/pr-batch-intake.md#plan-to-goal-handoff).
+   The prompt carries only repository, exact work-item URL,
    task name, instruction, human `auto` or `ask` merge authority, and the
    optional human-availability time.
    <!-- host-branch: codex-only start -->
@@ -393,6 +394,10 @@ precise blocker.
    Keep stage-dependency plan/replay references, dispatcher choice and
    authority, `launch-pending`/`active` fencing, preferred model/effort,
    observed host/model/effort, Lane Cards, and coordination hooks in that durable state. The
+   durable Batch Plan/task metadata also keeps each timestamped `Batch title:`
+   and applies the verified source-issue `<ID?>` rule from canonical
+   [Plan To Goal Handoff](../../workflows/pr-batch-intake.md#plan-to-goal-handoff);
+   the human prompt continues to use `Task name:`.
    portable `dispatcher-capability-preflight` helper remains the launch
    decision seam. Persist `launch-pending` before worker launch and ordinary
    `active` state after spawn before Goal-mode resume. Record host observations
@@ -490,8 +495,9 @@ Return:
   installed backend does not support queue state, omit this section and note that
   queue state is unavailable.
 - Residual risks and maintainer decisions needed.
-- Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
-- Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt and its Batch Plan or exact durable plan-state reference.` and `Next: Paste both into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
+- Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action or wait instruction with an exact command, paste-ready prompt, URL, question, trigger, or clearing condition, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`.
+- Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+- Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt, its exact immutable plan-state reference, and the exact batch_plan_binding.` and `Next: Paste all three into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
 
 ## Common Mistakes
 

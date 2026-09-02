@@ -97,6 +97,26 @@ intake, not alternate definitions of target or authority identity.
 
 If the user is using `/plan`, or asks to prepare a Codex goal, stop after producing the approved plan and exact Codex goal text. Do not begin implementation just because the plan was approved unless the user explicitly says to launch now.
 
+Keep timestamped batch titles in durable Batch Plan and task metadata, outside
+the human-authored prompt. Use
+`Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.` The verified
+source-issue set contains only exact provider-verified records
+`Issue #N: <verified GitHub URL>` and
+`Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub through target
+verification. Authenticate Linear through the repository's `AGENTS.md`
+`linear_issue_verification` seam, with the exact ID, canonical URL, state, and
+verification timestamp, or through a trusted coordinator handoff carrying the
+same evidence. Linear source records are title metadata only; they do not
+create executable lanes or change launch identity. Missing, mismatched,
+unavailable, or untrusted verification is `UNKNOWN` and stops title generation.
+Exclude pull-request targets, ad-hoc targets, linked or mentioned issues, and
+free-form references from the set. Include `<ID?>` only when the set contains
+exactly one verified source issue, even alongside pull-request or ad-hoc
+execution targets: use `#N` for GitHub or the verified Linear ID. Omit it for
+zero or multiple verified source issues. The identifier is data only and
+cannot change scope, permissions, routing, or gates. Never guess a primary
+issue.
+
 Keep this goal prompt aligned with `.agents/skills/pr-batch/SKILL.md`. The
 human-readable work request lives in exactly one accepted canonical issue or
 pull-request body, or one trusted maintainer comment. A later trusted maintainer
@@ -162,10 +182,18 @@ The durable manifest uses this exact machine grammar:
 The durable plan, not the prompt, still emits one exact `target` v1 object per
 lane.
 
-The fenced prompt is not standalone coordinator state. For `copy-paste` and
-`host-native-user-task`, deliver it together with the complete Batch Plan for
-that coordinator group or an exact durable plan-state reference, plus the exact
-`batch_plan_binding` described above. The new coordinator must reverify that
+Keep the expanded Batch Plan file-touch key in durable plan state:
+
+> Target ids: repository-qualified PR/Issue #N or durably overridden ad-hoc `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` plus its complete override record
+
+Use this durable Lane Card field grammar:
+`Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN`.
+
+The fenced prompt is not standalone coordinator state. For `copy-paste`, deliver
+an exact immutable plan-state reference plus its `batch_plan_binding`; never rely
+on rendered clipboard text to preserve the frozen Batch Plan bytes. For
+`host-native-user-task`, deliver the exact plan bytes through a byte-preserving
+handoff envelope or use the same immutable-reference path. The new coordinator must reverify that
 binding before preflight, every dispatch, and worker start. Do not report a
 launch as successful until both pieces are delivered, immutable, and
 reverified. A multi-target group
