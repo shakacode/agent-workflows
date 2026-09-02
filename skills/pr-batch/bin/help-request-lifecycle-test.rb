@@ -302,6 +302,50 @@ class HelpRequestLifecycleTest < Minitest::Test
     input&.close!
   end
 
+  def test_lane_closeout_does_not_satisfy_another_lane_for_an_unlaned_request
+    input = Tempfile.new(["help-request-lifecycle-cross-lane-closeout", ".json"])
+    input.write(JSON.generate(
+                  "events" => [
+                    {
+                      "event_id" => "request-unlaned",
+                      "batch_id" => "batch-1",
+                      "type" => "help_requested",
+                      "reason" => "permission",
+                      "at" => "2026-08-23T05:48:18Z"
+                    },
+                    {
+                      "event_id" => "review-closeout",
+                      "batch_id" => "batch-1",
+                      "lane" => "review",
+                      "type" => "lane_closed",
+                      "status" => "blocked-user-input",
+                      "evidence" => "request-unlaned",
+                      "at" => "2026-08-23T10:00:00Z"
+                    }
+                  ]
+                ))
+    input.flush
+
+    review, review_stderr, review_status = run_lifecycle(
+      input: input.path,
+      now: "2026-08-23T10:00:01Z",
+      lane: "review"
+    )
+    docs, docs_stderr, docs_status = run_lifecycle(
+      input: input.path,
+      now: "2026-08-23T10:00:01Z",
+      lane: "docs"
+    )
+
+    assert_predicate review_status, :success?, review_stderr
+    assert_predicate docs_status, :success?, docs_stderr
+    assert_equal true, review.fetch("terminal_action").fetch("recorded")
+    assert_equal false, docs.fetch("terminal_action").fetch("recorded")
+    assert_equal true, docs.fetch("terminal_action").fetch("required")
+  ensure
+    input&.close!
+  end
+
   def test_invalid_now_returns_unknown_json_without_a_backtrace
     stdout, stderr, status = Open3.capture3(
       RbConfig.ruby,
@@ -311,7 +355,15 @@ class HelpRequestLifecycleTest < Minitest::Test
     )
 
     assert_equal 1, status.exitstatus
-    assert_equal "UNKNOWN", JSON.parse(stdout).fetch("status")
+    result = JSON.parse(stdout)
+    assert_equal "UNKNOWN", result.fetch("status")
+    assert_equal false, result.fetch("phase_gate").fetch("allowed")
+    assert_empty result.fetch("requests")
+    assert_empty result.fetch("unresolved_requests")
+    assert_nil result.fetch("blocking_request_id")
+    assert_nil result.fetch("blocking_request")
+    assert_empty result.fetch("prohibited_phase_transitions")
+    assert_equal false, result.fetch("terminal_action").fetch("required")
     assert_includes stderr, "not-a-date"
     refute_includes stderr, "help-request-lifecycle:"
   end

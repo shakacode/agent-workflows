@@ -49,7 +49,7 @@ module HelpRequestLifecycle
     request_rows.each { |request| add_age!(request, now) }
     blocking_request = request_rows.find { |request| blocking_permission_request?(request) }
     overdue = blocking_request && blocking_request.fetch("age_seconds") >= max_open_seconds
-    terminal_recorded = overdue && terminal_for_request?(terminal_events, blocking_request)
+    terminal_recorded = overdue && terminal_for_request?(terminal_events, blocking_request, lane: lane)
 
     {
       "contract" => "help-request-lifecycle",
@@ -159,10 +159,12 @@ module HelpRequestLifecycle
     request["state"] == "open" && request["reason"] == "permission"
   end
 
-  def terminal_for_request?(events, request)
+  def terminal_for_request?(events, request, lane:)
     events.any? do |event|
       normalized_status = event["status"].to_s.downcase.tr("-", "_")
-      event["evidence"] == request["request_id"] && normalized_status == "blocked_user_input"
+      event_lane = optional_string(event["lane"])
+      lane_matches = lane.nil? || event_lane.nil? || event_lane == lane
+      event["evidence"] == request["request_id"] && normalized_status == "blocked_user_input" && lane_matches
     end
   end
 

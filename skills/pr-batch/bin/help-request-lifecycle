@@ -50,6 +50,20 @@ rescue ArgumentError, OptionParser::ParseError, JSON::ParserError, HelpRequestLi
     "contract" => "help-request-lifecycle",
     "version" => HelpRequestLifecycle::VERSION,
     "status" => "UNKNOWN",
+    "max_open_seconds" => options.fetch(:max_open_seconds),
+    "evaluated_at" => options.fetch(:now).utc.iso8601,
+    "lane" => options[:lane],
+    "requests" => [],
+    "unresolved_requests" => [],
+    "blocking_request_id" => nil,
+    "blocking_request" => nil,
+    "phase_gate" => {
+      "allowed" => false,
+      "request_id" => nil,
+      "blocked_phases" => HelpRequestLifecycle::PROHIBITED_PERMISSION_PHASES
+    },
+    "prohibited_phase_transitions" => [],
+    "terminal_action" => { "required" => false, "recorded" => false },
     "error" => e.message
   )
   warn e.message

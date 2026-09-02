@@ -320,6 +320,39 @@ class BatchStatusTest < Minitest::Test
       payload = JSON.parse(stdout)
       assert_empty payload.fetch("items")
       assert_includes payload.fetch("unknowns"), "batch aw-b: response was not an object"
+      lifecycle = payload.fetch("help_request_lifecycles").fetch("aw-b")
+      assert_equal "UNKNOWN", lifecycle.fetch("status")
+      assert_includes lifecycle.fetch("error"), "event history unavailable"
+    end
+  end
+
+  def test_failed_batch_fetch_degrades_to_an_explicit_unknown_lifecycle
+    Dir.mktmpdir("batch-status-batch-failure") do |dir|
+      write_executable(File.join(dir, "agent-coord"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        warn "batch backend unavailable"
+        exit 1
+      RUBY
+      env = {
+        "PATH" => [dir, ENV.fetch("PATH")].join(File::PATH_SEPARATOR),
+        "PR_BATCH_SKILL_DIR" => File.expand_path("../../pr-batch", __dir__)
+      }
+
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--batch-id", "aw-b",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      assert_empty payload.fetch("items")
+      assert_includes payload.fetch("unknowns"), "batch aw-b: batch backend unavailable"
+      lifecycle = payload.fetch("help_request_lifecycles").fetch("aw-b")
+      assert_equal "UNKNOWN", lifecycle.fetch("status")
+      assert_includes lifecycle.fetch("error"), "event history unavailable"
     end
   end
 

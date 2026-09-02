@@ -264,11 +264,22 @@ options[:batch_ids].each do |batch_id|
   )
   if batch_error
     batch_payloads[batch_id] = nil
+    help_request_lifecycles[batch_id] = help_request_lifecycle(
+      nil,
+      now: options.fetch(:now),
+      max_open_seconds: options.fetch(:help_request_max_open_seconds)
+    )
     batch_unknowns << "batch #{batch_id}: #{batch_error}"
     next
   end
 
   unless batch_payload.is_a?(Hash)
+    batch_payloads[batch_id] = nil
+    help_request_lifecycles[batch_id] = help_request_lifecycle(
+      nil,
+      now: options.fetch(:now),
+      max_open_seconds: options.fetch(:help_request_max_open_seconds)
+    )
     batch_unknowns << "batch #{batch_id}: response was not an object"
     next
   end
