@@ -1093,8 +1093,14 @@ module CompletedBatchAuditReceipt
         return false unless target
 
         if headless_issue_target?(target, target_rows.fetch(index)["head_sha"])
-          row["verdict"] == "NOT_APPLICABLE" && row["status"] == "not_applicable" &&
-            row["maintainer_waiver"].nil? && row["head_sha"].nil? &&
+          source = parse_target_url(target_rows.fetch(index)["source"])
+          return false unless source && source.fetch("type") == "pull_request"
+          return false unless same_repository_identity?(source, target)
+
+          live_pr = gh_api(source.fetch("host"), "repos/#{source.fetch('repo')}/pulls/#{source.fetch('number')}")
+          row["verdict"] == "SATISFIED" && row["status"] == "satisfied" &&
+            row["maintainer_waiver"].nil? && row["head_sha"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
+            row["head_sha"] == live_pr.dig("head", "sha").to_s.downcase &&
             row["evidence_sha256"].to_s.match?(CompletedBatchPublicationPreflight::DIGEST_PATTERN)
         else
           row["verdict"] == "SATISFIED" && row["status"] == "satisfied" &&

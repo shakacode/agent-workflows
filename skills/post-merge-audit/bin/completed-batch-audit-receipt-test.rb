@@ -796,6 +796,34 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_replay_rejects_headless_issue_snapshots_with_forged_pr_head
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(
+      target,
+      issue_head_sha: "not_applicable",
+      implementation_pr_head_sha: "d" * 40
+    )
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      assert_raises(CompletedBatchAuditReceipt::AcceptedDeferralError) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
   def test_accepted_deferral_replay_preserves_legacy_evidence_when_lane_pr_state_is_merged
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
@@ -3846,7 +3874,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     lane_identity_fields: {},
     lane_targets: ["4731"],
     lane_pr_state: "closed",
-    issue_head_sha: "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e"
+    issue_head_sha: "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e",
+    implementation_pr_head_sha: "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e"
   )
     headless_issue = issue_head_sha == "not_applicable"
     coordination_status = {
@@ -3883,16 +3912,16 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     qa_evidence = if headless_issue
                     <<~MARKER
                       <!-- qa-evidence v1
-                      required: no
-                      status: not_applicable
-                      head_sha: not_applicable
-                      tested_at: issue #4731 resolved by complementary PR
+                      required: yes
+                      status: satisfied
+                      head_sha: #{implementation_pr_head_sha}
+                      tested_at: PR/head #{implementation_pr_head_sha}
                       scope: issue #4731 headless accept-deferral
-                      automated_checks: not applicable
-                      manual_checks: not applicable
+                      automated_checks: focused tests
+                      manual_checks: not applicable: no manual surface
                       findings: none
-                      release_blocking: not_applicable
-                      process_gap_disposition: not_applicable
+                      release_blocking: clear
+                      process_gap_disposition: script
                       -->
                     MARKER
                   else

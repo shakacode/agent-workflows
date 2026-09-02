@@ -104,6 +104,9 @@ module CompletedBatchPublicationPreflight
       blockers,
       target_verifier:
     )
+    canonical_target_snapshots_by_key = canonical_targets.to_h do |target_snapshot|
+      [target_key(target_snapshot.fetch("target")), target_snapshot]
+    end
     canonical_lanes = canonical_lane_snapshots(
       lane_entries,
       authenticated_target_completion_keys,
@@ -111,7 +114,7 @@ module CompletedBatchPublicationPreflight
     )
     canonical_qa = canonical_qa_snapshots(
       expected_targets,
-      snapshots,
+      canonical_target_snapshots_by_key,
       qa_entries,
       issue_resolved_by_pr_keys,
       blockers,
@@ -668,13 +671,28 @@ module CompletedBatchPublicationPreflight
       lane = lanes_by_target.dig(key, "lane")
       raw_head_sha = row["head_sha"].to_s.downcase
       no_pr_evidence = canonical_no_pr_evidence(row["no_pr_evidence"], target)
+      source = normalized_known_string(row["source"])
+      source_target = target_from_url(source) if source
       complementary_issue_target = target["type"] == "issue" && raw_head_sha == "not_applicable" &&
                                    complementary_pr_target?(target, lane, lane_entries)
+      resolved_pr_head_sha = nil
       if complementary_issue_target && row.key?("no_pr_evidence")
         blockers << "#{target_label(target)} no-PR evidence contradicts complementary produced PR"
       end
       issue_resolved_by_pr = complementary_issue_target && !row.key?("no_pr_evidence")
       issue_resolved_by_pr_keys[key] = true if issue_resolved_by_pr
+      if issue_resolved_by_pr
+        if source_target&.fetch("type") == "pull_request"
+          resolved_pr = authenticated_gh_api(
+            source_target.fetch("host"),
+            "repos/#{source_target.fetch('repo')}/pulls/#{source_target.fetch('number')}"
+          )
+          resolved_pr_head_sha = resolved_pr.dig("head", "sha").to_s.downcase
+          blockers << "#{target_label(target)} resolved PR head SHA is absent or invalid" unless resolved_pr_head_sha.match?(SHA_PATTERN)
+        else
+          blockers << "#{target_label(target)} resolved PR source is absent or invalid"
+        end
+      end
       if target["type"] == "issue" && raw_head_sha == "not_applicable" &&
          (no_pr_evidence || issue_resolved_by_pr)
         head_sha = nil
@@ -685,7 +703,6 @@ module CompletedBatchPublicationPreflight
           blockers << "#{target_label(target)} no-PR evidence is invalid or inconsistent"
         end
       end
-      source = normalized_known_string(row["source"])
       blockers << "#{target_label(target)} target snapshot source is absent" unless source
       verified = target_verifier&.call(target:)
       verified_shape = verified.is_a?(Hash) &&
@@ -725,6 +742,7 @@ module CompletedBatchPublicationPreflight
         "head_sha" => head_sha,
         "no_pr_evidence" => no_pr_evidence,
         "source" => source,
+        "resolved_pr_head_sha" => resolved_pr_head_sha,
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
       }
       snapshot["completed_at"] = verified_target_facts.fetch("completed_at") if authenticated_target_completion
@@ -738,10 +756,11 @@ module CompletedBatchPublicationPreflight
     return false unless lane
 
     lane_targets = lane_targets_for(lane, lane_entries)
-    return false unless lane_targets.length == 2 && lane_targets.include?(issue_target)
+    return false unless lane_targets.include?(issue_target)
 
-    produced_pr = lane_targets.find { |target| target["type"] == "pull_request" }
-    produced_pr && produced_pr["host"].casecmp?(issue_target.fetch("host")) &&
+    produced_pr = target_from_url(lane["pr_url"].to_s)
+    produced_pr && produced_pr["type"] == "pull_request" &&
+      produced_pr["host"].casecmp?(issue_target.fetch("host")) &&
       produced_pr["repo"].casecmp?(issue_target.fetch("repo"))
   end
 
@@ -765,10 +784,14 @@ module CompletedBatchPublicationPreflight
       raw_head_sha = snapshots.dig(key, "head_sha").to_s.downcase
       no_pr = canonical_no_pr_evidence(snapshots.dig(key, "no_pr_evidence"), target)
       issue_resolved_by_pr = issue_resolved_by_pr_keys[key] == true
-      head_sha = raw_head_sha.match?(SHA_PATTERN) ? raw_head_sha : nil
+      resolved_pr_head_sha = snapshots.dig(key, "resolved_pr_head_sha").to_s.downcase
+      head_sha = if issue_resolved_by_pr
+                   resolved_pr_head_sha.match?(SHA_PATTERN) ? resolved_pr_head_sha : nil
+                 else
+                   raw_head_sha.match?(SHA_PATTERN) ? raw_head_sha : nil
+                 end
       headless_issue_disposition = target["type"] == "issue" && raw_head_sha == "not_applicable" &&
                                    (no_pr || issue_resolved_by_pr)
-      head_sha = nil if headless_issue_disposition
       unless row
         blockers << "#{target_label(target)} QA evidence is absent"
         next({ "target" => target, "head_sha" => head_sha, "verdict" => "UNKNOWN", "status" => nil,
@@ -801,7 +824,11 @@ module CompletedBatchPublicationPreflight
         verdict = "UNKNOWN"
         status = nil
       end
-      if headless_issue_disposition && !valid_headless_issue_qa_disposition?(qa)
+      if headless_issue_disposition && !valid_headless_issue_qa_disposition?(
+        qa,
+        issue_resolved_by_pr:,
+        expected_head_sha: head_sha
+      )
         disposition = issue_resolved_by_pr ? "issue-resolved-by-PR" : "typed no-PR"
         blockers << "#{target_label(target)} QA evidence contradicts #{disposition} disposition"
       end
@@ -832,13 +859,21 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def valid_headless_issue_qa_disposition?(replayed_qa)
+  def valid_headless_issue_qa_disposition?(replayed_qa, issue_resolved_by_pr:, expected_head_sha: nil)
     fields = replayed_qa.fetch("fields")
-    replayed_qa.fetch("verdict") == "NOT_APPLICABLE" &&
-      fields.fetch("required", nil) == "no" &&
-      fields.fetch("status", nil) == "not_applicable" &&
-      fields.fetch("head_sha", nil).to_s.downcase == "not_applicable" &&
-      fields.fetch("release_blocking", nil) == "not_applicable"
+    if issue_resolved_by_pr
+      replayed_qa.fetch("verdict") == "SATISFIED" &&
+        fields.fetch("status", nil) == "satisfied" &&
+        fields.fetch("head_sha", nil).to_s.match?(/\A[0-9a-f]{40}\z/) &&
+        fields.fetch("head_sha") == expected_head_sha &&
+        fields.fetch("release_blocking", nil) == "clear"
+    else
+      replayed_qa.fetch("verdict") == "NOT_APPLICABLE" &&
+        fields.fetch("required", nil) == "no" &&
+        fields.fetch("status", nil) == "not_applicable" &&
+        fields.fetch("head_sha", nil).to_s.downcase == "not_applicable" &&
+        fields.fetch("release_blocking", nil) == "not_applicable"
+    end
   end
 
   def canonical_no_pr_evidence(value, target)
