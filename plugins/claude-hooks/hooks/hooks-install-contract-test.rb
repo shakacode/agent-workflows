@@ -108,6 +108,26 @@ class HooksInstallContractTest < Minitest::Test
     assert_includes documentation, "Codex"
   end
 
+  def test_the_withdrawn_merge_gate_is_documented_as_structured_only
+    documentation = File.read(DOCS)
+    normalized = documentation.gsub(/\s+/, " ")
+
+    assert_includes normalized, "No merge-text gate"
+    assert_includes normalized, "withdrawn `PreToolUse` merge-command gate"
+    assert_includes normalized, "structured host tool/argv identity"
+    assert_includes normalized, "Direct `gh pr merge` can remain usable"
+    assert_includes normalized, "Wrapper invocations (`env`, `sh -c`, `bash -lc`, `nohup`,"
+    assert_includes normalized, "command substitution/backticks"
+    assert_includes normalized, "quoted subcommand tokens"
+    assert_includes normalized, "arithmetic expansion"
+    assert_includes normalized, "heredocs"
+    assert_includes normalized, "URL selectors"
+    assert_includes normalized, "redirections"
+    assert_includes normalized, "unknown flags"
+    assert_includes normalized, "NUL-bearing argv/cwd values"
+    assert_includes normalized, "fail closed"
+  end
+
   private
 
   def assert_adapter(hook, basename)

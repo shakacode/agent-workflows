@@ -38,6 +38,18 @@ currently documents the SessionEnd reasons `clear`, `resume`, `logout`,
 stopping reason except `resume`. The script also checks `resume` defensively, so
 a hand-edited installation cannot drain a session that is merely resuming.
 
+## No merge-text gate
+
+This pack does not ship the withdrawn `PreToolUse` merge-command gate from
+PR #343. The old shell-text recognizer was retired rather than extended. If a
+future host-owned merge gate is ever reintroduced, it should use structured
+host tool/argv identity or a positive receipt boundary, not arbitrary shell
+parsing. Direct `gh pr merge` can remain usable when the host presents the
+exact argv. Wrapper invocations (`env`, `sh -c`, `bash -lc`, `nohup`,
+`timeout`, `command`, `xargs`, `eval`), command substitution/backticks, quoted
+subcommand tokens, arithmetic expansion, heredocs, URL selectors, redirections,
+unknown flags, and NUL-bearing argv/cwd values must fail closed.
+
 ## Enable the adapter
 
 The adapter is deliberately **not** registered in
