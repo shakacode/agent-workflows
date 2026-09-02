@@ -209,6 +209,8 @@ class BatchStatusTest < Minitest::Test
       assert_equal "unavailable", route.fetch("binding_status")
       assert_includes route.fetch("missing_fields"), "work item url"
       assert_includes row.fetch("unknowns"), "owner route unavailable: missing work item url"
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link")
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link_machine_id")
     end
   end
 
@@ -308,6 +310,166 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_owner_route_normalizes_repo_case_before_comparison
+    coordination = {
+      "claims" => [{
+        "agent_id" => "worker-362",
+        "status" => "active",
+        "repo" => "ShakaCode/Agent-Workflows",
+        "target" => "362",
+        "branch" => "codex/status-362",
+        "host" => "codex",
+        "thread_handle" => "aw-362",
+        "session_id" => "claim-session"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "worker-362",
+        "target" => "ShakaCode/Agent-Workflows#362",
+        "branch" => "codex/status-362",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "thread_handle" => "aw-362",
+        "session_id" => "claim-session",
+        "session_source" => "codex_thread_id",
+        "status" => "in_progress",
+        "liveness" => "live"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "pr", number: 362) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--pr", "362",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      route = row.fetch("owner_route")
+      assert_equal "consistent", route.fetch("binding_status")
+      assert_empty route.fetch("binding_issues")
+      assert_empty route.fetch("missing_fields")
+      refute_includes row.fetch("unknowns"), "owner route: claim repository mismatch"
+      refute_includes row.fetch("unknowns"), "owner route: heartbeat work item mismatch"
+    end
+  end
+
+  def test_owner_route_marks_stale_heartbeats_inconsistent
+    coordination = {
+      "claims" => [{
+        "agent_id" => "worker-362",
+        "status" => "active",
+        "repo" => "shakacode/agent-workflows",
+        "target" => "362",
+        "branch" => "codex/status-362",
+        "host" => "codex",
+        "thread_handle" => "aw-362",
+        "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "worker-362",
+        "host" => "codex",
+        "machine_id" => "kona",
+        "target" => "shakacode/agent-workflows#362",
+        "branch" => "codex/status-362",
+        "thread_handle" => "aw-362",
+        "session_id" => "019feb28-f6a7-7e53-992e-09fa93633f10",
+        "session_source" => "codex_thread_id",
+        "status" => "in_progress",
+        "liveness" => "stale"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "pr", number: 362) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--pr", "362",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      route = row.fetch("owner_route")
+      assert_equal "inconsistent", route.fetch("binding_status")
+      assert_includes route.fetch("binding_issues"), "heartbeat liveness stale"
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link")
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link_machine_id")
+    end
+  end
+
+  def test_owner_route_requires_workspace_for_claude_routes
+    coordination = {
+      "claims" => [{
+        "agent_id" => "worker-362",
+        "status" => "active",
+        "repo" => "shakacode/agent-workflows",
+        "target" => "362",
+        "branch" => "claude/status-362",
+        "host" => "claude-code/conductor",
+        "thread_handle" => "aw-362",
+        "session_id" => "claude-session-362"
+      }],
+      "heartbeats" => [{
+        "agent_id" => "worker-362",
+        "host" => "claude-code/conductor",
+        "target" => "shakacode/agent-workflows#362",
+        "branch" => "claude/status-362",
+        "thread_handle" => "aw-362",
+        "session_id" => "claude-session-362",
+        "session_source" => "agent_coord_session_id",
+        "status" => "in_progress",
+        "liveness" => "live"
+      }]
+    }
+
+    with_fake_commands(coordination:, github_kind: "pr", number: 362) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--pr", "362",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      route = row.fetch("owner_route")
+      assert_equal "unavailable", route.fetch("binding_status")
+      assert_includes route.fetch("missing_fields"), "workspace"
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link")
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link_machine_id")
+    end
+  end
+
+  def test_owner_route_rejects_non_object_coordination_payload
+    coordination = []
+
+    with_fake_commands(coordination:, github_kind: "issue", number: 188) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "188",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      route = row.fetch("owner_route")
+      assert_equal "unavailable", route.fetch("binding_status")
+      assert_includes route.fetch("missing_fields"), "coordination state"
+      assert_includes row.fetch("unknowns"), "coordination state: response was not an object"
+    end
+  end
+
   def test_owner_route_treats_literal_unknown_route_values_as_missing
     coordination = {
       "claims" => [{
@@ -394,7 +556,7 @@ class BatchStatusTest < Minitest::Test
       row = JSON.parse(stdout).fetch("items").first
       route = row.fetch("owner_route")
       assert_equal "Codex", row.fetch("editor")
-      assert_equal "codex://threads/019feb28-f6a7-7e53-992e-09fa93633f10", row.fetch("codex_deep_link")
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link")
       assert_equal "unavailable", route.fetch("binding_status")
       assert_includes route.fetch("missing_fields"), "claim host"
       assert_includes route.fetch("missing_fields"), "heartbeat host"
@@ -567,7 +729,7 @@ class BatchStatusTest < Minitest::Test
       assert_equal "issue", row.fetch("target").fetch("kind")
       assert_equal "Codex", row.fetch("editor"), "current heartbeat must override stale lane metadata"
       assert_equal "kona", row.fetch("machine_id")
-      assert_equal "codex://threads/019feb28-f6a7-7e53-992e-09fa93633f10", row.fetch("codex_deep_link")
+      assert_equal "UNKNOWN", row.fetch("codex_deep_link")
     end
   end
 
