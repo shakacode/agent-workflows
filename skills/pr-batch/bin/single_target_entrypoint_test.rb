@@ -147,6 +147,7 @@ assert(!prompt_intake.include?("Do not pass a durably overridden `adhoc:` target
 assert(prompt_intake.include?("Target: <exact issue, pull-request, or durable override identity>"), "launcher run record must preserve the stable intake identity")
 assert(prompt_intake.include?("type `github-issue` or `github-pull-request`"), "canonical intake must name executable GitHub target types")
 assert(prompt_intake.include?("The sole ad-hoc object type is `trusted-ad-hoc-override`"), "canonical intake must reserve ad-hoc launch for the typed durable override")
+assert(prompt_intake.include?("Target ids: repository-qualified PR/Issue #N or durably overridden ad-hoc `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`"), "canonical intake file-touch map must preserve canonical launch identity")
 worker_execution_handoff = worker_execution.gsub(/\s+/, " ")
 assert(worker_execution_handoff.include?("`Target:` `<verified GitHub issue/PR link>` or exactly `n/a — durably overridden ad-hoc; durable_ref=<exact accepted durable_authorization_ref>`"), "lane cards must not invent a GitHub link for a durable ad-hoc target")
 assert(integration_closeout.include?("For a durably overridden ad-hoc target, record the\n  evidence, rationale, complete override provenance"), "canonical final handoff must preserve overridden ad-hoc provenance")

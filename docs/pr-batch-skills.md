@@ -351,6 +351,10 @@ omit the queue summary and note that queue state is unavailable.
    UTF-8 without Unicode normalization, Markdown rendering, whitespace
    trimming, or newline insertion or removal. Selection, launch, and worker
    checks fetch the same object and field and hash only those bytes.
+   When GitHub returns `body: null` for a title-only issue or pull request,
+   treat its canonical source bytes as the empty UTF-8 string. Retain that
+   SHA-256 digest in the selection, launch, and worker fields; do not drop the
+   source because its body is null.
 
    The launcher keeps one compact collapsed run record with one entry per target
    lane. Before prompt creation, it persists one immutable unique per-execution

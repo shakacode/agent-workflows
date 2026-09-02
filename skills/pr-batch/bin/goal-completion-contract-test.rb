@@ -230,6 +230,12 @@ PROJECT_PREFIX_RULE = "Resolve `<PROJECT>` from the optional `repo_prefix` in " 
                       "(`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, " \
                       "`go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid " \
                       "configured `repo_prefix` is a blocker; do not silently fall back."
+CONTINUATION_HANDLE_SELECTION_RULE =
+  "Otherwise, after exact target and lane resolution, derive one top-level `Thread handle:` using the normal " \
+  "`<batch-short>-<lane>-<word>` rule: use the resumed lane id or owner slug for exactly one resumed lane; use " \
+  "literal `coordinator` as `<lane>` for any resumed subset of two or more lanes, whether or not every batch lane " \
+  "resumes. Keep any lane-specific handles in their lane state; do not treat " \
+  "them as competing top-level candidates."
 LEGACY_PROJECT_ABBREVIATION_PHRASES = [
   "`<PROJECT>` is a short abbreviation derived from the current repository name",
   "Derive `<PROJECT>` from the current repository name",
@@ -686,7 +692,10 @@ class GoalCompletionContractTest < Minitest::Test
 
     assert_nil compact_contract_line(@triage_skill),
                "skills/triage/SKILL.md must keep the compact contract out of generated prompts"
-    assert_equal COMPACT_CONTRACT_LINE, compact_contract_line(@workflow_contract_section)
+    line = compact_contract_line(@workflow_contract_section)
+    assert_equal COMPACT_CONTRACT_LINE, line
+    refute_includes line, "`blocked`=>", "canonical compact completion contract"
+    refute_includes line, "non-user block=>", "canonical compact completion contract"
     COMPACT_CONTRACT_INVARIANTS.each do |invariant|
       assert_text_includes @workflow_contract_section, invariant, "canonical completion contract"
     end
@@ -1016,6 +1025,14 @@ class GoalCompletionContractTest < Minitest::Test
     )
     assert_equal 1, continuation.lines.count { |line| line.strip == HUMAN_STATUS_VERSION_KEY },
                  "continuation monitor prompt must reference #{HUMAN_STATUS_VERSION_KEY} exactly once"
+    {
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/plan-pr-batch/SKILL.md" => @plan_pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }.each do |label, text|
+      assert_equal 1, text.scan(HUMAN_STATUS_SKILL_REFERENCE).length,
+                   "#{label} human-status contract reference drifted"
+    end
     assert_text_includes @human_attention_section, "[`HST-v1`](pr-processing.md#human-status-translation-contract)",
                          "human-attention notification surface"
   end
@@ -1569,6 +1586,48 @@ class GoalCompletionContractTest < Minitest::Test
                         "#{label} restores vague batch title guidance that the full repository name satisfies: #{phrase}"
       end
     end
+  end
+
+  def test_continuation_prompt_preserves_title_and_thread_handle_shape
+    assert continuation_title_thread_handle_shape_valid?(@workflow_resume_prompt),
+           "workflow continuation prompt must have one ordered title/Thread handle header"
+
+    invalid_headers = {
+      "missing Thread handle" => @workflow_resume_prompt.sub("#{CONTINUATION_THREAD_HANDLE_LINE}\n", ""),
+      "duplicate Thread handle" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_THREAD_HANDLE_LINE}\n",
+        "#{CONTINUATION_THREAD_HANDLE_LINE}\n#{CONTINUATION_THREAD_HANDLE_LINE}\n"
+      ),
+      "missing blank line" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n#{CONTINUATION_THREAD_HANDLE_LINE}"
+      ),
+      "duplicate blank line" => @workflow_resume_prompt.sub(
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n#{CONTINUATION_THREAD_HANDLE_LINE}",
+        "#{CONTINUATION_BATCH_TITLE_LINE}\n\n\n#{CONTINUATION_THREAD_HANDLE_LINE}"
+      )
+    }
+    invalid_headers.each do |label, text|
+      refute continuation_title_thread_handle_shape_valid?(text),
+             "workflow continuation prompt guard must reject #{label}"
+    end
+  end
+
+  def test_continuation_handle_selects_one_single_or_multi_lane_role
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+
+    assert_squished_includes continuation, CONTINUATION_HANDLE_SELECTION_RULE,
+                             "workflow continuation prompt"
+    assert_squished_includes continuation, "exactly one resumed lane",
+                             "single-lane continuation fixture"
+    assert_squished_includes continuation, "any resumed subset of two or more lanes",
+                             "two-of-five continuation fixture"
+    assert_squished_includes continuation, "whether or not every batch lane resumes",
+                             "partial-versus-full multi-lane fixture"
   end
 
   def test_batch_handoff_format_requires_the_archive_readiness_status_line

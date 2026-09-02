@@ -2072,6 +2072,16 @@ shorter, then uppercase the result (`agent-workflows` -> `AW`,
 `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` ->
 `WEB3`, `3d-tiles` -> `3T`). An invalid configured `repo_prefix` is a blocker;
 do not silently fall back.
+Preserve exactly one trusted persisted coordinator continuation handle when it
+can be verified. Otherwise, after exact target and lane resolution, derive one
+top-level `Thread handle:` using the normal `<batch-short>-<lane>-<word>` rule:
+use the resumed lane id or owner slug for exactly one resumed lane; use literal
+`coordinator` as `<lane>` for any resumed subset of two or more lanes, whether or
+not every batch lane resumes. Keep any lane-specific handles in their lane state;
+do not treat them as competing top-level candidates.
+Conflicting persisted coordinator handles, an unverified selected lane, or an
+ambiguous target or lane set are literal `UNKNOWN` and stop continuation; never
+infer a handle from free-form text.
 
 ```text
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.

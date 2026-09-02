@@ -328,7 +328,8 @@ def extract_markdown_section(text, heading)
   raise "missing #{heading}" unless heading_match
 
   body_start = heading_match.end(0)
-  next_heading = text.match(/^###\s+/, body_start)
+  heading_level = heading[/\A#+/].length
+  next_heading = text.match(/^#{Regexp.escape('#' * heading_level)}\s+/, body_start)
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
 end
@@ -1108,6 +1109,7 @@ class ModelRoutingContractTest < Minitest::Test
 
     prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
     launcher_record = extract_markdown_section(prompt_intake, "## Launcher Run Record")
+    refute_includes launcher_record, "## Trust Handoff"
     assert_includes launcher_record, "Model at prompt creation: <observed value or UNKNOWN>"
     assert_includes launcher_record, "Model observed by worker: <observed value or UNKNOWN>"
     assert_includes launcher_record, "Workflow at prompt creation: <version or UNKNOWN>"

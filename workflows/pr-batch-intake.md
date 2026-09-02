@@ -182,6 +182,10 @@ The durable manifest uses this exact machine grammar:
 The durable plan, not the prompt, still emits one exact `target` v1 object per
 lane.
 
+Keep the expanded Batch Plan file-touch key in durable plan state:
+
+> Target ids: repository-qualified PR/Issue #N or durably overridden ad-hoc `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` plus its complete override record
+
 The fenced prompt is not standalone coordinator state. For `copy-paste` and
 `host-native-user-task`, deliver it together with the complete Batch Plan for
 that coordinator group or an exact durable plan-state reference, plus the exact

@@ -268,12 +268,7 @@ module GoalPromptDriftContract
     intake_surfaces = if surfaces.key?("workflows/pr-batch-intake.md")
                         surfaces.slice("workflows/pr-batch-intake.md", "skills/triage/SKILL.md")
                       else
-                        surfaces.slice(
-                          "workflows/pr-processing.md",
-                          "skills/plan-pr-batch/SKILL.md",
-                          "skills/pr-batch/SKILL.md",
-                          "skills/triage/SKILL.md"
-                        )
+                        surfaces.slice("skills/triage/SKILL.md")
                       end
     replay_surfaces = surfaces.slice(
       "workflows/pr-processing.md",

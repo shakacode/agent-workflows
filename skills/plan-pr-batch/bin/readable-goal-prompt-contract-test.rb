@@ -110,6 +110,17 @@ class ReadableGoalPromptContractTest < Minitest::Test
     assert_includes error.message, "canonical issue creation count is 0, expected 1"
   end
 
+  def test_security_pins_support_portable_checkout_without_prompt_intake
+    surfaces = {
+      "workflows/pr-processing.md" => @workflow,
+      "skills/plan-pr-batch/SKILL.md" => @plan_skill,
+      "skills/pr-batch/SKILL.md" => @pr_batch_skill,
+      "skills/triage/SKILL.md" => @triage_skill
+    }
+
+    GoalPromptDriftContract.check_security_pins!(surfaces:, batch_plan_preflight: @batch_plan_preflight)
+  end
+
   def test_all_canonical_surfaces_share_one_readable_prompt
     assert_equal 1, @prompts.values.uniq.length
     assert_equal EXPECTED_PROMPT, @prompts.values.first
@@ -226,6 +237,8 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "one compact collapsed run record with one entry per target lane",
       "directly appends `Launched at` plus `Prompt digest at launch`",
       "successful security-preflight source URL, `body` field, and SHA-256 snapshot",
+      "When GitHub returns `body: null` for a title-only issue or pull request",
+      "treat its canonical source bytes as the empty UTF-8 string",
       "verifies identity and digest before it interprets the source",
       "`batch_plan_binding`",
       "workers never race GitHub read-modify-write updates",
@@ -233,6 +246,16 @@ class ReadableGoalPromptContractTest < Minitest::Test
       "complete Batch Plan for that coordinator group or an exact durable plan-state reference",
       "multi-target group remains one coordinator launch with one target per worker lane"
     ].each { |phrase| assert_includes normalized, phrase }
+  end
+
+  def test_copy_paste_handoff_delivers_prompt_plan_and_binding
+    [@plan_skill, @triage_skill].each do |text|
+      normalized = text.gsub(/\s+/, " ")
+      assert_includes normalized,
+                      "Start a new task with the fenced goal prompt, its Batch Plan or exact durable " \
+                      "plan-state reference, and the exact batch_plan_binding."
+      assert_includes normalized, "Next: Paste all three into that task"
+    end
   end
 
   def test_launcher_record_owns_launch_provenance_and_append_only_observations
