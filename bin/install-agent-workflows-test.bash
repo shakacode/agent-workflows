@@ -639,6 +639,41 @@ test_copy_install_restores_a_fully_removed_doctor_tree() {
   assert_file "$target/bin/agent_doctor/renderer.rb"
 }
 
+test_copy_install_refuses_an_unowned_newly_introduced_helper() {
+  local tmp source target output status helper before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  helper="$target/bin/agent-workflows-trust-audit"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  # A helper a newer source introduces has no recorded fingerprint, so the
+  # delivery-state inventory cannot speak for its destination.
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.read(path))
+    metadata.fetch("managed_bin_copy_fingerprints").delete("agent-workflows-trust-audit")
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
+  printf 'my own script\n' > "$helper"
+  before="$(shasum "$helper")"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "copy install overwrote an unowned newly introduced helper"
+  assert_contains "$output" "Refusing to replace unowned pack bin helper"
+  [[ "$before" = "$(shasum "$helper")" ]] || fail "refused install still overwrote the user's file"
+
+  # Restoring the pack's own content makes the destination ours again.
+  install -m 0755 "$source/bin/agent-workflows-trust-audit" "$helper"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+}
+
 test_copy_install_refuses_a_chmod_only_managed_helper_change() {
   local tmp source target output status helper
   tmp="$(mktemp -d)"
@@ -9203,6 +9238,7 @@ main() {
     test_copy_install_refuses_a_managed_doctor_root_mode_change
     test_copy_install_reports_a_missing_managed_doctor_module
     test_copy_install_restores_a_fully_removed_doctor_tree
+    test_copy_install_refuses_an_unowned_newly_introduced_helper
     test_copy_install_refuses_a_chmod_only_managed_helper_change
     test_copy_install_refuses_an_unexpected_managed_doctor_entry
     test_copy_install_refuses_a_symlinked_managed_bin_root

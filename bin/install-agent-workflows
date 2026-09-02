@@ -3538,6 +3538,59 @@ recorded_pack_root_copy_fingerprint_matches() {
   recorded_copy_fingerprint_matches "managed_pack_root_copy_fingerprints" "$1" "$2"
 }
 
+# Reports what the recorded map says about one helper, so the three cases stay
+# distinguishable: 0 the map records it, 1 the map records helpers but not this
+# one, 2 there is no usable map at all.
+recorded_bin_copy_fingerprint_state() {
+  local entry_name="$1"
+  local metadata_path="$target/$metadata_name"
+  local state=2
+  if [[ "${install_metadata_binding_state:-}" = "present" ]]; then
+    require_install_metadata_binding
+    metadata_path="$install_metadata_snapshot_path"
+  elif [[ "${install_metadata_binding_state:-}" = "absent" ]]; then
+    return 2
+  fi
+  [[ -f "$metadata_path" && ! -L "$metadata_path" ]] || return 2
+
+  ruby -rjson -e '
+    metadata_path, entry_name = ARGV
+    metadata = JSON.parse(File.binread(metadata_path))
+    exit 2 unless metadata.is_a?(Hash) && metadata["mode"] == "copy"
+    fingerprints = metadata["managed_bin_copy_fingerprints"]
+    exit 2 unless fingerprints.is_a?(Hash) && !fingerprints.empty?
+    exit(fingerprints[entry_name].is_a?(String) ? 0 : 1)
+  ' "$metadata_path" "$entry_name" 2>/dev/null
+  state=$?
+  if [[ "${install_metadata_binding_state:-}" = "present" ]]; then
+    require_install_metadata_binding
+  fi
+  return "$state"
+}
+
+# A helper a newer source introduces has no recorded fingerprint, so the
+# delivery-state inventory cannot speak for its destination. Refuse to
+# overwrite one that is not provably ours, the way pack documents already are.
+# A recorded helper is governed by that inventory instead, and metadata with no
+# map at all keeps the behavior it had before the map existed.
+pack_bin_helper_destination_owned() {
+  local helper="$1"
+  local destination="$2"
+  local source_path="$3"
+  local state=0
+
+  recorded_bin_copy_fingerprint_state "$helper" || state=$?
+  [[ "$state" -eq 1 ]] || return 0
+
+  if [[ "$mode" = "copy" ]]; then
+    recorded_revision_managed_file_matches "bin/$helper" "$destination" ||
+      { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
+      managed_file_symlink_matches_recorded_source "bin/$helper" "$destination"
+  else
+    managed_file_symlink_matches_recorded_source "bin/$helper" "$destination"
+  fi
+}
+
 verify_pack_doc_destinations() {
   local doc_name destination source_path
   [[ ! -L "$target/docs" ]] || return 0
@@ -3608,6 +3661,11 @@ verify_install_destinations() {
         echo "Refusing to replace non-file path: $destination" >&2
         exit 1
       fi
+      [[ -e "$destination" || -L "$destination" ]] || continue
+      pack_bin_helper_destination_owned "$helper" "$destination" "$repo_root/bin/$helper" && continue
+
+      echo "Refusing to replace unowned pack bin helper: $destination" >&2
+      exit 1
     done
   else
     for destination in "$target/bin" "$target/skills"; do
