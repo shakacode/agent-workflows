@@ -155,6 +155,26 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
 end
 
 class PrSecurityPreflightTest < Minitest::Test
+  def test_self_reports_canonical_helper_path_and_digest
+    with_fake_gh("warning-issue") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      path = File.realpath(SCRIPT)
+      digest = "sha256:#{Digest::SHA256.hexdigest(File.binread(path))}"
+
+      assert status.success?, out
+      assert_includes out.lines.map(&:chomp), "Preflight helper: #{path}"
+      assert_includes out.lines.map(&:chomp), "Preflight helper content digest: #{digest}"
+    end
+  end
+
   def test_missing_repo_config_uses_env_global_config
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       consumer_root = File.join(dir, "consumer")
@@ -3855,11 +3875,10 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
-  def test_trusted_base_rejects_unavailable_required_actor_repository_head_or_merge_facts
+  def test_trusted_base_rejects_unavailable_required_actor_repository_or_merge_facts
     cases = {
       "actor" => { "PREFLIGHT_TEST_MISSING_ACTOR" => "1" },
       "repository" => { "PREFLIGHT_TEST_GRAPH_HEAD_REPO" => "UNKNOWN" },
-      "head" => { "PREFLIGHT_TEST_GRAPH_HEAD_SHA" => "UNKNOWN" },
       "merge" => { "PREFLIGHT_TEST_GRAPH_MERGE_SHA" => "UNKNOWN" }
     }
 
@@ -3870,6 +3889,18 @@ class PrSecurityPreflightTest < Minitest::Test
         assert_trusted_base_blocked(out, status)
         assert_includes out, "Trusted-base high-risk acceptance unavailable:", label
       end
+    end
+  end
+
+  def test_scan_rejects_unavailable_graph_head_before_trusted_base_acceptance
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_GRAPH_HEAD_SHA" => "UNKNOWN" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      error = assert_raises(RuntimeError) do
+        run_trusted_base_preflight(env, trust_config_path, repo_root)
+      end
+
+      assert_includes error.message, "PR #123 head changed before preflight evidence scan"
     end
   end
 
@@ -3885,6 +3916,133 @@ class PrSecurityPreflightTest < Minitest::Test
 
       assert_trusted_base_blocked(out, status)
       refute_includes out, "Checks green."
+    end
+  end
+
+  def test_high_risk_file_output_includes_predicate_matches_from_same_evaluation
+    with_fake_gh("high-risk-file-predicates") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      expected_matches = [
+        { path: ".github/workflows/test.yml", matches: ["root-prefix"], broad_protected_parent_only: true },
+        {
+          path: "skills/pr-batch/bin/security-floor-contract-test.rb",
+          matches: ["nested-script-dir"],
+          broad_protected_parent_only: true
+        },
+        { path: "AGENTS.md", matches: ["exact-filename"], broad_protected_parent_only: false },
+        {
+          path: ".agents/bin/test",
+          matches: %w[root-prefix nested-script-dir],
+          broad_protected_parent_only: true
+        }
+      ]
+      diff_identity = {
+        base_ref_oid: "b" * 40,
+        head_ref_oid: "a" * 40
+      }
+
+      assert status.success?, out
+      assert_includes out, "Diff base/head identity: #{JSON.generate(diff_identity)}"
+      assert_includes out, "High-risk predicate matches: #{JSON.generate(expected_matches)}"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_pr_scan_fails_closed_when_base_or_head_changes
+    with_fake_gh("moving-pr-base") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      refute status.success?, out
+      assert_includes out, "PR #123 base/head or changed-file count changed while preflight evidence was scanned"
+    end
+  end
+
+  def test_pr_scan_fails_closed_when_files_api_inventory_is_incomplete
+    with_fake_gh("truncated-pr-files") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      refute status.success?, out
+      assert_includes out, "PR #123 changed-file evidence is incomplete: expected 2, fetched 1"
+    end
+  end
+
+  def test_pr_scan_fails_closed_at_files_api_cap_before_fetching_files
+    with_fake_gh("capped-pr-files") do |env, trust_config_path, log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      refute status.success?, out
+      assert_includes out, "PR #123 changed-file count is at or above the GitHub Files API cap (3000): 3000"
+      refute_includes File.read(log_path), "pulls/123/files?per_page=100"
+    end
+  end
+
+  def test_renamed_high_risk_file_emits_previous_path_predicate_evidence
+    with_fake_gh("renamed-high-risk-file") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      file_records = [{
+        path: "skills/pr-batch/bin/new-contract-test.rb",
+        previous_path: "skills/pr-batch/bin/old-contract-test.rb"
+      }]
+      expected_matches = file_records.first.values.map do |path|
+        { path:, matches: ["nested-script-dir"], broad_protected_parent_only: true }
+      end
+
+      assert status.success?, out
+      assert_includes out, "Changed file records: #{JSON.generate(file_records)}"
+      assert_includes out, "High-risk predicate matches: #{JSON.generate(expected_matches)}"
+    end
+  end
+
+  def test_pr_scan_fails_closed_when_base_or_head_is_malformed
+    with_fake_gh("malformed-pr-identity") do |env, trust_config_path, _log_path|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "123"
+      )
+
+      refute status.success?, out
+      assert_includes out, "PR #123 base/head identity is missing or malformed"
     end
   end
 
@@ -5863,7 +6021,7 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ] || [ "$mode" = "trusted-base-high-risk" ]; then
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ] || [ "$mode" = "trusted-base-high-risk" ]; then
           pr_body="${PREFLIGHT_TEST_PR_BODY:-}"
           cat <<JSON
       {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"${pr_body}","user":{"login":"justin808"},"pull_request":{}}
@@ -6050,7 +6208,7 @@ class PrSecurityPreflightTest < Minitest::Test
           cat <<JSON
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","state":"${state}","mergedAt":"2026-08-28T00:00:00Z","isCrossRepository":${cross_repository},"baseRefName":"${graph_base_ref}","headRefOid":"${head_sha}","headRepository":{"nameWithOwner":"${head_repo}"},"mergeCommit":{"oid":"${merge_sha}"},"author":${author_json},"participants":{${participant_count_field}"pageInfo":{"hasNextPage":${participant_has_next},"endCursor":${participant_end_cursor}},"nodes":${participant_nodes}},"timelineItems":{"totalCount":${timeline_total},"pageInfo":{"hasNextPage":${timeline_has_next},"endCursor":${timeline_end_cursor}},"nodes":${timeline_nodes}}}}}}
       JSON
-        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}]}}}}}
       JSON
@@ -6315,11 +6473,62 @@ class PrSecurityPreflightTest < Minitest::Test
         exit 0
       fi
 
+      if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123/files?per_page=100" ]; then
+        if [ "$mode" = "trusted-base-high-risk" ]; then
+          cat <<'JSON'
+      [[{"filename":".github/workflows/test.yml"},{"filename":"AGENTS.md"}]]
+      JSON
+        elif [ "$mode" = "high-risk-file-predicates" ]; then
+          cat <<'JSON'
+      [[{"filename":".github/workflows/test.yml"},{"filename":"skills/pr-batch/bin/security-floor-contract-test.rb"},{"filename":"AGENTS.md"},{"filename":".agents/bin/test"},{"filename":"docs/safe.md"}]]
+      JSON
+        elif [ "$mode" = "renamed-high-risk-file" ]; then
+          cat <<'JSON'
+      [[{"filename":"skills/pr-batch/bin/new-contract-test.rb","previous_filename":"skills/pr-batch/bin/old-contract-test.rb"}]]
+      JSON
+        elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+          printf '[[{"filename":"docs/safe.md"}]]'
+        else
+          printf '[[{"filename":".github/workflows/test.yml"}]]'
+        fi
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+        if [ "$mode" = "malformed-pr-identity" ]; then
+          printf '{"baseRefOid":null,"headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","changedFiles":1}\n'
+          exit 0
+        fi
+        base_oid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        changed_files=1
+        if [ "$mode" = "trusted-base-high-risk" ]; then
+          changed_files=2
+        elif [ "$mode" = "high-risk-file-predicates" ]; then
+          changed_files=5
+        elif [ "$mode" = "truncated-pr-files" ]; then
+          changed_files=2
+        elif [ "$mode" = "capped-pr-files" ]; then
+          changed_files=3000
+        fi
+        if [ "$mode" = "moving-pr-base" ]; then
+          identity_call_count="$(grep -c '^pr view 123 ' #{Shellwords.shellescape(log_path)})"
+          if [ "$identity_call_count" -gt 1 ]; then
+            base_oid="cccccccccccccccccccccccccccccccccccccccc"
+          fi
+        fi
+        printf '{"baseRefOid":"%s","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","changedFiles":%s}\n' "$base_oid" "$changed_files"
+        exit 0
+      fi
+
       if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
         for arg in "$@"; do
           if [ "$arg" = "--name-only" ]; then
             if [ "$mode" = "trusted-base-high-risk" ]; then
               printf '.github/workflows/test.yml\nAGENTS.md\n'
+              exit 0
+            fi
+            if [ "$mode" = "high-risk-file-predicates" ]; then
+              printf '.github/workflows/test.yml\nskills/pr-batch/bin/security-floor-contract-test.rb\nAGENTS.md\n.agents/bin/test\ndocs/safe.md\n'
               exit 0
             fi
             if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
@@ -6352,6 +6561,16 @@ class PrSecurityPreflightTest < Minitest::Test
       --- a/AGENTS.md
       +++ b/AGENTS.md
       +safe agent guidance
+          DIFF
+          exit 0
+        fi
+        if [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ]; then
+          cat <<'DIFF'
+      diff --git a/docs/safe.md b/docs/safe.md
+      index 0000000..1111111 100644
+      --- a/docs/safe.md
+      +++ b/docs/safe.md
+      +safe docs
       DIFF
           exit 0
         fi

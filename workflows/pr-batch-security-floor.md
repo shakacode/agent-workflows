@@ -116,23 +116,27 @@ overflow count. On overflow, preserve the helper's restricted temporary JSON
 artifact path, `sha256:` digest, and entry count; inspect the complete actor/URL
 queues from that artifact when triaging, but do not paste the full artifact into
 prompts or handoffs.
+A repository may opt in to `pr_security_preflight.trusted_base_high_risk_acceptance`
+in its trusted-base `.agents/agent-workflow.yml`. Accept the separate
+`TRUSTED_BASE_HIGH_RISK_ACCEPTED` receipt only when the helper freshly fetches the configured same-repository remote/ref and binds the exact merged PR head, merge result, fetched base, policy source, and every high-risk path. This waives only `high-risk-files`; manual acknowledgement remains distinct.
+The helper must independently authenticate the ref, pin its Git and SSH executables, bind the invoking checkout to the fetched base, and reject incomplete or untrusted actors, API evidence, policy, repository identity, or ancestry. Rerun preflight after any base movement so the provenance is current.
 
-A repository may opt in to
-`pr_security_preflight.trusted_base_high_risk_acceptance` in its trusted-base
-`.agents/agent-workflow.yml`. Accept the separate
-`TRUSTED_BASE_HIGH_RISK_ACCEPTED` receipt only when the helper freshly fetches
-the configured same-repository remote/ref and binds the exact merged PR head,
-merge result, fetched base, policy source, and every high-risk path. This waives
-only `high-risk-files`; manual acknowledgement remains distinct. The helper
-must independently authenticate the ref, pin its Git and SSH executables, bind
-the invoking checkout to the fetched base, and reject incomplete or untrusted
-actors, API evidence, policy, repository identity, or ancestry. Rerun preflight
-after any base movement so the provenance is current.
+A durable `adhoc:` override has no public GitHub target to scan; it still receives a `security-floor v1` result with preflight `n/a` and its complete trusted provenance embedded. Skipping preflight is never override authority.
 
-A durable `adhoc:` override has no public GitHub
-target to scan; it still receives a `security-floor v1` result with preflight
-`n/a` and its complete trusted provenance embedded. Skipping preflight is never
-override authority.
+One narrow integration-closeout resolution applies to a `high-risk-files`
+finding caused only by the broad protected-parent match:
+
+- Preconditions: require completed exact-head validation and configured review, plus final `safe_class == "tests"` from `skills/pr-batch/bin/autonomous-merge-eligibility` after it parses the trusted-base `AutonomousMergePolicy` for the same base/head from complete policy, semantic, and file evidence. Otherwise remain blocked;
+  never reconstruct policy or add another test-path list.
+- Evidence binding: independently recompute `sha256:` over the helper's self-reported canonical path and require it match the emitted digest. Preserve both plus its emitted exact diff base/head, current/previous file records, predicate evidence, and flat risky-path list;
+  require that pair match eligibility evidence. At resolution, repeat the computation and scan; require the digest unchanged and the same exact pair.
+- Predicate decision: require predicate paths to equal the flat risky-path list and require emitted `broad_protected_parent_only == true` for every high-risk predicate record; never infer it from raw matches or require predicate records for ordinary non-risky diff paths. The helper sets true only for `root-prefix` or `nested-script-dir`, including nested-script-dir-only, and false for `exact-filename`. Require each predicate path to be a current or previous path, then bind the full safe-class verdict to every diff path. It enforces `safe_path_groups.tests`
+  inclusion/exclusion and unambiguous `test_change == "strengthens-only"`; never
+  substitute a path-only check.
+- Independent stops: production helpers, mixed diffs, excluded tests,
+  `human_review_paths`, and `policy_paths` keep their own stops. Malformed,
+incomplete, stale, changed-digest, contradictory, or `UNKNOWN` policy, helper, file, validation, or review evidence remains `UNKNOWN` and blocked. This clears
+only the `high-risk-files` protected-parent stop; it never clears another security-floor or review gate.
 
 ## Security-Floor Result
 
@@ -141,7 +145,8 @@ Return one `security-floor v1` result per lane with:
 - canonical target and the trusted-base identity required at this stage;
 - evaluated lifecycle stage or consequential action;
 - preflight outcome, exact invocation, resolved trust-config provenance, every
-  reported finding, and acknowledged exact-target findings, or `n/a`;
+  reported finding, bound helper path and `sha256:` digest, and acknowledged
+  exact-target findings, or `n/a`;
 - untrusted and metadata-only comment/review queues: bounded inline actor/URL
   entries plus the complete overflow artifact path, digest, and count when
   present, or explicit empty queues;
@@ -151,6 +156,12 @@ Return one `security-floor v1` result per lane with:
   evidence from creation onward; before creation, record the planned identities
   and isolation mechanism with checkout-isolation evidence `n/a`;
 - exact head/base evidence binding required at the current stage;
+- for a protected-parent safe-test decision, both the original broad
+  protected-parent match and the safe-test-only resolution, with per-path
+  predicate matches and broad-only verdict, helper digest, matching exact
+  diff/eligibility base/head, trusted `AutonomousMergePolicy` provenance, final
+  `safe_class`, complete semantic and path evidence, and any independent blocking
+  path or evidence reason preserved;
 - consequential-action authority; and
 - `PASS`, `BLOCKED`, or `UNKNOWN`, plus the precise affected-lane reason.
 

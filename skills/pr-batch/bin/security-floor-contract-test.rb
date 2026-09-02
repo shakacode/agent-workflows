@@ -118,4 +118,57 @@ class SecurityFloorContractTest < Minitest::Test
     assert_includes normalized_intake, "complete durable override provenance embedded when applicable"
     refute_includes normalized_intake, "shared-security-floor result or accepted durable ad-hoc trust evidence"
   end
+
+  def test_pr_602_style_test_helper_can_resolve_only_the_broad_parent_risk_after_ordinary_gates
+    normalized_floor = @floor.gsub(/\s+/, " ")
+
+    assert_includes normalized_floor,
+                    "One narrow integration-closeout resolution applies"
+    assert_includes normalized_floor,
+                    "from `skills/pr-batch/bin/autonomous-merge-eligibility` after it parses the trusted-base `AutonomousMergePolicy`"
+    assert_includes normalized_floor,
+                    "final `safe_class == \"tests\"`"
+    assert_includes normalized_floor,
+                    "same base/head from complete policy, semantic, and file evidence"
+    assert_includes normalized_floor,
+                    "independently recompute `sha256:` over the helper's self-reported canonical path"
+    assert_includes normalized_floor,
+                    "require it match the emitted digest"
+    assert_includes normalized_floor,
+                    "emitted exact diff base/head, current/previous file records, predicate evidence, and flat risky-path list"
+    assert_includes normalized_floor,
+                    "require that pair match eligibility evidence"
+    assert_includes normalized_floor,
+                    "repeat the computation and scan; require the digest unchanged and the same exact pair"
+    assert_includes normalized_floor,
+                    "require predicate paths to equal the flat risky-path list"
+    assert_includes normalized_floor,
+                    "require emitted `broad_protected_parent_only == true` for every high-risk predicate record"
+    assert_includes normalized_floor,
+                    "never infer it from raw matches"
+    assert_includes normalized_floor,
+                    "never infer it from raw matches or require predicate records for ordinary non-risky diff paths"
+    assert_includes normalized_floor,
+                    "sets true only for `root-prefix` or `nested-script-dir`, including nested-script-dir-only, and false for `exact-filename`"
+    assert_includes normalized_floor,
+                    "Require each predicate path to be a current or previous path, then bind the full safe-class verdict to every diff path"
+    assert_includes normalized_floor,
+                    "enforces `safe_path_groups.tests` inclusion/exclusion and unambiguous `test_change == \"strengthens-only\"`"
+    assert_includes normalized_floor,
+                    "never substitute a path-only check"
+    assert_includes normalized_floor,
+                    "production helpers, mixed diffs, excluded tests, `human_review_paths`, and `policy_paths` keep their own stops"
+    assert_includes normalized_floor,
+                    "Malformed, incomplete, stale, changed-digest, contradictory, or `UNKNOWN` policy, helper"
+    assert_includes normalized_floor,
+                    "reported finding, bound helper path and `sha256:` digest"
+    assert_includes normalized_floor,
+                    "both the original broad protected-parent match and the safe-test-only resolution"
+    assert_includes normalized_floor,
+                    "predicate matches and broad-only verdict, helper digest, matching exact diff/eligibility base/head"
+    assert_includes normalized_floor,
+                    "final `safe_class`, complete semantic and path evidence"
+    assert_includes normalized_floor,
+                    "clears only the `high-risk-files` protected-parent stop"
+  end
 end

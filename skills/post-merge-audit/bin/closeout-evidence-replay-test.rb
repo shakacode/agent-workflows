@@ -447,6 +447,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       manual_checks: browser path complete; durable attachment pending
       user_visible_ui_change: yes
       visual_evidence_destination: human_attachment_pending
+      visual_evidence_blocked_reason: uploader_absent
       visual_evidence: blocked: human attachment required; prepared local artifacts: /tmp/before.png /tmp/after.png
       paint_check: passed: rendered screenshots inspected
       interaction_change: no
@@ -462,6 +463,84 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     MARKDOWN
 
     assert_equal "BLOCKED", data.fetch("qa_evidence").fetch("verdict")
+  end
+
+  def test_v2_blocked_upload_must_name_why_the_uploader_was_unavailable
+    %w[uploader_denied no_configured_store].push("upload_failed: 413 from the asset endpoint").each do |reason|
+      data = run_replay(blocked_visual_evidence_marker("visual_evidence_blocked_reason: #{reason}\n"))
+      assert_equal "BLOCKED", data.fetch("qa_evidence").fetch("verdict"), "expected #{reason} to replay"
+    end
+
+    ["", "visual_evidence_blocked_reason: unavailable\n", "visual_evidence_blocked_reason: upload_failed:\n"].each do |line|
+      data = run_replay(blocked_visual_evidence_marker(line))
+      assert_equal "UNKNOWN", data.fetch("qa_evidence").fetch("verdict"), "expected #{line.inspect} to fail closed"
+      assert_includes data.fetch("qa_evidence").fetch("missing"), "visual_evidence_blocked_reason"
+    end
+  end
+
+  def test_v2_rejects_a_blocked_reason_on_a_durable_receipt
+    satisfied = run_replay(durable_github_marker(""))
+    assert_equal "SATISFIED", satisfied.fetch("qa_evidence").fetch("verdict")
+
+    ["visual_evidence_blocked_reason: uploader_absent\n", "visual_evidence_blocked_reason:\n"].each do |line|
+      stray = run_replay(durable_github_marker(line))
+      assert_equal "UNKNOWN", stray.fetch("qa_evidence").fetch("verdict")
+      assert_includes stray.fetch("qa_evidence").fetch("missing"), "visual_evidence_blocked_reason.unexpected"
+    end
+  end
+
+  def durable_github_marker(reason_line)
+    <<~MARKDOWN
+      <!-- qa-evidence v2
+      required: yes
+      status: satisfied
+      head_sha: 1111111111111111111111111111111111111111
+      tested_at: PR #123 head 1111111111111111111111111111111111111111
+      scope: current UI change
+      automated_checks: bin/validate
+      manual_checks: browser path complete
+      user_visible_ui_change: yes
+      visual_evidence_destination: github_pr
+      #{reason_line}visual_evidence: durable: before https://github.com/user-attachments/assets/1111 and after https://github.com/user-attachments/assets/2222
+      paint_check: passed: rendered screenshots inspected
+      interaction_change: no
+      interaction_evidence: not applicable: no interaction behavior changed
+      visual_fix: yes
+      negative_control: observed_failure: unfixed implementation failed the visual assertion
+      performance_impact: not_applicable
+      performance_evidence: not applicable: no rendered-page, asset-delivery, or bundle impact
+      findings: none
+      release_blocking: clear
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
+  end
+
+  def blocked_visual_evidence_marker(reason_line)
+    <<~MARKDOWN
+      <!-- qa-evidence v2
+      required: yes
+      status: blocked
+      head_sha: 1111111111111111111111111111111111111111
+      tested_at: PR #123 head 1111111111111111111111111111111111111111
+      scope: current UI change
+      automated_checks: bin/validate
+      manual_checks: browser path complete; durable attachment pending
+      user_visible_ui_change: yes
+      visual_evidence_destination: human_attachment_pending
+      #{reason_line}visual_evidence: blocked: human attachment required; prepared local artifacts: /tmp/before.png /tmp/after.png
+      paint_check: passed: rendered screenshots inspected
+      interaction_change: no
+      interaction_evidence: not applicable: no interaction behavior changed
+      visual_fix: yes
+      negative_control: observed_failure: unfixed implementation failed the visual assertion
+      performance_impact: not_applicable
+      performance_evidence: not applicable: no rendered-page, asset-delivery, or bundle impact
+      findings: blocked on human attachment
+      release_blocking: blocked
+      process_gap_disposition: checklist+replay
+      -->
+    MARKDOWN
   end
 
   def test_v2_rejects_local_paths_as_durable_visual_or_interaction_evidence
