@@ -38,7 +38,7 @@ page:
 gh api --method GET --paginate --slurp \
   repos/<OWNER>/<REPO>/actions/workflows/<WORKFLOW_ID_OR_FILE>/runs \
   -f head_sha='<HEAD_SHA>' -F per_page=100 |
-  jq '[.[].workflow_runs[]] | group_by([.event, .head_sha]) | map(max_by([.created_at, .id])) | map({databaseId: .id, attempt: .run_attempt, conclusion: .conclusion, headSha: .head_sha, event: .event, workflowName: .name, number: .run_number, createdAt: .created_at, url: .html_url})'
+  jq '[.[].workflow_runs[] | {databaseId: .id, attempt: .run_attempt, conclusion: .conclusion, headSha: .head_sha, event: .event, workflowName: .name, number: .run_number, createdAt: .created_at, url: .html_url}]'
 gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
 gh api --method GET --paginate --slurp \
   repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs \
@@ -47,23 +47,25 @@ gh api --method GET --paginate --slurp \
 gh run view <RUN_ID> --attempt <N> --log
 ```
 
-Fully paginate the matching workflow's runs before selecting the newest run for
-each `(event, head_sha)` pair. Only then, for every selected run, enumerate
+Keep every fetched run until invocation equivalence has been derived; do not
+group, deduplicate, or select the newest run first. For every run, enumerate
 every attempt from `1` through its `attempt` value and fully paginate that
-attempt's jobs before deriving evidence. The selected run object establishes event and
-workflow selection; the attempt-specific jobs payload establishes the target
-job's own result, identity, and runner labels; and the logs supply any
-workflow-dispatch inputs, matrix values, runner image, toolchain version, or
-other configuration selection that the workflow prints. A run's aggregate
-`conclusion` must never stand in for the target job's result. If GitHub reports
-truncation, an API cap prevents any exhaustive listing, or a required dimension
-remains unavailable, record the incomplete fact as `UNKNOWN` rather than
-treating the returned page as complete.
+attempt's jobs. The run object establishes event and workflow selection; the
+attempt-specific jobs payload establishes the target job's own result, identity,
+and runner labels; and the logs supply controlled inputs, matrix parameters,
+runner image, toolchain/runtime, and relevant environment or configuration
+selection. Only after those dimensions are known may runs be partitioned by the
+full equivalence predicate and their target-job outcomes compared. A run's
+aggregate `conclusion` must never stand in for the target job's result. If GitHub
+reports truncation, an API cap prevents any exhaustive listing, or a required
+dimension remains unavailable, record the incomplete fact as `UNKNOWN` rather
+than treating the returned page as complete.
 
 An equivalent hosted invocation has matching controlled invocation parameters
 and selected or known pre-run hosted environment identity: event, inputs,
-matrix, runner image, toolchain, and configuration selection. It compares
-those pre-run facts, not runtime behavior or outcomes.
+matrix, runner image, toolchain/runtime, and relevant environment or
+configuration selection. It compares those pre-run facts, not runtime behavior
+or outcomes.
 
 ## Preflight
 
@@ -199,10 +201,11 @@ Then recommend the next smallest action:
 ## Self-Check
 
 - The failing hosted check and head SHA are exact.
-- Hosted history is derived only after complete matching-workflow run pagination,
-  newest-per-`(event, head_sha)` selection, and complete attempt/job pagination
-  for every selected run; incomplete evidence is `UNKNOWN` and `BLOCKED` before
-  a candidate deterministic/parity case can proceed.
+- Hosted history keeps repeated same-event/same-SHA runs through complete
+  attempt/job/log derivation. Different controlled dimensions remain separate;
+  differing target-job outcomes within one equivalent group route to
+  `fix-flaky-tests`. Incomplete evidence is `UNKNOWN` and `BLOCKED` before a
+  candidate deterministic/parity case can proceed.
 - If failure identity, hosted run history, or invocation equivalence is
   unavailable/unverifiable, record each unavailable fact as `UNKNOWN`,
   classify the result as `BLOCKED`, and stop.

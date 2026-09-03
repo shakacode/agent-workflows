@@ -84,8 +84,9 @@ and use the conservative outcome defined below.
    failure logs and history for the failure identity, then record the local
    result separately. An equivalent hosted invocation has matching controlled
    invocation parameters and selected or known pre-run hosted environment
-   identity—event, inputs, matrix, runner image, toolchain, and configuration
-   selection—not runtime behavior or outcomes. If equivalence is unverifiable,
+   identity—event, inputs, matrix, runner image, toolchain/runtime, and relevant
+   environment or configuration selection—not runtime behavior or outcomes. If
+   equivalence is unverifiable,
    exit 3 does not fire. Record `UNKNOWN`, do not classify or route the failure,
    and continue only evidence collection that does not depend on a
    deterministic/intermittent classification. If the missing evidence cannot
@@ -294,6 +295,10 @@ Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt t
   classification or routing, and keeps the task here; if the gap cannot be
   recovered, the outcome is `ROOT_CAUSE_NOT_IDENTIFIED` with the needed
   evidence named.
+- Repeated same-event/same-SHA runs survive until every equivalence dimension is
+  derived. Different controlled dimensions remain separate; differing
+  target-job outcomes within one equivalent group establish hosted
+  intermittency.
 - Local runs were used only for investigation; the pass claim cites CI.
 - No skip, sleep, retry wrapper, or unjustified timeout increase was proposed.
 - Infrastructure flakiness was claimed only with build-wide evidence.
