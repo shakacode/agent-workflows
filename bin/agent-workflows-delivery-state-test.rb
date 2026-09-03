@@ -2656,6 +2656,34 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     assert_equal [reported], JSON.parse(payload).fetch("blocking")
   end
 
+  def test_marker_only_conflict_path_is_scrubbed_before_serialization
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      raw = "/target/bin/agent_doctor/bad\xFFmarker".dup.force_encoding(Encoding::ASCII_8BIT)
+
+      original = AgentWorkflowsDeliveryState.method(:managed_doctor_marker_conflict)
+      AgentWorkflowsDeliveryState.define_singleton_method(:managed_doctor_marker_conflict) { |*, **| raw }
+      begin
+        payload = AgentWorkflowsDeliveryState.managed_bin_copy_state(
+          target:,
+          source:,
+          metadata: { "mode" => "copy", "managed_bin_copy_fingerprints" => fingerprints }
+        )
+      ensure
+        AgentWorkflowsDeliveryState.define_singleton_method(
+          :managed_doctor_marker_conflict,
+          original
+        )
+      end
+
+      reported = AgentWorkflowsDeliveryState.reportable_path(raw)
+      serialized = JSON.pretty_generate(payload)
+
+      assert_equal [reported], payload.fetch("blocking")
+      assert_equal payload, JSON.parse(serialized)
+    end
+  end
+
   def test_empty_managed_bin_fingerprints_fail_closed_for_a_copy_install
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       source, target, _fingerprints = managed_bin_fixture(tmp)

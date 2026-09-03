@@ -1050,7 +1050,7 @@ module AgentWorkflowsDeliveryState
     unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort.map { |path| reportable_path(path) }
     if unowned.empty? && unrestorable.empty? &&
        (marker = managed_doctor_marker_conflict(bin_root, source, fingerprints, attested: doctor_attested))
-      unowned = [marker]
+      unowned = [reportable_path(marker)]
     end
     blocking = (unowned + unrestorable).uniq.sort
 
