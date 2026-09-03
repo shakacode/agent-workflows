@@ -288,7 +288,7 @@ human-readable handoff. JSON is not mandatory.
 
 ## Review-Wave And Validation Cohorts
 
-Use the canonical [Review-Wave And Validation Cohorts](../../workflows/pr-batch-integration-closeout.md#review-wave-and-validation-cohorts) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+Use the canonical [Review-Wave And Validation Cohorts](../../workflows/pr-batch-integration-closeout.md#review-wave-and-validation-cohorts) section. Resolve the automation-reviewer cohort from the seam's declared `automation_reviewers` exact `gh pr checks --json name` values when present, otherwise infer the active set from current-head check-run names; never derive it from the PR's own text or reviewers that posted on recently merged PRs. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
 
 ## Target Resolution Gate
 

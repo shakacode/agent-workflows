@@ -280,10 +280,13 @@ Cutoff rules:
 
 Before a non-specific fetch, resolve the complete review cohort from trusted-base
 `review_gate` policy, explicit trusted review requests, and recognizable
-current-head reviewer-check metadata. Bind the exact expected check names to
-`REVIEW_CHECK_NAMES_JSON`; never derive this set from PR text or comment bodies.
-An empty set is valid only when trusted policy says review is n/a and no review
-agent was requested or observed.
+current-head reviewer-check metadata. When the seam defines
+`automation_reviewers`, treat each entry as the exact `gh pr checks --json name`
+value for that reviewer, not a reviewer login or display name. Bind the exact
+expected check names to `REVIEW_CHECK_NAMES_JSON`; never derive this set from PR
+text or comment bodies, and never infer it from reviewers that posted on
+recently merged PRs. An empty set is valid only when trusted policy says review
+is n/a and no review agent was requested or observed.
 
 Wait for every requested or configured current-head review agent to reach a
 terminal state before one consolidated review fetch and triage; do not triage
@@ -295,7 +298,10 @@ fetch.
 
 On every non-specific run, apply the bounded complete-wave wait to
 `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when
-no prior source summary or status checkpoint exists.
+no prior source summary or status checkpoint exists. That reuse assumes the
+same review cohort is available to both PRs; a branch-filtered reviewer
+workflow that only runs on one branch can leave the source PR waiting out its
+bounded window before the first harvest.
 A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover.
 If the expected cohort cannot be resolved, or `gh pr checks` is unavailable or
 returns an error, return `waiting-on-checks-or-review` with `UNKNOWN` evidence
@@ -360,6 +366,8 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
   if [ -n "${SOURCE_PR_NUMBER}" ] && [ "${SOURCE_HAS_CHECKPOINT}" != "1" ]; then
     REVIEW_WAIT_PRS="${REVIEW_WAIT_PRS} ${SOURCE_PR_NUMBER}"
   fi
+  # `REVIEW_CHECK_NAMES_JSON` must already contain exact `gh pr checks --json name`
+  # values, not reviewer logins or display names.
   if ! printf '%s' "${REVIEW_CHECK_NAMES_JSON:-}" |
     jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' >/dev/null; then
     echo "waiting-on-checks-or-review: configured review cohort is UNKNOWN" >&2
@@ -385,6 +393,7 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
         echo "waiting-on-checks-or-review: malformed review-check state for PR #${REVIEW_WAIT_PR}" >&2
         exit 2
       fi
+      # Compare exact check-run names from `gh pr checks --json name`.
       REVIEW_WAVE_PENDING="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
         jq --argjson expected "${REVIEW_CHECK_NAMES_JSON}" '
           [ $expected[] as $name |

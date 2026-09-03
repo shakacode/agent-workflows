@@ -21,9 +21,10 @@ USAGE_LIMIT_WAIVER = "A usage-limit or capacity failure — CodeRabbit's `too ma
                      "quota exhaustion — is an explicit terminal failed disposition that satisfies the review-artifact " \
                      "barrier as a waiver; record it and proceed to consolidated triage instead of parking in " \
                      "`waiting-on-checks-or-review` for an artifact the limit prevents."
-COHORT_DISCOVERY = "Resolve the automation-reviewer cohort from the seam's declared reviewers when present, otherwise " \
-                   "infer the active set from the reviewers that posted on recently merged PRs; never derive it from " \
-                   "the PR's own text."
+COHORT_DISCOVERY = "Resolve the automation-reviewer cohort from the seam's declared `automation_reviewers` exact " \
+                   "`gh pr checks --json name` values when present, otherwise infer the active set from current-head " \
+                   "check-run names; never derive it from the PR's own text or reviewers that posted on recently " \
+                   "merged PRs."
 
 class ReviewWaveContractTest < Minitest::Test
   def setup
@@ -92,6 +93,8 @@ class ReviewWaveContractTest < Minitest::Test
     [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER].each do |rule|
       assert_rule @docs, rule
     end
+    assert_rule @pr_batch, COHORT_DISCOVERY
+    assert_rule @docs, COHORT_DISCOVERY
     assert_includes @pr_batch,
                     "[Review-Wave And Validation Cohorts](../../workflows/pr-batch-integration-closeout.md#review-wave-and-validation-cohorts)"
   end

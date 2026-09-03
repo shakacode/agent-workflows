@@ -89,6 +89,7 @@ script means that capability is n/a in that repo.
 - `base_branch`
 - `follow_up_prefix`
 - `review_gate`
+- `automation_reviewers`
 - `approval_exempt`
 - `coordination_backend`
 - `changelog`
@@ -97,6 +98,10 @@ script means that capability is n/a in that repo.
 - `ci_parity_environment`
 - `hosted_ci_trigger`
 - `ci_change_detector`
+
+Optional policy keys such as `automation_reviewers` can carry machine-resolvable
+reviewer-to-check-name mappings; when present, each entry must use the exact
+`gh pr checks --json name` value, not a reviewer login or display name.
 
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
