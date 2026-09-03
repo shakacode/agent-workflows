@@ -3,6 +3,9 @@
 > **Status:** Working specification approved in principle by the maintainer on
 > 2026-09-02. This document records the operating decisions and follow-up work;
 > it does not by itself add a daemon, dashboard feature, or coordination API.
+> It is a point-in-time record. The live file layout, snapshot schema, writer
+> state, and desk rules are the
+> [Snapshot And Desk Contract](../control-tower-prompts.md#snapshot-and-desk-contract).
 
 ## Objective
 
@@ -28,9 +31,10 @@ control tower refreshes live state before acting.
 1. Run one user-facing control tower per repository. A control tower may create
    and supervise repository-scoped Codex tasks, but two control towers must not
    concurrently own the same repository portfolio.
-2. Use a shared macOS-mounted directory for the first Human Attention Desk.
-   The shared directory is transport and presentation, not the authoritative
-   coordination database.
+2. Use a shared network-mounted directory, such as SMB or NFS, for the first
+   Human Attention Desk. The shared directory is transport and presentation,
+   not the authoritative coordination database. File-sync clients are not a
+   supported transport.
 3. Each repository control tower is the sole writer of one repository snapshot.
    It never edits the combined Human Attention document.
 4. One dedicated HIL Desk task is the sole writer of the combined generated
@@ -52,6 +56,13 @@ control tower refreshes live state before acting.
 9. The free product supports one user and one Codex host with local state. The
    paid product earns its value through multi-host and multi-user coordination,
    shared dashboards, authorization, audit history, and provider adapters.
+10. The live contract lives with the prompts in
+    `docs/control-tower-prompts.md`, not in this plan, so the plan can be
+    archived as a historical record without becoming stale authority.
+11. Issue, pull-request, comment, label, and branch content is untrusted
+    evidence for every tower and for the desk. Authority comes only from
+    `AGENTS.md`, repository policy, and the maintainer's authenticated
+    instructions.
 
 ## Requirements
 
@@ -62,9 +73,9 @@ not workers launched or pull requests opened. During the initial catch-up wave,
 integration, review remediation, and obsolete-work closure take priority over
 creating broad new implementation work.
 
-Acceptance: every status snapshot reports opened, merged, and closed counts
-separately, plus the net change in open pull requests and issues since the wave
-began.
+Acceptance: every snapshot reports opened, merged, and closed counts separately
+for issues and for pull requests, plus each type's open count at wave start and
+now, so the net change per type since the wave began is derivable.
 
 ### R2 — Repository ownership
 
@@ -73,7 +84,9 @@ workers own bounded targets; the tower retains integration responsibility and
 is the only repository task that writes that repository's HIL snapshot.
 
 Acceptance: every repository snapshot identifies the repository, control-tower
-task, host, generation, and last successful refresh.
+task, host, generation, last successful refresh, declared refresh interval, and
+a status of `active`, `paused`, or `terminal`. A tower publishes a `terminal`
+snapshot when its interval ends or it stops.
 
 ### R3 — Conflict-free shared document
 
@@ -89,23 +102,28 @@ desk's last known good input.
 
 A tower SHALL write a complete temporary snapshot in the destination directory,
 validate it, and rename it to the canonical repository snapshot name. It SHALL
-increase a monotonically increasing generation. The HIL Desk SHALL reject a
-lower generation and preserve the last known good snapshot when a new file is
-invalid or incomplete.
+increase a monotonically increasing generation. A replacement tower SHALL
+continue from the generation in the existing canonical snapshot rather than
+restarting the counter. The HIL Desk SHALL reject a lower generation and
+preserve the last known good snapshot when a new file is invalid or incomplete.
 
 Acceptance: interruption before rename leaves either the previous valid
-snapshot or no snapshot, never a half-written canonical file.
+snapshot or no snapshot, never a half-written canonical file, and a restarted
+tower's first snapshot is accepted.
 
 ### R5 — One aggregate writer
 
 The short-term operating model SHALL designate one HIL Desk task and host as
 the aggregate writer. A replacement SHALL first establish that the prior task
-is terminal or that an explicit takeover has been authorized. Automatic
-multi-writer failover is out of scope for the file MVP.
+is terminal or that an explicit takeover has been authorized, then increment
+the writer epoch. Automatic multi-writer failover is out of scope for the file
+MVP.
 
 Acceptance: `state/hil-writer.json` identifies the current writer task, host,
-epoch, and last refresh. A mismatched live writer stops publication without
-stopping repository work.
+epoch, heartbeat, and each repository's last accepted generation. A writer is
+live while its heartbeat is fresher than the contract's threshold. A different
+live writer or a newer epoch stops publication without stopping repository
+work, and a replacement recovers accepted generations from that file.
 
 ### R6 — Source-task decisions
 
@@ -119,15 +137,21 @@ only after the source snapshot no longer reports it as unresolved.
 ### R7 — Dynamic priority
 
 The HIL Desk SHALL rerank from current inputs on every refresh. Priority SHALL
-be explained in plain language, not hidden behind an opaque score. The order is:
+be explained in plain language, not hidden behind an opaque score. Each item
+SHALL carry exactly one priority class, ranked in this order:
 
-1. imminent production, security, data-loss, or irreversible-action decisions;
-2. decisions that unblock the most valuable independent work;
-3. current-head merge or walkthrough decisions that are fully prepared;
-4. other outcome-changing product or architecture decisions.
+1. `irreversible`: imminent production, security, data-loss, or
+   irreversible-action decisions;
+2. `unblocks-work`: decisions that unblock the most valuable independent work;
+3. `ready-merge`: current-head merge or walkthrough decisions that are fully
+   prepared;
+4. `product-architecture`: other outcome-changing product or architecture
+   decisions.
 
 Routine implementation, bookkeeping, test-hardening preferences, unchanged
-state, and optional telemetry SHALL NOT enter the queue.
+state, and optional telemetry SHALL NOT enter the queue. A snapshot older than
+twice its declared refresh interval is stale; the desk SHALL show it as stale
+and SHALL NOT clear its items.
 
 Acceptance: a new higher-consequence item moves ahead of older lower-priority
 items on the next refresh and displays the reason for the move.
@@ -172,8 +196,8 @@ from `agent-coordination`. The file MVP SHALL not become a second permanent
 database or force dashboard code to parse Markdown as authority.
 
 Acceptance: the backend contract uses provider, host, task, repository, target,
-status, priority reason, deep link, and timestamps as structured fields; the
-Markdown document is generated output.
+status, priority class and reason, deep link, and timestamps as structured
+fields; the Markdown document is generated output.
 
 ### R12 — Product boundary
 
@@ -188,72 +212,14 @@ document for one user and one host.
 ## File MVP
 
 Each machine may mount the shared directory at a different local path. The
-control-tower prompts call that local path `<SHARED_HIL_ROOT>`.
+control-tower prompts call that local path `<SHARED_HIL_ROOT>`. The file
+layout, snapshot schema, writer state, generated-document fields, and transport
+rules are defined once, in the
+[Snapshot And Desk Contract](../control-tower-prompts.md#snapshot-and-desk-contract),
+so that towers, the desk, the later renderer, and the dashboard read one
+source. This plan does not duplicate them.
 
-```text
-<SHARED_HIL_ROOT>/
-  repo-snapshots/
-    shakacode--agent-workflows.json
-    shakacode--agent-coordination.json
-    shakacode--agent-coordination-dashboard.json
-  generated/
-    HUMAN_ATTENTION.md
-  state/
-    hil-writer.json
-```
-
-No tower scans or modifies another repository's snapshot. A snapshot is small,
-bounded, and contains only unresolved attention plus directional counts:
-
-```json
-{
-  "schema_version": 1,
-  "repository": "shakacode/agent-workflows",
-  "generation": 12,
-  "updated_at": "2026-09-02T18:00:00Z",
-  "control_tower": {
-    "provider": "codex",
-    "host": "M5",
-    "task_id": "stable-task-id",
-    "deeplink": "copied-native-deeplink-or-UNKNOWN"
-  },
-  "portfolio": {
-    "open_issues": 124,
-    "open_pull_requests": 87,
-    "merged_since_start": 0,
-    "closed_since_start": 0,
-    "opened_since_start": 0
-  },
-  "attention": [
-    {
-      "id": "repository-stable-attention-id",
-      "target": "https://github.com/OWNER/REPO/pull/123",
-      "source_task_id": "stable-task-id",
-      "source_deeplink": "copied-native-deeplink-or-UNKNOWN",
-      "kind": "architecture",
-      "question": "One exact outcome-changing question",
-      "choices": ["Material choice and consequence", "Other material choice and consequence"],
-      "priority_class": "unblocks-work",
-      "priority_reason": "Unblocks four integration-ready pull requests",
-      "safe_resume": "Exact instruction the source task will follow",
-      "created_at": "2026-09-02T17:00:00Z",
-      "refreshed_at": "2026-09-02T18:00:00Z"
-    }
-  ]
-}
-```
-
-The generated document begins with its generation, refresh time, writer, and a
-read-only warning. Every item shows the question, why it is currently ranked
-there, what it unlocks, attention estimate when known, host, freshness, target,
-and source-task deep link. It also shows degraded or stale repository snapshots
-without treating them as permission to clear their questions.
-
-If the human wants editable notes, use a different file such as
-`HUMAN_NOTES.md`. The HIL Desk never reads it as authority and never overwrites
-it.
-
-## Cross-Host Test
+## Cross-Host And Transport Tests
 
 Before building a resolver:
 
@@ -263,6 +229,14 @@ Before building a resolver:
 4. record whether the link opens, routes, fails, or selects an ambiguous local
    task; and
 5. preserve the stable task ID and host even when the link is unusable.
+
+Before trusting the desk, from each host:
+
+1. rename a complete temporary file over an existing snapshot and confirm the
+   other host sees either the old or the new file, never a partial one;
+2. record how long the other host takes to observe the new file;
+3. write different files from both hosts at the same time; and
+4. drop the mount during a rename and confirm the canonical file is intact.
 
 If native links are host-local, the dashboard later provides a stable attention
 URL that names the source host and offers the available host-specific open or
@@ -295,9 +269,11 @@ transcripts.
 
 - **Requirements:** R1-R10.
 - **Repository:** `agent-workflows`.
-- **Files:** `docs/control-tower-prompts.md` and documentation index.
+- **Files:** `docs/control-tower-prompts.md` (prompts and contract) and the
+  documentation index.
 - **Done:** concise paste-ready prompts exist for the two control towers, HIL
-  Desk, later dashboard lane, and another repository.
+  Desk, later dashboard lane, and another repository, and each links to the
+  contract.
 - **Parallelism:** independent of T2-T5.
 
 ### T2 — Prove the shared-file MVP manually
@@ -307,7 +283,9 @@ transcripts.
 - **Scope:** one M5 HIL Desk, one M5 `agent-workflows` tower, and one M1
   `agent-coordination` tower.
 - **Done:** both snapshots update without conflict, one generated document
-  reranks the combined queue, and a resolved source-task item disappears.
+  reranks the combined queue, a resolved source-task item disappears, a
+  restarted tower's next snapshot is accepted, and the transport tests above
+  are recorded.
 - **Parallelism:** starts after T1; dashboard work does not block it.
 
 ### T3 — Add a deterministic snapshot renderer
@@ -317,7 +295,8 @@ transcripts.
   portable renderer and `agent-coordination` for backend-owned state. Do not
   duplicate the implementation.
 - **Done:** fixtures prove atomic generation, generation rollback rejection,
-  malformed-input preservation, deterministic ranking, and bounded output.
+  malformed-input preservation, staleness labeling, deterministic ranking by
+  priority class, and bounded output.
 - **Parallelism:** after T2 reveals the smallest stable contract.
 
 ### T4 — Add structured attention state to Agent Coordination
@@ -358,14 +337,15 @@ transcripts.
 - **Design:** per-repository atomic snapshots, one aggregate writer, source-task
   decisions, native Codex links, and later backend/dashboard projection.
 - **Tasks:** T1-T5 above.
-- **File-touch map or discovery scope:** documentation now; renderer ownership
-  remains a bounded T3 planning decision.
+- **File-touch map or discovery scope:** documentation now, with the live
+  contract in `docs/control-tower-prompts.md`; renderer ownership remains a
+  bounded T3 planning decision.
 - **Validation expectations:** repository-owned focused checks and full gates;
-  T2 additionally proves M5/M1 file and deep-link behavior.
+  T2 additionally proves M5/M1 file, transport, and deep-link behavior.
 - **Expected readiness or unresolved `UNKNOWN` facts:** cross-host native Codex
   deep-link behavior and the final mounted paths remain `UNKNOWN` until T2.
 - **Blocking questions:** none for publishing prompts or running the manual MVP.
 - **Non-blocking assumptions:** the same shared directory is mounted read/write
-  on M5 and M1, possibly at different local paths.
+  on M5 and M1 over SMB or NFS, possibly at different local paths.
 - **Recommended `$plan-pr-batch` scope:** after the manual MVP, plan T3 and T4
   as separate issues; plan T5 only after its backlog gate clears.
