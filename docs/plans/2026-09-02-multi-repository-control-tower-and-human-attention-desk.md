@@ -74,8 +74,9 @@ integration, review remediation, and obsolete-work closure take priority over
 creating broad new implementation work.
 
 Acceptance: every snapshot reports opened, merged, and closed counts separately
-for issues and for pull requests, plus each type's open count at wave start and
-now, so the net change per type since the wave began is derivable.
+for issues and for pull requests, with closed pull requests excluding merged
+ones, plus each type's open count at wave start and now, so the net change per
+type since the wave began is derivable.
 
 ### R2 — Repository ownership
 
@@ -123,7 +124,10 @@ Acceptance: `state/hil-writer.json` identifies the current writer task, host,
 epoch, heartbeat, and each repository's last accepted generation. A writer is
 live while its heartbeat is fresher than the contract's threshold. A different
 live writer or a newer epoch stops publication without stopping repository
-work, and a replacement recovers accepted generations from that file.
+work. A replacement claims the file, re-reads it after one heartbeat interval
+before publishing, and recovers accepted generations from that file; the desk
+rebuilds the document from accepted inputs on every refresh so an interrupted
+publication is repaired.
 
 ### R6 — Source-task decisions
 

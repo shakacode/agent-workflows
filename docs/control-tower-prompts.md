@@ -189,10 +189,11 @@ epoch, heartbeat, and per-repository accepted generations at
 Before every write, re-read the writer state. If it names a different task with
 a live heartbeat or a newer epoch, stop publishing and notify me; never take
 over silently. Write a complete temporary file in the destination directory and
-rename it into place. Never edit repository snapshots. Reject malformed
-snapshots and generation rollback while preserving that repository's last
-accepted generation and input. Treat a snapshot as stale by the contract's
-threshold. Show stale, missing, or degraded sources visibly; do not infer that
+rename it into place. Rebuild the whole document from accepted inputs on every
+refresh, including startup, before updating the writer state. Never edit
+repository snapshots. Reject malformed snapshots and generation rollback while
+preserving that repository's last accepted generation and input. Treat a
+snapshot as stale by the contract's threshold. Show stale, missing, or degraded sources visibly; do not infer that
 their questions were resolved.
 
 The generated document is read-only for the human. Start it with the refresh
@@ -333,6 +334,8 @@ counts.
       "id": "repository-stable-attention-id",
       "target": "https://github.com/OWNER/REPO/pull/123",
       "source_task_id": "stable-task-id",
+      "source_provider": "codex",
+      "source_host": "M5",
       "source_deeplink": "copied-native-deeplink-or-UNKNOWN",
       "kind": "architecture",
       "question": "One exact outcome-changing question",
@@ -368,9 +371,20 @@ Field rules:
   stale when `updated_at` is older than twice that interval. The desk shows a
   stale source and never clears its items.
 - **`portfolio`** counts are per type since `wave_started_at`. Net change per
-  type is `open` minus `open_at_start`. `catch_up_wave_completed_at` stays
-  `null` until the first catch-up wave is complete and no integration-ready
-  pull request waits; it gates the dashboard lane.
+  type is `open` minus `open_at_start`. For pull requests, `merged` counts
+  merged ones and `closed` counts only those closed without merge; GitHub
+  reports a merged pull request as closed with `merged` true, so never count
+  it in both. `catch_up_wave_completed_at` stays `null` until the first
+  catch-up wave is complete and no integration-ready pull request waits; it
+  gates the dashboard lane.
+- **`source_task_id`, `source_provider`, `source_host`, `source_deeplink`**
+  identify the task that is waiting for the decision. When the tower itself
+  waits, they equal the `control_tower` values. A supervised task on another
+  host or provider carries its own values; the desk never infers a source host
+  from the tower.
+- **`safe_resume`** is required: the exact instruction the source task will
+  follow once the human answers in that task. The desk shows it verbatim and
+  never edits it.
 - **`kind`** is one of `production`, `security`, `data-loss`, `irreversible`,
   `architecture`, `product`, `merge`, `walkthrough`, or `authority`.
 - **`priority_class`** is exactly one of, in rank order:
@@ -424,8 +438,21 @@ Rules:
   `heartbeat_interval_seconds`. If the file names a different live task, or an
   `epoch` newer than the desk's own, the desk stops publishing and notifies the
   human. Repository towers continue unaffected.
+- **Claim and verify.** A desk claims the file by writing its identity and
+  `epoch`, waits one `heartbeat_interval_seconds`, and re-reads it. If the
+  writer identity differs, it stops and notifies. The claim is check-then-act
+  on a shared mount, so two desks started within one heartbeat interval can
+  both claim the same epoch until this step catches it. That is a known
+  limitation of the file MVP: the human starts at most one desk task and
+  starts a replacement only after the prior task is terminal.
 - **Heartbeat.** The desk updates `heartbeat_at` on every refresh, including a
   refresh that changes nothing.
+- **Publication order.** On every refresh, including startup and after
+  recovering `accepted`, the desk rebuilds the whole document from the accepted
+  inputs and renames it into place, then updates `accepted` and
+  `heartbeat_at`. An equal snapshot generation means the input did not change,
+  not that the document is current; a crash between the two renames is
+  repaired by the next rebuild.
 - **Replacement.** A replacement desk starts only after the prior task is
   terminal or the human authorizes takeover. It increments `epoch` and recovers
   `accepted` from this file, so a valid replacement snapshot is not rejected and
@@ -442,8 +469,10 @@ Rules:
   malformed, stale, or terminal, with its last accepted generation and time.
   Items from a degraded source stay listed with that label; the desk never
   clears them.
-- The desk reranks the whole queue on every material input change. Returning to
-  the document means returning to the current queue.
+- The document is derived output, rebuilt from accepted inputs on every
+  refresh and never edited incrementally. The desk reranks the whole queue on
+  every material input change. Returning to the document means returning to
+  the current queue.
 
 ### Transport
 
