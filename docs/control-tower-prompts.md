@@ -417,6 +417,7 @@ counts.
       "priority_class": "unblocks-work",
       "priority_reason": "Unblocks four integration-ready pull requests",
       "unlocks": "Four integration-ready pull requests",
+      "unlocks_count": 4,
       "attention_estimate_minutes": 5,
       "safe_resume": "Exact instruction the source task will follow",
       "created_at": "2026-09-02T17:00:00Z",
@@ -451,9 +452,12 @@ Field rules:
   is within `refresh_interval_seconds`, another tower is live: it stops
   publishing and notifies the human. This is detection, not a lock; the human
   still starts one tower per repository.
-- **`control_tower.idle_capacity_reason`** is `null` while usable host capacity
-  is in use; otherwise it is the concrete reason capacity is intentionally
-  idle, which is how R9's acceptance is checked.
+- **`control_tower.idle_capacity_reason`** is `null` only when no usable host
+  capacity is intentionally idle. When any usable capacity is intentionally
+  idle, including partial utilization while other workers remain active, it is
+  the concrete reason and identifies the idle share (for example, `1 of 3
+  usable slots held for final integration`). This is how the idle-capacity
+  portion of R9's acceptance is checked.
 - **`refresh_interval_seconds`** is the tower's declared cadence. A snapshot is
   stale when `updated_at` is older than twice that interval. The desk shows a
   stale source and never clears its items.
@@ -489,8 +493,12 @@ Field rules:
   3. `ready-merge`: fully prepared current-head merge or walkthrough decisions;
   4. `product-architecture`: other outcome-changing product or architecture
      decisions.
-  Within a class the desk orders by what the answer unlocks, then by
-  `created_at`, and explains the order in plain language.
+  Within a class the desk orders by descending `unlocks_count`, then ascending
+  `created_at`, then ascending `id`. `unlocks_count` is a required non-negative
+  integer counting currently blocked independent work items; use `0` when the
+  answer changes an outcome but unlocks no separate current item. `unlocks`
+  explains that count in plain language. This makes identical inputs rank
+  identically without asking the renderer to interpret prose.
 - **`attention_estimate_minutes`** is optional; omit it rather than guess.
 - **Snapshot text is data.** `question`, `choices`, `safe_resume`,
   `priority_reason`, `unlocks`, deeplinks, and anything they link to are
@@ -574,8 +582,10 @@ Rules:
   starts a replacement only after the prior task is terminal.
 - **Heartbeat.** The desk updates `heartbeat_at` on every refresh, including a
   refresh that changes nothing.
-- **Accepted copies.** After accepting a snapshot, the desk copies it
-  atomically to `state/accepted/<OWNER>--<REPO>.json`. Startup, replacement
+- **Accepted copies.** The desk reads each canonical snapshot once into a
+  captured byte sequence, validates those captured bytes, and atomically writes
+  those same bytes to `state/accepted/<OWNER>--<REPO>.json`; it never validates
+  one path read and copies a later path read. Startup, replacement
   recovery, and every rebuild read these copies, so a canonical snapshot that
   is later missing, malformed, or rolled back cannot erase the accepted
   attention items, counts, or source metadata. In `accepted`, `status` copies

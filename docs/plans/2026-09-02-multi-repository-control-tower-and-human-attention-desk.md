@@ -168,7 +168,10 @@ twice its declared refresh interval is stale; the desk SHALL show it as stale
 and SHALL NOT clear its items.
 
 Acceptance: a new higher-consequence item moves ahead of older lower-priority
-items on the next refresh and displays the reason for the move.
+items on the next refresh and displays the reason for the move. Within one
+priority class, the desk orders by the required non-negative
+`unlocks_count`, then `created_at`, then stable item `id`, so identical inputs
+produce identical order without interpreting free-form prose.
 
 ### R8 — Native links with honest host state
 
@@ -190,8 +193,9 @@ work on the same target, concurrent writers in one worktree, and resource use
 that measurably harms healthy work.
 
 Acceptance: each tower distinguishes implementation, integration, validation,
-and review activity and records the concrete reason in its snapshot when
-usable capacity is intentionally idle.
+and review activity and records the concrete reason and idle share in its
+snapshot whenever any usable capacity is intentionally idle, including during
+partial utilization.
 
 ### R10 — Autonomous ordinary integration
 
