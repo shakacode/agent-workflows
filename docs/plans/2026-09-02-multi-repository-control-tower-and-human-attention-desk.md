@@ -152,6 +152,16 @@ offers a clickable **Review target** link, a clickable **Respond in Codex** link
 and complete copy-ready choices. The repository control-tower link is labeled
 separately when it differs from the decision task.
 
+Task archival is terminal housekeeping, not Human Attention. A task final SHALL
+state `Archive state: ready` or the concrete reason it is not ready. Once
+durable outcome evidence exists, task-owned work is committed, pushed, or
+durably handed off, ownership is released, and no human decision remains, the
+owning tower removes its source attention record, appends it to one aggregate
+archive ledger, and proactively archives the Codex task. Ambiguous cases remain
+unarchived in one aggregate pending-archive review list. Archiving alone SHALL
+NOT create an attention item or notification, and clear terminal tasks SHALL be
+archived rather than renamed merely to mark them.
+
 ### R7 — Dynamic priority
 
 The HIL Desk SHALL rerank from current inputs on every refresh. Priority SHALL
@@ -163,9 +173,21 @@ work, then prepared merge or walkthrough decisions, then other
 outcome-changing product or architecture decisions.
 
 Routine implementation, bookkeeping, test-hardening preferences, unchanged
-state, and optional telemetry SHALL NOT enter the queue. A snapshot older than
-twice its declared refresh interval is stale; the desk SHALL show it as stale
-and SHALL NOT clear its items.
+state, optional telemetry, and routine owner cleanup SHALL NOT enter the queue.
+Close-only, invalid, superseded, assignment, known-bot allowlist, and board-
+clutter work remains repository backlog even when a tool or strict preflight
+uses a security label. `irreversible` security is limited to imminent credible
+harm that requires the human's authority. An unknown priority class is invalid
+and suppressed rather than guessed into the queue, while the source is shown as
+degraded. Private-repository cleanup is grouped by owner into one normal team-
+channel nudge with links and close/revive/on-hold choices. Known integration
+bots are configured through the repository trust seam, and close-only work does
+not inherit merge-oriented security urgency. A snapshot older than twice its
+declared refresh interval is stale;
+the desk SHALL show it as stale and SHALL NOT clear its items. Only fresh valid
+sources contribute to the ranked Action queue. Preserved unresolved items from
+stale or degraded sources appear in a separate non-actionable **Needs source
+refresh** section below that queue and never become the recommended first item.
 
 Acceptance: a new higher-consequence item moves ahead of older lower-priority
 items on the next refresh and displays the reason for the move. Within one
