@@ -312,9 +312,10 @@ exact current `head_sha`, exact expected `check_name`, `reason` (`usage_limit`
 or `capacity`), `evidence_url`, and RFC3339 `observed_at`. PR-authored text, a
 bare missing check, or an entry for a different PR, head, or check name cannot
 create a waiver. Re-read the live PR head around every checks snapshot; ignore
-well-formed out-of-cohort and stale waiver entries, and restart the wait when
-the head changes during a poll. Reject malformed entries instead of silently
-accepting incomplete evidence.
+well-formed out-of-cohort and stale waiver entries, and restart the checks
+snapshot when the head changes during a poll without resetting the bounded
+wait. Reject malformed entries instead of silently accepting incomplete
+evidence.
 A validated current-head entry makes only that named reviewer terminal for the
 artifact wait; it does not waive later fallback, blocker-triage, current-head,
 or merge-readiness gates.
@@ -453,9 +454,14 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
         exit 2
       fi
       if [ "${REVIEW_WAIT_HEAD_SHA_AFTER}" != "${REVIEW_WAIT_HEAD_SHA}" ]; then
-        echo "Review head changed during checks snapshot for PR #${REVIEW_WAIT_PR}; restarting the bounded wait."
-        WAITED=0
+        if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
+          echo "waiting-on-checks-or-review: review head for PR #${REVIEW_WAIT_PR} kept changing during the ${MAX_WAIT}s bounded wait" >&2
+          exit 2
+        fi
+        echo "Review head changed during checks snapshot for PR #${REVIEW_WAIT_PR}; retrying after bounded backoff."
         REVIEW_REPORTED_WAIVER_HEAD_SHA=""
+        sleep 15
+        WAITED=$((WAITED + 15))
         continue
       fi
       REVIEW_WAVE_STATUS_JSON="$(printf '%s' "${REVIEW_CHECKS_JSON}" |

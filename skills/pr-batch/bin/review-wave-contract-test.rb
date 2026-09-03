@@ -123,6 +123,8 @@ class ReviewWaveContractTest < Minitest::Test
       assert_includes text, "REVIEW_WAIT_HEAD_SHA_AFTER"
       assert_includes text, ".head_sha == $head"
       assert_includes text, "0|1|8"
+      assert_match(/REVIEW_WAIT_HEAD_SHA_AFTER.*?!=.*?REVIEW_WAIT_HEAD_SHA.*?WAITED.*?-ge.*?MAX_WAIT.*?exit 2.*?sleep 15.*?WAITED=\$\(\(WAITED \+ 15\)\).*?continue/m, text)
+      refute_match(/REVIEW_WAIT_HEAD_SHA_AFTER.*?!=.*?REVIEW_WAIT_HEAD_SHA.*?WAITED=0.*?continue/m, text)
       assert_includes text, "select(($waived | index($name)) == null)"
       assert_includes text, "pending_count:"
       assert_includes text, "missing_names:"
