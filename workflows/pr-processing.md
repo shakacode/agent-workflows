@@ -1280,9 +1280,11 @@ one of exactly these five checkpoints:
 - `dispatch`: one message when a wave launches.
 - `pr-open`: one message per PR when it is opened. This is the existing PR-open
   Lane Card moment.
-- `decision-required`: a blocker, a required approval, or a maintainer/product
-  question, classified under
-  [Question And Decision Handling](#question-and-decision-handling).
+- `decision-required`: a blocker that needs user action, a required approval, or
+  a maintainer/product question, classified under
+  [Question And Decision Handling](#question-and-decision-handling). A target
+  blocked on something the coordinator will clear itself is a `merge-decision`,
+  not a `decision-required`.
 - `merge-decision`: the merge, ready, or blocked verdict for a target.
 - `final-handoff`: the batch handoff.
 
@@ -1312,7 +1314,9 @@ occasion to speak: fold it into the `dispatch`, `decision-required`,
 `merge-decision`, or `final-handoff` message it accompanies, or emit it as an
 explicitly requested status report. A recap after the first one in a task
 repeats only the rows whose state changed since the previous recap. Unchanged targets collapse into
-one line naming their count and their shared state, not their evidence. Do not
+one aggregate line per distinct state, naming that state and how many targets
+hold it, not their evidence; a batch whose unchanged targets sit in three states
+produces three such lines, not one. Do not
 reprint a full table when one row moved. The first recap of a task is full
 because no previous state exists, and a changed row still carries its complete
 required evidence.
@@ -1351,7 +1355,7 @@ this compact marker exactly once inside **FYI / decisions made**, self-counted
 over its own user-visible messages in the task:
 
 ```text
-<!-- coordinator-narration-volume v1 batch_id=<percent-encoded-id>; messages=<int|UNKNOWN>; characters=<int|UNKNOWN>; checkpoints=dispatch:<int|UNKNOWN>,pr-open:<int|UNKNOWN>,decision-required:<int|UNKNOWN>,merge-decision:<int|UNKNOWN>,final-handoff:<int|UNKNOWN>; always_allowed=<int|UNKNOWN>; unclassified_messages=<int|UNKNOWN>; source=<coordinator-self-count|UNKNOWN> -->
+<!-- coordinator-narration-volume v1 batch_id=<percent-encoded-id>; messages=<int|UNKNOWN>; characters=<int|UNKNOWN>; checkpoints=dispatch:<int|UNKNOWN>,pr-open:<int|UNKNOWN>,decision-required:<int|UNKNOWN>,merge-decision:<int|UNKNOWN>,final-handoff:<int|UNKNOWN>; always_allowed=<int|UNKNOWN>; always_allowed_detail=direct-answer:<int|UNKNOWN>,requested-status:<int|UNKNOWN>,required-turn:<int|UNKNOWN>,safety-stop:<int|UNKNOWN>; unclassified_messages=<int|UNKNOWN>; source=<coordinator-self-count|UNKNOWN> -->
 ```
 
 `characters` counts Unicode code points, not bytes or grapheme clusters, over
@@ -1360,7 +1364,17 @@ rendered output — summed across every user-visible coordinator message in the
 task, including the final handoff. It excludes text the coordinator did not
 author, such as tool output and quoted reviewer bodies, and it excludes this
 marker itself, which cannot count itself. `messages` uses the same inclusion
-boundary. `always_allowed` counts the four always-allowed non-checkpoint kinds.
+boundary. `always_allowed` remains the v1 aggregate of the four always-allowed
+non-checkpoint kinds so existing readers retain the field shape they already
+parse. `always_allowed_detail` breaks that aggregate out per kind for the same
+reason the checkpoints are broken out: a single combined total cannot distinguish
+a legitimately long required walkthrough from a coordinator routing ordinary
+narration through the loosest category. `direct-answer` in particular means a
+reply to a question the user actually asked in this task, not narration the
+coordinator characterizes as answering something; narration that fails that test
+is `unclassified_messages`. A large `required-turn` count is expected and benign;
+a large `direct-answer` count is a drift signal exactly like a nonzero
+`unclassified_messages`.
 `unclassified_messages` counts user-visible messages that matched no checkpoint
 and no always-allowed category. Only text the coordinator shows the user is in
 scope at all: a worker's Lane Card at claim, block, or cancel is internal
@@ -1374,9 +1388,14 @@ a nonzero value is exactly the drift signal this counter exists to expose.
 Every user-visible message counts in exactly one bucket. When a message would
 match more than one, take the first match in this order: `final-handoff`,
 `decision-required`, `merge-decision`, `pr-open`, `dispatch`, then
-`always_allowed`. A final handoff that also carries per-target merge verdicts is
-therefore one `final-handoff` message, not two. With that rule and every field
-known, `messages` equals the five checkpoint counts plus `always_allowed` plus
+the first matching `always_allowed` subtype in this most-specific-first order:
+`safety-stop`, `required-turn`, `requested-status`, then `direct-answer`. This
+preserves the most specific reason the message was allowed instead of letting a
+broader direct answer absorb required or explicitly requested output. A final
+handoff that also carries per-target merge verdicts is therefore one
+`final-handoff` message, not two. With that rule and every field known,
+`always_allowed` equals the four `always_allowed_detail` counts, and `messages`
+equals the five checkpoint counts plus `always_allowed` plus
 `unclassified_messages`; report a reconciliation mismatch rather than silently
 adjusting a field.
 
