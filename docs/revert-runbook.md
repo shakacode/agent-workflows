@@ -576,11 +576,11 @@ one member of a rebased series depends on the PR, and testing member-by-member
 can find each individual commit "independent" while the PR as a whole is not.
 
 Otherwise **unwind the closure**: the suspect PR's range plus every closure
-unit that depends on it, transitively — whether that unit landed before or
-after the suspect PR. A declared `edit` or `validation_open` edge can add
-earlier-landed units to that closure even though they are not part of the
-later-commit comparison above. A dependent PR contributes its whole landed
-range, and a direct commit stands on its own, per
+unit that depends on it, transitively. Include later-landed dependents of every
+edge type. A declared `edit` or `validation_open` edge can also add
+earlier-landed units even though they are not part of the later-commit comparison
+above. A dependent PR contributes its whole landed range, and a direct commit
+stands on its own, per
 [Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr).
 If any input to that test is `UNKNOWN`, take the wider scope or stop for the
 operator. A too-wide revert is a review problem; a too-narrow revert leaves the
