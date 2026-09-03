@@ -587,7 +587,8 @@ esac
 # 1. Rename-aware history, one pathspec per invocation as --follow requires.
 for p in "${PATHS[@]}"; do
   printf '=== %s\n' "$p"
-  git --no-pager log --follow --format='%h %s' "${BASE_TIP}" -- "$p"
+  git --no-pager log --follow --format='%h %s' \
+    "${OLDEST_IN_SCOPE_SHA}^1..${BASE_TIP}" -- "$p"
 done
 
 # 2. Every rename from immediately before the oldest known closure unit through
