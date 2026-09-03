@@ -81,6 +81,22 @@
       }
     },
     {
+      "name": "current-fix-package-wrong-range",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["review-package-commit-list-mismatch"]
+      }
+    },
+    {
+      "name": "historical-package-report-digest-mismatch",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["review-round-report-digest-mismatch"]
+      }
+    },
+    {
       "name": "p0-cap-blocker",
       "expected": {
         "status": "blocked",

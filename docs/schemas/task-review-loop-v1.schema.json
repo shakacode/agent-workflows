@@ -230,6 +230,7 @@
         "kind",
         "package_digest",
         "review_package",
+        "worker_report",
         "base_sha",
         "head_sha",
         "implementer_id",
@@ -246,6 +247,7 @@
         "kind": {"enum": ["initial_review", "fix_re_review"]},
         "package_digest": {"$ref": "#/$defs/digest"},
         "review_package": {"$ref": "#/$defs/reviewPackage"},
+        "worker_report": {"$ref": "#/$defs/workerReport"},
         "base_sha": {"$ref": "#/$defs/sha"},
         "head_sha": {"$ref": "#/$defs/sha"},
         "implementer_id": {"$ref": "#/$defs/nonEmptyString"},
@@ -288,6 +290,7 @@
     "replacementEvidence": {
       "type": "object",
       "required": [
+        "identity",
         "round",
         "prior_implementer_id",
         "replacement_implementer_id",
@@ -297,6 +300,7 @@
         "evidence"
       ],
       "properties": {
+        "identity": {"$ref": "#/$defs/identity"},
         "round": {"type": "integer", "minimum": 0, "maximum": 5},
         "prior_implementer_id": {"$ref": "#/$defs/nonEmptyString"},
         "replacement_implementer_id": {"$ref": "#/$defs/nonEmptyString"},

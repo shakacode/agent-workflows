@@ -50,14 +50,15 @@ module TaskReviewLoop
   ].freeze
   ROUND_KEYS = %w[
     addressed_finding_ids base_sha digest head_sha implementer_id kind new_consequential_finding_ids
-    open_finding_ids package_digest prior_round_digest review_findings review_package reviewer_id number
+    open_finding_ids package_digest prior_round_digest review_findings review_package reviewer_id number worker_report
   ].freeze
   ARTIFACT_KEYS = %w[byte_count digest path].freeze
   EXACT_DIFF_KEYS = %w[byte_count digest path truncated].freeze
   OPEN_FINDINGS_KEYS = %w[byte_count digest ids path].freeze
   FINDING_CONTROL_KEYS = %w[cap_piercing finding_id load_bearing].freeze
   REPLACEMENT_KEYS = %w[
-    evidence ownership_reconciled prior_implementer_id prior_instance_stopped reason replacement_implementer_id round
+    evidence identity ownership_reconciled prior_implementer_id prior_instance_stopped reason replacement_implementer_id
+    round
   ].freeze
   CAP_KEYS = %w[coordinator_id findings round].freeze
   CAP_RECORD_REQUIRED_KEYS = %w[disposition evidence finding_id].freeze
@@ -159,7 +160,7 @@ module TaskReviewLoop
   def round_shape?(round)
     exact_keys?(round, ROUND_KEYS) && round["number"].is_a?(Integer) && round["number"].between?(0, 5) &&
       %w[initial_review fix_re_review].include?(round["kind"]) && digest?(round["package_digest"]) &&
-      review_package_shape?(round["review_package"]) &&
+      review_package_shape?(round["review_package"]) && worker_report_shape?(round["worker_report"]) &&
       full_sha?(round["base_sha"]) && full_sha?(round["head_sha"]) && non_empty_string?(round["implementer_id"]) &&
       non_empty_string?(round["reviewer_id"]) &&
       (round["prior_round_digest"].nil? || digest?(round["prior_round_digest"])) &&
@@ -194,7 +195,8 @@ module TaskReviewLoop
       [true, false].include?(control["load_bearing"]) && [true, false].include?(control["cap_piercing"])
     end
     return false unless input["replacement_evidence"].is_a?(Array) && input["replacement_evidence"].all? do |record|
-      exact_keys?(record, REPLACEMENT_KEYS) && record["round"].is_a?(Integer) && record["round"].between?(0, 5) &&
+      exact_keys?(record, REPLACEMENT_KEYS) && identity_shape?(record["identity"]) &&
+      record["round"].is_a?(Integer) && record["round"].between?(0, 5) &&
       non_empty_string?(record["prior_implementer_id"]) && non_empty_string?(record["replacement_implementer_id"]) &&
       REPLACEMENT_REASONS.include?(record["reason"]) && record["prior_instance_stopped"] == true &&
       record["ownership_reconciled"] == true && string_array?(record["evidence"], allow_empty: false)
@@ -270,11 +272,11 @@ module TaskReviewLoop
     expected_scope = round["number"].zero? ? "task" : "fix"
     package["base_sha"] == round["base_sha"] && package["head_sha"] == round["head_sha"] &&
       package["expected_current_head_sha"] == round["head_sha"] && package["scope"] == expected_scope &&
-      (!report_round_heads_valid || package_commit_range?(package, report))
+      report_round_heads_valid && package_commit_range?(package, report)
   end
 
-  def replacement_evidence_valid?(record, round_number, prior_implementer, replacement_implementer)
-    record.is_a?(Hash) && record["round"] == round_number &&
+  def replacement_evidence_valid?(record, identity, round_number, prior_implementer, replacement_implementer)
+    record.is_a?(Hash) && same_identity?(identity, record["identity"]) && record["round"] == round_number &&
       same_actor?(record["prior_implementer_id"], prior_implementer) &&
       same_actor?(record["replacement_implementer_id"], replacement_implementer) &&
       record["prior_instance_stopped"] == true && record["ownership_reconciled"] == true &&
@@ -322,7 +324,16 @@ module TaskReviewLoop
     [nil, "#{label}-unreadable"]
   end
 
-  def load_findings(reference, label)
+  def findings_cache_key(reference)
+    return unless reference.is_a?(Hash)
+
+    [reference["path"], reference["digest"], reference["byte_count"]]
+  end
+
+  def load_findings(reference, label, cache = nil)
+    cache_key = findings_cache_key(reference)
+    return [cache.fetch(cache_key), nil] if cache_key && cache&.key?(cache_key)
+
     bytes, artifact_error = load_artifact(reference, label)
     return [nil, artifact_error] if artifact_error
 
@@ -330,6 +341,7 @@ module TaskReviewLoop
     failures = ValidateReviewFindings.validate_document(document, label)
     return [nil, "#{label}-invalid"] unless failures.empty?
 
+    cache[cache_key] = document if cache_key && cache
     [document, nil]
   rescue JSON::ParserError
     [nil, "#{label}-invalid"]
@@ -388,7 +400,7 @@ module TaskReviewLoop
     validate_cap_adjudication(adjudication, open_ids)
   end
 
-  def validate_pending_open_findings(input, round, identity)
+  def validate_pending_open_findings(input, round, identity, findings_cache)
     reference = input["open_findings"]
     if round.nil?
       return [] if reference.nil? && input["finding_controls"].empty?
@@ -397,7 +409,7 @@ module TaskReviewLoop
     end
     return ["open-findings-required"] if reference.nil?
 
-    document, artifact_error = load_findings(reference, "open-findings")
+    document, artifact_error = load_findings(reference, "open-findings", findings_cache)
     return [artifact_error] if artifact_error
 
     errors = []
@@ -407,7 +419,7 @@ module TaskReviewLoop
       round["head_sha"],
       round["base_sha"]
     )
-    prior_document, = load_findings(round["review_findings"], "review-findings")
+    prior_document, = load_findings(round["review_findings"], "review-findings", findings_cache)
     if prior_document
       prior_open_records = prior_document.fetch("review_findings").select do |finding|
         OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
@@ -421,7 +433,7 @@ module TaskReviewLoop
     errors
   end
 
-  def validate(input)
+  def validate(input, findings_cache = {})
     return ["input-object-required"] unless input.is_a?(Hash)
     return ["contract-version-invalid"] unless input["contract"] == "task-review-loop" && input["version"] == 1
     return ["input-schema-invalid"] unless closed_shape?(input)
@@ -443,7 +455,9 @@ module TaskReviewLoop
     if input["review_state"] == "pending" && round.is_a?(Hash) && round["number"] == 5
       errors << "round-cap-reached"
     end
-    errors.concat(validate_pending_open_findings(input, round, identity)) if input["review_state"] == "pending"
+    if input["review_state"] == "pending"
+      errors.concat(validate_pending_open_findings(input, round, identity, findings_cache))
+    end
 
     if !rounds.is_a?(Array) || rounds.length > 6 || rounds.each_with_index.any? do |entry, index|
       !entry.is_a?(Hash) || entry["number"] != index ||
@@ -467,13 +481,7 @@ module TaskReviewLoop
     if brief.is_a?(Hash) && report.is_a?(Hash) && package.is_a?(Hash)
       errors << "review-package-brief-digest-mismatch" unless package["brief_digest"] == brief["digest"]
       errors << "review-package-report-digest-mismatch" unless package["worker_report_digest"] == report["digest"]
-      package_commits = package["commit_list"]
-      report_commits = report["commits"]
-      unless !package_commits.empty? && report_commits.last(package_commits.length) == package_commits &&
-             package_commits.last == package["head_sha"] && report_commits.last == report["head_sha"]
-        errors << "review-package-commit-list-mismatch"
-      end
-      if package["scope"] == "task" && package_commits != report_commits
+      unless package_commit_range?(package, report) && package["head_sha"] == report["head_sha"]
         errors << "review-package-commit-list-mismatch"
       end
       unless report_round_heads_valid
@@ -532,6 +540,7 @@ module TaskReviewLoop
       evidence = input.fetch("replacement_evidence", []).find do |record|
         replacement_evidence_valid?(
           record,
+          identity,
           0,
           report["initial_implementer_id"],
           package["implementer_id"]
@@ -545,6 +554,7 @@ module TaskReviewLoop
         evidence = input.fetch("replacement_evidence", []).find do |record|
           replacement_evidence_valid?(
             record,
+            identity,
             0,
             report["initial_implementer_id"],
             rounds.first["implementer_id"]
@@ -560,6 +570,7 @@ module TaskReviewLoop
         evidence = input.fetch("replacement_evidence", []).find do |record|
           replacement_evidence_valid?(
             record,
+            identity,
             rounds.last["number"] + 1,
             rounds.last["implementer_id"],
             package["implementer_id"]
@@ -578,6 +589,7 @@ module TaskReviewLoop
         evidence = input.fetch("replacement_evidence", []).find do |record|
           replacement_evidence_valid?(
             record,
+            identity,
             current_round["number"],
             prior_round["implementer_id"],
             current_round["implementer_id"]
@@ -594,22 +606,41 @@ module TaskReviewLoop
         errors << "review-round-digest-mismatch" unless valid_record_digest?(review_round)
         errors << "review-round-empty-range" if review_round["base_sha"] == review_round["head_sha"]
         round_package = review_round["review_package"]
+        round_report = review_round["worker_report"]
         current_completed_package = input["review_state"] == "complete" && index == rounds.length - 1
         unless round_package.is_a?(Hash) && review_round["package_digest"] == round_package["digest"] &&
                (!current_completed_package || round_package == package)
           errors << "review-round-package-mismatch"
         end
-        if round_package.is_a?(Hash) && !current_completed_package
+        if current_completed_package && round_report != report
+          errors << "review-round-report-mismatch"
+        end
+        if round_package.is_a?(Hash) && round_report.is_a?(Hash) && !current_completed_package
           errors << "review-round-package-invalid" unless valid_record_digest?(round_package)
+          errors << "review-round-report-invalid" unless valid_record_digest?(round_report)
           unless same_identity?(identity, round_package["identity"]) &&
                  round_package["brief_digest"] == brief["digest"]
             errors << "review-round-package-foreign"
           end
+          unless same_identity?(identity, round_report["identity"]) && round_report["brief_digest"] == brief["digest"]
+            errors << "review-round-report-foreign"
+          end
+          unless round_package["worker_report_digest"] == round_report["digest"]
+            errors << "review-round-report-digest-mismatch"
+          end
+          report_heads_valid = ordered_subsequence?(round_heads.first(index + 1), round_report["commits"])
+          unless round_report["base_sha"] == report["base_sha"] &&
+                 round_report["head_sha"] == review_round["head_sha"] &&
+                 round_report["commits"].last == review_round["head_sha"] && report_heads_valid &&
+                 same_actor?(round_report["initial_implementer_id"], report["initial_implementer_id"]) &&
+                 same_actor?(round_report["current_implementer_id"], review_round["implementer_id"])
+            errors << "review-round-report-binding-mismatch"
+          end
           unless round_package_range_bound?(
             round_package,
             review_round,
-            report,
-            report_round_heads_valid
+            round_report,
+            report_heads_valid
           )
             errors << "review-round-package-range-mismatch"
           end
@@ -623,7 +654,11 @@ module TaskReviewLoop
           errors << diff_error if diff_error
           errors << "review-round-exact-diff-empty" if diff && diff.strip.empty?
         end
-        findings_document, findings_error = load_findings(review_round["review_findings"], "review-findings")
+        findings_document, findings_error = load_findings(
+          review_round["review_findings"],
+          "review-findings",
+          findings_cache
+        )
         if findings_error
           errors << findings_error
           next
@@ -675,12 +710,12 @@ module TaskReviewLoop
       evidence = input.fetch("replacement_evidence", [])
       evidence_matches = evidence.map do |record|
         transitions.count do |number, prior_implementer, replacement_implementer|
-          replacement_evidence_valid?(record, number, prior_implementer, replacement_implementer)
+          replacement_evidence_valid?(record, identity, number, prior_implementer, replacement_implementer)
         end
       end
       expected_matches = transitions.map do |number, prior_implementer, replacement_implementer|
         evidence.count do |record|
-          replacement_evidence_valid?(record, number, prior_implementer, replacement_implementer)
+          replacement_evidence_valid?(record, identity, number, prior_implementer, replacement_implementer)
         end
       end
       if evidence_matches.any? { |count| count != 1 } || expected_matches.any? { |count| count > 1 }
@@ -700,7 +735,7 @@ module TaskReviewLoop
         end
       end
 
-      open_document, open_error = load_findings(input["open_findings"], "open-findings")
+      open_document, open_error = load_findings(input["open_findings"], "open-findings", findings_cache)
       errors << open_error if open_error
       if open_document && input["open_findings"].is_a?(Hash)
         errors << "open-findings-foreign" unless findings_bound?(
@@ -712,7 +747,9 @@ module TaskReviewLoop
         open_records = open_document.fetch("review_findings")
         actual_open_ids = open_records.map { |finding| finding["id"] }
         errors << "open-finding-ids-mismatch" unless input["open_findings"]["ids"] == actual_open_ids
-        latest_document, = load_findings(round["review_findings"], "review-findings") if round.is_a?(Hash)
+        if round.is_a?(Hash)
+          latest_document, = load_findings(round["review_findings"], "review-findings", findings_cache)
+        end
         if latest_document
           latest_open_records = latest_document.fetch("review_findings").select do |finding|
             OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
@@ -745,7 +782,8 @@ module TaskReviewLoop
   end
 
   def reduce(input)
-    errors = validate(input)
+    findings_cache = {}
+    errors = validate(input, findings_cache)
     unless errors.empty?
       return decision("blocked", false, errors.sort)
     end
@@ -755,7 +793,8 @@ module TaskReviewLoop
       if open_ids == []
         decision("task_complete", true, ["review-clean"])
       elsif input.fetch("rounds").last["number"] == 5
-        blocking_reasons = cap_blocking_reasons(input)
+        open_document = findings_cache.fetch(findings_cache_key(input["open_findings"]))
+        blocking_reasons = cap_blocking_reasons(input, open_document)
         if blocking_reasons.empty?
           decision("task_complete", true, ["cap-adjudicated"])
         else
@@ -772,8 +811,7 @@ module TaskReviewLoop
     end
   end
 
-  def cap_blocking_reasons(input)
-    document, = load_findings(input["open_findings"], "open-findings")
+  def cap_blocking_reasons(input, document)
     findings = document.fetch("review_findings")
     reasons = []
     reasons << "p0-finding-open" if findings.any? { |finding| finding["severity"] == "P0" }

@@ -9,6 +9,7 @@ gem "json_schemer", PINNED_JSON_SCHEMER_VERSION
 require "json_schemer"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "tmpdir"
 
 HELPER = File.expand_path("task-review-loop", __dir__)
@@ -46,6 +47,9 @@ class TaskReviewLoopTest < Minitest::Test
 
       assert validator.valid?(input)
       refute validator.valid?(input.merge("unexpected" => true))
+      refute validator.valid?(
+        input.merge("rounds" => [input.fetch("rounds").first.reject { |key, _value| key == "worker_report" }])
+      )
     end
   end
 
@@ -55,6 +59,11 @@ class TaskReviewLoopTest < Minitest::Test
       replacement = replacement_input(directory).merge("replacement_evidence" => [replacement_record])
 
       assert validator.valid?(replacement)
+      refute validator.valid?(
+        replacement.merge(
+          "replacement_evidence" => [replacement_record.reject { |key, _value| key == "identity" }]
+        )
+      )
       assert validator.valid?(cap_input(directory))
     end
   end
@@ -251,6 +260,38 @@ class TaskReviewLoopTest < Minitest::Test
 
       assert_equal "blocked", output.fetch("status")
       assert_equal ["exact-diff-unreadable"], output.fetch("reasons")
+    end
+  end
+
+  def test_validated_findings_artifacts_are_not_reloaded_during_reduction
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = cap_input(directory)
+      findings_path = input.dig("open_findings", "path")
+      script = <<~'RUBY'
+        target = ENV.fetch("TASK_REVIEW_FINDINGS_PATH")
+        reads = 0
+        original_binread = File.method(:binread)
+        File.define_singleton_method(:binread) do |path, *args|
+          if path == target
+            reads += 1
+            raise Errno::ENOENT, path if reads > 1
+          end
+          original_binread.call(path, *args)
+        end
+        load ARGV.fetch(0)
+      RUBY
+
+      stdout, stderr, status = Open3.capture3(
+        { "TASK_REVIEW_FINDINGS_PATH" => findings_path },
+        RbConfig.ruby,
+        "-e",
+        script,
+        HELPER,
+        stdin_data: JSON.generate(input)
+      )
+
+      assert status.success?, stderr
+      assert_equal "task_complete", JSON.parse(stdout).fetch("status")
     end
   end
 
@@ -494,6 +535,20 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_replacement_evidence_is_bound_to_the_task_identity
+    Dir.mktmpdir("task-review-loop") do |directory|
+      foreign_identity = TASK_IDENTITY.merge("task_id" => "another-task")
+      evidence = replacement_record.merge("identity" => foreign_identity)
+      input = replacement_input(directory).merge("replacement_evidence" => [evidence])
+
+      output, = evaluate(input)
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "worker-replacement-evidence-foreign"
+      refute output.fetch("dependent_task_permitted")
+    end
+  end
+
   def test_five_round_cap_requires_complete_evidence_backed_adjudication_and_has_no_sixth_round
     replay = replay_case("five-round-cap-adjudicated")
 
@@ -557,6 +612,84 @@ class TaskReviewLoopTest < Minitest::Test
       assert_equal false, output.fetch("dependent_task_permitted")
       assert_includes output.fetch("reasons"), "review-round-package-range-mismatch"
       refute_includes output.fetch("reasons"), "cap-adjudicated"
+    end
+  end
+
+  def test_historical_package_worker_report_digest_resolves_to_its_retained_report
+    replay = replay_case("historical-package-report-digest-mismatch")
+
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = consequential_breakage_input(directory)
+      rounds = input.fetch("rounds").dup
+      historical_package = with_digest(
+        rounds.fetch(0).fetch("review_package").merge(
+          "worker_report_digest" => "sha256:#{'0' * 64}"
+        ).reject { |key, _value| key == "digest" }
+      )
+      rounds[0] = with_digest(
+        rounds.fetch(0).merge(
+          "package_digest" => historical_package.fetch("digest"),
+          "review_package" => historical_package
+        ).reject { |key, _value| key == "digest" }
+      )
+      current_package = with_digest(
+        input.fetch("review_package").merge(
+          "prior_round_digest" => rounds.fetch(0).fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+      rounds[1] = with_digest(
+        rounds.fetch(1).merge(
+          "package_digest" => current_package.fetch("digest"),
+          "review_package" => current_package,
+          "prior_round_digest" => rounds.fetch(0).fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(input.merge("review_package" => current_package, "rounds" => rounds))
+
+      assert_equal replay.fetch("expected"), output.slice(*replay.fetch("expected").keys)
+    end
+  end
+
+  def test_invalid_historical_report_round_heads_fail_the_package_range_closed
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = consequential_breakage_input(directory)
+      rounds = input.fetch("rounds").dup
+      historical_report = with_digest(
+        rounds.fetch(0).fetch("worker_report").merge(
+          "commits" => [OTHER_HEAD_SHA]
+        ).reject { |key, _value| key == "digest" }
+      )
+      historical_package = with_digest(
+        rounds.fetch(0).fetch("review_package").merge(
+          "worker_report_digest" => historical_report.fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+      rounds[0] = with_digest(
+        rounds.fetch(0).merge(
+          "package_digest" => historical_package.fetch("digest"),
+          "review_package" => historical_package,
+          "worker_report" => historical_report
+        ).reject { |key, _value| key == "digest" }
+      )
+      current_package = with_digest(
+        input.fetch("review_package").merge(
+          "prior_round_digest" => rounds.fetch(0).fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+      rounds[1] = with_digest(
+        rounds.fetch(1).merge(
+          "package_digest" => current_package.fetch("digest"),
+          "review_package" => current_package,
+          "prior_round_digest" => rounds.fetch(0).fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(input.merge("review_package" => current_package, "rounds" => rounds))
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-round-package-range-mismatch"
+      refute output.fetch("dependent_task_permitted")
     end
   end
 
@@ -823,6 +956,7 @@ class TaskReviewLoopTest < Minitest::Test
         "kind" => "fix_re_review",
         "package_digest" => package.fetch("digest"),
         "review_package" => package,
+        "worker_report" => report,
         "base_sha" => FIX_HEAD_SHA,
         "head_sha" => OTHER_HEAD_SHA,
         "implementer_id" => "implementer-a",
@@ -940,6 +1074,30 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_current_fix_package_covers_the_exact_report_slice_after_its_base
+    replay = replay_case("current-fix-package-wrong-range")
+
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = rebind_report(
+        consequential_breakage_input(directory),
+        "commits" => [HEAD_SHA, OTHER_HEAD_SHA, FIX_HEAD_SHA]
+      )
+      variants = {
+        "omitted-intermediate-commit" => input,
+        "included-reviewed-base" => rebind_package(
+          input,
+          "commit_list" => [HEAD_SHA, OTHER_HEAD_SHA, FIX_HEAD_SHA]
+        )
+      }
+
+      variants.each do |name, variant|
+        output, = evaluate(variant)
+
+        assert_equal replay.fetch("expected"), output.slice(*replay.fetch("expected").keys), name
+      end
+    end
+  end
+
   def test_initial_task_package_covers_the_full_worker_report_commit_sequence
     Dir.mktmpdir("task-review-loop") do |directory|
       input = clean_review_input(directory)
@@ -958,7 +1116,7 @@ class TaskReviewLoopTest < Minitest::Test
       output, = evaluate(input)
 
       assert_equal "blocked", output.fetch("status")
-      assert_equal ["worker-report-round-heads-mismatch"], output.fetch("reasons")
+      assert_includes output.fetch("reasons"), "worker-report-round-heads-mismatch"
     end
   end
 
@@ -1000,6 +1158,7 @@ class TaskReviewLoopTest < Minitest::Test
           "kind" => "fix_re_review",
           "package_digest" => package.fetch("digest"),
           "review_package" => package,
+          "worker_report" => report,
           "base_sha" => HEAD_SHA,
           "head_sha" => OTHER_HEAD_SHA,
           "prior_round_digest" => prior.fetch("digest")
@@ -1028,7 +1187,11 @@ class TaskReviewLoopTest < Minitest::Test
       )
       rounds = input.fetch("rounds").dup
       rounds[-1] = with_digest(
-        rounds.last.merge("package_digest" => package.fetch("digest"), "review_package" => package)
+        rounds.last.merge(
+          "package_digest" => package.fetch("digest"),
+          "review_package" => package,
+          "worker_report" => report
+        )
               .reject { |key, _value| key == "digest" }
       )
       output, = evaluate(input.merge("worker_report" => report, "review_package" => package, "rounds" => rounds))
@@ -1337,6 +1500,7 @@ class TaskReviewLoopTest < Minitest::Test
       "kind" => "initial_review",
       "package_digest" => package.fetch("digest"),
       "review_package" => package,
+      "worker_report" => report,
       "base_sha" => BASE_SHA,
       "head_sha" => HEAD_SHA,
       "implementer_id" => "implementer-a",
@@ -1420,6 +1584,7 @@ class TaskReviewLoopTest < Minitest::Test
       "kind" => "fix_re_review",
       "package_digest" => package.fetch("digest"),
       "review_package" => package,
+      "worker_report" => report,
       "base_sha" => HEAD_SHA,
       "head_sha" => FIX_HEAD_SHA,
       "implementer_id" => "implementer-a",
@@ -1459,6 +1624,7 @@ class TaskReviewLoopTest < Minitest::Test
       rounds.last.merge(
         "package_digest" => package.fetch("digest"),
         "review_package" => package,
+        "worker_report" => report,
         "implementer_id" => "implementer-c"
       ).reject { |key, _value| key == "digest" }
     )
@@ -1467,6 +1633,7 @@ class TaskReviewLoopTest < Minitest::Test
 
   def replacement_record(round: 1)
     {
+      "identity" => TASK_IDENTITY,
       "round" => round,
       "prior_implementer_id" => "implementer-a",
       "replacement_implementer_id" => "implementer-c",
@@ -1538,6 +1705,7 @@ class TaskReviewLoopTest < Minitest::Test
         "kind" => "fix_re_review",
         "package_digest" => round_package.fetch("digest"),
         "review_package" => round_package,
+        "worker_report" => round_report,
         "base_sha" => CAP_HEAD_SHAS.fetch(number - 1),
         "head_sha" => CAP_HEAD_SHAS.fetch(number),
         "implementer_id" => "implementer-a",
@@ -1587,6 +1755,7 @@ class TaskReviewLoopTest < Minitest::Test
       "kind" => "fix_re_review",
       "package_digest" => package.fetch("digest"),
       "review_package" => package,
+      "worker_report" => report,
       "base_sha" => CAP_HEAD_SHAS.fetch(4),
       "head_sha" => final_head,
       "implementer_id" => "implementer-a",
@@ -1716,8 +1885,10 @@ class TaskReviewLoopTest < Minitest::Test
   def rebind_package(input, changes)
     package = with_digest(input.fetch("review_package").merge(changes).reject { |key, _value| key == "digest" })
     rounds = input.fetch("rounds").dup
+    round_changes = { "package_digest" => package.fetch("digest"), "review_package" => package }
+    round_changes["worker_report"] = input.fetch("worker_report") if input["review_state"] == "complete"
     rounds[-1] = with_digest(
-      rounds.last.merge("package_digest" => package.fetch("digest"), "review_package" => package)
+      rounds.last.merge(round_changes)
             .reject { |key, _value| key == "digest" }
     )
     input.merge("review_package" => package, "rounds" => rounds)

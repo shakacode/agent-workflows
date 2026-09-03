@@ -79,6 +79,8 @@ and brief digest. It records:
 
 Append fix evidence to the same task-scoped report, then recompute its digest.
 The coordinator can show a compact status, but review uses the durable report.
+A completed round retains the exact report snapshot that its review package
+names. The reducer validates that report before the round can count.
 A new implementer never relies on hidden context from the prior worker.
 Only `done` and `done_with_concerns` reports can enter review. A
 `needs_context` or `blocked` report remains a worker-execution stop.
@@ -93,11 +95,11 @@ diff stat, and prior-round digest.
 Capture the complete diff in a readable artifact. Set its raw-byte digest and
 byte count and set `truncated` to false. For initial review, use `scope: task`,
 the task base, the worker report's full ordered commit list, and a null
-prior-round digest. For re-review, use `scope: fix`,
-the head seen by the preceding review as the diff base, and that preceding
-round's digest. Its commit list is the current suffix of the worker report,
-which retains every completed round head in order. Never use `HEAD~1` as a
-substitute for the accepted task or fix base.
+prior-round digest. For re-review, use `scope: fix`, the head seen by the
+preceding review as the diff base, and that preceding round's digest. Its
+commit list is the complete base-exclusive and head-inclusive slice of the
+worker report, which retains every completed round head in order. Never use
+`HEAD~1` as a substitute for the accepted task or fix base.
 
 The helper rejects an unreadable, empty, stale, truncated, digest-mismatched,
 foreign-task, wrong-scope, or incorrectly chained package. Base and head must
@@ -105,19 +107,22 @@ be distinct in the package and every completed round; a nonempty artifact
 cannot make an empty Git range reviewable. A pending valid package reduces to
 `review_eligible`.
 
-Retain the complete `review_package` inside every completed round. Its
-`package_digest` must match the retained package digest. Before a round counts,
-the helper verifies the retained record digest, reloads its exact-diff artifact,
-and binds its task identity, brief, scope, base/head, expected head, actors,
-prior-round digest, and exact worker-report commit slice. A missing, fabricated,
-or wrong-range historical package fails closed before cap adjudication or
-dependent work.
+Retain the complete `review_package` and its exact `worker_report` snapshot
+inside every completed round. Its `package_digest` must match the retained
+package digest, and its `worker_report_digest` must resolve to the retained
+report digest. Before a round counts, the helper verifies both retained record
+digests, reloads its exact-diff artifact, and binds task identity, brief,
+scope, base/head, expected head, actors, prior-round digest, and the exact
+report commit slice. A missing, fabricated, wrong-report, or wrong-range
+historical package fails closed before cap adjudication or dependent work.
 
 ## Review Findings And Independence
 
 Each review writes a separate `review-finding-v0` JSON artifact. The helper
 loads it and calls `ValidateReviewFindings.validate_document`; do not define a
 second finding format or translate findings into a private severity system.
+Within one reduction, the helper passes each validated findings document
+through later checks instead of reloading the artifact from disk.
 Set each existing finding `target` to the exact task identity plus the reviewed
 head SHA. When a canonical review receipt is present, bind its committed target
 to the round's exact base and head too. A foreign identity or range fails closed.
@@ -148,8 +153,9 @@ silently expand the task loop.
 
 Round `0` is the initial task review. Fix rounds are numbered `1` through `5`.
 One fix round contains one implementation pass, covering verification evidence,
-one retained exact fix-diff package, and one independent re-review. Each record
-contains that full package and binds its digest, base/head,
+one retained worker-report snapshot, one retained exact fix-diff package, and
+one independent re-review. Each record contains that full report and package
+and binds their digests, base/head,
 implementer/reviewer, normalized findings artifact, outcome ids,
 prior-round digest, and its own digest.
 
@@ -158,9 +164,10 @@ implementer for early fix rounds. When continuation is unavailable or bounded
 replacement is justified, dispatch a fresh implementer with only the brief,
 durable report, and open findings. Record `replacement_evidence` with the prior
 and replacement identities, reason, stopped-prior-instance proof, reconciled
-ownership proof, and durable evidence references. No two implementers may own
-the task concurrently. Use replacement round `0` when ownership changes before
-the initial review package; later replacement records use the fix-round number.
+ownership proof, complete task identity, and durable evidence references. No
+two implementers may own the task concurrently. Use replacement round `0` when
+ownership changes before the initial review package; later replacement records
+use the fix-round number.
 
 An open finding before round five reduces to `fix_required`. Consequential new
 breakage from the fix diff joins the open set and adds
