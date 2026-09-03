@@ -45,6 +45,7 @@ Commands below use one stable placeholder set:
 | `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
 | `REPAIR_PR_URL` | `REPAIR_PR`'s HTML URL, derived in [checkpoint B](#coordination-events-and-terminal-state); unset until a repair merges |
 | `EVIDENCE_URL` | the durable URL a terminal release cites — `REPAIR_PR_URL` on the repair path, the accepted-risk record's URL on the no-repair path, and **unset** when neither exists |
+| `NAMED_SUCCESSOR` | the verified successor lane, issue, or PR identifier; unset only when no named successor exists |
 
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA,
   recorded as `BASE_TIP`:
@@ -210,12 +211,15 @@ N=$(gh api graphql \
 ```
 
 Where GraphQL is unavailable, page the REST endpoint and sum — same answer, one
-request per 100 commits:
+request per 100 commits. Keep `pipefail` local to the subshell so later expected
+nonzero exits stay inspectable:
 
 ```bash
-set -euo pipefail
-N=$(gh api "repos/${REPO}/pulls/${PR}/commits" --paginate --jq 'length' \
-  | awk '{s+=$1} END {print s}')
+N=$(
+  set -o pipefail
+  gh api "repos/${REPO}/pulls/${PR}/commits" --paginate --jq 'length' \
+    | awk '{s+=$1} END {print s}'
+)
 ```
 
 Note `-F n=` for the PR number: GraphQL needs a JSON integer for `$n:Int!`, and
@@ -579,9 +583,11 @@ the unit it depends on. When two units are incomparable in the dependency
 graph, break ties by reverse landing order so the result stays deterministic:
 newest in-scope commit first, oldest last. If a dependency-selected unit landed
 before the suspect PR, keep it ahead of the predecessor it depends on so the
-dependency is removed first.
-Every intermediate commit on the revert branch should be a state the code could
-plausibly have been in. Forward order does not merely conflict more — it
+dependency is removed first. That edge case is intentional: preserving a safe
+intermediate tree takes precedence over the historical-plausibility heuristic
+below. Every intermediate commit on the revert branch should be a state the code
+could plausibly have been in, except for that dependency-before-predecessor
+tie-break. Forward order does not merely conflict more — it
 produces intermediate trees that git reports as successful and that are
 actually broken, because a dependent merge is still present after its
 dependency has been removed.
@@ -1208,14 +1214,17 @@ now, choosing between the two non-`done` terminal values:
 **Build the arguments conditionally.** `--terminal` comes from whether a named
 successor exists, and `--evidence-url` is optional and must be either a real
 HTTP(S) URL or absent — an empty string is rejected and the closeout fails,
-leaving the lane open. Do not print one command that passes the flag
-unconditionally and rely on the reader to drop it: the same block then serves
-both the repair and the accepted-risk paths, and it is correct as run.
+leaving the lane open. If that successor fact is unknown, stop here; do not
+invent `NAMED_SUCCESSOR` or substitute literal `UNKNOWN`. Do not print one
+command that passes the flag unconditionally and rely on the reader to drop it:
+the same block then serves both the repair and the accepted-risk paths, and it
+is correct as run.
 
 ```bash
 RELEASE_ARGS=(--pr-state "${PR_STATE}" --batch-id "${BATCH_ID}"
   --repo "${REPO}" --target "${TARGET}")
-# any nonempty value means a named successor exists
+# Set NAMED_SUCCESSOR to the verified successor lane, issue, or PR identifier
+# when one exists; otherwise leave it unset.
 if [ -n "${NAMED_SUCCESSOR:-}" ]; then
   RELEASE_ARGS+=(--terminal superseded)
 else
