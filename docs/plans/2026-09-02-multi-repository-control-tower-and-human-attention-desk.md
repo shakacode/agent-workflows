@@ -102,7 +102,9 @@ warning and SHALL NOT be a place for human edits.
 
 Acceptance: simultaneous snapshot updates from five repositories cannot write
 the same pathname, and a partial or malformed snapshot never replaces the
-desk's last known good input.
+desk's last known good input. Each main card exposes only **What changes**,
+**Real risk/downside**, **Recommendation**, **One action**, GitHub link, raw HIL
+Codex link, and `M5`/`M1`; protocol details remain machine metadata or collapsed.
 
 ### R4 — Atomic snapshot publication
 
@@ -181,11 +183,10 @@ terminal tasks SHALL be archived rather than renamed merely to mark them.
 
 The HIL Desk SHALL rerank from current inputs on every refresh. Priority SHALL
 be explained in plain language, not hidden behind an opaque score. Each item
-SHALL carry exactly one `priority_class` from the ranked list in the
-[contract](../control-tower-prompts.md#snapshot-and-desk-contract), which
-orders imminent irreversible decisions first, then decisions that unblock
-work, then prepared merge or walkthrough decisions, then other
-outcome-changing product or architecture decisions.
+SHALL carry one of the four allowed `priority_class` machine classifications in
+the [contract](../control-tower-prompts.md#snapshot-and-desk-contract). The desk
+SHALL rank imminent irreversible harm first; otherwise it ranks by work
+unblocked, not a readiness-state label.
 
 Routine implementation, bookkeeping, test-hardening preferences, unchanged
 state, optional telemetry, and routine owner cleanup SHALL NOT enter the queue.
@@ -204,19 +205,19 @@ sources contribute to the ranked Action queue. Preserved unresolved items from
 stale or degraded sources appear in a separate non-actionable **Needs source
 refresh** section below that queue and never become the recommended first item.
 
-Acceptance: a new higher-consequence item moves ahead of older lower-priority
-items on the next refresh and displays the reason for the move. Within one
-priority class, the desk orders by the required non-negative
-`unlocks_count`, then `created_at`, then stable item `id`, so identical inputs
-produce identical order without interpreting free-form prose.
+Acceptance: a new higher-value item moves ahead on refresh and explains the
+human-attention value. After genuine irreversible harm, the desk orders all
+remaining classes by required non-negative `unlocks_count`, then `created_at`,
+then stable item `id`, so readiness labels do not control order.
 
 ### R8 — Native links with honest host state
 
-An attention item SHOULD carry the copied native Codex deep link, stable task
-identifier, task title, provider, host, and last-seen time. A known deep link
-SHALL render as clickable Markdown and SHALL NOT be wrapped in inline code.
-Unknown or untested cross-host behavior stays explicit; it must not block
-repository execution.
+An actionable item SHALL carry its HIL-prefix companion's native Codex deeplink,
+stable task identifier, title, provider, display host, and last-seen time. A
+known Codex URI SHALL render raw and unformatted, never Markdown or inline code.
+Display host is `M5` or `M1`, never `local`; producer-local identities are
+normalized at the source/aggregation boundary. Unknown or untested cross-host
+and new-window behavior stays explicit and does not block repository execution.
 
 Acceptance: the M1-to-M5, M5-to-M1, and source-host-offline cases are recorded
 before a cross-host link resolver is treated as implemented.

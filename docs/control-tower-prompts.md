@@ -250,20 +250,21 @@ repository snapshots.
 Only fresh active sources feed the ranked **Action queue**. Preserve unresolved
 items from every degraded source in non-actionable **Needs source refresh**
 below it. The read-only document starts with how to use the queue and a desk
-link. Each item shows the exact question, copy-ready choices, rank reason,
-unlocks, estimate, repository, host, freshness, **Respond on GitHub**, and the
-required HIL companion task. Distinguish `decision_channel: github_comment`
-from companion identity and walkthrough mode. Render every Codex URI raw as
-`codex://threads/...`, never Markdown or code. Escape other untrusted Markdown
-fields and validate links. Never answer or clear an item. Show typed
-counts/deltas, current ready-PR gate, milestone, status, and freshness per repo.
+link. Each main card shows only **What changes**, **Real risk/downside**,
+**Recommendation**, **One action**, GitHub link, raw HIL Codex link, and display
+host `M5` or `M1`. Put SHA, generation, source/gate IDs, marker protocols,
+freshness, and refresh mechanics in machine metadata or collapsed **Technical
+details**. Distinguish `decision_channel: github_comment` from companion
+identity and walkthrough mode. Render Codex URIs raw, never Markdown or code.
+Never answer or clear an item. Show portfolio data outside the main cards.
 
-Rerank when content, freshness, status, or priority inputs change, using only:
-irreversible, unblocks-work, ready-merge, product-architecture. Reject unknown
-classes. Explain rank plainly. Exclude routine implementation, bookkeeping,
-test preferences, authorized mechanical merges, unchanged status, telemetry,
-and owner cleanup. Security is irreversible only for imminent credible harm
-requiring human authority.
+Rerank on material input change. Put imminent irreversible harm requiring human
+authority first; otherwise sort by descending `unlocks_count`, then
+`created_at`, then `id`. Never promote an item merely for a readiness-state
+label. Keep the four allowed `priority_class` values as machine classification
+and reject unknown classes. Explain human-attention value and work unblocked in
+plain language. Exclude routine work, authorized merges, unchanged status,
+telemetry, and owner cleanup.
 
 Stay silent when actionable state is unchanged. Notify <NOTIFY_CHANNEL> under
 the Human Attention Notifications contract only for a new urgent first item, a
@@ -432,6 +433,10 @@ it never truncates fields or accepts a partial attention array.
       "hil_task_deeplink": "codex://threads/stable-hil-task-id",
       "walkthrough_mode": null,
       "kind": "architecture",
+      "what_changes": "The planning contract accepts one recovery posture",
+      "risk_downside": "The rejected posture may require manual cleanup and retry",
+      "recommendation": "Choose the fail-closed posture and track automation separately",
+      "one_action": "Comment: Approve the recommended fail-closed posture",
       "question": "One exact outcome-changing question",
       "choices": ["Material choice and consequence", "Other material choice and consequence"],
       "priority_class": "unblocks-work",
@@ -519,6 +524,11 @@ Field rules:
   `walkthrough requested` selects `requested` when not already selected. The
   same HIL task uses `pr-walkthrough` and publishes a COMMENT-only GitHub review
   with one conceptual step per honest inline thread. Completion is not approval.
+- **Human card fields.** `what_changes`, `risk_downside`, `recommendation`, and
+  `one_action` are required plain-language strings. Together with the GitHub
+  target, raw HIL deeplink, and `M5`/`M1` host, they are the only always-visible
+  card fields. Internal SHA, generation, source/gate IDs, marker protocols, and
+  refresh mechanics stay in machine metadata or collapsed **Technical details**.
 - **`safe_resume`** is required: the exact instruction the control tower will
   follow once the human answers. It must instantiate a trusted action template
   allowed by repository policy; the control tower validates it again before
@@ -526,7 +536,7 @@ Field rules:
   The desk renders the escaped value as data and never executes or edits it.
 - **`kind`** is one of `production`, `security`, `data-loss`, `irreversible`,
   `architecture`, `product`, `merge`, `walkthrough`, or `authority`.
-- **`priority_class`** is exactly one of, in rank order:
+- **`priority_class`** is exactly one of these machine classifications:
   1. `irreversible`: imminent credible production, security, data-loss, or
      irreversible-action harm that requires the human's authority; a tool,
      preflight, or label alone does not qualify;
@@ -534,8 +544,10 @@ Field rules:
   3. `ready-merge`: fully prepared current-head merge or walkthrough decisions;
   4. `product-architecture`: other outcome-changing product or architecture
      decisions.
-  Within a class the desk orders by descending `unlocks_count`, then ascending
-  `created_at`, then ascending `id`. `unlocks_count` is a required non-negative
+  The desk ranks genuine `irreversible` harm first; otherwise it orders across
+  classes by descending `unlocks_count`, then ascending `created_at`, then
+  ascending `id`. A readiness label alone never raises rank. `unlocks_count` is
+  a required non-negative
   integer counting currently blocked independent work items; use `0` when the
   answer changes an outcome but unlocks no separate current item. `unlocks`
   explains that count in plain language. This makes identical inputs rank
