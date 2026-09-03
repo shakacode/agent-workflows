@@ -39,12 +39,13 @@ control tower refreshes live state before acting.
    It never edits the combined Human Attention document.
 4. One dedicated HIL Desk task is the sole writer of the combined generated
    Human Attention Document (HAD). The human treats the HAD as read-only and
-   records decisions in the linked PR- or issue-specific Codex task. The HIL
-   Desk chat is only for queue refreshes, stale-source diagnosis, and broken
-   links.
-5. Codex native task deep links are the primary short-term navigation surface.
-   Cross-host behavior is tested rather than assumed. A future dashboard route
-   may resolve a task when a native link is local to another host.
+   records durable decisions in the linked GitHub thread. Every actionable item
+   also has one HIL-prefix companion task for guided discussion, monitoring, and
+   relay. The HIL Desk chat is only for queue refreshes, stale-source diagnosis,
+   and broken links.
+5. GitHub is the canonical cross-machine response surface. Raw Codex task
+   deeplinks open companion tasks; cross-host and new-window behavior is tested,
+   not assumed. A future dashboard route may resolve host-specific navigation.
 6. The HIL Desk continuously reranks unresolved decisions. Returning to the
    document means returning to the current queue, not continuing an obsolete
    numbered list.
@@ -140,24 +141,29 @@ repaired.
 Each pull-request attention item SHALL use authenticated GitHub PR comments as
 the canonical durable, cross-machine decision channel for exact-head approvals,
 gate acknowledgments, requested changes, complete choices, and the literal
-`walkthrough requested`. A busy repository tower SHALL poll those comments
-asynchronously and SHALL NOT require the human to type into the tower. It SHALL
-verify the author and applicable exact head before acting, then clear the item
-only by publishing a newer snapshot. The HIL Desk SHALL NOT answer, reinterpret,
-or clear the question.
+`walkthrough requested`. Every actionable item SHALL also have exactly one
+companion task titled `HIL — <repo> PR #<n> — <decision>`. That task, not the
+busy execution-only tower, SHALL monitor and reply on GitHub, verify author and
+applicable exact head, relay outcomes, notify the tower, and auto-archive when
+terminal. The tower SHALL execute the relayed outcome and clear the item only
+by publishing a newer snapshot. The aggregate HIL Desk SHALL NOT answer,
+reinterpret, or clear the question.
 
-A dedicated PR-specific walkthrough task SHALL be created only after the
-explicit walkthrough comment. It SHALL use `pr-walkthrough`, return any decision
-to the PR comment thread, notify the tower, and auto-archive when terminal. The
-schema SHALL distinguish `decision_channel: github_comment` from optional
-walkthrough task identity and deeplink fields. The HAD SHALL render each Codex
+When existing risk or complexity gates require a full walkthrough, the HIL task
+SHALL prepare it automatically with `pr-walkthrough` and publish a COMMENT-only
+GitHub review with one conceptual step per honest inline review thread. The
+literal `walkthrough requested` remains an override for cases not auto-selected.
+The schema SHALL distinguish `decision_channel: github_comment`, required HIL
+task identity/deeplink, and `walkthrough_mode`. The HAD SHALL render each Codex
 deeplink as a raw unformatted `codex://threads/...` URL, never Markdown or code.
-No current verified mechanism forces a deeplink into a new Codex window; the
-user preserves the HIL view by opening a separate app window when desired.
+No verified mechanism forces a deeplink into a new Codex window; the user keeps
+the HIL view in a separately opened app window when desired. Every displayed
+host is normalized at the producer/aggregation boundary to `M5` or `M1`, never
+the runner-local identity `local`.
 
-Acceptance: an item remains until the source snapshot clears it, shows complete
-copy-ready choices and **Respond on GitHub**, and shows walkthrough identity only
-after an explicit request. Completing a walkthrough is not merge approval.
+Acceptance: an item remains until its snapshot clears it and shows complete
+choices, **Respond on GitHub**, the HIL-prefix companion identity, and raw Codex
+URL. Walkthrough completion is not approval.
 
 Task archival is terminal housekeeping, not Human Attention. A task final SHALL
 state `Archive state: ready` or the concrete reason it is not ready. Once
@@ -365,8 +371,8 @@ transcripts.
 - **Requirements:** R6-R8, R11-R12.
 - **Repository:** `agent-coordination`.
 - **Done:** attention records, canonical GitHub-comment decision channel, tower
-  identity, and optional walkthrough identity are durable and queryable without
-  storing transcripts or making optional link capability a workflow blocker.
+  identity, required HIL companion identity, and walkthrough mode are durable
+  and queryable. Display hosts are normalized to `M5` or `M1`, never `local`.
 - **Parallelism:** after T2; can overlap T3 once ownership is resolved.
 
 ### T5 — Render the HIL queue in the dashboard
@@ -374,8 +380,8 @@ transcripts.
 - **Requirements:** R6-R8, R11-R12.
 - **Repository:** `agent-coordination-dashboard`.
 - **Done:** a read-only Attention view continuously reranks backend records,
-  links to the GitHub comment channel, shows optional walkthrough identity only
-  after request, explains priority, and visibly reports stale hosts.
+  links to the GitHub comment channel and required HIL companion, shows
+  walkthrough mode, explains priority, and visibly reports stale hosts.
 - **Parallelism:** starts after T4's structured attention records exist and
   after the first backlog-integration wave in both `agent-workflows` and
   `agent-coordination`, when neither tower has a waiting integration-ready
