@@ -253,7 +253,7 @@ module TaskReviewLoop
     return false unless commits.is_a?(Array) && package_commits.is_a?(Array)
 
     head_index = commits.index(package["head_sha"])
-    return false unless head_index
+    return false unless head_index && head_index == commits.length - 1
 
     expected_commits = if package["scope"] == "task"
                          return false unless package["base_sha"] == report["base_sha"]

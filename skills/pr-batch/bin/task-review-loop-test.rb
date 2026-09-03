@@ -1255,6 +1255,17 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_worker_report_rejects_commits_after_the_declared_head
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      input = rebind_report(input, "commits" => [HEAD_SHA, OTHER_HEAD_SHA])
+      output, = evaluate(input)
+
+      assert_equal "blocked", output.fetch("status")
+      assert_equal ["review-package-commit-list-mismatch"], output.fetch("reasons")
+    end
+  end
+
   def test_worker_report_retains_every_completed_round_head_in_order
     Dir.mktmpdir("task-review-loop") do |directory|
       input = consequential_breakage_input(directory)
