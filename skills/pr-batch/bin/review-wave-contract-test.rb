@@ -119,13 +119,14 @@ class ReviewWaveContractTest < Minitest::Test
       assert_includes text, "REVIEW_WAVE_PENDING_CHECK_NAMES"
       assert_includes text, "REVIEW_UNAVAILABLE_WAIVERS_JSON"
       assert_includes text, "REVIEW_WAIVED_CHECK_NAMES_JSON"
+      assert_includes text, "REVIEW_WAVE_STATUS_JSON"
       assert_includes text, "REVIEW_WAIT_HEAD_SHA_AFTER"
       assert_includes text, ".head_sha == $head"
       assert_includes text, "0|1|8"
       assert_includes text, "select(($waived | index($name)) == null)"
-      assert_match(/select\(\(\$waived \| index\(\$name\)\) == null\).*?select\(\(\$checks \| length\) == 0 or any\(\$checks\[\]; \.bucket == "pending"\)\)/m, text)
-      assert_includes text, "select(($checks | length) == 0) | $name"
-      assert_includes text, 'select(($checks | length) > 0 and any($checks[]; .bucket == "pending")) | $name'
+      assert_includes text, "pending_count:"
+      assert_includes text, "missing_names:"
+      assert_includes text, "pending_names:"
       assert_match(/review wave .* did not settle .* missing expected check-run names: \$\{REVIEW_WAVE_MISSING_CHECK_NAMES\}; pending expected check-run names: \$\{REVIEW_WAVE_PENDING_CHECK_NAMES\}.*?exit 2/m, text)
       refute_includes text, "wait for any in-progress `claude-review`"
       refute_includes text, "proceeding with currently available review data"
@@ -138,15 +139,26 @@ class ReviewWaveContractTest < Minitest::Test
     terminal_checks = [{ "name" => "claude-review", "bucket" => "pass" }]
     pending_checks = terminal_checks + [{ "name" => "coderabbitai", "bucket" => "pending" }]
     head_sha = "a" * 40
-    exact_waiver = [{ "check_name" => "coderabbitai", "head_sha" => head_sha }]
-    stale_waiver = [{ "check_name" => "coderabbitai", "head_sha" => "b" * 40 }]
-    unrelated_waiver = [{ "check_name" => "unrelated-reviewer", "head_sha" => head_sha }]
+    exact_waiver = waiver(pr_number: 684, check_name: "coderabbitai", head_sha: head_sha)
+    stale_waiver = waiver(pr_number: 684, check_name: "coderabbitai", head_sha: "b" * 40)
+    other_pr_waiver = waiver(pr_number: 683, check_name: "coderabbitai", head_sha: head_sha)
+    unrelated_waiver = waiver(pr_number: 684, check_name: "unrelated-reviewer", head_sha: head_sha)
 
-    assert_equal 1, review_wave_pending(expected, terminal_checks, [], head_sha)
-    assert_equal 0, review_wave_pending(expected, terminal_checks, exact_waiver, head_sha)
-    assert_equal 0, review_wave_pending(expected, pending_checks, exact_waiver, head_sha)
-    assert_equal 1, review_wave_pending(expected, terminal_checks, unrelated_waiver, head_sha)
-    assert_equal 1, review_wave_pending(expected, terminal_checks, stale_waiver, head_sha)
+    [@address_review, @address_review_workflow].each do |text|
+      assert waiver_evidence_valid?(text, [exact_waiver, stale_waiver, other_pr_waiver, unrelated_waiver])
+      refute waiver_evidence_valid?(text, [exact_waiver.merge("reason" => "unknown")])
+      assert_equal 1, review_wave_pending(text, expected, terminal_checks, [], 684, head_sha)
+      assert_equal 0, review_wave_pending(text, expected, terminal_checks, [exact_waiver], 684, head_sha)
+      assert_equal 0, review_wave_pending(text, expected, pending_checks, [exact_waiver], 684, head_sha)
+      assert_equal 1, review_wave_pending(text, expected, terminal_checks, [unrelated_waiver], 684, head_sha)
+      assert_equal 1, review_wave_pending(text, expected, terminal_checks, [stale_waiver], 684, head_sha)
+      assert_equal 1, review_wave_pending(text, expected, terminal_checks, [other_pr_waiver], 684, head_sha)
+    end
+
+    assert_equal normalized_filter(jq_filter(@address_review, "REVIEW_WAIVED_CHECK_NAMES_JSON")),
+                 normalized_filter(jq_filter(@address_review_workflow, "REVIEW_WAIVED_CHECK_NAMES_JSON"))
+    assert_equal normalized_filter(jq_filter(@address_review, "REVIEW_WAVE_STATUS_JSON")),
+                 normalized_filter(jq_filter(@address_review_workflow, "REVIEW_WAVE_STATUS_JSON"))
   end
 
   private
@@ -159,22 +171,58 @@ class ReviewWaveContractTest < Minitest::Test
     assert_includes text.gsub(/\s+/, " "), rule
   end
 
-  def review_wave_pending(expected, checks, waivers, head_sha)
-    filter = <<~'JQ'
-      [ $waivers[] | select(.head_sha == $head_sha) | .check_name ] | unique as $waived |
-      [ $expected[] as $name |
-        select(($waived | index($name)) == null) |
-        ([ $checks[] | select(.name == $name)]) as $named_checks |
-        select(($named_checks | length) == 0 or any($named_checks[]; .bucket == "pending"))
-      ] | length
-    JQ
+  def review_wave_pending(text, expected, checks, waivers, pr_number, head_sha)
+    waived = run_jq(
+      jq_filter(text, "REVIEW_WAIVED_CHECK_NAMES_JSON"), waivers,
+      "--argjson", "pr", pr_number.to_s, "--arg", "head", head_sha,
+      "--argjson", "expected", JSON.generate(expected)
+    )
+    status = run_jq(
+      jq_filter(text, "REVIEW_WAVE_STATUS_JSON"), checks,
+      "--argjson", "expected", JSON.generate(expected), "--argjson", "waived", JSON.generate(waived)
+    )
+    status.fetch("pending_count")
+  end
+
+  def waiver_evidence_valid?(text, waivers)
+    filter = text.match(%r{jq -e --arg host "\$\{GH_HOST\}" --arg repo "\$\{REPO\}" '(?<filter>.*?)' >/dev/null; then}m)
+    raise "missing waiver validation jq filter" unless filter
+
+    _stdout, _stderr, status = Open3.capture3(
+      "jq", "-e", "--arg", "host", "github.com", "--arg", "repo", "shakacode/agent-workflows",
+      filter[:filter], stdin_data: JSON.generate(waivers)
+    )
+    status.success?
+  end
+
+  def waiver(pr_number:, check_name:, head_sha:)
+    {
+      "pr_number" => pr_number,
+      "head_sha" => head_sha,
+      "check_name" => check_name,
+      "reason" => "capacity",
+      "evidence_url" => "https://github.com/shakacode/agent-workflows/pull/#{pr_number}#issuecomment-1",
+      "observed_at" => "2026-09-03T10:00:00Z"
+    }
+  end
+
+  def jq_filter(text, variable)
+    match = text.match(/#{Regexp.escape(variable)}=.*?\|\s*\n\s*jq -c .*? '(?<filter>.*?)'\)"/m)
+    raise "missing jq filter for #{variable}" unless match
+
+    match[:filter]
+  end
+
+  def normalized_filter(filter)
+    filter.gsub(/\s+/, " ").strip
+  end
+
+  def run_jq(filter, input, *arguments)
     stdout, stderr, status = Open3.capture3(
-      "jq", "-n", "--argjson", "expected", JSON.generate(expected),
-      "--argjson", "checks", JSON.generate(checks), "--argjson", "waivers", JSON.generate(waivers),
-      "--arg", "head_sha", head_sha, filter
+      "jq", "-c", *arguments, filter, stdin_data: JSON.generate(input)
     )
     assert status.success?, stderr
-    Integer(stdout, 10)
+    JSON.parse(stdout)
   end
 
   def section(text, heading, end_heading)

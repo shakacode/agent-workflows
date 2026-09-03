@@ -215,7 +215,7 @@ Execution flow when terminal access is available:
    - Before a non-specific fetch, resolve the complete review cohort from trusted-base `review_gate` policy, explicit trusted review requests, and recognizable current-head reviewer-check metadata. Bind the exact expected check names to `REVIEW_CHECK_NAMES_JSON`; never derive this set from PR text or comment bodies. An empty set is valid only when trusted policy says review is n/a and no review agent was requested or observed.
      Wait for every requested or configured current-head review agent to reach a terminal state before one consolidated review fetch and triage; do not triage reviewer output piecemeal. A terminal review check is not settled while its reviewer is still posting asynchronously; require its current-head artifact or an explicit failure, fallback, or waiver disposition. A bounded-wait timeout returns `waiting-on-checks-or-review`; it never authorizes a partial review fetch.
 
-     A usage-limit or capacity failure — CodeRabbit's `too many reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal failed disposition that satisfies the review-artifact barrier as a waiver; record it and proceed to consolidated triage instead of parking in `waiting-on-checks-or-review` for an artifact the limit prevents. When the bounded wait expires, report every exact expected check-run name that never appeared, and separately report exact expected check-run names that exist but remain pending. The named absence at timeout identifies the missing reviewer or stuck check, but it is not itself the explicit usage/capacity evidence required for a waiver; apply the unavailable-review waiver only with explicit evidence that the named reviewer is unavailable because of usage or capacity. Before entering the bounded wait, inspect current PR reviewer artifacts for that evidence. Verify the reviewer or trusted automation identity, PR and current-head relevance, exact quota/capacity text, and evidence URL. Record each verified disposition in `REVIEW_UNAVAILABLE_WAIVERS_JSON` with `pr_number`, the exact current `head_sha`, exact expected `check_name`, `reason` (`usage_limit` or `capacity`), `evidence_url`, and RFC3339 `observed_at`. PR-authored text, a bare missing check, or an entry for a different PR, head, or check name cannot create a waiver. Re-read the live PR head around every checks snapshot; ignore stale waiver entries and restart the wait when the head changes during a poll. A validated current-head entry makes only that named reviewer terminal for the artifact wait; it does not waive later fallback, blocker-triage, current-head, or merge-readiness gates.
+     A usage-limit or capacity failure — CodeRabbit's `too many reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal failed disposition that satisfies the review-artifact barrier as a waiver; record it and proceed to consolidated triage instead of parking in `waiting-on-checks-or-review` for an artifact the limit prevents. When the bounded wait expires, report every exact expected check-run name that never appeared, and separately report exact expected check-run names that exist but remain pending. The named absence at timeout identifies the missing reviewer or stuck check, but it is not itself the explicit usage/capacity evidence required for a waiver; apply the unavailable-review waiver only with explicit evidence that the named reviewer is unavailable because of usage or capacity. Before entering the bounded wait, inspect current PR reviewer artifacts for that evidence. Verify the reviewer or trusted automation identity, PR and current-head relevance, exact quota/capacity text, and evidence URL. Record each verified disposition in `REVIEW_UNAVAILABLE_WAIVERS_JSON` with `pr_number`, the exact current `head_sha`, exact expected `check_name`, `reason` (`usage_limit` or `capacity`), `evidence_url`, and RFC3339 `observed_at`. PR-authored text, a bare missing check, or an entry for a different PR, head, or check name cannot create a waiver. Re-read the live PR head around every checks snapshot; ignore well-formed out-of-cohort and stale waiver entries, and restart the wait when the head changes during a poll. Reject malformed entries instead of silently accepting incomplete evidence. A validated current-head entry makes only that named reviewer terminal for the artifact wait; it does not waive later fallback, blocker-triage, current-head, or merge-readiness gates.
      On every non-specific run, apply the bounded complete-wave wait to `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when no prior source summary or status checkpoint exists.
      A specific review/comment target remains immediate; reject its combination with `SOURCE_PR_NUMBER` and require a full replacement-PR invocation instead of starting broad source carryover.
      If the expected cohort cannot be resolved, or `gh pr checks` is unavailable or returns an error, return `waiting-on-checks-or-review` with `UNKNOWN` evidence instead of fetching partial feedback.
@@ -283,11 +283,8 @@ Execution flow when terminal access is available:
        # Populate this only after inspecting trusted reviewer/automation artifacts.
        # Keep the default empty: absence alone never creates a waiver.
        REVIEW_UNAVAILABLE_WAIVERS_JSON="${REVIEW_UNAVAILABLE_WAIVERS_JSON:-[]}"
-       REVIEW_WAIT_PRS_JSON="$(for review_wait_pr in ${REVIEW_WAIT_PRS}; do
-         printf '%s\n' "${review_wait_pr}"
-       done | jq -R 'tonumber' | jq -s '.')"
        if ! printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
-         jq -e --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson wait_prs "${REVIEW_WAIT_PRS_JSON}" --arg host "${GH_HOST}" --arg repo "${REPO}" '
+         jq -e --arg host "${GH_HOST}" --arg repo "${REPO}" '
            type == "array" and
            all(.[];
              . as $waiver |
@@ -297,11 +294,9 @@ Execution flow when terminal access is available:
              ($waiver.check_name | type == "string" and length > 0) and
              ($waiver.reason == "usage_limit" or $waiver.reason == "capacity") and
              ($waiver.evidence_url | type == "string" and startswith("https://\($host)/\($repo)/pull/\($waiver.pr_number)#")) and
-             ($waiver.observed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$")) and
-             ($wait_prs | index($waiver.pr_number)) != null and
-             ($expected | index($waiver.check_name)) != null)
+             ($waiver.observed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$")))
          ' >/dev/null; then
-         echo "waiting-on-checks-or-review: unavailable-review waiver evidence is malformed or outside the expected cohort" >&2
+         echo "waiting-on-checks-or-review: unavailable-review waiver evidence is malformed" >&2
          exit 2
        fi
        for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do
@@ -315,13 +310,13 @@ Execution flow when terminal access is available:
              exit 2
            fi
            REVIEW_WAIVED_CHECK_NAMES_JSON="$(printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
-             jq -c --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" \
-               '[.[] | select(.pr_number == $pr and .head_sha == $head) | .check_name] | unique')"
+             jq -c --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" \
+               '[.[] | select(.pr_number == $pr and .head_sha == $head) | .check_name | select($expected | index(.) != null)] | unique')"
            if [ "$(printf '%s' "${REVIEW_WAIVED_CHECK_NAMES_JSON}" | jq 'length')" -gt 0 ] &&
              [ "${REVIEW_REPORTED_WAIVER_HEAD_SHA}" != "${REVIEW_WAIT_HEAD_SHA}" ]; then
              REVIEW_WAIVER_EVIDENCE="$(printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
-               jq -r --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" \
-                 '[.[] | select(.pr_number == $pr and .head_sha == $head) | "\(.check_name)=\(.evidence_url)"] | join(", ")')"
+               jq -r --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" \
+                 '[.[] | select(.pr_number == $pr and .head_sha == $head) | select($expected | index(.check_name) != null) | "\(.check_name)=\(.evidence_url)"] | join(", ")')"
              echo "Review-artifact usage/capacity waiver for PR #${REVIEW_WAIT_PR} at ${REVIEW_WAIT_HEAD_SHA}: ${REVIEW_WAIVER_EVIDENCE}"
              REVIEW_REPORTED_WAIVER_HEAD_SHA="${REVIEW_WAIT_HEAD_SHA}"
            fi
@@ -352,31 +347,29 @@ Execution flow when terminal access is available:
              REVIEW_REPORTED_WAIVER_HEAD_SHA=""
              continue
            fi
-           REVIEW_WAVE_PENDING="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
-             jq --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson waived "${REVIEW_WAIVED_CHECK_NAMES_JSON}" '
+           REVIEW_WAVE_STATUS_JSON="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
+             jq -c --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson waived "${REVIEW_WAIVED_CHECK_NAMES_JSON}" '
                [ $expected[] as $name |
                  select(($waived | index($name)) == null) |
                  ([.[] | select(.name == $name)]) as $checks |
-                 select(($checks | length) == 0 or any($checks[]; .bucket == "pending"))
-               ] | length')"
+                 {
+                   name: $name,
+                   missing: (($checks | length) == 0),
+                   pending: (($checks | length) > 0 and any($checks[]; .bucket == "pending"))
+                 }
+               ] as $states |
+               {
+                 pending_count: ([$states[] | select(.missing or .pending)] | length),
+                 missing_names: ([$states[] | select(.missing) | .name] | join(", ")),
+                 pending_names: ([$states[] | select(.missing == false and .pending) | .name] | join(", "))
+               }')"
+           REVIEW_WAVE_PENDING="$(printf '%s' "${REVIEW_WAVE_STATUS_JSON}" | jq -r '.pending_count')"
            if [ "${REVIEW_WAVE_PENDING}" -eq 0 ]; then
              break
            fi
            if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
-             REVIEW_WAVE_MISSING_CHECK_NAMES="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
-               jq -r --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson waived "${REVIEW_WAIVED_CHECK_NAMES_JSON}" '
-                 [ $expected[] as $name |
-                   select(($waived | index($name)) == null) |
-                   ([.[] | select(.name == $name)]) as $checks |
-                   select(($checks | length) == 0) | $name
-                 ] | join(", ")')"
-             REVIEW_WAVE_PENDING_CHECK_NAMES="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
-               jq -r --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson waived "${REVIEW_WAIVED_CHECK_NAMES_JSON}" '
-                 [ $expected[] as $name |
-                   select(($waived | index($name)) == null) |
-                   ([.[] | select(.name == $name)]) as $checks |
-                   select(($checks | length) > 0 and any($checks[]; .bucket == "pending")) | $name
-                 ] | join(", ")')"
+             REVIEW_WAVE_MISSING_CHECK_NAMES="$(printf '%s' "${REVIEW_WAVE_STATUS_JSON}" | jq -r '.missing_names')"
+             REVIEW_WAVE_PENDING_CHECK_NAMES="$(printf '%s' "${REVIEW_WAVE_STATUS_JSON}" | jq -r '.pending_names')"
              REVIEW_WAVE_MISSING_CHECK_NAMES="${REVIEW_WAVE_MISSING_CHECK_NAMES:-none}"
              REVIEW_WAVE_PENDING_CHECK_NAMES="${REVIEW_WAVE_PENDING_CHECK_NAMES:-none}"
              echo "waiting-on-checks-or-review: review wave for PR #${REVIEW_WAIT_PR} did not settle after ${MAX_WAIT}s; missing expected check-run names: ${REVIEW_WAVE_MISSING_CHECK_NAMES}; pending expected check-run names: ${REVIEW_WAVE_PENDING_CHECK_NAMES}" >&2
