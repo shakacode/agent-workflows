@@ -568,23 +568,40 @@ the similarity threshold, is recorded as a delete plus an add, and is not
 followed by anything.
 
 Run both of these and reconcile them by hand. Neither is sufficient alone and
-the pair is still not a proof:
+the pair is still not a proof. Set `OLDEST_IN_SCOPE_SHA` to the oldest landed
+commit across the closure units recovered so far, including every
+earlier-landed unit selected by the dependency plan. An unknown boundary must
+stop the scan instead of falling back to `${SHA}` or unbounded history:
 
 ```bash
+case "${OLDEST_IN_SCOPE_SHA:-UNKNOWN}" in
+  ''|UNKNOWN)
+    echo "oldest in-scope commit is UNKNOWN: stop before rename scan" >&2
+    exit 1
+    ;;
+esac
+
 # 1. Rename-aware history, one pathspec per invocation as --follow requires.
 for p in "${PATHS[@]}"; do
   printf '=== %s\n' "$p"
   git --no-pager log --follow --format='%h %s' "${BASE_TIP}" -- "$p"
 done
 
-# 2. Every rename that landed in the window, at a loosened similarity
-#    threshold, whether or not either side is currently in PATHS.
+# 2. Every rename from immediately before the oldest known closure unit through
+#    BASE_TIP, at a loosened threshold, whether or not either side is in PATHS.
 git --no-pager log --first-parent --find-renames=30% --diff-filter=R \
-  --name-status --format='%h %s' "${SHA}..${BASE_TIP}"
+  --name-status --format='%h %s' \
+  "${OLDEST_IN_SCOPE_SHA}^1..${BASE_TIP}"
 ```
 
 If query 2 shows a rename whose source **or** destination is in `PATHS`, add the
 other side to `PATHS` and re-run the whole cross-check — a rename can chain.
+If dependency reconciliation adds a closure unit older than the current
+`OLDEST_IN_SCOPE_SHA`, move the boundary to that unit and re-run too. Continue
+until neither `PATHS` nor the oldest boundary changes; only then fix
+`PRE_BATCH_SHA` to `${OLDEST_IN_SCOPE_SHA}^1`. This is bounded at the oldest
+known closure unit while still covering a rename that landed between an
+earlier-dependent unit and the suspect PR.
 
 What neither query catches is a rewrite-plus-rename that scores below even the
 loosened threshold; git has no record linking the two paths, so no pathspec
@@ -1485,19 +1502,22 @@ An agent **may not**, without an explicit operator decision:
    `MERGE_STYLE` with a `case`** — two unconditional assignments both run and
    the rebase one wins. Read the list before using it. An unverifiable list is
    `UNKNOWN`: widen or stop.
-4. Build `PATHS` from the landed range's `--name-only -z` output into a bash
-   array, and expand it only as `"${PATHS[@]}"`. Run the `--follow` and
-   `--find-renames` cross-check before recording any disjointness result.
-5. Compute the revert closure from the batch manifest, dependency-plan edges of
-   **every** type, and
-   git, comparing whole ranges. Map every in-scope commit to a PR: a confirmed
+4. Seed the declared closure from the batch manifest and dependency-plan edges
+   of **every** type. Reconcile every selected lane to its authenticated landed
+   PR, landed direct commit, or terminal no-land evidence; recover
+   earlier-landed ranges explicitly and establish `OLDEST_IN_SCOPE_SHA`. Build
+   `PATHS` from every recovered range's `--name-only -z` output into a bash
+   array, and expand it only as `"${PATHS[@]}"`.
+5. Complete the closure against git, comparing whole ranges. Map every in-scope
+   commit to a PR: a confirmed
    direct commit is a closure unit of one, a unit selected by `edit` or
    `validation_open` stays in scope even when it landed before the suspect PR,
    and a failed lookup or contradictory `merge_order` landing is `UNKNOWN`.
-   Reconcile every dependency-selected lane to its authenticated landed PR,
-   landed direct commit, or terminal no-land evidence; recover earlier-landed
-   ranges and paths explicitly instead of relying on the later-only commit
-   walk. Fail closed to the wider scope on any `UNKNOWN`.
+   Run the `--follow` and `--find-renames` cross-check from
+   `${OLDEST_IN_SCOPE_SHA}^1`; when reconciliation expands `PATHS` or adds an
+   older closure unit, move the boundary and repeat. Fail closed to the wider
+   scope on any `UNKNOWN`, and record no disjointness result before paths and
+   the boundary both reach a fixed point.
    Fix `PRE_BATCH_SHA` as `${OLDEST_IN_SCOPE_SHA}^1`.
 6. Decide revert versus forward fix, and write down why.
 7. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
