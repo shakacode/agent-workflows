@@ -180,7 +180,7 @@ retains their installer regression coverage.
 
 ## Cross-Repository Integration Assumptions
 
-- `agent-coordination` ships the exact `doctor --stack-json [--deep] <backend-selector>` interface and does not create a missing explicit local root.
+- `agent-coordination` ships the exact `doctor --stack-json [--deep] --state-root PATH` interface and does not create a missing explicit local root.
 - `agent-coordination-dashboard` ships the exact Node CLI interface and maps a stopped optional service to degraded/exit `1`.
 - Both sibling components emit the same v1 required fields, derive component status from checks, use the shared exit mapping, keep stdout JSON-only, and treat additive fields as optional.
 - The three PRs may land independently, but the master reports generic wrapper checks until installed component versions provide their interfaces. A full-stack release/smoke requires compatible revisions of all three repositories.
