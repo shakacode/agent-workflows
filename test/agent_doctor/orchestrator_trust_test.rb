@@ -292,10 +292,10 @@ class AgentDoctorOrchestratorTrustTest < Minitest::Test
     installed = path("target/bin/agent-workflows-doctor")
     FileUtils.mkdir_p(File.dirname(source_helper))
     write_delegate(source_helper, "agent-workflows", "workflows.installation")
-    system("git", "-C", path("src/agent-workflows"), "add", "bin/agent-workflows-doctor", exception: true)
-    system("git", "-C", path("src/agent-workflows"), "commit", "--quiet", "-m", "delegate fixture", exception: true)
     FileUtils.rm_f(installed)
     File.link(source_helper, installed)
+    system("git", "-C", path("src/agent-workflows"), "add", "bin/agent-workflows-doctor", exception: true)
+    system("git", "-C", path("src/agent-workflows"), "commit", "--quiet", "-m", "delegate fixture", exception: true)
     runner = RecordingDelegateRunner.new(non_deadline_runner, installed)
 
     payload = orchestrator(runner: runner).call
