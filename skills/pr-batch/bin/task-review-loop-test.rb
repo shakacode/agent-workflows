@@ -511,6 +511,55 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_fabricated_historical_package_digest_cannot_advance_cap_adjudication
+    replay = replay_case("fabricated-historical-package")
+
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = cap_input(directory)
+      rounds = input.fetch("rounds").dup
+      fabricated_digest = "sha256:#{'0' * 64}"
+      fabricated_package = rounds.fetch(2).fetch("review_package").merge("digest" => fabricated_digest)
+      rounds[2] = with_digest(
+        rounds.fetch(2).merge(
+          "package_digest" => fabricated_digest,
+          "review_package" => fabricated_package
+        ).reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(input.merge("rounds" => rounds))
+
+      assert_equal replay.fetch("expected"), output.slice(*replay.fetch("expected").keys)
+      assert_includes output.fetch("reasons"), "review-round-package-invalid"
+      refute_includes output.fetch("reasons"), "cap-adjudicated"
+    end
+  end
+
+  def test_historical_package_commit_range_cannot_advance_cap_adjudication
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = cap_input(directory)
+      rounds = input.fetch("rounds").dup
+      historical_round = rounds.fetch(2)
+      historical_package = with_digest(
+        historical_round.fetch("review_package").merge(
+          "commit_list" => [historical_round.fetch("base_sha"), historical_round.fetch("head_sha")]
+        ).reject { |key, _value| key == "digest" }
+      )
+      rounds[2] = with_digest(
+        historical_round.merge(
+          "package_digest" => historical_package.fetch("digest"),
+          "review_package" => historical_package
+        ).reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(input.merge("rounds" => rounds))
+
+      assert_equal "blocked", output.fetch("status")
+      assert_equal false, output.fetch("dependent_task_permitted")
+      assert_includes output.fetch("reasons"), "review-round-package-range-mismatch"
+      refute_includes output.fetch("reasons"), "cap-adjudicated"
+    end
+  end
+
   def test_pending_package_after_round_five_cannot_start_a_sixth_fix_round
     Dir.mktmpdir("task-review-loop") do |directory|
       input = cap_input(directory)
@@ -656,6 +705,7 @@ class TaskReviewLoopTest < Minitest::Test
       round = with_digest(
         input.fetch("rounds").first.merge(
           "package_digest" => package.fetch("digest"),
+          "review_package" => package,
           "reviewer_id" => reviewer
         ).reject { |key, _value| key == "digest" }
       )
@@ -719,7 +769,8 @@ class TaskReviewLoopTest < Minitest::Test
              .reject { |key, _value| key == "digest" }
       )
       rounds[-1] = with_digest(
-        rounds.last.merge("package_digest" => package.fetch("digest")).reject { |key, _value| key == "digest" }
+        rounds.last.merge("package_digest" => package.fetch("digest"), "review_package" => package)
+              .reject { |key, _value| key == "digest" }
       )
       empty_path = write_findings(directory, "empty-open-findings.json", [])
 
@@ -771,6 +822,7 @@ class TaskReviewLoopTest < Minitest::Test
         "number" => 2,
         "kind" => "fix_re_review",
         "package_digest" => package.fetch("digest"),
+        "review_package" => package,
         "base_sha" => FIX_HEAD_SHA,
         "head_sha" => OTHER_HEAD_SHA,
         "implementer_id" => "implementer-a",
@@ -821,7 +873,8 @@ class TaskReviewLoopTest < Minitest::Test
              .reject { |key, _value| key == "digest" }
       )
       rounds[1] = with_digest(
-        rounds[1].merge("package_digest" => package.fetch("digest")).reject { |key, _value| key == "digest" }
+        rounds[1].merge("package_digest" => package.fetch("digest"), "review_package" => package)
+                 .reject { |key, _value| key == "digest" }
       )
       empty_path = write_findings(directory, "premature-consequential-open.json", [])
 
@@ -946,6 +999,7 @@ class TaskReviewLoopTest < Minitest::Test
           "number" => 1,
           "kind" => "fix_re_review",
           "package_digest" => package.fetch("digest"),
+          "review_package" => package,
           "base_sha" => HEAD_SHA,
           "head_sha" => OTHER_HEAD_SHA,
           "prior_round_digest" => prior.fetch("digest")
@@ -974,7 +1028,8 @@ class TaskReviewLoopTest < Minitest::Test
       )
       rounds = input.fetch("rounds").dup
       rounds[-1] = with_digest(
-        rounds.last.merge("package_digest" => package.fetch("digest")).reject { |key, _value| key == "digest" }
+        rounds.last.merge("package_digest" => package.fetch("digest"), "review_package" => package)
+              .reject { |key, _value| key == "digest" }
       )
       output, = evaluate(input.merge("worker_report" => report, "review_package" => package, "rounds" => rounds))
 
@@ -1011,7 +1066,8 @@ class TaskReviewLoopTest < Minitest::Test
       rounds[1] = with_digest(
         rounds.fetch(1).merge(
           "prior_round_digest" => rounds.fetch(0).fetch("digest"),
-          "package_digest" => package.fetch("digest")
+          "package_digest" => package.fetch("digest"),
+          "review_package" => package
         ).reject { |key, _value| key == "digest" }
       )
       output, = evaluate(input.merge("review_package" => package, "rounds" => rounds))
@@ -1214,7 +1270,8 @@ class TaskReviewLoopTest < Minitest::Test
       rounds[1] = with_digest(
         rounds.fetch(1).merge(
           "prior_round_digest" => rounds.fetch(0).fetch("digest"),
-          "package_digest" => package.fetch("digest")
+          "package_digest" => package.fetch("digest"),
+          "review_package" => package
         ).reject { |key, _value| key == "digest" }
       )
       output, = evaluate(input.merge("review_package" => package, "rounds" => rounds))
@@ -1279,6 +1336,7 @@ class TaskReviewLoopTest < Minitest::Test
       "number" => 0,
       "kind" => "initial_review",
       "package_digest" => package.fetch("digest"),
+      "review_package" => package,
       "base_sha" => BASE_SHA,
       "head_sha" => HEAD_SHA,
       "implementer_id" => "implementer-a",
@@ -1361,6 +1419,7 @@ class TaskReviewLoopTest < Minitest::Test
       "number" => 1,
       "kind" => "fix_re_review",
       "package_digest" => package.fetch("digest"),
+      "review_package" => package,
       "base_sha" => HEAD_SHA,
       "head_sha" => FIX_HEAD_SHA,
       "implementer_id" => "implementer-a",
@@ -1399,6 +1458,7 @@ class TaskReviewLoopTest < Minitest::Test
     rounds[-1] = with_digest(
       rounds.last.merge(
         "package_digest" => package.fetch("digest"),
+        "review_package" => package,
         "implementer_id" => "implementer-c"
       ).reject { |key, _value| key == "digest" }
     )
@@ -1454,10 +1514,30 @@ class TaskReviewLoopTest < Minitest::Test
         head_sha: CAP_HEAD_SHAS.fetch(number)
       )
       round_findings_path = write_findings(directory, "cap-round-#{number}-findings.json", [round_finding])
+      round_diff_path = File.join(directory, "cap-round-#{number}.diff")
+      File.write(round_diff_path, "diff --git a/lib/task-review.rb b/lib/task-review.rb\n+cap fix #{number}\n")
+      round_report = with_digest(
+        input.fetch("worker_report").merge(
+          "head_sha" => CAP_HEAD_SHAS.fetch(number),
+          "commits" => CAP_HEAD_SHAS.first(number + 1)
+        ).reject { |key, _value| key == "digest" }
+      )
+      round_package = with_digest(
+        input.fetch("review_package").merge(
+          "worker_report_digest" => round_report.fetch("digest"),
+          "base_sha" => CAP_HEAD_SHAS.fetch(number - 1),
+          "head_sha" => CAP_HEAD_SHAS.fetch(number),
+          "expected_current_head_sha" => CAP_HEAD_SHAS.fetch(number),
+          "commit_list" => [CAP_HEAD_SHAS.fetch(number)],
+          "exact_diff" => artifact(round_diff_path).merge("truncated" => false),
+          "prior_round_digest" => rounds.last.fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
       rounds << with_digest(
         "number" => number,
         "kind" => "fix_re_review",
-        "package_digest" => "sha256:#{number.to_s * 64}",
+        "package_digest" => round_package.fetch("digest"),
+        "review_package" => round_package,
         "base_sha" => CAP_HEAD_SHAS.fetch(number - 1),
         "head_sha" => CAP_HEAD_SHAS.fetch(number),
         "implementer_id" => "implementer-a",
@@ -1482,6 +1562,8 @@ class TaskReviewLoopTest < Minitest::Test
     )
     final_findings_path = write_findings(directory, "cap-round-5-findings.json", [final_finding])
     final_findings_artifact = artifact(final_findings_path)
+    final_diff_path = File.join(directory, "cap-round-5.diff")
+    File.write(final_diff_path, "diff --git a/lib/task-review.rb b/lib/task-review.rb\n+cap fix 5\n")
     report = with_digest(
       input.fetch("worker_report").merge(
         "head_sha" => final_head,
@@ -1495,6 +1577,7 @@ class TaskReviewLoopTest < Minitest::Test
         "head_sha" => final_head,
         "expected_current_head_sha" => final_head,
         "commit_list" => [final_head],
+        "exact_diff" => artifact(final_diff_path).merge("truncated" => false),
         "prior_round_digest" => rounds.last.fetch("digest")
       )
            .reject { |key, _value| key == "digest" }
@@ -1503,6 +1586,7 @@ class TaskReviewLoopTest < Minitest::Test
       "number" => 5,
       "kind" => "fix_re_review",
       "package_digest" => package.fetch("digest"),
+      "review_package" => package,
       "base_sha" => CAP_HEAD_SHAS.fetch(4),
       "head_sha" => final_head,
       "implementer_id" => "implementer-a",
@@ -1561,8 +1645,16 @@ class TaskReviewLoopTest < Minitest::Test
   def non_independent_earlier_round_input(directory)
     input = consequential_breakage_input(directory)
     rounds = input.fetch("rounds").dup
+    historical_package = with_digest(
+      rounds.fetch(0).fetch("review_package").merge("reviewer_id" => " IMPLEMENTER-A ")
+            .reject { |key, _value| key == "digest" }
+    )
     rounds[0] = with_digest(
-      rounds.fetch(0).merge("reviewer_id" => " IMPLEMENTER-A ").reject { |key, _value| key == "digest" }
+      rounds.fetch(0).merge(
+        "package_digest" => historical_package.fetch("digest"),
+        "review_package" => historical_package,
+        "reviewer_id" => " IMPLEMENTER-A "
+      ).reject { |key, _value| key == "digest" }
     )
     package = with_digest(
       input.fetch("review_package").merge("prior_round_digest" => rounds.fetch(0).fetch("digest"))
@@ -1571,7 +1663,8 @@ class TaskReviewLoopTest < Minitest::Test
     rounds[1] = with_digest(
       rounds.fetch(1).merge(
         "prior_round_digest" => rounds.fetch(0).fetch("digest"),
-        "package_digest" => package.fetch("digest")
+        "package_digest" => package.fetch("digest"),
+        "review_package" => package
       ).reject { |key, _value| key == "digest" }
     )
     input.merge("review_package" => package, "rounds" => rounds)
@@ -1624,7 +1717,8 @@ class TaskReviewLoopTest < Minitest::Test
     package = with_digest(input.fetch("review_package").merge(changes).reject { |key, _value| key == "digest" })
     rounds = input.fetch("rounds").dup
     rounds[-1] = with_digest(
-      rounds.last.merge("package_digest" => package.fetch("digest")).reject { |key, _value| key == "digest" }
+      rounds.last.merge("package_digest" => package.fetch("digest"), "review_package" => package)
+            .reject { |key, _value| key == "digest" }
     )
     input.merge("review_package" => package, "rounds" => rounds)
   end

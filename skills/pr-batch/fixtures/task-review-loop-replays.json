@@ -73,6 +73,14 @@
       }
     },
     {
+      "name": "fabricated-historical-package",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["prior-round-digest-mismatch", "review-round-package-invalid"]
+      }
+    },
+    {
       "name": "p0-cap-blocker",
       "expected": {
         "status": "blocked",

@@ -50,7 +50,7 @@ module TaskReviewLoop
   ].freeze
   ROUND_KEYS = %w[
     addressed_finding_ids base_sha digest head_sha implementer_id kind new_consequential_finding_ids
-    open_finding_ids package_digest prior_round_digest review_findings reviewer_id number
+    open_finding_ids package_digest prior_round_digest review_findings review_package reviewer_id number
   ].freeze
   ARTIFACT_KEYS = %w[byte_count digest path].freeze
   EXACT_DIFF_KEYS = %w[byte_count digest path truncated].freeze
@@ -159,6 +159,7 @@ module TaskReviewLoop
   def round_shape?(round)
     exact_keys?(round, ROUND_KEYS) && round["number"].is_a?(Integer) && round["number"].between?(0, 5) &&
       %w[initial_review fix_re_review].include?(round["kind"]) && digest?(round["package_digest"]) &&
+      review_package_shape?(round["review_package"]) &&
       full_sha?(round["base_sha"]) && full_sha?(round["head_sha"]) && non_empty_string?(round["implementer_id"]) &&
       non_empty_string?(round["reviewer_id"]) &&
       (round["prior_round_digest"].nil? || digest?(round["prior_round_digest"])) &&
@@ -240,6 +241,36 @@ module TaskReviewLoop
       cursor += offset + 1
       true
     end
+  end
+
+  def package_commit_range?(package, report)
+    return false unless package.is_a?(Hash) && report.is_a?(Hash)
+
+    commits = report["commits"]
+    package_commits = package["commit_list"]
+    return false unless commits.is_a?(Array) && package_commits.is_a?(Array)
+
+    head_index = commits.index(package["head_sha"])
+    return false unless head_index
+
+    expected_commits = if package["scope"] == "task"
+                         return false unless package["base_sha"] == report["base_sha"]
+
+                         commits[0..head_index]
+                       else
+                         base_index = commits.index(package["base_sha"])
+                         return false unless base_index && base_index < head_index
+
+                         commits[(base_index + 1)..head_index]
+                       end
+    package_commits == expected_commits
+  end
+
+  def round_package_range_bound?(package, round, report, report_round_heads_valid)
+    expected_scope = round["number"].zero? ? "task" : "fix"
+    package["base_sha"] == round["base_sha"] && package["head_sha"] == round["head_sha"] &&
+      package["expected_current_head_sha"] == round["head_sha"] && package["scope"] == expected_scope &&
+      (!report_round_heads_valid || package_commit_range?(package, report))
   end
 
   def replacement_evidence_valid?(record, round_number, prior_implementer, replacement_implementer)
@@ -402,6 +433,9 @@ module TaskReviewLoop
     package = input["review_package"]
     rounds = input.fetch("rounds", [])
     round = rounds.last
+    round_heads = rounds.filter_map { |entry| entry["head_sha"] if entry.is_a?(Hash) }
+    report_round_heads_valid = report.is_a?(Hash) && report["commits"].is_a?(Array) &&
+                               ordered_subsequence?(round_heads, report["commits"])
 
     if !input["cap_adjudication"].nil? && (!round.is_a?(Hash) || round["number"] != 5)
       errors << "cap-adjudication-premature"
@@ -442,8 +476,7 @@ module TaskReviewLoop
       if package["scope"] == "task" && package_commits != report_commits
         errors << "review-package-commit-list-mismatch"
       end
-      round_heads = rounds.filter_map { |entry| entry["head_sha"] if entry.is_a?(Hash) }
-      unless ordered_subsequence?(round_heads, report_commits)
+      unless report_round_heads_valid
         errors << "worker-report-round-heads-mismatch"
       end
     end
@@ -560,6 +593,36 @@ module TaskReviewLoop
       rounds.each_with_index do |review_round, index|
         errors << "review-round-digest-mismatch" unless valid_record_digest?(review_round)
         errors << "review-round-empty-range" if review_round["base_sha"] == review_round["head_sha"]
+        round_package = review_round["review_package"]
+        current_completed_package = input["review_state"] == "complete" && index == rounds.length - 1
+        unless round_package.is_a?(Hash) && review_round["package_digest"] == round_package["digest"] &&
+               (!current_completed_package || round_package == package)
+          errors << "review-round-package-mismatch"
+        end
+        if round_package.is_a?(Hash) && !current_completed_package
+          errors << "review-round-package-invalid" unless valid_record_digest?(round_package)
+          unless same_identity?(identity, round_package["identity"]) &&
+                 round_package["brief_digest"] == brief["digest"]
+            errors << "review-round-package-foreign"
+          end
+          unless round_package_range_bound?(
+            round_package,
+            review_round,
+            report,
+            report_round_heads_valid
+          )
+            errors << "review-round-package-range-mismatch"
+          end
+          unless same_actor?(round_package["implementer_id"], review_round["implementer_id"]) &&
+                 same_actor?(round_package["reviewer_id"], review_round["reviewer_id"]) &&
+                 round_package["prior_round_digest"] == review_round["prior_round_digest"]
+            errors << "review-round-package-binding-mismatch"
+          end
+          errors << "review-round-package-truncated" unless round_package.dig("exact_diff", "truncated") == false
+          diff, diff_error = load_artifact(round_package["exact_diff"], "review-round-exact-diff")
+          errors << diff_error if diff_error
+          errors << "review-round-exact-diff-empty" if diff && diff.strip.empty?
+        end
         findings_document, findings_error = load_findings(review_round["review_findings"], "review-findings")
         if findings_error
           errors << findings_error

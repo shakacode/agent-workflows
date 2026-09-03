@@ -105,6 +105,14 @@ be distinct in the package and every completed round; a nonempty artifact
 cannot make an empty Git range reviewable. A pending valid package reduces to
 `review_eligible`.
 
+Retain the complete `review_package` inside every completed round. Its
+`package_digest` must match the retained package digest. Before a round counts,
+the helper verifies the retained record digest, reloads its exact-diff artifact,
+and binds its task identity, brief, scope, base/head, expected head, actors,
+prior-round digest, and exact worker-report commit slice. A missing, fabricated,
+or wrong-range historical package fails closed before cap adjudication or
+dependent work.
+
 ## Review Findings And Independence
 
 Each review writes a separate `review-finding-v0` JSON artifact. The helper
@@ -140,9 +148,10 @@ silently expand the task loop.
 
 Round `0` is the initial task review. Fix rounds are numbered `1` through `5`.
 One fix round contains one implementation pass, covering verification evidence,
-one exact fix-diff package, and one independent re-review. Each record binds its
-package, base/head, implementer/reviewer, normalized findings artifact, outcome
-ids, prior-round digest, and its own digest.
+one retained exact fix-diff package, and one independent re-review. Each record
+contains that full package and binds its digest, base/head,
+implementer/reviewer, normalized findings artifact, outcome ids,
+prior-round digest, and its own digest.
 
 When the host supports safe same-agent continuation, resume the original
 implementer for early fix rounds. When continuation is unavailable or bounded
