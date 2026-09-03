@@ -212,14 +212,17 @@ N=$(gh api graphql \
 
 Where GraphQL is unavailable, page the REST endpoint and sum — same answer, one
 request per 100 commits. Keep `pipefail` local to the subshell so later expected
-nonzero exits stay inspectable:
+nonzero exits stay inspectable, and fail closed before `N` is used:
 
 ```bash
 N=$(
   set -o pipefail
   gh api "repos/${REPO}/pulls/${PR}/commits" --paginate --jq 'length' \
     | awk '{s+=$1} END {print s}'
-)
+) || {
+  echo "paged commit count is UNKNOWN: stop before using N" >&2
+  exit 1
+}
 ```
 
 Note `-F n=` for the PR number: GraphQL needs a JSON integer for `$n:Int!`, and
