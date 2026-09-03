@@ -155,12 +155,14 @@ terminal. The tower SHALL execute the relayed outcome and clear the item only
 by publishing a newer snapshot. The aggregate HIL Desk SHALL NOT answer,
 reinterpret, or clear the question.
 
-When existing risk or complexity gates require a full walkthrough, the HIL task
-SHALL prepare it automatically with `pr-walkthrough` and publish a COMMENT-only
-GitHub review with one conceptual step per honest inline review thread. The
-literal `walkthrough requested` remains an override for cases not auto-selected.
+When risk or complexity gates require a walkthrough, the HIL task SHALL use
+`pr-walkthrough` to prepare the complete exact-head walkthrough up front and
+publish all conceptual sections in one COMMENT-only GitHub review, one per
+honest separately replyable inline thread. It SHALL NOT wait for `next` turns
+before publishing later sections. `walkthrough requested` overrides
+non-selection; live interactive Codex delivery occurs only when Justin asks.
 The schema SHALL distinguish `decision_channel: github_comment`, required HIL
-task identity/deeplink, and `walkthrough_mode`. The HAD SHALL render each Codex
+task identity/deeplink, `walkthrough_mode`, and live-request state. The HAD SHALL render each Codex
 deeplink as a raw unformatted `codex://threads/...` URL, never Markdown or code.
 No verified mechanism forces a deeplink into a new Codex window; the user keeps
 the HIL view in a separately opened app window when desired. Every displayed

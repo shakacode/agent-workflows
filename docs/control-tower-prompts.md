@@ -17,10 +17,12 @@ the whole block into a new Codex task for the named project.
 - Every actionable item also has exactly one companion task titled
   `HIL — <repo> PR #<n> — <decision>`. It monitors and replies on GitHub,
   relays outcomes to the execution-only tower, and archives when terminal.
-- When risk or complexity gates require a full walkthrough, that same HIL task
-  uses `pr-walkthrough` and publishes one conceptual step per honest inline
-  COMMENT-only review thread. `walkthrough requested` is an override when gates
-  did not auto-select one. Walkthrough completion is not approval.
+- When risk or complexity gates require a walkthrough, that HIL task uses
+  `pr-walkthrough` to prepare
+  the complete exact-head walkthrough up front and publishes all conceptual
+  sections in one pass, one per honest separately replyable COMMENT-only review
+  thread. `walkthrough requested` overrides non-selection. A live interactive
+  Codex walkthrough starts only when Justin asks. Completion is not approval.
 - The **Human Attention Desk (HIL Desk)** reads repository snapshots and
   rebuilds the queue. Use its chat to refresh the queue or diagnose a stale
   source or broken link. Do not answer repository decisions in the desk chat.
@@ -125,10 +127,11 @@ tasks and keep decision-free work moving without routine status. Every
 actionable item gets exactly one `HIL — agent-workflows PR #<n> — <decision>`
 companion task and raw deeplink. It monitors and replies on canonical GitHub
 comments, relays outcomes, notifies this execution-only tower, and archives when
-terminal. If risk/complexity gates require a full walkthrough, that same task
-uses `pr-walkthrough` and publishes one conceptual step per honest inline
-COMMENT-only review thread. `walkthrough requested` overrides non-selection;
-completion is not approval. Never require human input in this busy tower.
+terminal. When gates require a walkthrough, that task publishes all exact-head
+sections up front in replyable COMMENT-only threads. `walkthrough requested`
+overrides non-selection;
+live Codex walkthrough is request-only, and completion is not approval. Never
+require human input in this busy tower.
 
 Each task final says `Archive state: ready` or gives the concrete blocker. Once
 evidence is durable, work is committed/pushed/handed off, ownership is released,
@@ -185,10 +188,11 @@ archive scoped Codex tasks and keep decision-free work moving without routine
 status. Every actionable item gets exactly one
 `HIL — agent-coordination PR #<n> — <decision>` companion task and raw deeplink.
 It monitors and replies on canonical GitHub comments, relays outcomes, notifies
-this execution-only tower, and archives when terminal. If risk/complexity gates
-require a full walkthrough, that same task uses `pr-walkthrough` and publishes
-one conceptual step per honest inline COMMENT-only review thread.
-`walkthrough requested` overrides non-selection; completion is not approval.
+this execution-only tower, and archives when terminal. When gates require a
+walkthrough, that task publishes all exact-head sections up front in replyable
+COMMENT-only threads.
+`walkthrough requested` overrides non-selection; live Codex walkthrough is
+request-only, and completion is not approval.
 Never require human input in this busy tower.
 
 Each task final says `Archive state: ready` or gives the concrete blocker. Once
@@ -348,10 +352,11 @@ tasks before creating new ones. Do not send routine status.
 Every actionable item gets exactly one
 `HIL — <repo> PR #<n> — <decision>` companion task and raw deeplink. It monitors
 and replies on canonical GitHub comments, relays outcomes, notifies this
-execution-only tower, and archives when terminal. If risk/complexity gates
-require a full walkthrough, that same task uses `pr-walkthrough` and publishes
-one conceptual step per honest inline COMMENT-only review thread.
-`walkthrough requested` overrides non-selection; completion is not approval.
+execution-only tower, and archives when terminal. When gates require a
+walkthrough, that task publishes all exact-head sections up front in replyable
+COMMENT-only threads.
+`walkthrough requested` overrides non-selection; live Codex walkthrough is
+request-only, and completion is not approval.
 
 Every task final states `Archive state: ready` or gives the concrete blocker.
 When evidence is durable, work is committed/pushed/handed off, ownership is
@@ -439,6 +444,7 @@ it never truncates fields or accepts a partial attention array.
       "hil_task_host": "M5",
       "hil_task_deeplink": "codex://threads/stable-hil-task-id",
       "walkthrough_mode": null,
+      "live_walkthrough_requested": false,
       "kind": "architecture",
       "what_changes": "The planning contract accepts one recovery posture",
       "risk_downside": "The rejected posture may require manual cleanup and retry",
@@ -529,9 +535,12 @@ Field rules:
   creates tasks or consumes answers.
 - **Walkthrough mode.** `walkthrough_mode` is `automatic`, `requested`, or
   `null`. Risk/complexity gates select `automatic`; the literal GitHub comment
-  `walkthrough requested` selects `requested` when not already selected. The
-  same HIL task uses `pr-walkthrough` and publishes a COMMENT-only GitHub review
-  with one conceptual step per honest inline thread. Completion is not approval.
+  `walkthrough requested` overrides non-selection. The HIL task uses
+  `pr-walkthrough` to prepare the complete exact-head walkthrough up front and
+  publishes all conceptual sections in one COMMENT-only review, one per honest
+  separately replyable thread; it never waits for `next` turns before publishing
+  later sections. `live_walkthrough_requested` is true only when Justin asks for
+  interactive Codex delivery. Completion is not approval.
 - **Human card fields.** `what_changes`, `risk_downside`, `recommendation`, and
   `one_action` are required plain-language strings. Together with the GitHub
   target, raw HIL deeplink, and `M5`/`M1` host, they are the only always-visible
