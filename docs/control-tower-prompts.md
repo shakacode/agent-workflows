@@ -12,8 +12,12 @@ the whole block into a new Codex task for the named project.
 
 - The **control tower** coordinates one repository. Use it for portfolio status
   or to repair a broken handoff, not as the default place to review every PR.
-- The **decision task** owns one item that needs human attention. Its title
-  names the PR or issue. Use it for questions, a walkthrough, and the decision.
+- The linked **GitHub PR comment thread** is the canonical durable channel for
+  exact-head approvals, gate acknowledgments, requested changes, decisions,
+  and the literal request `walkthrough requested`.
+- A **walkthrough task** is optional and exists only after that explicit
+  request. It explains one conceptual change at a time with `pr-walkthrough`,
+  returns the decision to GitHub, notifies the tower, and archives when done.
 - The **Human Attention Desk (HIL Desk)** reads repository snapshots and
   rebuilds the queue. Use its chat to refresh the queue or diagnose a stale
   source or broken link. Do not answer repository decisions in the desk chat.
@@ -24,16 +28,16 @@ the whole block into a new Codex task for the named project.
 For each HAD item:
 
 1. Open **Review target** to inspect the GitHub PR or issue when needed.
-2. Open **Respond in Codex** to enter the PR- or issue-specific decision task.
-3. Reply with one complete choice shown in the item. No special syntax is
-   required. Ask for a walkthrough in that task if the choice is not clear.
-4. Return to the HAD. The source task consumes the answer, publishes a newer
+2. Reply on the PR with one complete displayed choice. The busy control tower
+   consumes the comment asynchronously; never type the answer into that tower.
+3. Comment `walkthrough requested` when explanation is needed. The tower then
+   creates a dedicated walkthrough task and records its raw Codex deeplink.
+4. Return to the HAD. The control tower consumes the answer, publishes a newer
    snapshot, and the desk removes or reranks the item.
 
-An authenticated maintainer comment on the linked GitHub target is also a
-valid response after the source task verifies the author and applicable exact
-head. This lets a maintainer answer during PR review. The source task, not the
-HIL Desk, detects the comment and updates the repository snapshot.
+The tower verifies comment author and applicable exact head, acts on the
+decision, and publishes a newer snapshot. The HIL Desk never consumes comments
+or decisions itself.
 
 ## One-Time Setup
 
@@ -43,12 +47,12 @@ or NFS. The local mount paths may differ. For each prompt, replace
 client such as iCloud Drive or Dropbox: it produces conflict copies instead of
 the atomic rename the contract requires.
 
-For the best document links, use Codex **Copy deeplink** on each control tower,
-the HIL Desk, and each user-visible decision task. Replace
-`<THIS_TASK_DEEPLINK>`. If a link is not yet available, use literal `UNKNOWN`
-and continue; add it on the next snapshot refresh. Render a known URI as a
-Markdown link such as `[Open decision task](codex://threads/task-id)`. Never
-wrap a usable deep link in backticks because that makes it non-clickable.
+Use Codex **Copy deeplink** on each control tower, the HIL Desk, and any
+explicitly requested walkthrough task. Replace `<THIS_TASK_DEEPLINK>`, or use
+literal `UNKNOWN` until the next refresh. In the generated HIL document render
+`codex://threads/...` as a raw, unformatted URL: never a Markdown link or
+backticks. No verified Codex mechanism forces that URI into a new app window;
+the user keeps the HIL view in a separately opened app window when desired.
 
 Replace `<NOTIFY_CHANNEL>` with the Slack channel the HIL Desk may post to, or
 `none`. Desk notifications follow the
@@ -109,9 +113,12 @@ Configure known bots through the trust seam.
 Keep independent M5 capacity useful without duplicate owners or worktrees.
 Preserve exact target ownership, current-head evidence, and host health. Use
 this task as the only portfolio coordinator; supervise and archive scoped Codex
-tasks and keep decision-free work moving without routine status. For an item
-that benefits from a walkthrough, reuse or create one target-named decision
-task and publish its identity; fall back to this task only if creation fails.
+tasks and keep decision-free work moving without routine status. Poll canonical
+GitHub PR comments asynchronously for decisions, exact-head approvals, gate
+acknowledgments, requested changes, and `walkthrough requested`; never require
+the human to type into this busy tower. Only after that explicit request create
+a target-named task using `pr-walkthrough`; have it return the decision to the
+PR comment thread, notify this tower, and auto-archive when terminal.
 
 Each task final says `Archive state: ready` or gives the concrete blocker. Once
 evidence is durable, work is committed/pushed/handed off, ownership is released,
@@ -166,9 +173,12 @@ Keep independent M1 capacity useful without duplicate owners or worktrees.
 Preserve exact target ownership, current-head evidence, backend compatibility,
 and host health. Use this task as the only portfolio coordinator; supervise and
 archive scoped Codex tasks and keep decision-free work moving without routine
-status. For an item that benefits from a walkthrough, reuse or create one
-target-named decision task and publish its identity; fall back here only if
-creation fails.
+status. Poll canonical GitHub PR comments asynchronously for decisions,
+exact-head approvals, gate acknowledgments, requested changes, and
+`walkthrough requested`; never require the human to type into this busy tower.
+Only after that explicit request create a target-named task using
+`pr-walkthrough`; have it return the decision to the PR comment thread, notify
+this tower, and auto-archive when terminal.
 
 Each task final says `Archive state: ready` or gives the concrete blocker. Once
 evidence is durable, work is committed/pushed/handed off, ownership is released,
@@ -217,8 +227,8 @@ snapshot under <SHARED_HIL_ROOT>/state/accepted/. Your deeplink is
 
 Every user-facing status or final includes [Open the current Human Attention
 Document](<SHARED_HIL_ROOT>/generated/HUMAN_ATTENTION.md). The desk chat handles
-refreshes, degraded sources, and broken links; decisions belong in each item's
-**Respond in Codex** task.
+refreshes, degraded sources, and broken links; decisions belong in the linked
+GitHub PR comment thread.
 
 Before every write, re-read writer state. Stop and notify for another live task
 or newer epoch; never take over silently or lower the epoch. Use same-directory
@@ -233,11 +243,12 @@ Only fresh active sources feed the ranked **Action queue**. Preserve unresolved
 items from every degraded source in non-actionable **Needs source refresh**
 below it. The read-only document starts with how to use the queue and a desk
 link. Each item shows the exact question, copy-ready choices, rank reason,
-unlocks, estimate, repository, host, freshness, source identity, **Review
-target**, **Respond in Codex**, and a separate **Repository control tower** when
-different. Escape untrusted Markdown fields and separately validate HTTP/Codex
-links. Never answer or clear an item. Show typed counts/deltas, current ready-PR
-gate, milestone, status, and freshness per repository.
+unlocks, estimate, repository, host, freshness, and **Respond on GitHub**.
+Distinguish `decision_channel: github_comment` from optional walkthrough task
+identity and deeplink. Render every Codex URI as raw unformatted
+`codex://threads/...`, never Markdown or code. Escape other untrusted Markdown
+fields and validate links. Never answer or clear an item. Show typed
+counts/deltas, current ready-PR gate, milestone, status, and freshness per repo.
 
 Rerank when content, freshness, status, or priority inputs change, using only:
 irreversible, unblocks-work, ready-merge, product-architecture. Reject unknown
@@ -265,9 +276,10 @@ Human Attention view over structured agent-coordination records. Preserve the
 dashboard's current product boundary: do not launch agents, answer decisions,
 merge, edit code in target repositories, or mutate coordination records.
 
-Render a continuously reranked queue with repository, target, source host,
-provider, source task, native open URI, freshness, exact question, choices and
-consequences, priority reason, and what the answer unlocks. Rank only items from
+Render a continuously reranked queue with repository, target, tower host,
+provider, `decision_channel`, optional walkthrough task identity/raw Codex URI,
+freshness, exact question, choices and consequences, priority reason, and what
+the answer unlocks. Rank only items from
 fresh valid sources. Show stale, unreachable, UNKNOWN, and unsupported sources
 honestly in a separate non-actionable **Needs source refresh** section below
 the live queue. Use the priority
@@ -318,10 +330,12 @@ Use available host capacity for independent useful work without duplicate
 target ownership or shared-worktree writers. Reuse and supervise existing
 tasks before creating new ones. Do not send routine status.
 
-Before publishing a PR- or issue-specific attention item that benefits from a
-walkthrough, reuse or create one user-visible decision task named for that
-target. Point the item's source task fields to that task. Use this control tower
-as the explicit response fallback only when a target task cannot be created.
+Poll canonical GitHub PR comments asynchronously for decisions, exact-head
+approvals, gate acknowledgments, requested changes, and `walkthrough requested`;
+never require the human to type into this busy tower. Only after that explicit
+request create a target-named task using `pr-walkthrough`; have it return the
+decision to the PR comment thread, notify this tower, and auto-archive when
+terminal. Publish its optional walkthrough identity while it exists.
 
 Every task final states `Archive state: ready` or gives the concrete blocker.
 When evidence is durable, work is committed/pushed/handed off, ownership is
@@ -401,11 +415,12 @@ it never truncates fields or accepts a partial attention array.
     {
       "id": "repository-stable-attention-id",
       "target": "https://github.com/OWNER/REPO/pull/123",
-      "source_task_id": "stable-task-id",
-      "source_task_title": "HIL — REPO PR #123 — Decide example",
-      "source_provider": "codex",
-      "source_host": "M5",
-      "source_deeplink": "copied-native-deeplink-or-UNKNOWN",
+      "decision_channel": "github_comment",
+      "walkthrough_task_id": null,
+      "walkthrough_task_title": null,
+      "walkthrough_provider": null,
+      "walkthrough_host": null,
+      "walkthrough_deeplink": null,
       "kind": "architecture",
       "question": "One exact outcome-changing question",
       "choices": ["Material choice and consequence", "Other material choice and consequence"],
@@ -414,7 +429,7 @@ it never truncates fields or accepts a partial attention array.
       "unlocks": "Four integration-ready pull requests",
       "unlocks_count": 4,
       "attention_estimate_minutes": 5,
-      "safe_resume": "Exact instruction the source task will follow",
+      "safe_resume": "Exact trusted instruction the control tower will follow",
       "created_at": "2026-09-02T17:00:00Z",
       "refreshed_at": "2026-09-02T18:00:00Z"
     }
@@ -475,22 +490,21 @@ Field rules:
 - **`integration_ready_pull_requests`** is the current count of PRs whose
   integration gates are complete and which wait only for merge. Refresh it from
   live state on every publish; the dashboard lane requires `0`.
-- **`source_task_id`, `source_task_title`, `source_provider`, `source_host`,
-  `source_deeplink`** identify the user-visible task that is waiting for the
-  decision. For a PR- or issue-specific item that benefits from a walkthrough,
-  this is a task named for that target, not the repository control tower. When
-  no target task can be created, these fields equal the `control_tower` values
-  and the HAD labels the link as a control-tower fallback. A supervised task on
-  another host or provider carries its own values; the desk never infers a
-  source host from the tower.
-- **Response channels.** Each choice is a complete, copy-ready response. The
-  human may answer in the source task or leave the same answer as an
-  authenticated maintainer comment on `target`. The source task verifies the
-  GitHub author and applicable exact head before treating a comment as
-  authority. The HIL Desk never consumes the answer directly.
-- **`safe_resume`** is required: the exact instruction the source task will
+- **Decision channel.** `decision_channel` is `github_comment`. The linked PR
+  comment thread is the canonical durable, cross-machine channel for choices,
+  exact-head approvals, gate acknowledgments, requested changes, and the
+  literal `walkthrough requested`. The tower polls it asynchronously, verifies
+  the authenticated author and applicable exact head, and never requires the
+  human to type into the busy tower. Each choice is complete and copy-ready.
+- **Optional walkthrough task.** `walkthrough_task_id`, title, provider, host,
+  and deeplink are absent or `null` unless the maintainer explicitly comments
+  `walkthrough requested`. The tower then creates one target-named task using
+  `pr-walkthrough`. That task returns the decision to the PR comment thread,
+  notifies the tower, and auto-archives when terminal. Its Codex URI is rendered
+  raw and unformatted. The HIL Desk never creates tasks or consumes answers.
+- **`safe_resume`** is required: the exact instruction the control tower will
   follow once the human answers. It must instantiate a trusted action template
-  allowed by repository policy; the source task validates it again before
+  allowed by repository policy; the control tower validates it again before
   execution and rejects arbitrary repository-derived or policy-violating text.
   The desk renders the escaped value as data and never executes or edits it.
 - **`kind`** is one of `production`, `security`, `data-loss`, `irreversible`,
@@ -647,15 +661,16 @@ Rules:
 
 - The header shows the aggregate generation, refresh time, writer task and host,
   a clickable link to the HIL Desk, and a read-only warning. A short operator
-  guide says to start at item 1, review the GitHub target if needed, respond in
-  the linked decision task with one displayed choice, then return because the
-  queue can rerank.
+  guide says to start at item 1, review the GitHub target, comment one displayed
+  choice or `walkthrough requested`, then return because the queue can rerank.
 - Each item shows the exact question, choices and consequences, priority class
   and plain-language reason, what it unlocks, attention estimate when known,
-  repository, host, freshness, source task id and provider, and three clearly
-  labeled destinations when available: **Review target**, **Respond in Codex**,
-  and **Repository control tower**. A known HTTP or Codex URI is a Markdown
-  link, never inline code. `UNKNOWN` remains plain text.
+  repository, host, freshness, `decision_channel`, and **Respond on GitHub**.
+  When an explicitly requested walkthrough is active, show its task identity,
+  provider, host, and raw unformatted `codex://threads/...` deeplink separately.
+  Never render a Codex URI as Markdown or inline code. `UNKNOWN` remains plain
+  text. The app has no verified way to force that URI into a new window; the
+  user may keep this HIL view open in a separate app window.
 - A portfolio section shows, per repository, the typed counts and net deltas
   since wave start, `catch_up_wave_completed_at`, tower status, and freshness,
   so the human learns the dashboard gate from this document rather than from

@@ -135,22 +135,29 @@ the desk's durable copy of each accepted snapshot; the desk rebuilds the
 document from those copies on every refresh so an interrupted publication is
 repaired.
 
-### R6 — Source-task decisions
+### R6 — Durable PR-comment decisions
 
-Each attention item SHALL link to the authoritative Codex task waiting for the
-decision. A PR- or issue-specific item that benefits from a walkthrough SHALL
-link to a user-visible task named for that target, not only to the repository
-control tower. If the runner cannot create that task, the HAD SHALL label the
-control tower as a fallback. The HIL Desk SHALL NOT answer, reinterpret, or
-clear the question. The source task clears it by publishing a newer snapshot.
-An authenticated maintainer comment on the linked GitHub target is also a valid
-response after the source task verifies the author and applicable exact head.
+Each pull-request attention item SHALL use authenticated GitHub PR comments as
+the canonical durable, cross-machine decision channel for exact-head approvals,
+gate acknowledgments, requested changes, complete choices, and the literal
+`walkthrough requested`. A busy repository tower SHALL poll those comments
+asynchronously and SHALL NOT require the human to type into the tower. It SHALL
+verify the author and applicable exact head before acting, then clear the item
+only by publishing a newer snapshot. The HIL Desk SHALL NOT answer, reinterpret,
+or clear the question.
 
-Acceptance: an item remains visible while it is being reviewed and disappears
-only after the source snapshot no longer reports it as unresolved. Each item
-offers a clickable **Review target** link, a clickable **Respond in Codex** link,
-and complete copy-ready choices. The repository control-tower link is labeled
-separately when it differs from the decision task.
+A dedicated PR-specific walkthrough task SHALL be created only after the
+explicit walkthrough comment. It SHALL use `pr-walkthrough`, return any decision
+to the PR comment thread, notify the tower, and auto-archive when terminal. The
+schema SHALL distinguish `decision_channel: github_comment` from optional
+walkthrough task identity and deeplink fields. The HAD SHALL render each Codex
+deeplink as a raw unformatted `codex://threads/...` URL, never Markdown or code.
+No current verified mechanism forces a deeplink into a new Codex window; the
+user preserves the HIL view by opening a separate app window when desired.
+
+Acceptance: an item remains until the source snapshot clears it, shows complete
+copy-ready choices and **Respond on GitHub**, and shows walkthrough identity only
+after an explicit request. Completing a walkthrough is not merge approval.
 
 Task archival is terminal housekeeping, not Human Attention. A task final SHALL
 state `Archive state: ready` or the concrete reason it is not ready. Once
@@ -357,9 +364,9 @@ transcripts.
 
 - **Requirements:** R6-R8, R11-R12.
 - **Repository:** `agent-coordination`.
-- **Done:** attention records and provider/host/task identity are durable and
-  queryable without storing transcripts or making optional link capability a
-  workflow blocker.
+- **Done:** attention records, canonical GitHub-comment decision channel, tower
+  identity, and optional walkthrough identity are durable and queryable without
+  storing transcripts or making optional link capability a workflow blocker.
 - **Parallelism:** after T2; can overlap T3 once ownership is resolved.
 
 ### T5 — Render the HIL queue in the dashboard
@@ -367,8 +374,8 @@ transcripts.
 - **Requirements:** R6-R8, R11-R12.
 - **Repository:** `agent-coordination-dashboard`.
 - **Done:** a read-only Attention view continuously reranks backend records,
-  links to the source task, explains priority, and visibly reports stale or
-  unavailable hosts.
+  links to the GitHub comment channel, shows optional walkthrough identity only
+  after request, explains priority, and visibly reports stale hosts.
 - **Parallelism:** starts after T4's structured attention records exist and
   after the first backlog-integration wave in both `agent-workflows` and
   `agent-coordination`, when neither tower has a waiting integration-ready
