@@ -245,11 +245,9 @@ gap:
   fails one run in twenty, and a locally failing attempt does not turn hosted
   intermittency into a parity gap.
 
-If equivalence is unverifiable, record `UNKNOWN`; do not classify or route the
-failure. No fast exit fires. Keep the task in this workflow and continue only
-classification-independent evidence collection. If the gap cannot be
-recovered, close as `ROOT_CAUSE_NOT_IDENTIFIED`, citing the missing fact and
-what evidence would settle it.
+When equivalence is unverifiable, apply Step 1 exit 3's `UNKNOWN` rule: do not
+classify or route the failure, and use its evidence-only continuation and
+`ROOT_CAUSE_NOT_IDENTIFIED` closeout contract.
 
 If the classification itself is unclear, establish determinism first by
 inspecting the run history for that commit. Do not run both workflows in
