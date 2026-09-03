@@ -26,7 +26,8 @@ Commands below use one stable placeholder set:
 
 | Placeholder | Meaning |
 | --- | --- |
-| `REPO` | `OWNER/REPO_NAME`, as `gh --repo` takes it |
+| `REPO` | `[HOST/]OWNER/REPO_NAME`, as `gh --repo` takes it |
+| `REPO_HOST`, `REPO_PATH` | the authenticated GitHub host and `OWNER/REPO_NAME`, derived from `gh repo view` before URL or API-path checks |
 | `OWNER`, `REPO_NAME` | the two halves separately, for `gh api graphql` |
 | `BASE` | the repo's `base_branch` seam, e.g. `main` |
 | `BASE_TIP` | `origin/${BASE}` as it stood when scope analysis began |
@@ -1331,6 +1332,38 @@ case "${DECIDING_OPERATOR_GITHUB_LOGIN:-UNKNOWN}" in
     ;;
 esac
 
+REPO_IDENTITY_JSON=$(gh repo view "${REPO}" \
+  --json nameWithOwner,url) || exit 1
+REPO_PATH=$(printf '%s' "${REPO_IDENTITY_JSON}" \
+  | jq -er '.nameWithOwner') || exit 1
+REPO_URL=$(printf '%s' "${REPO_IDENTITY_JSON}" \
+  | jq -er '.url') || exit 1
+case "${REPO_PATH}" in
+  ''|/*|*/|*/*/*|*$'\n'*|*$'\r'*)
+    echo "authenticated repository path is invalid: stop" >&2
+    exit 1
+    ;;
+  */*) ;;
+  *)
+    echo "authenticated repository path is not OWNER/REPO_NAME: stop" >&2
+    exit 1
+    ;;
+esac
+case "${REPO_URL}" in
+  https://*) ;;
+  *)
+    echo "authenticated repository URL is not HTTPS: stop" >&2
+    exit 1
+    ;;
+esac
+REPO_HOST=${REPO_URL#https://}
+REPO_HOST=${REPO_HOST%%/*}
+if [ -z "${REPO_HOST}" ] \
+  || [ "${REPO_URL}" != "https://${REPO_HOST}/${REPO_PATH}" ]; then
+  echo "authenticated repository URL does not match host and path: stop" >&2
+  exit 1
+fi
+
 TARGET_JSON=$(gh issue view "${RELEASE_TARGET}" --repo "${REPO}" \
   --json number,url 2>/dev/null) \
   || TARGET_JSON=$(gh pr view "${RELEASE_TARGET}" --repo "${REPO}" \
@@ -1339,17 +1372,19 @@ TARGET_JSON=$(gh issue view "${RELEASE_TARGET}" --repo "${REPO}" \
 TARGET_NUMBER=$(printf '%s' "${TARGET_JSON}" | jq -er '.number') || exit 1
 TARGET_URL=$(printf '%s' "${TARGET_JSON}" | jq -er '.url') || exit 1
 case "${TARGET_URL}" in
-  "https://github.com/${REPO}/issues/"*|"https://github.com/${REPO}/pull/"*) ;;
+  "https://${REPO_HOST}/${REPO_PATH}/issues/"*|\
+    "https://${REPO_HOST}/${REPO_PATH}/pull/"*) ;;
   *)
     echo "release target did not resolve inside REPO: stop" >&2
     exit 1
     ;;
 esac
-EXPECTED_ISSUE_API_URL=$(gh api "repos/${REPO}/issues/${TARGET_NUMBER}" \
+EXPECTED_ISSUE_API_URL=$(gh api --hostname "${REPO_HOST}" \
+  "repos/${REPO_PATH}/issues/${TARGET_NUMBER}" \
   --jq '.url') || exit 1
 
-DECISION_JSON=$(gh api \
-  "repos/${REPO}/issues/comments/${SUCCESSOR_DECISION_COMMENT_ID}") \
+DECISION_JSON=$(gh api --hostname "${REPO_HOST}" \
+  "repos/${REPO_PATH}/issues/comments/${SUCCESSOR_DECISION_COMMENT_ID}") \
   || exit 1
 DECISION_AUTHOR=$(printf '%s' "${DECISION_JSON}" \
   | jq -er '.user.login') || exit 1
@@ -1393,7 +1428,8 @@ case "${SUCCESSOR_STATE:-UNKNOWN}" in
   present)
     NAMED_SUCCESSOR=${DECISION_NAMED_SUCCESSOR}
     case "${NAMED_SUCCESSOR:-UNKNOWN}" in
-      "https://github.com/${REPO}/issues/"*|"https://github.com/${REPO}/pull/"*) ;;
+      "https://${REPO_HOST}/${REPO_PATH}/issues/"*|\
+        "https://${REPO_HOST}/${REPO_PATH}/pull/"*) ;;
       *)
         echo "named successor is not a same-repo issue/PR URL: stop" >&2
         exit 1
