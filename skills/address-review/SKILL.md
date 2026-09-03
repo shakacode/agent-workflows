@@ -424,14 +424,6 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
       REVIEW_WAIVED_CHECK_NAMES_JSON="$(printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
         jq -c --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" \
           '[.[] | select(.pr_number == $pr and .head_sha == $head) | .check_name | select($expected | index(.) != null)] | unique')"
-      if [ "$(printf '%s' "${REVIEW_WAIVED_CHECK_NAMES_JSON}" | jq 'length')" -gt 0 ] &&
-        [ "${REVIEW_REPORTED_WAIVER_HEAD_SHA}" != "${REVIEW_WAIT_HEAD_SHA}" ]; then
-        REVIEW_WAIVER_EVIDENCE="$(printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
-          jq -r --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" \
-            '[.[] | select(.pr_number == $pr and .head_sha == $head) | select($expected | index(.check_name) != null) | "\(.check_name)=\(.evidence_url)"] | join(", ")')"
-        echo "Review-artifact usage/capacity waiver for PR #${REVIEW_WAIT_PR} at ${REVIEW_WAIT_HEAD_SHA}: ${REVIEW_WAIVER_EVIDENCE}"
-        REVIEW_REPORTED_WAIVER_HEAD_SHA="${REVIEW_WAIT_HEAD_SHA}"
-      fi
       if REVIEW_CHECKS_JSON="$(gh pr checks "${REVIEW_WAIT_PR}" --repo "${REPO}" --json name,bucket 2>/dev/null)"; then
         REVIEW_CHECKS_STATUS=0
       else
@@ -463,6 +455,14 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
         sleep 15
         WAITED=$((WAITED + 15))
         continue
+      fi
+      if [ "$(printf '%s' "${REVIEW_WAIVED_CHECK_NAMES_JSON}" | jq 'length')" -gt 0 ] &&
+        [ "${REVIEW_REPORTED_WAIVER_HEAD_SHA}" != "${REVIEW_WAIT_HEAD_SHA}" ]; then
+        REVIEW_WAIVER_EVIDENCE="$(printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
+          jq -r --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" \
+            '[.[] | select(.pr_number == $pr and .head_sha == $head) | select($expected | index(.check_name) != null) | "\(.check_name)=\(.evidence_url)"] | join(", ")')"
+        echo "Review-artifact usage/capacity waiver for PR #${REVIEW_WAIT_PR} at ${REVIEW_WAIT_HEAD_SHA}: ${REVIEW_WAIVER_EVIDENCE}"
+        REVIEW_REPORTED_WAIVER_HEAD_SHA="${REVIEW_WAIT_HEAD_SHA}"
       fi
       REVIEW_WAVE_STATUS_JSON="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
         jq -c --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson waived "${REVIEW_WAIVED_CHECK_NAMES_JSON}" '
