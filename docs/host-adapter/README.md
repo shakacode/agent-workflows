@@ -40,10 +40,10 @@ a hand-edited installation cannot drain a session that is merely resuming.
 
 ## No merge-command gate
 
-This pack does not ship the `PreToolUse` merge-command gate proposed in issue
-#276 and later withdrawn from PR #343. The old shell-text recognizer was retired
-rather than extended. If a future host-owned merge gate is ever reintroduced,
-it should use structured
+This pack does not ship the `PreToolUse` merge-command gate proposed in
+issue #276 and later withdrawn from PR #343. The old shell-text recognizer was
+retired rather than extended. If a future host-owned merge gate is ever
+reintroduced, it should use structured
 host tool/argv identity or a positive receipt boundary, not arbitrary shell
 parsing. Direct `gh pr merge` can remain usable when the host presents the
 exact argv. Wrapper invocations (`env`, `sh -c`, `bash -lc`, `nohup`,
