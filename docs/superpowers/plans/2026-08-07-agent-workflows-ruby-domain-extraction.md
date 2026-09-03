@@ -81,6 +81,7 @@ single-skill helper boundary, and safety contract.
 | --- | --- |
 | `bin/agent-workflow-seam-doctor` | `lib/agent_workflows/seam` |
 | `bin/agent_doctor/autonomous_merge_policy*.rb` | `lib/agent_workflows/policy`; move atomically with every caller/provenance rewrite in Task 2 |
+| `bin/agent_doctor/hosted_qa_policy.rb` | `lib/agent_workflows/policy`; move in the same Task 2 commit because it loads the autonomous policy parser |
 | `skills/pr-batch/bin/pr-security-preflight` | `lib/agent_workflows/security` and `lib/agent_workflows/trust` |
 | `skills/plan-pr-batch/bin/batch-plan-preflight` | `lib/agent_workflows/batch` |
 | `skills/plan-pr-batch/bin/pr-file-touch-map` | Retained single-skill helper owned by `plan-pr-batch` |
@@ -296,15 +297,15 @@ exporter, plus exporter-only tests for helper-set transitions.
   directory still requires the named maintenance grant and proved quiescence
   above; classification alone never authorizes its offline replacement.
   Classify each consumer as `full-skill` or `helper-companion` and prove that its
-  selected mode leaves exactly one invocable skill route. Migrate one canary
-  consumer first, then update every supported pinned consumer through its own
-  reviewed PR. Keep the supported pinned consumer set as an explicit reviewed
-  manifest in this plan:
+  selected mode leaves exactly one invocable skill route. Keep the supported
+  pinned consumer set as an explicit reviewed manifest in this plan:
   - `test/fixtures/pinned-copy-consumer`
-  Use that entry as the canary and update only that consumer.
-  The first skill-wrapper cutover cannot merge until the
-  canary passes and every remaining consumer either has the complete generation
-  bundle or explicitly retains the pre-cutover helper body.
+  The manifest currently has one entry. Use it as the canary and migrate it
+  through its own reviewed PR. If review adds entries before cutover, migrate
+  each remaining listed consumer through its own reviewed PR after the canary.
+  The first skill-wrapper cutover cannot merge until every manifest entry either
+  has the complete generation bundle or explicitly retains the pre-cutover
+  helper body.
 - Add `test/pinned_copy/export_test.bash` and fixture consumers containing no
   gem, host-global library, or source checkout. Before the first skill wrapper
   cutover, prove exported helpers run from the fixture, a partial or
@@ -460,9 +461,12 @@ git commit -m "test: add Ruby CLI characterization harness"
   `lib/agent_workflows/policy/autonomous_merge_policy_globs.rb`.
 - Move: `bin/agent_doctor/autonomous_merge_policy_yaml.rb` to
   `lib/agent_workflows/policy/autonomous_merge_policy_yaml.rb`.
+- Move: `bin/agent_doctor/hosted_qa_policy.rb` to
+  `lib/agent_workflows/policy/hosted_qa_policy.rb`.
 - Create: `lib/agent_workflows/cli/seam_doctor.rb`
 - Create: `test/gem/seam/*_test.rb`
 - Create: `test/gem/policy/autonomous_merge_policy_test.rb`
+- Create: `test/gem/policy/hosted_qa_policy_test.rb`
 - Create: `test/packaging/installed_seam_doctor_test.rb`
 - Modify: `test/packaging/public_entrypoints_test.rb`
 - Modify: `bin/agent-workflow-seam-doctor`
@@ -475,7 +479,12 @@ git commit -m "test: add Ruby CLI characterization harness"
 - Modify: `skills/pr-batch/bin/merge-assurance-test.rb`
 - Modify: `skills/pr-batch/bin/pr-merge-submit-test.rb`
 - Modify: `skills/pr-batch/fixtures/autonomous-merge-policy-sources.json`
+- Modify: `skills/pr-batch/bin/hosted-qa-readiness`
+- Modify: `skills/pr-batch/bin/hosted-qa-readiness-test.rb`
+- Modify: `skills/pr-batch/lib/hosted_qa_runtime_trust.rb`
+- Modify: `skills/pr-batch/bin/hosted-qa-gate-contract-test.rb`
 - Modify: `workflows/pr-processing.md`
+- Modify: `workflows/pr-batch-integration-closeout.md`
 - Modify: `bin/install-agent-workflows-test.bash` for source-pack policy loading.
 - Create: `exe/agent-workflow-seam-doctor`
 - Modify: `agent-workflows.gem-manifest`, `agent-workflows.runtime-manifest`
@@ -522,6 +531,14 @@ and merge callers use the package and the legacy-vs-canonical policy corpus is
 byte-for-byte equivalent in decisions, errors, and glob matches. No
 compatibility lookup may search both old and new policy locations.
 
+Move `bin/agent_doctor/hosted_qa_policy.rb` into the same packaged policy
+namespace in that first commit. It directly loads the autonomous policy parser,
+so the cutover must also update the hosted-QA helper require, its runtime-trust
+closure, both source and installed paths in the integration-closeout workflow,
+the seam-doctor caller, installer manifests, fixtures, and focused tests. Delete
+none of the four legacy policy files until these callers load only the packaged
+paths and the hosted-QA decision and error corpus is equivalent.
+
 The listed merge-eligibility, assurance, and submission files are mechanical
 caller/provenance rewrites required to make this one policy-domain move atomic;
 they do not move or redesign those merge domains. Their staged diff is limited
@@ -533,10 +550,10 @@ Perform that package-policy cutover as the first substep of Step 4. Immediately
 after the packaged parser, existing callers, provenance paths, manifests,
 fixtures, isolation coverage, and legacy deletions pass their focused tests,
 create the first commit defined in Step 7. Do this before creating
-  `Seam::Policy`, rewriting the seam launchers, or modifying their shared package
-  entrypoint for the seam cutover. The later seam work may then build only on the
-  committed canonical policy API and cannot leave an intermediate commit whose
-  launcher references an unstaged seam implementation.
+`Seam::Policy`, rewriting the seam launchers, or modifying their shared package
+entrypoint for the seam cutover. The later seam work may then build only on the
+committed canonical policy API and cannot leave an intermediate commit whose
+launcher references an unstaged seam implementation.
 
 - [ ] **Step 5: Add both installed and source-pack CLIs and the differential corpus**
 
@@ -570,10 +587,13 @@ ruby -Ilib test/gem/seam/shell_command_test.rb
 ruby -Ilib test/gem/seam/initializer_test.rb
 ruby -Ilib test/gem/seam/validator_test.rb
 ruby -Ilib test/gem/policy/autonomous_merge_policy_test.rb
+ruby -Ilib test/gem/policy/hosted_qa_policy_test.rb
 ruby skills/pr-batch/bin/autonomous-merge-contract-test.rb
 ruby skills/pr-batch/bin/autonomous-merge-eligibility-test.rb
 ruby skills/pr-batch/bin/merge-assurance-test.rb
 ruby skills/pr-batch/bin/pr-merge-submit-test.rb
+ruby skills/pr-batch/bin/hosted-qa-readiness-test.rb
+ruby skills/pr-batch/bin/hosted-qa-gate-contract-test.rb
 ruby -Ilib test/packaging/installed_seam_doctor_test.rb
 ruby -Ilib test/packaging/public_entrypoints_test.rb
 bin/agent-workflow-seam-doctor --root test/fixtures/consumer-repo --shared .
@@ -585,7 +605,7 @@ Expected: all established assertions and full validation pass.
 - [ ] **Step 7: Preserve four atomic PR-sized commit boundaries**
 
 As required in Step 4, the policy-parser move, every existing
-caller/provenance/fixture rewrite, and all three legacy deletions form the first
+caller/provenance/fixture rewrite, and all four legacy deletions form the first
 atomic commit before any seam implementation or launcher cutover. Before
 committing, require this exact search to return exit 1 (no legacy reference)
 across every tracked text file except the historical implementation plans. The
@@ -597,14 +617,17 @@ other status is a search failure and must also stop the commit:
 ```bash
 git rm -- bin/agent_doctor/autonomous_merge_policy.rb \
   bin/agent_doctor/autonomous_merge_policy_globs.rb \
-  bin/agent_doctor/autonomous_merge_policy_yaml.rb
+  bin/agent_doctor/autonomous_merge_policy_yaml.rb \
+  bin/agent_doctor/hosted_qa_policy.rb
 git add -- agent-workflows.gem-manifest agent-workflows.runtime-manifest \
   config/ruby-production-boundaries.yml \
   lib/agent_workflows.rb \
   lib/agent_workflows/policy/autonomous_merge_policy.rb \
   lib/agent_workflows/policy/autonomous_merge_policy_globs.rb \
   lib/agent_workflows/policy/autonomous_merge_policy_yaml.rb \
+  lib/agent_workflows/policy/hosted_qa_policy.rb \
   test/gem/policy/autonomous_merge_policy_test.rb \
+  test/gem/policy/hosted_qa_policy_test.rb \
   test/packaging/public_entrypoints_test.rb \
   bin/agent-workflow-seam-doctor bin/agent-workflow-seam-doctor-test.rb \
   bin/install-agent-workflows-test.bash \
@@ -616,9 +639,15 @@ git add -- agent-workflows.gem-manifest agent-workflows.runtime-manifest \
   skills/pr-batch/bin/merge-assurance-test.rb \
   skills/pr-batch/bin/pr-merge-submit-test.rb \
   skills/pr-batch/fixtures/autonomous-merge-policy-sources.json \
-  workflows/pr-processing.md
+  skills/pr-batch/bin/hosted-qa-readiness \
+  skills/pr-batch/bin/hosted-qa-readiness-test.rb \
+  skills/pr-batch/lib/hosted_qa_runtime_trust.rb \
+  skills/pr-batch/bin/hosted-qa-gate-contract-test.rb \
+  workflows/pr-processing.md workflows/pr-batch-integration-closeout.md
 set +e
-git grep --cached -n -I -e 'agent_doctor/autonomous_merge_policy' -- . \
+git grep --cached -n -I \
+  -e 'agent_doctor/autonomous_merge_policy' \
+  -e 'agent_doctor/hosted_qa_policy' -- . \
   ':!docs/superpowers/plans/**'
 legacy_reference_status=$?
 set -e
@@ -635,10 +664,13 @@ printf '%s\t%s\n' \
   D bin/agent_doctor/autonomous_merge_policy.rb \
   D bin/agent_doctor/autonomous_merge_policy_globs.rb \
   D bin/agent_doctor/autonomous_merge_policy_yaml.rb \
+  D bin/agent_doctor/hosted_qa_policy.rb \
   A lib/agent_workflows/policy/autonomous_merge_policy.rb \
   A lib/agent_workflows/policy/autonomous_merge_policy_globs.rb \
   A lib/agent_workflows/policy/autonomous_merge_policy_yaml.rb \
+  A lib/agent_workflows/policy/hosted_qa_policy.rb \
   A test/gem/policy/autonomous_merge_policy_test.rb \
+  A test/gem/policy/hosted_qa_policy_test.rb \
   M agent-workflows.gem-manifest \
   M agent-workflows.runtime-manifest \
   M config/ruby-production-boundaries.yml \
@@ -655,10 +687,15 @@ printf '%s\t%s\n' \
   M skills/pr-batch/bin/merge-assurance-test.rb \
   M skills/pr-batch/bin/pr-merge-submit-test.rb \
   M skills/pr-batch/fixtures/autonomous-merge-policy-sources.json \
-  M workflows/pr-processing.md | sort > "$policy_commit_expected"
+  M skills/pr-batch/bin/hosted-qa-readiness \
+  M skills/pr-batch/bin/hosted-qa-readiness-test.rb \
+  M skills/pr-batch/lib/hosted_qa_runtime_trust.rb \
+  M skills/pr-batch/bin/hosted-qa-gate-contract-test.rb \
+  M workflows/pr-processing.md \
+  M workflows/pr-batch-integration-closeout.md | sort > "$policy_commit_expected"
 git diff --cached --name-status --no-renames | sort > "$policy_commit_actual"
 diff -u "$policy_commit_expected" "$policy_commit_actual"
-git commit -m "refactor: package autonomous merge policy parser"
+git commit -m "refactor: package policy parsers"
 ```
 
 Commit the remaining pure seam parsing, initializer/writes, and validator/CLI
