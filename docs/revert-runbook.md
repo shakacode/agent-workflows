@@ -651,15 +651,13 @@ graph, break ties by reverse landing order so the result stays deterministic:
 newest in-scope commit first, oldest last. If a unit selected by `edit` or
 `validation_open` landed before the suspect PR, keep it ahead of the predecessor
 it depends on so the dependent is reverted before the predecessor it built on.
-That edge case is intentional:
-preserving a safe intermediate tree takes precedence over the
-historical-plausibility heuristic below. Every intermediate commit on the revert
-branch should be a state the code could plausibly have been in, except for that
-dependency-before-predecessor ordering requirement. Forward order does not
-merely conflict more — it
-produces intermediate trees that git reports as successful and that are
-actually broken, because a dependent merge is still present after its
-dependency has been removed.
+That edge case is intentional: preserving a safe intermediate tree takes
+precedence over the historical-plausibility heuristic below. Every intermediate
+commit on the revert branch should be a state the code could plausibly have been
+in, except for that dependency-before-predecessor ordering requirement. Forward
+order does not merely conflict more — it produces intermediate trees that git
+reports as successful and that are actually broken, because a dependent merge
+is still present after its dependency has been removed.
 
 ### Build the revert on a branch
 
@@ -1306,9 +1304,16 @@ SUCCESSOR_STATE=UNKNOWN
 SUCCESSOR_DECISION_REF=UNKNOWN
 unset NAMED_SUCCESSOR TERMINAL
 
-case "${RELEASE_BATCH_ID:-UNKNOWN}:${RELEASE_TARGET:-UNKNOWN}" in
-  *UNKNOWN*|*:|:*)
-    echo "release batch or target is UNKNOWN: stop before verification" >&2
+# `build-UNKNOWN-42` is a valid opaque id; only an exact UNKNOWN field is invalid.
+case "${RELEASE_BATCH_ID-}" in
+  ''|UNKNOWN|*$'\n'*|*$'\r'*)
+    echo "release batch id is empty, multiline, or UNKNOWN: stop before verification" >&2
+    exit 1
+    ;;
+esac
+case "${RELEASE_TARGET-}" in
+  ''|UNKNOWN|*$'\n'*|*$'\r'*)
+    echo "release target is empty, multiline, or UNKNOWN: stop before verification" >&2
     exit 1
     ;;
 esac
