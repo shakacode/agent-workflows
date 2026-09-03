@@ -267,6 +267,10 @@ Use [docs/source-pack-glossary.md](docs/source-pack-glossary.md) for canonical
 vocabulary around source-pack distribution, install paths, seams, readiness
 states, review findings, and state-machine fixtures.
 
+### Examples and adopters
+
+- [shakacode/shakaperf](https://github.com/shakacode/shakaperf): TypeScript/yarn monorepo with `.agents/agent-workflow.yml` in the `.agents/` seam.
+
 ## Maintainer Sync Reference
 
 Most teams can adopt the source pack with the Quick Start and Consumer Repo
