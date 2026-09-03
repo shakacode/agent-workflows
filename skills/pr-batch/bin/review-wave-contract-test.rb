@@ -119,6 +119,8 @@ class ReviewWaveContractTest < Minitest::Test
       assert_includes text, "REVIEW_WAVE_PENDING_CHECK_NAMES"
       assert_includes text, "REVIEW_UNAVAILABLE_WAIVERS_JSON"
       assert_includes text, "REVIEW_WAIVED_CHECK_NAMES_JSON"
+      assert_includes text, "REVIEW_WAIT_HEAD_SHA_AFTER"
+      assert_includes text, ".head_sha == $head"
       assert_includes text, "0|1|8"
       assert_includes text, "select(($waived | index($name)) == null)"
       assert_match(/select\(\(\$waived \| index\(\$name\)\) == null\).*?select\(\(\$checks \| length\) == 0 or any\(\$checks\[\]; \.bucket == "pending"\)\)/m, text)
@@ -135,11 +137,16 @@ class ReviewWaveContractTest < Minitest::Test
     expected = %w[coderabbitai claude-review]
     terminal_checks = [{ "name" => "claude-review", "bucket" => "pass" }]
     pending_checks = terminal_checks + [{ "name" => "coderabbitai", "bucket" => "pending" }]
+    head_sha = "a" * 40
+    exact_waiver = [{ "check_name" => "coderabbitai", "head_sha" => head_sha }]
+    stale_waiver = [{ "check_name" => "coderabbitai", "head_sha" => "b" * 40 }]
+    unrelated_waiver = [{ "check_name" => "unrelated-reviewer", "head_sha" => head_sha }]
 
-    assert_equal 1, review_wave_pending(expected, terminal_checks, [])
-    assert_equal 0, review_wave_pending(expected, terminal_checks, ["coderabbitai"])
-    assert_equal 0, review_wave_pending(expected, pending_checks, ["coderabbitai"])
-    assert_equal 1, review_wave_pending(expected, terminal_checks, ["unrelated-reviewer"])
+    assert_equal 1, review_wave_pending(expected, terminal_checks, [], head_sha)
+    assert_equal 0, review_wave_pending(expected, terminal_checks, exact_waiver, head_sha)
+    assert_equal 0, review_wave_pending(expected, pending_checks, exact_waiver, head_sha)
+    assert_equal 1, review_wave_pending(expected, terminal_checks, unrelated_waiver, head_sha)
+    assert_equal 1, review_wave_pending(expected, terminal_checks, stale_waiver, head_sha)
   end
 
   private
@@ -152,8 +159,9 @@ class ReviewWaveContractTest < Minitest::Test
     assert_includes text.gsub(/\s+/, " "), rule
   end
 
-  def review_wave_pending(expected, checks, waived)
+  def review_wave_pending(expected, checks, waivers, head_sha)
     filter = <<~'JQ'
+      [ $waivers[] | select(.head_sha == $head_sha) | .check_name ] | unique as $waived |
       [ $expected[] as $name |
         select(($waived | index($name)) == null) |
         ([ $checks[] | select(.name == $name)]) as $named_checks |
@@ -162,7 +170,8 @@ class ReviewWaveContractTest < Minitest::Test
     JQ
     stdout, stderr, status = Open3.capture3(
       "jq", "-n", "--argjson", "expected", JSON.generate(expected),
-      "--argjson", "checks", JSON.generate(checks), "--argjson", "waived", JSON.generate(waived), filter
+      "--argjson", "checks", JSON.generate(checks), "--argjson", "waivers", JSON.generate(waivers),
+      "--arg", "head_sha", head_sha, filter
     )
     assert status.success?, stderr
     Integer(stdout, 10)
