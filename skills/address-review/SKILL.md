@@ -467,8 +467,8 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
       REVIEW_WAVE_STATUS_JSON="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
         jq -c --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson waived "${REVIEW_WAIVED_CHECK_NAMES_JSON}" '
           [ $expected[] as $name |
-            select(($waived | index($name)) == null) |
             ([.[] | select(.name == $name)]) as $checks |
+            select(($waived | index($name)) == null or any($checks[]; .bucket == "pending")) |
             {
               name: $name,
               missing: (($checks | length) == 0),

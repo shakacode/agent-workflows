@@ -125,7 +125,8 @@ class ReviewWaveContractTest < Minitest::Test
       assert_includes text, "0|1|8"
       assert_match(/REVIEW_WAIT_HEAD_SHA_AFTER.*?!=.*?REVIEW_WAIT_HEAD_SHA.*?WAITED.*?-ge.*?MAX_WAIT.*?exit 2.*?sleep 15.*?WAITED=\$\(\(WAITED \+ 15\)\).*?continue/m, text)
       refute_match(/REVIEW_WAIT_HEAD_SHA_AFTER.*?!=.*?REVIEW_WAIT_HEAD_SHA.*?WAITED=0.*?continue/m, text)
-      assert_includes text, "select(($waived | index($name)) == null)"
+      assert_includes text,
+                      'select(($waived | index($name)) == null or any($checks[]; .bucket == "pending"))'
       assert_includes text, "pending_count:"
       assert_includes text, "missing_names:"
       assert_includes text, "pending_names:"
@@ -151,7 +152,7 @@ class ReviewWaveContractTest < Minitest::Test
       refute waiver_evidence_valid?(text, [exact_waiver.merge("reason" => "unknown")])
       assert_equal 1, review_wave_pending(text, expected, terminal_checks, [], 684, head_sha)
       assert_equal 0, review_wave_pending(text, expected, terminal_checks, [exact_waiver], 684, head_sha)
-      assert_equal 0, review_wave_pending(text, expected, pending_checks, [exact_waiver], 684, head_sha)
+      assert_equal 1, review_wave_pending(text, expected, pending_checks, [exact_waiver], 684, head_sha)
       assert_equal 1, review_wave_pending(text, expected, terminal_checks, [unrelated_waiver], 684, head_sha)
       assert_equal 1, review_wave_pending(text, expected, terminal_checks, [stale_waiver], 684, head_sha)
       assert_equal 1, review_wave_pending(text, expected, terminal_checks, [other_pr_waiver], 684, head_sha)
