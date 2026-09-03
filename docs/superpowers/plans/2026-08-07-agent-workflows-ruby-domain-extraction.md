@@ -299,8 +299,10 @@ exporter, plus exporter-only tests for helper-set transitions.
   selected mode leaves exactly one invocable skill route. Migrate one canary
   consumer first, then update every supported pinned consumer through its own
   reviewed PR. Keep the supported pinned consumer set as an explicit reviewed
-  manifest in this plan; use its first entry as the canary and update only the
-  consumers named there. The first skill-wrapper cutover cannot merge until the
+  manifest in this plan:
+  - `test/fixtures/pinned-copy-consumer`
+  Use its first entry as the canary and update only the consumers named there.
+  The first skill-wrapper cutover cannot merge until the
   canary passes and every remaining consumer either has the complete generation
   bundle or explicitly retains the pre-cutover helper body.
 - Add `test/pinned_copy/export_test.bash` and fixture consumers containing no
@@ -530,11 +532,11 @@ deferred to Task 5 and requires its own review slice.
 Perform that package-policy cutover as the first substep of Step 4. Immediately
 after the packaged parser, existing callers, provenance paths, manifests,
 fixtures, isolation coverage, and legacy deletions pass their focused tests,
-create the first commit in this step. Do this before creating
-`Seam::Policy`, rewriting the seam launchers, or modifying their shared package
-entrypoint for the seam cutover. The later seam work may then build only on the
-committed canonical policy API and cannot leave an intermediate commit whose
-launcher references an unstaged seam implementation.
+  create the first commit defined in Step 7. Do this before creating
+  `Seam::Policy`, rewriting the seam launchers, or modifying their shared package
+  entrypoint for the seam cutover. The later seam work may then build only on the
+  committed canonical policy API and cannot leave an intermediate commit whose
+  launcher references an unstaged seam implementation.
 
 - [ ] **Step 5: Add both installed and source-pack CLIs and the differential corpus**
 
