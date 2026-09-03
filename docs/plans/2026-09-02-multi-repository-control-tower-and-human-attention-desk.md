@@ -103,7 +103,9 @@ desk's last known good input.
 
 A tower SHALL write a complete temporary snapshot in the destination directory,
 validate it, and rename it to the canonical repository snapshot name. It SHALL
-increase a monotonically increasing generation. A replacement tower SHALL
+increase a monotonically increasing generation on every successful refresh,
+including one without content changes, so a quiet healthy source does not
+appear stale. A replacement tower SHALL
 continue from the generation in the existing canonical snapshot rather than
 restarting the counter. The HIL Desk SHALL reject a lower generation and
 preserve the last known good snapshot when a new file is invalid or incomplete.
@@ -125,9 +127,10 @@ epoch, heartbeat, and each repository's last accepted generation. A writer is
 live while its heartbeat is fresher than the contract's threshold. A different
 live writer or a newer epoch stops publication without stopping repository
 work. A replacement claims the file, re-reads it after one heartbeat interval
-before publishing, and recovers accepted generations from that file; the desk
-rebuilds the document from accepted inputs on every refresh so an interrupted
-publication is repaired.
+before publishing, and recovers accepted generations from that file and from
+the desk's durable copy of each accepted snapshot; the desk rebuilds the
+document from those copies on every refresh so an interrupted publication is
+repaired.
 
 ### R6 — Source-task decisions
 
@@ -289,7 +292,11 @@ transcripts.
 - **Done:** both snapshots update without conflict, one generated document
   reranks the combined queue, a resolved source-task item disappears, a
   restarted tower's next snapshot is accepted, and the transport tests above
-  are recorded.
+  are recorded. Writer lifecycle cases are also recorded: a desk with a stale
+  epoch stops publishing, a replacement's claim is verified after one heartbeat
+  interval, a crash between the document and writer-state renames is repaired
+  on restart, and a malformed or rolled-back canonical snapshot leaves the
+  accepted copy and its items intact.
 - **Parallelism:** starts after T1; dashboard work does not block it.
 
 ### T3 — Add a deterministic snapshot renderer
@@ -300,7 +307,8 @@ transcripts.
   duplicate the implementation.
 - **Done:** fixtures prove atomic generation, generation rollback rejection,
   malformed-input preservation, staleness labeling, deterministic ranking by
-  priority class, and bounded output.
+  priority class, bounded output, and that an adversarial snapshot whose text
+  contains instructions is rendered as data.
 - **Parallelism:** after T2 reveals the smallest stable contract.
 
 ### T4 — Add structured attention state to Agent Coordination
