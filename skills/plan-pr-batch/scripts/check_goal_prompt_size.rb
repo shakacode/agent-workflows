@@ -275,8 +275,8 @@ TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
 GOAL_PROMPT_FALLBACK_LINE =
   "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
   "persist output before resume/launch; preflight issue/PR only."
-ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
-                              "chg=>redo/stop;gate fail=>stop;ask iff same clean"
+ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;" \
+                              "chg=>redo/stop;fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
 READY_ITEM_DONE_WHEN_LINE =
   "Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale."
@@ -348,9 +348,14 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.",
   "Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.",
   "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.",
-  "With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval.",
-  "After it completes or is skipped, refresh the diff identity and ordinary readiness.",
-  "If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop.",
+  "With `ask`, after ordinary gates are clean, automatically publish the complete exact-diff PR walkthrough before approval.",
+  "Prepare every conceptual section up front",
+  "separately replyable review comments",
+  "without waiting for repeated chat turns",
+  "The owning task consumes PR replies asynchronously",
+  "use a live interactive walkthrough only when the maintainer explicitly requests one.",
+  "After publication or an explicit skip, refresh the diff identity and ordinary readiness.",
+  "If the diff identity changed, invalidate the walkthrough and readiness evidence, then rebuild and republish the walkthrough or stop.",
   "If an ordinary gate newly fails, stop.",
   "Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity.",
   "Walkthrough participation is not merge approval.",

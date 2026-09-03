@@ -89,8 +89,11 @@ authority, merge without asking the user to perform the authorized mechanical
 action. Continue to use the repository submission policy and all exact-head
 assurance gates; autonomous authority does not bypass them.
 
-When current exact-diff human approval is genuinely required, first complete
-the one-concept-at-a-time PR walkthrough if human understanding is the blocker.
+When current exact-diff human approval is genuinely required, first publish the
+complete exact-diff PR walkthrough if human understanding is the blocker. Put
+the orientation and all conceptual sections on GitHub in one pass, prefer
+separately replyable review threads, and let the owning task consume replies
+asynchronously. Use live interaction only when the maintainer explicitly asks.
 Then refresh readiness and present the full exact head SHA, the sorted gate set,
 and rollback status before asking one final question that names the exact
 approval needed. Walkthrough participation is not approval, and any head change
@@ -157,8 +160,8 @@ Everything between checkpoints is silent; a tool-call preamble is not a
 checkpoint. An HST-v1 actionable notification is not a separate category: it is
 emitted at the `decision-required`, `merge-decision`, or `final-handoff`
 checkpoint whose state it reports; closeout and archive completion is a
-`final-handoff`. A direct answer, an explicitly requested status report, a turn of a
-required interactive exchange such as the `ask` merge-authority walkthrough, and
+`final-handoff`. A direct answer, an explicitly requested status report, a turn
+of an explicitly requested interactive exchange such as a live PR walkthrough, and
 a required safety stop are always allowed without being checkpoints. Every
 user-visible message counts in exactly one bucket of the closeout marker.
 

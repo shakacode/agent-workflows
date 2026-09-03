@@ -93,9 +93,11 @@ closeout. When human attention is genuinely required, choose one route.
 
 Start `$pr-walkthrough` for the exact current diff when the maintainer asks to
 understand a PR or when the recorded `ask` authority reaches its walkthrough
-gate. Explain one conceptual change per response and pause for questions or
-explicit readiness. Do not repeat a walkthrough completed for the same diff
-identity. After the last step, refresh readiness after the walkthrough, then
+gate. Prepare the complete map, then publish the orientation and every concept
+to GitHub in one pass with separately replyable threads where useful. The
+owning task consumes replies asynchronously; use live interaction only when the
+maintainer explicitly asks. Do not repeat a walkthrough completed for the same
+diff identity. After publication, refresh readiness, then
 ask the merge question separately only if the same diff is still clean and a
 decision is required. Walkthrough participation never grants merge authority.
 

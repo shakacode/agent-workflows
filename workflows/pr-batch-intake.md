@@ -72,8 +72,8 @@ exact value already supplied:
 - **Mode:** plan-only, create a host goal prompt, or launch workers now.
 - **`merge_authority`:** `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
   it before worker launch from visible authority or ask. `ask` automatically
-  walks through the exact-diff PR one conceptual change at a time before its
-  one final merge decision; never silently default it.
+  publishes the complete exact-diff walkthrough as separately replyable GitHub
+  concepts before its one final merge decision; never silently default it.
 - **Concurrency:** one machine, multiple machines, or single-threaded.
 - **Batch size target:** `codex`, `claude`, or `generic`; explicit paste
   destination or runner wins, otherwise use reliable host detection or

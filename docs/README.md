@@ -42,7 +42,7 @@ and implementation plans are collected in the final reference section.
 | Run an attended work window or leave authorized work moving overnight | [Attended And Overnight Workflow](attended-and-overnight-workflow.md) |
 | Finish and archive a stale PR-batch task | Use the `$close-batch` skill |
 | Understand task ownership, cross-task requests, approvals, and heartbeat communication | [User-Facing Coordination](user-facing-coordination.md) |
-| Understand a PR one conceptual change and rationale at a time | Use the `$pr-walkthrough` skill |
+| Understand a PR through a complete, replyable GitHub walkthrough | Use the `$pr-walkthrough` skill |
 | Decide whether an issue or proposed fix is worth doing | [Issue And Fix Evaluation](issue-evaluation.md) |
 | Route coordinators and workers by capability, cost, risk, and escalation evidence | [Cost-aware model routing](agent-workflows-model-routing.md) |
 | Use Compound Engineering inside an Agent Workflows lane | [Using Compound Engineering With Agent Workflows](compound-engineering.md) |

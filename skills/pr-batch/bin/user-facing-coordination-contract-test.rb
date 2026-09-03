@@ -279,7 +279,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes walkthrough, "Action needed: none."
     assert_includes walkthrough, "Next: Archive this task."
     assert_includes walkthrough,
-                    "Next: Return control to the current coordinator task for its refreshed merge decision."
+                    "Action needed: Review the linked GitHub walkthrough and reply in any concept thread that needs discussion."
+    assert_includes walkthrough,
+                    "Next: The current coordinator task will consume PR replies and refresh readiness before its separate merge decision."
 
     [SPEC, PLAN_ISSUE_TRIAGE].each do |path|
       text = normalized(path)

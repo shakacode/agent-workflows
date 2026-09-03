@@ -273,10 +273,11 @@ Four plain-word definitions first:
   a default for you.
 
 For a first lane, choose `ask`. Here is what `ask` actually does: once the
-PR's ordinary gates are clean, the coordinator automatically starts a
-`$pr-walkthrough` — an exact-diff explanation of the PR, one conceptual
-change at a time, with room for your questions between changes — and only
-then asks one final merge question. The walkthrough itself is not approval:
+PR's ordinary gates are clean, the coordinator automatically publishes a
+`$pr-walkthrough` — a complete exact-diff explanation whose conceptual sections
+are separately replyable on GitHub — and only then asks one final merge
+question. The owning task consumes your thread replies asynchronously; live
+exploration remains available when you explicitly ask for it. The walkthrough itself is not approval:
 if the diff changes or a gate starts failing in the meantime, the merge
 question is withheld and the walkthrough restarts or stops.
 
@@ -398,12 +399,11 @@ person you already trust to push there, use two skills in order: understand
 first, judge second.
 
 First, ask for the `pr-walkthrough` skill — the same guided tour that
-Step 4's `ask` merge authority starts automatically. It is read-only: the
-agent maps the whole exact diff into conceptual changes, then explains one
-change at a time — problem, what changed, why this approach, effect and
-risk, proof — and pauses for your questions before continuing. It is
-explicitly not a code review and not approval; finishing the tour approves
-nothing. Step 4's transcript shows what those pauses look like.
+Step 4's `ask` merge authority starts automatically. The agent maps the whole
+exact diff into conceptual changes, then publishes every section as a replyable
+GitHub thread in one pass. It is explicitly not a code review or approval;
+finishing the tour approves nothing. Ask for live exploration if you prefer
+one concept at a time in chat.
 
 Then, ask for the `adversarial-pr-review` skill. It is a skeptical,
 report-only red-team pass over correctness, security, compatibility,

@@ -119,6 +119,23 @@ class AttendedAndOvernightWorkflowContractTest < Minitest::Test
     assert_includes prose, "unavailable telemetry alone does not block launch"
   end
 
+  def test_portfolio_refresh_uses_real_bases_and_refreshes_non_github_destinations
+    prose = normalize_prose(@doc)
+
+    assert_includes prose, "each PR's exact configured or per-PR base branch"
+    refute_includes prose, "current `main` or base"
+    assert_includes prose, "for each wholly non-GitHub trusted-ad-hoc run, also refresh its existing durable plan or backend destination"
+  end
+
+  def test_walkthrough_is_complete_github_native_and_asynchronous_by_default
+    prose = normalize_prose(@doc)
+
+    assert_includes prose, "publish the orientation and every conceptual section to the PR in one pass"
+    assert_includes prose, "Prefer separately replyable review threads"
+    assert_includes prose, "let the owning task consume replies asynchronously"
+    assert_includes prose, "live one-section-at-a-time walkthrough only when the maintainer explicitly asks"
+  end
+
   # --- No invented vocabulary ahead of the open #560/#582 run-record lane ---
 
   def test_the_guide_does_not_invent_a_second_run_record_format

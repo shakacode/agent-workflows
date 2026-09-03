@@ -51,10 +51,11 @@ For post-merge audits after a concurrent batch or before a release candidate, us
 
 For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversarial-pr-review/SKILL.md` when skills are available. Reusable Codex, Claude, and comparison prompts live in `.agents/workflows/adversarial-pr-review.md`.
 
-For an interactive human-oriented explanation of a PR, use
-`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It presents
-one conceptual change at a time, explains why it exists, and pauses for
-questions before continuing.
+For a human-oriented explanation of a PR, use
+`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It prepares
+the complete exact-diff explanation, publishes the conceptual sections as
+separately replyable GitHub threads, and lets the owning task consume questions
+asynchronously. Live interaction is an explicit fallback.
 
 ## User-Facing Coordination Contract
 
@@ -1131,7 +1132,7 @@ Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 
 ```
@@ -1294,14 +1295,13 @@ it reports — closeout and archive completion is a `final-handoff` — and it
 counts in that checkpoint's bucket. Four message kinds are always allowed and
 are not checkpoints: a direct answer to a user question; an explicitly requested
 status report, such as `$status` or `$batch-status`; a turn or step another
-contract requires the coordinator to show, including every orientation and
-one-conceptual-change turn of the
-[ask merge-authority walkthrough](#ask-merge-authority-walkthrough-gate) and the
+contract requires the coordinator to show, including each turn of an explicitly
+requested live [PR walkthrough](#ask-merge-authority-walkthrough-gate) and the
 verified review triage that
 [Review Comment Handling](#review-comment-handling) requires before action `f`;
 and an immediate stop required by a non-negotiable safety rule in
 `.agents/skills/pr-batch/SKILL.md` or by a [Worker Rules](#worker-rules) stop
-condition. `OC-v1` never suppresses a required interactive exchange; those turns
+condition. `OC-v1` never suppresses an explicitly requested interactive exchange; those turns
 count in the marker's `always_allowed` bucket below, not in
 `unclassified_messages`. A single-target batch with no required walkthrough
 therefore produces roughly five coordinator messages, not twenty-five. Reducing
@@ -2182,7 +2182,7 @@ Goal completion contract:
 - When that blocker publishes an exact future retry time, schedule the same-thread heartbeat for that time because neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that exact published time; use it as the single scheduled mechanism for that blocker and gate; do not start or retain either watcher mode for the same gate, and create or update its durable record before stopping or replacing any existing watcher so no wake is lost. Follow the Scheduled Retry Heartbeat rule in the Goal Mode Completion Contract for its conditions, durable record, wake-time gate replay, single-instance update, and terminal cleanup.
 - Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
-- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
+- With `ask`, after ordinary gates are clean, automatically publish the complete exact-diff PR walkthrough before approval. Prepare every conceptual section up front, then publish the orientation and all sections to GitHub in one pass, using separately replyable review comments where useful and without waiting for repeated chat turns. The owning task consumes PR replies asynchronously; use a live interactive walkthrough only when the maintainer explicitly requests one. After publication or an explicit skip, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then rebuild and republish the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
 
 Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```

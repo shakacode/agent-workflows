@@ -11,15 +11,17 @@ class PrWalkthroughContractTest < Minitest::Test
   PR_BATCH = File.join(ROOT, "skills/pr-batch/SKILL.md")
   PR_MONITORING = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 
-  def test_skill_is_exact_diff_interactive_and_complete
+  def test_skill_is_exact_diff_github_native_and_complete
     skill = File.read(SKILL).gsub(/\s+/, " ")
 
     phrases = [
       "Record a diff identity",
-      "Inspect the complete file list and diff before presenting Step 1.",
-      "Present exactly one conceptual change per response.",
-      "Then stop. Do not include the next conceptual change in the same response.",
-      "Advance only after explicit readiness"
+      "Inspect the complete file list and diff before drafting the first published section.",
+      "Prepare every section before publishing any of them.",
+      "Prefer one GitHub `COMMENT` review tied to the exact head",
+      "publish every conceptual section in that same submission as a separate inline review comment",
+      "Publish all prepared sections in one pass.",
+      "Do not wait for `next`"
     ]
     positions = phrases.map do |phrase|
       position = skill.index(phrase)
@@ -29,9 +31,9 @@ class PrWalkthroughContractTest < Minitest::Test
     positions.each_cons(2) { |before, after| assert_operator before, :<, after }
 
     stale_positions = [
-      "If the diff identity changes during the walkthrough",
+      "If the diff identity changes during preparation or before publication",
       "invalidate the coverage ledger",
-      "rebuild the map before advancing or returning control"
+      "rebuild the complete package before publishing"
     ].map do |phrase|
       position = skill.index(phrase)
       assert position, "expected #{phrase.inspect}"
@@ -39,12 +41,13 @@ class PrWalkthroughContractTest < Minitest::Test
     end
     stale_positions.each_cons(2) { |before, after| assert_operator before, :<, after }
 
-    assert_includes skill, "Keep each response concise and conversational."
+    assert_includes skill, "Keep every section concise and conversational."
     assert_includes skill, "guidance, not required headings or a checklist"
-    assert_includes skill, "Full mode means complete coverage and more steps when needed, not verbose responses."
+    assert_includes skill, "Full mode means complete coverage and more sections when needed, not verbose comments."
     assert_includes skill, "Maintain a private coverage ledger"
     assert_includes skill, "PR link, diff identity, purpose, and prior behavior;"
     assert_includes skill, "Walkthrough participation is not merge approval."
+    assert_includes skill, "Use live interactive mode only when the maintainer explicitly asks for live exploration."
   end
 
   def test_ask_authority_automatically_walks_through_before_merge_decision
@@ -52,10 +55,13 @@ class PrWalkthroughContractTest < Minitest::Test
       text = File.read(path).gsub(/\s+/, " ")
 
       phrases = [
-        "automatically start the exact-diff PR walkthrough",
-        "full interactive mode for large or complex PRs",
-        "After it completes or is skipped, refresh the diff identity and ordinary readiness.",
-        "If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop.",
+        "automatically publish the complete exact-diff PR walkthrough",
+        "Prepare every conceptual section up front",
+        "separately replyable review comments",
+        "without waiting for repeated chat turns",
+        "The owning task consumes PR replies asynchronously",
+        "After publication or an explicit skip, refresh the diff identity and ordinary readiness.",
+        "If the diff identity changed, invalidate the walkthrough and readiness evidence, then rebuild and republish the walkthrough or stop.",
         "If an ordinary gate newly fails, stop.",
         "Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity.",
         "Walkthrough participation is not merge approval."
@@ -73,7 +79,7 @@ class PrWalkthroughContractTest < Minitest::Test
     pr_batch = File.read(PR_BATCH)
 
     assert_includes pr_batch,
-                    "[automatic interactive exact-diff walkthrough]" \
+                    "[automatic GitHub-native exact-diff walkthrough]" \
                     "(../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)"
   end
 
@@ -82,8 +88,9 @@ class PrWalkthroughContractTest < Minitest::Test
     phrases = [
       "The current task remains the sole user-facing coordinator.",
       "The walkthrough is an internal explanatory phase, not another task or owner.",
-      "Present exactly one conceptual change per response.",
-      "return control to the current task",
+      "The current owning task consumes the PR discussion",
+      "Use live interactive mode only when the maintainer explicitly asks",
+      "retains control after publishing the exact-diff walkthrough",
       "ask its one final merge decision separately"
     ]
     positions = phrases.map do |phrase|
