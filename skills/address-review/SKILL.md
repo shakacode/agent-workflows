@@ -316,6 +316,13 @@ well-formed out-of-cohort and stale waiver entries, and restart the checks
 snapshot when the head changes during a poll without resetting the bounded
 wait. Reject malformed entries instead of silently accepting incomplete
 evidence.
+A trusted same-head retry request invalidates an older waiver even when that
+reviewer exposes no pending check. Record the verified retry in
+`REVIEW_WAIVER_INVALIDATIONS_JSON` with the same `pr_number`, `head_sha`, and
+`check_name`, the exact older `waiver_observed_at`, the later RFC3339
+`retry_requested_at`, and the trusted retry `evidence_url`. Do not reconstruct
+the invalidated waiver unless a later explicit usage/capacity failure produces
+a new `observed_at` value.
 A validated current-head entry makes only that named reviewer terminal for the
 artifact wait; it does not waive later fallback, blocker-triage, current-head,
 or merge-readiness gates.
@@ -395,6 +402,7 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
   # Populate this only after inspecting trusted reviewer/automation artifacts.
   # Keep the default empty: absence alone never creates a waiver.
   REVIEW_UNAVAILABLE_WAIVERS_JSON="${REVIEW_UNAVAILABLE_WAIVERS_JSON:-[]}"
+  REVIEW_WAIVER_INVALIDATIONS_JSON="${REVIEW_WAIVER_INVALIDATIONS_JSON:-[]}"
   if ! printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
     jq -e --arg host "${GH_HOST}" --arg repo "${REPO}" '
       type == "array" and
@@ -411,6 +419,22 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
     echo "waiting-on-checks-or-review: unavailable-review waiver evidence is malformed" >&2
     exit 2
   fi
+  if ! printf '%s' "${REVIEW_WAIVER_INVALIDATIONS_JSON}" |
+    jq -e --arg host "${GH_HOST}" --arg repo "${REPO}" '
+      type == "array" and
+      all(.[];
+        . as $invalidation |
+        ($invalidation | type == "object") and
+        ($invalidation.pr_number | type == "number" and . > 0 and floor == .) and
+        ($invalidation.head_sha | type == "string" and test("^[0-9a-f]{40}$")) and
+        ($invalidation.check_name | type == "string" and length > 0) and
+        ($invalidation.waiver_observed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$")) and
+        ($invalidation.retry_requested_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$")) and
+        ($invalidation.evidence_url | type == "string" and startswith("https://\($host)/\($repo)/pull/\($invalidation.pr_number)#")))
+    ' >/dev/null; then
+    echo "waiting-on-checks-or-review: review-waiver invalidation evidence is malformed" >&2
+    exit 2
+  fi
   for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do
     MAX_WAIT=180
     WAITED=0
@@ -418,12 +442,27 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
     while :; do
       if ! REVIEW_WAIT_HEAD_SHA="$(gh pr view "${REVIEW_WAIT_PR}" --repo "${REPO}" --json headRefOid --jq .headRefOid 2>/dev/null)" ||
         ! printf '%s' "${REVIEW_WAIT_HEAD_SHA}" | grep -Eq '^[0-9a-f]{40}$'; then
-        echo "waiting-on-checks-or-review: current head is UNKNOWN for PR #${REVIEW_WAIT_PR}" >&2
-        exit 2
+        if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
+          echo "waiting-on-checks-or-review: current head remained UNKNOWN for PR #${REVIEW_WAIT_PR} during the ${MAX_WAIT}s bounded wait" >&2
+          exit 2
+        fi
+        echo "Current head is temporarily UNKNOWN for PR #${REVIEW_WAIT_PR}; retrying after bounded backoff." >&2
+        sleep 15
+        WAITED=$((WAITED + 15))
+        continue
       fi
       REVIEW_WAIVED_CHECK_NAMES_JSON="$(printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
-        jq -c --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" \
-          '[.[] | select(.pr_number == $pr and .head_sha == $head) | .check_name | select($expected | index(.) != null)] | unique')"
+        jq -c --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson invalidations "${REVIEW_WAIVER_INVALIDATIONS_JSON}" '
+          [.[] |
+            . as $waiver |
+            select(.pr_number == $pr and .head_sha == $head) |
+            select(any($invalidations[];
+              .pr_number == $waiver.pr_number and .head_sha == $waiver.head_sha and
+              .check_name == $waiver.check_name and .waiver_observed_at == $waiver.observed_at) | not) |
+            .check_name as $name |
+            select($expected | index($name) != null) |
+            $name
+          ] | unique')"
       if REVIEW_CHECKS_JSON="$(gh pr checks "${REVIEW_WAIT_PR}" --repo "${REPO}" --json name,bucket 2>/dev/null)"; then
         REVIEW_CHECKS_STATUS=0
       else
@@ -442,8 +481,14 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
       fi
       if ! REVIEW_WAIT_HEAD_SHA_AFTER="$(gh pr view "${REVIEW_WAIT_PR}" --repo "${REPO}" --json headRefOid --jq .headRefOid 2>/dev/null)" ||
         ! printf '%s' "${REVIEW_WAIT_HEAD_SHA_AFTER}" | grep -Eq '^[0-9a-f]{40}$'; then
-        echo "waiting-on-checks-or-review: current head is UNKNOWN after checks snapshot for PR #${REVIEW_WAIT_PR}" >&2
-        exit 2
+        if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
+          echo "waiting-on-checks-or-review: current head remained UNKNOWN after checks snapshots for PR #${REVIEW_WAIT_PR} during the ${MAX_WAIT}s bounded wait" >&2
+          exit 2
+        fi
+        echo "Current head is temporarily UNKNOWN after the checks snapshot for PR #${REVIEW_WAIT_PR}; retrying after bounded backoff." >&2
+        sleep 15
+        WAITED=$((WAITED + 15))
+        continue
       fi
       if [ "${REVIEW_WAIT_HEAD_SHA_AFTER}" != "${REVIEW_WAIT_HEAD_SHA}" ]; then
         if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
@@ -459,8 +504,17 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
       if [ "$(printf '%s' "${REVIEW_WAIVED_CHECK_NAMES_JSON}" | jq 'length')" -gt 0 ] &&
         [ "${REVIEW_REPORTED_WAIVER_HEAD_SHA}" != "${REVIEW_WAIT_HEAD_SHA}" ]; then
         REVIEW_WAIVER_EVIDENCE="$(printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
-          jq -r --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" \
-            '[.[] | select(.pr_number == $pr and .head_sha == $head) | select($expected | index(.check_name) != null) | "\(.check_name)=\(.evidence_url)"] | join(", ")')"
+          jq -r --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson invalidations "${REVIEW_WAIVER_INVALIDATIONS_JSON}" '
+            [.[] |
+              . as $waiver |
+              select(.pr_number == $pr and .head_sha == $head) |
+              select(any($invalidations[];
+                .pr_number == $waiver.pr_number and .head_sha == $waiver.head_sha and
+                .check_name == $waiver.check_name and .waiver_observed_at == $waiver.observed_at) | not) |
+              .check_name as $name |
+              select($expected | index($name) != null) |
+              "\($name)=\(.evidence_url)"
+            ] | join(", ")')"
         echo "Review-artifact usage/capacity waiver for PR #${REVIEW_WAIT_PR} at ${REVIEW_WAIT_HEAD_SHA}: ${REVIEW_WAIVER_EVIDENCE}"
         REVIEW_REPORTED_WAIVER_HEAD_SHA="${REVIEW_WAIT_HEAD_SHA}"
       fi
