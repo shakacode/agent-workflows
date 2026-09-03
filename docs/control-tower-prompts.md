@@ -8,6 +8,33 @@ snapshot schema, writer state, and desk rules that the prompts depend on are the
 document. Prompt creation stays short: replace the bracketed values and paste
 the whole block into a new Codex task for the named project.
 
+## What Each Surface Is For
+
+- The **control tower** coordinates one repository. Use it for portfolio status
+  or to repair a broken handoff, not as the default place to review every PR.
+- The **decision task** owns one item that needs human attention. Its title
+  names the PR or issue. Use it for questions, a walkthrough, and the decision.
+- The **Human Attention Desk (HIL Desk)** reads repository snapshots and
+  rebuilds the queue. Use its chat to refresh the queue or diagnose a stale
+  source or broken link. Do not answer repository decisions in the desk chat.
+- The **Human Attention Document (HAD)** is the generated, prioritized queue at
+  `<SHARED_HIL_ROOT>/generated/HUMAN_ATTENTION.md`. Open it, start with item 1,
+  and return to it after each decision because the order can change.
+
+For each HAD item:
+
+1. Open **Review target** to inspect the GitHub PR or issue when needed.
+2. Open **Respond in Codex** to enter the PR- or issue-specific decision task.
+3. Reply with one complete choice shown in the item. No special syntax is
+   required. Ask for a walkthrough in that task if the choice is not clear.
+4. Return to the HAD. The source task consumes the answer, publishes a newer
+   snapshot, and the desk removes or reranks the item.
+
+An authenticated maintainer comment on the linked GitHub target is also a
+valid response after the source task verifies the author and applicable exact
+head. This lets a maintainer answer during PR review. The source task, not the
+HIL Desk, detects the comment and updates the repository snapshot.
+
 ## One-Time Setup
 
 Mount one shared directory on M5 and M1 over a network filesystem such as SMB
@@ -16,9 +43,12 @@ or NFS. The local mount paths may differ. For each prompt, replace
 client such as iCloud Drive or Dropbox: it produces conflict copies instead of
 the atomic rename the contract requires.
 
-For the best document links, use Codex **Copy deeplink** on each of the three
-tasks and replace `<THIS_TASK_DEEPLINK>`. If the link is not yet available, use
-literal `UNKNOWN` and continue; add it on the next snapshot refresh.
+For the best document links, use Codex **Copy deeplink** on each control tower,
+the HIL Desk, and each user-visible decision task. Replace
+`<THIS_TASK_DEEPLINK>`. If a link is not yet available, use literal `UNKNOWN`
+and continue; add it on the next snapshot refresh. Render a known URI as a
+Markdown link such as `[Open decision task](codex://threads/task-id)`. Never
+wrap a usable deep link in backticks because that makes it non-clickable.
 
 Replace `<NOTIFY_CHANNEL>` with the Slack channel the HIL Desk may post to, or
 `none`. Desk notifications follow the
@@ -88,6 +118,10 @@ merges and closures over opening many speculative PRs.
 Use this task as the only repository portfolio coordinator. Create, title,
 monitor, message, and archive repository-scoped Codex tasks as needed. Keep
 decision-free work moving while I am absent. Do not send me routine status.
+Before publishing a PR- or issue-specific attention item that benefits from a
+walkthrough, reuse or create one user-visible decision task named for that
+target. Point the item's source task fields to that task. Use this control tower
+as the explicit response fallback only when a target task cannot be created.
 
 Publish this repository's complete attention snapshot atomically to:
 <SHARED_HIL_ROOT>/repo-snapshots/shakacode--agent-workflows.json
@@ -150,6 +184,10 @@ worktree.
 Use this task as the only repository portfolio coordinator. Create, title,
 monitor, message, and archive repository-scoped Codex tasks as needed. Keep
 decision-free work moving while I am absent. Do not send me routine status.
+Before publishing a PR- or issue-specific attention item that benefits from a
+walkthrough, reuse or create one user-visible decision task named for that
+target. Point the item's source task fields to that task. Use this control tower
+as the explicit response fallback only when a target task cannot be created.
 
 Publish this repository's complete attention snapshot atomically to:
 <SHARED_HIL_ROOT>/repo-snapshots/shakacode--agent-coordination.json
@@ -196,6 +234,11 @@ epoch, heartbeat, and per-repository accepted generations at
 snapshot under <SHARED_HIL_ROOT>/state/accepted/. This task's native deeplink
 is <THIS_TASK_DEEPLINK>.
 
+In every user-facing desk status or final response, include this clickable
+link: [Open the current Human Attention Document](<SHARED_HIL_ROOT>/generated/HUMAN_ATTENTION.md).
+Explain that the desk chat is for refreshes, stale-source diagnosis, and broken
+links. Route repository decisions to the item's **Respond in Codex** task.
+
 Before every write, re-read the writer state. If it names a different task with
 a live heartbeat or a newer epoch, stop publishing and notify me; never take
 over silently and never write an epoch lower than the one on disk. Write a complete temporary file in the destination directory and
@@ -207,13 +250,18 @@ preserving that repository's last accepted generation and input. Treat a
 snapshot as stale by the contract's threshold. Show stale, missing, or degraded sources visibly; do not infer that
 their questions were resolved.
 
-The generated document is read-only for the human. Start it with the refresh
-time, aggregate generation, writer task and host, and this warning: decisions
-belong in the linked source Codex task. For each unresolved item show its exact
-question, choices and consequences, why it is ranked here, what it unlocks,
-attention estimate when known, target, repository, host, freshness, source task
-id and provider, and native Codex deeplink. Never answer or clear an item
-yourself. Also show each
+The generated document is read-only for the human. Start it with a short
+**How to use this queue** section: start with item 1, use **Review target** for
+GitHub evidence, use **Respond in Codex** for the decision or walkthrough, reply
+with one complete displayed choice, and return to the document because the
+queue can rerank. Show a clickable link to this HIL Desk for refresh or broken-
+link help. For each unresolved item show its exact question, copy-ready choices
+and consequences, why it is ranked here, what it unlocks, attention estimate
+when known, repository, host, and freshness. Render the GitHub URL as
+**Review target** and the source task deeplink as **Respond in Codex — <task
+title>**. When the repository control tower differs from the decision task,
+show its deeplink separately as **Repository control tower**. Never put a known
+deeplink in inline code. Never answer or clear an item yourself. Also show each
 repository's typed portfolio counts, net deltas, catch-up milestone, tower
 status, and freshness.
 
@@ -285,6 +333,11 @@ Use available host capacity for independent useful work without duplicate
 target ownership or shared-worktree writers. Reuse and supervise existing
 tasks before creating new ones. Do not send routine status.
 
+Before publishing a PR- or issue-specific attention item that benefits from a
+walkthrough, reuse or create one user-visible decision task named for that
+target. Point the item's source task fields to that task. Use this control tower
+as the explicit response fallback only when a target task cannot be created.
+
 Atomically publish only this repository's snapshot to
 <SHARED_HIL_ROOT>/repo-snapshots/<OWNER>--<REPO>.json following the Snapshot
 And Desk Contract in
@@ -354,6 +407,7 @@ counts.
       "id": "repository-stable-attention-id",
       "target": "https://github.com/OWNER/REPO/pull/123",
       "source_task_id": "stable-task-id",
+      "source_task_title": "HIL — REPO PR #123 — Decide example",
       "source_provider": "codex",
       "source_host": "M5",
       "source_deeplink": "copied-native-deeplink-or-UNKNOWN",
@@ -410,11 +464,19 @@ Field rules:
   it in both. `catch_up_wave_completed_at` stays `null` until the first
   catch-up wave is complete and no integration-ready pull request waits; it
   gates the dashboard lane.
-- **`source_task_id`, `source_provider`, `source_host`, `source_deeplink`**
-  identify the task that is waiting for the decision. When the tower itself
-  waits, they equal the `control_tower` values. A supervised task on another
-  host or provider carries its own values; the desk never infers a source host
-  from the tower.
+- **`source_task_id`, `source_task_title`, `source_provider`, `source_host`,
+  `source_deeplink`** identify the user-visible task that is waiting for the
+  decision. For a PR- or issue-specific item that benefits from a walkthrough,
+  this is a task named for that target, not the repository control tower. When
+  no target task can be created, these fields equal the `control_tower` values
+  and the HAD labels the link as a control-tower fallback. A supervised task on
+  another host or provider carries its own values; the desk never infers a
+  source host from the tower.
+- **Response channels.** Each choice is a complete, copy-ready response. The
+  human may answer in the source task or leave the same answer as an
+  authenticated maintainer comment on `target`. The source task verifies the
+  GitHub author and applicable exact head before treating a comment as
+  authority. The HIL Desk never consumes the answer directly.
 - **`safe_resume`** is required: the exact instruction the source task will
   follow once the human answers in that task. The desk shows it verbatim and
   never edits it.
@@ -541,12 +603,16 @@ Rules:
 ### Generated document
 
 - The header shows the aggregate generation, refresh time, writer task and host,
-  and a read-only warning that decisions belong in the linked source task.
+  a clickable link to the HIL Desk, and a read-only warning. A short operator
+  guide says to start at item 1, review the GitHub target if needed, respond in
+  the linked decision task with one displayed choice, then return because the
+  queue can rerank.
 - Each item shows the exact question, choices and consequences, priority class
   and plain-language reason, what it unlocks, attention estimate when known,
-  target, repository, host, freshness, source task id and provider, and native
-  deeplink, so the authoritative task is identifiable even when the link is
-  `UNKNOWN` or unusable.
+  repository, host, freshness, source task id and provider, and three clearly
+  labeled destinations when available: **Review target**, **Respond in Codex**,
+  and **Repository control tower**. A known HTTP or Codex URI is a Markdown
+  link, never inline code. `UNKNOWN` remains plain text.
 - A portfolio section shows, per repository, the typed counts and net deltas
   since wave start, `catch_up_wave_completed_at`, tower status, and freshness,
   so the human learns the dashboard gate from this document rather than from

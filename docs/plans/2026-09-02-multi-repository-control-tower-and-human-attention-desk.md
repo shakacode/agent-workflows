@@ -38,8 +38,10 @@ control tower refreshes live state before acting.
 3. Each repository control tower is the sole writer of one repository snapshot.
    It never edits the combined Human Attention document.
 4. One dedicated HIL Desk task is the sole writer of the combined generated
-   document. The human treats that document as read-only and records decisions
-   in the linked source Codex task.
+   Human Attention Document (HAD). The human treats the HAD as read-only and
+   records decisions in the linked PR- or issue-specific Codex task. The HIL
+   Desk chat is only for queue refreshes, stale-source diagnosis, and broken
+   links.
 5. Codex native task deep links are the primary short-term navigation surface.
    Cross-host behavior is tested rather than assumed. A future dashboard route
    may resolve a task when a native link is local to another host.
@@ -136,11 +138,19 @@ repaired.
 ### R6 — Source-task decisions
 
 Each attention item SHALL link to the authoritative Codex task waiting for the
-decision. The HIL Desk SHALL NOT answer, reinterpret, or clear the question.
-The source task clears it by publishing a newer snapshot.
+decision. A PR- or issue-specific item that benefits from a walkthrough SHALL
+link to a user-visible task named for that target, not only to the repository
+control tower. If the runner cannot create that task, the HAD SHALL label the
+control tower as a fallback. The HIL Desk SHALL NOT answer, reinterpret, or
+clear the question. The source task clears it by publishing a newer snapshot.
+An authenticated maintainer comment on the linked GitHub target is also a valid
+response after the source task verifies the author and applicable exact head.
 
 Acceptance: an item remains visible while it is being reviewed and disappears
-only after the source snapshot no longer reports it as unresolved.
+only after the source snapshot no longer reports it as unresolved. Each item
+offers a clickable **Review target** link, a clickable **Respond in Codex** link,
+and complete copy-ready choices. The repository control-tower link is labeled
+separately when it differs from the decision task.
 
 ### R7 — Dynamic priority
 
@@ -163,8 +173,10 @@ items on the next refresh and displays the reason for the move.
 ### R8 — Native links with honest host state
 
 An attention item SHOULD carry the copied native Codex deep link, stable task
-identifier, provider, host, and last-seen time. Unknown or untested cross-host
-behavior stays explicit; it must not block repository execution.
+identifier, task title, provider, host, and last-seen time. A known deep link
+SHALL render as clickable Markdown and SHALL NOT be wrapped in inline code.
+Unknown or untested cross-host behavior stays explicit; it must not block
+repository execution.
 
 Acceptance: the M1-to-M5, M5-to-M1, and source-host-offline cases are recorded
 before a cross-host link resolver is treated as implemented.
