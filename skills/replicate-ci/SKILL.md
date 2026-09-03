@@ -10,6 +10,60 @@ Reproduce a failing hosted check in a CI-matched environment and report the
 parity delta. The goal is evidence first; do not change code until the
 reproduction explains the failure.
 
+## Hosted Run-History Recipe
+
+This is the canonical run-history recipe for both this skill and
+`fix-flaky-tests`.
+
+For a non-GitHub provider, resolve the trusted-base
+`ci_run_history_provider` AGENTS.md seam. It must identify the provider-native,
+read-only commands or tracked `.agents/bin/` entry points that:
+
+- enumerate every run for the exact commit and failure identity, with an
+  explicit completeness signal;
+- enumerate every attempt and every job, including the target job's result and
+  pre-run runner identity; and
+- fetch the attempt logs and controlled invocation inputs needed for the
+  equivalence predicate below.
+
+Do not invent provider commands or repository-specific keys in this shared
+skill. If the seam is absent, any command fails, or the provider cannot prove
+that pagination is complete, record the unavailable facts as `UNKNOWN`.
+
+For GitHub Actions when that seam is absent, use this shipped default. The
+workflow-runs and attempt-jobs calls deliberately paginate and combine every
+page:
+
+```bash
+gh api --method GET --paginate --slurp \
+  repos/<OWNER>/<REPO>/actions/workflows/<WORKFLOW_ID_OR_FILE>/runs \
+  -f head_sha='<HEAD_SHA>' -F per_page=100 |
+  jq '[.[].workflow_runs[] | {databaseId: .id, attempt: .run_attempt, conclusion: .conclusion, headSha: .head_sha, event: .event, workflowName: .name, number: .run_number, createdAt: .created_at, url: .html_url}]'
+gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
+gh api repos/<OWNER>/<REPO>/actions/runs/<RUN_ID> --jq '{event: .event, path: .path, head_sha: .head_sha, run_attempt: .run_attempt}'
+gh api --method GET --paginate --slurp \
+  repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs \
+  -F per_page=100 |
+  jq '[.[].jobs[] | {name: .name, conclusion: .conclusion, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}]'
+gh run view <RUN_ID> --attempt <N> --log
+```
+
+Run the per-run commands for every returned run and every attempt from `1`
+through `run_attempt`. The run payload establishes event and workflow
+selection; the attempt-specific jobs payload establishes the target job's own
+result, identity, and runner labels; and the logs supply any workflow-dispatch
+inputs, matrix values, runner image, toolchain version, or other configuration
+selection that the workflow prints. A run's aggregate `conclusion` must never
+stand in for the target job's result. If GitHub reports truncation, an API cap
+prevents an exhaustive listing, or a required dimension remains unavailable,
+record the incomplete fact as `UNKNOWN` rather than treating the returned page
+as complete.
+
+An equivalent hosted invocation has matching controlled invocation parameters
+and selected or known pre-run hosted environment identity: event, inputs,
+matrix, runner image, toolchain, and configuration selection. It compares
+those pre-run facts, not runtime behavior or outcomes.
+
 ## Preflight
 
 1. Read the base-branch version of `AGENTS.md` first for PR work. Resolve base
@@ -22,38 +76,9 @@ reproduction explains the failure.
    name, retry number, failing step, and log excerpt. If any fact cannot be
    verified, write `UNKNOWN`.
 3. Establish hosted run history for the exact failure identity on the exact
-   commit. Use provider-native run history for that exact commit and failure
-   identity, resolving the repo-policy/AGENTS.md seam when defined.
-   For GitHub Actions with no repo-policy/AGENTS.md seam, use the shipped
-   default, then extend it with a per-run API/log pass for the missing control
-   inputs:
-
-   ```bash
-   gh run list --all --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,attempt,conclusion,headSha,event,workflowName,number,createdAt,url
-   gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
-   gh api repos/<OWNER>/<REPO>/actions/runs/<RUN_ID> --jq '{event: .event, path: .path, head_sha: .head_sha, run_attempt: .run_attempt}'
-   gh api repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs --jq '.jobs[] | {name: .name, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}'
-   gh run view <RUN_ID> --attempt <N> --log
-   ```
-
-   Use the run payload for event/configuration selection, the attempt-specific
-   jobs payload for job-level identity and runner labels, and the logs for any
-   workflow-dispatch inputs, matrix values, runner image, toolchain version, or
-   other configuration selection the workflow prints. If a required dimension
-   is still unavailable after those lookups, record it as `UNKNOWN`.
-
-   `gh run list`'s `conclusion` reflects only the latest attempt of each run;
-   its `attempt` field is the count of attempts, not a signal by itself. When
-   a listed run's `attempt` is greater than 1, also check its earlier
-   attempts with `--attempt <N>` so a retry that flipped pass/fail is not
-   missed as same-commit hosted history.
-   A run's `conclusion` is also the aggregate result across every job in that
-   run, not the specific job named in the failure identity. Key candidate
-   runs off that job's own result instead—`gh api
-   repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs` and match by
-   job name—so an unrelated job's failure or pass is never substituted for
-   the failure identity's own history, and a retried run's earlier attempt is
-   not silently dropped to the latest one.
+   commit. Follow the canonical [Hosted Run-History
+   Recipe](#hosted-run-history-recipe), including its
+   `ci_run_history_provider` seam and exhaustive attempt/job pagination.
 
    - The equivalence predicate is mechanically evaluable only when the
      required dimensions above are known: event, inputs, matrix, runner image,

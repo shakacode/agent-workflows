@@ -68,8 +68,10 @@ Run exits 1 and 2 from git and repository/issue metadata before fetching CI
 logs. They decide only whether existing external work owns the same failure.
 Exit 3 is not a pre-log check: it requires exact hosted failure logs and history
 plus separately recorded local evidence. Exits 1-3 end the task with
-`NOT_THIS_WORKFLOW`; exits 4 and 5 redirect the scope of the work and continue
-into this workflow:
+`NOT_THIS_WORKFLOW` only when their evidence gates pass; exits 4 and 5 redirect
+the scope of the work and continue into this workflow. If exit 3's equivalence
+evidence remains `UNKNOWN`, no fast exit fires: keep the task in this workflow
+and use the conservative outcome defined below.
 
 1. **Already fixed, not closed.** Identify a post-failure commit that explicitly
    addresses the same failing test and failure mechanism. Cite its linked issue
@@ -84,7 +86,11 @@ into this workflow:
    invocation parameters and selected or known pre-run hosted environment
    identity—event, inputs, matrix, runner image, toolchain, and configuration
    selection—not runtime behavior or outcomes. If equivalence is unverifiable,
-   record `UNKNOWN` and do not classify or route the failure.
+   exit 3 does not fire. Record `UNKNOWN`, do not classify or route the failure,
+   and continue only evidence collection that does not depend on a
+   deterministic/intermittent classification. If the missing evidence cannot
+   be recovered, close as `ROOT_CAUSE_NOT_IDENTIFIED` with the exact gap and
+   the evidence needed to settle it.
    If the same exact failure occurs on every equivalent hosted invocation and
    reproduces locally, it is an ordinary bug. If the same exact failure occurs
    on every equivalent hosted invocation and the local reproduction is green,
@@ -122,37 +128,13 @@ gh run view <run-id> --json headSha,conclusion,createdAt,workflowName
 ```
 
 To establish same-commit hosted history for Step 1 exit 3 and the Boundary
-section below, also list every run of the failing workflow on the exact
-commit, and check earlier attempts of a retried run — `gh run view`'s
-`conclusion` reflects only the latest attempt:
+section below, follow `replicate-ci`'s canonical [Hosted Run-History
+Recipe](../replicate-ci/SKILL.md#hosted-run-history-recipe). It includes the
+missing attempt-specific jobs fetch, exhaustive workflow-run and job
+pagination, target-job matching, all-attempt inspection, and the trusted-base
+`ci_run_history_provider` AGENTS.md seam for non-GitHub providers. Do not copy
+or vary that operator recipe here.
 
- ```bash
- gh run list --all --commit <HEAD_SHA> --workflow <WORKFLOW_NAME> --limit 100 --json databaseId,attempt,conclusion,headSha,event,workflowName,number,createdAt,url
- gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
- gh api repos/<OWNER>/<REPO>/actions/runs/<RUN_ID> --jq '{event: .event, path: .path, head_sha: .head_sha, run_attempt: .run_attempt}'
- gh run view <RUN_ID> --attempt <N> --log
- ```
-
-Use the run payload for event/configuration selection, the attempt-specific
-jobs output for job-level identity and runner labels, and the per-attempt
-logs for any workflow-dispatch inputs, matrix values, runner image, toolchain
-version, or other configuration selection the workflow prints. If any of
-those required dimensions are still unavailable after those lookups, record
-them as `UNKNOWN` rather than inferring equivalence from job names alone.
-
-- `attempt` is the count of attempts, not a signal by itself; when a listed
-  run's `attempt` is greater than 1, check its earlier attempts too.
-- A run's `conclusion` is the aggregate result across every job in that run,
-  not the specific job identified by the failure. Key candidate runs off that
-  job's own result instead — `gh run view <RUN_ID> --attempt <N> --json jobs`
-  and match by job name — so an unrelated job's failure or pass is never
-  substituted for the failing job's own history, and a retried run's earlier
-  attempt is not silently dropped to the latest one.
-- For any other provider, resolve the log-fetch and replay commands from the
-  repo-policy/AGENTS.md seam described above rather than assuming a provider
-  CLI exists. Buildkite, CircleCI, and everything else stay seam-resolved by
-  design: this skill must not hardcode a provider the consumer repo does not
-  use.
 - Record with the error: the exact run id, head SHA, job name, attempt/retry
   number, failing step, and timestamp. If any of those cannot be verified,
   write `UNKNOWN` rather than guessing. A backtrace without its head SHA
@@ -264,7 +246,10 @@ gap:
   intermittency into a parity gap.
 
 If equivalence is unverifiable, record `UNKNOWN`; do not classify or route the
-failure.
+failure. No fast exit fires. Keep the task in this workflow and continue only
+classification-independent evidence collection. If the gap cannot be
+recovered, close as `ROOT_CAUSE_NOT_IDENTIFIED`, citing the missing fact and
+what evidence would settle it.
 
 If the classification itself is unclear, establish determinism first by
 inspecting the run history for that commit. Do not run both workflows in
@@ -307,8 +292,10 @@ Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt t
   artifact, while exit 3 cites exact hosted determinism across equivalent
   hosted invocations and the corresponding local reproduction evidence; a
   local-green exit 3 also names the `replicate-ci` handoff.
-- Unverifiable equivalence is `UNKNOWN` and forbids deterministic/intermittent
-  classification or routing.
+- Unverifiable equivalence is `UNKNOWN`, forbids deterministic/intermittent
+  classification or routing, and keeps the task here; if the gap cannot be
+  recovered, the outcome is `ROOT_CAUSE_NOT_IDENTIFIED` with the needed
+  evidence named.
 - Local runs were used only for investigation; the pass claim cites CI.
 - No skip, sleep, retry wrapper, or unjustified timeout increase was proposed.
 - Infrastructure flakiness was claimed only with build-wide evidence.
