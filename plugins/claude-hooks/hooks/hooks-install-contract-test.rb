@@ -111,12 +111,13 @@ class HooksInstallContractTest < Minitest::Test
   def test_the_withdrawn_merge_gate_is_documented_as_structured_only
     documentation = File.read(DOCS)
     normalized = documentation.gsub(/\s+/, " ")
+    section = normalized[/## No merge-command gate (.*?) ## Enable the adapter/, 1]
 
-    assert_includes normalized, "No merge-command gate"
-    assert_includes normalized, "proposed in issue #276"
-    assert_includes normalized, "withdrawn from PR #343"
-    assert_includes normalized, "structured host tool/argv identity"
-    assert_includes normalized, "fail closed"
+    refute_nil section, "the merge-gate policy must stay in its own section"
+    assert_includes section, "proposed in issue #276"
+    assert_includes section, "withdrawn from PR #343"
+    assert_includes section, "structured host tool/argv identity"
+    assert_includes section, "fail closed"
   end
 
   private
