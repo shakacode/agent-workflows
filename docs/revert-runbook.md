@@ -487,6 +487,35 @@ never from a file discovered by searching the worktree. A missing, malformed, or
 mismatched plan, or one whose id does not tie to `${BATCH_ID}`, is `UNKNOWN`:
 widen the scope or stop, exactly as for an absent plan.
 
+The commit-to-PR query in
+[Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr)
+only walks `${SHA}^1..${BASE_TIP}`. It therefore cannot discharge a reachable
+`to` lane that landed before the suspect PR. Reconcile **every** lane selected
+by the transitive dependency walk against its durable lane handoff, including
+the verified `pr_url` in its Lane Card, and record exactly one outcome:
+
+- **Landed PR** — verify the URL belongs to `${REPO}`, ask GitHub for its merged
+  state and merge commit, and confirm that landed commit is on the first-parent
+  history ending at `${BASE_TIP}`. Then run
+  [Recover each PR's landed range](#recover-each-prs-landed-range) for that PR,
+  add its complete `REVERT_LIST` to the closure, and add the whole range to
+  `PATHS` before applying the decision rule. Do this even when the landed commit
+  is earlier than `${SHA}`.
+- **Landed direct commit** — accept only an exact commit SHA carried by the
+  durable handoff, confirmed on that same first-parent history, whose
+  commit-to-PR lookup succeeds and returns no PR. Add it as the one-commit unit
+  described above and add its paths to `PATHS`.
+- **Did not land** — accept only a terminal no-PR handoff or a verified GitHub
+  PR that is still unmerged. Record the evidence; there is no landed unit to
+  add.
+
+An issue target, branch name, commit subject, absent `pr_url`, or an
+`UNKNOWN`/non-terminal handoff is not artifact identity. If any selected lane
+cannot be reconciled to one of those three outcomes, or the handoff and GitHub
+or git disagree, the closure is `UNKNOWN`: stop or widen to the enclosing batch
+closure. Do not let the later-only commit walk silently stand in for this lane
+reconciliation.
+
 When the backend is `n/a`, the manifest lives in the durable coordinator
 handoff instead of a registration surface; read it there. When neither the
 manifest nor the plan file can be read, the dependency fact is `UNKNOWN`.
@@ -1427,7 +1456,10 @@ An agent **may not**, without an explicit operator decision:
    direct commit is a closure unit of one, a unit selected by `edit` or
    `validation_open` stays in scope even when it landed before the suspect PR,
    and a failed lookup or contradictory `merge_order` landing is `UNKNOWN`.
-   Fail closed to the wider scope on any `UNKNOWN`.
+   Reconcile every dependency-selected lane to its authenticated landed PR,
+   landed direct commit, or terminal no-land evidence; recover earlier-landed
+   ranges and paths explicitly instead of relying on the later-only commit
+   walk. Fail closed to the wider scope on any `UNKNOWN`.
    Fix `PRE_BATCH_SHA` as `${OLDEST_IN_SCOPE_SHA}^1`.
 6. Decide revert versus forward fix, and write down why.
 7. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
