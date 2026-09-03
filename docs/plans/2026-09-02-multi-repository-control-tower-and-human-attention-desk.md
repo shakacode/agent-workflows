@@ -82,7 +82,9 @@ type since the wave began is derivable.
 
 Exactly one control tower SHALL own a repository portfolio at a time. Internal
 workers own bounded targets; the tower retains integration responsibility and
-is the only repository task that writes that repository's HIL snapshot.
+is the only repository task that writes that repository's HIL snapshot. A
+tower SHALL stop publishing when its canonical snapshot names a different live
+tower.
 
 Acceptance: every repository snapshot identifies the repository, control-tower
 task, host, generation, last successful refresh, declared refresh interval, and
@@ -290,8 +292,10 @@ transcripts.
   are recorded. Writer lifecycle cases are also recorded: a desk with a stale
   epoch stops publishing, a replacement's claim is verified after one heartbeat
   interval, a crash between the document and writer-state renames is repaired
-  on restart, and a malformed or rolled-back canonical snapshot leaves the
-  accepted copy and its items intact.
+  on restart, a malformed or rolled-back canonical snapshot leaves the
+  accepted copy and its items intact, a second tower started for the same
+  repository stops itself, and the producer roster survives a desk
+  replacement.
 - **Parallelism:** starts after T1; dashboard work does not block it.
 
 ### T3 — Add a deterministic snapshot renderer
