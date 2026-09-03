@@ -461,7 +461,7 @@ class TaskReviewLoopTest < Minitest::Test
       base_input = clean_review_input(directory)
       foreign_identity = base_input.fetch("identity").merge("task_id" => "foreign-task")
       variants = {
-        "stale-package" => base_input.merge("expected_current_head_sha" => OTHER_HEAD_SHA),
+        "stale-package" => rebind_package(base_input, "expected_current_head_sha" => OTHER_HEAD_SHA),
         "truncated-package" => rebind_package(
           base_input,
           "exact_diff" => base_input.dig("review_package", "exact_diff").merge("truncated" => true)
@@ -651,6 +651,47 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_non_reviewable_historical_report_fails_closed
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = consequential_breakage_input(directory)
+      rounds = input.fetch("rounds").dup
+      historical_report = with_digest(
+        rounds.fetch(0).fetch("worker_report").merge("status" => "blocked")
+              .reject { |key, _value| key == "digest" }
+      )
+      historical_package = with_digest(
+        rounds.fetch(0).fetch("review_package").merge(
+          "worker_report_digest" => historical_report.fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+      rounds[0] = with_digest(
+        rounds.fetch(0).merge(
+          "package_digest" => historical_package.fetch("digest"),
+          "review_package" => historical_package,
+          "worker_report" => historical_report
+        ).reject { |key, _value| key == "digest" }
+      )
+      current_package = with_digest(
+        input.fetch("review_package").merge(
+          "prior_round_digest" => rounds.fetch(0).fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+      rounds[1] = with_digest(
+        rounds.fetch(1).merge(
+          "package_digest" => current_package.fetch("digest"),
+          "review_package" => current_package,
+          "prior_round_digest" => rounds.fetch(0).fetch("digest")
+        ).reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(input.merge("review_package" => current_package, "rounds" => rounds))
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-round-report-not-reviewable"
+      refute output.fetch("dependent_task_permitted")
+    end
+  end
+
   def test_invalid_historical_report_round_heads_fail_the_package_range_closed
     Dir.mktmpdir("task-review-loop") do |directory|
       input = consequential_breakage_input(directory)
@@ -766,8 +807,13 @@ class TaskReviewLoopTest < Minitest::Test
         head_sha: final_head
       )
       findings_path = write_findings(directory, "clean-cap-findings.json", [addressed])
-      open_path = write_findings(directory, "clean-cap-open-findings.json", [])
       rounds = input.fetch("rounds").dup
+      open_path = write_findings(
+        directory,
+        "clean-cap-open-findings.json",
+        [],
+        receipt: review_receipt(head_sha: rounds.last.fetch("head_sha"), base_sha: rounds.last.fetch("base_sha"))
+      )
       rounds[-1] = with_digest(
         rounds.last.merge(
           "review_findings" => artifact(findings_path),
@@ -818,12 +864,12 @@ class TaskReviewLoopTest < Minitest::Test
   end
 
   def test_every_round_requires_a_reviewer_independent_from_its_implementer
-    replay = replay_case("reviewer-independence")
-
     Dir.mktmpdir("task-review-loop") do |directory|
       output, = evaluate(non_independent_earlier_round_input(directory))
 
-      assert_equal replay.fetch("expected"), output.slice(*replay.fetch("expected").keys)
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "reviewer-not-independent"
+      refute output.fetch("dependent_task_permitted")
     end
   end
 
@@ -846,7 +892,7 @@ class TaskReviewLoopTest < Minitest::Test
       output, = evaluate(input.merge("review_package" => package, "rounds" => [round]))
 
       assert_equal "blocked", output.fetch("status")
-      assert_equal ["reviewer-not-independent"], output.fetch("reasons")
+      assert_includes output.fetch("reasons"), "reviewer-not-independent"
     end
   end
 
@@ -905,7 +951,12 @@ class TaskReviewLoopTest < Minitest::Test
         rounds.last.merge("package_digest" => package.fetch("digest"), "review_package" => package)
               .reject { |key, _value| key == "digest" }
       )
-      empty_path = write_findings(directory, "empty-open-findings.json", [])
+      empty_path = write_findings(
+        directory,
+        "empty-open-findings.json",
+        [],
+        receipt: review_receipt(head_sha: FIX_HEAD_SHA, base_sha: HEAD_SHA)
+      )
 
       output, = evaluate(
         input.merge(
@@ -1010,7 +1061,12 @@ class TaskReviewLoopTest < Minitest::Test
         rounds[1].merge("package_digest" => package.fetch("digest"), "review_package" => package)
                  .reject { |key, _value| key == "digest" }
       )
-      empty_path = write_findings(directory, "premature-consequential-open.json", [])
+      empty_path = write_findings(
+        directory,
+        "premature-consequential-open.json",
+        [],
+        receipt: review_receipt(head_sha: FIX_HEAD_SHA, base_sha: HEAD_SHA)
+      )
 
       output, = evaluate(
         input.merge(
@@ -1031,6 +1087,7 @@ class TaskReviewLoopTest < Minitest::Test
       input = clean_review_input(directory)
       document = {
         "schema" => "review-finding-v0",
+        "reviewer_id" => "reviewer-b",
         "review_receipt" => review_receipt(head_sha: OTHER_HEAD_SHA),
         "review_findings" => []
       }
@@ -1048,6 +1105,95 @@ class TaskReviewLoopTest < Minitest::Test
 
       assert_equal "blocked", output.fetch("status")
       assert_includes output.fetch("reasons"), "review-findings-foreign"
+    end
+  end
+
+  def test_empty_findings_without_a_review_receipt_fail_closed
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      path = File.join(directory, "empty-findings-without-receipt.json")
+      File.write(
+        path,
+        JSON.generate(
+          "schema" => "review-finding-v0",
+          "reviewer_id" => "reviewer-b",
+          "review_findings" => []
+        )
+      )
+      reference = artifact(path)
+      round = with_digest(
+        input.fetch("rounds").first.merge("review_findings" => reference)
+             .reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(
+        input.merge("rounds" => [round], "open_findings" => reference.merge("ids" => []))
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-findings-foreign"
+      assert_includes output.fetch("reasons"), "open-findings-foreign"
+    end
+  end
+
+  def test_findings_reviewer_must_match_the_round_reviewer
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      document = {
+        "schema" => "review-finding-v0",
+        "reviewer_id" => "implementer-a",
+        "review_receipt" => review_receipt,
+        "review_findings" => []
+      }
+      path = File.join(directory, "implementer-findings.json")
+      File.write(path, JSON.generate(document))
+      reference = artifact(path)
+      round = with_digest(
+        input.fetch("rounds").first.merge("review_findings" => reference)
+             .reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(
+        input.merge("rounds" => [round], "open_findings" => reference.merge("ids" => []))
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-findings-foreign"
+      assert_includes output.fetch("reasons"), "open-findings-foreign"
+    end
+  end
+
+  def test_empty_findings_require_complete_review_coverage
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      receipt = review_receipt
+      receipt["coverage"] = {
+        "status" => "partial",
+        "included_paths" => [],
+        "excluded_paths" => ["lib/task-review.rb"],
+        "limitations" => ["The task path was not reviewed."]
+      }
+      document = {
+        "schema" => "review-finding-v0",
+        "reviewer_id" => "reviewer-b",
+        "review_receipt" => receipt,
+        "review_findings" => []
+      }
+      path = File.join(directory, "partial-clean-findings.json")
+      File.write(path, JSON.generate(document))
+      reference = artifact(path)
+      round = with_digest(
+        input.fetch("rounds").first.merge("review_findings" => reference)
+             .reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(
+        input.merge("rounds" => [round], "open_findings" => reference.merge("ids" => []))
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-findings-incomplete-coverage"
+      assert_includes output.fetch("reasons"), "open-findings-incomplete-coverage"
     end
   end
 
@@ -1291,7 +1437,12 @@ class TaskReviewLoopTest < Minitest::Test
   def test_re_review_cannot_omit_a_previously_open_finding
     Dir.mktmpdir("task-review-loop") do |directory|
       input = consequential_breakage_input(directory)
-      empty_path = write_findings(directory, "empty-re-review.json", [])
+      empty_path = write_findings(
+        directory,
+        "empty-re-review.json",
+        [],
+        receipt: review_receipt(head_sha: FIX_HEAD_SHA, base_sha: HEAD_SHA)
+      )
       empty_reference = artifact(empty_path)
       rounds = input.fetch("rounds").dup
       rounds[-1] = with_digest(
@@ -1478,7 +1629,15 @@ class TaskReviewLoopTest < Minitest::Test
     diff_path = File.join(directory, "task.diff")
     File.write(diff_path, "diff --git a/lib/task-review.rb b/lib/task-review.rb\n+review\n")
     findings_path = File.join(directory, "review-findings.json")
-    File.write(findings_path, JSON.generate("schema" => "review-finding-v0", "review_findings" => []))
+    File.write(
+      findings_path,
+      JSON.generate(
+        "schema" => "review-finding-v0",
+        "reviewer_id" => "reviewer-b",
+        "review_receipt" => review_receipt,
+        "review_findings" => []
+      )
+    )
     package = with_digest(
       "identity" => identity,
       "brief_digest" => brief.fetch("digest"),
@@ -1899,9 +2058,18 @@ class TaskReviewLoopTest < Minitest::Test
     rebind_package(input.merge("worker_report" => report), "worker_report_digest" => report.fetch("digest"))
   end
 
-  def write_findings(directory, basename, findings)
+  def write_findings(directory, basename, findings, receipt: nil)
     path = File.join(directory, basename)
-    File.write(path, JSON.generate("schema" => "review-finding-v0", "review_findings" => findings))
+    document = {
+      "schema" => "review-finding-v0",
+      "reviewer_id" => "reviewer-b",
+      "review_findings" => findings
+    }
+    document["review_receipt"] = receipt if receipt
+    File.write(
+      path,
+      JSON.generate(document)
+    )
     path
   end
 

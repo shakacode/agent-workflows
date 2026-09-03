@@ -347,16 +347,23 @@ module TaskReviewLoop
     [nil, "#{label}-invalid"]
   end
 
-  def findings_bound?(document, identity, head_sha, base_sha)
+  def findings_bound?(document, identity, head_sha, base_sha, reviewer_id)
+    findings = document.fetch("review_findings")
     expected_target = identity.merge("head_sha" => head_sha)
-    return false unless document.fetch("review_findings").all? { |finding| finding["target"] == expected_target }
+    return false unless findings.all? { |finding| finding["target"] == expected_target }
+    return false unless same_actor?(document["reviewer_id"], reviewer_id)
 
     receipt = document["review_receipt"]
+    return false if findings.empty? && !receipt
     return true unless receipt
 
     target = receipt["target"]
     target.is_a?(Hash) && target["kind"] == "committed" &&
       target["base_sha"] == base_sha && target["head_sha"] == head_sha
+  end
+
+  def complete_findings_coverage?(document)
+    document.dig("review_receipt", "coverage", "status") == "complete"
   end
 
   def finding_lineage_valid?(prior, current)
@@ -417,7 +424,8 @@ module TaskReviewLoop
       document,
       identity,
       round["head_sha"],
-      round["base_sha"]
+      round["base_sha"],
+      round["reviewer_id"]
     )
     prior_document, = load_findings(round["review_findings"], "review-findings", findings_cache)
     if prior_document
@@ -618,6 +626,9 @@ module TaskReviewLoop
         if round_package.is_a?(Hash) && round_report.is_a?(Hash) && !current_completed_package
           errors << "review-round-package-invalid" unless valid_record_digest?(round_package)
           errors << "review-round-report-invalid" unless valid_record_digest?(round_report)
+          unless %w[done done_with_concerns].include?(round_report["status"])
+            errors << "review-round-report-not-reviewable"
+          end
           unless same_identity?(identity, round_package["identity"]) &&
                  round_package["brief_digest"] == brief["digest"]
             errors << "review-round-package-foreign"
@@ -665,8 +676,17 @@ module TaskReviewLoop
         end
 
         findings = findings_document.fetch("review_findings")
-        unless findings_bound?(findings_document, identity, review_round["head_sha"], review_round["base_sha"])
+        unless findings_bound?(
+          findings_document,
+          identity,
+          review_round["head_sha"],
+          review_round["base_sha"],
+          review_round["reviewer_id"]
+        )
           errors << "review-findings-foreign"
+        end
+        if findings.empty? && !complete_findings_coverage?(findings_document)
+          errors << "review-findings-incomplete-coverage"
         end
         derived_open_ids = findings.filter_map do |finding|
           finding["id"] if OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
@@ -742,9 +762,13 @@ module TaskReviewLoop
           open_document,
           identity,
           expected_head,
-          round&.[]("base_sha")
+          round&.[]("base_sha"),
+          round&.[]("reviewer_id")
         )
         open_records = open_document.fetch("review_findings")
+        if open_records.empty? && !complete_findings_coverage?(open_document)
+          errors << "open-findings-incomplete-coverage"
+        end
         actual_open_ids = open_records.map { |finding| finding["id"] }
         errors << "open-finding-ids-mismatch" unless input["open_findings"]["ids"] == actual_open_ids
         if round.is_a?(Hash)

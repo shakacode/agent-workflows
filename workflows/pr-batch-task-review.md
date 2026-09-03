@@ -83,7 +83,9 @@ A completed round retains the exact report snapshot that its review package
 names. The reducer validates that report before the round can count.
 A new implementer never relies on hidden context from the prior worker.
 Only `done` and `done_with_concerns` reports can enter review. A
-`needs_context` or `blocked` report remains a worker-execution stop.
+`needs_context` or `blocked` report remains a worker-execution stop. The same
+status rule applies to every retained historical report before its round can
+count toward the cap or dependent-work permission.
 
 ## Exact-Diff Review Package
 
@@ -121,11 +123,17 @@ historical package fails closed before cap adjudication or dependent work.
 Each review writes a separate `review-finding-v0` JSON artifact. The helper
 loads it and calls `ValidateReviewFindings.validate_document`; do not define a
 second finding format or translate findings into a private severity system.
+Add the task-loop `reviewer_id` at the document level. It must name the same
+reviewer as the completed round. Package metadata alone does not prove who
+produced the findings artifact.
 Within one reduction, the helper passes each validated findings document
 through later checks instead of reloading the artifact from disk.
 Set each existing finding `target` to the exact task identity plus the reviewed
 head SHA. When a canonical review receipt is present, bind its committed target
 to the round's exact base and head too. A foreign identity or range fails closed.
+An empty findings array must include that committed receipt. The receipt must
+bind the exact round base and head and report `coverage.status: complete`.
+Partial or unknown coverage cannot produce a clean task decision.
 The round record classifies normalized finding ids as addressed, open, or new
 consequential breakage. The current `open_findings` artifact must match the
 open records in the latest round exactly.
