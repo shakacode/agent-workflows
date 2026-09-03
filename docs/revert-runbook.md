@@ -463,13 +463,13 @@ three bind `from` as the predecessor and `to` as the dependent. The types differ
 only in how much the dependent lane is *permitted to do* while the edge is
 pending: `edit` allows read-only discovery only, `validation_open` allows local
 commits but blocks push and PR open, `merge_order` blocks merge alone. That is a
-  scheduling distinction, not a dependency-direction one. For revert scope all
-  three mean the same thing — the `to` lane's landed work was produced or
-  validated in a world where the `from` lane exists — so all three belong in the
-  closure. Only `edit` and `validation_open` may legitimately select an
-  earlier-landed dependent. A `merge_order` edge requires the predecessor to be
-  merged before the dependent can merge, so the opposite landing order is a
-  bypassed gate or corrupt-plan finding, not a supported closure case.
+scheduling distinction, not a dependency-direction one. For revert scope all
+three mean the same thing — the `to` lane's landed work was produced or
+validated in a world where the `from` lane exists — so all three belong in the
+closure. Only `edit` and `validation_open` may legitimately select an
+earlier-landed dependent. A `merge_order` edge requires the predecessor to be
+merged before the dependent can merge, so the opposite landing order is a
+bypassed gate or corrupt-plan finding, not a supported closure case.
 
 `edit` is the most dangerous type to omit, not the least. A lane blocked on an
 `edit` edge could not create a branch until its predecessor was satisfied, so it
@@ -629,7 +629,8 @@ the unit it depends on. When two units are incomparable in the dependency
 graph, break ties by reverse landing order so the result stays deterministic:
 newest in-scope commit first, oldest last. If a unit selected by `edit` or
 `validation_open` landed before the suspect PR, keep it ahead of the predecessor
-it depends on so the dependency is removed first. That edge case is intentional:
+it depends on so the dependent is reverted before the predecessor it built on.
+That edge case is intentional:
 preserving a safe intermediate tree takes precedence over the
 historical-plausibility heuristic below. Every intermediate commit on the revert
 branch should be a state the code could plausibly have been in, except for that
@@ -1262,14 +1263,11 @@ now, choosing between the two non-`done` terminal values:
 verified `SUCCESSOR_STATE`, and `--evidence-url` is optional and must be either a
 real HTTP(S) URL or absent — an empty string is rejected and the closeout fails,
 leaving the lane open. If that successor fact is unknown, stop here; do not
-invent `NAMED_SUCCESSOR` or substitute literal `UNKNOWN`. Do not print one
-command that passes the flag unconditionally and rely on the reader to drop it:
-the same block then serves both the repair and the accepted-risk paths, and it
-is correct as run.
+invent `NAMED_SUCCESSOR` or substitute literal `UNKNOWN`. First validate the
+successor fact and derive `TERMINAL`; this block is shared by both release forms
+below:
 
 ```bash
-RELEASE_ARGS=(--pr-state "${PR_STATE}" --batch-id "${BATCH_ID}"
-  --repo "${REPO}" --target "${TARGET}")
 # Set SUCCESSOR_STATE only after checking whether a named successor exists.
 case "${SUCCESSOR_STATE:-UNKNOWN}" in
   present)
@@ -1291,6 +1289,15 @@ case "${SUCCESSOR_STATE:-UNKNOWN}" in
     exit 1
     ;;
 esac
+```
+
+When an array is available, build the optional flag instead of typing one
+unconditional command and relying on the reader to drop it. The same block then
+serves both the repair and accepted-risk paths, and it is correct as run:
+
+```bash
+RELEASE_ARGS=(--pr-state "${PR_STATE}" --batch-id "${BATCH_ID}"
+  --repo "${REPO}" --target "${TARGET}")
 RELEASE_ARGS+=(--terminal "${TERMINAL}")
 if [ -n "${EVIDENCE_URL:-}" ]; then
   RELEASE_ARGS+=(--evidence-url "${EVIDENCE_URL}")
@@ -1302,27 +1309,6 @@ Where an array is not available, validate `SUCCESSOR_STATE` and then branch on
 `EVIDENCE_URL` independently so all four valid combinations stay valid:
 
 ```bash
-case "${SUCCESSOR_STATE:-UNKNOWN}" in
-  present)
-    if [ -z "${NAMED_SUCCESSOR:-}" ] || [ "${NAMED_SUCCESSOR}" = UNKNOWN ]; then
-      echo "named successor is UNKNOWN: stop before terminal release" >&2
-      exit 1
-    fi
-    TERMINAL=superseded
-    ;;
-  absent)
-    if [ -n "${NAMED_SUCCESSOR:-}" ]; then
-      echo "successor state is absent but NAMED_SUCCESSOR is set" >&2
-      exit 1
-    fi
-    TERMINAL=abandoned
-    ;;
-  *)
-    echo "successor state is UNKNOWN: stop before terminal release" >&2
-    exit 1
-    ;;
-esac
-
 if [ -n "${EVIDENCE_URL:-}" ]; then
   agent-coord release --terminal "${TERMINAL}" --pr-state "${PR_STATE}" \
     --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}" \
