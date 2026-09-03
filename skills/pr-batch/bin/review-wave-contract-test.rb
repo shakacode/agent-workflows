@@ -150,10 +150,20 @@ class ReviewWaveContractTest < Minitest::Test
     other_pr_waiver = waiver(pr_number: 683, check_name: "coderabbitai", head_sha: head_sha)
     unrelated_waiver = waiver(pr_number: 684, check_name: "unrelated-reviewer", head_sha: head_sha)
     exact_invalidation = invalidation(exact_waiver)
+    stale_invalidation = exact_invalidation.merge("retry_requested_at" => "2026-09-03T09:55:00Z")
+    simultaneous_invalidation = exact_invalidation.merge("retry_requested_at" => exact_waiver.fetch("observed_at"))
+    offset_invalidation = exact_invalidation.merge(
+      "waiver_observed_at" => "2026-09-03T12:00:00+02:00",
+      "retry_requested_at" => "2026-09-03T09:05:00-01:00"
+    )
 
     [@address_review, @address_review_workflow].each do |text|
       assert waiver_evidence_valid?(text, [exact_waiver, stale_waiver, other_pr_waiver, unrelated_waiver])
       refute waiver_evidence_valid?(text, [exact_waiver.merge("reason" => "unknown")])
+      assert invalidation_evidence_valid?(text, [exact_invalidation])
+      assert invalidation_evidence_valid?(text, [offset_invalidation])
+      refute invalidation_evidence_valid?(text, [stale_invalidation])
+      refute invalidation_evidence_valid?(text, [simultaneous_invalidation])
       assert_equal({ "pending_count" => 1, "missing_names" => "coderabbitai", "pending_names" => "" },
                    review_wave_status(text, expected, terminal_checks, [], [], 684, head_sha))
       assert_equal({ "pending_count" => 0, "missing_names" => "", "pending_names" => "" },
@@ -230,6 +240,19 @@ class ReviewWaveContractTest < Minitest::Test
     _stdout, _stderr, status = Open3.capture3(
       "jq", "-e", "--arg", "host", "github.com", "--arg", "repo", "shakacode/agent-workflows",
       filter[:filter], stdin_data: JSON.generate(waivers)
+    )
+    status.success?
+  end
+
+  def invalidation_evidence_valid?(text, invalidations)
+    filters = text.scan(%r{jq -e --arg host "\$\{GH_HOST\}" --arg repo "\$\{REPO\}" '(.*?)' >/dev/null; then}m)
+                  .flatten
+    filter = filters.find { |candidate| candidate.include?("retry_requested_at") }
+    raise "missing waiver invalidation validation jq filter" unless filter
+
+    _stdout, _stderr, status = Open3.capture3(
+      "jq", "-e", "--arg", "host", "github.com", "--arg", "repo", "shakacode/agent-workflows",
+      filter, stdin_data: JSON.generate(invalidations)
     )
     status.success?
   end

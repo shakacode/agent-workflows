@@ -302,6 +302,17 @@ Execution flow when terminal access is available:
        fi
        if ! printf '%s' "${REVIEW_WAIVER_INVALIDATIONS_JSON}" |
          jq -e --arg host "${GH_HOST}" --arg repo "${REPO}" '
+           def rfc3339_epoch:
+             capture("^(?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})T(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?:\\.(?<fraction>[0-9]+))?(?<zone>Z|(?<sign>[+-])(?<offset_hour>[0-9]{2}):(?<offset_minute>[0-9]{2}))$") as $timestamp |
+             ([$timestamp.year, $timestamp.month, $timestamp.day, $timestamp.hour, $timestamp.minute, $timestamp.second, 0, 0] |
+               map(tonumber) |
+               .[1] -= 1 |
+               mktime) +
+             (if ($timestamp.fraction // "") == "" then 0 else ("0." + $timestamp.fraction | tonumber) end) -
+             (if $timestamp.zone == "Z" then 0
+              else ((($timestamp.offset_hour | tonumber) * 60 + ($timestamp.offset_minute | tonumber)) * 60) *
+                (if $timestamp.sign == "+" then 1 else -1 end)
+              end);
            type == "array" and
            all(.[];
              . as $invalidation |
@@ -311,6 +322,8 @@ Execution flow when terminal access is available:
              ($invalidation.check_name | type == "string" and length > 0) and
              ($invalidation.waiver_observed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$")) and
              ($invalidation.retry_requested_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$")) and
+             (try (($invalidation.retry_requested_at | rfc3339_epoch) >
+               ($invalidation.waiver_observed_at | rfc3339_epoch)) catch false) and
              ($invalidation.evidence_url | type == "string" and startswith("https://\($host)/\($repo)/pull/\($invalidation.pr_number)#")))
          ' >/dev/null; then
          echo "waiting-on-checks-or-review: review-waiver invalidation evidence is malformed" >&2
