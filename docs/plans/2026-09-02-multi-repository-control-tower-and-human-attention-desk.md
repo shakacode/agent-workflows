@@ -106,8 +106,8 @@ validate it, and rename it to the canonical repository snapshot name. It SHALL
 increase a monotonically increasing generation on every successful refresh,
 including one without content changes, so a quiet healthy source does not
 appear stale. A replacement tower SHALL
-continue from the generation in the existing canonical snapshot rather than
-restarting the counter. The HIL Desk SHALL reject a lower generation and
+continue from the higher of the existing canonical snapshot's generation and
+the desk's accepted copy rather than restarting the counter. The HIL Desk SHALL reject a lower generation and
 preserve the last known good snapshot when a new file is invalid or incomplete.
 
 Acceptance: interruption before rename leaves either the previous valid
@@ -118,9 +118,8 @@ tower's first snapshot is accepted.
 
 The short-term operating model SHALL designate one HIL Desk task and host as
 the aggregate writer. A replacement SHALL first establish that the prior task
-is terminal or that an explicit takeover has been authorized, then increment
-the writer epoch. Automatic multi-writer failover is out of scope for the file
-MVP.
+is terminal, then increment the writer epoch. Takeover of a live writer and
+automatic multi-writer failover are out of scope for the file MVP.
 
 Acceptance: `state/hil-writer.json` identifies the current writer task, host,
 epoch, heartbeat, and each repository's last accepted generation. A writer is
@@ -145,15 +144,11 @@ only after the source snapshot no longer reports it as unresolved.
 
 The HIL Desk SHALL rerank from current inputs on every refresh. Priority SHALL
 be explained in plain language, not hidden behind an opaque score. Each item
-SHALL carry exactly one priority class, ranked in this order:
-
-1. `irreversible`: imminent production, security, data-loss, or
-   irreversible-action decisions;
-2. `unblocks-work`: decisions that unblock the most valuable independent work;
-3. `ready-merge`: current-head merge or walkthrough decisions that are fully
-   prepared;
-4. `product-architecture`: other outcome-changing product or architecture
-   decisions.
+SHALL carry exactly one `priority_class` from the ranked list in the
+[contract](../control-tower-prompts.md#snapshot-and-desk-contract), which
+orders imminent irreversible decisions first, then decisions that unblock
+work, then prepared merge or walkthrough decisions, then other
+outcome-changing product or architecture decisions.
 
 Routine implementation, bookkeeping, test-hardening preferences, unchanged
 state, and optional telemetry SHALL NOT enter the queue. A snapshot older than
@@ -181,8 +176,8 @@ work on the same target, concurrent writers in one worktree, and resource use
 that measurably harms healthy work.
 
 Acceptance: each tower distinguishes implementation, integration, validation,
-and review activity and records the concrete reason when usable capacity is
-intentionally idle.
+and review activity and records the concrete reason in its snapshot when
+usable capacity is intentionally idle.
 
 ### R10 — Autonomous ordinary integration
 
@@ -327,9 +322,10 @@ transcripts.
 - **Done:** a read-only Attention view continuously reranks backend records,
   links to the source task, explains priority, and visibly reports stale or
   unavailable hosts.
-- **Parallelism:** starts after the first backlog-integration wave in both
-  `agent-workflows` and `agent-coordination`, when neither tower has a waiting
-  integration-ready pull request.
+- **Parallelism:** starts after T4's structured attention records exist and
+  after the first backlog-integration wave in both `agent-workflows` and
+  `agent-coordination`, when neither tower has a waiting integration-ready
+  pull request.
 
 ## Non-Goals For The File MVP
 

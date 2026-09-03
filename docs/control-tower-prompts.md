@@ -91,9 +91,10 @@ Publish this repository's complete attention snapshot atomically to:
 <SHARED_HIL_ROOT>/repo-snapshots/shakacode--agent-workflows.json
 Follow the Snapshot And Desk Contract in
 https://github.com/shakacode/agent-workflows/blob/main/docs/control-tower-prompts.md#snapshot-and-desk-contract
-This task's native deeplink is <THIS_TASK_DEEPLINK>. If a snapshot already
-exists, continue from its generation; increase the generation on every
-refresh, even when nothing changed. Include only unresolved decisions that
+This task's native deeplink is <THIS_TASK_DEEPLINK>. Continue from the higher
+generation found in the existing snapshot or the desk's accepted copy under
+<SHARED_HIL_ROOT>/state/accepted/; increase the generation on every refresh,
+even when nothing changed. Include only unresolved decisions that
 genuinely need me; never edit the combined HUMAN_ATTENTION.md.
 
 Report opened, merged, closed, and net-open counts separately for issues and
@@ -151,9 +152,10 @@ Publish this repository's complete attention snapshot atomically to:
 <SHARED_HIL_ROOT>/repo-snapshots/shakacode--agent-coordination.json
 Follow the Snapshot And Desk Contract in
 https://github.com/shakacode/agent-workflows/blob/main/docs/control-tower-prompts.md#snapshot-and-desk-contract
-This task's native deeplink is <THIS_TASK_DEEPLINK>. If a snapshot already
-exists, continue from its generation; increase the generation on every
-refresh, even when nothing changed. Include only unresolved decisions that
+This task's native deeplink is <THIS_TASK_DEEPLINK>. Continue from the higher
+generation found in the existing snapshot or the desk's accepted copy under
+<SHARED_HIL_ROOT>/state/accepted/; increase the generation on every refresh,
+even when nothing changed. Include only unresolved decisions that
 genuinely need me; never edit the combined HUMAN_ATTENTION.md.
 
 Report opened, merged, closed, and net-open counts separately for issues and
@@ -192,7 +194,7 @@ snapshot under <SHARED_HIL_ROOT>/state/accepted/.
 
 Before every write, re-read the writer state. If it names a different task with
 a live heartbeat or a newer epoch, stop publishing and notify me; never take
-over silently. Write a complete temporary file in the destination directory and
+over silently and never write an epoch lower than the one on disk. Write a complete temporary file in the destination directory and
 rename it into place. Rebuild the whole document from accepted inputs on every
 refresh, including startup, before updating the writer state. Never edit
 repository snapshots. Reject malformed snapshots and generation rollback while
@@ -205,7 +207,9 @@ time, aggregate generation, writer task and host, and this warning: decisions
 belong in the linked source Codex task. For each unresolved item show its exact
 question, choices and consequences, why it is ranked here, what it unlocks,
 attention estimate when known, target, repository, host, freshness, and native
-Codex deeplink. Never answer or clear an item yourself.
+Codex deeplink. Never answer or clear an item yourself. Also show each
+repository's typed portfolio counts, net deltas, catch-up milestone, tower
+status, and freshness.
 
 Rerank the entire queue whenever an input materially changes, using the
 contract's priority classes in order: irreversible, unblocks-work, ready-merge,
@@ -279,8 +283,9 @@ Atomically publish only this repository's snapshot to
 <SHARED_HIL_ROOT>/repo-snapshots/<OWNER>--<REPO>.json following the Snapshot
 And Desk Contract in
 https://github.com/shakacode/agent-workflows/blob/main/docs/control-tower-prompts.md#snapshot-and-desk-contract
-This task's native deeplink is <THIS_TASK_DEEPLINK>. If a snapshot already
-exists, continue from its generation, and increase it on every refresh. Never
+This task's native deeplink is <THIS_TASK_DEEPLINK>. Continue from the higher
+generation in the existing snapshot or the desk's accepted copy under
+<SHARED_HIL_ROOT>/state/accepted/, and increase it on every refresh. Never
 edit the aggregate HUMAN_ATTENTION.md. Report opened, merged, closed, and net-open counts
 separately for issues and pull requests, keep decision-free work moving until
 the interval ends, then publish a final snapshot with status terminal and stop.
@@ -303,7 +308,7 @@ this way.
   state/
     hil-writer.json          HIL Desk identity, epoch, heartbeat, accepted generations
     accepted/
-      <OWNER>--<REPO>.json   HIL Desk copy of the last accepted snapshot
+      <OWNER>--<REPO>.json   HIL Desk copy of the last accepted snapshot; a tower may read its own
 ```
 
 No tower reads or modifies another repository's snapshot. If the human wants
@@ -327,7 +332,8 @@ counts.
     "host": "M5",
     "task_id": "stable-task-id",
     "deeplink": "copied-native-deeplink-or-UNKNOWN",
-    "status": "active"
+    "status": "active",
+    "idle_capacity_reason": null
   },
   "portfolio": {
     "wave_started_at": "2026-09-02T17:00:00Z",
@@ -366,15 +372,21 @@ Field rules:
   snapshot, never a half-written canonical file.
 - **`generation`** is strictly increasing per repository and increases on every
   successful refresh, including one whose content did not change, so freshness
-  can advance. A replacement tower reads the canonical snapshot and publishes
-  its generation plus one; it starts at `1` only when no canonical snapshot
-  exists. The desk treats an equal generation as a duplicate, rejects a lower
+  can advance. A replacement tower publishes one more than the higher of the
+  canonical snapshot's generation and the desk's accepted copy at
+  `state/accepted/<OWNER>--<REPO>.json`; it starts at `1` only when neither
+  exists, so a deleted or rolled-back canonical file cannot lock a tower out
+  behind the desk's high-water mark. A tower may read its own accepted copy
+  but never writes under `state/`. The desk treats an equal generation as a duplicate, rejects a lower
   generation, and keeps that repository's last accepted input. A higher
   generation with unchanged content updates freshness without a rerank.
 - **`control_tower.status`** is `active`, `paused`, or `terminal`. A tower
   publishes a final `terminal` snapshot when its interval ends or it stops. The
   desk keeps a terminal tower's unresolved items visible and labels the source
   terminal; only a later valid snapshot clears them.
+- **`control_tower.idle_capacity_reason`** is `null` while usable host capacity
+  is in use; otherwise it is the concrete reason capacity is intentionally
+  idle, which is how R9's acceptance is checked.
 - **`refresh_interval_seconds`** is the tower's declared cadence. A snapshot is
   stale when `updated_at` is older than twice that interval. The desk shows a
   stale source and never clears its items.
@@ -453,6 +465,12 @@ Rules:
   `heartbeat_interval_seconds`. If the file names a different live task, or an
   `epoch` newer than the desk's own, the desk stops publishing and notifies the
   human. Repository towers continue unaffected.
+- **Epoch floor.** A desk never writes writer state whose `epoch` is lower
+  than the one on disk, so a superseded desk that re-reads before every write
+  stops instead of restoring its own state over a newer claim.
+- **`aggregate_generation`** increases by one each time the desk renames a
+  rebuilt document into place. A header value that stops changing while
+  heartbeats continue means the desk is stalled on rendering.
 - **Claim and verify.** A desk claims the file by writing its identity and
   `epoch`, waits one `heartbeat_interval_seconds`, and re-reads it. If the
   writer identity differs, it stops and notifies. The claim is check-then-act
@@ -477,7 +495,10 @@ Rules:
   not that the document is current; a crash between the two renames is
   repaired by the next rebuild.
 - **Replacement.** A replacement desk starts only after the prior task is
-  terminal or the human authorizes takeover. It increments `epoch` and recovers
+  terminal. If the prior task cannot confirm termination, the human stops it
+  first; takeover of a live writer is not supported because the epoch is not a
+  fence against a writer that is mid-publication. It increments `epoch` and
+  recovers
   `accepted` from this file and the accepted copies, so a valid replacement
   snapshot is not rejected and a rollback is still detected. Automatic failover
   is out of scope.
@@ -489,6 +510,10 @@ Rules:
 - Each item shows the exact question, choices and consequences, priority class
   and plain-language reason, what it unlocks, attention estimate when known,
   target, repository, host, freshness, and native deeplink.
+- A portfolio section shows, per repository, the typed counts and net deltas
+  since wave start, `catch_up_wave_completed_at`, tower status, and freshness,
+  so the human learns the dashboard gate from this document rather than from
+  raw snapshots.
 - A degraded-sources section lists every expected producer that is missing,
   malformed, stale, or terminal, with its last accepted generation and time.
   Items from a degraded source stay listed with that label; the desk never
