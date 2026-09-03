@@ -45,8 +45,9 @@ Commands below use one stable placeholder set:
 | `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
 | `REPAIR_PR_URL` | `REPAIR_PR`'s HTML URL, derived in [checkpoint B](#coordination-events-and-terminal-state); unset until a repair merges |
 | `EVIDENCE_URL` | the durable URL a terminal release cites — `REPAIR_PR_URL` on the repair path, the accepted-risk record's URL on the no-repair path, and **unset** when neither exists |
-| `SUCCESSOR_STATE` | the verified successor fact — literal `present` or `absent`; keep it `UNKNOWN` until verified |
-| `NAMED_SUCCESSOR` | the verified successor lane, issue, or PR identifier when `SUCCESSOR_STATE=present`; otherwise unset |
+| `SUCCESSOR_STATE` | the verified successor fact — literal `present` or `absent`; keep it `UNKNOWN` until [verified](#verify-the-successor-state) |
+| `SUCCESSOR_DECISION_REF` | the durable authenticated closeout record that explicitly names a successor or records that none will carry the intent |
+| `NAMED_SUCCESSOR` | the verified same-repo issue/PR URL, or canonical target URL backing a successor lane, when `SUCCESSOR_STATE=present`; otherwise unset |
 
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA,
   recorded as `BASE_TIP`:
@@ -1254,34 +1255,67 @@ still reach a defensible state rather than dangling with an open
   handoff. An accepted risk that is written down is a decision; one that is not
   is an unexplained dangling lane.
 
-**Terminal state depends on whether the lane has already closed.**
+#### Verify the successor state
 
-*Lane not yet terminal* (`planned`, `claimed`, `active`, `blocked`) — close it
-now, choosing between the two non-`done` terminal values:
-
-**Build the arguments conditionally.** `--terminal` comes from the explicit,
-verified `SUCCESSOR_STATE`, and `--evidence-url` is optional and must be either a
-real HTTP(S) URL or absent — an empty string is rejected and the closeout fails,
-leaving the lane open. If that successor fact is unknown, stop here; do not
-invent `NAMED_SUCCESSOR` or substitute literal `UNKNOWN`. First validate the
-successor fact and derive `TERMINAL`; this block is shared by both release forms
-below:
+Do not derive `absent` from an empty search, an unset variable, or a stale lane
+list. First inspect the exact repair target and its coordination record:
 
 ```bash
-# Set SUCCESSOR_STATE only after checking whether a named successor exists.
+GH_PAGER=cat gh issue view "${REPAIR_TARGET}" --repo "${REPO}" --comments
+agent-coord status --repo "${REPO}" --target "${REPAIR_TARGET}" --json
+```
+
+Those commands are discovery, not proof of absence. A successor is `present`
+only when the authenticated closeout record names the exact new issue, PR, or
+lane that will carry the intent. Use the canonical same-repo issue/PR URL as
+`NAMED_SUCCESSOR`; for a lane, use its canonical target URL. A successor is
+`absent` only when the deciding operator explicitly records in the durable
+closeout handoff or comment that no named successor will carry the intent.
+
+Run this block in the same shell immediately before the release blocks below.
+It starts from `UNKNOWN`, requires the durable decision reference, verifies a
+named successor against GitHub, and derives `TERMINAL`. Pressing Enter or
+supplying any unverified value fails closed:
+
+```bash
+SUCCESSOR_STATE=UNKNOWN
+SUCCESSOR_DECISION_REF=UNKNOWN
+unset NAMED_SUCCESSOR
+
+printf 'Durable successor-decision reference: ' >&2
+IFS= read -r SUCCESSOR_DECISION_REF
+case "${SUCCESSOR_DECISION_REF:-UNKNOWN}" in
+  ''|UNKNOWN)
+    echo "successor decision is UNKNOWN: stop before terminal release" >&2
+    exit 1
+    ;;
+esac
+
+printf 'Verified successor state (present/absent): ' >&2
+IFS= read -r SUCCESSOR_STATE
 case "${SUCCESSOR_STATE:-UNKNOWN}" in
   present)
-    if [ -z "${NAMED_SUCCESSOR:-}" ] || [ "${NAMED_SUCCESSOR}" = UNKNOWN ]; then
-      echo "named successor is UNKNOWN: stop before terminal release" >&2
+    printf 'Exact successor issue/PR URL: ' >&2
+    IFS= read -r NAMED_SUCCESSOR
+    case "${NAMED_SUCCESSOR:-UNKNOWN}" in
+      "https://github.com/${REPO}/issues/"*|"https://github.com/${REPO}/pull/"*) ;;
+      *)
+        echo "named successor is not a same-repo issue/PR URL: stop" >&2
+        exit 1
+        ;;
+    esac
+    VERIFIED_SUCCESSOR=$(gh issue view "${NAMED_SUCCESSOR}" \
+      --repo "${REPO}" --json url --jq '.url' 2>/dev/null) \
+      || VERIFIED_SUCCESSOR=$(gh pr view "${NAMED_SUCCESSOR}" \
+        --repo "${REPO}" --json url --jq '.url') \
+      || exit 1
+    if [ "${VERIFIED_SUCCESSOR}" != "${NAMED_SUCCESSOR}" ]; then
+      echo "named successor URL did not verify exactly: stop" >&2
       exit 1
     fi
     TERMINAL=superseded
     ;;
   absent)
-    if [ -n "${NAMED_SUCCESSOR:-}" ]; then
-      echo "successor state is absent but NAMED_SUCCESSOR is set" >&2
-      exit 1
-    fi
     TERMINAL=abandoned
     ;;
   *)
@@ -1290,6 +1324,21 @@ case "${SUCCESSOR_STATE:-UNKNOWN}" in
     ;;
 esac
 ```
+
+Record `SUCCESSOR_DECISION_REF`, `SUCCESSOR_STATE`, and `NAMED_SUCCESSOR` (or
+literal `none`) in the terminal handoff. The interactive answers are not the
+evidence; the authenticated record and exact GitHub lookup are.
+
+**Terminal state depends on whether the lane has already closed.**
+
+*Lane not yet terminal* (`planned`, `claimed`, `active`, `blocked`) — close it
+now, choosing between the two non-`done` terminal values:
+
+**Build the arguments conditionally.** `--terminal` comes from `TERMINAL`,
+derived by the verified block above, and `--evidence-url` is optional and must
+be either a real HTTP(S) URL or absent — an empty string is rejected and the
+closeout fails, leaving the lane open. Do not change `SUCCESSOR_STATE`,
+`NAMED_SUCCESSOR`, or `TERMINAL` between verification and release.
 
 When an array is available, build the optional flag instead of typing one
 unconditional command and relying on the reader to drop it. The same block then
@@ -1490,8 +1539,9 @@ An agent **may not**, without an explicit operator decision:
     or `abandoned`; release the repair lane claimed in step 7 as `done` under
     `REPAIR_BATCH_ID` / `REPAIR_LANE`; restore `RERERE_PRIOR`; reclassify the
     worked issue as `regressed`. Build the release arguments conditionally so
-    `--terminal` follows the verified `SUCCESSOR_STATE` and `--evidence-url` is
-    present only when `EVIDENCE_URL` is set. If no repair lands at all,
+    `--terminal` follows the executable successor-state verification above;
+    record `SUCCESSOR_DECISION_REF`, and include `--evidence-url` only when
+    `EVIDENCE_URL` is set. If no repair lands at all,
     skip checkpoint B but still close **both** lanes terminally (omitting
     `--evidence-url` when no durable URL exists), close the draft revert PR,
     restore `RERERE_PRIOR`, reclassify the worked issue `regressed`, and record
