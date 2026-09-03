@@ -45,7 +45,8 @@ Commands below use one stable placeholder set:
 | `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
 | `REPAIR_PR_URL` | `REPAIR_PR`'s HTML URL, derived in [checkpoint B](#coordination-events-and-terminal-state); unset until a repair merges |
 | `EVIDENCE_URL` | the durable URL a terminal release cites — `REPAIR_PR_URL` on the repair path, the accepted-risk record's URL on the no-repair path, and **unset** when neither exists |
-| `NAMED_SUCCESSOR` | the verified successor lane, issue, or PR identifier; unset only when no named successor exists |
+| `SUCCESSOR_STATE` | the verified successor fact — literal `present` or `absent`; keep it `UNKNOWN` until verified |
+| `NAMED_SUCCESSOR` | the verified successor lane, issue, or PR identifier when `SUCCESSOR_STATE=present`; otherwise unset |
 
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA,
   recorded as `BASE_TIP`:
@@ -395,11 +396,13 @@ Three outcomes, three treatments:
 - **Maps to a PR** — recover that PR's landed range and treat the whole range as
   the unit, exactly as above.
 - **Confirmed direct commit** (the lookup succeeded and returned nothing) — the
-  commit is its own closure unit, of exactly one commit. Admit it, and revert it
-  in the same reverse-landing order by its parent shape. Nothing is lost by
-  admitting it: the range machinery exists to answer "how many commits did this
-  PR land", and for a direct commit that answer is one, known exactly. Refusing
-  the case would be fail-closed theatre over the easiest unit in the document.
+  commit is its own closure unit, of exactly one commit. Admit it, and order it
+  by the same rule as every other unit: reverse dependency order first, then
+  reverse landing order for incomparable units. Revert it by its parent shape.
+  Nothing is lost by admitting it: the range machinery exists to answer "how
+  many commits did this PR land", and for a direct commit that answer is one,
+  known exactly. Refusing the case would be fail-closed theatre over the easiest
+  unit in the document.
 - **Lookup failed** — `UNKNOWN`. Stop, or widen to the enclosing batch closure.
   Do not read "the request errored" as "there is no PR": a network failure, a
   token without the scope, and a genuinely direct commit all produce no PR
@@ -424,8 +427,12 @@ Two artifacts declare lane dependency, and both are authoritative for scope:
   carries `edges[]`, each binding `from` (predecessor lane), `to` (dependent
   lane), and `type`. Every lane reachable from the failing lane by following
   edges forward — **of any type** — is a candidate for joint revert. Take the
-  transitive closure, not just direct successors. A dependency-selected unit
-  stays in scope even when it landed before the suspect PR.
+  transitive closure, not just direct successors. A declared `edit` or
+  `validation_open` edge can legitimately select a unit that landed before the
+  suspect PR. A `merge_order` dependent cannot legitimately land before its
+  predecessor; if history says it did, the plan or gate evidence is inconsistent
+  and therefore `UNKNOWN`. Stop and investigate or widen to the enclosing batch
+  closure instead of treating that ordering as expected.
 
 Read `type` from the **immutable `stage-dependency-plan` file**, which is the
 only one of the two artifacts whose edges carry it; the mutable
@@ -456,18 +463,22 @@ three bind `from` as the predecessor and `to` as the dependent. The types differ
 only in how much the dependent lane is *permitted to do* while the edge is
 pending: `edit` allows read-only discovery only, `validation_open` allows local
 commits but blocks push and PR open, `merge_order` blocks merge alone. That is a
-scheduling distinction, not a dependency-direction one. For revert scope all
-three mean the same thing — the `to` lane's landed work was produced or
-validated in a world where the `from` lane exists — so all three belong in the
-closure, even when the dependent landed before the suspect PR.
+  scheduling distinction, not a dependency-direction one. For revert scope all
+  three mean the same thing — the `to` lane's landed work was produced or
+  validated in a world where the `from` lane exists — so all three belong in the
+  closure. Only `edit` and `validation_open` may legitimately select an
+  earlier-landed dependent. A `merge_order` edge requires the predecessor to be
+  merged before the dependent can merge, so the opposite landing order is a
+  bypassed gate or corrupt-plan finding, not a supported closure case.
 
 `edit` is the most dangerous type to omit, not the least. A lane blocked on an
 `edit` edge could not create a branch until its predecessor was satisfied, so it
 is the case where a later PR most likely builds on the suspect PR's *behavior*
 without touching the suspect PR's *files* — which means it also passes the
 disjoint-file check in [Decision rule](#decision-rule). Filtering the edges and
-relying on file overlap therefore misses it twice. Landing time does not change
-membership.
+relying on file overlap therefore misses it twice. For `edit` and
+`validation_open`, landing time does not change membership; a contradictory
+`merge_order` landing remains `UNKNOWN`.
 
 `STAGE_DEPENDENCY_PLAN_PATH` and `STAGE_DEPENDENCY_PLAN_ID` both come from the
 trusted coordinator handoff, per
@@ -500,8 +511,8 @@ git log --ancestry-path --first-parent --format='%h %s' "${SHA}..${BASE_TIP}"
 git log --first-parent --format='%h %s' "${BASE_TIP}" -- "${PATHS[@]}"
 ```
 
-A dependency-selected unit that landed before `${SHA}` will not appear in this
-window; keep it in the closure anyway.
+A unit selected by a declared `edit` or `validation_open` edge that landed
+before `${SHA}` will not appear in this window; keep it in the closure anyway.
 
 `"${PATHS[@]}"` is quoted deliberately: see
 [Build the path set](#build-the-path-set) for why an unquoted expansion turns a
@@ -567,9 +578,9 @@ can find each individual commit "independent" while the PR as a whole is not.
 Otherwise **unwind the closure**: the suspect PR's range plus every closure
 unit that depends on it, transitively — whether that unit landed before or
 after the suspect PR. A declared `edit` or `validation_open` edge can add
-earlier-landed units to that closure even though they are not part of the later-
-commit comparison above. A dependent PR contributes its whole landed range, and
-a direct commit stands on its own, per
+earlier-landed units to that closure even though they are not part of the
+later-commit comparison above. A dependent PR contributes its whole landed
+range, and a direct commit stands on its own, per
 [Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr).
 If any input to that test is `UNKNOWN`, take the wider scope or stop for the
 operator. A too-wide revert is a review problem; a too-narrow revert leaves the
@@ -584,13 +595,14 @@ commits it should compare against.
 Revert in **reverse dependency order**: every dependent unit comes out before
 the unit it depends on. When two units are incomparable in the dependency
 graph, break ties by reverse landing order so the result stays deterministic:
-newest in-scope commit first, oldest last. If a dependency-selected unit landed
-before the suspect PR, keep it ahead of the predecessor it depends on so the
-dependency is removed first. That edge case is intentional: preserving a safe
-intermediate tree takes precedence over the historical-plausibility heuristic
-below. Every intermediate commit on the revert branch should be a state the code
-could plausibly have been in, except for that dependency-before-predecessor
-tie-break. Forward order does not merely conflict more — it
+newest in-scope commit first, oldest last. If a unit selected by `edit` or
+`validation_open` landed before the suspect PR, keep it ahead of the predecessor
+it depends on so the dependency is removed first. That edge case is intentional:
+preserving a safe intermediate tree takes precedence over the
+historical-plausibility heuristic below. Every intermediate commit on the revert
+branch should be a state the code could plausibly have been in, except for that
+dependency-before-predecessor ordering requirement. Forward order does not
+merely conflict more — it
 produces intermediate trees that git reports as successful and that are
 actually broken, because a dependent merge is still present after its
 dependency has been removed.
@@ -1214,9 +1226,9 @@ still reach a defensible state rather than dangling with an open
 *Lane not yet terminal* (`planned`, `claimed`, `active`, `blocked`) — close it
 now, choosing between the two non-`done` terminal values:
 
-**Build the arguments conditionally.** `--terminal` comes from whether a named
-successor exists, and `--evidence-url` is optional and must be either a real
-HTTP(S) URL or absent — an empty string is rejected and the closeout fails,
+**Build the arguments conditionally.** `--terminal` comes from the explicit,
+verified `SUCCESSOR_STATE`, and `--evidence-url` is optional and must be either a
+real HTTP(S) URL or absent — an empty string is rejected and the closeout fails,
 leaving the lane open. If that successor fact is unknown, stop here; do not
 invent `NAMED_SUCCESSOR` or substitute literal `UNKNOWN`. Do not print one
 command that passes the flag unconditionally and rely on the reader to drop it:
@@ -1226,28 +1238,58 @@ is correct as run.
 ```bash
 RELEASE_ARGS=(--pr-state "${PR_STATE}" --batch-id "${BATCH_ID}"
   --repo "${REPO}" --target "${TARGET}")
-# Set NAMED_SUCCESSOR to the verified successor lane, issue, or PR identifier
-# when one exists; otherwise leave it unset.
-if [ -n "${NAMED_SUCCESSOR:-}" ]; then
-  RELEASE_ARGS+=(--terminal superseded)
-else
-  RELEASE_ARGS+=(--terminal abandoned)
-fi
+# Set SUCCESSOR_STATE only after checking whether a named successor exists.
+case "${SUCCESSOR_STATE:-UNKNOWN}" in
+  present)
+    if [ -z "${NAMED_SUCCESSOR:-}" ] || [ "${NAMED_SUCCESSOR}" = UNKNOWN ]; then
+      echo "named successor is UNKNOWN: stop before terminal release" >&2
+      exit 1
+    fi
+    TERMINAL=superseded
+    ;;
+  absent)
+    if [ -n "${NAMED_SUCCESSOR:-}" ]; then
+      echo "successor state is absent but NAMED_SUCCESSOR is set" >&2
+      exit 1
+    fi
+    TERMINAL=abandoned
+    ;;
+  *)
+    echo "successor state is UNKNOWN: stop before terminal release" >&2
+    exit 1
+    ;;
+esac
+RELEASE_ARGS+=(--terminal "${TERMINAL}")
 if [ -n "${EVIDENCE_URL:-}" ]; then
   RELEASE_ARGS+=(--evidence-url "${EVIDENCE_URL}")
 fi
 agent-coord release "${RELEASE_ARGS[@]}"
 ```
 
-Where an array is not available, branch on `NAMED_SUCCESSOR` and `EVIDENCE_URL`
-independently so all four valid combinations stay valid:
+Where an array is not available, validate `SUCCESSOR_STATE` and then branch on
+`EVIDENCE_URL` independently so all four valid combinations stay valid:
 
 ```bash
-if [ -n "${NAMED_SUCCESSOR:-}" ]; then
-  TERMINAL=superseded
-else
-  TERMINAL=abandoned
-fi
+case "${SUCCESSOR_STATE:-UNKNOWN}" in
+  present)
+    if [ -z "${NAMED_SUCCESSOR:-}" ] || [ "${NAMED_SUCCESSOR}" = UNKNOWN ]; then
+      echo "named successor is UNKNOWN: stop before terminal release" >&2
+      exit 1
+    fi
+    TERMINAL=superseded
+    ;;
+  absent)
+    if [ -n "${NAMED_SUCCESSOR:-}" ]; then
+      echo "successor state is absent but NAMED_SUCCESSOR is set" >&2
+      exit 1
+    fi
+    TERMINAL=abandoned
+    ;;
+  *)
+    echo "successor state is UNKNOWN: stop before terminal release" >&2
+    exit 1
+    ;;
+esac
 
 if [ -n "${EVIDENCE_URL:-}" ]; then
   agent-coord release --terminal "${TERMINAL}" --pr-state "${PR_STATE}" \
@@ -1382,9 +1424,10 @@ An agent **may not**, without an explicit operator decision:
 5. Compute the revert closure from the batch manifest, dependency-plan edges of
    **every** type, and
    git, comparing whole ranges. Map every in-scope commit to a PR: a confirmed
-   direct commit is a closure unit of one, a dependency-selected unit stays in
-   scope even when it landed before the suspect PR, and a failed lookup is
-   `UNKNOWN`. Fail closed to the wider scope on any `UNKNOWN`.
+   direct commit is a closure unit of one, a unit selected by `edit` or
+   `validation_open` stays in scope even when it landed before the suspect PR,
+   and a failed lookup or contradictory `merge_order` landing is `UNKNOWN`.
+   Fail closed to the wider scope on any `UNKNOWN`.
    Fix `PRE_BATCH_SHA` as `${OLDEST_IN_SCOPE_SHA}^1`.
 6. Decide revert versus forward fix, and write down why.
 7. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
@@ -1426,8 +1469,8 @@ An agent **may not**, without an explicit operator decision:
     or `abandoned`; release the repair lane claimed in step 7 as `done` under
     `REPAIR_BATCH_ID` / `REPAIR_LANE`; restore `RERERE_PRIOR`; reclassify the
     worked issue as `regressed`. Build the release arguments conditionally so
-    `--terminal` follows whether a named successor exists and `--evidence-url`
-    is present only when `EVIDENCE_URL` is set. If no repair lands at all,
+    `--terminal` follows the verified `SUCCESSOR_STATE` and `--evidence-url` is
+    present only when `EVIDENCE_URL` is set. If no repair lands at all,
     skip checkpoint B but still close **both** lanes terminally (omitting
     `--evidence-url` when no durable URL exists), close the draft revert PR,
     restore `RERERE_PRIOR`, reclassify the worked issue `regressed`, and record
