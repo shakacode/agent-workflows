@@ -557,12 +557,12 @@ Compare whole ranges, not individual commits: a later commit that depends on any
 one member of a rebased series depends on the PR, and testing member-by-member
 can find each individual commit "independent" while the PR as a whole is not.
 
-If a declared `edit` or `validation_open` edge selects a unit that landed before
-the suspect PR, keep it in the closure even though it is not part of the later-
-commit comparison above. Otherwise **unwind the closure**: the suspect PR's
-range plus every closure unit that depends on it, transitively — whether that
-unit landed before or after the suspect PR. A dependent PR contributes its
-whole landed range, and a direct commit stands on its own, per
+Otherwise **unwind the closure**: the suspect PR's range plus every closure
+unit that depends on it, transitively — whether that unit landed before or
+after the suspect PR. A declared `edit` or `validation_open` edge can add
+earlier-landed units to that closure even though they are not part of the later-
+commit comparison above. A dependent PR contributes its whole landed range, and
+a direct commit stands on its own, per
 [Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr).
 If any input to that test is `UNKNOWN`, take the wider scope or stop for the
 operator. A too-wide revert is a review problem; a too-narrow revert leaves the
@@ -575,10 +575,11 @@ commits it should compare against.
 ## 2. Revert Order
 
 Revert in **reverse dependency order**: every dependent unit comes out before
-the unit it depends on. In the common case where dependency order and landing
-order line up, that is reverse landing order: newest in-scope commit first,
-oldest last. If a dependency-selected unit landed before the suspect PR, keep
-it ahead of the predecessor it depends on so the dependency is removed first.
+the unit it depends on. When two units are incomparable in the dependency
+graph, break ties by reverse landing order so the result stays deterministic:
+newest in-scope commit first, oldest last. If a dependency-selected unit landed
+before the suspect PR, keep it ahead of the predecessor it depends on so the
+dependency is removed first.
 Every intermediate commit on the revert branch should be a state the code could
 plausibly have been in. Forward order does not merely conflict more — it
 produces intermediate trees that git reports as successful and that are
@@ -796,9 +797,10 @@ queue. It is also why the list is built with `--first-parent`, never with a
 `A..B` range.
 
 Run one such invocation per in-scope PR, taking the PRs in reverse dependency
-order. When dependency order and landing order line up, that is newest-first.
-Keep `-m` scoped to a single merge commit; never hand a mixed-shape set to one
-invocation and rely on `-m` applying correctly across it.
+order and breaking ties by reverse landing order. When dependency order and
+landing order line up, that is newest-first. Keep `-m` scoped to a single
+merge commit; never hand a mixed-shape set to one invocation and rely on `-m`
+applying correctly across it.
 
 Confirm the list's shape rather than assuming it. The classifier in section 1
 already labelled every commit; the list handed to the bare form must be
@@ -1385,12 +1387,13 @@ An agent **may not**, without an explicit operator decision:
    restore it on **every** exit path — merged repair included, not only
    abandonment.
 9. Revert **every commit in every in-scope list** in reverse dependency order,
-   by handing each whole list to one `git revert` invocation (`-m 1` on a
-   merge commit, alone). Within each list, `git revert` still queues newest
-   first on its own. On conflict: resolve and `--continue`, or `--abort` and
-   re-scope — never `--skip`, and never leave a partial sequence. Abandoning a
-   multi-PR closure also needs `git checkout -B "${REVERT_BRANCH}" "${BASE_TIP}"`,
-   because `--abort` only cancels the invocation it is run from.
+   breaking ties by reverse landing order, by handing each whole list to one
+   `git revert` invocation (`-m 1` on a merge commit, alone). Within each list,
+   `git revert` still queues newest first on its own. On conflict: resolve and
+   `--continue`, or `--abort` and re-scope — never `--skip`, and never leave a
+   partial sequence. Abandoning a multi-PR closure also needs
+   `git checkout -B "${REVERT_BRANCH}" "${BASE_TIP}"`, because `--abort` only
+   cancels the invocation it is run from.
 10. Classify every conflicting hunk as dependent or independent; stop and
     re-scope if an independent hunk cannot be preserved.
 11. Validate the branch, and diff the final tree against `PRE_BATCH_SHA`.
