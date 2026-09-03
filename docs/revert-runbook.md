@@ -45,8 +45,11 @@ Commands below use one stable placeholder set:
 | `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
 | `REPAIR_PR_URL` | `REPAIR_PR`'s HTML URL, derived in [checkpoint B](#coordination-events-and-terminal-state); unset until a repair merges |
 | `EVIDENCE_URL` | the durable URL a terminal release cites — `REPAIR_PR_URL` on the repair path, the accepted-risk record's URL on the no-repair path, and **unset** when neither exists |
+| `DECIDING_OPERATOR_GITHUB_LOGIN` | the GitHub login of the operator who made the successor decision, captured from that authorization rather than inferred from the comment |
+| `RELEASE_BATCH_ID`, `RELEASE_TARGET` | the batch and canonical target of the **one** non-terminal lane currently being verified and released |
+| `SUCCESSOR_DECISION_COMMENT_ID` | the numeric id of that lane's GitHub issue comment containing the exact successor-decision marker |
 | `SUCCESSOR_STATE` | the verified successor fact — literal `present` or `absent`; keep it `UNKNOWN` until [verified](#verify-the-successor-state) |
-| `SUCCESSOR_DECISION_REF` | the durable authenticated closeout record that explicitly names a successor or records that none will carry the intent |
+| `SUCCESSOR_DECISION_REF` | the authenticated decision comment URL derived from GitHub, never typed independently |
 | `NAMED_SUCCESSOR` | the verified same-repo issue/PR URL, or canonical target URL backing a successor lane, when `SUCCESSOR_STATE=present`; otherwise unset |
 
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA,
@@ -1275,45 +1278,114 @@ still reach a defensible state rather than dangling with an open
 #### Verify the successor state
 
 Do not derive `absent` from an empty search, an unset variable, or a stale lane
-list. First inspect the exact repair target and its coordination record:
+list. The deciding operator records the decision as a GitHub issue comment on
+the canonical target of the lane being closed, using exactly one of each marker
+line:
 
-```bash
-GH_PAGER=cat gh issue view "${REPAIR_TARGET}" --repo "${REPO}" --comments
-agent-coord status --repo "${REPO}" --target "${REPAIR_TARGET}" --json
+```text
+Release batch: <exact batch id>
+Successor state: <present|absent>
+Named successor: <same-repo issue/PR URL|none>
 ```
 
-Those commands are discovery, not proof of absence. A successor is `present`
-only when the authenticated closeout record names the exact new issue, PR, or
-lane that will carry the intent. Use the canonical same-repo issue/PR URL as
-`NAMED_SUCCESSOR`; for a lane, use its canonical target URL. A successor is
-`absent` only when the deciding operator explicitly records in the durable
-closeout handoff or comment that no named successor will carry the intent.
+Verify and release **one lane at a time**. For a non-terminal original lane,
+set `RELEASE_BATCH_ID` / `RELEASE_TARGET` to `BATCH_ID` / `TARGET`. On the
+no-repair path, start over for the repair lane with `REPAIR_BATCH_ID` /
+`REPAIR_TARGET` and that target's own decision-comment id. Never reuse the
+first lane's derived values for the second. A repair lane released `done` after
+a repair merges does not use successor state.
 
-Run this block in the same shell immediately before the release blocks below.
-It starts from `UNKNOWN`, requires the durable decision reference, verifies a
-named successor against GitHub, and derives `TERMINAL`. Pressing Enter or
-supplying any unverified value fails closed:
+Run this block immediately before releasing the selected lane. It fetches the
+comment, verifies its author and canonical target, binds its marker to the
+selected batch, derives the state and named successor from the fetched body,
+and verifies a named successor against GitHub. Missing, duplicated, mismatched,
+or mistyped evidence fails closed:
 
 ```bash
 SUCCESSOR_STATE=UNKNOWN
 SUCCESSOR_DECISION_REF=UNKNOWN
-unset NAMED_SUCCESSOR
+unset NAMED_SUCCESSOR TERMINAL
 
-printf 'Durable successor-decision reference: ' >&2
-IFS= read -r SUCCESSOR_DECISION_REF
-case "${SUCCESSOR_DECISION_REF:-UNKNOWN}" in
+case "${RELEASE_BATCH_ID:-UNKNOWN}:${RELEASE_TARGET:-UNKNOWN}" in
+  *UNKNOWN*|*:|:*)
+    echo "release batch or target is UNKNOWN: stop before verification" >&2
+    exit 1
+    ;;
+esac
+case "${SUCCESSOR_DECISION_COMMENT_ID:-UNKNOWN}" in
+  ''|UNKNOWN|*[!0-9]*)
+    echo "successor decision comment id is invalid: stop" >&2
+    exit 1
+    ;;
+esac
+case "${DECIDING_OPERATOR_GITHUB_LOGIN:-UNKNOWN}" in
   ''|UNKNOWN)
-    echo "successor decision is UNKNOWN: stop before terminal release" >&2
+    echo "deciding operator GitHub login is UNKNOWN: stop" >&2
     exit 1
     ;;
 esac
 
-printf 'Verified successor state (present/absent): ' >&2
-IFS= read -r SUCCESSOR_STATE
+TARGET_JSON=$(gh issue view "${RELEASE_TARGET}" --repo "${REPO}" \
+  --json number,url 2>/dev/null) \
+  || TARGET_JSON=$(gh pr view "${RELEASE_TARGET}" --repo "${REPO}" \
+    --json number,url) \
+  || exit 1
+TARGET_NUMBER=$(printf '%s' "${TARGET_JSON}" | jq -er '.number') || exit 1
+TARGET_URL=$(printf '%s' "${TARGET_JSON}" | jq -er '.url') || exit 1
+case "${TARGET_URL}" in
+  "https://github.com/${REPO}/issues/"*|"https://github.com/${REPO}/pull/"*) ;;
+  *)
+    echo "release target did not resolve inside REPO: stop" >&2
+    exit 1
+    ;;
+esac
+EXPECTED_ISSUE_API_URL=$(gh api "repos/${REPO}/issues/${TARGET_NUMBER}" \
+  --jq '.url') || exit 1
+
+DECISION_JSON=$(gh api \
+  "repos/${REPO}/issues/comments/${SUCCESSOR_DECISION_COMMENT_ID}") \
+  || exit 1
+DECISION_AUTHOR=$(printf '%s' "${DECISION_JSON}" \
+  | jq -er '.user.login') || exit 1
+DECISION_ISSUE_API_URL=$(printf '%s' "${DECISION_JSON}" \
+  | jq -er '.issue_url') || exit 1
+SUCCESSOR_DECISION_REF=$(printf '%s' "${DECISION_JSON}" \
+  | jq -er '.html_url') || exit 1
+DECISION_BODY=$(printf '%s' "${DECISION_JSON}" \
+  | jq -er '.body') || exit 1
+
+if [ "${DECISION_AUTHOR}" != "${DECIDING_OPERATOR_GITHUB_LOGIN}" ]; then
+  echo "successor decision author does not match deciding operator: stop" >&2
+  exit 1
+fi
+if [ "${DECISION_ISSUE_API_URL}" != "${EXPECTED_ISSUE_API_URL}" ]; then
+  echo "successor decision comment belongs to a different target: stop" >&2
+  exit 1
+fi
+
+DECISION_BATCH=$(printf '%s\n' "${DECISION_BODY}" | awk '
+  { sub(/\r$/, "") }
+  index($0, "Release batch: ") == 1 { n++; v=substr($0, 16) }
+  END { if (n != 1) exit 1; print v }
+') || { echo "release-batch marker is missing or duplicated: stop" >&2; exit 1; }
+SUCCESSOR_STATE=$(printf '%s\n' "${DECISION_BODY}" | awk '
+  { sub(/\r$/, "") }
+  index($0, "Successor state: ") == 1 { n++; v=substr($0, 18) }
+  END { if (n != 1) exit 1; print v }
+') || { echo "successor-state marker is missing or duplicated: stop" >&2; exit 1; }
+DECISION_NAMED_SUCCESSOR=$(printf '%s\n' "${DECISION_BODY}" | awk '
+  { sub(/\r$/, "") }
+  index($0, "Named successor: ") == 1 { n++; v=substr($0, 18) }
+  END { if (n != 1) exit 1; print v }
+') || { echo "named-successor marker is missing or duplicated: stop" >&2; exit 1; }
+
+if [ "${DECISION_BATCH}" != "${RELEASE_BATCH_ID}" ]; then
+  echo "successor decision names a different batch: stop" >&2
+  exit 1
+fi
 case "${SUCCESSOR_STATE:-UNKNOWN}" in
   present)
-    printf 'Exact successor issue/PR URL: ' >&2
-    IFS= read -r NAMED_SUCCESSOR
+    NAMED_SUCCESSOR=${DECISION_NAMED_SUCCESSOR}
     case "${NAMED_SUCCESSOR:-UNKNOWN}" in
       "https://github.com/${REPO}/issues/"*|"https://github.com/${REPO}/pull/"*) ;;
       *)
@@ -1333,6 +1405,11 @@ case "${SUCCESSOR_STATE:-UNKNOWN}" in
     TERMINAL=superseded
     ;;
   absent)
+    if [ "${DECISION_NAMED_SUCCESSOR}" != none ]; then
+      echo "absent decision must name successor as none: stop" >&2
+      exit 1
+    fi
+    unset NAMED_SUCCESSOR
     TERMINAL=abandoned
     ;;
   *)
@@ -1342,9 +1419,9 @@ case "${SUCCESSOR_STATE:-UNKNOWN}" in
 esac
 ```
 
-Record `SUCCESSOR_DECISION_REF`, `SUCCESSOR_STATE`, and `NAMED_SUCCESSOR` (or
-literal `none`) in the terminal handoff. The interactive answers are not the
-evidence; the authenticated record and exact GitHub lookup are.
+Record `RELEASE_BATCH_ID`, `RELEASE_TARGET`, `SUCCESSOR_DECISION_REF`,
+`SUCCESSOR_STATE`, and `NAMED_SUCCESSOR` (or literal `none`) in that lane's
+terminal handoff. The fetched comment and exact GitHub lookups are the evidence.
 
 **Terminal state depends on whether the lane has already closed.**
 
@@ -1362,8 +1439,8 @@ unconditional command and relying on the reader to drop it. The same block then
 serves both the repair and accepted-risk paths, and it is correct as run:
 
 ```bash
-RELEASE_ARGS=(--pr-state "${PR_STATE}" --batch-id "${BATCH_ID}"
-  --repo "${REPO}" --target "${TARGET}")
+RELEASE_ARGS=(--pr-state "${PR_STATE}" --batch-id "${RELEASE_BATCH_ID}"
+  --repo "${REPO}" --target "${RELEASE_TARGET}")
 RELEASE_ARGS+=(--terminal "${TERMINAL}")
 if [ -n "${EVIDENCE_URL:-}" ]; then
   RELEASE_ARGS+=(--evidence-url "${EVIDENCE_URL}")
@@ -1371,17 +1448,20 @@ fi
 agent-coord release "${RELEASE_ARGS[@]}"
 ```
 
-Where an array is not available, validate `SUCCESSOR_STATE` and then branch on
-`EVIDENCE_URL` independently so all four valid combinations stay valid:
+Where an array is not available, run the same per-lane verification and then
+branch on `EVIDENCE_URL` independently so all four valid combinations stay
+valid:
 
 ```bash
 if [ -n "${EVIDENCE_URL:-}" ]; then
   agent-coord release --terminal "${TERMINAL}" --pr-state "${PR_STATE}" \
-    --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}" \
+    --batch-id "${RELEASE_BATCH_ID}" --repo "${REPO}" \
+    --target "${RELEASE_TARGET}" \
     --evidence-url "${EVIDENCE_URL}"
 else
   agent-coord release --terminal "${TERMINAL}" --pr-state "${PR_STATE}" \
-    --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}"
+    --batch-id "${RELEASE_BATCH_ID}" --repo "${REPO}" \
+    --target "${RELEASE_TARGET}"
 fi
 ```
 
@@ -1560,9 +1640,12 @@ An agent **may not**, without an explicit operator decision:
     `REPAIR_BATCH_ID` / `REPAIR_LANE`; restore `RERERE_PRIOR`; reclassify the
     worked issue as `regressed`. Build the release arguments conditionally so
     `--terminal` follows the executable successor-state verification above;
-    record `SUCCESSOR_DECISION_REF`, and include `--evidence-url` only when
-    `EVIDENCE_URL` is set. If no repair lands at all,
+    bind that verification to the original lane's target and batch, record its
+    authenticated `SUCCESSOR_DECISION_REF`, and include `--evidence-url` only
+    when `EVIDENCE_URL` is set. If no repair lands at all,
     skip checkpoint B but still close **both** lanes terminally (omitting
-    `--evidence-url` when no durable URL exists), close the draft revert PR,
-    restore `RERERE_PRIOR`, reclassify the worked issue `regressed`, and record
-    the accepted-risk decision and its operator in the durable handoff.
+    `--evidence-url` when no durable URL exists), rerunning verification with a
+    separate authenticated decision on each lane's own target and batch. Close
+    the draft revert PR, restore `RERERE_PRIOR`, reclassify the worked issue
+    `regressed`, and record the accepted-risk decision and its operator in the
+    durable handoff.
