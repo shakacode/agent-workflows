@@ -1944,7 +1944,8 @@ decision-object URL, the expected deciding principal, and, only for
 `authorization-stale`, the authorization producer run/artifact ID/service
 digest. For `authorization-stale`, `capture-decision` and `finalize-decision`
 each re-check the live canonical UTC clock against `expires_at` immediately
-before writing their outputs; equality or a past value fails closed.
+before writing their outputs; only a clock value earlier than `expires_at`
+fails closed.
 `capture-decision` proves those selectors through the GitHub API,
 downloads each artifact into a separate fresh directory, verifies its bytes and
 schema, runs the writer with only those verified paths plus the `RUNNER_TEMP`

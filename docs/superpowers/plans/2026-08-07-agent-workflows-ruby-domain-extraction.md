@@ -301,7 +301,7 @@ exporter, plus exporter-only tests for helper-set transitions.
   reviewed PR. Keep the supported pinned consumer set as an explicit reviewed
   manifest in this plan:
   - `test/fixtures/pinned-copy-consumer`
-  Use its first entry as the canary and update only the consumers named there.
+  Use that entry as the canary and update only that consumer.
   The first skill-wrapper cutover cannot merge until the
   canary passes and every remaining consumer either has the complete generation
   bundle or explicitly retains the pre-cutover helper body.
@@ -532,7 +532,7 @@ deferred to Task 5 and requires its own review slice.
 Perform that package-policy cutover as the first substep of Step 4. Immediately
 after the packaged parser, existing callers, provenance paths, manifests,
 fixtures, isolation coverage, and legacy deletions pass their focused tests,
-  create the first commit defined in Step 7. Do this before creating
+create the first commit defined in Step 7. Do this before creating
   `Seam::Policy`, rewriting the seam launchers, or modifying their shared package
   entrypoint for the seam cutover. The later seam work may then build only on the
   committed canonical policy API and cannot leave an intermediate commit whose

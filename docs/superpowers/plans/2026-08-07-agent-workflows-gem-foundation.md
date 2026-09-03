@@ -1252,9 +1252,11 @@ git commit -m "feat: install agent workflows Ruby library atomically"
 **Interfaces:**
 
 - Consumes: canonical doctor library and installed layouts from Tasks 3-5.
-- Produces: one doctor implementation tree with no runtime fallback; the four
-  explicitly deferred policy files remain temporarily for domain-extraction Task 2,
-  where the seam and existing merge callers move atomically.
+- Produces: one doctor implementation tree with no runtime fallback; the
+  autonomous-merge trio remain temporarily for domain-extraction Task 2, where
+  the seam and existing merge callers move atomically, and
+  `hosted_qa_policy.rb` remains temporarily for the hosted runtime QA gate
+  workflow in `workflows/pr-batch-integration-closeout.md`.
 
 - [ ] **Step 1: Prove all remaining callers before deletion**
 
