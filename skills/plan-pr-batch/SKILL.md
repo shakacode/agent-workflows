@@ -147,3 +147,4 @@ After editing this skill's goal prompt rules or template, run:
 ```bash
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
 ```
+
