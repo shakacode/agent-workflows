@@ -2,6 +2,9 @@
 
 Portable Codex and Claude workflow pack for ShakaCode repositories.
 
+> **Documentation:** Explore the ShakaCode agent stack at
+> [agents.shakacode.com](https://agents.shakacode.com).
+
 This repository packages reusable agent skills, workflow prompts, and helper
 scripts for PR batches, review triage, merge readiness, CI routing, changelog
 updates, and audit loops.
