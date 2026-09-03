@@ -1,6 +1,6 @@
 # ShakaCode Agent Workflows
 
-Portable Codex and Claude workflow pack for ShakaCode repositories.
+Portable Codex and Claude workflow pack.
 
 [![ShakaCode Agent Workflows — Run AI coding agents in fleets, safely](https://agents.shakacode.com/og.png)](https://agents.shakacode.com)
 
