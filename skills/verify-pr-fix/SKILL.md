@@ -75,12 +75,19 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    the loaded skill pack. For a shareable visual of terminal results you may render the captured output with the
    visualize tool, but the render must reproduce real output verbatim — never stage numbers.
 7. **Clean up.** Kill spawned processes and remove scratch dirs/worktrees, but preserve or move locally
-   prepared `human_attachment_pending` evidence to a non-scratch location until a human attaches it.
+   prepared `human_attachment_pending` evidence to a non-scratch location until it is attached.
    Confirm nothing leaked (`pgrep -fl <marker>` should report none).
 8. **Report to the PR.** Post a comment with the structured format below. Before posting to GitHub (an
    outward-facing action), confirm with the user unless they already told you to post. Write the body to a
-   temp file and use `gh pr comment <n> --body-file` (avoids inline-formatting issues; see global Git
-   workflow rules).
+   temp file and use `gh pr comment <n> --body-file`. With GitHub CLI 2.99.0+ on
+   GitHub.com or GitHub Enterprise Cloud, repository write access, and an OAuth,
+   classic PAT, or fine-grained PAT credential, reference each local image/video
+   in that body and add a repeatable `--attach 'path#alt text'` for images (omit
+   `#alt text` for video). Read the posted comment back and retain the rewritten
+   durable URLs. This also avoids inline-formatting issues; see global Git
+   workflow rules. GitHub Actions and App tokens are unsupported; fall back to
+   the Durable Visual Evidence Gate's browser or human path when CLI attachment
+   upload is unavailable.
 9. **Cross-link the issue (optional).** If asked, comment on the linked issue with a 2-3 sentence summary
    and a link to the PR comment URL returned by step 8: `gh issue comment <n> --body-file`.
 

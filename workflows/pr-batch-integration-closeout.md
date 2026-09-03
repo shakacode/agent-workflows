@@ -529,6 +529,12 @@ inconsistent omission record and returns `UNKNOWN`.
 
 Use `visual_evidence_blocked_reason` only with `human_attachment_pending`;
 missing or extra values replay as `UNKNOWN`.
+Before emitting `uploader_absent`, check for GitHub CLI 2.99.0+'s supported
+`--attach` path on GitHub.com or GitHub Enterprise Cloud as well as an
+authenticated browser uploader.
+Treat an unsupported GitHub Actions/App token, missing authentication, missing
+repository write access, or host upload permission as `uploader_denied`, and
+record actual media/size/transient failures as `upload_failed: reason`.
 
 Historical `qa-evidence v1` receipts remain replayable for backward
 compatibility. Do not emit v1 for new closeout evidence. The presence of any v2
@@ -537,7 +543,10 @@ valid v2 ignores legacy v1 history, while a stale or malformed v2 cannot be
 rescued by a current v1. When auditing a current user-visible UI change, run
 `closeout-evidence-replay --expected-head-sha <full-final-head-SHA>
 --require-visual-evidence-v2`; v1-only or stale evidence then fails closed
-rather than silently bypassing the durable visual gate.
+rather than silently bypassing the durable visual gate. For GitHub Enterprise
+Server browser uploads, add `--github-host <repository GitHub host>`, resolving
+the exact host from trusted repository context. The completed-batch publication
+preflight supplies each trusted target's host automatically.
 
 For priority review findings that feed a strict merge ledger or final handoff,
 append a hidden disposition marker without inventing a separate review-finding
@@ -977,7 +986,10 @@ The closeout lane is:
    `--expected-head-sha <full-final-head-SHA>`. Add
    `--require-visual-evidence-v2` in the same invocation for every current
    user-visible UI change; this flag is invalid without
-   `--expected-head-sha <full-final-head-SHA>`. Add
+   `--expected-head-sha <full-final-head-SHA>`. For GitHub Enterprise Server
+   browser uploads, also pass `--github-host <repository GitHub host>` resolved
+   from trusted repository context; the completed-batch publication preflight
+   passes the trusted target host automatically. Add
    `--require-priority-dispositions` whenever the merge ledger or handoff relies
    on fixed, waived, or deferred priority findings. If the head changes again before
    readiness or merge, repeat this checklist and replay; missing or mismatched

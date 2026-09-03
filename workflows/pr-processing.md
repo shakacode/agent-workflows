@@ -957,10 +957,23 @@ For each user-visible UI change:
    reference. Inspect each capture: a blank or unpainted page is a failed
    capture, not passing evidence.
 2. Put the artifacts where every intended reviewer can open them. For a public
-   or GitHub-only project, prefer GitHub PR attachments. When an authenticated
-   browser/file-upload capability is available, use GitHub's UI upload flow and
-   retain the stable `github.com/user-attachments/assets/...` URL; obtaining the
-   URL does not require submitting a comment. A configured linked tracker or
+   or GitHub-only project, prefer GitHub PR attachments. With GitHub CLI 2.99.0
+   or newer on GitHub.com or GitHub Enterprise Cloud, use the repeatable
+   `--attach` flag on `gh pr create` or `gh pr comment`; the actor needs
+   repository write access through OAuth, a classic PAT, or a fine-grained PAT.
+   GitHub Actions and App tokens are unsupported. Because these commands mutate GitHub, run them
+   only when the user request or active workflow already authorizes that create,
+   edit, or comment; otherwise confirm before posting. Keep the prose in
+   `--body-file`, reference each local image or video path in that Markdown, and
+   pass the same path with `--attach` so `gh`
+   rewrites it to the uploaded asset URL without losing image alt text. An
+   unreferenced attachment is appended to the body. For an existing PR, default
+   to a dedicated comment; use `gh pr edit` only when the body file preserves
+   the complete current description. Read the resulting body/comment back to
+   retain its stable GitHub attachment URL. If supported CLI upload is not
+   available, an authenticated browser/file-upload capability may use GitHub's
+   UI upload flow; obtaining the URL there does not require submitting a
+   comment. A configured linked tracker or
    repo artifact destination is also valid when every intended reviewer has
    access; link that evidence from the PR. Upload a recording through the same
    PR attachment flow as a screenshot, using a GitHub-supported video file
@@ -968,31 +981,45 @@ For each user-visible UI change:
    respecting the repository's current upload-size limit. Retain the generated
    attachment URL in the evidence record so GitHub can render the clip for
    reviewers.
-   A `github_pr` destination must contain a reviewer-visible `github.com` URL.
+   CLI attachment uploads support PNG, JPEG, GIF, WebP, SVG, MP4, MOV, and WebM.
+   Attach at most 50 files per command. If a multi-file command exits nonzero,
+   earlier files may still have uploaded and the issue, PR, or comment may still
+   have been created or updated. Capture any printed resource URL, read the
+   resulting body/comment before retrying, retain successful attachment URLs,
+   and retry only failed or unattempted files so evidence is not duplicated or
+   orphaned.
+   Check the current limit before uploading: at launch GitHub allows 10 MB per
+   image/GIF, 10 MB per video on Free plans, and 100 MB per video on paid plans.
+   A `github_pr` destination must contain a reviewer-visible HTTPS URL on the
+   repository's GitHub platform or its attachment host.
    A `linked_tracker` or `repo_artifact_store` destination must name that
    destination and contain its reviewer-visible HTTPS URL.
-3. GitHub documents no public REST or GraphQL attachment-upload route. Do not
-   depend on an undocumented direct-upload endpoint unless the repository has
-   explicitly configured and verified that integration. This is a constraint on
-   GitHub's API, not a statement that agents cannot attach images: a host whose
-   browser tooling can set a file input on an authenticated github.com session
-   completes the UI upload flow normally. Before recording a blocked upload,
+3. Do not mistake the absence of a public REST or GraphQL attachment endpoint
+   for the absence of a supported command-line path: GitHub CLI 2.99.0 and newer
+   provides `--attach` on issue and PR create/edit/comment commands. Do not use
+   undocumented direct-upload endpoints. The CLI path supports GitHub.com and
+   GitHub Enterprise Cloud, but not GitHub Enterprise Server in this release;
+   use a configured artifact store or an authenticated browser upload on GHES.
+   Before recording a blocked upload,
    resolve which state applies, because the remedies differ. Record the matching
    `visual_evidence_blocked_reason` and state its remedy in the handoff:
-   - `uploader_absent` — the host exposes no file-input upload tool at all. A
-     host that has one must run the lane, or a human attaches the artifacts.
-   - `uploader_denied` — the tool exists but the host's permission policy
-     refused the call. A worker cannot lift this at runtime and must not try;
-     a human pre-provisions the permission before the lane launches.
+   - `uploader_absent` — the host has neither GitHub CLI 2.99.0+ nor a supported
+     browser/file-input uploader. Upgrade or move the lane to a capable host, or
+     have a human attach the artifacts.
+   - `uploader_denied` — an uploader exists but authentication, repository write
+     access, supported credential type, or host permission policy refused the
+     call. A worker must not widen its own access; a human fixes or pre-provisions
+     the required access or selects another uploader.
    - `no_configured_store` — no linked tracker or repo artifact destination is
      configured or reachable. Configure one, or a human attaches the artifacts.
-   - `upload_failed: reason` — an available uploader was exercised and failed.
-     Name the observed failure; a retry or a human attachment resolves it.
+   - `upload_failed: reason` — an available uploader was exercised and failed,
+     including unsupported media, size-limit, and transient upload errors. Name
+     the observed failure; a retry or a human attachment resolves it.
 
    When none of these apply the uploader is usable: perform the upload, record a
    durable destination, and omit `visual_evidence_blocked_reason` entirely.
 
-   If no authenticated UI uploader or configured integration is available,
+   If no authenticated supported uploader or configured integration is available,
    prepare clearly named local
    before/after artifacts and report their absolute paths, but record
    `human_attachment_pending` with the matching

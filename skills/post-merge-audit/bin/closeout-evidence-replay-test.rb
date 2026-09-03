@@ -11,7 +11,13 @@ SCRIPT = File.expand_path("closeout-evidence-replay", __dir__)
 load SCRIPT unless defined?(CloseoutEvidenceReplay)
 
 class CloseoutEvidenceReplayTest < Minitest::Test
-  def run_replay(body, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
+  def run_replay(
+    body,
+    expected_head_sha: nil,
+    require_priority_dispositions: false,
+    require_visual_evidence_v2: false,
+    github_host: nil
+  )
     Tempfile.create("closeout-evidence") do |file|
       file.write(body)
       file.flush
@@ -19,6 +25,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       command.concat(["--expected-head-sha", expected_head_sha]) if expected_head_sha
       command << "--require-priority-dispositions" if require_priority_dispositions
       command << "--require-visual-evidence-v2" if require_visual_evidence_v2
+      command.concat(["--github-host", github_host]) if github_host
       command << file.path
       out, status = Open3.capture2e(*command)
       assert status.success?, out
@@ -812,6 +819,25 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes qa.fetch("missing"), "visual_evidence.github_url"
   end
 
+  def test_v2_github_destination_accepts_configured_enterprise_server_host
+    evidence = "durable: before and after https://github.example.test/example/repo/pull/123#visual"
+    qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+
+    qa = run_replay(
+      v2_marker("visual_evidence" => evidence),
+      github_host: "github.example.test"
+    ).fetch("qa_evidence")
+    assert_equal "SATISFIED", qa.fetch("verdict")
+  end
+
+  def test_github_host_option_rejects_urls_and_paths
+    %w[https://github.example.test github.example.test/path].each do |host|
+      _out, status = Open3.capture2e("ruby", SCRIPT, "--github-host", host, __FILE__)
+      refute status.success?, host
+    end
+  end
+
   def test_v2_github_destination_rejects_github_url_nested_in_tracker_query
     nested = "https://tracker.example.test/artifact?next=https://github.com/example/repo/pull/123#visual"
     evidence = "durable: before and after #{nested}"
@@ -869,6 +895,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     hosts = %w[
       github.com/example/repo/pull/123#visual
       user-images.githubusercontent.com/123/before.png
+      example.ghe.com/example/repo/pull/123#visual
     ]
 
     hosts.each do |host_and_path|
@@ -876,6 +903,22 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
 
       assert_equal "SATISFIED", qa.fetch("verdict"), host_and_path
+    end
+  end
+
+  def test_v2_github_destination_rejects_non_tenant_ghe_hosts
+    hosts = %w[
+      exampleghe.com/example/repo/pull/123#visual
+      api.example.ghe.com/graphql
+      uploads.example.ghe.com/user-attachments/assets/123
+    ]
+
+    hosts.each do |host_and_path|
+      evidence = "durable: before and after https://#{host_and_path}"
+      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), host_and_path
+      assert_includes qa.fetch("missing"), "visual_evidence.github_url", host_and_path
     end
   end
 

@@ -706,7 +706,8 @@ module CompletedBatchPublicationPreflight
       replay = CloseoutEvidenceReplay.replay(
         evidence,
         expected_head_sha: head_sha,
-        require_visual_evidence_v2: user_visible_ui_change == "yes"
+        require_visual_evidence_v2: user_visible_ui_change == "yes",
+        github_host: target.fetch("host")
       )
       qa = replay.fetch("qa_evidence")
       verdict = qa.fetch("verdict")
