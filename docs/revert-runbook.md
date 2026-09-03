@@ -541,7 +541,10 @@ git log --first-parent --format='%h %s' "${BASE_TIP}" -- "${PATHS[@]}"
 ```
 
 A unit selected by a declared `edit` or `validation_open` edge that landed
-before `${SHA}` will not appear in this window; keep it in the closure anyway.
+before `${SHA}` will not appear in the first, `${SHA}..${BASE_TIP}` query;
+recover it through the lane reconciliation above and keep it in the closure.
+Its paths can appear in the second, unbounded query — treat that hit as evidence
+to reconcile, not as expected noise.
 
 `"${PATHS[@]}"` is quoted deliberately: see
 [Build the path set](#build-the-path-set) for why an unquoted expansion turns a
