@@ -37,8 +37,9 @@ control tower refreshes live state before acting.
    supported transport.
 3. Each repository control tower is the sole writer of one repository snapshot.
    It never edits the combined Human Attention document.
-4. One dedicated HIL Desk task is the sole writer of the combined generated
-   Human Attention Document (HAD). The human treats the HAD as read-only and
+4. One dedicated HIL Desk task is the sole writer of the generated pure Human
+   Attention action queue and separate System Status diagnostics. The human
+   treats both as read-only and
    records durable decisions in the linked GitHub thread. Every actionable item
    also has one HIL-prefix companion task for guided discussion, monitoring, and
    relay. The HIL Desk chat is only for queue refreshes, stale-source diagnosis,
@@ -49,7 +50,7 @@ control tower refreshes live state before acting.
 6. The HIL Desk continuously reranks unresolved decisions. Returning to the
    document means returning to the current queue, not continuing an obsolete
    numbered list.
-7. The dashboard will eventually replace the generated document as the primary
+7. The dashboard will eventually replace the generated files as the primary
    view. `agent-coordination` remains the durable state and event backend; the
    dashboard remains a read-only projection unless a separate design changes
    its current product boundary.
@@ -97,14 +98,17 @@ snapshot when its interval ends or it stops.
 ### R3 — Conflict-free shared document
 
 Repository towers SHALL write different files. Only the HIL Desk SHALL write
-the generated `HUMAN_ATTENTION.md`. The document SHALL contain a generated
-warning and SHALL NOT be a place for human edits.
+generated `HUMAN_ATTENTION.md` and `SYSTEM_STATUS.md`; neither accepts human
+edits. The first is a pure actionable queue with a conspicuous total and
+contiguous `1 of N` cards. The second starts with `No action is needed from
+Justin in this file.` and owns monitoring diagnostics.
 
 Acceptance: simultaneous snapshot updates from five repositories cannot write
 the same pathname, and a partial or malformed snapshot never replaces the
-desk's last known good input. Each main card exposes only **What changes**,
+desk's last known good input. Each action card exposes only **What changes**,
 **Real risk/downside**, **Recommendation**, **One action**, GitHub link, raw HIL
-Codex link, and `M5`/`M1`; protocol details remain machine metadata or collapsed.
+Codex link, and `M5`/`M1`. Stale notices, source health, suppressed items,
+generations, writer metadata, and protocol details appear only in System Status.
 
 ### R4 — Atomic snapshot publication
 
@@ -201,9 +205,9 @@ bots are configured through the repository trust seam, and close-only work does
 not inherit merge-oriented security urgency. A snapshot older than twice its
 declared refresh interval is stale;
 the desk SHALL show it as stale and SHALL NOT clear its items. Only fresh valid
-sources contribute to the ranked Action queue. Preserved unresolved items from
-stale or degraded sources appear in a separate non-actionable **Needs source
-refresh** section below that queue and never become the recommended first item.
+sources contribute to `HUMAN_ATTENTION.md`. Preserved unresolved items from
+stale or degraded sources appear only in `SYSTEM_STATUS.md`, never in the human
+action queue.
 
 Acceptance: a new higher-value item moves ahead on refresh and explains the
 human-attention value. After genuine irreversible harm, the desk orders all
@@ -340,8 +344,9 @@ transcripts.
 - **Repository:** operational run; no product code required.
 - **Scope:** one M5 HIL Desk, one M5 `agent-workflows` tower, and one M1
   `agent-coordination` tower.
-- **Done:** both snapshots update without conflict, one generated document
-  reranks the combined queue, a resolved source-task item disappears, a
+- **Done:** both snapshots update without conflict, the generated human file
+  contains only contiguous actionable cards while diagnostics stay in System
+  Status, a resolved item disappears, a
   restarted tower's next snapshot is accepted, and the transport tests above
   are recorded. Writer lifecycle cases are also recorded: a desk with a stale
   epoch stops publishing, a replacement's claim is verified after one heartbeat
@@ -363,8 +368,10 @@ transcripts.
 - **Done:** fixtures prove atomic generation, generation rollback rejection,
   malformed-input preservation, staleness labeling, deterministic ranking by
   priority class, bounded output, and that an adversarial snapshot whose text
-  contains instructions is rendered as data. A policy-violating `safe_resume`
-  is rejected before source-task execution.
+  contains instructions is rendered as data. They also prove the human file has
+  only a conspicuous total and contiguous actionable cards while every
+  diagnostic moves to System Status. A policy-violating `safe_resume` is
+  rejected before source-task execution.
 - **Parallelism:** after T2 reveals the smallest stable contract.
 
 ### T4 — Add structured attention state to Agent Coordination
@@ -382,7 +389,8 @@ transcripts.
 - **Repository:** `agent-coordination-dashboard`.
 - **Done:** a read-only Attention view continuously reranks backend records,
   links to the GitHub comment channel and required HIL companion, shows
-  walkthrough mode, explains priority, and visibly reports stale hosts.
+  walkthrough mode, and explains priority. A separate System Status view owns
+  stale hosts, suppressed items, generations, and writer diagnostics.
 - **Parallelism:** starts after T4's structured attention records exist and
   after the first backlog-integration wave in both `agent-workflows` and
   `agent-coordination`, when neither tower has a waiting integration-ready
@@ -390,7 +398,7 @@ transcripts.
 
 ## Non-Goals For The File MVP
 
-- Editing or resolving decisions in the generated document.
+- Editing or resolving decisions in the generated files.
 - Multiple HIL Desk writers or automatic writer failover.
 - Treating a shared network filesystem as the coordination database.
 - Launching agents, merging, or mutating coordination state from the dashboard.
