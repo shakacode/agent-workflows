@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "json"
+require "open3"
 
 ROOT = File.expand_path("../../..", __dir__)
 
@@ -115,8 +117,11 @@ class ReviewWaveContractTest < Minitest::Test
       assert_includes text, "REVIEW_CHECK_NAMES_JSON"
       assert_includes text, "REVIEW_WAVE_MISSING_CHECK_NAMES"
       assert_includes text, "REVIEW_WAVE_PENDING_CHECK_NAMES"
+      assert_includes text, "REVIEW_UNAVAILABLE_WAIVERS_JSON"
+      assert_includes text, "REVIEW_WAIVED_CHECK_NAMES_JSON"
       assert_includes text, "0|1|8"
-      assert_includes text, 'select(($checks | length) == 0 or any($checks[]; .bucket == "pending"))'
+      assert_includes text, "select(($waived | index($name)) == null)"
+      assert_match(/select\(\(\$waived \| index\(\$name\)\) == null\).*?select\(\(\$checks \| length\) == 0 or any\(\$checks\[\]; \.bucket == "pending"\)\)/m, text)
       assert_includes text, "select(($checks | length) == 0) | $name"
       assert_includes text, 'select(($checks | length) > 0 and any($checks[]; .bucket == "pending")) | $name'
       assert_match(/review wave .* did not settle .* missing expected check-run names: \$\{REVIEW_WAVE_MISSING_CHECK_NAMES\}; pending expected check-run names: \$\{REVIEW_WAVE_PENDING_CHECK_NAMES\}.*?exit 2/m, text)
@@ -124,6 +129,17 @@ class ReviewWaveContractTest < Minitest::Test
       refute_includes text, "proceeding with currently available review data"
       refute_includes text, 'test("claude.?review"; "i")'
     end
+  end
+
+  def test_explicit_usage_waiver_makes_only_the_named_reviewer_terminal
+    expected = %w[coderabbitai claude-review]
+    terminal_checks = [{ "name" => "claude-review", "bucket" => "pass" }]
+    pending_checks = terminal_checks + [{ "name" => "coderabbitai", "bucket" => "pending" }]
+
+    assert_equal 1, review_wave_pending(expected, terminal_checks, [])
+    assert_equal 0, review_wave_pending(expected, terminal_checks, ["coderabbitai"])
+    assert_equal 0, review_wave_pending(expected, pending_checks, ["coderabbitai"])
+    assert_equal 1, review_wave_pending(expected, terminal_checks, ["unrelated-reviewer"])
   end
 
   private
@@ -134,6 +150,22 @@ class ReviewWaveContractTest < Minitest::Test
 
   def assert_rule(text, rule)
     assert_includes text.gsub(/\s+/, " "), rule
+  end
+
+  def review_wave_pending(expected, checks, waived)
+    filter = <<~'JQ'
+      [ $expected[] as $name |
+        select(($waived | index($name)) == null) |
+        ([ $checks[] | select(.name == $name)]) as $named_checks |
+        select(($named_checks | length) == 0 or any($named_checks[]; .bucket == "pending"))
+      ] | length
+    JQ
+    stdout, stderr, status = Open3.capture3(
+      "jq", "-n", "--argjson", "expected", JSON.generate(expected),
+      "--argjson", "checks", JSON.generate(checks), "--argjson", "waived", JSON.generate(waived), filter
+    )
+    assert status.success?, stderr
+    Integer(stdout, 10)
   end
 
   def section(text, heading, end_heading)
