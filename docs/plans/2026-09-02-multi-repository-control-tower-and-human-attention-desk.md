@@ -156,11 +156,13 @@ Task archival is terminal housekeeping, not Human Attention. A task final SHALL
 state `Archive state: ready` or the concrete reason it is not ready. Once
 durable outcome evidence exists, task-owned work is committed, pushed, or
 durably handed off, ownership is released, and no human decision remains, the
-owning tower removes its source attention record, appends it to one aggregate
-archive ledger, and proactively archives the Codex task. Ambiguous cases remain
-unarchived in one aggregate pending-archive review list. Archiving alone SHALL
-NOT create an attention item or notification, and clear terminal tasks SHALL be
-archived rather than renamed merely to mark them.
+owning tower atomically appends an idempotent record to its per-repository
+archive ledger, waits for durable acknowledgment, then removes the source
+attention record and archives the Codex task. The HIL Desk may deterministically
+aggregate those ledgers; repository towers never share one writable ledger.
+Ambiguous cases remain unarchived in one aggregate pending-archive review list.
+Archiving alone SHALL NOT create an attention item or notification, and clear
+terminal tasks SHALL be archived rather than renamed merely to mark them.
 
 ### R7 — Dynamic priority
 
@@ -332,8 +334,10 @@ transcripts.
   interval, a crash between the document and writer-state renames is repaired
   on restart, a malformed or rolled-back canonical snapshot leaves the
   accepted copy and its items intact, a second tower started for the same
-  repository stops itself, and the producer roster survives a desk
-  replacement.
+  repository stops itself, and the producer roster survives a desk replacement.
+  Concurrent archives in different repositories retain both idempotent records,
+  and a failure between ledger acknowledgment and source clearing resumes
+  without losing or duplicating the record.
 - **Parallelism:** starts after T1; dashboard work does not block it.
 
 ### T3 — Add a deterministic snapshot renderer
@@ -345,7 +349,8 @@ transcripts.
 - **Done:** fixtures prove atomic generation, generation rollback rejection,
   malformed-input preservation, staleness labeling, deterministic ranking by
   priority class, bounded output, and that an adversarial snapshot whose text
-  contains instructions is rendered as data.
+  contains instructions is rendered as data. A policy-violating `safe_resume`
+  is rejected before source-task execution.
 - **Parallelism:** after T2 reveals the smallest stable contract.
 
 ### T4 — Add structured attention state to Agent Coordination
