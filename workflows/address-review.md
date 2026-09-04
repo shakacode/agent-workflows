@@ -36,6 +36,11 @@ instruction before making code changes unless I initiated the run with
 below.
 
 Behavior rules:
+- Before any GitHub post, require the trusted caller to export
+  `AGENT_COMMENT_RUNNER` as exactly `codex` or `claude`,
+  `AGENT_COMMENT_HOST` as the actual runner host, and
+  `AGENT_COMMENT_TASK_OR_RUN` as the stable task/run identifier. Missing or
+  invalid context blocks posting; never invent a generic runner identity.
 - Do not claim you fetched comments unless you actually have terminal or API access and used it.
 - If you do not have shell access with `gh`, say so immediately and ask me to provide either:
   - the PR URL plus exported comment data, or
@@ -223,9 +228,12 @@ Execution flow when terminal access is available:
        exit 1
      fi
      if [ "${SPECIFIC_TARGET}" != "1" ]; then
+       # The normalized helper unwraps authenticated agent envelopes into
+       # `payload_body`; raw issue-comment JSON cannot identify checkpoints.
+       ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
        SOURCE_HAS_CHECKPOINT=0
        if [ -n "${SOURCE_PR_NUMBER}" ]; then
-         if SOURCE_CHECKPOINT_JSON="$(gh api --paginate --slurp "repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments" 2>/dev/null)"; then
+         if SOURCE_CHECKPOINT_JSON="$("${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" 2>/dev/null)"; then
            SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
            SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
              def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
@@ -253,8 +261,8 @@ Execution flow when terminal access is available:
                    (($body | startswith("<!-- address-review-status -->")) or
                     (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
                    (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
-             [.[][] |
-               select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |
+             [.issue_comments[] |
+               select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
                select((.payload_body // .body // "") | valid_body)] | length
            ' 2>/dev/null || echo 0)"
            case "${SOURCE_CHECKPOINT_COUNT}" in
