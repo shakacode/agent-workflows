@@ -246,6 +246,13 @@ base and removes when it no longer does; it queues mechanical work for the
 **Control tower** and is never a human signal.
 _Avoid_: conflicting (the raw GitHub field), blocked
 
+**Disposition**:
+The **Control tower**'s per-PR classification from the throughput plan's R12,
+exactly one of `accelerate`, `continue`, `hold`, `replace`, `close`, or
+`integration-ready`; `close` requires evidence of duplicate, superseded, or
+invalid work and keeps the branch.
+_Avoid_: triage state, verdict, status
+
 ## Relationships
 
 - **Batch → Wave → Lane → Instance**: when wave scheduling is used, a
