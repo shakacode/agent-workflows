@@ -302,6 +302,10 @@ _Avoid_: comment type, severity, priority (a decision's priority is a card field
 - Every agent-posted GitHub comment carries exactly one **Comment kind**; a
   `decision` comment is the same card the Human Attention Desk mirrors, and
   only a `decision` may accompany a **Human-attention label**.
+- A `bookkeeping` comment is one per agent task per PR and is edited in place;
+  a `decision` comment is never edited after a human could have replied; an
+  `info` comment appends so each walkthrough section stays separately
+  replyable.
 - **Drain** is observed at worker phase transitions; the **Hard escape hatch** is for workers that stop reaching them.
 
 ## Example dialogue
