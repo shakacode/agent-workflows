@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "fileutils"
+require "tmpdir"
 require "yaml"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -60,6 +62,39 @@ class WritingStyleContractTest < Minitest::Test
     workflow = read("workflows/pr-processing.md")
 
     assert_includes workflow, RESOLVER_FAILURE_RULE
+  end
+
+  def test_loaded_workflow_and_skill_fallbacks_support_split_pack_roots
+    workflow = read("workflows/pr-processing.md")
+    normalized = workflow.gsub(/\s+/, " ")
+
+    assert_includes normalized, "start from the exact loaded `workflows/pr-processing.md` path"
+    assert_includes normalized, "resolve `../bin/agent-workflow-writing-style` from its containing `workflows/` directory"
+    assert_includes normalized, "then start from the exact loaded `skills/<skill>/SKILL.md` path"
+    assert_includes normalized, "resolve `../../bin/agent-workflow-writing-style` from its containing skill directory"
+    assert_includes normalized, "Do not use a skill-local `skills/<skill>/bin/` directory for this fallback."
+
+    Dir.mktmpdir do |root|
+      loaded_workflow = File.join(root, "consumer", ".agents", "workflows", "pr-processing.md")
+      loaded_skill = File.join(root, "agent-home", "skills", "pr-batch", "SKILL.md")
+      installed_resolver = File.join(root, "agent-home", "bin", "agent-workflow-writing-style")
+      FileUtils.mkdir_p(File.dirname(loaded_workflow))
+      FileUtils.mkdir_p(File.dirname(loaded_skill))
+      FileUtils.mkdir_p(File.dirname(installed_resolver))
+      FileUtils.touch(loaded_workflow)
+      FileUtils.touch(loaded_skill)
+      FileUtils.touch(installed_resolver)
+
+      workflow_candidate = File.expand_path("../bin/agent-workflow-writing-style", File.dirname(loaded_workflow))
+      skill_candidate = File.expand_path("../../bin/agent-workflow-writing-style", File.dirname(loaded_skill))
+      skill_local_resolver = File.join(File.dirname(loaded_skill), "bin", "agent-workflow-writing-style")
+      selected = [workflow_candidate, skill_candidate].find { |candidate| File.file?(candidate) }
+
+      refute File.exist?(workflow_candidate)
+      assert_equal installed_resolver, skill_candidate
+      assert_equal installed_resolver, selected
+      refute_equal skill_local_resolver, selected
+    end
   end
 
   def test_seam_design_inventories_covered_and_deferred_consumers

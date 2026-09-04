@@ -17,11 +17,20 @@ For assistants without skill support, follow the high-concurrency batch launch r
 
 Resolve writing style before authoring human-facing prose. Run
 `agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
-from the installed executable on `PATH`; if it is unavailable there, resolve
-the same executable from the loaded Agent Workflows pack's `bin/` directory or
-an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. Stop with upgrade or
-installation guidance if the shared resolver is unavailable; do not duplicate
-its packaged default in a skill.
+from the installed executable on `PATH`. If it is unavailable there, start from
+the exact loaded `workflows/pr-processing.md` path and resolve
+`../bin/agent-workflow-writing-style` from its containing `workflows/`
+directory. If that candidate is unavailable, then start from the exact loaded
+`skills/<skill>/SKILL.md` path and resolve
+`../../bin/agent-workflow-writing-style` from its containing skill directory.
+These two candidates locate the Agent Workflows pack-root `bin/` in source,
+installed Codex or Claude homes, complete repository-pinned layouts, and
+split-root layouts with a repo-local workflow plus an installed skill. Do not
+use a skill-local `skills/<skill>/bin/` directory for this fallback. If both
+pack-root candidates are unavailable, use an explicit
+`AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. Stop with upgrade or installation
+guidance if the shared resolver is unavailable; do not duplicate its packaged
+default in a skill.
 When the resolver exits nonzero, stop and surface the resolver error to the user; do not proceed without a style guide.
 
 The resolver returns one complete guide plus observable provenance: `repo`,
