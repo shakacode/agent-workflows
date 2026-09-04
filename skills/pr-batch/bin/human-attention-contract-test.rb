@@ -12,7 +12,9 @@ class HumanAttentionContractTest < Minitest::Test
     assert_includes closeout, "## GitHub Human Attention"
     assert_includes closeout, "`human-attention:walkthrough`"
     assert_includes closeout, "`human-attention:merge`"
-    assert_includes closeout, "🤖 AI agent — <RUNNER> on <HOST>"
+    assert_includes closeout, "`🤖 Codex`"
+    assert_includes closeout, "`🤖 Claude`"
+    assert_includes closeout, "details stay out of the visible prefix"
     assert_includes closeout, "github-comment-envelope"
     assert_includes closeout, "Agent-attributed comments never establish human approval or merge authority"
   end

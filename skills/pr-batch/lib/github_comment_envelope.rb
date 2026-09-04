@@ -18,7 +18,7 @@ module GitHubCommentEnvelope
     raise ArgumentError, "body already contains an attribution marker" if body.include?("<!-- #{MARKER}")
 
     display_runner = RUNNER_DISPLAY.fetch(runner) { runner.split("-").map(&:capitalize).join(" ") }
-    visible = "🤖 AI agent — #{display_runner} on #{host}"
+    visible = "🤖 #{display_runner}"
     marker = <<~MARKER.chomp
       <!-- #{MARKER}
       runner: #{runner}
@@ -30,7 +30,7 @@ module GitHubCommentEnvelope
   end
 
   def agent_authored?(body)
-    !parse(body).nil? || body.to_s.start_with?("🤖 AI agent — ")
+    !parse(body).nil? || body.to_s.match?(/\A🤖 [^\r\n]+(?:\r?\n|\z)/)
   end
 
   def payload(body)
@@ -65,7 +65,7 @@ module GitHubCommentEnvelope
     display_runner = RUNNER_DISPLAY.fetch(runner.downcase) do
       runner.downcase.split("-").map(&:capitalize).join(" ")
     end
-    return unless visible == "🤖 AI agent — #{display_runner} on #{host}"
+    return unless visible == "🤖 #{display_runner}"
 
     { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run }
   end

@@ -2117,7 +2117,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert_match(/SHA-256 `[0-9a-f]{64}`/, reference)
       refute_includes reference, "<!-- completed-batch-audit"
       posted_comment = File.read(env.fetch("FAKE_GH_BODY"))
-      assert posted_comment.start_with?("🤖 AI agent — Agent Workflows on ")
+      assert posted_comment.start_with?("🤖 Agent Workflows\n")
       assert GitHubCommentEnvelope.payload(posted_comment).start_with?("Completed-batch audit: replay evidence follows.\n\n")
       summary = result.fetch("pr_description_summary")
       assert_equal "https://github.com/acme/widgets/pull/184", summary.fetch("url")

@@ -1251,7 +1251,8 @@ reference interaction pattern.
 
 All Agent Workflows-authored top-level comments and review replies must cross
 the `github-comment-envelope` boundary. Its visible first line is exactly
-`🤖 AI agent — <RUNNER> on <HOST>`, followed by a hidden versioned marker that
+`🤖 Codex` for Codex or `🤖 Claude` for Claude. Machine, host, task, run, and
+automation details stay out of the visible prefix. A hidden versioned marker
 records the runner, host, and task-or-run identifier. Use `post-issue` for a
 top-level PR or issue comment and `post-reply` for an inline review reply.
 Consumer code must not bypass this boundary.

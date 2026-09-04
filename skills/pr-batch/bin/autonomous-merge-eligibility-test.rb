@@ -950,7 +950,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     prefixed = decision_comment(
       id: "1",
       url:,
-      body: "🤖 AI agent — Codex on M5\n#{decision_body(head_sha: HEAD_SHA, gates: ['changed-files-limit'], evidence: url)}"
+      body: "🤖 Codex\n#{decision_body(head_sha: HEAD_SHA, gates: ['changed-files-limit'], evidence: url)}"
     )
     result = evaluate do |base_sha|
       evidence(

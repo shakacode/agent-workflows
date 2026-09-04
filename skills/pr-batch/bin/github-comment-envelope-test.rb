@@ -9,7 +9,7 @@ require "tmpdir"
 require_relative "../lib/github_comment_envelope"
 
 SCRIPT = File.expand_path("github-comment-envelope", __dir__)
-VISIBLE_PREFIX = "🤖 AI agent — Codex on M5"
+VISIBLE_PREFIX = "🤖 Codex"
 
 class GitHubCommentEnvelopeTest < Minitest::Test
   def test_render_adds_visible_first_line_and_hidden_attribution
@@ -47,7 +47,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       stdin: "Done."
     )
     classified = run_cli("classify", stdin: rendered[:stdout])
-    prefix_only = run_cli("classify", stdin: "🤖 AI agent — Codex on M5\nlegacy payload")
+    prefix_only = run_cli("classify", stdin: "🤖 Codex\nlegacy payload")
     human = run_cli("classify", stdin: "I approve this change.\n")
 
     assert_equal "agent\n", classified[:stdout]
@@ -56,7 +56,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
   end
 
   def test_payload_does_not_strip_a_malformed_prefix_only_comment
-    body = "🤖 AI agent — Codex on M5\nlegacy payload"
+    body = "🤖 Codex\nlegacy payload"
 
     assert_equal body, GitHubCommentEnvelope.payload(body)
   end
@@ -90,7 +90,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
 
       assert_predicate result[:status], :success?, result[:stderr]
       assert_includes posted.fetch("args"), "repos/acme/widgets/issues/7/comments"
-      assert posted.fetch("body").start_with?("🤖 AI agent — Codex on M5\n")
+      assert posted.fetch("body").start_with?("🤖 Codex\n")
     end
   end
 
@@ -117,7 +117,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
 
       assert_predicate result[:status], :success?, result[:stderr]
       assert_includes posted.fetch("args"), "repos/acme/widgets/pulls/7/comments/99/replies"
-      assert posted.fetch("body").start_with?("🤖 AI agent — Codex on M5\n")
+      assert posted.fetch("body").start_with?("🤖 Codex\n")
     end
   end
 
