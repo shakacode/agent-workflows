@@ -738,6 +738,13 @@ module TaskReviewLoop
         unless complete_findings_coverage?(findings_document, diff_paths[round_package&.[]("digest")])
           errors << "review-findings-incomplete-coverage"
         end
+        if findings.any? do |finding|
+          finding["disposition"] == "accepted_fixed" &&
+          (finding.dig("verification", "status") != "verified" ||
+           finding.dig("verification", "current_head_state") != "current")
+        end
+          errors << "accepted-fixed-verification-required"
+        end
         derived_open_ids = findings.filter_map do |finding|
           finding["id"] if OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
         end

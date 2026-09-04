@@ -1431,6 +1431,51 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_accepted_fixed_requires_verified_current_head_evidence
+    [%w[verified current], %w[unverified current], %w[unknown current],
+     %w[verified stale], %w[verified unknown], %w[verified not_applicable]].each do |status, head_state|
+      Dir.mktmpdir("task-review-loop") do |directory|
+        input = consequential_breakage_input(directory)
+        addressed = finding("finding-1", disposition: "accepted_fixed")
+        addressed["verification"] = { "status" => status, "current_head_state" => head_state }
+        receipt = review_receipt(head_sha: FIX_HEAD_SHA, base_sha: HEAD_SHA)
+        path = write_findings(directory, "fixed-findings.json", [addressed], receipt: receipt)
+        input["rounds"][-1] = with_digest(
+          input.fetch("rounds").last.merge(
+            "review_findings" => artifact(path),
+            "open_finding_ids" => [],
+            "new_consequential_finding_ids" => []
+          ).reject { |key, _value| key == "digest" }
+        )
+        open_path = write_findings(directory, "fixed-open.json", [], receipt: receipt)
+        input["open_findings"] = artifact(open_path).merge("ids" => [])
+        input["finding_controls"] = []
+        assert JSONSchemer.schema(JSON.parse(File.read(SCHEMA))).valid?(input)
+        output, = evaluate(input)
+
+        if status == "verified" && head_state == "current"
+          assert_equal "task_complete", output.fetch("status")
+        else
+          assert_equal "blocked", output.fetch("status"), "#{status}/#{head_state}"
+          assert_includes output.fetch("reasons"), "accepted-fixed-verification-required"
+          refute output.fetch("dependent_task_permitted")
+        end
+      end
+    end
+  end
+
+  def test_coordinator_owns_git_provenance_before_reducer_invocation
+    workflow = File.read(File.join(REPO_ROOT, "workflows/pr-batch-task-review.md")).gsub(/\s+/, " ")
+
+    assert_includes workflow, "supplied-artifact consistency, not independent Git provenance"
+    assert_includes workflow, "Immediately before every reducer invocation"
+    assert_includes workflow, "already-trusted lane repository and declared base/head"
+    assert_includes workflow, "compare them byte-for-byte with each current and retained round's exact-diff artifact"
+    assert_includes workflow, "A mismatch or unavailable verification blocks invocation and dependent work"
+    assert_includes workflow, "Do not repair a mismatch by merely recomputing submitted digests"
+    refute_includes workflow, "fabricated, wrong-report, or wrong-range historical package fails closed"
+  end
+
   def test_review_package_commit_list_is_bound_to_the_worker_report_and_head
     Dir.mktmpdir("task-review-loop") do |directory|
       input = rebind_package(clean_review_input(directory), "commit_list" => [OTHER_HEAD_SHA])

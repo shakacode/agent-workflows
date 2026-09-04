@@ -38,6 +38,9 @@ Canonical record digests use UTF-8 JSON with object keys sorted recursively and
 array order preserved. Remove the record's own `digest` field before hashing,
 then prefix the lowercase SHA-256 value with `sha256:`. Artifact digests cover
 the exact raw bytes at `path`; `byte_count` covers the same bytes.
+These hashes establish supplied-artifact consistency, not independent Git
+provenance. The coordinator owns repository and range verification before
+invoking this artifact-reading reducer.
 
 The output status is exactly one of:
 
@@ -107,6 +110,14 @@ git diff --no-ext-diff --no-textconv --no-color --no-relative --binary \
 
 Do not pass `--no-prefix`, custom prefixes, or a path filter. Recapture existing
 noncanonical artifacts before review; the reducer does not infer prefix modes.
+Immediately before every reducer invocation, the coordinator must use its
+already-trusted lane repository and declared base/head to recapture canonical
+diff bytes with the command above and compare them byte-for-byte with each
+current and retained round's exact-diff artifact. Verify the repository and
+range against the coordinator's accepted lane state, not artifact-supplied
+authority. A mismatch or unavailable verification blocks invocation and
+dependent work. Do not repair a mismatch by merely recomputing submitted
+digests. Keep successful comparison evidence with the task handoff.
 Require successful capture before setting its raw-byte digest and
 byte count and set `truncated` to false. For initial review, use `scope: task`,
 the task base, the worker report's full ordered commit list, and a null
@@ -128,8 +139,9 @@ package digest, and its `worker_report_digest` must resolve to the retained
 report digest. Before a round counts, the helper verifies both retained record
 digests, reloads its exact-diff artifact, and binds task identity, brief,
 scope, base/head, expected head, actors, prior-round digest, and the exact
-report commit slice. A missing, fabricated, wrong-report, or wrong-range
-historical package fails closed before cap adjudication or dependent work.
+report commit slice. A missing or internally mismatched historical package
+fails closed before cap adjudication or dependent work. Repository-derived
+authenticity remains the coordinator's pre-invocation check above.
 
 ## Review Findings And Independence
 
@@ -162,6 +174,9 @@ breakage first found in a fix diff remains open until a later fix round.
 Reviewer-level `deferred` and `waived_by_maintainer` dispositions remain open
 inside this loop. Only the coordinator's evidence-backed cap adjudication can
 defer or waive them for task completion.
+An `accepted_fixed` outcome requires `verification.status: verified` and
+`verification.current_head_state: current` in every retained round before the
+finding can be retired; stale or unverified fix claims fail closed.
 
 The reviewer must be distinct from every implementer in the task after Unicode
 case folding and whitespace trimming. Implementer self-review is useful but
