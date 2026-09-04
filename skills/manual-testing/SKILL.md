@@ -158,7 +158,9 @@ blocker. Do not fake a manual pass from static inspection.
      `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"
      --expected-head-sha <full-final-head-SHA>
      --require-visual-evidence-v2
-     <file-or->`. The strict v2 flag is invalid
+     [--github-host <trusted-repository-GitHub-host>]
+     <file-or->`. Include `--github-host` for GitHub Enterprise Server browser
+     uploads. The strict v2 flag is invalid
      without the expected final-head SHA. If the helper cannot be resolved or
      run, report the evidence and readiness state as `blocked`; do not proceed
      with a pass claim.

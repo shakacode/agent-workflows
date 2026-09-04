@@ -832,7 +832,12 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_github_host_option_rejects_urls_and_paths
-    %w[https://github.example.test github.example.test/path].each do |host|
+    %w[
+      https://github.example.test
+      github.example.test/path
+      localhost
+      private-user-images.githubusercontent.com
+    ].each do |host|
       _out, status = Open3.capture2e("ruby", SCRIPT, "--github-host", host, __FILE__)
       refute status.success?, host
     end

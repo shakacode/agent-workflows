@@ -608,16 +608,12 @@ module CloseoutEvidenceReplay
   def normalize_github_host(value)
     return if value.nil? || value.empty? || value.match?(URI_SCHEME)
 
-    uri = URI.parse("https://#{value}")
-    return unless uri.is_a?(URI::HTTPS) && uri.host && uri.userinfo.nil?
+    uri = parse_https_url("https://#{value}")
+    return unless uri && uri.userinfo.nil?
     return unless (uri.path.nil? || uri.path.empty?) && uri.query.nil? && uri.fragment.nil?
-    return unless uri.host.match?(/\A[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\z/)
-    return if uri.host.split(".").any? { |label| label.empty? || label.length > 63 || label.start_with?("-") || label.end_with?("-") }
 
     host = uri.host.downcase
     uri.port == 443 ? host : "#{host}:#{uri.port}"
-  rescue URI::Error
-    nil
   end
 
   def absolute_local_path?(value)
