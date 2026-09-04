@@ -363,8 +363,14 @@ module TaskReviewLoop
       target["base_sha"] == base_sha && target["head_sha"] == head_sha
   end
 
-  def complete_findings_coverage?(document)
-    document.dig("review_receipt", "coverage", "status") == "complete"
+  def complete_findings_coverage?(document, changed_paths)
+    coverage = document.dig("review_receipt", "coverage")
+    return false unless coverage.is_a?(Hash) && coverage["status"] == "complete"
+
+    included_paths = coverage["included_paths"]
+    return false unless string_array?(included_paths) && string_array?(changed_paths)
+
+    (changed_paths - included_paths).empty?
   end
 
   def cap_authority_from_env
@@ -705,7 +711,7 @@ module TaskReviewLoop
         )
           errors << "review-findings-foreign"
         end
-        unless complete_findings_coverage?(findings_document)
+        unless complete_findings_coverage?(findings_document, round_report&.[]("changed_paths"))
           errors << "review-findings-incomplete-coverage"
         end
         derived_open_ids = findings.filter_map do |finding|
@@ -786,7 +792,7 @@ module TaskReviewLoop
           round&.[]("reviewer_id")
         )
         open_records = open_document.fetch("review_findings")
-        unless complete_findings_coverage?(open_document)
+        unless complete_findings_coverage?(open_document, round&.dig("worker_report", "changed_paths"))
           errors << "open-findings-incomplete-coverage"
         end
         actual_open_ids = open_records.map { |finding| finding["id"] }

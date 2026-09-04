@@ -1259,6 +1259,29 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_complete_review_coverage_includes_every_changed_path
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      receipt = review_receipt
+      receipt.fetch("coverage")["included_paths"] = []
+      path = write_findings(directory, "empty-included-paths.json", [], receipt: receipt)
+      reference = artifact(path)
+      round = with_digest(
+        input.fetch("rounds").first.merge("review_findings" => reference)
+             .reject { |key, _value| key == "digest" }
+      )
+
+      output, = evaluate(
+        input.merge("rounds" => [round], "open_findings" => reference.merge("ids" => []))
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-findings-incomplete-coverage"
+      assert_includes output.fetch("reasons"), "open-findings-incomplete-coverage"
+      refute output.fetch("dependent_task_permitted")
+    end
+  end
+
   def test_nonempty_findings_require_a_complete_range_bound_review_receipt
     Dir.mktmpdir("task-review-loop") do |directory|
       input = clean_review_input(directory)
