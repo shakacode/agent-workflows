@@ -150,6 +150,19 @@ module HumanAttention
       raise Error, "cannot update human-attention labels: #{edit_stderr.lines.first.to_s.strip}" unless edit_status.success?
     end
 
+    verify_stdout, verify_stderr, verify_status = Open3.capture3(
+      github_cli, "pr", "view", pr_number.to_s, "--repo", repo, "--json", "state,headRefOid,labels"
+    )
+    raise Error, "cannot verify human-attention labels: #{verify_stderr.lines.first.to_s.strip}" unless verify_status.success?
+
+    verified = JSON.parse(verify_stdout)
+    unchanged = verified["state"] == "OPEN" && verified["headRefOid"] == expected_head
+    raise Error, "PR changed while updating human-attention labels" unless unchanged
+
+    verified_labels = Array(verified["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
+    verified_state = classify(labels: verified_labels, configured_labels: labels)
+    raise Error, "human-attention label update did not reach the requested state" unless verified_state == state
+
     { "repo" => repo, "pr" => pr_number, "head_sha" => expected_head, "state" => state, "labels" => labels }
   rescue JSON::ParserError
     raise Error, "PR state response is malformed"

@@ -342,7 +342,7 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
               (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
         [.[][] |
           select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |
-          select((.body // "") | valid_body)] | length
+          select((.payload_body // .body // "") | valid_body)] | length
       ' 2>/dev/null || echo 0)"
       case "${SOURCE_CHECKPOINT_COUNT}" in
         ''|*[!0-9]*) SOURCE_CHECKPOINT_COUNT=0 ;;
@@ -461,7 +461,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         startswith("<!-- address-review-status -->") or
         startswith("<!-- codex-claim v1");
       def generated_source_reply($comment):
-        (($comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
+        (($comment.payload_body // $comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
         ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
       def item_key($kind; $id; $thread_id):
         [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -481,7 +481,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
           $inventory.issue_comments[]? |
           . as $comment |
           select((.created_at // "") <= $checkpoint_created_at) |
-          select((((.body // "") | marker_body) or generated_source_reply($comment)) | not) |
+          select((((.payload_body // .body // "") | marker_body) or generated_source_reply($comment)) | not) |
           candidate_state("issue-comment"; .id; "-"; (.created_at // ""))
         ] + [
           $inventory.review_summaries[]? |
@@ -515,11 +515,11 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
       [.issue_comments[] |
         select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
         . as $checkpoint |
-        select(($checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
+        select(($checkpoint.payload_body // $checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
       sort_by(.created_at) | reverse
     ' source-review-data.json)"; then
-      SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
-      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+      SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].payload_body // .[0].body // ""')"
+      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
     else
       echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
     fi

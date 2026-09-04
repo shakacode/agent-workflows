@@ -65,6 +65,9 @@ class FetchPrReviewDataTest < Minitest::Test
     comments = [{ "body" => body, "created_at" => "2026-01-05T00:00:00Z" }]
 
     assert_equal "2026-01-05T00:00:00Z", FetchPrReviewData.compute_cutoff(comments)
+    normalized = FetchPrReviewData.build_issue_comments([{ "body" => body }]).first
+    assert_equal "<!-- address-review-summary -->\ncurrent", normalized.fetch("payload_body")
+    assert_equal body, normalized.fetch("body")
   end
 
   def test_drops_empty_review_summaries

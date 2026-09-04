@@ -93,6 +93,7 @@ module FetchPrReviewData
         "id" => review["id"],
         "type" => "review_summary",
         "body" => review["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(review["body"].to_s),
         "state" => review["state"],
         "user" => review.dig("user", "login"),
         "created_at" => review["submitted_at"],
@@ -110,6 +111,7 @@ module FetchPrReviewData
         "type" => "review",
         "path" => comment["path"],
         "body" => comment["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(comment["body"].to_s),
         "line" => comment["line"],
         "start_line" => comment["start_line"],
         "user" => comment.dig("user", "login"),
@@ -129,6 +131,7 @@ module FetchPrReviewData
         "node_id" => comment["node_id"],
         "type" => "issue",
         "body" => comment["body"],
+        "payload_body" => GitHubCommentEnvelope.payload(comment["body"].to_s),
         "user" => comment.dig("user", "login"),
         "created_at" => comment["created_at"],
         "html_url" => comment["html_url"]

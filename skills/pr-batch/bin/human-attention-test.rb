@@ -103,7 +103,9 @@ class HumanAttentionTest < Minitest::Test
         require "json"
         File.open(ENV.fetch("CALLS"), "a") { |file| file.puts(ARGV.join("\t")) }
         if ARGV[0, 2] == ["pr", "view"]
-          puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}", "labels" => [{"name" => "human-attention:walkthrough"}]})
+          edited = File.read(ENV.fetch("CALLS")).include?("--add-label\thuman-attention:merge")
+          label = edited ? "human-attention:merge" : "human-attention:walkthrough"
+          puts JSON.generate({"state" => "OPEN", "headRefOid" => "#{'a' * 40}", "labels" => [{"name" => label}]})
         end
       RUBY
       File.chmod(0o755, fake_gh)
@@ -118,6 +120,8 @@ class HumanAttentionTest < Minitest::Test
       edit = File.readlines(calls, chomp: true).find { |line| line.start_with?("pr\tedit") }
       assert_includes edit, "--remove-label\thuman-attention:walkthrough"
       assert_includes edit, "--add-label\thuman-attention:merge"
+      view_count = File.readlines(calls).count { |line| line.start_with?("pr\tview") }
+      assert_equal 2, view_count
     end
   end
 
