@@ -19,6 +19,7 @@ end
 load finding_validator
 
 module TaskReviewLoop
+  MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
   OPEN_FINDING_DISPOSITIONS = %w[
     must_fix needs_decision should_fix deferred waived_by_maintainer unknown
   ].freeze
@@ -316,7 +317,15 @@ module TaskReviewLoop
     path = reference["path"]
     return [nil, "#{label}-path-invalid"] unless non_empty_string?(path)
 
-    bytes = File.binread(path)
+    # Check the opened descriptor; a path check can race with replacement by a FIFO.
+    bytes = File.open(path, File::RDONLY | File::NONBLOCK) do |file|
+      stat = file.stat
+      return [nil, "#{label}-not-regular-file"] unless stat.file?
+      return [nil, "#{label}-too-large"] if stat.size > MAX_ARTIFACT_BYTES
+
+      file.binmode.read(MAX_ARTIFACT_BYTES + 1).to_s
+    end
+    return [nil, "#{label}-too-large"] if bytes.bytesize > MAX_ARTIFACT_BYTES
     return [nil, "#{label}-byte-count-mismatch"] unless reference["byte_count"] == bytes.bytesize
 
     digest = "sha256:#{Digest::SHA256.hexdigest(bytes)}"

@@ -119,7 +119,15 @@ authority. A mismatch or unavailable verification blocks invocation and
 dependent work. Do not repair a mismatch by merely recomputing submitted
 digests. Keep successful comparison evidence with the task handoff.
 Require successful capture before setting its raw-byte digest and
-byte count and set `truncated` to false. For initial review, use `scope: task`,
+byte count and set `truncated` to false. Every exact-diff and findings artifact
+must resolve to a regular file no larger than 16 MiB (16,777,216 bytes).
+The reducer checks the opened descriptor and bounds its read, including when
+a file grows after the size check. Nonregular files return
+`<label>-not-regular-file`; oversized artifacts return `<label>-too-large`.
+Symlinks to regular files remain supported. This is a per-artifact resource
+limit, not a trusted-root restriction; larger artifacts that previously loaded
+are now blocked and must not be truncated to bypass the limit.
+For initial review, use `scope: task`,
 the task base, the worker report's full ordered commit list, and a null
 prior-round digest. For re-review, use `scope: fix`, the head seen by the
 preceding review as the diff base, and that preceding round's digest. Its

@@ -267,6 +267,146 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_fifo_artifact_is_rejected_without_waiting_for_a_writer
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      path = File.join(directory, "findings.fifo")
+      File.mkfifo(path, 0o600)
+      input["open_findings"]["path"] = path
+
+      Open3.popen3(HELPER) do |stdin, stdout, stderr, waiter|
+        stdin.write(JSON.generate(input))
+        stdin.close
+        begin
+          assert waiter.join(3), "artifact read waited for a FIFO writer"
+          assert waiter.value.success?, stderr.read
+          output = JSON.parse(stdout.read)
+          assert_equal "blocked", output.fetch("status")
+          assert_includes output.fetch("reasons"), "open-findings-not-regular-file"
+        ensure
+          unless waiter.join(0)
+            Process.kill("KILL", waiter.pid)
+            waiter.join
+          end
+        end
+      end
+    end
+  end
+
+  def test_oversized_artifact_is_rejected_before_digest_or_json_validation
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      path = File.join(directory, "oversized-findings.json")
+      File.open(path, "wb") { |file| file.truncate((16 * 1024 * 1024) + 1) }
+      input["open_findings"]["path"] = path
+
+      output, = evaluate(input)
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "open-findings-too-large"
+    end
+  end
+
+  def test_artifact_type_check_uses_the_open_descriptor
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      script = <<~'RUBY'
+        target = ENV.fetch("TASK_REVIEW_FINDINGS_PATH")
+        original_open = File.method(:open)
+        File.define_singleton_method(:open) do |path, *args, &block|
+          # Model replacement at open: the named file is regular, the descriptor is not.
+          opened_path = path == target ? File.dirname(path) : path
+          original_open.call(opened_path, *args, &block)
+        end
+        load ARGV.fetch(0)
+      RUBY
+      stdout, stderr, status = Open3.capture3(
+        { "TASK_REVIEW_FINDINGS_PATH" => input.dig("open_findings", "path") },
+        RbConfig.ruby, "-e", script, HELPER, stdin_data: JSON.generate(input)
+      )
+
+      assert status.success?, stderr
+      output = JSON.parse(stdout)
+      assert_equal "blocked", output.fetch("status")
+      assert(output.fetch("reasons").any? { |reason| reason.end_with?("-not-regular-file") })
+    end
+  end
+
+  def test_artifact_growth_after_stat_is_bounded_and_rejected
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      script = <<~'RUBY'
+        target = ENV.fetch("TASK_REVIEW_FINDINGS_PATH")
+        original_open = File.method(:open)
+        File.define_singleton_method(:open) do |path, *args, &block|
+          original_open.call(path, *args) do |file|
+            if path == target
+              old_stat = file.stat
+              original_open.call(path, "ab") { |writer| writer.truncate((16 * 1024 * 1024) + 1) }
+              file.define_singleton_method(:stat) { old_stat }
+              original_read = file.method(:read)
+              file.define_singleton_method(:read) do |length|
+                raise "unbounded artifact read" unless length == (16 * 1024 * 1024) + 1
+
+                original_read.call(length)
+              end
+            end
+            block.call(file)
+          end
+        end
+        load ARGV.fetch(0)
+      RUBY
+      stdout, stderr, status = Open3.capture3(
+        { "TASK_REVIEW_FINDINGS_PATH" => input.dig("open_findings", "path") },
+        RbConfig.ruby, "-e", script, HELPER, stdin_data: JSON.generate(input)
+      )
+
+      assert status.success?, stderr
+      output = JSON.parse(stdout)
+      assert_equal "blocked", output.fetch("status")
+      assert(output.fetch("reasons").any? { |reason| reason.end_with?("-too-large") })
+    end
+  end
+
+  def test_valid_findings_at_the_artifact_size_limit_still_complete
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      path = File.join(directory, "large-open-findings.json")
+      bytes = File.binread(input.dig("open_findings", "path"))
+      File.binwrite(path, bytes.ljust(16 * 1024 * 1024))
+      input["open_findings"] = artifact(path).merge("ids" => [])
+
+      output, = evaluate(input)
+
+      assert_equal "task_complete", output.fetch("status")
+    end
+  end
+
+  def test_empty_artifact_is_rejected_without_an_io_crash
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      File.truncate(input.dig("open_findings", "path"), 0)
+
+      output, = evaluate(input)
+
+      assert_equal "blocked", output.fetch("status")
+      assert(output.fetch("reasons").any? { |reason| reason.end_with?("-byte-count-mismatch") })
+    end
+  end
+
+  def test_regular_artifact_symlinks_remain_supported
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      path = File.join(directory, "findings-link.json")
+      File.symlink(input.dig("open_findings", "path"), path)
+      input["open_findings"]["path"] = path
+
+      output, = evaluate(input)
+
+      assert_equal "task_complete", output.fetch("status")
+    end
+  end
+
   def test_validated_findings_artifacts_are_not_reloaded_during_reduction
     Dir.mktmpdir("task-review-loop") do |directory|
       input = cap_input(directory)
@@ -274,13 +414,13 @@ class TaskReviewLoopTest < Minitest::Test
       script = <<~'RUBY'
         target = ENV.fetch("TASK_REVIEW_FINDINGS_PATH")
         reads = 0
-        original_binread = File.method(:binread)
-        File.define_singleton_method(:binread) do |path, *args|
+        original_open = File.method(:open)
+        File.define_singleton_method(:open) do |path, *args, &block|
           if path == target
             reads += 1
             raise Errno::ENOENT, path if reads > 1
           end
-          original_binread.call(path, *args)
+          original_open.call(path, *args, &block)
         end
         load ARGV.fetch(0)
       RUBY
