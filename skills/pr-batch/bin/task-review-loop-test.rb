@@ -863,7 +863,7 @@ class TaskReviewLoopTest < Minitest::Test
         consequential: true,
         independent_validation: {
           "status" => "confirmed",
-          "validator" => "reviewer-b",
+          "validator" => "validator-c",
           "evidence" => ["fix-diff://finding-2"]
         },
         head_sha: final_head
@@ -1384,7 +1384,7 @@ class TaskReviewLoopTest < Minitest::Test
         head_sha: HEAD_SHA,
         independent_validation: {
           "status" => "confirmed",
-          "validator" => "reviewer-b",
+          "validator" => "validator-c",
           "evidence" => ["fix-diff://finding-1"]
         }
       )
@@ -1461,6 +1461,134 @@ class TaskReviewLoopTest < Minitest::Test
           refute output.fetch("dependent_task_permitted")
         end
       end
+    end
+  end
+
+  def test_consequential_validator_must_be_independent_of_task_actors
+    validators = ["reviewer-b", "implementer-a", "\u00a0ＲＥＶＩＥＷＥＲ-Ｂ\u2003", " IMPLEMENTER-A ", "validator-c"]
+    validators.product([["P0", false], ["P1", false], ["P2", true]]).each do |validator, (severity, consequential)|
+      Dir.mktmpdir("task-review-loop") do |directory|
+        input = clean_review_input(directory)
+        rejected = finding(
+          "finding-1", severity: severity, consequential: consequential,
+                       disposition: "rejected_false_positive", head_sha: HEAD_SHA,
+                       independent_validation: {
+                         "status" => "rejected", "validator" => validator, "evidence" => ["probe://finding-1"]
+                       }
+        )
+        path = write_findings(directory, "rejected-findings.json", [rejected])
+        input["rounds"][0] = with_digest(
+          input.fetch("rounds").first.merge(
+            "review_findings" => artifact(path), "addressed_finding_ids" => ["finding-1"]
+          ).reject { |key, _value| key == "digest" }
+        )
+        assert JSONSchemer.schema(JSON.parse(File.read(SCHEMA))).valid?(input)
+        output, = evaluate(input)
+
+        if validator == "validator-c"
+          assert_equal "task_complete", output.fetch("status"), "#{validator}/#{severity}"
+          assert output.fetch("dependent_task_permitted")
+        else
+          assert_equal "blocked", output.fetch("status"), "#{validator}/#{severity}"
+          assert_equal ["finding-validator-not-independent"], output.fetch("reasons")
+          refute output.fetch("dependent_task_permitted")
+        end
+      end
+    end
+  end
+
+  def test_carried_consequential_finding_cannot_be_retired_by_task_actors
+    %w[reviewer-b implementer-a validator-c].each do |validator|
+      Dir.mktmpdir("task-review-loop") do |directory|
+        input = cap_input(directory)
+        round = input.fetch("rounds").last
+        rejected = finding(
+          "finding-2", severity: "P1", consequential: true, disposition: "rejected_false_positive",
+                       head_sha: round.fetch("head_sha"),
+                       independent_validation: {
+                         "status" => "rejected", "validator" => validator, "evidence" => ["probe://finding-2"]
+                       }
+        )
+        path = write_findings(directory, "retired-findings.json", [rejected])
+        input["rounds"][-1] = with_digest(
+          round.merge("review_findings" => artifact(path), "open_finding_ids" => [],
+                      "addressed_finding_ids" => ["finding-2"]).reject { |key, _value| key == "digest" }
+        )
+        open_path = write_findings(
+          directory, "retired-open.json", [],
+          receipt: review_receipt(head_sha: round.fetch("head_sha"), base_sha: round.fetch("base_sha"))
+        )
+        input["open_findings"] = artifact(open_path).merge("ids" => [])
+        input["finding_controls"] = []
+        input["cap_adjudication"] = nil
+        output, = evaluate(input)
+
+        if validator == "validator-c"
+          assert_equal "task_complete", output.fetch("status")
+          assert output.fetch("dependent_task_permitted")
+        else
+          assert_equal "blocked", output.fetch("status")
+          assert_equal ["finding-validator-not-independent"], output.fetch("reasons")
+          refute output.fetch("dependent_task_permitted")
+        end
+      end
+    end
+  end
+
+  def test_open_consequential_validator_excludes_prior_and_replacement_implementers
+    %w[implementer-a implementer-c validator-c].each do |validator|
+      Dir.mktmpdir("task-review-loop") do |directory|
+        input = replacement_input(directory).merge("replacement_evidence" => [replacement_record])
+        round = input.fetch("rounds").last
+        records = JSON.parse(File.read(round.dig("review_findings", "path"))).fetch("review_findings")
+        records.last["independent_validation"]["validator"] = validator
+        path = write_findings(directory, "replacement-validator-findings.json", records)
+        input["rounds"][-1] = with_digest(
+          round.merge("review_findings" => artifact(path)).reject { |key, _value| key == "digest" }
+        )
+        open_path = write_findings(directory, "replacement-validator-open.json", [records.last])
+        input["open_findings"] = artifact(open_path).merge("ids" => ["finding-2"])
+        output, = evaluate(input)
+
+        if validator == "validator-c"
+          assert_equal "fix_required", output.fetch("status")
+        else
+          assert_equal "blocked", output.fetch("status")
+          assert_equal ["finding-validator-not-independent"], output.fetch("reasons")
+        end
+        refute output.fetch("dependent_task_permitted")
+      end
+    end
+  end
+
+  def test_historical_consequential_validation_cannot_be_hidden_by_later_rounds
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = cap_input(directory)
+      prior_digest = nil
+      input["rounds"] = input.fetch("rounds").map do |round|
+        if round["number"] == 2
+          records = JSON.parse(File.read(round.dig("review_findings", "path"))).fetch("review_findings")
+          records.first["independent_validation"]["validator"] = "reviewer-b"
+          path = write_findings(directory, "historical-validator-findings.json", records)
+          round = round.merge("review_findings" => artifact(path))
+        end
+        package = with_digest(
+          round.fetch("review_package").merge("prior_round_digest" => prior_digest)
+               .reject { |key, _value| key == "digest" }
+        )
+        updated = with_digest(
+          round.merge("prior_round_digest" => prior_digest, "review_package" => package,
+                      "package_digest" => package.fetch("digest")).reject { |key, _value| key == "digest" }
+        )
+        prior_digest = updated.fetch("digest")
+        updated
+      end
+      input["review_package"] = input.fetch("rounds").last.fetch("review_package")
+      output, = evaluate(input)
+
+      assert_equal "blocked", output.fetch("status")
+      assert_equal ["finding-validator-not-independent"], output.fetch("reasons")
+      refute output.fetch("dependent_task_permitted")
     end
   end
 
@@ -1698,7 +1826,7 @@ class TaskReviewLoopTest < Minitest::Test
         consequential: true,
         independent_validation: {
           "status" => "confirmed",
-          "validator" => "reviewer-b",
+          "validator" => "validator-c",
           "evidence" => ["different-evidence"]
         }
       )
@@ -1804,7 +1932,7 @@ class TaskReviewLoopTest < Minitest::Test
         consequential: true,
         independent_validation: {
           "status" => "confirmed",
-          "validator" => "reviewer-b",
+          "validator" => "validator-c",
           "evidence" => ["fix-diff://finding-2"]
         }
       )
@@ -1838,7 +1966,7 @@ class TaskReviewLoopTest < Minitest::Test
         head_sha: HEAD_SHA,
         independent_validation: {
           "status" => "confirmed",
-          "validator" => "reviewer-b",
+          "validator" => "validator-c",
           "evidence" => ["task-diff://finding-2"]
         }
       )
@@ -2011,7 +2139,7 @@ class TaskReviewLoopTest < Minitest::Test
       consequential: true,
       independent_validation: {
         "status" => "confirmed",
-        "validator" => "reviewer-b",
+        "validator" => "validator-c",
         "evidence" => ["fix-diff://finding-2"]
       }
     )
@@ -2092,7 +2220,7 @@ class TaskReviewLoopTest < Minitest::Test
       consequential: true,
       independent_validation: {
         "status" => "confirmed",
-        "validator" => "reviewer-b",
+        "validator" => "validator-c",
         "evidence" => ["fix-diff://finding-2"]
       }
     )
@@ -2116,7 +2244,7 @@ class TaskReviewLoopTest < Minitest::Test
         consequential: true,
         independent_validation: {
           "status" => "confirmed",
-          "validator" => "reviewer-b",
+          "validator" => "validator-c",
           "evidence" => ["fix-diff://finding-2"]
         },
         head_sha: CAP_HEAD_SHAS.fetch(number)
@@ -2164,7 +2292,7 @@ class TaskReviewLoopTest < Minitest::Test
       consequential: true,
       independent_validation: {
         "status" => "confirmed",
-        "validator" => "reviewer-b",
+        "validator" => "validator-c",
         "evidence" => ["fix-diff://finding-2"]
       },
       head_sha: final_head
@@ -2235,7 +2363,7 @@ class TaskReviewLoopTest < Minitest::Test
       consequential: true,
       independent_validation: {
         "status" => "confirmed",
-        "validator" => "reviewer-b",
+        "validator" => "validator-c",
         "evidence" => ["fix-diff://finding-2"]
       },
       head_sha: input.fetch("expected_current_head_sha")

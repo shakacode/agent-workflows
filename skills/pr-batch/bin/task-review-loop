@@ -739,6 +739,14 @@ module TaskReviewLoop
           errors << "review-findings-incomplete-coverage"
         end
         if findings.any? do |finding|
+          (finding["consequential"] == true || %w[P0 P1].include?(finding["severity"])) &&
+          (Array(known_implementers) + [review_round["reviewer_id"]]).any? do |actor|
+            same_actor?(finding.dig("independent_validation", "validator"), actor)
+          end
+        end
+          errors << "finding-validator-not-independent"
+        end
+        if findings.any? do |finding|
           finding["disposition"] == "accepted_fixed" &&
           (finding.dig("verification", "status") != "verified" ||
            finding.dig("verification", "current_head_state") != "current")

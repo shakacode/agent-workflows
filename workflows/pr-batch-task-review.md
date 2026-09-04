@@ -183,6 +183,10 @@ case folding and whitespace trimming. Implementer self-review is useful but
 never satisfies this gate. Every initial review and fix re-review uses an
 independent reviewer.
 
+For each consequential finding, its independent validator must also differ
+from that round's reviewer and every task implementer under the same actor
+normalization. This applies to open and retired findings in every retained round.
+
 Review initial task compliance and task quality against the brief and exact
 task diff. Re-review only the fix diff and the existing open findings. Admit a
 new finding to the loop only when the fix diff causes consequential breakage.
