@@ -72,30 +72,30 @@ module HumanAttention
     degraded = []
     repositories(config).each do |repo|
       labels = labels_for(config, repo)
-      STATES.each do |state|
-        stdout, _stderr, status = Open3.capture3(
-          github_cli, "pr", "list", "--repo", repo, "--state", "open", "--label", labels.fetch(state),
-          "--json", "number,title,url,updatedAt,headRefOid"
-        )
-        unless status.success?
-          degraded << repo
-          next
-        end
-        begin
-          rows = JSON.parse(stdout)
-          raise Error, "query result is not a list" unless rows.is_a?(Array)
+      stdout, _stderr, status = Open3.capture3(
+        github_cli, "pr", "list", "--repo", repo, "--state", "open",
+        "--json", "number,title,url,updatedAt,headRefOid,labels"
+      )
+      unless status.success?
+        degraded << repo
+        next
+      end
+      begin
+        rows = JSON.parse(stdout)
+        raise Error, "query result is not a list" unless rows.is_a?(Array)
 
-          rows.each do |row|
-            entries << normalize_entry(row, repo:, state:, refreshed_at:)
-          end
-        rescue JSON::ParserError, Error
-          degraded << repo
+        repo_entries = rows.filter_map do |row|
+          row_labels = Array(row["labels"]).filter_map { |label| label["name"] if label.is_a?(Hash) }
+          state = classify(labels: row_labels, configured_labels: labels)
+          next if state == "none"
+
+          normalize_entry(row, repo:, state:, refreshed_at:)
         end
+        entries.concat(repo_entries)
+      rescue JSON::ParserError, Error, KeyError
+        degraded << repo
       end
     end
-    duplicate_targets = entries.group_by { |entry| [entry.fetch("repo"), entry.fetch("number")] }
-                               .select { |_target, rows| rows.map { |row| row.fetch("state") }.uniq.length > 1 }
-    raise Error, "a PR must not carry both human-attention labels" unless duplicate_targets.empty?
 
     [entries.sort_by { |entry| [entry.fetch("repo"), entry.fetch("number"), entry.fetch("state")] }, degraded.uniq.sort]
   end

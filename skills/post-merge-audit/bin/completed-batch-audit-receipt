@@ -5,7 +5,6 @@ require "json"
 require "digest"
 require "base64"
 require "optparse"
-require "socket"
 require "timeout"
 require "uri"
 require_relative "../../pr-batch/lib/github_comment_envelope"
@@ -279,12 +278,16 @@ module CompletedBatchAuditReceipt
 
     target, actor = select_verified_anchor(targets)
     endpoint = "repos/#{target.fetch('repo')}/issues/#{target.fetch('number')}/comments"
-    comment_body = GitHubCommentEnvelope.render(
-      body: comment_body,
-      runner: ENV.fetch("AGENT_COMMENT_RUNNER", "agent-workflows"),
-      host: ENV.fetch("AGENT_COMMENT_HOST", Socket.gethostname),
-      task_or_run: ENV.fetch("AGENT_COMMENT_TASK_OR_RUN", expected_batch_id)
-    )
+    begin
+      comment_body = GitHubCommentEnvelope.render(
+        body: comment_body,
+        runner: ENV.fetch("AGENT_COMMENT_RUNNER"),
+        host: ENV.fetch("AGENT_COMMENT_HOST"),
+        task_or_run: ENV.fetch("AGENT_COMMENT_TASK_OR_RUN")
+      )
+    rescue KeyError, ArgumentError => e
+      raise Error, "cannot attribute agent-authored comment: #{e.message}"
+    end
     begin
       posted = gh_api(
         target.fetch("host"),

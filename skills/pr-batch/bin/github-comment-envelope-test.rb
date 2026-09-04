@@ -60,6 +60,21 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_equal body, GitHubCommentEnvelope.payload(body)
   end
 
+  def test_payload_preserves_cr_characters_and_an_attribution_marker_in_payload
+    payload = "Quoted marker: <!-- agent-comment-attribution:v1 -->\r\n"
+    body = GitHubCommentEnvelope.render(body: payload, runner: "codex", host: "M5", task_or_run: "task-7")
+
+    assert_equal payload, GitHubCommentEnvelope.payload(body)
+  end
+
+  def test_render_rejects_unknown_visible_runner_identity
+    error = assert_raises(ArgumentError) do
+      GitHubCommentEnvelope.render(body: "Done.", runner: "agent-workflows", host: "M5", task_or_run: "task-7")
+    end
+
+    assert_equal "runner must be codex or claude", error.message
+  end
+
   def test_autonomous_human_authority_explicitly_excludes_agent_envelopes
     source = File.read(File.expand_path("../lib/autonomous_merge_decision.rb", __dir__))
 

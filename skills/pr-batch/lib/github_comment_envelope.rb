@@ -15,9 +15,11 @@ module GitHubCommentEnvelope
     runner = normalized_value(runner, "runner").downcase
     host = normalized_value(host, "host")
     task_or_run = normalized_value(task_or_run, "task-or-run")
-    raise ArgumentError, "body already contains an attribution marker" if body.include?("<!-- #{MARKER}")
+    raise ArgumentError, "body already has an attribution envelope" if parse(body)
 
-    display_runner = RUNNER_DISPLAY.fetch(runner) { runner.split("-").map(&:capitalize).join(" ") }
+    display_runner = RUNNER_DISPLAY.fetch(runner) do
+      raise ArgumentError, "runner must be codex or claude"
+    end
     visible = "🤖 #{display_runner}"
     marker = <<~MARKER.chomp
       <!-- #{MARKER}
@@ -44,9 +46,9 @@ module GitHubCommentEnvelope
   end
 
   def parse(body)
-    return unless body.is_a?(String) && !body.include?("\r")
+    return unless body.is_a?(String)
 
-    lines = body.lines(chomp: true)
+    lines = body.lines(chomp: true).first(6).map { |line| line.delete_suffix("\r") }
     return if lines.length < 6
 
     visible = lines[0]
@@ -55,16 +57,13 @@ module GitHubCommentEnvelope
     return unless lines[3].start_with?("host: ")
     return unless lines[4].start_with?("task_or_run: ")
     return unless lines[5] == "-->"
-    return unless body.scan("<!-- #{MARKER}").length == 1
-
     runner = lines[2].delete_prefix("runner: ")
     host = lines[3].delete_prefix("host: ")
     task_or_run = lines[4].delete_prefix("task_or_run: ")
     return unless [runner, host, task_or_run].all? { |value| value.match?(VALUE_PATTERN) }
 
-    display_runner = RUNNER_DISPLAY.fetch(runner.downcase) do
-      runner.downcase.split("-").map(&:capitalize).join(" ")
-    end
+    display_runner = RUNNER_DISPLAY[runner.downcase]
+    return unless display_runner
     return unless visible == "🤖 #{display_runner}"
 
     { "version" => VERSION, "runner" => runner.downcase, "host" => host, "task_or_run" => task_or_run }

@@ -266,6 +266,11 @@ After parallel fixes complete, verify no conflicts exist between the changes by 
 Post through `github-comment-envelope post-issue`; never call the GitHub comment
 endpoint directly.
 
+Before posting, export `AGENT_COMMENT_RUNNER` as exactly `codex` or `claude`,
+`AGENT_COMMENT_HOST` as the actual runner host, and
+`AGENT_COMMENT_TASK_OR_RUN` as this task/run's stable identifier. Missing or
+invalid context blocks the post; never synthesize a generic runner identity.
+
 Every replacement-carryover general reply posted to `SOURCE_PR_NUMBER` for an
 issue comment or review summary must start with the authenticated
 `<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked

@@ -12,7 +12,6 @@
 
 require "json"
 require "optparse"
-require "socket"
 require "tempfile"
 require "time"
 require "timeout"
@@ -759,11 +758,13 @@ module StaleAssignmentSweep
     def post_comment(repo, number, body)
       enveloped = GitHubCommentEnvelope.render(
         body:,
-        runner: ENV.fetch("AGENT_COMMENT_RUNNER", "agent-workflows"),
-        host: ENV.fetch("AGENT_COMMENT_HOST", Socket.gethostname),
-        task_or_run: ENV.fetch("AGENT_COMMENT_TASK_OR_RUN", "stale-assignment-sweep")
+        runner: ENV.fetch("AGENT_COMMENT_RUNNER"),
+        host: ENV.fetch("AGENT_COMMENT_HOST"),
+        task_or_run: ENV.fetch("AGENT_COMMENT_TASK_OR_RUN")
       )
       run_gh("api", "repos/#{repo}/issues/#{number}/comments", "-f", "body=#{enveloped}")
+    rescue KeyError, ArgumentError => e
+      raise Error, "cannot attribute agent-authored comment: #{e.message}"
     end
 
     def remove_assignee(repo, number, login)

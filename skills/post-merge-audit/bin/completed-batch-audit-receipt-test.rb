@@ -16,6 +16,19 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   WORKFLOW_CONFIG = File.expand_path("../../../.agents/agent-workflow.yml", __dir__)
   REAL_BACKEND = "agent-coord private backend"
 
+  def setup
+    @attribution_environment = %w[AGENT_COMMENT_RUNNER AGENT_COMMENT_HOST AGENT_COMMENT_TASK_OR_RUN].to_h do |name|
+      [name, ENV[name]]
+    end
+    ENV["AGENT_COMMENT_RUNNER"] = "codex"
+    ENV["AGENT_COMMENT_HOST"] = "test-host"
+    ENV["AGENT_COMMENT_TASK_OR_RUN"] = "test-receipt"
+  end
+
+  def teardown
+    @attribution_environment.each { |name, value| value ? ENV[name] = value : ENV.delete(name) }
+  end
+
   def marker(body)
     "<!-- completed-batch-audit v1\n#{body.chomp}\n-->\n"
   end
@@ -3475,10 +3488,18 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   def capture_receipt_cli(*arguments)
     command = arguments.dup
     script_index = command.index(SCRIPT)
+    environment = command.first.is_a?(Hash) ? command.first : {}
+    unless command.first.is_a?(Hash)
+      environment = {}
+      command.unshift(environment)
+      script_index += 1 if script_index
+    end
+    environment["AGENT_COMMENT_RUNNER"] ||= "codex"
+    environment["AGENT_COMMENT_HOST"] ||= "test-host"
+    environment["AGENT_COMMENT_TASK_OR_RUN"] ||= "test-receipt"
     if script_index &&
        %w[publish replay supersede].include?(command[script_index + 1]) &&
        !command.include?("--workflow-config")
-      environment = command.first.is_a?(Hash) ? command.first : {}
       workflow_config = environment.fetch("FAKE_WORKFLOW_CONFIG", WORKFLOW_CONFIG)
       command.concat(["--workflow-config", workflow_config])
     end

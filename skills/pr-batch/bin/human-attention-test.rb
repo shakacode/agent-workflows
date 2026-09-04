@@ -72,10 +72,11 @@ class HumanAttentionTest < Minitest::Test
         if args.include?("acme/broken")
           warn "unavailable"
           exit 1
-        elsif args.include?("human-attention:walkthrough")
-          puts JSON.generate([{"number" => 7, "title" => "Explain change", "url" => "https://github.com/acme/widgets/pull/7", "updatedAt" => "2026-09-03T12:00:00Z", "headRefOid" => "#{'a' * 40}"}])
         else
-          puts JSON.generate([{"number" => 8, "title" => "Ready to merge", "url" => "https://github.com/acme/widgets/pull/8", "updatedAt" => "2026-09-03T12:01:00Z", "headRefOid" => "#{'b' * 40}"}])
+          puts JSON.generate([
+            {"number" => 7, "title" => "Explain change", "url" => "https://github.com/acme/widgets/pull/7", "updatedAt" => "2026-09-03T12:00:00Z", "headRefOid" => "#{'a' * 40}", "labels" => [{"name" => "human-attention:walkthrough"}]},
+            {"number" => 8, "title" => "Ready to merge", "url" => "https://github.com/acme/widgets/pull/8", "updatedAt" => "2026-09-03T12:01:00Z", "headRefOid" => "#{'b' * 40}", "labels" => [{"name" => "human-attention:merge"}]}
+          ])
         end
       RUBY
       File.chmod(0o755, fake_gh)
@@ -91,6 +92,34 @@ class HumanAttentionTest < Minitest::Test
       assert_includes result[:stdout], "2 of 2 — MERGE — acme/widgets — Ready to merge"
       assert_includes result[:stdout], "Degraded repositories: acme/broken"
       assert_includes result[:stdout], "This queue does not represent remaining agent-owned work."
+    end
+  end
+
+  def test_desk_degrades_only_the_repository_with_conflicting_labels_and_discards_its_rows
+    config = <<~YAML
+      ---
+      human_attention:
+        repositories:
+          acme/conflicted: {}
+          acme/healthy: {}
+    YAML
+    with_repo_config(config) do |root|
+      fake_gh = File.join(root, "gh")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        repo = ARGV.fetch(ARGV.index("--repo") + 1)
+        labels = repo.end_with?("conflicted") ? ["human-attention:walkthrough", "human-attention:merge"] : ["human-attention:merge"]
+        puts JSON.generate([{"number" => 7, "title" => repo, "url" => "https://example.test/7", "headRefOid" => "#{'a' * 40}", "labels" => labels.map { |name| {"name" => name} }}])
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli("desk", "--repo-root", root, env: { "HUMAN_ATTENTION_GH" => fake_gh })
+
+      assert_predicate result[:status], :success?, result[:stderr]
+      assert_includes result[:stdout], "MERGE — acme/healthy"
+      refute_includes result[:stdout], "WALKTHROUGH — acme/conflicted"
+      assert_includes result[:stdout], "Degraded repositories: acme/conflicted"
     end
   end
 
