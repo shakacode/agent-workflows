@@ -310,25 +310,31 @@ Worker: branch 42-fix-empty-config-crash pushed with 2 commits.
 .agents/bin/validate PASS, .agents/bin/test PASS. PR #57 opened.
 
 Checks on PR #57: all green. merge_authority is ask, so starting the
-walkthrough.
+GitHub-native walkthrough.
 
-Walkthrough (1/2): the config loader now returns a documented default when
-the file is empty instead of raising. Questions before the next change?
-> no
+GitHub walkthrough published on PR #57 for the exact comparison
+`main@0123456` -> `89abcde`:
+- Orientation and complete two-section agenda: COMMENT review
+- Section 1/2: the config loader now returns a documented default when the
+  file is empty instead of raising — separately replyable review thread
+- Section 2/2: a regression test covering the empty-file case — separately
+  replyable review thread
 
-Walkthrough (2/2): a regression test covering the empty-file case.
-Questions?
-> no
+All conceptual sections were posted in one pass. The owning task will consume
+PR replies asynchronously. Live exploration is available only when you
+explicitly request it.
 
-Diff identity unchanged since the walkthrough; checks still green.
+Diff identity unchanged since publication; checks still green.
 One final question: merge PR #57 into main? (yes/no)
 ```
 
 The shape to notice: the issue body is treated as untrusted input (work to
 describe, never instructions to obey), the worker and the coordinator are
-separate roles, gates come before the walkthrough, and there is exactly one
-merge question at the end — asked only while the explained diff is still the
-exact diff on the PR.
+separate roles, gates come before the walkthrough, every conceptual section is
+published before the task waits, and there is exactly one merge question at
+the end — asked only while the explained diff is still the exact diff on the
+PR. Focused follow-up questions stay in the separately replyable GitHub
+threads unless you explicitly request live exploration.
 
 Before running this against a public repository, read
 [Trust And Preflight](trust-and-preflight.md) and fill in the

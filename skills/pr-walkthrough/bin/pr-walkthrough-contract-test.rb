@@ -10,6 +10,8 @@ class PrWalkthroughContractTest < Minitest::Test
   INTEGRATION_CLOSEOUT = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
   PR_BATCH = File.join(ROOT, "skills/pr-batch/SKILL.md")
   PR_MONITORING = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
+  OPENAI_METADATA = File.join(ROOT, "skills/pr-walkthrough/agents/openai.yaml")
+  GETTING_STARTED = File.join(ROOT, "docs/getting-started.md")
 
   def test_skill_is_exact_diff_github_native_and_complete
     skill = File.read(SKILL).gsub(/\s+/, " ")
@@ -99,5 +101,34 @@ class PrWalkthroughContractTest < Minitest::Test
       position
     end
     positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+  end
+
+  def test_picker_and_getting_started_use_github_native_default
+    metadata = File.read(OPENAI_METADATA).gsub(/\s+/, " ")
+
+    assert_includes metadata, "Publish a complete PR walkthrough on GitHub"
+    assert_includes metadata, "publish a complete exact-diff walkthrough"
+    assert_includes metadata, "separately replyable GitHub comments"
+    assert_includes metadata, "use live interaction only if I explicitly ask"
+    refute_includes metadata, "one change at a time"
+
+    guide = File.read(GETTING_STARTED).gsub(/\s+/, " ")
+    phrases = [
+      "GitHub walkthrough published on PR #57 for the exact comparison",
+      "All conceptual sections were posted in one pass.",
+      "The owning task will consume PR replies asynchronously.",
+      "Live exploration is available only when you explicitly request it.",
+      "Diff identity unchanged since publication"
+    ]
+    positions = phrases.map do |phrase|
+      position = guide.index(phrase)
+      assert position, "expected #{phrase.inspect}"
+      position
+    end
+    positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+
+    assert_operator guide.scan("separately replyable review thread").length, :>=, 2
+    refute_includes guide, "Questions before the next change?"
+    refute_includes guide, "Walkthrough (1/2):"
   end
 end

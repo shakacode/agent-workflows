@@ -1,4 +1,4 @@
 interface:
   display_name: "PR Walkthrough"
-  short_description: "Explain a pull request one change at a time"
-  default_prompt: "Use $pr-walkthrough to walk me through this PR one change at a time, including why each change was made."
+  short_description: "Publish a complete PR walkthrough on GitHub"
+  default_prompt: "Use $pr-walkthrough to publish a complete exact-diff walkthrough to this PR as separately replyable GitHub comments; use live interaction only if I explicitly ask."
