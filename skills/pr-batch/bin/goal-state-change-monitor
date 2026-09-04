@@ -79,7 +79,7 @@ def sha256_digest?(value)
 end
 
 def known_identity?(value)
-  value.is_a?(String) && !value.strip.empty? && !value.strip.casecmp?("UNKNOWN")
+  value.is_a?(String) && value == value.strip && !value.empty? && !value.casecmp?("UNKNOWN")
 end
 
 def persisted_decision?(decision, monitor_id)
@@ -284,8 +284,12 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
                  fail_json("corrupt-persisted-state")
                end
              end
+  if previous.is_a?(Hash) && !known_identity?(previous["plan_identity"])
+    repaired_identity_state = previous.merge("plan_identity" => plan_identity)
+    reason = persisted_state?(repaired_identity_state) ? "plan-identity-missing" : "corrupt-persisted-state"
+    fail_json(reason)
+  end
   fail_json("corrupt-persisted-state") if previous && !persisted_state?(previous)
-  fail_json("plan-identity-missing") if previous && !known_identity?(previous["plan_identity"])
   fail_json("plan-identity-collision") if previous && previous["plan_identity"] != plan_identity
   fail_json("monitor-id-collision") if previous && previous["monitor_id"] != monitor_id
 

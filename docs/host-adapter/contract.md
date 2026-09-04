@@ -168,6 +168,14 @@ old acknowledgement to unrelated newer evidence, or naming an impossible
 waking action, fails closed. For bounded migration, legacy
 `acknowledged_wake_ids` is dropped on the next state persistence.
 
+Every `goal-state-change-observation` must carry a nonempty, known
+`plan_identity`. The identity is an exact opaque value: leading or trailing
+whitespace and case-insensitive `UNKNOWN` are invalid. The reducer persists the
+identity and rejects a state file created for another plan. A legacy state file
+without `plan_identity` fails closed with `plan-identity-missing`; the adapter
+must reconcile or replace that state instead of assigning it to the current
+plan, because the reducer cannot prove which plan created it.
+
 `blocker_state` is an object whose arrays are set-valued collections; adapters
 must encode ordered sequences as keyed objects. The reducer canonicalizes object
 keys and set members before hashing so API result order alone cannot wake the

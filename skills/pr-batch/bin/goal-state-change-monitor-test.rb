@@ -1995,6 +1995,43 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_observation_requires_an_exact_known_plan_identity
+    invalid_plan_identities = [nil, "", "UNKNOWN", "unknown", " plan-a", "plan-a "]
+
+    invalid_plan_identities.each do |plan_identity|
+      Dir.mktmpdir do |directory|
+        input = observation
+        plan_identity.nil? ? input.delete("plan_identity") : input["plan_identity"] = plan_identity
+
+        decision, stderr, status = run_helper(File.join(directory, "monitor.json"), input)
+
+        assert_nil decision
+        refute status.success?
+        assert_includes stderr, '"reason":"plan-identity-required"'
+      end
+    end
+  end
+
+  def test_legacy_state_without_plan_identity_fails_with_reconciliation_reason
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      legacy_state = JSON.parse(File.read(state_path)).tap { |state| state.delete("plan_identity") }
+      File.write(state_path, JSON.generate(legacy_state))
+
+      decision, stderr, status = run_helper(
+        state_path,
+        observation("probe_sequence" => 1, "observed_at" => "2026-08-09T00:15:00Z")
+      )
+
+      assert_nil decision
+      refute status.success?
+      assert_includes stderr, '"reason":"plan-identity-missing"'
+      assert_equal legacy_state, JSON.parse(File.read(state_path))
+    end
+  end
+
   def test_token_and_unchanged_run_ceilings_are_bounded
     cases = {
       "token-ceiling" => {
