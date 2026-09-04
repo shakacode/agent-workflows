@@ -234,6 +234,18 @@ merge authority it was granted, remediates small blockers, and routes only
 outcome-changing decisions to the human.
 _Avoid_: sweeper, merge bot, the batch (a batch ends; the tower does not)
 
+**Human-attention label**:
+A GitHub label stating that the next action on a PR belongs to the human:
+`human-attention:walkthrough` (read the published walkthrough first) or
+`human-attention:merge` (agents recommend merge; only the merge click remains).
+_Avoid_: ready to merge, needs review, approved
+
+**Needs-rebase**:
+The `needs-rebase` label a GitHub Action applies while a PR conflicts with its
+base and removes when it no longer does; it queues mechanical work for the
+**Control tower** and is never a human signal.
+_Avoid_: conflicting (the raw GitHub field), blocked
+
 ## Relationships
 
 - **Batch → Wave → Lane → Instance**: when wave scheduling is used, a
@@ -269,6 +281,10 @@ _Avoid_: sweeper, merge bot, the batch (a batch ends; the tower does not)
 - **Worker phase** answers "is it progressing?"; **Live/Stale/Dead** answers "is it running?"; **Wedged** is live without worker-phase progress.
 - A **Merge backlog** item belongs to the repository **Control tower** once
   the **Lane** that opened it ends; a lane never keeps a PR alive to merge it.
+- A **Human-attention label** is applied by the **Control tower** after the
+  autonomous-merge eligibility gate hands a PR to the human, and stripped by
+  CI when the head changes. A CI-triggered agent may read, review, label, and
+  draft an assessment; it never pushes or merges.
 - **Drain** is observed at worker phase transitions; the **Hard escape hatch** is for workers that stop reaching them.
 
 ## Example dialogue
