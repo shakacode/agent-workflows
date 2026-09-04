@@ -28,6 +28,9 @@
 require "json"
 require "open3"
 require "time"
+require "yaml"
+require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
+load File.expand_path("diff-identity", __dir__) unless defined?(DiffIdentity)
 
 # Pure verdict logic (no I/O) plus the gh-backed runner. The pure methods take
 # the raw `gh pr checks --json` output string (or parsed rows) so they can be
@@ -94,6 +97,32 @@ module PrCiReadiness
     end
   end
 
+  def policy_dispositions_own_fallback_rows?(rows, required_cancellations:, other_scope:)
+    dispositions = other_scope["policy_dispositions"]
+    exact_rows = other_scope["rows"]
+    return false unless dispositions.is_a?(Array) && dispositions.any? && exact_rows.is_a?(Array)
+
+    disposition_rows = dispositions.filter_map do |disposition|
+      matches = exact_rows.select { |row| disposition_matches_row?(disposition, row) }
+      matches.first if matches.one?
+    end
+    return false unless disposition_rows.length == dispositions.length
+
+    blocking_rows = readiness_rows(
+      rows, required_used: false, required_cancellations:
+    ).select { |row| %w[cancel fail pending].include?(row["bucket"].to_s) }
+    return false if blocking_rows.empty?
+
+    blocking_rows.all? do |row|
+      link = row["link"]
+      row["bucket"] == "pending" && link.is_a?(String) && !link.empty? &&
+        disposition_rows.one? do |exact_row|
+          row["name"] == exact_row["name"] && link == exact_row["details_url"] &&
+            (row["workflow"].to_s.empty? || row["workflow"] == exact_row["app_slug"])
+        end
+    end
+  end
+
   def failing_names(rows)
     rows.select { |row| row["bucket"].to_s == "fail" }.map { |row| row["name"].to_s }
   end
@@ -144,6 +173,23 @@ module PrCiReadiness
 
   EVIDENCE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
   SUCCESSFUL_CONCLUSIONS = %w[success neutral skipped].freeze
+  POLICY_PATH = ".agents/agent-workflow.yml"
+  POLICY_KEYS = %w[optional_approval_held_checks version].freeze
+  OPTIONAL_CHECK_KEYS = %w[app_slug id name].freeze
+  POLICY_RULE_ID = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
+  CIRCLECI_APP_SLUG = "circleci-checks"
+  CIRCLECI_WORKFLOW_URL = %r{\Ahttps://app\.circleci\.com/workflow/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?[^#\s]*)?\z}
+  SYSTEM_GIT = %w[/opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git /bin/git].find do |path|
+    File.file?(path) && File.executable?(path)
+  end
+  TRUSTED_GIT_ENV = {
+    "GIT_CONFIG_NOSYSTEM" => "1",
+    "GIT_CONFIG_SYSTEM" => File::NULL,
+    "GIT_CONFIG_GLOBAL" => File::NULL,
+    "GIT_NO_REPLACE_OBJECTS" => "1",
+    "GIT_TERMINAL_PROMPT" => "0",
+    "LC_ALL" => "C"
+  }.freeze
 
   def evidence_row_state(row)
     return "UNKNOWN" unless row.is_a?(Hash)
@@ -169,10 +215,17 @@ module PrCiReadiness
 
   def evidence_scope(
     source:, head_sha:, complete:, rows:, checked_at:, error: nil,
-    informational_rows: [], gates_verdict: true
+    informational_rows: [], gates_verdict: true, policy_dispositions: nil
   )
     normalized_rows = rows.is_a?(Array) ? rows : []
-    row_states = normalized_rows.map { |row| evidence_row_state(row) }
+    blocking_rows = if policy_dispositions.nil?
+                      normalized_rows
+                    else
+                      normalized_rows.reject do |row|
+                        policy_dispositions.any? { |disposition| disposition_matches_row?(disposition, row) }
+                      end
+                    end
+    row_states = blocking_rows.map { |row| evidence_row_state(row) }
     state =
       # Non-gating scopes preserve completeness and error diagnostics without
       # allowing advisory inventory failures to change the readiness verdict.
@@ -199,12 +252,13 @@ module PrCiReadiness
       "informational_rows" => informational_rows.is_a?(Array) ? informational_rows : [],
       "checked_at" => checked_at
     }
+    result["policy_dispositions"] = policy_dispositions unless policy_dispositions.nil?
     result["error"] = error.to_s unless error.to_s.empty?
     result["error"] ||= "one or more rows had an unknown state" if state == "UNKNOWN" && complete == true
     result
   end
 
-  def evidence_contract(repo:, pr_number:, head_sha:, checked_at:, scopes:)
+  def evidence_contract(repo:, pr_number:, base:, diff_base_sha:, head_sha:, checked_at:, scopes:)
     states = scopes.values.map { |scope| scope["state"] }
     verdict =
       if states.any? { |state| !EVIDENCE_STATES.include?(state) } || states.include?("UNKNOWN")
@@ -219,6 +273,11 @@ module PrCiReadiness
       "version" => 2,
       "repo" => repo,
       "pr" => pr_number.to_i,
+      "base" => base,
+      "diff_base_sha" => diff_base_sha,
+      "diff_identity" => DiffIdentity.derive(
+        base_ref: base.fetch("ref"), diff_base_sha:, head_sha:
+      ),
       "head_sha" => head_sha,
       "checked_at" => checked_at,
       "verdict" => verdict,
@@ -229,7 +288,8 @@ module PrCiReadiness
   def inventory_scopes(
     head_sha:, checked_at:, required_rows:, required_complete:, actions_rows:,
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
-    statuses_complete:, errors: {}, gate_advisory_rows: true
+    statuses_complete:, errors: {}, gate_advisory_rows: true,
+    optional_approval_held_policy: nil
   )
     # required_rows may still contain a non-Hash entry that survived
     # readiness classification upstream (kept, not dropped, so it remains
@@ -257,6 +317,14 @@ module PrCiReadiness
         row["app_slug"].to_s == "github-actions" ||
         row["dependabot"] == true
     end
+    policy_dispositions = if optional_approval_held_policy.nil?
+                            nil
+                          else
+                            optional_approval_held_dispositions(
+                              other_rows, required_rows:, policy: optional_approval_held_policy,
+                                          head_sha:
+                            )
+                          end
 
     {
       "required_status_check_rollup" => evidence_scope(
@@ -286,9 +354,210 @@ module PrCiReadiness
         rows: gate_advisory_rows ? other_rows : [],
         informational_rows: gate_advisory_rows ? [] : other_rows,
         gates_verdict: gate_advisory_rows,
-        checked_at:, error: errors["other"]
+        checked_at:, error: errors["other"],
+        policy_dispositions: gate_advisory_rows ? policy_dispositions : []
       )
     }
+  end
+
+  def validate_optional_approval_held_policy!(policy)
+    unless closed_string_key_schema?(policy, POLICY_KEYS) && policy["version"] == 1
+      raise Error, "ci_readiness must be a closed version 1 mapping"
+    end
+
+    rules = policy["optional_approval_held_checks"]
+    unless rules.is_a?(Array) && !rules.empty?
+      raise Error, "ci_readiness.optional_approval_held_checks must be a nonempty list"
+    end
+
+    seen_ids = {}
+    seen_identities = {}
+    rules.each do |rule|
+      unless closed_string_key_schema?(rule, OPTIONAL_CHECK_KEYS)
+        raise Error, "each optional approval-held check must contain exactly app_slug, id, and name"
+      end
+
+      rule_id = rule["id"]
+      app_slug = rule["app_slug"]
+      name = rule["name"]
+      raise Error, "optional approval-held check id is invalid" unless
+        rule_id.is_a?(String) && rule_id.match?(POLICY_RULE_ID)
+      raise Error, "optional approval-held check app_slug is invalid" unless
+        app_slug == CIRCLECI_APP_SLUG
+      raise Error, "optional approval-held check name must be resolved single-line text" unless
+        name.is_a?(String) && name == name.strip && !name.empty? &&
+        !name.match?(/[[:cntrl:]]/) && name != "UNKNOWN"
+      raise Error, "duplicate optional approval-held check id #{rule_id}" if seen_ids[rule_id]
+
+      identity = [app_slug, name]
+      if seen_identities[identity]
+        raise Error, "duplicate optional approval-held check identity #{app_slug}/#{name}"
+      end
+
+      seen_ids[rule_id] = true
+      seen_identities[identity] = true
+    end
+    policy
+  end
+
+  def closed_string_key_schema?(value, expected_keys)
+    value.is_a?(Hash) && value.keys.all?(String) &&
+      value.keys.length == expected_keys.length && (value.keys - expected_keys).empty?
+  end
+
+  def optional_approval_held_dispositions(rows, required_rows:, policy:, head_sha:)
+    validate_optional_approval_held_policy!(policy)
+    identity_counts = Array(rows).filter_map { |row| check_run_identity(row) }.tally
+    rules_by_identity = policy.fetch("optional_approval_held_checks").to_h do |rule|
+      [[rule.fetch("app_slug"), rule.fetch("name")], rule]
+    end
+
+    rows.filter_map do |row|
+      next unless optional_approval_held_row?(row)
+      next unless row["head_sha"] == head_sha
+      next unless identity_counts[check_run_identity(row)] == 1
+
+      rule = rules_by_identity[[row["app_slug"], row["name"]]]
+      next unless rule
+      next if Array(required_rows).any? { |required| required_matches_optional_row?(required, row) }
+
+      {
+        "disposition" => "optional_approval_held",
+        "rule_id" => rule.fetch("id"),
+        "kind" => "check_run",
+        "id" => row.fetch("id"),
+        "app_slug" => row.fetch("app_slug"),
+        "name" => row.fetch("name"),
+        "head_sha" => row.fetch("head_sha"),
+        "provider_run_id" => circleci_workflow_id(row)
+      }
+    end
+  end
+
+  def check_run_identity(row)
+    return nil unless row.is_a?(Hash) && row["kind"] == "check_run"
+
+    row.values_at("kind", "app_slug", "name")
+  end
+
+  def optional_approval_held_row?(row)
+    row.is_a?(Hash) && row["kind"] == "check_run" &&
+      row["id"].is_a?(Integer) && row["id"].positive? &&
+      row["head_sha"].is_a?(String) && row["head_sha"].match?(/\A[0-9a-f]{40}\z/) &&
+      row["app_slug"] == CIRCLECI_APP_SLUG &&
+      row["name"].is_a?(String) && !row["name"].empty? && row["name"] != "UNKNOWN" &&
+      row["status"] == "in_progress" && row["conclusion"].nil? &&
+      circleci_approval_held_evidence?(row)
+  end
+
+  def circleci_approval_held_evidence?(row)
+    return false unless optional_phase_timestamp?(row, "started_at")
+    return false unless row.key?("completed_at") && row["completed_at"].nil?
+    return false unless row.key?("actions") && row["actions"].nil?
+
+    workflow_id = circleci_workflow_id(row)
+    output = row["output"]
+    return false unless workflow_id && output.is_a?(Hash) && output.keys.sort == %w[summary title]
+    return false unless output["title"] == "Workflow: #{row['name']}"
+
+    summary_lines = output["summary"].to_s.lines.map(&:strip).reject(&:empty?)
+    summary_link = summary_lines.shift.to_s.match(%r{\A\[View CircleCI Workflow\]\((https://[^)]+)\)\z})
+    summary_id = summary_link && summary_link[1].match(CIRCLECI_WORKFLOW_URL)&.[](1)
+    return false unless summary_id == workflow_id
+
+    phases = summary_lines.map { |line| line.match(/\A\* (?<job>\S.*) - (?<status>\S+)\z/) }
+    return false if phases.empty? || phases.any?(&:nil?)
+    return false unless phases.any? { |phase| phase[:status] == "Blocked" }
+
+    phases.all? { |phase| %w[Success Blocked].include?(phase[:status]) }
+  end
+
+  def circleci_workflow_id(row)
+    row["details_url"].to_s.match(CIRCLECI_WORKFLOW_URL)&.[](1)
+  end
+
+  def optional_phase_timestamp?(row, key)
+    return false unless row.key?(key)
+    return true if row[key].nil?
+    return false unless row[key].is_a?(String)
+
+    Time.iso8601(row[key])
+    true
+  rescue ArgumentError
+    false
+  end
+
+  def required_matches_optional_row?(required, row)
+    required.is_a?(Hash) && required["name"].to_s.casecmp?(row["name"].to_s)
+  end
+
+  def disposition_matches_row?(disposition, row)
+    disposition.is_a?(Hash) && row.is_a?(Hash) &&
+      disposition["kind"] == row["kind"] && disposition["id"] == row["id"] &&
+      disposition["app_slug"] == row["app_slug"] && disposition["name"] == row["name"] &&
+      disposition["head_sha"] == row["head_sha"] &&
+      disposition["provider_run_id"] == circleci_workflow_id(row)
+  end
+
+  def trusted_ci_policy_at(repo_root:, base_ref:, base_sha:)
+    validate_trusted_policy_binding!(base_ref:, base_sha:)
+    root = File.realpath(repo_root)
+    raise Error, "trusted repository root is not a directory" unless File.directory?(root)
+
+    resolved = git_capture!(root, "rev-parse", "#{base_sha}^{commit}").strip.downcase
+    raise Error, "trusted repository does not resolve the exact base SHA" unless resolved == base_sha
+
+    tree_entry = git_capture!(root, "ls-tree", base_sha, "--", POLICY_PATH)
+    return nil if tree_entry.empty?
+
+    raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{POLICY_PATH}")
+    duplicate_errors = AutonomousMergePolicy.duplicate_key_errors(raw).select do |error|
+      error == '$ contains duplicate key "ci_readiness"' ||
+        error.start_with?("$.ci_readiness contains duplicate key") ||
+        error.start_with?("$.ci_readiness.optional_approval_held_checks contains duplicate key")
+    end
+    unless duplicate_errors.empty?
+      raise Error, "trusted-base ci_readiness policy contains duplicate keys: #{duplicate_errors.join('; ')}"
+    end
+
+    config = YAML.safe_load(raw, permitted_classes: [], permitted_symbols: [], aliases: false) || {}
+    raise Error, "trusted-base policy is not a mapping" unless config.is_a?(Hash)
+
+    policy = config["ci_readiness"]
+    return nil if policy.nil? || policy == "n/a"
+
+    validate_optional_approval_held_policy!(policy)
+    blob_sha = git_capture!(root, "rev-parse", "#{base_sha}:#{POLICY_PATH}").strip.downcase
+    raise Error, "trusted-base policy blob SHA is invalid" unless blob_sha.match?(/\A[0-9a-f]{40}\z/)
+
+    {
+      "version" => 1,
+      "provenance" => "git:#{base_sha}:#{POLICY_PATH}@#{blob_sha}",
+      "base" => { "ref" => base_ref, "sha" => base_sha },
+      "optional_approval_held_checks" => policy.fetch("optional_approval_held_checks")
+    }
+  rescue Errno::ENOENT, Errno::EACCES, Psych::Exception => e
+    raise Error, "trusted-base ci_readiness policy is unavailable or malformed: #{e.message.lines.first.to_s.strip}"
+  end
+
+  def validate_trusted_policy_binding!(base_ref:, base_sha:)
+    raise Error, "trusted-base policy base ref is invalid" unless DiffIdentity.canonical_ref?(base_ref)
+    raise Error, "trusted-base policy base SHA must be lowercase full hexadecimal" unless
+      base_sha.is_a?(String) && base_sha.match?(/\A[0-9a-f]{40}\z/)
+  end
+
+  def git_capture!(root, *arguments)
+    raise Error, "trusted system Git executable is unavailable" unless SYSTEM_GIT
+
+    stdout, stderr, status = Open3.capture3(
+      TRUSTED_GIT_ENV,
+      SYSTEM_GIT, "--no-replace-objects", "--literal-pathspecs", "-C", root, *arguments,
+      unsetenv_others: true
+    )
+    return stdout if status.success?
+
+    detail = [stderr, stdout].map(&:strip).reject(&:empty?).join("; ")
+    raise Error, "trusted Git read failed: #{detail.empty? ? 'no diagnostic' : detail}"
   end
 
   # Build the normalized result hash from the captured check rows. Invalid
@@ -376,6 +645,12 @@ module PrCiReadiness
     viewer also block readiness. The viewer-scoped inventory is paginated;
     complete means pagination completed only in that scope. Other reviewers'
     unsubmitted drafts are not observable or covered.
+    With --trusted-repo-root, a closed trusted-base ci_readiness policy may
+    classify an exact named non-required CircleCI approval hold as informational.
+    The raw row remains present and the emitted disposition binds the policy
+    blob, head, check-run id, provider, name, and workflow UUID. Required,
+    selected, active, incomplete, stale, malformed, unknown, or ambiguous
+    evidence remains blocking.
 
     Arguments:
       <pr-number>        PR number to inspect (integer).
@@ -388,6 +663,10 @@ module PrCiReadiness
                                               Repeat for multiple maintainer-requested runs.
                                               With no usable required checks, requested runs replace
                                               the full advisory-list fallback gate.
+          --trusted-repo-root DIR             Load ci_readiness policy from the live base SHA's
+                                              .agents/agent-workflow.yml Git blob in this repository.
+          --diff-base-sha SHA                 Bind evidence to the reviewed effective merge base.
+                                              Defaults to the PR's current base SHA.
           --json                              Print JSON (default).
           --text                              Print a human-readable verdict instead of JSON.
           --self-check                        Run parser checks plus a read-only gh smoke check.
@@ -397,6 +676,11 @@ module PrCiReadiness
       {
         "pr": 1234,
         "context": { "host": "github.com" },
+        "base": { "ref": "main", "sha": "<LIVE_BASE_SHA>" },
+        "diff_base_sha": "<REVIEWED_DIFF_BASE_SHA>",
+        "diff_identity": "<CANONICAL_DIFF_IDENTITY>",
+        "head_sha": "<EXACT_HEAD_SHA>",
+        "ci_policy": { "version": 1, "provenance": "git:<BASE_SHA>:...@<BLOB_SHA>", ... } | null,
         "verdict": "READY" | "NOT_READY" | "UNKNOWN",
         "required_used": true | false,
         "failing": [ "check name", ... ],
@@ -433,6 +717,10 @@ module PrCiReadiness
   # gh-backed CLI: parses args, fetches the check rows, and prints the verdict.
   # All subprocess calls use array args (no shell).
   class Runner
+    def initialize(read_transport: nil)
+      @read_transport = read_transport
+    end
+
     def run(argv)
       opts = parse_args(argv)
       if opts[:help]
@@ -445,13 +733,31 @@ module PrCiReadiness
 
       pr_number = validate_pr!(opts[:pr])
       repo = resolve_repo!(opts[:repo])
-      result = assess(repo, pr_number, requested_hosted_runs: opts[:requested_hosted_runs])
+      result = assess(
+        repo, pr_number,
+        requested_hosted_runs: opts[:requested_hosted_runs],
+        trusted_repo_root: opts[:trusted_repo_root],
+        diff_base_sha: opts[:diff_base_sha]
+      )
       result["context"] = { "host" => host }
       print_result(result, opts[:format])
       0
     rescue Error => e
       warn "Error: #{e.message}"
       1
+    end
+
+    def assess_authenticated(
+      repo:, pr_number:, host:, requested_hosted_runs:, trusted_repo_root:, diff_base_sha:
+    )
+      resolved_host = resolve_host!(host)
+      @gh_env = { "GH_HOST" => resolved_host }
+      result = assess(
+        resolve_repo!(repo), validate_pr!(pr_number), requested_hosted_runs:,
+                                                      trusted_repo_root:, diff_base_sha:
+      )
+      result["context"] = { "host" => resolved_host }
+      result
     end
 
     private
@@ -464,6 +770,8 @@ module PrCiReadiness
         pr: nil,
         repo: nil,
         host: nil,
+        diff_base_sha: nil,
+        trusted_repo_root: nil,
         requested_hosted_runs: []
       }
       args = argv.dup
@@ -473,6 +781,8 @@ module PrCiReadiness
         when "--host" then opts[:host] = take_value!(args, "--host")
         when "--repo" then opts[:repo] = take_value!(args, "--repo")
         when "--requested-hosted-run" then opts[:requested_hosted_runs] << take_value!(args, "--requested-hosted-run")
+        when "--trusted-repo-root" then opts[:trusted_repo_root] = take_value!(args, "--trusted-repo-root")
+        when "--diff-base-sha" then opts[:diff_base_sha] = take_value!(args, "--diff-base-sha")
         when "--json" then opts[:format] = "json"
         when "--text" then opts[:format] = "text"
         when "--self-check" then opts[:self_check] = true
@@ -555,7 +865,7 @@ module PrCiReadiness
 
     # Fetch the required-check list first; fall back to the full list when the
     # required form yields no current rows. required_used flips false on fallback.
-    def assess(repo, pr_number, requested_hosted_runs:)
+    def assess(repo, pr_number, requested_hosted_runs:, trusted_repo_root: nil, diff_base_sha: nil)
       checked_at = Time.now.utc.iso8601
       target_pr =
         begin
@@ -564,6 +874,18 @@ module PrCiReadiness
           return unavailable_target_pr_result(repo, pr_number, checked_at, e)
         end
       exact_head_sha = target_pr.fetch(:head_sha)
+      reviewed_diff_base_sha = diff_base_sha || target_pr.fetch(:base_sha)
+      unless reviewed_diff_base_sha.is_a?(String) && reviewed_diff_base_sha.match?(/\A[0-9a-f]{40}\z/)
+        raise Error, "--diff-base-sha must be a lowercase full hexadecimal commit SHA"
+      end
+
+      trusted_ci_policy = if trusted_repo_root
+                            PrCiReadiness.trusted_ci_policy_at(
+                              repo_root: trusted_repo_root,
+                              base_ref: target_pr.fetch(:base_ref),
+                              base_sha: target_pr.fetch(:base_sha)
+                            )
+                          end
       required_fetch = fetch_checks(repo, pr_number, required: true)
       required_raw = required_fetch.fetch(:raw)
       required_query_known = required_fetch.fetch(:known_good)
@@ -610,6 +932,7 @@ module PrCiReadiness
         end
       query_evidence_known = required_query_known && full_query_known != false
       result["verdict"] = "UNKNOWN" if !query_evidence_known && result["verdict"] == "READY"
+      ordinary_checks_verdict = result.fetch("verdict")
       result = apply_requested_hosted_runs(result, repo, pr_number, requested_hosted_runs)
       result = apply_viewer_review_inventory(result, repo, pr_number)
       required_evidence_rows =
@@ -659,12 +982,33 @@ module PrCiReadiness
         statuses: inventory.fetch(:statuses),
         statuses_complete: inventory.fetch(:statuses_complete),
         errors: inventory.fetch(:errors),
-        gate_advisory_rows: !requested_hosted_runs_supplied
+        gate_advisory_rows: !requested_hosted_runs_supplied,
+        optional_approval_held_policy: trusted_ci_policy && {
+          "version" => trusted_ci_policy.fetch("version"),
+          "optional_approval_held_checks" => trusted_ci_policy.fetch("optional_approval_held_checks")
+        }
       )
       contract = PrCiReadiness.evidence_contract(
-        repo:, pr_number:, head_sha: exact_head_sha, checked_at:, scopes:
+        repo:, pr_number:,
+        base: { "ref" => target_pr.fetch(:base_ref), "sha" => target_pr.fetch(:base_sha) },
+        diff_base_sha: reviewed_diff_base_sha, head_sha: exact_head_sha, checked_at:, scopes:
       )
-      ordinary_verdict = result.fetch("verdict")
+      disposition_owns_fallback = !required_used && ordinary_checks_verdict == "NOT_READY" &&
+                                  result.fetch("invalid").empty? &&
+                                  contract.fetch("verdict") == "READY" &&
+                                  PrCiReadiness.policy_dispositions_own_fallback_rows?(
+                                    rows, required_cancellations:,
+                                          other_scope: scopes.fetch("other")
+                                  )
+      ordinary_verdict = if !disposition_owns_fallback
+                           result.fetch("verdict")
+                         elsif result.fetch("viewer_pending_review_drafts").any?
+                           "NOT_READY"
+                         elsif result.dig("viewer_review_inventory", "complete") != true
+                           "UNKNOWN"
+                         else
+                           contract.fetch("verdict")
+                         end
       overall_verdict =
         if ordinary_verdict == "NOT_READY" || contract.fetch("verdict") == "NOT_READY"
           "NOT_READY"
@@ -673,11 +1017,13 @@ module PrCiReadiness
         else
           "READY"
         end
-      contract.merge(result).merge(
+      merged = contract.merge(result).merge(
         "verdict" => overall_verdict,
         "ordinary_verdict" => ordinary_verdict,
         "scopes" => scopes
       )
+      merged["ci_policy"] = trusted_ci_policy if trusted_ci_policy
+      merged
     end
 
     def unavailable_target_pr_result(repo, pr_number, checked_at, error)
@@ -697,9 +1043,19 @@ module PrCiReadiness
       ordinary = PrCiReadiness.assess(
         pr_number:, required_used: false, rows: [], required_cancellations: []
       )
-      contract = PrCiReadiness.evidence_contract(
-        repo:, pr_number:, head_sha:, checked_at:, scopes:
-      )
+      contract = {
+        "contract" => "pr-ci-readiness",
+        "version" => 2,
+        "repo" => repo,
+        "pr" => pr_number.to_i,
+        "base" => { "ref" => "UNKNOWN", "sha" => "UNKNOWN" },
+        "diff_base_sha" => "UNKNOWN",
+        "diff_identity" => "UNKNOWN",
+        "head_sha" => head_sha,
+        "checked_at" => checked_at,
+        "verdict" => "UNKNOWN",
+        "scopes" => scopes
+      }
       contract.merge(ordinary).merge(
         "verdict" => "UNKNOWN",
         "ordinary_verdict" => "UNKNOWN",
@@ -798,7 +1154,7 @@ module PrCiReadiness
         "check_runs"
       ).map do |row|
         ensure_exact_head!(row, head_sha, "check run")
-        {
+        normalized = {
           "kind" => "check_run",
           "id" => row["id"],
           "name" => row["name"].to_s,
@@ -809,6 +1165,23 @@ module PrCiReadiness
           "app_slug" => row.dig("app", "slug").to_s,
           "dependabot" => dependabot_attributed?(row)
         }
+        if normalized["app_slug"] == CIRCLECI_APP_SLUG
+          output = row["output"]
+          normalized.merge!(
+            "name" => row["name"],
+            "conclusion" => row.fetch("conclusion", "UNKNOWN"),
+            "started_at" => row.fetch("started_at", "UNKNOWN"),
+            "completed_at" => row.fetch("completed_at", "UNKNOWN"),
+            "details_url" => row.fetch("details_url", "UNKNOWN"),
+            "actions" => row.fetch("actions", "UNKNOWN"),
+            "output" => if output.is_a?(Hash) && output.key?("title") && output.key?("summary")
+                          { "title" => output["title"], "summary" => output["summary"] }
+                        else
+                          "UNKNOWN"
+                        end
+          )
+        end
+        normalized
       end
       [rows, true, nil]
     rescue StandardError => e
@@ -1103,7 +1476,7 @@ module PrCiReadiness
       cmd = ["gh", "pr", "checks", pr_number.to_s, "--repo", repo]
       cmd << "--required" if required
       cmd += ["--json", "name,state,bucket,link,workflow"]
-      out, err, status = Open3.capture3(@gh_env, *cmd)
+      out, err, status = capture_gh(*cmd)
       raw = out.to_s.force_encoding("UTF-8")
       known_good = PrCiReadiness.json_array_payload?(raw) ||
                    status.success? && raw.strip.empty? || no_checks_diagnostic?(err)
@@ -1326,8 +1699,8 @@ module PrCiReadiness
       raise Error, "target PR head was not an object" unless head.is_a?(Hash)
 
       head_sha = head["sha"]
-      unless full_sha?(head_sha)
-        raise Error, "target PR head SHA was not a full hexadecimal commit SHA"
+      unless head_sha.is_a?(String) && head_sha.match?(/\A[0-9a-f]{40}\z/)
+        raise Error, "target PR head SHA was not a lowercase full hexadecimal commit SHA"
       end
 
       head_ref = head["ref"]
@@ -1343,14 +1716,27 @@ module PrCiReadiness
         raise Error, "target PR head repo id was not a positive integer"
       end
 
+      base = data["base"]
+      raise Error, "target PR base was not an object" unless base.is_a?(Hash)
+
+      base_sha = base["sha"]
+      unless base_sha.is_a?(String) && base_sha.match?(/\A[0-9a-f]{40}\z/)
+        raise Error, "target PR base SHA was not a lowercase full hexadecimal commit SHA"
+      end
+
+      base_ref = base["ref"]
+      unless DiffIdentity.canonical_ref?(base_ref)
+        raise Error, "target PR base ref was not canonical"
+      end
+
       {
-        id:, number:, head_sha:, head_ref:, head_repo_id:,
+        id:, number:, head_sha:, head_ref:, head_repo_id:, base_sha:, base_ref:,
         head_repo_full_name: head_repo["full_name"].to_s
       }
     end
 
     def same_target_pr_identity?(left, right)
-      keys = %i[id number head_sha head_ref head_repo_id]
+      keys = %i[id number head_sha head_ref head_repo_id base_sha base_ref]
       left.values_at(*keys) == right.values_at(*keys)
     end
 
@@ -1359,7 +1745,8 @@ module PrCiReadiness
       repo_name = "unknown" if repo_name.empty?
       "id=#{identity.fetch(:id)} number=##{identity.fetch(:number)} " \
         "head=#{identity.fetch(:head_sha)} ref=#{identity.fetch(:head_ref)} " \
-        "head_repo_id=#{identity.fetch(:head_repo_id)} head_repo=#{repo_name}"
+        "head_repo_id=#{identity.fetch(:head_repo_id)} head_repo=#{repo_name} " \
+        "base=#{identity.fetch(:base_ref)}@#{identity.fetch(:base_sha)}"
     end
 
     def fetch_actions_run(repo, run_id)
@@ -1404,10 +1791,18 @@ module PrCiReadiness
     # Run a command with no shell (array args) and return UTF-8 stdout, raising
     # when the command fails. Used only for commands whose exit status matters.
     def capture_required!(*cmd)
-      out, status = Open3.capture2(@gh_env, *cmd)
-      raise Error, "command failed: #{cmd.first(3).join(' ')}" unless status.success?
+      out, err, status = capture_gh(*cmd)
+      raise Error, "command failed: #{cmd.first(3).join(' ')}: #{err.to_s.strip}" unless status.success?
 
       out.force_encoding("UTF-8")
+    end
+
+    def capture_gh(*cmd)
+      return Open3.capture3(@gh_env, *cmd) unless @read_transport
+
+      raise Error, "read transport only accepts gh commands" unless cmd.first == "gh"
+
+      @read_transport.call(*cmd.drop(1), host: @gh_env.fetch("GH_HOST"))
     end
 
     def print_result(result, format)

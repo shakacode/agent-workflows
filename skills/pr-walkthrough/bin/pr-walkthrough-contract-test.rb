@@ -47,6 +47,23 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes skill, "Walkthrough participation is not merge approval."
   end
 
+  def test_walkthrough_uses_the_canonical_diff_identity_contract
+    skill = File.read(SKILL)
+    closeout = File.read(INTEGRATION_CLOSEOUT)
+
+    [skill, closeout].each do |text|
+      assert_includes text, '"${PR_BATCH_SKILL_DIR}/bin/diff-identity"'
+      assert_includes text, "--base-ref <BASE_BRANCH>"
+      assert_includes text, "--diff-base-sha <REVIEWED_DIFF_BASE_SHA>"
+      assert_includes text, "--head-sha <FULL_HEAD_SHA>"
+    end
+
+    assert_includes skill, "live base SHA"
+    assert_includes skill, "reviewed diff-base SHA"
+    assert_includes closeout, "canonical diff identity"
+    assert_includes closeout, "reviewed diff-base SHA"
+  end
+
   def test_ask_authority_automatically_walks_through_before_merge_decision
     [WORKFLOW, INTEGRATION_CLOSEOUT, PR_MONITORING].each do |path|
       text = File.read(path).gsub(/\s+/, " ")

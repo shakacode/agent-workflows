@@ -54,7 +54,10 @@ For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversari
 For an interactive human-oriented explanation of a PR, use
 `.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It presents
 one conceptual change at a time, explains why it exists, and pauses for
-questions before continuing.
+questions before continuing. Its walkthrough identity must come from the
+installed `pr-batch/bin/diff-identity` helper using the base ref, reviewed
+diff-base SHA, and full head SHA; an opaque caller-supplied digest is not an
+identity receipt.
 
 ## User-Facing Coordination Contract
 

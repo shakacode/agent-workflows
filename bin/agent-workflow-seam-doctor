@@ -156,6 +156,11 @@ module AgentWorkflowSeamDoctor
       _SECRET_ACCESS_KEY|_PRIVATE_KEY
     )\z
   /x
+  CI_READINESS_POLICY_KEY = "ci_readiness"
+  CI_READINESS_POLICY_KEYS = %w[optional_approval_held_checks version].freeze
+  CI_READINESS_RULE_KEYS = %w[app_slug id name].freeze
+  CI_READINESS_RULE_ID = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
+  CI_READINESS_APP_SLUG = "circleci-checks"
   SYSTEM_TOOL_DIRS = [
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -1756,7 +1761,9 @@ module AgentWorkflowSeamDoctor
       next if key == "trusted_actions" && value == []
       next if key == "writing_style"
 
-      closed_policy = ["autonomous_merge", SELECTED_HOSTED_CI_POLICY_KEY].include?(key)
+      closed_policy = [
+        "autonomous_merge", SELECTED_HOSTED_CI_POLICY_KEY, CI_READINESS_POLICY_KEY
+      ].include?(key)
       next unless unresolved_policy_value?(
         value,
         empty_collections_unresolved: !closed_policy,
@@ -1780,6 +1787,7 @@ module AgentWorkflowSeamDoctor
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
     issues.concat(selected_hosted_ci_receipts_policy_issues(root, config))
+    issues.concat(ci_readiness_policy_issues(config, yaml))
     issues.concat(hosted_qa_policy_issues(root, yaml))
     if config.key?("autonomous_merge")
       autonomous_policy = AutonomousMergePolicy.parse(yaml)
@@ -1995,6 +2003,48 @@ module AgentWorkflowSeamDoctor
     end
 
     selected_hosted_ci_file_issues(root, executable)
+  end
+
+  def ci_readiness_policy_issues(config, yaml)
+    return [] unless config.key?(CI_READINESS_POLICY_KEY)
+
+    duplicate_errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
+      error == '$ contains duplicate key "ci_readiness"' ||
+        error.start_with?("$.ci_readiness contains duplicate key") ||
+        error.start_with?("$.ci_readiness.optional_approval_held_checks contains duplicate key")
+    end
+    issues = duplicate_errors.map { |error| "invalid ci_readiness policy: #{error}" }
+    policy = config[CI_READINESS_POLICY_KEY]
+    return issues if policy == "n/a"
+    unless exact_string_keys?(policy, CI_READINESS_POLICY_KEYS)
+      return issues << "invalid ci_readiness policy: keys must be exactly " \
+                       "#{CI_READINESS_POLICY_KEYS.sort.join(', ')}"
+    end
+    issues << "invalid ci_readiness policy: version must be 1" unless policy["version"] == 1
+    rules = policy["optional_approval_held_checks"]
+    unless rules.is_a?(Array) && rules.any?
+      return issues << "invalid ci_readiness policy: optional_approval_held_checks must be a non-empty list"
+    end
+
+    valid_rules = rules.all? do |rule|
+      exact_string_keys?(rule, CI_READINESS_RULE_KEYS) &&
+        rule["id"].is_a?(String) && rule["id"].match?(CI_READINESS_RULE_ID) &&
+        rule["app_slug"] == CI_READINESS_APP_SLUG &&
+        rule["name"].is_a?(String) && rule["name"] == rule["name"].strip && !rule["name"].empty? &&
+        !rule["name"].match?(/[[:cntrl:]]/) && rule["name"] != "UNKNOWN"
+    end
+    unless valid_rules
+      issues << "invalid ci_readiness policy: each rule must contain exact valid app_slug, id, and name strings"
+      return issues
+    end
+
+    ids = rules.map { |rule| rule.fetch("id") }
+    identities = rules.map { |rule| rule.values_at("app_slug", "name") }
+    issues << "invalid ci_readiness policy: rule ids must be unique" unless ids.uniq.length == ids.length
+    unless identities.uniq.length == identities.length
+      issues << "invalid ci_readiness policy: app_slug/name identities must be unique"
+    end
+    issues
   end
 
   def selected_hosted_ci_file_issues(root, relative_path)
