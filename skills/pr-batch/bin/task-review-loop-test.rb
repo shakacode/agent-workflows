@@ -38,6 +38,10 @@ TASK_IDENTITY = {
   "plan_digest" => "sha256:#{'1' * 64}",
   "task_id" => "task-review-loop-core"
 }.freeze
+CAP_AUTHORITY_ENV = {
+  "AGENT_WORKFLOW_TASK_REVIEW_COORDINATOR_ID" => "coordinator-a",
+  "AGENT_WORKFLOW_TASK_REVIEW_WAIVER_AUTHORITY_REFS" => JSON.generate(["maintainer://justin"])
+}.freeze
 
 class TaskReviewLoopTest < Minitest::Test
   def test_schema_is_closed_and_accepts_the_clean_contract
@@ -282,7 +286,7 @@ class TaskReviewLoopTest < Minitest::Test
       RUBY
 
       stdout, stderr, status = Open3.capture3(
-        { "TASK_REVIEW_FINDINGS_PATH" => findings_path },
+        CAP_AUTHORITY_ENV.merge("TASK_REVIEW_FINDINGS_PATH" => findings_path),
         RbConfig.ruby,
         "-e",
         script,
@@ -563,6 +567,64 @@ class TaskReviewLoopTest < Minitest::Test
       assert_equal replay.fetch("expected"), output.slice(*replay.fetch("expected").keys)
       assert_equal "blocked", sixth_output.fetch("status")
       assert_includes sixth_output.fetch("reasons"), "round-cap-exceeded"
+    end
+  end
+
+  def test_cap_adjudication_requires_the_configured_coordinator
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = cap_input(directory)
+      adjudication = input.fetch("cap_adjudication").merge("coordinator_id" => "implementer-a")
+      output, = evaluate(input.merge("cap_adjudication" => adjudication))
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "cap-coordinator-unauthorized"
+      refute output.fetch("dependent_task_permitted")
+    end
+  end
+
+  def test_cap_adjudication_fails_closed_without_authority_policy
+    Dir.mktmpdir("task-review-loop") do |directory|
+      output, = evaluate(
+        cap_input(directory),
+        "AGENT_WORKFLOW_TASK_REVIEW_COORDINATOR_ID" => nil,
+        "AGENT_WORKFLOW_TASK_REVIEW_WAIVER_AUTHORITY_REFS" => nil
+      )
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "cap-authority-policy-invalid"
+      refute output.fetch("dependent_task_permitted")
+    end
+  end
+
+  def test_cap_waiver_requires_a_configured_authority_reference
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = cap_input(directory)
+      record = input.dig("cap_adjudication", "findings", 0).merge(
+        "disposition" => "waived",
+        "authority_ref" => "arbitrary://self-asserted"
+      ).reject { |key, _value| key == "tracking_ref" }
+      adjudication = input.fetch("cap_adjudication").merge("findings" => [record])
+      output, = evaluate(input.merge("cap_adjudication" => adjudication))
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "cap-waiver-authority-untrusted"
+      refute output.fetch("dependent_task_permitted")
+    end
+  end
+
+  def test_cap_waiver_accepts_the_configured_authority_reference
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = cap_input(directory)
+      record = input.dig("cap_adjudication", "findings", 0).merge(
+        "disposition" => "waived",
+        "authority_ref" => "maintainer://justin"
+      ).reject { |key, _value| key == "tracking_ref" }
+      adjudication = input.fetch("cap_adjudication").merge("findings" => [record])
+      output, = evaluate(input.merge("cap_adjudication" => adjudication))
+
+      assert_equal "task_complete", output.fetch("status")
+      assert_equal ["cap-adjudicated"], output.fetch("reasons")
+      assert output.fetch("dependent_task_permitted")
     end
   end
 
@@ -1194,6 +1256,49 @@ class TaskReviewLoopTest < Minitest::Test
       assert_equal "blocked", output.fetch("status")
       assert_includes output.fetch("reasons"), "review-findings-incomplete-coverage"
       assert_includes output.fetch("reasons"), "open-findings-incomplete-coverage"
+    end
+  end
+
+  def test_nonempty_findings_require_a_complete_range_bound_review_receipt
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      addressed = finding(
+        "finding-1",
+        disposition: "accepted_fixed",
+        head_sha: HEAD_SHA,
+        independent_validation: {
+          "status" => "confirmed",
+          "validator" => "reviewer-b",
+          "evidence" => ["fix-diff://finding-1"]
+        }
+      )
+      partial_receipt = review_receipt
+      partial_receipt["coverage"] = {
+        "status" => "partial",
+        "included_paths" => [],
+        "excluded_paths" => ["lib/task-review.rb"],
+        "limitations" => ["The task path was not reviewed."]
+      }
+      variants = {
+        "missing" => nil,
+        "partial" => partial_receipt
+      }
+
+      variants.each do |name, receipt|
+        findings_path = write_findings(directory, "#{name}-nonempty-findings.json", [addressed], receipt: receipt)
+        findings = artifact(findings_path)
+        round = with_digest(
+          input.fetch("rounds").last.merge(
+            "review_findings" => findings,
+            "addressed_finding_ids" => ["finding-1"]
+          ).reject { |key, _value| key == "digest" }
+        )
+        output, = evaluate(input.merge("rounds" => [round]))
+
+        assert_equal "blocked", output.fetch("status"), name
+        assert_includes output.fetch("reasons"), "review-findings-incomplete-coverage", name
+        refute output.fetch("dependent_task_permitted"), name
+      end
     end
   end
 
@@ -2069,13 +2174,19 @@ class TaskReviewLoopTest < Minitest::Test
     rebind_package(input.merge("worker_report" => report), "worker_report_digest" => report.fetch("digest"))
   end
 
-  def write_findings(directory, basename, findings, receipt: nil)
+  def write_findings(directory, basename, findings, receipt: :auto)
     path = File.join(directory, basename)
     document = {
       "schema" => "review-finding-v0",
       "reviewer_id" => "reviewer-b",
       "review_findings" => findings
     }
+    if receipt == :auto
+      head_sha = findings.first&.dig("target", "head_sha") || HEAD_SHA
+      head_index = CAP_HEAD_SHAS.index(head_sha)
+      base_sha = head_index&.positive? ? CAP_HEAD_SHAS.fetch(head_index - 1) : BASE_SHA
+      receipt = review_receipt(head_sha: head_sha, base_sha: base_sha)
+    end
     document["review_receipt"] = receipt if receipt
     File.write(
       path,
@@ -2108,8 +2219,8 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
-  def evaluate(input)
-    stdout, stderr, status = Open3.capture3(HELPER, stdin_data: JSON.generate(input))
+  def evaluate(input, env = {})
+    stdout, stderr, status = Open3.capture3(CAP_AUTHORITY_ENV.merge(env), HELPER, stdin_data: JSON.generate(input))
     assert status.success?, stderr
     [JSON.parse(stdout), stdout]
   end

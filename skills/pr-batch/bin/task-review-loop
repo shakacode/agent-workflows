@@ -68,6 +68,8 @@ module TaskReviewLoop
   VERIFICATION_STATUSES = %w[passed failed not_run UNKNOWN].freeze
   REPLACEMENT_REASONS = %w[continuation_unavailable implementer_unavailable bounded_escalation].freeze
   CAP_DISPOSITIONS = %w[disproven waived deferred blocked].freeze
+  COORDINATOR_ID_ENV = "AGENT_WORKFLOW_TASK_REVIEW_COORDINATOR_ID"
+  WAIVER_AUTHORITIES_ENV = "AGENT_WORKFLOW_TASK_REVIEW_WAIVER_AUTHORITY_REFS"
 
   module_function
 
@@ -354,8 +356,7 @@ module TaskReviewLoop
     return false unless same_actor?(document["reviewer_id"], reviewer_id)
 
     receipt = document["review_receipt"]
-    return false if findings.empty? && !receipt
-    return true unless receipt
+    return false unless receipt
 
     target = receipt["target"]
     target.is_a?(Hash) && target["kind"] == "committed" &&
@@ -366,6 +367,17 @@ module TaskReviewLoop
     document.dig("review_receipt", "coverage", "status") == "complete"
   end
 
+  def cap_authority_from_env
+    coordinator_id = ENV[COORDINATOR_ID_ENV]
+    authority_refs = JSON.parse(ENV.fetch(WAIVER_AUTHORITIES_ENV, "[]"))
+    return nil unless non_empty_string?(coordinator_id) && string_array?(authority_refs) &&
+                      authority_refs.uniq == authority_refs
+
+    { "coordinator_id" => coordinator_id, "waiver_authority_refs" => authority_refs }
+  rescue JSON::ParserError
+    nil
+  end
+
   def finding_lineage_valid?(prior, current)
     stable_keys = %w[id source title body location]
     severity_order = %w[P0 P1 P2 P3 INFO]
@@ -374,10 +386,15 @@ module TaskReviewLoop
       (prior["consequential"] != true || current["consequential"] == true)
   end
 
-  def validate_cap_adjudication(adjudication, open_ids)
+  def validate_cap_adjudication(adjudication, open_ids, authority)
     return ["cap-adjudication-required"] unless adjudication.is_a?(Hash)
 
     errors = []
+    if authority.nil?
+      errors << "cap-authority-policy-invalid"
+    elsif !same_actor?(adjudication["coordinator_id"], authority["coordinator_id"])
+      errors << "cap-coordinator-unauthorized"
+    end
     records = adjudication.fetch("findings")
     adjudicated_ids = records.map { |record| record.fetch("finding_id") }
     unless adjudication["round"] == 5 && adjudicated_ids.sort == open_ids.sort &&
@@ -396,15 +413,18 @@ module TaskReviewLoop
       end
       if record["disposition"] == "waived" && !non_empty_string?(record["authority_ref"])
         errors << "cap-waiver-authority-required"
+      elsif record["disposition"] == "waived" && authority &&
+            !authority["waiver_authority_refs"].include?(record["authority_ref"])
+        errors << "cap-waiver-authority-untrusted"
       end
     end
     errors
   end
 
-  def validate_cap_state(adjudication, open_ids)
+  def validate_cap_state(adjudication, open_ids, authority)
     return adjudication.nil? ? [] : ["cap-adjudication-unexpected"] if open_ids.empty?
 
-    validate_cap_adjudication(adjudication, open_ids)
+    validate_cap_adjudication(adjudication, open_ids, authority)
   end
 
   def validate_pending_open_findings(input, round, identity, findings_cache)
@@ -441,7 +461,7 @@ module TaskReviewLoop
     errors
   end
 
-  def validate(input, findings_cache = {})
+  def validate(input, findings_cache = {}, cap_authority = cap_authority_from_env)
     return ["input-object-required"] unless input.is_a?(Hash)
     return ["contract-version-invalid"] unless input["contract"] == "task-review-loop" && input["version"] == 1
     return ["input-schema-invalid"] unless closed_shape?(input)
@@ -685,7 +705,7 @@ module TaskReviewLoop
         )
           errors << "review-findings-foreign"
         end
-        if findings.empty? && !complete_findings_coverage?(findings_document)
+        unless complete_findings_coverage?(findings_document)
           errors << "review-findings-incomplete-coverage"
         end
         derived_open_ids = findings.filter_map do |finding|
@@ -766,7 +786,7 @@ module TaskReviewLoop
           round&.[]("reviewer_id")
         )
         open_records = open_document.fetch("review_findings")
-        if open_records.empty? && !complete_findings_coverage?(open_document)
+        unless complete_findings_coverage?(open_document)
           errors << "open-findings-incomplete-coverage"
         end
         actual_open_ids = open_records.map { |finding| finding["id"] }
@@ -797,7 +817,7 @@ module TaskReviewLoop
         errors << "new-consequential-finding-invalid" unless (declared_new - consequential_ids).empty?
 
         if round.is_a?(Hash) && round["number"] == 5
-          errors.concat(validate_cap_state(input["cap_adjudication"], actual_open_ids))
+          errors.concat(validate_cap_state(input["cap_adjudication"], actual_open_ids, cap_authority))
         end
       end
     end
@@ -805,9 +825,9 @@ module TaskReviewLoop
     errors.compact.uniq
   end
 
-  def reduce(input)
+  def reduce(input, cap_authority = cap_authority_from_env)
     findings_cache = {}
-    errors = validate(input, findings_cache)
+    errors = validate(input, findings_cache, cap_authority)
     unless errors.empty?
       return decision("blocked", false, errors.sort)
     end

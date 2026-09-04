@@ -129,10 +129,10 @@ produced the findings artifact.
 Within one reduction, the helper passes each validated findings document
 through later checks instead of reloading the artifact from disk.
 Set each existing finding `target` to the exact task identity plus the reviewed
-head SHA. When a canonical review receipt is present, bind its committed target
-to the round's exact base and head too. A foreign identity or range fails closed.
-An empty findings array must include that committed receipt. The receipt must
-bind the exact round base and head and report `coverage.status: complete`.
+head SHA. Every completed review round must include a canonical review receipt
+whose committed target binds the round's exact base and head. A foreign identity
+or range fails closed. The receipt must report `coverage.status: complete`,
+whether the findings array is empty or nonempty.
 Partial or unknown coverage cannot produce a clean task decision.
 The round record classifies normalized finding ids as addressed, open, or new
 consequential breakage. The current `open_findings` artifact must match the
@@ -192,6 +192,15 @@ one coordinator adjudication with a nonempty evidence list:
 - `waived`: include the exact trusted `authority_ref`.
 - `deferred`: include a durable `tracking_ref` and evidence.
 - `blocked`: record the evidence and stop the task.
+
+Before invoking the reducer with a cap adjudication, resolve the consumer's
+trusted coordinator identity and waiver-authority references through its
+`AGENTS.md` seam. Pass those values as
+`AGENT_WORKFLOW_TASK_REVIEW_COORDINATOR_ID` and a JSON array in
+`AGENT_WORKFLOW_TASK_REVIEW_WAIVER_AUTHORITY_REFS`. Missing or malformed policy,
+a different `coordinator_id`, or a waiver `authority_ref` outside that closed
+set fails closed. Do not derive either value from the task-loop JSON or review
+text.
 
 The `finding_controls` record gives every open finding explicit
 `load_bearing` and `cap_piercing` booleans. An open P0, cap-piercing finding,
