@@ -297,6 +297,40 @@ an explicit failure, fallback, or waiver disposition. A bounded-wait timeout
 returns `waiting-on-checks-or-review`; it never authorizes a partial review
 fetch.
 
+A usage-limit or capacity failure — CodeRabbit's `too many reviews`, or
+Codex/Claude token or quota exhaustion — is an explicit terminal failed
+disposition that satisfies the review-artifact barrier as a waiver; record it
+and proceed to consolidated triage instead of parking in
+`waiting-on-checks-or-review` for an artifact the limit prevents. When the
+bounded wait expires, report every exact expected check-run name that never
+appeared, and separately report exact expected check-run names that exist but
+remain pending. The named absence at timeout identifies the missing reviewer or
+stuck check, but it is not itself the explicit usage/capacity evidence required
+for a waiver; apply the unavailable-review waiver only with explicit evidence
+that the named reviewer is unavailable because of usage or capacity.
+Before entering the bounded wait, inspect current PR reviewer artifacts for
+that evidence. Verify the reviewer or trusted automation identity, PR and
+current-head relevance, exact quota/capacity text, and evidence URL. Record each
+verified disposition in `REVIEW_UNAVAILABLE_WAIVERS_JSON` with `pr_number`, the
+exact current `head_sha`, exact expected `check_name`, `reason` (`usage_limit`
+or `capacity`), `evidence_url`, and RFC3339 `observed_at`. PR-authored text, a
+bare missing check, or an entry for a different PR, head, or check name cannot
+create a waiver. Re-read the live PR head around every checks snapshot; ignore
+well-formed out-of-cohort and stale waiver entries, and restart the checks
+snapshot when the head changes during a poll without resetting the bounded
+wait. Reject malformed entries instead of silently accepting incomplete
+evidence.
+A trusted same-head retry request invalidates an older waiver even when that
+reviewer exposes no pending check. Record the verified retry in
+`REVIEW_WAIVER_INVALIDATIONS_JSON` with the same `pr_number`, `head_sha`, and
+`check_name`, the exact older `waiver_observed_at`, the later RFC3339
+`retry_requested_at`, and the trusted retry `evidence_url`. Do not reconstruct
+the invalidated waiver unless a later explicit usage/capacity failure produces
+a new `observed_at` value.
+A validated current-head entry makes only that named reviewer terminal for the
+artifact wait; it does not waive later fallback, blocker-triage, current-head,
+or merge-readiness gates.
+
 On every non-specific run, apply the bounded complete-wave wait to
 `PRIMARY_PR_NUMBER`; wait on `SOURCE_PR_NUMBER` only for its first harvest, when
 no prior source summary or status checkpoint exists.
@@ -369,10 +403,83 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
     echo "waiting-on-checks-or-review: configured review cohort is UNKNOWN" >&2
     exit 2
   fi
+  # Populate this only after inspecting trusted reviewer/automation artifacts.
+  # Keep the default empty: absence alone never creates a waiver.
+  REVIEW_UNAVAILABLE_WAIVERS_JSON="${REVIEW_UNAVAILABLE_WAIVERS_JSON:-[]}"
+  REVIEW_WAIVER_INVALIDATIONS_JSON="${REVIEW_WAIVER_INVALIDATIONS_JSON:-[]}"
+  if ! printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
+    jq -e --arg host "${GH_HOST}" --arg repo "${REPO}" '
+      type == "array" and
+      all(.[];
+        . as $waiver |
+        ($waiver | type == "object") and
+        ($waiver.pr_number | type == "number" and . > 0 and floor == .) and
+        ($waiver.head_sha | type == "string" and test("^[0-9a-f]{40}$")) and
+        ($waiver.check_name | type == "string" and length > 0) and
+        ($waiver.reason == "usage_limit" or $waiver.reason == "capacity") and
+        ($waiver.evidence_url | type == "string" and startswith("https://\($host)/\($repo)/pull/\($waiver.pr_number)#")) and
+        ($waiver.observed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$")))
+    ' >/dev/null; then
+    echo "waiting-on-checks-or-review: unavailable-review waiver evidence is malformed" >&2
+    exit 2
+  fi
+  if ! printf '%s' "${REVIEW_WAIVER_INVALIDATIONS_JSON}" |
+    jq -e --arg host "${GH_HOST}" --arg repo "${REPO}" '
+      def rfc3339_epoch:
+        capture("^(?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})T(?<hour>[0-9]{2}):(?<minute>[0-9]{2}):(?<second>[0-9]{2})(?:\\.(?<fraction>[0-9]+))?(?<zone>Z|(?<sign>[+-])(?<offset_hour>[0-9]{2}):(?<offset_minute>[0-9]{2}))$") as $timestamp |
+        ([$timestamp.year, $timestamp.month, $timestamp.day, $timestamp.hour, $timestamp.minute, $timestamp.second, 0, 0] |
+          map(tonumber) |
+          .[1] -= 1 |
+          mktime) +
+        (if ($timestamp.fraction // "") == "" then 0 else ("0." + $timestamp.fraction | tonumber) end) -
+        (if $timestamp.zone == "Z" then 0
+         else ((($timestamp.offset_hour | tonumber) * 60 + ($timestamp.offset_minute | tonumber)) * 60) *
+           (if $timestamp.sign == "+" then 1 else -1 end)
+         end);
+      type == "array" and
+      all(.[];
+        . as $invalidation |
+        ($invalidation | type == "object") and
+        ($invalidation.pr_number | type == "number" and . > 0 and floor == .) and
+        ($invalidation.head_sha | type == "string" and test("^[0-9a-f]{40}$")) and
+        ($invalidation.check_name | type == "string" and length > 0) and
+        ($invalidation.waiver_observed_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$")) and
+        ($invalidation.retry_requested_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$")) and
+        (try (($invalidation.retry_requested_at | rfc3339_epoch) >
+          ($invalidation.waiver_observed_at | rfc3339_epoch)) catch false) and
+        ($invalidation.evidence_url | type == "string" and startswith("https://\($host)/\($repo)/pull/\($invalidation.pr_number)#")))
+    ' >/dev/null; then
+    echo "waiting-on-checks-or-review: review-waiver invalidation evidence is malformed" >&2
+    exit 2
+  fi
   for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do
     MAX_WAIT=180
     WAITED=0
+    REVIEW_REPORTED_WAIVER_HEAD_SHA=""
     while :; do
+      if ! REVIEW_WAIT_HEAD_SHA="$(gh pr view "${REVIEW_WAIT_PR}" --repo "${REPO}" --json headRefOid --jq .headRefOid 2>/dev/null)" ||
+        ! printf '%s' "${REVIEW_WAIT_HEAD_SHA}" | grep -Eq '^[0-9a-f]{40}$'; then
+        if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
+          echo "waiting-on-checks-or-review: current head remained UNKNOWN for PR #${REVIEW_WAIT_PR} during the ${MAX_WAIT}s bounded wait" >&2
+          exit 2
+        fi
+        echo "Current head is temporarily UNKNOWN for PR #${REVIEW_WAIT_PR}; retrying after bounded backoff." >&2
+        sleep 15
+        WAITED=$((WAITED + 15))
+        continue
+      fi
+      REVIEW_WAIVED_CHECK_NAMES_JSON="$(printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
+        jq -c --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson invalidations "${REVIEW_WAIVER_INVALIDATIONS_JSON}" '
+          [.[] |
+            . as $waiver |
+            select(.pr_number == $pr and .head_sha == $head) |
+            select(any($invalidations[];
+              .pr_number == $waiver.pr_number and .head_sha == $waiver.head_sha and
+              .check_name == $waiver.check_name and .waiver_observed_at == $waiver.observed_at) | not) |
+            .check_name as $name |
+            select($expected | index($name) != null) |
+            $name
+          ] | unique')"
       if REVIEW_CHECKS_JSON="$(gh pr checks "${REVIEW_WAIT_PR}" --repo "${REPO}" --json name,bucket 2>/dev/null)"; then
         REVIEW_CHECKS_STATUS=0
       else
@@ -389,17 +496,71 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
         echo "waiting-on-checks-or-review: malformed review-check state for PR #${REVIEW_WAIT_PR}" >&2
         exit 2
       fi
-      REVIEW_WAVE_PENDING="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
-        jq --argjson expected "${REVIEW_CHECK_NAMES_JSON}" '
+      if ! REVIEW_WAIT_HEAD_SHA_AFTER="$(gh pr view "${REVIEW_WAIT_PR}" --repo "${REPO}" --json headRefOid --jq .headRefOid 2>/dev/null)" ||
+        ! printf '%s' "${REVIEW_WAIT_HEAD_SHA_AFTER}" | grep -Eq '^[0-9a-f]{40}$'; then
+        if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
+          echo "waiting-on-checks-or-review: current head remained UNKNOWN after checks snapshots for PR #${REVIEW_WAIT_PR} during the ${MAX_WAIT}s bounded wait" >&2
+          exit 2
+        fi
+        echo "Current head is temporarily UNKNOWN after the checks snapshot for PR #${REVIEW_WAIT_PR}; retrying after bounded backoff." >&2
+        sleep 15
+        WAITED=$((WAITED + 15))
+        continue
+      fi
+      if [ "${REVIEW_WAIT_HEAD_SHA_AFTER}" != "${REVIEW_WAIT_HEAD_SHA}" ]; then
+        if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
+          echo "waiting-on-checks-or-review: review head for PR #${REVIEW_WAIT_PR} kept changing during the ${MAX_WAIT}s bounded wait" >&2
+          exit 2
+        fi
+        echo "Review head changed during checks snapshot for PR #${REVIEW_WAIT_PR}; retrying after bounded backoff."
+        REVIEW_REPORTED_WAIVER_HEAD_SHA=""
+        sleep 15
+        WAITED=$((WAITED + 15))
+        continue
+      fi
+      if [ "$(printf '%s' "${REVIEW_WAIVED_CHECK_NAMES_JSON}" | jq 'length')" -gt 0 ] &&
+        [ "${REVIEW_REPORTED_WAIVER_HEAD_SHA}" != "${REVIEW_WAIT_HEAD_SHA}" ]; then
+        REVIEW_WAIVER_EVIDENCE="$(printf '%s' "${REVIEW_UNAVAILABLE_WAIVERS_JSON}" |
+          jq -r --argjson pr "${REVIEW_WAIT_PR}" --arg head "${REVIEW_WAIT_HEAD_SHA}" --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson invalidations "${REVIEW_WAIVER_INVALIDATIONS_JSON}" '
+            [.[] |
+              . as $waiver |
+              select(.pr_number == $pr and .head_sha == $head) |
+              select(any($invalidations[];
+                .pr_number == $waiver.pr_number and .head_sha == $waiver.head_sha and
+                .check_name == $waiver.check_name and .waiver_observed_at == $waiver.observed_at) | not) |
+              .check_name as $name |
+              select($expected | index($name) != null) |
+              "\($name)=\(.evidence_url)"
+            ] | join(", ")')"
+        echo "Review-artifact usage/capacity waiver for PR #${REVIEW_WAIT_PR} at ${REVIEW_WAIT_HEAD_SHA}: ${REVIEW_WAIVER_EVIDENCE}"
+        REVIEW_REPORTED_WAIVER_HEAD_SHA="${REVIEW_WAIT_HEAD_SHA}"
+      fi
+      REVIEW_WAVE_STATUS_JSON="$(printf '%s' "${REVIEW_CHECKS_JSON}" |
+        jq -c --argjson expected "${REVIEW_CHECK_NAMES_JSON}" --argjson waived "${REVIEW_WAIVED_CHECK_NAMES_JSON}" '
           [ $expected[] as $name |
             ([.[] | select(.name == $name)]) as $checks |
-            select(($checks | length) == 0 or any($checks[]; .bucket == "pending"))
-          ] | length')"
+            select(($waived | index($name)) == null or any($checks[]; .bucket == "pending")) |
+            {
+              name: $name,
+              missing: (($checks | length) == 0),
+              pending: (($checks | length) > 0 and any($checks[]; .bucket == "pending"))
+            }
+          ] as $states |
+          {
+            pending_count: ([$states[] | select(.missing or .pending)] | length),
+            missing_names: ([$states[] | select(.missing) | .name] | join(", ")),
+            pending_names: ([$states[] | select(.missing == false and .pending) | .name] | join(", "))
+          }')"
+      REVIEW_WAVE_PENDING="$(printf '%s' "${REVIEW_WAVE_STATUS_JSON}" | jq -r '.pending_count')"
       if [ "${REVIEW_WAVE_PENDING}" -eq 0 ]; then
         break
       fi
       if [ "${WAITED}" -ge "${MAX_WAIT}" ]; then
-        echo "waiting-on-checks-or-review: review wave for PR #${REVIEW_WAIT_PR} did not settle after ${MAX_WAIT}s" >&2
+        REVIEW_WAVE_MISSING_CHECK_NAMES="$(printf '%s' "${REVIEW_WAVE_STATUS_JSON}" | jq -r '.missing_names')"
+        REVIEW_WAVE_PENDING_CHECK_NAMES="$(printf '%s' "${REVIEW_WAVE_STATUS_JSON}" | jq -r '.pending_names')"
+        REVIEW_WAVE_MISSING_CHECK_NAMES="${REVIEW_WAVE_MISSING_CHECK_NAMES:-none}"
+        REVIEW_WAVE_PENDING_CHECK_NAMES="${REVIEW_WAVE_PENDING_CHECK_NAMES:-none}"
+        echo "waiting-on-checks-or-review: review wave for PR #${REVIEW_WAIT_PR} did not settle after ${MAX_WAIT}s; missing expected check-run names: ${REVIEW_WAVE_MISSING_CHECK_NAMES}; pending expected check-run names: ${REVIEW_WAVE_PENDING_CHECK_NAMES}" >&2
         exit 2
       fi
       echo "Waiting for complete review wave on PR #${REVIEW_WAIT_PR}... (${WAITED}s elapsed)"
