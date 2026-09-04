@@ -943,6 +943,33 @@ def warnings_not_already_blocking(suspicious_warnings, suspicious)
   suspicious_warnings.reject { |finding| blocking_locations.include?(finding.fetch(:location)) }
 end
 
+def oversized_pull_request_diff_error?(error)
+  message = error.message
+  message.include?("gh pr diff ") && message.match?(/HTTP 406/i) &&
+    (message.include?("diff exceeded the maximum number of lines") || message.include?("PullRequest.diff too_large"))
+end
+
+def pull_request_diff(repo, number)
+  {
+    content: run_gh("pr", "diff", number.to_s, "--repo", repo),
+    coverage_findings: []
+  }
+rescue RuntimeError => e
+  raise unless oversized_pull_request_diff_error?(e)
+
+  {
+    content: nil,
+    coverage_findings: [
+      {
+        connection: "pull request diff",
+        fetched_count: 0,
+        reason: "HTTP 406; diff exceeds GitHub's 20,000-line limit",
+        total_count: 1
+      }
+    ]
+  }
+end
+
 def suspicious_findings_for_target(repo:, number:, rest:, target:, target_is_pr:, trust_config:, team_cache:)
   suspicious = []
   suspicious_warnings = suspicious_text_findings(
@@ -961,10 +988,13 @@ def suspicious_findings_for_target(repo:, number:, rest:, target:, target_is_pr:
     pattern: WARNING_SUSPICIOUS_PATTERN
   )
 
+  diff_coverage_findings = []
   if target_is_pr
-    diff = run_gh("pr", "diff", number.to_s, "--repo", repo)
-    blocking_diff_findings = suspicious_added_lines(diff, pattern: BLOCKING_SUSPICIOUS_PATTERN)
-    warning_diff_findings = suspicious_added_lines(diff, pattern: WARNING_SUSPICIOUS_PATTERN)
+    diff_result = pull_request_diff(repo, number)
+    diff_coverage_findings = diff_result.fetch(:coverage_findings)
+    diff = diff_result.fetch(:content)
+    blocking_diff_findings = diff ? suspicious_added_lines(diff, pattern: BLOCKING_SUSPICIOUS_PATTERN) : []
+    warning_diff_findings = diff ? suspicious_added_lines(diff, pattern: WARNING_SUSPICIOUS_PATTERN) : []
     suspicious.concat(blocking_diff_findings)
     if trusted_pr_source?(repo, target, trust_config:, team_cache:)
       suspicious_warnings.concat(warning_diff_findings)
@@ -975,7 +1005,7 @@ def suspicious_findings_for_target(repo:, number:, rest:, target:, target_is_pr:
 
   suspicious_warnings = warnings_not_already_blocking(suspicious_warnings, suspicious)
 
-  { suspicious:, suspicious_warnings: }
+  { diff_coverage_findings:, suspicious:, suspicious_warnings: }
 end
 
 def untrusted_interaction_finding(repo, author, kind, url, trust_config:, team_cache:)
@@ -1580,6 +1610,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
 
   {
     changed_file_count: diff_snapshot&.fetch(:changed_file_count),
+    diff_coverage_findings: suspicious_findings.fetch(:diff_coverage_findings),
     diff_identity:,
     file_records:,
     files:,
@@ -1613,7 +1644,9 @@ def print_graph_coverage_findings(findings)
 
   puts "  GitHub API coverage findings:"
   findings.each do |finding|
-    if finding.fetch(:reason) == "nodes unavailable"
+    if finding.fetch(:connection) == "pull request diff"
+      puts "    - pull request diff unavailable: #{finding.fetch(:reason)}"
+    elsif finding.fetch(:reason) == "nodes unavailable"
       puts "    - #{finding.fetch(:connection)} nodes unavailable; " \
            "reported total_count=#{finding.fetch(:total_count)}"
     else
@@ -1793,7 +1826,8 @@ end
 def record_blockers(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:,
                     strict_trust:)
   number = result.fetch(:number)
-  if result.fetch(:graph_coverage_findings).any?
+  coverage_findings = result.fetch(:graph_coverage_findings) + result.fetch(:diff_coverage_findings)
+  if coverage_findings.any?
     record_blocker(
       number,
       "github-api-coverage",
@@ -1876,7 +1910,7 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
     puts "  Diff base/head identity: #{JSON.generate(result.fetch(:diff_identity))}"
     puts "  Authoritative changed-file count: #{result.fetch(:changed_file_count)}"
   end
-  print_graph_coverage_findings(result.fetch(:graph_coverage_findings))
+  print_graph_coverage_findings(result.fetch(:graph_coverage_findings) + result.fetch(:diff_coverage_findings))
   print_participant_findings(result.fetch(:participant_findings))
   print_untrusted_interactions(result.fetch(:untrusted_interactions))
   print_metadata_only_interactions(result.fetch(:metadata_only_interactions))
