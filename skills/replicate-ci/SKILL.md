@@ -32,15 +32,16 @@ that pagination is complete, record the unavailable facts as `UNKNOWN`.
 
 For GitHub Actions when that seam is absent, use this shipped default. The
 workflow-runs and attempt-jobs calls deliberately paginate and combine every
-page:
+page. Resolve `<HOST>` from the target repository URL or run URL; do not assume
+that the repository is hosted on `github.com`:
 
 ```bash
-gh api --method GET --paginate --slurp \
+gh api --hostname <HOST> --method GET --paginate --slurp \
   repos/<OWNER>/<REPO>/actions/workflows/<WORKFLOW_ID_OR_FILE>/runs \
   -f head_sha='<HEAD_SHA>' -F per_page=100 |
   jq '[.[].workflow_runs[] | {databaseId: .id, attempt: .run_attempt, conclusion: .conclusion, headSha: .head_sha, event: .event, workflowName: .name, number: .run_number, createdAt: .created_at, url: .html_url}]'
 gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
-gh api --method GET --paginate --slurp \
+gh api --hostname <HOST> --method GET --paginate --slurp \
   repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs \
   -F per_page=100 |
   jq '[.[].jobs[] | {name: .name, conclusion: .conclusion, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}]'
