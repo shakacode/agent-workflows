@@ -30,6 +30,7 @@ input:
 ```
 
 The helper reads contract artifacts and emits one deterministic JSON decision.
+Git must be available to parse exact-diff paths with read-only `git apply --numstat -z`.
 It does not create or update worktrees, claims, files, commits, branches, PRs,
 checks, or backend state.
 
@@ -133,6 +134,10 @@ head SHA. Every completed review round must include a canonical review receipt
 whose committed target binds the round's exact base and head. A foreign identity
 or range fails closed. The receipt must report `coverage.status: complete`,
 whether the findings array is empty or nonempty.
+Its `coverage.included_paths` must cover every path in that round's exact diff,
+not every path in the cumulative worker report. Renames use the destination
+path; deletions use the deleted path. An unparseable diff cannot prove complete
+coverage.
 Partial or unknown coverage cannot produce a clean task decision.
 The round record classifies normalized finding ids as addressed, open, or new
 consequential breakage. The current `open_findings` artifact must match the

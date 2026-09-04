@@ -244,7 +244,7 @@ class TaskReviewLoopTest < Minitest::Test
       output, = evaluate(input)
 
       assert_equal "blocked", output.fetch("status")
-      assert_equal ["exact-diff-empty"], output.fetch("reasons")
+      assert_includes output.fetch("reasons"), "exact-diff-empty"
     end
   end
 
@@ -263,7 +263,7 @@ class TaskReviewLoopTest < Minitest::Test
       output, = evaluate(input)
 
       assert_equal "blocked", output.fetch("status")
-      assert_equal ["exact-diff-unreadable"], output.fetch("reasons")
+      assert_includes output.fetch("reasons"), "exact-diff-unreadable"
     end
   end
 
@@ -1282,6 +1282,67 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_fix_coverage_does_not_require_unchanged_task_paths
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = consequential_breakage_input(directory, changed_paths: ["lib/task-review.rb", "lib/other.rb"])
+      assert JSONSchemer.schema(JSON.parse(File.read(SCHEMA))).valid?(input)
+      output, = evaluate(input)
+
+      assert_equal "fix_required", output.fetch("status")
+      refute_includes output.fetch("reasons"), "review-findings-incomplete-coverage"
+      refute_includes output.fetch("reasons"), "open-findings-incomplete-coverage"
+    end
+  end
+
+  def test_coverage_uses_diff_paths_even_when_report_omits_them
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = rebind_report(clean_review_input(directory), "changed_paths" => [])
+      diff_path = input.dig("review_package", "exact_diff", "path")
+      File.write(diff_path, exact_patch("lib/unreviewed.rb", "change"))
+      input = rebind_package(input, "exact_diff" => artifact(diff_path).merge("truncated" => false))
+      output, = evaluate(input)
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-findings-incomplete-coverage"
+      assert_includes output.fetch("reasons"), "open-findings-incomplete-coverage"
+    end
+  end
+
+  def test_exact_diff_coverage_parses_git_path_variants
+    variants = {
+      "rename" => ["lib/renamed.rb", "diff --git a/lib/old.rb b/lib/renamed.rb\nsimilarity index 100%\nrename from lib/old.rb\nrename to lib/renamed.rb\n"],
+      "deletion" => ["lib/deleted.rb", "diff --git a/lib/deleted.rb b/lib/deleted.rb\ndeleted file mode 100644\n--- a/lib/deleted.rb\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n"],
+      "binary" => ["lib/data.bin", "diff --git a/lib/data.bin b/lib/data.bin\nindex 1234567..7654321 100644\nBinary files a/lib/data.bin and b/lib/data.bin differ\n"],
+      "space" => ["lib/a b.rb", exact_patch("lib/a b.rb", "change")],
+      "tab" => ["lib/a\tb.rb", "diff --git \"a/lib/a\\tb.rb\" \"b/lib/a\\tb.rb\"\n--- \"a/lib/a\\tb.rb\"\n+++ \"b/lib/a\\tb.rb\"\n@@ -0,0 +1 @@\n+change\n"]
+    }
+    variants.each do |name, (path, patch)|
+      Dir.mktmpdir("task-review-loop") do |directory|
+        input = clean_review_input(directory, changed_paths: [path])
+        diff_path = input.dig("review_package", "exact_diff", "path")
+        File.write(diff_path, patch)
+        input = rebind_package(input, "exact_diff" => artifact(diff_path).merge("truncated" => false))
+        output, = evaluate(input)
+
+        assert_equal "task_complete", output.fetch("status"), "#{name}: #{output}"
+      end
+    end
+  end
+
+  def test_malformed_nonempty_diff_cannot_prove_complete_coverage
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      diff_path = input.dig("review_package", "exact_diff", "path")
+      File.write(diff_path, "diff --git a/lib/task-review.rb b/lib/task-review.rb\n+not a patch\n")
+      input = rebind_package(input, "exact_diff" => artifact(diff_path).merge("truncated" => false))
+      output, = evaluate(input)
+
+      assert_equal "blocked", output.fetch("status")
+      assert_includes output.fetch("reasons"), "review-findings-incomplete-coverage"
+      assert_includes output.fetch("reasons"), "open-findings-incomplete-coverage"
+    end
+  end
+
   def test_nonempty_findings_require_a_complete_range_bound_review_receipt
     Dir.mktmpdir("task-review-loop") do |directory|
       input = clean_review_input(directory)
@@ -1736,13 +1797,17 @@ class TaskReviewLoopTest < Minitest::Test
 
   private
 
+  def exact_patch(path, text)
+    "diff --git a/#{path} b/#{path}\n--- a/#{path}\n+++ b/#{path}\n@@ -0,0 +1 @@\n+#{text}\n"
+  end
+
   def replay_case(name)
     fixture = JSON.parse(File.read(FIXTURES, encoding: "UTF-8"))
     fixture.fetch("cases").find { |entry| entry.fetch("name") == name }.fetch("expected") => expected
     { "expected" => expected }
   end
 
-  def clean_review_input(directory)
+  def clean_review_input(directory, changed_paths: ["lib/task-review.rb"])
     identity = TASK_IDENTITY
     brief = with_digest(
       "identity" => identity,
@@ -1760,20 +1825,20 @@ class TaskReviewLoopTest < Minitest::Test
       "base_sha" => BASE_SHA,
       "head_sha" => HEAD_SHA,
       "commits" => [HEAD_SHA],
-      "changed_paths" => ["lib/task-review.rb"],
+      "changed_paths" => changed_paths,
       "verification" => [{ "command" => "ruby test/task-review-test.rb", "status" => "passed", "outcome" => "1 run" }],
       "concerns" => [],
       "open_context_needs" => []
     )
     diff_path = File.join(directory, "task.diff")
-    File.write(diff_path, "diff --git a/lib/task-review.rb b/lib/task-review.rb\n+review\n")
+    File.write(diff_path, changed_paths.map { |path| exact_patch(path, "review") }.join)
     findings_path = File.join(directory, "review-findings.json")
     File.write(
       findings_path,
       JSON.generate(
         "schema" => "review-finding-v0",
         "reviewer_id" => "reviewer-b",
-        "review_receipt" => review_receipt,
+        "review_receipt" => review_receipt(included_paths: changed_paths),
         "review_findings" => []
       )
     )
@@ -1827,13 +1892,14 @@ class TaskReviewLoopTest < Minitest::Test
     }
   end
 
-  def consequential_breakage_input(directory)
-    input = clean_review_input(directory)
+  def consequential_breakage_input(directory, changed_paths: ["lib/task-review.rb"])
+    input = clean_review_input(directory, changed_paths: changed_paths)
     original_package = input.fetch("review_package")
     initial_findings_path = write_findings(
       directory,
       "initial-findings.json",
-      [finding("finding-1", head_sha: HEAD_SHA)]
+      [finding("finding-1", head_sha: HEAD_SHA)],
+      receipt: review_receipt(included_paths: changed_paths)
     )
     initial_round = with_digest(
       input.fetch("rounds").fetch(0).merge(
@@ -1849,7 +1915,7 @@ class TaskReviewLoopTest < Minitest::Test
       ).reject { |key, _value| key == "digest" }
     )
     fix_diff_path = File.join(directory, "fix.diff")
-    File.write(fix_diff_path, "diff --git a/lib/task-review.rb b/lib/task-review.rb\n+fix\n")
+    File.write(fix_diff_path, exact_patch("lib/task-review.rb", "fix"))
     package = with_digest(
       original_package.merge(
         "worker_report_digest" => report.fetch("digest"),
@@ -1980,7 +2046,7 @@ class TaskReviewLoopTest < Minitest::Test
       )
       round_findings_path = write_findings(directory, "cap-round-#{number}-findings.json", [round_finding])
       round_diff_path = File.join(directory, "cap-round-#{number}.diff")
-      File.write(round_diff_path, "diff --git a/lib/task-review.rb b/lib/task-review.rb\n+cap fix #{number}\n")
+      File.write(round_diff_path, exact_patch("lib/task-review.rb", "cap fix #{number}"))
       round_report = with_digest(
         input.fetch("worker_report").merge(
           "head_sha" => CAP_HEAD_SHAS.fetch(number),
@@ -2029,7 +2095,7 @@ class TaskReviewLoopTest < Minitest::Test
     final_findings_path = write_findings(directory, "cap-round-5-findings.json", [final_finding])
     final_findings_artifact = artifact(final_findings_path)
     final_diff_path = File.join(directory, "cap-round-5.diff")
-    File.write(final_diff_path, "diff --git a/lib/task-review.rb b/lib/task-review.rb\n+cap fix 5\n")
+    File.write(final_diff_path, exact_patch("lib/task-review.rb", "cap fix 5"))
     report = with_digest(
       input.fetch("worker_report").merge(
         "head_sha" => final_head,
@@ -2160,7 +2226,7 @@ class TaskReviewLoopTest < Minitest::Test
     record
   end
 
-  def review_receipt(head_sha: HEAD_SHA, base_sha: BASE_SHA)
+  def review_receipt(head_sha: HEAD_SHA, base_sha: BASE_SHA, included_paths: ["lib/task-review.rb"])
     {
       "source" => "adversarial-pr-review",
       "target" => {
@@ -2173,7 +2239,7 @@ class TaskReviewLoopTest < Minitest::Test
       "risk_lenses" => [{ "name" => "correctness", "status" => "applied", "reason" => "test" }],
       "coverage" => {
         "status" => "complete",
-        "included_paths" => ["lib/task-review.rb"],
+        "included_paths" => included_paths,
         "excluded_paths" => [],
         "limitations" => []
       }

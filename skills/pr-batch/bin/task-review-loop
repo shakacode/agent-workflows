@@ -3,6 +3,7 @@
 
 require "digest"
 require "json"
+require "open3"
 
 finding_validator = File.expand_path("../../../bin/validate-review-findings", __dir__)
 unless File.file?(finding_validator)
@@ -373,6 +374,26 @@ module TaskReviewLoop
     (changed_paths - included_paths).empty?
   end
 
+  def exact_diff_paths(diff)
+    return unless diff.is_a?(String)
+
+    # Git parses quoting, renames, deletions, and binary patches without applying them.
+    output, _stderr, status = Open3.capture3(
+      "git", "apply", "--numstat", "-z", stdin_data: diff, chdir: "/"
+    )
+    return unless status.success?
+
+    paths = output.split("\0").map do |record|
+      added, removed, path = record.split("\t", 3)
+      return nil unless [added, removed].all? { |count| count&.match?(/\A(?:\d+|-)\z/) } && non_empty_string?(path)
+
+      path
+    end
+    paths.uniq unless paths.empty?
+  rescue SystemCallError, ArgumentError
+    nil
+  end
+
   def cap_authority_from_env
     coordinator_id = ENV[COORDINATOR_ID_ENV]
     authority_refs = JSON.parse(ENV.fetch(WAIVER_AUTHORITIES_ENV, "[]"))
@@ -473,6 +494,7 @@ module TaskReviewLoop
     return ["input-schema-invalid"] unless closed_shape?(input)
 
     errors = []
+    diff_paths = {}
     identity = input["identity"]
     brief = input["task_brief"]
     report = input["worker_report"]
@@ -536,6 +558,7 @@ module TaskReviewLoop
       diff, diff_error = load_artifact(package["exact_diff"], "exact-diff")
       errors << diff_error if diff_error
       errors << "exact-diff-empty" if diff && diff.strip.empty?
+      diff_paths[package["digest"]] = exact_diff_paths(diff)
       prior_round = input["review_state"] == "complete" ? rounds[-2] : rounds[-1]
       expected_prior_digest = prior_round&.[]("digest")
       unless package["prior_round_digest"] == expected_prior_digest
@@ -690,6 +713,7 @@ module TaskReviewLoop
           diff, diff_error = load_artifact(round_package["exact_diff"], "review-round-exact-diff")
           errors << diff_error if diff_error
           errors << "review-round-exact-diff-empty" if diff && diff.strip.empty?
+          diff_paths[round_package["digest"]] = exact_diff_paths(diff)
         end
         findings_document, findings_error = load_findings(
           review_round["review_findings"],
@@ -711,7 +735,7 @@ module TaskReviewLoop
         )
           errors << "review-findings-foreign"
         end
-        unless complete_findings_coverage?(findings_document, round_report&.[]("changed_paths"))
+        unless complete_findings_coverage?(findings_document, diff_paths[round_package&.[]("digest")])
           errors << "review-findings-incomplete-coverage"
         end
         derived_open_ids = findings.filter_map do |finding|
@@ -792,7 +816,7 @@ module TaskReviewLoop
           round&.[]("reviewer_id")
         )
         open_records = open_document.fetch("review_findings")
-        unless complete_findings_coverage?(open_document, round&.dig("worker_report", "changed_paths"))
+        unless complete_findings_coverage?(open_document, diff_paths[round&.dig("review_package", "digest")])
           errors << "open-findings-incomplete-coverage"
         end
         actual_open_ids = open_records.map { |finding| finding["id"] }
