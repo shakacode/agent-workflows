@@ -5,8 +5,10 @@ require "json"
 require "digest"
 require "base64"
 require "optparse"
+require "socket"
 require "timeout"
 require "uri"
+require_relative "../../pr-batch/lib/github_comment_envelope"
 
 load File.expand_path("completed-batch-publication-preflight", __dir__) unless defined?(CompletedBatchPublicationPreflight)
 
@@ -277,6 +279,12 @@ module CompletedBatchAuditReceipt
 
     target, actor = select_verified_anchor(targets)
     endpoint = "repos/#{target.fetch('repo')}/issues/#{target.fetch('number')}/comments"
+    comment_body = GitHubCommentEnvelope.render(
+      body: comment_body,
+      runner: ENV.fetch("AGENT_COMMENT_RUNNER", "agent-workflows"),
+      host: ENV.fetch("AGENT_COMMENT_HOST", Socket.gethostname),
+      task_or_run: ENV.fetch("AGENT_COMMENT_TASK_OR_RUN", expected_batch_id)
+    )
     begin
       posted = gh_api(
         target.fetch("host"),
@@ -644,6 +652,7 @@ module CompletedBatchAuditReceipt
   end
 
   def comment_marker(body)
+    body = GitHubCommentEnvelope.payload(body)
     header = [COMMENT_HEADER, LEGACY_COMMENT_HEADER].find do |candidate|
       body.start_with?("#{candidate}\n\n")
     end

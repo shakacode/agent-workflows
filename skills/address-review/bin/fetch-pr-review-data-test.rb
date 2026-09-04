@@ -6,6 +6,7 @@
 
 require "minitest/autorun"
 require "open3"
+require_relative "../../pr-batch/lib/github_comment_envelope"
 
 SCRIPT = File.expand_path("fetch-pr-review-data", __dir__)
 load SCRIPT
@@ -52,6 +53,18 @@ class FetchPrReviewDataTest < Minitest::Test
 
   def test_cutoff_is_latest_summary_marker_and_ignores_newer_status
     assert_equal "2026-01-03T00:00:00Z", assembled["review_cutoff_at"]
+  end
+
+  def test_cutoff_accepts_summary_as_first_payload_line_after_agent_envelope
+    body = GitHubCommentEnvelope.render(
+      body: "<!-- address-review-summary -->\ncurrent",
+      runner: "codex",
+      host: "M5",
+      task_or_run: "task-7"
+    )
+    comments = [{ "body" => body, "created_at" => "2026-01-05T00:00:00Z" }]
+
+    assert_equal "2026-01-05T00:00:00Z", FetchPrReviewData.compute_cutoff(comments)
   end
 
   def test_drops_empty_review_summaries

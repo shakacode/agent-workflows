@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+require_relative "../lib/human_attention"
+
+command = ARGV.shift
+options = { labels: [] }
+OptionParser.new do |parser|
+  parser.banner = "Usage: human-attention <resolve|classify|desk|transition> [options]"
+  parser.on("--repo-root PATH") { |value| options[:repo_root] = value }
+  parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
+  parser.on("--label LABEL") { |value| options[:labels] << value }
+  parser.on("--pr NUMBER", Integer) { |value| options[:pr] = value }
+  parser.on("--state STATE") { |value| options[:state] = value }
+  parser.on("--expected-head SHA") { |value| options[:expected_head] = value }
+end.parse!
+
+begin
+  config = HumanAttention.load_config(options.fetch(:repo_root))
+  case command
+  when "resolve"
+    puts JSON.pretty_generate("repo" => options.fetch(:repo), "labels" => HumanAttention.labels_for(config, options.fetch(:repo)))
+  when "classify"
+    configured = HumanAttention.labels_for(config, options.fetch(:repo))
+    puts HumanAttention.classify(labels: options.fetch(:labels), configured_labels: configured)
+  when "desk"
+    refreshed_at = ENV.fetch("HUMAN_ATTENTION_REFRESHED_AT", Time.now.utc.iso8601)
+    entries, degraded = HumanAttention.desk(config:, refreshed_at:)
+    puts HumanAttention.render_desk(entries, degraded)
+  when "transition"
+    result = HumanAttention.transition(
+      config:,
+      repo: options.fetch(:repo),
+      pr_number: options.fetch(:pr),
+      state: options.fetch(:state),
+      expected_head: options.fetch(:expected_head)
+    )
+    puts JSON.pretty_generate(result)
+  else
+    raise HumanAttention::Error, "Usage: human-attention <resolve|classify|desk|transition> [options]"
+  end
+rescue KeyError, HumanAttention::Error => e
+  warn e.message
+  exit 1
+end

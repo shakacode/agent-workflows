@@ -163,6 +163,9 @@ ruby skills/pr-batch/bin/security-floor-contract-test.rb
 ruby skills/pr-batch/bin/writing-style-contract-test.rb
 ruby skills/pr-batch/bin/user-facing-coordination-contract-test.rb
 ruby skills/pr-batch/bin/production-release-contract-test.rb
+ruby skills/pr-batch/bin/github-comment-envelope-test.rb
+ruby skills/pr-batch/bin/human-attention-test.rb
+ruby skills/pr-batch/bin/human-attention-contract-test.rb
 ruby skills/pr-batch/bin/goal-completion-contract-test.rb
 ruby skills/pr-batch/bin/file-expansion-contract-test.rb
 ruby skills/pr-batch/bin/worker-execution-contract-test.rb

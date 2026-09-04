@@ -2363,6 +2363,10 @@ Canonical rules: [Local-vs-CI parity (blind spots)](pr-batch-integration-closeou
 
 Canonical rules: [Review Churn Measurement](pr-batch-integration-closeout.md#review-churn-measurement). This heading remains as a compatibility route and must not mirror the component.
 
+## GitHub Human Attention
+
+Canonical rules: [GitHub Human Attention](pr-batch-integration-closeout.md#github-human-attention). This heading remains as a compatibility route and must not mirror the component.
+
 ## Human Attention Notifications
 
 Canonical rules: [Human Attention Notifications](pr-batch-integration-closeout.md#human-attention-notifications). This heading remains as a compatibility route and must not mirror the component.

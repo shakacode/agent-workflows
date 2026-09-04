@@ -30,7 +30,13 @@ module GitHubCommentEnvelope
   end
 
   def agent_authored?(body)
-    !parse(body).nil?
+    !parse(body).nil? || body.to_s.start_with?("🤖 AI agent — ")
+  end
+
+  def payload(body)
+    return body unless parse(body)
+
+    body.lines.drop(6).join.sub(/\A\n/, "")
   end
 
   def validate!(body)

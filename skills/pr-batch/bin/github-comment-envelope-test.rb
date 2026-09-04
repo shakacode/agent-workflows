@@ -5,6 +5,8 @@ require "json"
 require "minitest/autorun"
 require "open3"
 require "tempfile"
+require "tmpdir"
+require_relative "../lib/github_comment_envelope"
 
 SCRIPT = File.expand_path("github-comment-envelope", __dir__)
 VISIBLE_PREFIX = "🤖 AI agent — Codex on M5"
@@ -36,7 +38,7 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_includes result[:stderr], "missing attribution envelope"
   end
 
-  def test_classify_reports_agent_only_for_a_complete_envelope
+  def test_classify_reports_agent_for_a_complete_envelope_or_visible_prefix
     rendered = run_cli(
       "render",
       "--runner", "claude",
@@ -45,10 +47,18 @@ class GitHubCommentEnvelopeTest < Minitest::Test
       stdin: "Done."
     )
     classified = run_cli("classify", stdin: rendered[:stdout])
+    prefix_only = run_cli("classify", stdin: "🤖 AI agent — Codex on M5\nlegacy payload")
     human = run_cli("classify", stdin: "I approve this change.\n")
 
     assert_equal "agent\n", classified[:stdout]
+    assert_equal "agent\n", prefix_only[:stdout]
     assert_equal "human\n", human[:stdout]
+  end
+
+  def test_payload_does_not_strip_a_malformed_prefix_only_comment
+    body = "🤖 AI agent — Codex on M5\nlegacy payload"
+
+    assert_equal body, GitHubCommentEnvelope.payload(body)
   end
 
   def test_autonomous_human_authority_explicitly_excludes_agent_envelopes
@@ -57,10 +67,64 @@ class GitHubCommentEnvelopeTest < Minitest::Test
     assert_includes source, "GitHubCommentEnvelope.agent_authored?(comment[\"body\"])"
   end
 
+  def test_post_issue_routes_the_enveloped_body_through_one_boundary
+    Dir.mktmpdir("comment-envelope-post") do |directory|
+      fake_gh = File.join(directory, "gh")
+      capture = File.join(directory, "capture.json")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        body_arg = ARGV.find { |arg| arg.start_with?("body=@") }
+        body = File.read(body_arg.delete_prefix("body=@"))
+        File.write(ENV.fetch("CAPTURE"), JSON.generate({"args" => ARGV, "body" => body}))
+        puts JSON.generate({"html_url" => "https://github.com/acme/widgets/issues/7#issuecomment-1"})
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "post-issue", "--repo", "acme/widgets", "--number", "7",
+        "--runner", "codex", "--host", "M5", "--task-or-run", "task-7",
+        stdin: "Ready.", env: { "GITHUB_COMMENT_GH" => fake_gh, "CAPTURE" => capture }
+      )
+      posted = JSON.parse(File.read(capture))
+
+      assert_predicate result[:status], :success?, result[:stderr]
+      assert_includes posted.fetch("args"), "repos/acme/widgets/issues/7/comments"
+      assert posted.fetch("body").start_with?("🤖 AI agent — Codex on M5\n")
+    end
+  end
+
+  def test_post_reply_routes_the_enveloped_body_through_one_boundary
+    Dir.mktmpdir("comment-envelope-reply") do |directory|
+      fake_gh = File.join(directory, "gh")
+      capture = File.join(directory, "capture.json")
+      File.write(fake_gh, <<~RUBY)
+        #!/usr/bin/env ruby
+        require "json"
+        body_arg = ARGV.find { |arg| arg.start_with?("body=@") }
+        body = File.read(body_arg.delete_prefix("body=@"))
+        File.write(ENV.fetch("CAPTURE"), JSON.generate({"args" => ARGV, "body" => body}))
+        puts JSON.generate({"html_url" => "https://github.com/acme/widgets/pull/7#discussion_r99"})
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      result = run_cli(
+        "post-reply", "--repo", "acme/widgets", "--number", "7", "--comment-id", "99",
+        "--runner", "codex", "--host", "M5", "--task-or-run", "task-7",
+        stdin: "Fixed.", env: { "GITHUB_COMMENT_GH" => fake_gh, "CAPTURE" => capture }
+      )
+      posted = JSON.parse(File.read(capture))
+
+      assert_predicate result[:status], :success?, result[:stderr]
+      assert_includes posted.fetch("args"), "repos/acme/widgets/pulls/7/comments/99/replies"
+      assert posted.fetch("body").start_with?("🤖 AI agent — Codex on M5\n")
+    end
+  end
+
   private
 
-  def run_cli(*arguments, stdin: "")
-    stdout, stderr, status = Open3.capture3(SCRIPT, *arguments, stdin_data: stdin)
+  def run_cli(*arguments, stdin: "", env: {})
+    stdout, stderr, status = Open3.capture3(env, SCRIPT, *arguments, stdin_data: stdin)
     { stdout:, stderr:, status: }
   end
 end

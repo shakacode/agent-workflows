@@ -79,10 +79,11 @@ Memorable invocation: `$verify-pr-fix <PR>` or "manually verify this fix and rep
    Confirm nothing leaked (`pgrep -fl <marker>` should report none).
 8. **Report to the PR.** Post a comment with the structured format below. Before posting to GitHub (an
    outward-facing action), confirm with the user unless they already told you to post. Write the body to a
-   temp file and use `gh pr comment <n> --body-file` (avoids inline-formatting issues; see global Git
-   workflow rules).
+   temp file and pass it to the shared `pr-batch/bin/github-comment-envelope post-issue` helper with the
+   repository, PR number, runner, host, and task-or-run identity. Do not call the direct PR-comment command.
 9. **Cross-link the issue (optional).** If asked, comment on the linked issue with a 2-3 sentence summary
-   and a link to the PR comment URL returned by step 8: `gh issue comment <n> --body-file`.
+   and a link to the PR comment URL returned by step 8 through the same `github-comment-envelope
+   post-issue` helper.
 
 ## Reproduction tactics by change type
 

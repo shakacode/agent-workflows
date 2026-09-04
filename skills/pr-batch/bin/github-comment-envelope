@@ -2,15 +2,20 @@
 # frozen_string_literal: true
 
 require "optparse"
+require "open3"
+require "tempfile"
 require_relative "../lib/github_comment_envelope"
 
 command = ARGV.shift
 options = {}
 OptionParser.new do |parser|
-  parser.banner = "Usage: github-comment-envelope <render|validate|classify> [options]"
+  parser.banner = "Usage: github-comment-envelope <render|validate|classify|post-issue|post-reply> [options]"
   parser.on("--runner RUNNER") { |value| options[:runner] = value }
   parser.on("--host HOST") { |value| options[:host] = value }
   parser.on("--task-or-run ID") { |value| options[:task_or_run] = value }
+  parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
+  parser.on("--number NUMBER", Integer) { |value| options[:number] = value }
+  parser.on("--comment-id ID", Integer) { |value| options[:comment_id] = value }
 end.parse!
 
 begin
@@ -28,8 +33,38 @@ begin
     puts "OK"
   when "classify"
     puts GitHubCommentEnvelope.agent_authored?(body) ? "agent" : "human"
+  when "post-issue", "post-reply"
+    repo = options.fetch(:repo)
+    number = options.fetch(:number)
+    raise ArgumentError, "repository must use OWNER/REPO form" unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
+    raise ArgumentError, "number must be positive" unless number.positive?
+
+    enveloped = GitHubCommentEnvelope.render(
+      body:,
+      runner: options.fetch(:runner),
+      host: options.fetch(:host),
+      task_or_run: options.fetch(:task_or_run)
+    )
+    endpoint = if command == "post-issue"
+                 "repos/#{repo}/issues/#{number}/comments"
+               else
+                 comment_id = options.fetch(:comment_id)
+                 raise ArgumentError, "comment-id must be positive" unless comment_id.positive?
+
+                 "repos/#{repo}/pulls/#{number}/comments/#{comment_id}/replies"
+               end
+    Tempfile.create(["github-comment-envelope", ".md"], encoding: "UTF-8") do |file|
+      file.chmod(0o600)
+      file.write(enveloped)
+      file.flush
+      gh = ENV.fetch("GITHUB_COMMENT_GH", "gh")
+      stdout, stderr, status = Open3.capture3(gh, "api", endpoint, "-X", "POST", "-F", "body=@#{file.path}")
+      raise ArgumentError, "GitHub comment post failed: #{stderr.lines.first.to_s.strip}" unless status.success?
+
+      print stdout
+    end
   else
-    warn "Usage: github-comment-envelope <render|validate|classify> [options]"
+    warn "Usage: github-comment-envelope <render|validate|classify|post-issue|post-reply> [options]"
     exit 1
   end
 rescue KeyError, ArgumentError => e

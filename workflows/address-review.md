@@ -775,9 +775,9 @@ before mutating GitHub or the branch.
      `<!-- address-review-source-reply -->` marker. Exclude only a same-actor marked
      reply from source triage and snapshot completeness; another actor cannot use
      the marker to suppress a source candidate.
-     - Issue comments: set `RESPONSE_BODY="<response>"`; when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, set `RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"`; then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
-     - Review comment replies: use the selected item's review comment id, not the parsed input `COMMENT_ID`: `gh api repos/${REPO}/pulls/${ITEM_SOURCE_PR}/comments/${REVIEW_COMMENT_ID}/replies -X POST -f body="<response>"`
-     - Review summary body replies: apply the same source-only `RESPONSE_BODY` marker rule as issue comments, then run `gh api repos/${REPO}/issues/${ITEM_SOURCE_PR}/comments -X POST -f body="${RESPONSE_BODY}"`.
+     - Issue comments: set `RESPONSE_BODY="<response>"`; when `ITEM_SOURCE_PR` equals a non-empty `SOURCE_PR_NUMBER`, set `RESPONSE_BODY="$(printf '<!-- address-review-source-reply -->\n%s' "${RESPONSE_BODY}")"`; then pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue` with `--repo`, `--number`, `--runner`, `--host`, and `--task-or-run`.
+     - Review comment replies: use the selected item's review comment id, not the parsed input `COMMENT_ID`; pipe the response to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-reply` with the same attribution fields plus `--comment-id "${REVIEW_COMMENT_ID}"`.
+     - Review summary body replies: apply the same source-only `RESPONSE_BODY` marker rule as issue comments, then pipe it to `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue`.
    - Resolve threads only when the issue is actually handled, explicitly declined with my approval, autonomously declined under a trusted `COORDINATED_AUTOFIX=1` evidence-backed recommendation with the rationale recorded, or autonomously deferred/declined as a low-risk behavior-preserving `OPTIONAL` item under the Maintainer Attention Contract with rationale recorded. Generic handled/declined thread resolution must exclude coordinated `defer`; it follows the ordered durable-evidence path above. Autonomous deferred/declined optional replies must use the `AGENTS.md` tag format: include `[auto-deferred]` on its own line plus a one-line rationale before the thread is resolved. An auto-resolved optional thread that lacks that tag is a spec violation; do not resolve the thread if you cannot post the tag and rationale first:
      `gh api graphql -f query='mutation($threadId:ID!) { resolveReviewThread(input:{threadId:$threadId}) { thread { id isResolved } } }' -f threadId="<THREAD_ID>"`
    - Do not resolve anything still in progress or uncertain.
@@ -815,7 +815,7 @@ before mutating GitHub or the branch.
    - For marked summaries, end with a note that future full-PR scans should start after this comment unless I say `check all reviews`. For non-cutoff status comments, end with a note that the next run must use `check all reviews`.
    - Use exact timestamps in the summary when referring to the scan window.
    - When replacement carryover is inactive, post it directly with:
-     `gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"`
+     `${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope post-issue --repo "${REPO}" --number "${PR_NUMBER}" --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" < "${summary_body_file}"`
      When replacement carryover is active, do not run that direct post; delegate
      both checkpoint posts to the Step 10 template below.
    - In replacement carryover, build `source_summary_body_file` through

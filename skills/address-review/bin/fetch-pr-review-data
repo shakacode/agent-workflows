@@ -13,6 +13,7 @@
 
 require "json"
 require "open3"
+require_relative "../../pr-batch/lib/github_comment_envelope"
 
 # Pure data shaping (no I/O) plus the gh-backed runner. The pure methods take the
 # raw `gh --paginate --slurp` output strings so they can be unit-tested directly.
@@ -138,7 +139,7 @@ module FetchPrReviewData
   # Most recent issue comment whose body starts with the summary marker.
   def compute_cutoff(raw_issue)
     raw_issue
-      .select { |comment| comment["body"].to_s.start_with?(SUMMARY_MARKER) }
+      .select { |comment| GitHubCommentEnvelope.payload(comment["body"].to_s).start_with?(SUMMARY_MARKER) }
       .filter_map { |comment| comment["created_at"] }
       .reject(&:empty?)
       .max
