@@ -4,7 +4,6 @@
 require "json"
 require "minitest/autorun"
 require "open3"
-require "tempfile"
 require "tmpdir"
 require_relative "../lib/github_comment_envelope"
 
