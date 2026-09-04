@@ -1343,6 +1343,38 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_canonical_capture_overrides_local_diff_prefix_configuration
+    Dir.mktmpdir("task-review-loop") do |directory|
+      input = clean_review_input(directory)
+      repo = File.join(directory, "capture")
+      FileUtils.mkdir_p(File.join(repo, "lib"))
+      File.write(File.join(repo, "lib/task-review.rb"), "change\n")
+      [%w[init --quiet], %w[add lib/task-review.rb]].each do |args|
+        _stdout, stderr, status = Open3.capture3("git", *args, chdir: repo)
+        assert status.success?, stderr
+      end
+      capture_flags = %w[
+        --no-ext-diff --no-textconv --no-color --no-relative --binary
+        --src-prefix=a/ --dst-prefix=b/ --ignore-submodules=none --submodule=short
+      ]
+      workflow = File.read(File.join(REPO_ROOT, "workflows/pr-batch-task-review.md"))
+      capture_flags.each { |flag| assert_includes workflow, flag }
+      patch, stderr, status = Open3.capture3(
+        "git", "-c", "diff.noprefix=true", "-c", "diff.mnemonicPrefix=true",
+        "-c", "color.ui=always", "-c", "diff.relative=true",
+        "diff", "--cached", *capture_flags, "--", chdir: repo
+      )
+      assert status.success?, stderr
+      assert_includes patch, "diff --git a/lib/task-review.rb b/lib/task-review.rb"
+      diff_path = input.dig("review_package", "exact_diff", "path")
+      File.write(diff_path, patch)
+      input = rebind_package(input, "exact_diff" => artifact(diff_path).merge("truncated" => false))
+      output, = evaluate(input)
+
+      assert_equal "task_complete", output.fetch("status")
+    end
+  end
+
   def test_nonempty_findings_require_a_complete_range_bound_review_receipt
     Dir.mktmpdir("task-review-loop") do |directory|
       input = clean_review_input(directory)

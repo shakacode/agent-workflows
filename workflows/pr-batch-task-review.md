@@ -95,7 +95,19 @@ their digests, the complete task identity, exact 40-character base and head
 SHAs, expected current head, implementer and reviewer identities, commit list,
 diff stat, and prior-round digest.
 
-Capture the complete diff in a readable artifact. Set its raw-byte digest and
+Capture the complete diff in a readable artifact with canonical `a/` and `b/`
+prefixes, overriding local diff presentation settings. From the repository root,
+use the accepted exact base and head as `REVIEW_BASE_SHA` and `REVIEW_HEAD_SHA`:
+
+```bash
+git diff --no-ext-diff --no-textconv --no-color --no-relative --binary \
+  --src-prefix=a/ --dst-prefix=b/ --ignore-submodules=none --submodule=short \
+  "$REVIEW_BASE_SHA" "$REVIEW_HEAD_SHA" -- > "$EXACT_DIFF_PATH"
+```
+
+Do not pass `--no-prefix`, custom prefixes, or a path filter. Recapture existing
+noncanonical artifacts before review; the reducer does not infer prefix modes.
+Require successful capture before setting its raw-byte digest and
 byte count and set `truncated` to false. For initial review, use `scope: task`,
 the task base, the worker report's full ordered commit list, and a null
 prior-round digest. For re-review, use `scope: fix`, the head seen by the
