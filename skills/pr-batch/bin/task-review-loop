@@ -1,0 +1,940 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "json"
+require "open3"
+
+finding_validator = File.expand_path("../../../bin/validate-review-findings", __dir__)
+unless File.file?(finding_validator)
+  puts JSON.generate(
+    "contract" => "task-review-loop-decision",
+    "version" => 1,
+    "status" => "blocked",
+    "dependent_task_permitted" => false,
+    "reasons" => ["validate-review-findings-unavailable"]
+  )
+  exit 0
+end
+load finding_validator
+
+module TaskReviewLoop
+  MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
+  OPEN_FINDING_DISPOSITIONS = %w[
+    must_fix needs_decision should_fix deferred waived_by_maintainer unknown
+  ].freeze
+  TOP_LEVEL_KEYS = %w[
+    cap_adjudication
+    contract
+    expected_current_head_sha
+    finding_controls
+    identity
+    open_findings
+    replacement_evidence
+    review_package
+    review_state
+    rounds
+    task_brief
+    version
+    worker_report
+  ].freeze
+  IDENTITY_KEYS = %w[batch_id lane_id plan_digest plan_id task_id].freeze
+  TASK_BRIEF_KEYS = %w[
+    digest global_constraints identity interfaces requirements resolved_ambiguities
+  ].freeze
+  WORKER_REPORT_KEYS = %w[
+    base_sha brief_digest changed_paths commits concerns current_implementer_id digest head_sha
+    identity initial_implementer_id open_context_needs status verification
+  ].freeze
+  REVIEW_PACKAGE_KEYS = %w[
+    base_sha brief_digest commit_list diff_stat digest exact_diff expected_current_head_sha head_sha
+    identity implementer_id prior_round_digest reviewer_id scope worker_report_digest
+  ].freeze
+  ROUND_KEYS = %w[
+    addressed_finding_ids base_sha digest head_sha implementer_id kind new_consequential_finding_ids
+    open_finding_ids package_digest prior_round_digest review_findings review_package reviewer_id number worker_report
+  ].freeze
+  ARTIFACT_KEYS = %w[byte_count digest path].freeze
+  EXACT_DIFF_KEYS = %w[byte_count digest path truncated].freeze
+  OPEN_FINDINGS_KEYS = %w[byte_count digest ids path].freeze
+  FINDING_CONTROL_KEYS = %w[cap_piercing finding_id load_bearing].freeze
+  REPLACEMENT_KEYS = %w[
+    evidence identity ownership_reconciled prior_implementer_id prior_instance_stopped reason replacement_implementer_id
+    round
+  ].freeze
+  CAP_KEYS = %w[coordinator_id findings round].freeze
+  CAP_RECORD_REQUIRED_KEYS = %w[disposition evidence finding_id].freeze
+  CAP_RECORD_OPTIONAL_KEYS = %w[authority_ref tracking_ref].freeze
+  VERIFICATION_KEYS = %w[command outcome status].freeze
+  REPORT_STATUSES = %w[done done_with_concerns needs_context blocked].freeze
+  VERIFICATION_STATUSES = %w[passed failed not_run UNKNOWN].freeze
+  REPLACEMENT_REASONS = %w[continuation_unavailable implementer_unavailable bounded_escalation].freeze
+  CAP_DISPOSITIONS = %w[disproven waived deferred blocked].freeze
+  COORDINATOR_ID_ENV = "AGENT_WORKFLOW_TASK_REVIEW_COORDINATOR_ID"
+  WAIVER_AUTHORITIES_ENV = "AGENT_WORKFLOW_TASK_REVIEW_WAIVER_AUTHORITY_REFS"
+
+  module_function
+
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.each_with_object({}) { |key, result| result[key] = canonicalize(value.fetch(key)) }
+    when Array
+      value.map { |entry| canonicalize(entry) }
+    else
+      value
+    end
+  end
+
+  def record_digest(record)
+    payload = record.reject { |key, _value| key == "digest" }
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(payload)))}"
+  end
+
+  def valid_record_digest?(record)
+    record.is_a?(Hash) && record["digest"] == record_digest(record)
+  end
+
+  def digest?(value)
+    value.is_a?(String) && value.match?(/\Asha256:[0-9a-f]{64}\z/)
+  end
+
+  def non_empty_string?(value)
+    return false unless value.is_a?(String)
+
+    normalized = value.unicode_normalize(:nfkc).gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
+    !normalized.empty? && normalized.downcase(:fold) != "unknown"
+  end
+
+  def string_array?(value, allow_empty: true)
+    value.is_a?(Array) && (allow_empty || !value.empty?) && value.all? { |entry| non_empty_string?(entry) }
+  end
+
+  def exact_keys?(object, required, optional = [])
+    object.is_a?(Hash) && (required - object.keys).empty? && (object.keys - required - optional).empty?
+  end
+
+  def identity_shape?(identity)
+    exact_keys?(identity, IDENTITY_KEYS) &&
+      %w[batch_id lane_id plan_id task_id].all? { |key| non_empty_string?(identity[key]) } &&
+      digest?(identity["plan_digest"])
+  end
+
+  def artifact_shape?(artifact, keys = ARTIFACT_KEYS)
+    exact_keys?(artifact, keys) && non_empty_string?(artifact["path"]) && digest?(artifact["digest"]) &&
+      artifact["byte_count"].is_a?(Integer) && artifact["byte_count"].positive?
+  end
+
+  def verification_shape?(verification)
+    exact_keys?(verification, VERIFICATION_KEYS) && non_empty_string?(verification["command"]) &&
+      VERIFICATION_STATUSES.include?(verification["status"]) && non_empty_string?(verification["outcome"])
+  end
+
+  def task_brief_shape?(brief)
+    exact_keys?(brief, TASK_BRIEF_KEYS) && identity_shape?(brief["identity"]) && digest?(brief["digest"]) &&
+      string_array?(brief["requirements"], allow_empty: false) && string_array?(brief["global_constraints"]) &&
+      string_array?(brief["interfaces"]) && string_array?(brief["resolved_ambiguities"])
+  end
+
+  def worker_report_shape?(report)
+    exact_keys?(report, WORKER_REPORT_KEYS) && identity_shape?(report["identity"]) &&
+      digest?(report["brief_digest"]) && digest?(report["digest"]) &&
+      non_empty_string?(report["initial_implementer_id"]) && non_empty_string?(report["current_implementer_id"]) &&
+      REPORT_STATUSES.include?(report["status"]) && full_sha?(report["base_sha"]) && full_sha?(report["head_sha"]) &&
+      report["commits"].is_a?(Array) && !report["commits"].empty? &&
+      report["commits"].all? { |sha| full_sha?(sha) } && report["commits"].uniq == report["commits"] &&
+      string_array?(report["changed_paths"]) && report["changed_paths"].uniq == report["changed_paths"] &&
+      report["verification"].is_a?(Array) && report["verification"].all? { |item| verification_shape?(item) } &&
+      string_array?(report["concerns"]) && string_array?(report["open_context_needs"])
+  end
+
+  def review_package_shape?(package)
+    exact_keys?(package, REVIEW_PACKAGE_KEYS) && identity_shape?(package["identity"]) &&
+      digest?(package["brief_digest"]) && digest?(package["worker_report_digest"]) && digest?(package["digest"]) &&
+      %w[task fix].include?(package["scope"]) && full_sha?(package["base_sha"]) && full_sha?(package["head_sha"]) &&
+      full_sha?(package["expected_current_head_sha"]) && non_empty_string?(package["implementer_id"]) &&
+      non_empty_string?(package["reviewer_id"]) && package["commit_list"].is_a?(Array) &&
+      !package["commit_list"].empty? && package["commit_list"].all? { |sha| full_sha?(sha) } &&
+      package["commit_list"].uniq == package["commit_list"] && non_empty_string?(package["diff_stat"]) &&
+      artifact_shape?(package["exact_diff"], EXACT_DIFF_KEYS) &&
+      [true, false].include?(package.dig("exact_diff", "truncated")) &&
+      (package["prior_round_digest"].nil? || digest?(package["prior_round_digest"]))
+  end
+
+  def round_shape?(round)
+    exact_keys?(round, ROUND_KEYS) && round["number"].is_a?(Integer) && round["number"].between?(0, 5) &&
+      %w[initial_review fix_re_review].include?(round["kind"]) && digest?(round["package_digest"]) &&
+      review_package_shape?(round["review_package"]) && worker_report_shape?(round["worker_report"]) &&
+      full_sha?(round["base_sha"]) && full_sha?(round["head_sha"]) && non_empty_string?(round["implementer_id"]) &&
+      non_empty_string?(round["reviewer_id"]) &&
+      (round["prior_round_digest"].nil? || digest?(round["prior_round_digest"])) &&
+      artifact_shape?(round["review_findings"]) && string_array?(round["addressed_finding_ids"]) &&
+      string_array?(round["open_finding_ids"]) && string_array?(round["new_consequential_finding_ids"]) &&
+      [round["addressed_finding_ids"], round["open_finding_ids"], round["new_consequential_finding_ids"]].all? do |ids|
+        ids.uniq == ids
+      end && digest?(round["digest"])
+  end
+
+  def cap_record_shape?(record)
+    exact_keys?(record, CAP_RECORD_REQUIRED_KEYS, CAP_RECORD_OPTIONAL_KEYS) &&
+      non_empty_string?(record["finding_id"]) && CAP_DISPOSITIONS.include?(record["disposition"]) &&
+      string_array?(record["evidence"], allow_empty: false) &&
+      (!record.key?("tracking_ref") || non_empty_string?(record["tracking_ref"])) &&
+      (!record.key?("authority_ref") || non_empty_string?(record["authority_ref"]))
+  end
+
+  def closed_shape?(input)
+    return false unless exact_keys?(input, TOP_LEVEL_KEYS) && %w[pending complete].include?(input["review_state"])
+    return false unless input["contract"] == "task-review-loop" && input["version"] == 1
+    return false unless identity_shape?(input["identity"]) && full_sha?(input["expected_current_head_sha"])
+    return false unless task_brief_shape?(input["task_brief"]) && worker_report_shape?(input["worker_report"])
+    return false unless review_package_shape?(input["review_package"])
+    return false unless input["rounds"].is_a?(Array) && input["rounds"].all? { |round| round_shape?(round) }
+    return false unless input["open_findings"].nil? ||
+                        artifact_shape?(input["open_findings"], OPEN_FINDINGS_KEYS) &&
+                        string_array?(input["open_findings"]["ids"]) &&
+                        input["open_findings"]["ids"].uniq == input["open_findings"]["ids"]
+    return false unless input["finding_controls"].is_a?(Array) && input["finding_controls"].all? do |control|
+      exact_keys?(control, FINDING_CONTROL_KEYS) && non_empty_string?(control["finding_id"]) &&
+      [true, false].include?(control["load_bearing"]) && [true, false].include?(control["cap_piercing"])
+    end
+    return false unless input["replacement_evidence"].is_a?(Array) && input["replacement_evidence"].all? do |record|
+      exact_keys?(record, REPLACEMENT_KEYS) && identity_shape?(record["identity"]) &&
+      record["round"].is_a?(Integer) && record["round"].between?(0, 5) &&
+      non_empty_string?(record["prior_implementer_id"]) && non_empty_string?(record["replacement_implementer_id"]) &&
+      REPLACEMENT_REASONS.include?(record["reason"]) && record["prior_instance_stopped"] == true &&
+      record["ownership_reconciled"] == true && string_array?(record["evidence"], allow_empty: false)
+    end
+
+    cap = input["cap_adjudication"]
+    cap.nil? || exact_keys?(cap, CAP_KEYS) && cap["round"] == 5 && non_empty_string?(cap["coordinator_id"]) &&
+      cap["findings"].is_a?(Array) && cap["findings"].all? { |record| cap_record_shape?(record) }
+  end
+
+  def full_sha?(value)
+    value.is_a?(String) && value.match?(/\A[0-9a-f]{40}\z/)
+  end
+
+  def same_identity?(expected, actual)
+    expected.is_a?(Hash) && actual == expected
+  end
+
+  def actor_key(identity)
+    return nil unless identity.is_a?(String)
+
+    normalized = identity.unicode_normalize(:nfkc).gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
+    normalized.empty? ? nil : normalized.downcase(:fold)
+  end
+
+  def independent?(implementer, reviewer)
+    implementer_key = actor_key(implementer)
+    reviewer_key = actor_key(reviewer)
+    implementer_key && reviewer_key && implementer_key != reviewer_key
+  end
+
+  def same_actor?(left, right)
+    left_key = actor_key(left)
+    right_key = actor_key(right)
+    left_key && right_key && left_key == right_key
+  end
+
+  def ordered_subsequence?(needles, haystack)
+    cursor = 0
+    needles.all? do |needle|
+      offset = haystack[cursor..]&.index(needle)
+      next false unless offset
+
+      cursor += offset + 1
+      true
+    end
+  end
+
+  def package_commit_range?(package, report)
+    return false unless package.is_a?(Hash) && report.is_a?(Hash)
+
+    commits = report["commits"]
+    package_commits = package["commit_list"]
+    return false unless commits.is_a?(Array) && package_commits.is_a?(Array)
+
+    head_index = commits.index(package["head_sha"])
+    return false unless head_index && head_index == commits.length - 1
+
+    expected_commits = if package["scope"] == "task"
+                         return false unless package["base_sha"] == report["base_sha"]
+
+                         commits[0..head_index]
+                       else
+                         base_index = commits.index(package["base_sha"])
+                         return false unless base_index && base_index < head_index
+
+                         commits[(base_index + 1)..head_index]
+                       end
+    package_commits == expected_commits
+  end
+
+  def round_package_range_bound?(package, round, report, report_round_heads_valid)
+    expected_scope = round["number"].zero? ? "task" : "fix"
+    package["base_sha"] == round["base_sha"] && package["head_sha"] == round["head_sha"] &&
+      package["expected_current_head_sha"] == round["head_sha"] && package["scope"] == expected_scope &&
+      report_round_heads_valid && package_commit_range?(package, report)
+  end
+
+  def replacement_evidence_valid?(record, identity, round_number, prior_implementer, replacement_implementer)
+    record.is_a?(Hash) && same_identity?(identity, record["identity"]) && record["round"] == round_number &&
+      same_actor?(record["prior_implementer_id"], prior_implementer) &&
+      same_actor?(record["replacement_implementer_id"], replacement_implementer) &&
+      record["prior_instance_stopped"] == true && record["ownership_reconciled"] == true &&
+      record["evidence"].is_a?(Array) && !record["evidence"].empty? &&
+      record["evidence"].all? { |entry| entry.is_a?(String) && !entry.strip.empty? }
+  end
+
+  def expected_replacement_transitions(report, package, rounds, review_state)
+    transitions = []
+    if rounds.empty?
+      unless same_actor?(report["initial_implementer_id"], package["implementer_id"])
+        transitions << [0, report["initial_implementer_id"], package["implementer_id"]]
+      end
+      return transitions
+    end
+
+    unless same_actor?(report["initial_implementer_id"], rounds.first["implementer_id"])
+      transitions << [0, report["initial_implementer_id"], rounds.first["implementer_id"]]
+    end
+    rounds.each_cons(2) do |prior_round, current_round|
+      next if same_actor?(prior_round["implementer_id"], current_round["implementer_id"])
+
+      transitions << [current_round["number"], prior_round["implementer_id"], current_round["implementer_id"]]
+    end
+    if review_state == "pending" && !same_actor?(rounds.last["implementer_id"], package["implementer_id"])
+      transitions << [rounds.last["number"] + 1, rounds.last["implementer_id"], package["implementer_id"]]
+    end
+    transitions
+  end
+
+  def load_artifact(reference, label)
+    return [nil, "#{label}-reference-invalid"] unless reference.is_a?(Hash)
+
+    path = reference["path"]
+    return [nil, "#{label}-path-invalid"] unless non_empty_string?(path)
+
+    # Check the opened descriptor; a path check can race with replacement by a FIFO.
+    bytes = File.open(path, File::RDONLY | File::NONBLOCK) do |file|
+      stat = file.stat
+      return [nil, "#{label}-not-regular-file"] unless stat.file?
+      return [nil, "#{label}-too-large"] if stat.size > MAX_ARTIFACT_BYTES
+
+      file.binmode.read(MAX_ARTIFACT_BYTES + 1).to_s
+    end
+    return [nil, "#{label}-too-large"] if bytes.bytesize > MAX_ARTIFACT_BYTES
+    return [nil, "#{label}-byte-count-mismatch"] unless reference["byte_count"] == bytes.bytesize
+
+    digest = "sha256:#{Digest::SHA256.hexdigest(bytes)}"
+    return [nil, "#{label}-digest-mismatch"] unless reference["digest"] == digest
+
+    [bytes, nil]
+  rescue SystemCallError, ArgumentError
+    [nil, "#{label}-unreadable"]
+  end
+
+  def findings_cache_key(reference)
+    return unless reference.is_a?(Hash)
+
+    [reference["path"], reference["digest"], reference["byte_count"]]
+  end
+
+  def load_findings(reference, label, cache = nil)
+    cache_key = findings_cache_key(reference)
+    return [cache.fetch(cache_key), nil] if cache_key && cache&.key?(cache_key)
+
+    bytes, artifact_error = load_artifact(reference, label)
+    return [nil, artifact_error] if artifact_error
+
+    document = JSON.parse(bytes)
+    failures = ValidateReviewFindings.validate_document(document, label)
+    return [nil, "#{label}-invalid"] unless failures.empty?
+
+    cache[cache_key] = document if cache_key && cache
+    [document, nil]
+  rescue JSON::ParserError
+    [nil, "#{label}-invalid"]
+  end
+
+  def findings_bound?(document, identity, head_sha, base_sha, reviewer_id)
+    findings = document.fetch("review_findings")
+    expected_target = identity.merge("head_sha" => head_sha)
+    return false unless findings.all? { |finding| finding["target"] == expected_target }
+    return false unless same_actor?(document["reviewer_id"], reviewer_id)
+
+    receipt = document["review_receipt"]
+    return false unless receipt
+
+    target = receipt["target"]
+    target.is_a?(Hash) && target["kind"] == "committed" &&
+      target["base_sha"] == base_sha && target["head_sha"] == head_sha
+  end
+
+  def complete_findings_coverage?(document, changed_paths)
+    coverage = document.dig("review_receipt", "coverage")
+    return false unless coverage.is_a?(Hash) && coverage["status"] == "complete"
+
+    included_paths = coverage["included_paths"]
+    return false unless string_array?(included_paths) && string_array?(changed_paths)
+
+    (changed_paths - included_paths).empty?
+  end
+
+  def exact_diff_paths(diff)
+    return unless diff.is_a?(String)
+
+    # Git parses quoting, renames, deletions, and binary patches without applying them.
+    output, _stderr, status = Open3.capture3(
+      "git", "apply", "--numstat", "-z", stdin_data: diff, chdir: "/"
+    )
+    return unless status.success?
+
+    paths = output.split("\0").map do |record|
+      added, removed, path = record.split("\t", 3)
+      return nil unless [added, removed].all? { |count| count&.match?(/\A(?:\d+|-)\z/) } && non_empty_string?(path)
+
+      path
+    end
+    paths.uniq unless paths.empty?
+  rescue SystemCallError, ArgumentError
+    nil
+  end
+
+  def cap_authority_from_env
+    coordinator_id = ENV[COORDINATOR_ID_ENV]
+    authority_refs = JSON.parse(ENV.fetch(WAIVER_AUTHORITIES_ENV, "[]"))
+    return nil unless non_empty_string?(coordinator_id) && string_array?(authority_refs) &&
+                      authority_refs.uniq == authority_refs
+
+    { "coordinator_id" => coordinator_id, "waiver_authority_refs" => authority_refs }
+  rescue JSON::ParserError
+    nil
+  end
+
+  def finding_lineage_valid?(prior, current)
+    stable_keys = %w[id source title body location]
+    severity_order = %w[P0 P1 P2 P3 INFO]
+    stable_keys.all? { |key| prior[key] == current[key] } &&
+      severity_order.index(current["severity"]) <= severity_order.index(prior["severity"]) &&
+      (prior["consequential"] != true || current["consequential"] == true)
+  end
+
+  def validate_cap_adjudication(adjudication, open_ids, authority)
+    return ["cap-adjudication-required"] unless adjudication.is_a?(Hash)
+
+    errors = []
+    if authority.nil?
+      errors << "cap-authority-policy-invalid"
+    elsif !same_actor?(adjudication["coordinator_id"], authority["coordinator_id"])
+      errors << "cap-coordinator-unauthorized"
+    end
+    records = adjudication.fetch("findings")
+    adjudicated_ids = records.map { |record| record.fetch("finding_id") }
+    unless adjudication["round"] == 5 && adjudicated_ids.sort == open_ids.sort &&
+           adjudicated_ids.uniq == adjudicated_ids
+      errors << "cap-adjudication-incomplete"
+    end
+    records.each do |record|
+      unless CAP_DISPOSITIONS.include?(record["disposition"])
+        errors << "cap-adjudication-disposition-invalid"
+        next
+      end
+
+      errors << "cap-adjudication-evidence-required" unless string_array?(record["evidence"], allow_empty: false)
+      if record["disposition"] == "deferred" && !non_empty_string?(record["tracking_ref"])
+        errors << "cap-deferred-tracking-required"
+      end
+      if record["disposition"] == "waived" && !non_empty_string?(record["authority_ref"])
+        errors << "cap-waiver-authority-required"
+      elsif record["disposition"] == "waived" && authority &&
+            !authority["waiver_authority_refs"].include?(record["authority_ref"])
+        errors << "cap-waiver-authority-untrusted"
+      end
+    end
+    errors
+  end
+
+  def validate_cap_state(adjudication, open_ids, authority)
+    return adjudication.nil? ? [] : ["cap-adjudication-unexpected"] if open_ids.empty?
+
+    validate_cap_adjudication(adjudication, open_ids, authority)
+  end
+
+  def validate_pending_open_findings(input, round, identity, findings_cache)
+    reference = input["open_findings"]
+    if round.nil?
+      return [] if reference.nil? && input["finding_controls"].empty?
+
+      return ["open-findings-premature"]
+    end
+    return ["open-findings-required"] if reference.nil?
+
+    document, artifact_error = load_findings(reference, "open-findings", findings_cache)
+    return [artifact_error] if artifact_error
+
+    errors = []
+    errors << "open-findings-foreign" unless findings_bound?(
+      document,
+      identity,
+      round["head_sha"],
+      round["base_sha"],
+      round["reviewer_id"]
+    )
+    prior_document, = load_findings(round["review_findings"], "review-findings", findings_cache)
+    if prior_document
+      prior_open_records = prior_document.fetch("review_findings").select do |finding|
+        OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
+      end
+      errors << "open-findings-round-mismatch" unless document.fetch("review_findings") == prior_open_records
+    end
+    pending_ids = document.fetch("review_findings").map { |finding| finding["id"] }
+    errors << "open-finding-ids-mismatch" unless reference["ids"] == pending_ids
+    control_ids = input["finding_controls"].map { |control| control["finding_id"] }
+    errors << "finding-controls-mismatch" unless control_ids == pending_ids && control_ids.uniq == control_ids
+    errors
+  end
+
+  def validate(input, findings_cache = {}, cap_authority = cap_authority_from_env)
+    return ["input-object-required"] unless input.is_a?(Hash)
+    return ["contract-version-invalid"] unless input["contract"] == "task-review-loop" && input["version"] == 1
+    return ["input-schema-invalid"] unless closed_shape?(input)
+
+    errors = []
+    diff_paths = {}
+    identity = input["identity"]
+    brief = input["task_brief"]
+    report = input["worker_report"]
+    package = input["review_package"]
+    rounds = input.fetch("rounds", [])
+    round = rounds.last
+    round_heads = rounds.filter_map { |entry| entry["head_sha"] if entry.is_a?(Hash) }
+    report_round_heads_valid = report.is_a?(Hash) && report["commits"].is_a?(Array) &&
+                               ordered_subsequence?(round_heads, report["commits"])
+
+    if !input["cap_adjudication"].nil? && (!round.is_a?(Hash) || round["number"] != 5)
+      errors << "cap-adjudication-premature"
+    end
+    if input["review_state"] == "pending" && round.is_a?(Hash) && round["number"] == 5
+      errors << "round-cap-reached"
+    end
+    if input["review_state"] == "pending"
+      errors.concat(validate_pending_open_findings(input, round, identity, findings_cache))
+    end
+
+    if !rounds.is_a?(Array) || rounds.length > 6 || rounds.each_with_index.any? do |entry, index|
+      !entry.is_a?(Hash) || entry["number"] != index ||
+      entry["kind"] != (index.zero? ? "initial_review" : "fix_re_review")
+    end
+      errors << "round-cap-exceeded"
+    end
+
+    errors << "task-brief-invalid" unless brief.is_a?(Hash) && valid_record_digest?(brief)
+    errors << "worker-report-invalid" unless report.is_a?(Hash) && valid_record_digest?(report)
+    errors << "worker-report-not-reviewable" unless report.is_a?(Hash) &&
+                                                    %w[done done_with_concerns].include?(report["status"])
+    errors << "review-package-invalid" unless package.is_a?(Hash) && valid_record_digest?(package)
+    errors << "task-brief-foreign" unless brief.is_a?(Hash) && same_identity?(identity, brief["identity"])
+    errors << "worker-report-foreign" unless report.is_a?(Hash) && same_identity?(identity, report["identity"])
+    errors << "review-package-foreign" unless package.is_a?(Hash) && same_identity?(identity, package["identity"])
+
+    if brief.is_a?(Hash) && report.is_a?(Hash) && report["brief_digest"] != brief["digest"]
+      errors << "worker-report-brief-digest-mismatch"
+    end
+    if brief.is_a?(Hash) && report.is_a?(Hash) && package.is_a?(Hash)
+      errors << "review-package-brief-digest-mismatch" unless package["brief_digest"] == brief["digest"]
+      errors << "review-package-report-digest-mismatch" unless package["worker_report_digest"] == report["digest"]
+      unless package_commit_range?(package, report) && package["head_sha"] == report["head_sha"]
+        errors << "review-package-commit-list-mismatch"
+      end
+      unless report_round_heads_valid
+        errors << "worker-report-round-heads-mismatch"
+      end
+    end
+
+    expected_head = input["expected_current_head_sha"]
+    unless full_sha?(expected_head) && package.is_a?(Hash) && package["expected_current_head_sha"] == expected_head &&
+           package["head_sha"] == expected_head && report.is_a?(Hash) && report["head_sha"] == expected_head
+      errors << "review-package-stale-head"
+    end
+    errors << "review-package-base-sha-invalid" unless package.is_a?(Hash) && full_sha?(package["base_sha"])
+    if package.is_a?(Hash)
+      errors << "reviewer-not-independent" unless independent?(package["implementer_id"], package["reviewer_id"])
+      errors << "review-package-empty-range" if package["base_sha"] == package["head_sha"]
+      errors << "review-package-truncated" unless package.dig("exact_diff", "truncated") == false
+      diff, diff_error = load_artifact(package["exact_diff"], "exact-diff")
+      errors << diff_error if diff_error
+      errors << "exact-diff-empty" if diff && diff.strip.empty?
+      diff_paths[package["digest"]] = exact_diff_paths(diff)
+      prior_round = input["review_state"] == "complete" ? rounds[-2] : rounds[-1]
+      expected_prior_digest = prior_round&.[]("digest")
+      unless package["prior_round_digest"] == expected_prior_digest
+        errors << "review-package-prior-round-digest-mismatch"
+      end
+      expected_scope = prior_round ? "fix" : "task"
+      errors << "review-package-scope-invalid" unless package["scope"] == expected_scope
+      if input["review_state"] == "pending" && prior_round && prior_round["open_finding_ids"].empty?
+        errors << "fix-round-without-open-findings"
+      end
+      expected_base = prior_round ? prior_round["head_sha"] : report&.[]("base_sha")
+      errors << "review-package-base-mismatch" unless package["base_sha"] == expected_base
+    end
+
+    if report.is_a?(Hash) && package.is_a?(Hash) && !same_actor?(
+      report["current_implementer_id"], package["implementer_id"]
+    )
+      errors << "current-implementer-mismatch"
+    end
+
+    if report.is_a?(Hash) && package.is_a?(Hash)
+      known_implementers = [report["initial_implementer_id"], report["current_implementer_id"], package["implementer_id"]]
+      known_implementers.concat(rounds.filter_map { |entry| entry["implementer_id"] if entry.is_a?(Hash) })
+      known_reviewers = [package["reviewer_id"]]
+      known_reviewers.concat(rounds.filter_map { |entry| entry["reviewer_id"] if entry.is_a?(Hash) })
+      if known_reviewers.compact.any? do |reviewer|
+        known_implementers.compact.any? { |implementer| same_actor?(reviewer, implementer) }
+      end
+        errors << "reviewer-not-independent"
+      end
+    end
+
+    if rounds.is_a?(Array) && rounds.empty? && report.is_a?(Hash) && package.is_a?(Hash) && !same_actor?(
+      report["initial_implementer_id"], package["implementer_id"]
+    )
+      evidence = input.fetch("replacement_evidence", []).find do |record|
+        replacement_evidence_valid?(
+          record,
+          identity,
+          0,
+          report["initial_implementer_id"],
+          package["implementer_id"]
+        )
+      end
+      errors << "worker-replacement-evidence-required" unless evidence
+    end
+
+    if rounds.is_a?(Array) && !rounds.empty? && report.is_a?(Hash)
+      unless same_actor?(report["initial_implementer_id"], rounds.first["implementer_id"])
+        evidence = input.fetch("replacement_evidence", []).find do |record|
+          replacement_evidence_valid?(
+            record,
+            identity,
+            0,
+            report["initial_implementer_id"],
+            rounds.first["implementer_id"]
+          )
+        end
+        errors << "worker-replacement-evidence-required" unless evidence
+      end
+      if input["review_state"] == "complete"
+        errors << "current-implementer-mismatch" unless same_actor?(
+          report["current_implementer_id"], rounds.last["implementer_id"]
+        )
+      elsif package.is_a?(Hash) && !same_actor?(rounds.last["implementer_id"], package["implementer_id"])
+        evidence = input.fetch("replacement_evidence", []).find do |record|
+          replacement_evidence_valid?(
+            record,
+            identity,
+            rounds.last["number"] + 1,
+            rounds.last["implementer_id"],
+            package["implementer_id"]
+          )
+        end
+        errors << "worker-replacement-evidence-required" unless evidence
+      end
+      errors << "prior-round-digest-mismatch" unless rounds.first["prior_round_digest"].nil?
+      errors << "review-round-base-chain-mismatch" unless rounds.first["base_sha"] == report["base_sha"]
+      rounds.each_cons(2) do |prior_round, current_round|
+        errors << "prior-round-digest-mismatch" unless current_round["prior_round_digest"] == prior_round["digest"]
+        errors << "review-round-base-chain-mismatch" unless current_round["base_sha"] == prior_round["head_sha"]
+        errors << "fix-round-without-open-findings" if prior_round["open_finding_ids"].empty?
+        next if same_actor?(prior_round["implementer_id"], current_round["implementer_id"])
+
+        evidence = input.fetch("replacement_evidence", []).find do |record|
+          replacement_evidence_valid?(
+            record,
+            identity,
+            current_round["number"],
+            prior_round["implementer_id"],
+            current_round["implementer_id"]
+          )
+        end
+        errors << "worker-replacement-evidence-required" unless evidence
+      end
+
+      prior_finding_ids = []
+      prior_open_ids = []
+      prior_findings_by_id = {}
+      retired_finding_ids = []
+      rounds.each_with_index do |review_round, index|
+        errors << "review-round-digest-mismatch" unless valid_record_digest?(review_round)
+        errors << "review-round-empty-range" if review_round["base_sha"] == review_round["head_sha"]
+        round_package = review_round["review_package"]
+        round_report = review_round["worker_report"]
+        current_completed_package = input["review_state"] == "complete" && index == rounds.length - 1
+        unless round_package.is_a?(Hash) && review_round["package_digest"] == round_package["digest"] &&
+               (!current_completed_package || round_package == package)
+          errors << "review-round-package-mismatch"
+        end
+        if current_completed_package && round_report != report
+          errors << "review-round-report-mismatch"
+        end
+        if round_package.is_a?(Hash) && round_report.is_a?(Hash) && !current_completed_package
+          errors << "review-round-package-invalid" unless valid_record_digest?(round_package)
+          errors << "review-round-report-invalid" unless valid_record_digest?(round_report)
+          unless %w[done done_with_concerns].include?(round_report["status"])
+            errors << "review-round-report-not-reviewable"
+          end
+          unless same_identity?(identity, round_package["identity"]) &&
+                 round_package["brief_digest"] == brief["digest"]
+            errors << "review-round-package-foreign"
+          end
+          unless same_identity?(identity, round_report["identity"]) && round_report["brief_digest"] == brief["digest"]
+            errors << "review-round-report-foreign"
+          end
+          unless round_package["worker_report_digest"] == round_report["digest"]
+            errors << "review-round-report-digest-mismatch"
+          end
+          report_heads_valid = ordered_subsequence?(round_heads.first(index + 1), round_report["commits"])
+          unless round_report["base_sha"] == report["base_sha"] &&
+                 round_report["head_sha"] == review_round["head_sha"] &&
+                 round_report["commits"].last == review_round["head_sha"] && report_heads_valid &&
+                 same_actor?(round_report["initial_implementer_id"], report["initial_implementer_id"]) &&
+                 same_actor?(round_report["current_implementer_id"], review_round["implementer_id"])
+            errors << "review-round-report-binding-mismatch"
+          end
+          unless round_package_range_bound?(
+            round_package,
+            review_round,
+            round_report,
+            report_heads_valid
+          )
+            errors << "review-round-package-range-mismatch"
+          end
+          unless same_actor?(round_package["implementer_id"], review_round["implementer_id"]) &&
+                 same_actor?(round_package["reviewer_id"], review_round["reviewer_id"]) &&
+                 round_package["prior_round_digest"] == review_round["prior_round_digest"]
+            errors << "review-round-package-binding-mismatch"
+          end
+          errors << "review-round-package-truncated" unless round_package.dig("exact_diff", "truncated") == false
+          diff, diff_error = load_artifact(round_package["exact_diff"], "review-round-exact-diff")
+          errors << diff_error if diff_error
+          errors << "review-round-exact-diff-empty" if diff && diff.strip.empty?
+          diff_paths[round_package["digest"]] = exact_diff_paths(diff)
+        end
+        findings_document, findings_error = load_findings(
+          review_round["review_findings"],
+          "review-findings",
+          findings_cache
+        )
+        if findings_error
+          errors << findings_error
+          next
+        end
+
+        findings = findings_document.fetch("review_findings")
+        unless findings_bound?(
+          findings_document,
+          identity,
+          review_round["head_sha"],
+          review_round["base_sha"],
+          review_round["reviewer_id"]
+        )
+          errors << "review-findings-foreign"
+        end
+        unless complete_findings_coverage?(findings_document, diff_paths[round_package&.[]("digest")])
+          errors << "review-findings-incomplete-coverage"
+        end
+        if findings.any? do |finding|
+          (finding["consequential"] == true || %w[P0 P1].include?(finding["severity"])) &&
+          (Array(known_implementers) + [review_round["reviewer_id"]]).any? do |actor|
+            same_actor?(finding.dig("independent_validation", "validator"), actor)
+          end
+        end
+          errors << "finding-validator-not-independent"
+        end
+        if findings.any? do |finding|
+          finding["disposition"] == "accepted_fixed" &&
+          (finding.dig("verification", "status") != "verified" ||
+           finding.dig("verification", "current_head_state") != "current")
+        end
+          errors << "accepted-fixed-verification-required"
+        end
+        derived_open_ids = findings.filter_map do |finding|
+          finding["id"] if OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
+        end
+        derived_addressed_ids = findings.filter_map do |finding|
+          finding["id"] unless OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
+        end
+        errors << "finding-id-reused" unless (findings.map { |finding| finding["id"] } & retired_finding_ids).empty?
+        unless review_round["open_finding_ids"] == derived_open_ids &&
+               review_round["addressed_finding_ids"] == derived_addressed_ids
+          errors << "round-finding-outcome-mismatch"
+        end
+        consequential_ids = findings.filter_map do |finding|
+          finding["id"] if finding["consequential"] == true || %w[P0 P1].include?(finding["severity"])
+        end
+        declared_new = review_round["new_consequential_finding_ids"]
+        errors << "new-consequential-finding-invalid" unless (declared_new - consequential_ids).empty?
+        errors << "new-consequential-finding-not-open" unless (declared_new - derived_open_ids).empty?
+        errors << "new-consequential-finding-not-new" unless (declared_new & prior_finding_ids).empty?
+        unless index.zero?
+          errors << "prior-open-finding-outcome-mismatch" unless (prior_open_ids - findings.map { |finding| finding["id"] }).empty?
+          prior_open_ids.each do |finding_id|
+            current = findings.find { |finding| finding["id"] == finding_id }
+            prior = prior_findings_by_id[finding_id]
+            unless current && prior && finding_lineage_valid?(prior, current)
+              errors << "prior-open-finding-lineage-mismatch"
+            end
+          end
+          novel_ids = findings.map { |finding| finding["id"] } - prior_finding_ids
+          errors << "unrelated-new-finding" unless novel_ids.sort == declared_new.sort
+        end
+        prior_finding_ids = findings.map { |finding| finding["id"] }
+        prior_open_ids = derived_open_ids
+        prior_findings_by_id = findings.to_h { |finding| [finding["id"], finding] }
+        retired_finding_ids |= derived_addressed_ids
+      end
+    end
+
+    if rounds.is_a?(Array) && report.is_a?(Hash) && package.is_a?(Hash)
+      transitions = expected_replacement_transitions(report, package, rounds, input["review_state"])
+      evidence = input.fetch("replacement_evidence", [])
+      evidence_matches = evidence.map do |record|
+        transitions.count do |number, prior_implementer, replacement_implementer|
+          replacement_evidence_valid?(record, identity, number, prior_implementer, replacement_implementer)
+        end
+      end
+      expected_matches = transitions.map do |number, prior_implementer, replacement_implementer|
+        evidence.count do |record|
+          replacement_evidence_valid?(record, identity, number, prior_implementer, replacement_implementer)
+        end
+      end
+      if evidence_matches.any? { |count| count != 1 } || expected_matches.any? { |count| count > 1 }
+        errors << "worker-replacement-evidence-foreign"
+      end
+    end
+
+    if input["review_state"] == "complete"
+      errors << "review-round-missing" unless round.is_a?(Hash)
+      if round.is_a?(Hash)
+        errors << "review-round-package-mismatch" unless package.is_a?(Hash) && round["package_digest"] == package["digest"]
+        errors << "reviewer-not-independent" unless independent?(round["implementer_id"], round["reviewer_id"])
+        unless round["base_sha"] == package["base_sha"] && round["head_sha"] == package["head_sha"] &&
+               same_actor?(round["implementer_id"], package["implementer_id"]) &&
+               same_actor?(round["reviewer_id"], package["reviewer_id"])
+          errors << "review-round-package-binding-mismatch"
+        end
+      end
+
+      open_document, open_error = load_findings(input["open_findings"], "open-findings", findings_cache)
+      errors << open_error if open_error
+      if open_document && input["open_findings"].is_a?(Hash)
+        errors << "open-findings-foreign" unless findings_bound?(
+          open_document,
+          identity,
+          expected_head,
+          round&.[]("base_sha"),
+          round&.[]("reviewer_id")
+        )
+        open_records = open_document.fetch("review_findings")
+        unless complete_findings_coverage?(open_document, diff_paths[round&.dig("review_package", "digest")])
+          errors << "open-findings-incomplete-coverage"
+        end
+        actual_open_ids = open_records.map { |finding| finding["id"] }
+        errors << "open-finding-ids-mismatch" unless input["open_findings"]["ids"] == actual_open_ids
+        if round.is_a?(Hash)
+          latest_document, = load_findings(round["review_findings"], "review-findings", findings_cache)
+        end
+        if latest_document
+          latest_open_records = latest_document.fetch("review_findings").select do |finding|
+            OPEN_FINDING_DISPOSITIONS.include?(finding["disposition"])
+          end
+          errors << "open-findings-round-mismatch" unless open_records == latest_open_records
+        end
+        controls = input["finding_controls"]
+        control_ids = controls.is_a?(Array) ? controls.filter_map { |control| control["finding_id"] if control.is_a?(Hash) } : []
+        errors << "finding-controls-mismatch" unless control_ids == actual_open_ids && control_ids.uniq == control_ids
+        unless controls.is_a?(Array) && controls.all? do |control|
+          control.is_a?(Hash) && [true, false].include?(control["load_bearing"]) &&
+          [true, false].include?(control["cap_piercing"])
+        end
+          errors << "finding-controls-invalid"
+        end
+
+        consequential_ids = open_document.fetch("review_findings").filter_map do |finding|
+          finding["id"] if finding["consequential"] == true || %w[P0 P1].include?(finding["severity"])
+        end
+        declared_new = round.is_a?(Hash) ? round.fetch("new_consequential_finding_ids", []) : []
+        errors << "new-consequential-finding-invalid" unless (declared_new - consequential_ids).empty?
+
+        if round.is_a?(Hash) && round["number"] == 5
+          errors.concat(validate_cap_state(input["cap_adjudication"], actual_open_ids, cap_authority))
+        end
+      end
+    end
+
+    errors.compact.uniq
+  end
+
+  def reduce(input, cap_authority = cap_authority_from_env)
+    findings_cache = {}
+    errors = validate(input, findings_cache, cap_authority)
+    unless errors.empty?
+      return decision("blocked", false, errors.sort)
+    end
+
+    if input["review_state"] == "complete"
+      open_ids = input.dig("open_findings", "ids")
+      if open_ids == []
+        decision("task_complete", true, ["review-clean"])
+      elsif input.fetch("rounds").last["number"] == 5
+        open_document = findings_cache.fetch(findings_cache_key(input["open_findings"]))
+        blocking_reasons = cap_blocking_reasons(input, open_document)
+        if blocking_reasons.empty?
+          decision("task_complete", true, ["cap-adjudicated"])
+        else
+          decision("blocked", false, blocking_reasons)
+        end
+      else
+        reasons = ["open-findings-require-fix"]
+        latest_round = input.fetch("rounds").last
+        reasons.unshift("consequential-new-breakage") unless latest_round.fetch("new_consequential_finding_ids").empty?
+        decision("fix_required", false, reasons)
+      end
+    else
+      decision("review_eligible", false, ["exact-review-package-current"])
+    end
+  end
+
+  def cap_blocking_reasons(input, document)
+    findings = document.fetch("review_findings")
+    reasons = []
+    reasons << "p0-finding-open" if findings.any? { |finding| finding["severity"] == "P0" }
+    controls = input.fetch("finding_controls")
+    reasons << "cap-piercing-finding-open" if controls.any? { |control| control["cap_piercing"] }
+    reasons << "load-bearing-finding-open" if controls.any? { |control| control["load_bearing"] }
+    adjudications = input.dig("cap_adjudication", "findings")
+    reasons << "cap-adjudicated-blocked" if adjudications.any? { |record| record["disposition"] == "blocked" }
+    reasons
+  end
+
+  def decision(status, dependent_task_permitted, reasons)
+    {
+      "contract" => "task-review-loop-decision",
+      "version" => 1,
+      "status" => status,
+      "dependent_task_permitted" => dependent_task_permitted,
+      "reasons" => reasons
+    }
+  end
+end
+
+begin
+  input = JSON.parse($stdin.read)
+  puts JSON.generate(TaskReviewLoop.reduce(input))
+rescue JSON::ParserError
+  puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["malformed-json"]))
+end

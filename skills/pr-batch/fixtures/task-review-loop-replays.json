@@ -1,0 +1,132 @@
+{
+  "contract": "task-review-loop-replays",
+  "version": 1,
+  "cases": [
+    {
+      "name": "review-eligible",
+      "expected": {
+        "contract": "task-review-loop-decision",
+        "version": 1,
+        "status": "review_eligible",
+        "dependent_task_permitted": false,
+        "reasons": ["exact-review-package-current"]
+      }
+    },
+    {
+      "name": "clean-review",
+      "expected": {
+        "contract": "task-review-loop-decision",
+        "version": 1,
+        "status": "task_complete",
+        "dependent_task_permitted": true,
+        "reasons": ["review-clean"]
+      }
+    },
+    {
+      "name": "addressed-finding-with-consequential-breakage",
+      "expected": {
+        "contract": "task-review-loop-decision",
+        "version": 1,
+        "status": "fix_required",
+        "dependent_task_permitted": false,
+        "reasons": ["consequential-new-breakage", "open-findings-require-fix"]
+      }
+    },
+    {
+      "name": "stale-package",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["review-package-stale-head"]
+      }
+    },
+    {
+      "name": "truncated-package",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["review-package-truncated"]
+      }
+    },
+    {
+      "name": "foreign-package",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["review-package-foreign"]
+      }
+    },
+    {
+      "name": "worker-replacement-evidence",
+      "expected": {
+        "status": "fix_required",
+        "dependent_task_permitted": false,
+        "reasons": ["consequential-new-breakage", "open-findings-require-fix"]
+      }
+    },
+    {
+      "name": "five-round-cap-adjudicated",
+      "expected": {
+        "status": "task_complete",
+        "dependent_task_permitted": true,
+        "reasons": ["cap-adjudicated"]
+      }
+    },
+    {
+      "name": "fabricated-historical-package",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["prior-round-digest-mismatch", "review-round-package-invalid"]
+      }
+    },
+    {
+      "name": "current-fix-package-wrong-range",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["review-package-commit-list-mismatch"]
+      }
+    },
+    {
+      "name": "historical-package-report-digest-mismatch",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["review-round-report-digest-mismatch"]
+      }
+    },
+    {
+      "name": "p0-cap-blocker",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["p0-finding-open"]
+      }
+    },
+    {
+      "name": "cap-piercing-blocker",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["cap-piercing-finding-open"]
+      }
+    },
+    {
+      "name": "load-bearing-blocker",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["load-bearing-finding-open"]
+      }
+    },
+    {
+      "name": "reviewer-independence",
+      "expected": {
+        "status": "blocked",
+        "dependent_task_permitted": false,
+        "reasons": ["reviewer-not-independent"]
+      }
+    }
+  ]
+}
