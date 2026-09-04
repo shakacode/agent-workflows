@@ -253,6 +253,13 @@ exactly one of `accelerate`, `continue`, `hold`, `replace`, `close`, or
 invalid work and keeps the branch.
 _Avoid_: triage state, verdict, status
 
+**Comment kind**:
+The required audience class in every agent-posted GitHub comment envelope:
+`bookkeeping` (agent-to-agent, fully collapsed under one summary line),
+`info` (human-readable, `Action needed: none`, detail collapsed), or
+`decision` (the four desk-card fields visible, detail collapsed).
+_Avoid_: comment type, severity, priority (a decision's priority is a card field)
+
 ## Relationships
 
 - **Batch → Wave → Lane → Instance**: when wave scheduling is used, a
@@ -292,6 +299,9 @@ _Avoid_: triage state, verdict, status
   autonomous-merge eligibility gate hands a PR to the human, and stripped by
   CI when the head changes. A CI-triggered agent may read, review, label, and
   draft an assessment; it never pushes or merges.
+- Every agent-posted GitHub comment carries exactly one **Comment kind**; a
+  `decision` comment is the same card the Human Attention Desk mirrors, and
+  only a `decision` may accompany a **Human-attention label**.
 - **Drain** is observed at worker phase transitions; the **Hard escape hatch** is for workers that stop reaching them.
 
 ## Example dialogue
