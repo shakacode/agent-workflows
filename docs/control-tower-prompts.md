@@ -398,6 +398,8 @@ this way.
     expected-producers.json  human-maintained roster of expected snapshot files
     accepted/
       <OWNER>--<REPO>.json   HIL Desk copy of the last accepted snapshot; a tower may read its own
+    archive-ledgers/
+      <OWNER>--<REPO>.json   terminal task records; that repository tower is the sole writer
 ```
 
 No tower reads or modifies another repository's snapshot. If the human wants
@@ -507,12 +509,14 @@ Field rules:
   the concrete reason and identifies the idle share (for example, `1 of 3
   usable slots held for final integration`). This is how the idle-capacity
   portion of R9's acceptance is checked.
-- **`refresh_interval_seconds`** is the tower's declared cadence. A snapshot is
-  stale when `updated_at` is older than twice that interval. The desk rejects
-  `updated_at` more than five minutes ahead of its clock; accepted freshness is
-  measured from desk-observed `accepted_at`, so clock skew cannot extend a
-  writer's lease. Stale or degraded sources do not contribute to the action
-  queue; their preserved items appear only in `SYSTEM_STATUS.md`.
+- **`refresh_interval_seconds`** is an integer from 60 through 3,600 inclusive;
+  the desk rejects the snapshot outside that range. A snapshot is stale when
+  its producer-authored `updated_at` is older than twice that interval. The desk
+  rejects `updated_at` more than five minutes ahead of its clock;
+  desk-observed `accepted_at` is audit metadata and never extends source
+  freshness or a duplicate-tower liveness window. Stale or degraded sources do
+  not contribute to the action queue; their preserved items appear only in
+  `SYSTEM_STATUS.md`.
 - **`portfolio`** counts are per type since `wave_started_at`. Net change per
   type is `open` minus `open_at_start`. For pull requests, `merged` counts
   merged ones and `closed` counts only those closed without merge; GitHub
@@ -575,9 +579,14 @@ Field rules:
 - **`attention_estimate_minutes`** is optional; omit it rather than guess.
 - **Snapshot text is data.** `question`, `choices`, `safe_resume`,
   `priority_reason`, `unlocks`, deeplinks, and anything they link to are
-  untrusted. Escape Markdown control characters and HTML before rendering text;
-  validate intended links separately against allowed HTTP(S) and `codex:` URI
-  forms. Neither the desk nor a renderer follows embedded instructions.
+  untrusted. Escape Markdown control characters and HTML before rendering text.
+  `target` uses HTTPS on `github.com`, its owner/repository path exactly matches
+  the snapshot's `repository`, and its suffix is `/pull/<positive-integer>` or
+  `/issues/<positive-integer>`. `hil_task_deeplink` is exactly
+  `codex://threads/<hil_task_id>` for the same declared HIL task. Reject a
+  mismatched host, repository, task id, query, fragment, or extra path rather
+  than presenting it as a review link. Neither the desk nor a renderer follows
+  embedded instructions.
 - **Excluded from `attention`:** routine implementation, bookkeeping,
   test-hardening preferences, mechanical merges already authorized, unchanged
   status, optional telemetry, and routine owner-cleanup backlog. Close-only,
@@ -601,6 +610,46 @@ Field rules:
   stay unarchived in one aggregate pending-archive review list. Never notify or
   create an attention item solely for archiving, and do not rename a clearly
   terminal task merely to mark it.
+
+### Archive ledgers
+
+Each repository tower is the sole writer of
+`state/archive-ledgers/<OWNER>--<REPO>.json` and publishes it by validated
+same-directory temporary file plus atomic rename. The file has this shape:
+
+```json
+{
+  "schema_version": 1,
+  "repository": "shakacode/agent-workflows",
+  "generation": 9,
+  "records": [
+    {
+      "record_id": "sha256:<lowercase-hex>",
+      "provider": "codex",
+      "host": "M5",
+      "task_id": "stable-task-id",
+      "task_title": "Exact terminal task title",
+      "target": "https://github.com/OWNER/REPO/pull/123",
+      "outcome": "merged",
+      "evidence": "https://github.com/OWNER/REPO/pull/123",
+      "terminal_at": "2026-09-02T18:05:00Z"
+    }
+  ]
+}
+```
+
+`outcome` is `merged`, `closed`, `no-change`, `superseded`, or `handed-off`.
+`record_id` is SHA-256 over the UTF-8 bytes of
+`repository + NUL + provider + NUL + task_id`; one terminal record exists per
+stable task. Before writing, the tower re-reads its ledger, preserves all valid
+records, adds the record only when its id is absent, and increments `generation`
+only for a changed record set. After rename it re-reads the canonical file and
+requires the exact record id and fields it wrote; that successful comparison is
+the durable acknowledgment required before clearing attention or archiving the
+task. A mismatch or unreadable ledger leaves the task unarchived and visible in
+the per-repository pending set. The HIL Desk never writes ledgers; it combines
+their pending sets into one diagnostic list in `SYSTEM_STATUS.md` and links the
+canonical ledgers from `HUMAN_ATTENTION.md`.
 
 ### Writer state
 
