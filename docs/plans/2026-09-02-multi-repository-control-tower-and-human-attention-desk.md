@@ -144,7 +144,8 @@ repaired.
 
 ### R6 — Durable PR-comment decisions
 
-Each pull-request attention item SHALL use authenticated GitHub PR comments as
+Every Human Attention item SHALL be backed by a pull request and use
+authenticated GitHub PR comments as
 the canonical durable, cross-machine decision channel for exact-head approvals,
 gate acknowledgments, requested changes, complete choices, and the literal
 `walkthrough requested`. Every actionable item SHALL also have exactly one
@@ -154,6 +155,10 @@ applicable exact head, relay outcomes, notify the tower, and auto-archive when
 terminal. The tower SHALL execute the relayed outcome and clear the item only
 by publishing a newer snapshot. The aggregate HIL Desk SHALL NOT answer,
 reinterpret, or clear the question.
+
+Issue-only work SHALL remain repository backlog until decision-free scoping
+produces a pull request. It SHALL NOT enter `attention` or create an issue-named
+HIL companion directly.
 
 When risk or complexity gates require a walkthrough, the HIL task SHALL use
 `pr-walkthrough` to prepare the complete exact-head walkthrough up front and
@@ -170,8 +175,8 @@ host is normalized at the producer/aggregation boundary to `M5` or `M1`, never
 the runner-local identity `local`.
 
 Acceptance: an item remains until its snapshot clears it and shows complete
-choices, **Respond on GitHub**, the HIL-prefix companion identity, and raw Codex
-URL. Walkthrough completion is not approval.
+choices, **Respond on GitHub**, a PR target, the HIL-prefix companion identity,
+and raw Codex URL. Walkthrough completion is not approval.
 
 Task archival is terminal housekeeping, not Human Attention. A task final SHALL
 state `Archive state: ready` or the concrete reason it is not ready. Once
@@ -381,8 +386,10 @@ transcripts.
 - **Requirements:** R6-R8, R11-R12.
 - **Repository:** `agent-coordination`.
 - **Done:** attention records, canonical GitHub-comment decision channel, tower
-  identity, required HIL companion identity, and walkthrough mode are durable
-  and queryable. Display hosts are normalized to `M5` or `M1`, never `local`.
+  identity, required HIL companion identity and last-seen time, and walkthrough
+  mode are durable and queryable. A freshness test proves that a stale companion
+  is suppressed to System Status until repaired. Display hosts are normalized
+  to `M5` or `M1`, never `local`.
 - **Parallelism:** after T2; can overlap T3 once ownership is resolved.
 
 ### T5 — Render the HIL queue in the dashboard

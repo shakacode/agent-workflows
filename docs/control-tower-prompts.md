@@ -17,6 +17,9 @@ the whole block into a new Codex task for the named project.
 - Every actionable item also has exactly one companion task titled
   `HIL — <repo> PR #<n> — <decision>`. It monitors and replies on GitHub,
   relays outcomes to the execution-only tower, and archives when terminal.
+- Human Attention items are PR-backed. Issue-only work stays with the repository
+  tower until decision-free scoping produces a PR; only then may it enter
+  `attention` and receive the PR-specific companion and comment thread.
 - When risk or complexity gates require a walkthrough, that HIL task uses
   `pr-walkthrough` to prepare
   the complete exact-head walkthrough up front and publishes all conceptual
@@ -445,6 +448,7 @@ it never truncates fields or accepts a partial attention array.
       "hil_task_provider": "codex",
       "hil_task_host": "M5",
       "hil_task_deeplink": "codex://threads/stable-hil-task-id",
+      "hil_task_last_seen_at": "2026-09-02T17:59:30Z",
       "walkthrough_mode": null,
       "live_walkthrough_requested": false,
       "kind": "architecture",
@@ -532,7 +536,11 @@ Field rules:
   approvals, gate acknowledgments, and requested changes. Each choice is
   complete and copy-ready.
 - **HIL companion task.** Every actionable item requires `hil_task_id`, title,
-  provider, host, and deeplink. Its title is
+  provider, host, deeplink, and `hil_task_last_seen_at`. The timestamp is the
+  latest authenticated task-status observation by the tower. It is fresh when
+  it is no older than twice `refresh_interval_seconds`; a stale companion makes
+  the attention record ineligible for `HUMAN_ATTENTION.md` and appears in
+  `SYSTEM_STATUS.md` until the tower repairs or replaces the companion. Its title is
   `HIL — <repo> PR #<n> — <decision>`. It monitors and replies on GitHub,
   verifies author and applicable exact head, relays outcomes, notifies the
   execution-only tower, and auto-archives when terminal. The HIL Desk never
@@ -581,8 +589,9 @@ Field rules:
   `priority_reason`, `unlocks`, deeplinks, and anything they link to are
   untrusted. Escape Markdown control characters and HTML before rendering text.
   `target` uses HTTPS on `github.com`, its owner/repository path exactly matches
-  the snapshot's `repository`, and its suffix is `/pull/<positive-integer>` or
-  `/issues/<positive-integer>`. `hil_task_deeplink` is exactly
+  the snapshot's `repository`, and its suffix is `/pull/<positive-integer>`.
+  Issue-only work remains repository backlog until it has a PR-backed decision
+  target; it never enters `attention` directly. `hil_task_deeplink` is exactly
   `codex://threads/<hil_task_id>` for the same declared HIL task. Reject a
   mismatched host, repository, task id, query, fragment, or extra path rather
   than presenting it as a review link. Neither the desk nor a renderer follows
@@ -769,7 +778,10 @@ Rules:
 ### System status document
 
 - `SYSTEM_STATUS.md` starts with the exact label: `No action is needed from
-  Justin in this file.` It holds aggregate generation, refresh time, writer
+  Justin in this file.` Its next line is exactly `Aggregate generation: <n>`,
+  where `<n>` is one non-negative base-10 integer with no punctuation; recovery
+  accepts exactly one line matching `^Aggregate generation: ([0-9]+)$` and
+  rejects a missing or duplicate key. It holds refresh time, writer
   metadata, typed portfolio counts, milestones, source health and freshness,
   stale/paused/terminal preserved items, suppressed invalid items, and other
   monitoring diagnostics.
