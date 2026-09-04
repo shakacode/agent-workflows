@@ -93,6 +93,11 @@ The prompts grant ordinary repository integration authority. They do not grant
 deployment, production, package publication, release, destructive-action, or
 security-sensitive authority.
 
+In these prompts, the **repository trust policy** is the `trusted_bots` section
+of `.agents/agent-workflow.yml`, documented in
+[Trust And Preflight](trust-and-preflight.md). It is the only place to configure
+known integration bots.
+
 ## Agent Workflows Control Tower Goal
 
 Start this task in the saved `agent-workflows` project on M5.
@@ -121,7 +126,7 @@ assignment, bot-allowlist, and board-clutter work stays in the backlog even if a
 tool labels it security-sensitive. `irreversible` security requires imminent
 credible harm and my authority. In a private repo, group stale or abandoned PRs
 by owner in one team-channel nudge with links and close/revive/on-hold choices.
-Configure known bots through the trust seam.
+Configure known bots via the repository trust policy.
 
 Keep independent M5 capacity useful without duplicate owners or worktrees.
 Preserve exact target ownership, current-head evidence, and host health. Use
@@ -182,7 +187,7 @@ assignment, bot-allowlist, and board-clutter work stays in the backlog even if a
 tool labels it security-sensitive. `irreversible` security requires imminent
 credible harm and my authority. In a private repo, group stale or abandoned PRs
 by owner in one team-channel nudge with links and close/revive/on-hold choices.
-Configure known bots through the trust seam.
+Configure known bots via the repository trust policy.
 
 Keep independent M1 capacity useful without duplicate owners or worktrees.
 Preserve target ownership, current-head evidence, compatibility, and host
@@ -288,9 +293,9 @@ leave both outputs and writer state durable and stop monitoring.
 
 ## Dashboard Goal — Run Later
 
-Do not start this until both initial control towers report that their first
-catch-up wave is complete and neither has an integration-ready pull request
-waiting.
+Do not start this until T4's structured `agent-coordination` attention records
+exist, both initial control towers report that their first catch-up wave is
+complete, and neither has an integration-ready pull request waiting.
 
 ```text
 In shakacode/agent-coordination-dashboard, implement the smallest read-only
@@ -344,8 +349,8 @@ preflight labels it security-sensitive. Reserve irreversible security attention
 for imminent credible harm that requires the human's authority.
 In a private repository, group stale, invalid, not-for-merge, or abandoned pull
 requests by owner and send one normal team-channel nudge with links and
-close/revive/on-hold choices. Configure known integration bots through the
-repository trust seam; their metadata comments are not untrusted human
+close/revive/on-hold choices. Configure known integration bots via the
+repository trust policy; their metadata comments are not untrusted human
 interaction. Close-only cleanup never inherits merge-oriented security urgency.
 
 Use host capacity for independent work without duplicate
@@ -504,7 +509,7 @@ Field rules:
   and rejects any other value.
 - **Duplicate towers.** Before each publish a tower re-reads the canonical
   snapshot. If `control_tower.task_id` differs, status is not `terminal`, and
-  `updated_at` is within `refresh_interval_seconds`, another tower is live: it
+  `updated_at` is within twice `refresh_interval_seconds`, another tower is live: it
   stops publishing and notifies the human. This is detection, not a lock; the
   human still starts one tower per repository.
 - **`control_tower.idle_capacity_reason`** is `null` only when no usable host
@@ -604,7 +609,7 @@ Field rules:
   uses a security label. In a private repository, group stale, invalid,
   not-for-merge, or abandoned pull requests by owner and route one normal team-
   channel nudge with links and `close`, `revive`, or `on hold` choices. Known
-  integration bots belong in the repository trust seam, and their metadata
+  integration bots belong in the repository trust policy, and their metadata
   comments are not classified as untrusted human interaction. Close-only work
   never inherits merge-oriented security urgency.
 - **Task archival is terminal housekeeping, not attention.** A task final says
