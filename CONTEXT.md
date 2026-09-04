@@ -220,6 +220,20 @@ _Avoid_: kill, stop (bare)
 Coordinator-recorded cancellation when available, then process-level termination plus manual claim/worktree cleanup, for a wedged worker that cannot reach a checkpoint.
 _Avoid_: force kill (without the cleanup steps it names)
 
+### Integration
+
+**Merge backlog**:
+The open, non-draft PRs whose remaining step is a merge decision or a
+mechanical unblock such as a rebase or a stale bot-review dismissal, not
+implementation.
+_Avoid_: stuck PRs, open PR count
+
+**Control tower**:
+The per-repository standing agent task that integrates ready work under the
+merge authority it was granted, remediates small blockers, and routes only
+outcome-changing decisions to the human.
+_Avoid_: sweeper, merge bot, the batch (a batch ends; the tower does not)
+
 ## Relationships
 
 - **Batch → Wave → Lane → Instance**: when wave scheduling is used, a
@@ -253,6 +267,8 @@ _Avoid_: force kill (without the cleanup steps it names)
   worker instances never overlap.
 - A **Claim** is held by exactly one **Instance**; **Supersede (claim operation)** replaces the instance for the same **Lane identity**, **Takeover** replaces the owner after the holder is **Dead** or a fallback claim expires — both bump the **Generation** when the backend supports fencing.
 - **Worker phase** answers "is it progressing?"; **Live/Stale/Dead** answers "is it running?"; **Wedged** is live without worker-phase progress.
+- A **Merge backlog** item belongs to the repository **Control tower** once
+  the **Lane** that opened it ends; a lane never keeps a PR alive to merge it.
 - **Drain** is observed at worker phase transitions; the **Hard escape hatch** is for workers that stop reaching them.
 
 ## Example dialogue
@@ -269,3 +285,5 @@ _Avoid_: force kill (without the cleanup steps it names)
 - "restart" previously mixed ordinary agent-runner resume prompts with backend-fenced replacement — resolved: use restart/resume handoffs for the former, and **Supersede (claim operation)** only for explicit same-lane replacement when the backend supports fencing.
 - "supersede" also appears in CI/review triage for superseded workflow rows — resolved: **Supersede (claim operation)** is only the same-lane ownership replacement; use "superseded check row" or similar in CI contexts.
 - "phase" also appears in release phase / phase-gating policy — resolved: use **Worker phase** for lane progress and "release phase" for branch or release-train gate context.
+- "stuck" was also used for the PR portfolio — resolved: **Merge backlog**
+  names the PRs; **Wedged** and dead stay reserved for workers.
