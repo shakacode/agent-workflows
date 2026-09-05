@@ -498,7 +498,13 @@ module CloseoutEvidenceReplay
     end
 
     missing << "paint_check" unless valid_paint_check?(paint_check)
-    validate_interaction_evidence(interaction_change, interaction_evidence, missing)
+    validate_interaction_evidence(
+      interaction_change,
+      interaction_evidence,
+      missing,
+      destination: destination,
+      github_host: github_host
+    )
     validate_negative_control(visual_fix, negative_control, missing)
     validate_performance_evidence(performance_impact, performance_evidence, missing)
   end
@@ -533,10 +539,14 @@ module CloseoutEvidenceReplay
     end
   end
 
-  def validate_interaction_evidence(classification, evidence, missing)
+  def validate_interaction_evidence(classification, evidence, missing, destination:, github_host: nil)
     case classification
     when "yes"
-      missing << "interaction_evidence" unless durable_clip?(evidence) || measured_substitute?(evidence)
+      missing << "interaction_evidence" unless durable_clip?(
+        evidence,
+        destination: destination,
+        github_host: github_host
+      ) || measured_substitute?(evidence)
     when "no"
       missing << "interaction_evidence" unless reasoned_not_applicable?(evidence)
     else
@@ -656,10 +666,13 @@ module CloseoutEvidenceReplay
       )
   end
 
-  def durable_clip?(value)
-    value.start_with?("clip:") &&
-      http_url?(value) &&
-      !disallowed_durable_reference?(value)
+  def durable_clip?(value, destination:, github_host: nil)
+    durable = value.start_with?("clip:") &&
+              http_url?(value) &&
+              !disallowed_durable_reference?(value)
+    return false unless durable
+
+    destination != "github_pr" || github_url?(value, github_host: github_host)
   end
 
   def measured_substitute?(value)

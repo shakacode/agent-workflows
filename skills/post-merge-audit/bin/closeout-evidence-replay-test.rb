@@ -896,6 +896,38 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes interaction.fetch("missing"), "interaction_evidence"
   end
 
+  def test_v2_github_destination_requires_a_github_interaction_clip
+    qa = run_replay(
+      v2_marker(
+        "interaction_change" => "yes",
+        "interaction_evidence" => "clip: https://artifacts.example.test/ui-123"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "interaction_evidence"
+  end
+
+  def test_v2_github_destination_scopes_interaction_clip_to_configured_enterprise_host
+    visual = "durable: before and after https://github.example.test/example/repo/pull/123#visual"
+    overrides = {
+      "visual_evidence" => visual,
+      "interaction_change" => "yes"
+    }
+    untrusted = run_replay(
+      v2_marker(overrides.merge("interaction_evidence" => "clip: https://github.com/example/repo/pull/123#clip")),
+      github_host: "github.example.test"
+    ).fetch("qa_evidence")
+    trusted = run_replay(
+      v2_marker(overrides.merge("interaction_evidence" => "clip: https://github.example.test/example/repo/pull/123#clip")),
+      github_host: "github.example.test"
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", untrusted.fetch("verdict")
+    assert_includes untrusted.fetch("missing"), "interaction_evidence"
+    assert_equal "SATISFIED", trusted.fetch("verdict")
+  end
+
   def test_v2_github_destination_accepts_current_and_legacy_public_attachment_hosts
     hosts = %w[
       github.com/example/repo/pull/123#visual
