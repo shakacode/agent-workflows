@@ -367,6 +367,22 @@ this identity. Every later mutating command requires the same
 `--identity-file` and rejects a record whose immutable fields no longer match
 it before any GitHub read or record mutation.
 
+Publication is crash-safe. The helper writes the identity to a private candidate
+beside the target path, flushes it to disk, re-reads it, and only then hard-links
+it into place and flushes the directory entry. A partial or empty candidate is
+refused instead of published, the hard link makes exactly one writer the creator,
+and every loser authenticates the published identity against its own immutable
+binding before reusing it. An interrupted launch therefore leaves only an
+unpublished candidate, which a later launch reaps on a bounded scan; once an
+identity is published, no retry can replace it or mint a different one. Every
+reader opens the identity once with `O_NOFOLLOW` and checks that one descriptor,
+so an identity path that is not an owner-only regular file fails the launch
+closed: a symlink or a loosened mode is refused rather than adopted, and the
+check cannot be raced by swapping the path between the check and the read.
+Platforms that do not expose a directory flush keep the single-creator guarantee
+and lose only the crash-durability upgrade; a directory that denies the flush is
+reported as a durability warning, and a real I/O error still fails closed.
+
 - A retry of that helper launch reuses the same identity file and its helper
   evidence IDs, timestamps, configured-base binding, source, and selection
   digest even if `main` moved.
