@@ -19,6 +19,7 @@ require "tempfile"
 require "time"
 require "uri"
 require "yaml"
+require_relative "../lib/current_integration_evidence"
 
 module MergeAssurance
   class Error < StandardError; end
@@ -39,6 +40,13 @@ module MergeAssurance
     required_status_check_rollup github_actions dependabot other
   ].freeze
   SCOPE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
+  REQUESTED_HOSTED_KEYS = %w[
+    completed failing pending run_ids stale unknown
+  ].freeze
+  REQUESTED_HOSTED_COMPLETED_KEYS = %w[
+    conclusion head_sha name run_id status url
+  ].freeze
+  REQUESTED_HOSTED_COMPLETED_METADATA_KEYS = %w[name url].freeze
   CI_BUCKET_READY_VALUES = %w[pass skipping].freeze
   CI_BUCKET_NOT_READY_VALUES = %w[cancel fail pending].freeze
   CI_STATE_READY_VALUES = %w[neutral skipped success].freeze
@@ -231,7 +239,7 @@ module MergeAssurance
       validate_selected_hosted_run_duplicates(safe_context, failures)
     end
     validate_autonomous(autonomous_result, safe_context, failures)
-    failures << "ci_result contains UNKNOWN" if contains_unknown?(ci_result)
+    failures << "ci_result contains UNKNOWN" if ci_result_contains_unknown?(ci_result)
     failures << "autonomous_result contains UNKNOWN" if contains_unknown?(autonomous_result)
     failures << "context contains UNKNOWN" if contains_unknown?(context)
     failures << "selected_hosted_ci_receipts contains UNKNOWN" if
@@ -261,6 +269,52 @@ module MergeAssurance
       value.include?("UNKNOWN")
     else
       false
+    end
+  end
+
+  def ci_result_contains_unknown?(ci_result)
+    return contains_unknown?(ci_result) unless ci_result.is_a?(Hash)
+
+    ci_result.any? do |key, value|
+      if key == "scopes" && value.is_a?(Hash)
+        value.any? do |scope_name, scope|
+          contains_unknown?(scope_name) || ci_scope_contains_unknown?(scope)
+        end
+      elsif key == "requested_hosted"
+        requested_hosted_contains_unknown?(value)
+      else
+        contains_unknown?(key) || contains_unknown?(value)
+      end
+    end
+  end
+
+  def requested_hosted_contains_unknown?(requested_hosted)
+    return contains_unknown?(requested_hosted) unless requested_hosted.is_a?(Hash)
+
+    requested_hosted.any? do |key, value|
+      if key == "completed" && value.is_a?(Array)
+        value.any? do |run|
+          next contains_unknown?(run) unless run.is_a?(Hash)
+
+          run.any? do |run_key, run_value|
+            next false if REQUESTED_HOSTED_COMPLETED_METADATA_KEYS.include?(run_key)
+
+            contains_unknown?(run_key) || contains_unknown?(run_value)
+          end
+        end
+      else
+        contains_unknown?(key) || contains_unknown?(value)
+      end
+    end
+  end
+
+  def ci_scope_contains_unknown?(scope)
+    return contains_unknown?(scope) unless scope.is_a?(Hash) && scope["gates_verdict"] == false
+
+    scope.any? do |key, value|
+      next false if %w[error informational_rows].include?(key)
+
+      contains_unknown?(key) || contains_unknown?(value)
     end
   end
 
@@ -320,17 +374,57 @@ module MergeAssurance
         failures << "ci_result scope #{name} has invalid state"
         next
       end
-      failures << "ci_result scope #{name} is not complete" unless scope["complete"] == true
+      gates_verdict = scope.fetch("gates_verdict", true)
+      failures << "ci_result scope #{name} has invalid gates_verdict" unless [true, false].include?(gates_verdict)
+      if gates_verdict == false && name == "required_status_check_rollup"
+        failures << "ci_result scope #{name} cannot be non-gating"
+      end
+      if gates_verdict == false && scope["rows"] != []
+        failures << "ci_result scope #{name} non-gating rows must be empty"
+      end
+      failures << "ci_result scope #{name} is not complete" if gates_verdict != false && scope["complete"] != true
       failures << "ci_result scope #{name} is not ready" unless %w[READY NOT_APPLICABLE].include?(scope["state"])
       failures << "ci_result scope #{name} head mismatch" unless scope["head_sha"] == context["head_sha"]
       failures << "ci_result scope #{name} rows are invalid" unless scope["rows"].is_a?(Array)
+      if scope.key?("informational_rows") && !scope["informational_rows"].is_a?(Array)
+        failures << "ci_result scope #{name} informational_rows are invalid"
+      end
       recomputed_state = recompute_ci_scope_state(scope)
       unless scope["state"] == recomputed_state
         failures << "ci_result scope #{name} declared #{scope['state']} but recomputed #{recomputed_state}"
       end
       validate_timestamp(scope["checked_at"], now, "ci_result scope #{name}", failures)
     end
+    validate_non_gating_requested_hosted_binding(ci_result, context, failures) if
+      scopes.any? { |_name, scope| scope.is_a?(Hash) && scope["gates_verdict"] == false }
     validate_timestamp(ci_result["checked_at"], now, "ci_result", failures)
+  end
+
+  def validate_non_gating_requested_hosted_binding(ci_result, context, failures)
+    requested = ci_result["requested_hosted"]
+    valid = requested.is_a?(Hash) && requested.keys.sort == REQUESTED_HOSTED_KEYS
+    if valid
+      run_ids = requested["run_ids"]
+      completed = requested["completed"]
+      disposition_lists = %w[pending failing stale unknown].map { |key| requested[key] }
+      valid = run_ids.is_a?(Array) && !run_ids.empty? &&
+              run_ids.all? { |run_id| run_id.is_a?(String) && run_id.match?(/\A[1-9][0-9]*\z/) } &&
+              run_ids.uniq.length == run_ids.length && completed.is_a?(Array) &&
+              disposition_lists.all? { |rows| rows.is_a?(Array) && rows.empty? }
+    end
+    if valid
+      completed_run_ids = completed.filter_map do |row|
+        next unless row.is_a?(Hash) && row.keys.sort == REQUESTED_HOSTED_COMPLETED_KEYS
+        next unless row["run_id"].is_a?(String) && run_ids.include?(row["run_id"])
+        next unless row["status"] == "completed" && CI_CONCLUSION_READY_VALUES.include?(row["conclusion"])
+        next unless row["head_sha"] == context["head_sha"]
+        next unless row["name"].is_a?(String) && !row["name"].empty? && row["url"].is_a?(String)
+
+        row["run_id"]
+      end
+      valid = completed.length == run_ids.length && completed_run_ids.sort == run_ids.sort
+    end
+    failures << "ci_result non-gating scopes require completed exact-head requested hosted runs" unless valid
   end
 
   def empty_selected_hosted_ci_receipts
@@ -443,7 +537,9 @@ module MergeAssurance
     rows = scope["rows"]
     normalized_rows = rows.is_a?(Array) ? rows : []
     row_states = normalized_rows.map { |row| ci_evidence_row_state(row) }
-    if scope["complete"] != true
+    if scope["gates_verdict"] == false
+      "NOT_APPLICABLE"
+    elsif scope["complete"] != true
       "UNKNOWN"
     elsif !rows.is_a?(Array) || row_states.include?("UNKNOWN")
       "UNKNOWN"
@@ -982,25 +1078,12 @@ module MergeAssurance
     [accounting, semantic_tracker]
   end
 
-  # A semantic GitHub Actions change is not always in the repository's own
-  # `.github/`. Generated templates (for example `sim/template/.github/`) ship
-  # workflows to downstream repositories, and those are higher blast radius than
-  # a repo-local workflow, not lower. Accept the directory anywhere in a
-  # canonical repository-relative path while still requiring a file below it.
   def semantic_tracker_workflow_path?(path)
-    return false unless path.is_a?(String)
+    # Tracker paths are untrusted, so reject URL/drive-like prefixes here while
+    # canonical Git paths may contain colon-bearing directory names.
+    return false if path.is_a?(String) && path.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
 
-    components = path.split("/", -1)
-    return false if components.empty? || path.start_with?("/") || path.include?("\\") || path.include?("\0")
-
-    # Fail closed for any scheme- or drive-like prefix. This intentionally also
-    # rejects repository-relative first components containing a colon.
-    return false if path.match?(/\A[A-Za-z][A-Za-z0-9+.-]*:/)
-    return false if components.any? { |component| component.empty? || %w[. ..].include?(component) }
-
-    components.each_cons(3).any? do |first, second, _file|
-      first == ".github" && %w[workflows actions].include?(second)
-    end
+    CurrentIntegrationEvidence.github_actions_path?(path)
   end
 
   def validate_semantic_tracker(tracker, context, failures)

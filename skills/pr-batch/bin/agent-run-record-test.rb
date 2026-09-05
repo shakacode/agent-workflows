@@ -1235,6 +1235,12 @@ class AgentRunRecordTest < Minitest::Test
     assert_includes stderr, "latest material update must not be after record observation"
 
     record = valid_record
+    record.fetch("workflow_versions")["prompt_creation"]["observed_at"] = "2026-08-30T02:00:58.000Z"
+    _stdout, stderr, status = run_helper("render", stdin_data: JSON.generate(record))
+    refute status.success?
+    assert_includes stderr, "prompt workflow observation must not be after worker digest observation"
+
+    record = valid_record
     record.fetch("workflow_versions")["later_observations"] = [
       {
         "observed_at" => "2026-08-30T02:00:58.500Z",
@@ -1434,6 +1440,51 @@ class AgentRunRecordTest < Minitest::Test
       )
       refute repeat_status.success?
       assert_includes repeat_stderr, "worker-start observation is immutable"
+    end
+  end
+
+  def test_worker_start_promotes_waiting_state_to_active
+    with_fake_launch_environment do |directory, repo, _gh_log, environment|
+      identity_file = File.join(directory, "waiting-state.json")
+      prepare_arguments = [
+        RbConfig.ruby, HELPER,
+        "prepare",
+        *launch_timestamp_arguments,
+        "--issue", "560",
+        "--runner", "Codex",
+        "--machine", "M5",
+        "--repo-root", repo,
+        "--identity-file", identity_file,
+        "--state", "waiting",
+        "--format", "json"
+      ]
+      stdout, stderr, status = Open3.capture3(environment, *prepare_arguments)
+      assert status.success?, stderr
+
+      launch_stdout, launch_stderr, launch_status = Open3.capture3(
+        environment,
+        RbConfig.ruby,
+        HELPER,
+        "verify-launch",
+        "--handoff-envelope",
+        "--identity-file", identity_file,
+        stdin_data: stdout
+      )
+      assert launch_status.success?, launch_stderr
+
+      started_stdout, started_stderr, started_status = Open3.capture3(
+        environment,
+        RbConfig.ruby,
+        HELPER,
+        "mark-worker-started",
+        "--repo-root", repo,
+        "--identity-file", identity_file,
+        stdin_data: launch_stdout
+      )
+
+      assert started_status.success?, started_stderr
+      record = JSON.parse(started_stdout)
+      assert_equal "active", record.fetch("state")
     end
   end
 

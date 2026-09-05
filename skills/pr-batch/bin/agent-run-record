@@ -558,7 +558,7 @@ module AgentRunRecord
     record.fetch("runner")["model_at_worker_start"] = model
     record.fetch("prompt_source")["digest_observed_by_worker"] = observed_digest
     record.fetch("workflow_versions")["worker_start"] = observe_workflow_versions(pack_root, observed_at)
-    record["state"] = "active" if record.fetch("state") == "launch-pending"
+    record["state"] = "active" if %w[launch-pending waiting].include?(record.fetch("state"))
     record["latest_material_update"] = {
       "at" => observed_at,
       "summary" => "worker started"
@@ -1145,6 +1145,9 @@ module AgentRunRecord
     end
     if prompt_created_time > prompt_workflow_time || prompt_workflow_time > observed_time
       raise ContractError, "prompt workflow observation must follow prompt creation and precede record observation"
+    end
+    if worker_digest_time && prompt_workflow_time > worker_digest_time
+      raise ContractError, "prompt workflow observation must not be after worker digest observation"
     end
     if worker_digest_time && prompt_created_time > worker_digest_time
       raise ContractError, "Prompt created at must not be after worker digest observation"

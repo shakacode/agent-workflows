@@ -24,7 +24,9 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_TERMINAL_DISPOSITION_CLEAN_RULE = "Clean/none permits no records or only fully evidenced terminal records."
   REQUIRED_NON_TERMINAL_DISPOSITION_NON_CLEAN_RULE = "A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state."
   REQUIRED_OUTSTANDING_MARKER_FINDINGS_RULE = "In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback."
-  REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, and final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
+  REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE = "Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, the Unblock Block when the status is not clean, and the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
+  REQUIRED_UNBLOCK_FOLLOW_UP_RULE = "Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and emit the [Unblock Block]"
+  REQUIRED_UNBLOCK_RECEIPT_ORDER = "this compact receipt line opens the closing lines: it is followed by the [Unblock Block]"
   REQUIRED_TERMINAL_NEXT_STEP = "Every final user-visible workflow handoff must include one unambiguous `Next:` instruction."
   REQUIRED_ALL_MODE_TERMINAL_SCOPE = "This applies to completed-batch, release/range, and coverage catch-up audits."
   COMPLETED_BATCH_AUDIT_PLACEMENT_RULE = "When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`."
@@ -349,6 +351,10 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should prohibit qualifying and advisory reports from emitting coordinator handoff outputs"
       assert_includes text, REQUIRED_ADVISORY_VERDICT_PROHIBITION,
                       "#{relative_path} should prohibit advisory auditors from issuing the qualifying verdict"
+      assert_includes text, REQUIRED_UNBLOCK_FOLLOW_UP_RULE,
+                      "#{relative_path} should pair every non-clean final status with an Unblock Block"
+      assert_includes text, REQUIRED_UNBLOCK_RECEIPT_ORDER,
+                      "#{relative_path} should place the Unblock Block between the compact receipt and final status"
     end
   end
 

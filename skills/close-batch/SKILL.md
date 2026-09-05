@@ -146,11 +146,13 @@ and user-ownership gate; never replace the canonical `$pr-batch` final handoff.
 Preserve its per-target final states and Batch Handoff Format sections, then
 mechanically validate its `coordination:` declaration through the resolved
 `$pr-batch` helper before emitting the final message. A nonzero result is `NOT
-COMPLETE`. Emit the compact `Completed-batch audit:` line immediately before the
-final `Conversation status:` line only from an existing verified receipt or
-after explicit closeout authority permits publication. During a read-only
-assessment with no verified receipt, list the missing receipt as an exact
-blocker and do not publish or invent one. Except for a lane-worker handoff, end
+COMPLETE`. Emit the compact `Completed-batch audit:` line before the closing
+stack — the Unblock Block when the status is not clean, then the final
+`Conversation status:` line — only from an existing verified receipt. If
+explicit closeout authority permits publication, publish and verify the receipt
+first. During a read-only assessment with no verified receipt, emit no receipt
+line; list the missing receipt as an exact blocker and matching Unblock entry,
+and do not publish or invent one. Except for a lane-worker handoff, end
 with exactly one canonical line:
 
 ```text
