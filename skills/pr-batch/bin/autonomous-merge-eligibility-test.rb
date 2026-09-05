@@ -93,12 +93,59 @@ class AutonomousMergeEligibilityTest < Minitest::Test
   end
 
   def test_live_collection_returns_structured_unknown_for_an_undecodable_payload
-    result = evaluate(gh_invalid_utf8_field: "filename") do |base_sha|
+    result = evaluate(
+      subprocess_env: { "LANG" => "C", "LC_ALL" => "C" },
+      gh_invalid_utf8_field: "filename"
+    ) do |base_sha|
       evidence(base_sha:, files: files(1))
     end
 
     assert_equal "UNKNOWN", result.fetch("verdict")
     assert_match(/malformed or invalid GitHub evidence/, result.fetch("evidence_failures").first)
+  end
+
+  def test_live_collection_returns_structured_unknown_for_a_decoded_lone_surrogate
+    result = evaluate(gh_escaped_surrogate_field: "filename") do |base_sha|
+      evidence(base_sha:, files: files(1))
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_equal(
+      "malformed or invalid GitHub evidence: invalid Unicode scalar data in response for " \
+      "repos/example/repo/pulls/1/files?per_page=100&page=1",
+      result.fetch("evidence_failures").first
+    )
+  end
+
+  def test_current_integration_decode_failure_returns_structured_unknown
+    result = evaluate(gh_invalid_utf8_field: "current_integration") do |base_sha|
+      evidence(base_sha:, files: files(1))
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_equal(
+      "current integration evidence is unavailable: " \
+      "GitHub current-integration response is not valid UTF-8",
+      result.fetch("evidence_failures").first
+    )
+  end
+
+  def test_current_integration_lone_surrogate_returns_structured_unknown
+    result = evaluate(gh_escaped_surrogate_field: "current_integration_candidate_oid") do |recorded_base, root|
+      stale_evaluation(
+        root:,
+        recorded_base:,
+        head_path: "docs/feature.md",
+        base_delta_path: "docs/guide.md"
+      )
+    end
+
+    assert_equal "UNKNOWN", result.fetch("verdict")
+    assert_equal(
+      "current integration evidence is unavailable: " \
+      "GitHub current-integration response contains invalid Unicode scalar data",
+      result.fetch("evidence_failures").first
+    )
   end
 
   def test_live_collection_rejects_invalid_utf8_in_uninspected_comment_fields
@@ -1494,7 +1541,8 @@ class AutonomousMergeEligibilityTest < Minitest::Test
 
   def invoke(root:, calibration_path:, stdin_data: "", evaluation: nil, semantic_path: nil,
              helper_provenance: :trusted_base, subprocess_env: {}, gh_invalid_utf8_field: nil,
-             invalid_utf8_semantic_field: nil, invalid_utf8_semantic_syntax: false)
+             gh_escaped_surrogate_field: nil, invalid_utf8_semantic_field: nil,
+             invalid_utf8_semantic_syntax: false)
     command = [
       "ruby",
       SCRIPT,
@@ -1537,7 +1585,8 @@ class AutonomousMergeEligibilityTest < Minitest::Test
             "AUTONOMOUS_MERGE_GH" => fake_gh,
             "CURRENT_INTEGRATION_GH" => fake_gh,
             "AUTONOMOUS_MERGE_TEST_OBJECTIVE" => objective_path,
-            "AUTONOMOUS_MERGE_TEST_INVALID_UTF8_FIELD" => gh_invalid_utf8_field.to_s
+            "AUTONOMOUS_MERGE_TEST_INVALID_UTF8_FIELD" => gh_invalid_utf8_field.to_s,
+            "AUTONOMOUS_MERGE_TEST_ESCAPED_SURROGATE_FIELD" => gh_escaped_surrogate_field.to_s
           }.merge(subprocess_env),
           *command,
           stdin_data:
@@ -1554,7 +1603,8 @@ class AutonomousMergeEligibilityTest < Minitest::Test
 
   def evaluate(reviewed_heads_mode: "shadow", policy_yaml: nil, subprocess_env: {},
                gh_invalid_utf8_field: nil, invalid_utf8_semantic_field: nil,
-               invalid_utf8_semantic_syntax: false, &evaluation_builder)
+               invalid_utf8_semantic_syntax: false, gh_escaped_surrogate_field: nil,
+               &evaluation_builder)
     Dir.mktmpdir("autonomous-merge-eligibility-test") do |root|
       calibration_path = write_calibration(root, reviewed_heads_mode:)
       base_sha = initialize_trusted_base(root, policy_yaml:, include_runtime: true)
@@ -1564,7 +1614,8 @@ class AutonomousMergeEligibilityTest < Minitest::Test
                      evaluation_builder.call(base_sha)
                    end
       invoke(root:, calibration_path:, evaluation:, subprocess_env:, gh_invalid_utf8_field:,
-             invalid_utf8_semantic_field:, invalid_utf8_semantic_syntax:)
+             gh_escaped_surrogate_field:, invalid_utf8_semantic_field:,
+             invalid_utf8_semantic_syntax:)
     end
   end
 
@@ -1636,6 +1687,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       objective = JSON.parse(File.read(ENV.fetch("AUTONOMOUS_MERGE_TEST_OBJECTIVE")))
       if ARGV.include?("graphql")
         response = {
+          "metadata" => "placeholder",
           "data" => {
             "repository" => {
               "pullRequest" => {
@@ -1657,7 +1709,15 @@ class AutonomousMergeEligibilityTest < Minitest::Test
             }
           }
         }
-        puts JSON.generate(response)
+        payload = JSON.generate(response)
+        if ENV["AUTONOMOUS_MERGE_TEST_INVALID_UTF8_FIELD"] == "current_integration"
+          payload = payload.b.sub("placeholder".b, "\xFF".b)
+        end
+        if ENV["AUTONOMOUS_MERGE_TEST_ESCAPED_SURROGATE_FIELD"] == "current_integration_candidate_oid"
+          payload = payload.sub(objective.fetch("test_candidate_oid"), '\udcff')
+        end
+        $stdout.write(payload)
+        $stdout.write("\n")
         exit
       end
 
@@ -1716,6 +1776,9 @@ class AutonomousMergeEligibilityTest < Minitest::Test
           "https://github.com/example/repo/pull/1#issuecomment-1".b,
           "\xFF".b
         )
+      elsif ENV["AUTONOMOUS_MERGE_TEST_ESCAPED_SURROGATE_FIELD"] == "filename" &&
+            request == "repos/example/repo/pulls/1/files?per_page=100&page=1"
+        payload = payload.sub("lib/file_00.rb", '\udcff')
       end
       $stdout.write(payload)
       $stdout.write("\n")

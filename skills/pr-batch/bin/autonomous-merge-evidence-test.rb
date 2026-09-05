@@ -2,12 +2,62 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "tmpdir"
 require_relative "../lib/autonomous_merge_evidence"
 
 class AutonomousMergeEvidenceTest < Minitest::Test
   HEAD_SHA = "a" * 40
   BASE_SHA = "b" * 40
   UPDATED_AT = "2026-07-25T12:00:00Z"
+
+  def test_gh_api_decodes_non_ascii_json_as_utf8_under_an_ascii_default
+    with_gh_payload("{\"body\":\"caf".b + "\xC3\xA9".b + "\"}".b) do
+      original_encoding = Encoding.default_external
+      Encoding.default_external = Encoding::US_ASCII
+
+      response = AutonomousMergeEvidence.gh_api("repos/example/repo/pulls/7")
+
+      assert_equal "café", response.fetch("body")
+      assert_equal Encoding::UTF_8, response.fetch("body").encoding
+    ensure
+      Encoding.default_external = original_encoding
+    end
+  end
+
+  def test_gh_api_rejects_invalid_utf8_as_a_collection_error
+    with_gh_payload("{\"body\":\"".b + "\xFF".b + "\"}".b) do
+      error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+        AutonomousMergeEvidence.gh_api("repos/example/repo/pulls/7")
+      end
+
+      assert_equal(
+        "malformed or invalid GitHub evidence: " \
+        "invalid UTF-8 response for repos/example/repo/pulls/7",
+        error.message
+      )
+    end
+  end
+
+  def test_gh_api_rejects_lone_surrogates_decoded_from_json
+    payloads = [
+      %q({"metadata":{"key":"\udcff"}}),
+      %q({"metadata":{"\udcff":"value"}})
+    ]
+
+    payloads.each do |payload|
+      with_gh_payload(payload) do
+        error = assert_raises(AutonomousMergeEvidence::CollectionError) do
+          AutonomousMergeEvidence.gh_api("repos/example/repo/pulls/7")
+        end
+
+        assert_equal(
+          "malformed or invalid GitHub evidence: invalid Unicode scalar data in response for " \
+          "repos/example/repo/pulls/7",
+          error.message
+        )
+      end
+    end
+  end
 
   def test_collects_every_page_and_rechecks_exact_head_and_base
     calls = []
@@ -511,6 +561,26 @@ class AutonomousMergeEvidenceTest < Minitest::Test
   end
 
   private
+
+  def with_gh_payload(payload)
+    Dir.mktmpdir("autonomous-merge-gh-api-test") do |root|
+      fake_gh = File.join(root, "gh")
+      File.write(fake_gh, <<~'RUBY')
+        #!/usr/bin/env ruby
+        $stdout.binmode
+        $stdout.write(ENV.fetch("AUTONOMOUS_MERGE_TEST_PAYLOAD"))
+      RUBY
+      File.chmod(0o755, fake_gh)
+      original_command = ENV["AUTONOMOUS_MERGE_GH"]
+      original_payload = ENV["AUTONOMOUS_MERGE_TEST_PAYLOAD"]
+      ENV["AUTONOMOUS_MERGE_GH"] = fake_gh
+      ENV["AUTONOMOUS_MERGE_TEST_PAYLOAD"] = payload
+      yield
+    ensure
+      ENV["AUTONOMOUS_MERGE_GH"] = original_command
+      ENV["AUTONOMOUS_MERGE_TEST_PAYLOAD"] = original_payload
+    end
+  end
 
   def complete_api(commits:, reviews:)
     lambda do |path|
