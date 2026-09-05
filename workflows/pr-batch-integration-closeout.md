@@ -737,7 +737,10 @@ Every target must use one explicit final state:
   as a hosted link-check failure from an unrelated external HTTP error. Include
   local equivalent evidence, failing hosted URLs, and whether the next action is
   a maintainer waiver, rerun, or code change.
-- `blocked-user-input`: a surfaced maintainer/product decision is required.
+- `blocked-user-input`: a surfaced maintainer/product decision is required. For
+  an overdue open permission request, report its stable request id, state,
+  original request text, `requested_at`, age, and exact manual-resume action;
+  `lane_closed` evidence names that id rather than a later generic blocker.
 - `ready-human-review-required`: ordinary readiness is clean but autonomous
   eligibility requires a qualifying exact-current-head human risk decision.
 - `autonomous-merge-evidence-unknown`: ordinary readiness may be clean, but

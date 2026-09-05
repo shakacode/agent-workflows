@@ -261,12 +261,11 @@ authority, and completion facts unchanged.
 
 This execution skill adds only batch-shaping details that intake does not own:
 
-1. **Batch title**: consume canonical
-   [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection)
-   unchanged and keep the exact
-   `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` placeholder in pasteable
-   prompts. This entrypoint is a compatibility route and does not mirror the
-   selection or trust contract.
+1. **Batch title**: load and apply the canonical
+   [Plan To Goal Handoff](../../workflows/pr-processing.md#plan-to-goal-handoff)
+   title shape and the intake component's
+   [Verified Source-Issue Title Metadata](../../workflows/pr-batch-intake.md#verified-source-issue-title-metadata).
+   Do not restate or reinterpret either contract here.
 2. **Routing preferences and observations**: record coordinator, worker, and
    checker model/effort preferences before target interpretation. These are
    advisory. Host-observed host/model/effort fields are optional and remain
@@ -589,6 +588,13 @@ Classify every unresolved question before continuing:
 
 For a private-backend blocking stop, emit `help_requested` alongside the prose
 handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
+For a permission request, persist its returned `event_id` as the stable request
+id and route lifecycle handling to
+[coordination-backend.md](../../docs/coordination-backend.md#operational-signal-events).
+Do not enter implementation or review while that request is open. Only the
+coordinator records `help_request.resolved` or `help_request.declined`; the
+answer does not itself grant scope. An overdue request closes as
+`blocked-user-input` while naming the original request id.
 When a worker verifies a P0/P1 finding, confirmed regression, or required
 revert, emit `error` with `severity`, `category`, and `message`. Backend `n/a`
 skips these signals. Typed-event transport is optional: when an active private

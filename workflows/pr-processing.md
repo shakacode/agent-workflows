@@ -1146,6 +1146,12 @@ Classify every unresolved question before continuing:
 Before a private-backend lane pauses for required user input, emit
 `help_requested` alongside the prose handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. Follow the backend `n/a`, best-effort, and degraded-`UNKNOWN` rules under
 [Coordination Telemetry And Provenance](#coordination-telemetry-and-provenance).
+For a permission request, preserve its returned `event_id` as the request id.
+While it is open, the help-request lifecycle gate forbids later implementation
+and review transitions. A coordinator records an answer as
+`help_request.resolved` or `help_request.declined` with that id in `evidence`,
+then separately replays scope permissions. At the configured age ceiling, use
+the bounded `blocked-user-input` closeout and name the original request id.
 
 ### Maintainer Attention Contract
 
