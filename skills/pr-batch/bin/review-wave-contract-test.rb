@@ -140,6 +140,51 @@ class ReviewWaveContractTest < Minitest::Test
     end
   end
 
+  def test_shipped_pending_filter_counts_synthetic_check_payloads
+    pending_cases.each do |name, checks, expected_count|
+      assert_equal expected_count, pending_count(checks, expected_reviewers), name
+    end
+  end
+
+  def test_pending_fixtures_reject_inverted_and_missing_name_mutants
+    shipped_filter = shipped_pending_filter
+    mutants = {
+      "inverted pending bucket" => shipped_filter.gsub('.bucket == "pending"', '.bucket != "pending"'),
+      "missing-name branch removed" => shipped_filter.sub("missing: (($checks | length) == 0)", "missing: false")
+    }
+    expected_counts = pending_cases.map(&:last)
+
+    mutants.each do |name, mutant|
+      refute_equal shipped_filter, mutant, "#{name} mutation did not apply"
+      mutant_counts = pending_cases.map do |_case_name, checks, _expected_count|
+        pending_count(checks, expected_reviewers, filter: mutant)
+      end
+      refute_equal expected_counts, mutant_counts, "fixtures survived #{name}"
+    end
+  end
+
+  def test_shipped_review_wait_accepts_documented_gh_exit_codes
+    [0, 1, 8].each do |gh_status|
+      _stdout, stderr, status = run_shipped_review_wait("[]", gh_status)
+
+      assert_predicate status, :success?, "gh exit #{gh_status}: #{stderr}"
+    end
+  end
+
+  def test_shipped_review_wait_fails_closed_for_unknown_gh_exit_code
+    _stdout, stderr, status = run_shipped_review_wait("[]", 2)
+
+    assert_equal 2, status.exitstatus
+    assert_includes stderr, "review-check state is UNKNOWN"
+  end
+
+  def test_shipped_review_wait_fails_closed_for_non_array_output
+    _stdout, stderr, status = run_shipped_review_wait('{"name":"claude-review"}', 0)
+
+    assert_equal 2, status.exitstatus
+    assert_includes stderr, "malformed review-check state"
+  end
+
   def test_explicit_usage_waiver_makes_only_the_named_reviewer_terminal
     expected = %w[coderabbitai claude-review]
     terminal_checks = [{ "name" => "claude-review", "bucket" => "pass" }]
@@ -198,6 +243,112 @@ class ReviewWaveContractTest < Minitest::Test
   end
 
   private
+
+  def expected_reviewers
+    %w[claude-review CodeRabbit]
+  end
+
+  def pending_cases
+    [
+      [
+        "all pass",
+        [
+          { "name" => "claude-review", "bucket" => "pass" },
+          { "name" => "CodeRabbit", "bucket" => "pass" }
+        ],
+        0
+      ],
+      [
+        "one pending",
+        [
+          { "name" => "claude-review", "bucket" => "pending" },
+          { "name" => "CodeRabbit", "bucket" => "pass" }
+        ],
+        1
+      ],
+      [
+        "one failed",
+        [
+          { "name" => "claude-review", "bucket" => "fail" },
+          { "name" => "CodeRabbit", "bucket" => "pass" }
+        ],
+        0
+      ],
+      [
+        "expected name absent",
+        [{ "name" => "claude-review", "bucket" => "pass" }],
+        1
+      ],
+      ["empty array", [], 2],
+      [
+        "duplicate names with one pending",
+        [
+          { "name" => "claude-review", "bucket" => "pass" },
+          { "name" => "claude-review", "bucket" => "pending" },
+          { "name" => "CodeRabbit", "bucket" => "pass" }
+        ],
+        1
+      ]
+    ]
+  end
+
+  def pending_count(checks, expected, filter: shipped_pending_filter)
+    stdout, stderr, status = Open3.capture3(
+      "jq", "--argjson", "expected", JSON.generate(expected), "--argjson", "waived", "[]", filter,
+      stdin_data: JSON.generate(checks)
+    )
+    raise "jq failed: #{stderr}" unless status.success?
+
+    JSON.parse(stdout).fetch("pending_count")
+  end
+
+  def shipped_pending_filter
+    jq_filter(@address_review, "REVIEW_WAVE_STATUS_JSON")
+  end
+
+  def run_shipped_review_wait(output, gh_status)
+    gh_stub = <<~SH
+      gh() {
+        case "$1 $2" in
+          "pr view")
+            printf '%s' "${GH_STUB_HEAD_SHA}"
+            return 0
+            ;;
+          "pr checks")
+            printf '%s' "${GH_STUB_OUTPUT}"
+            return "${GH_STUB_STATUS}"
+            ;;
+          *)
+            echo "unexpected gh invocation: $*" >&2
+            return 99
+            ;;
+        esac
+      }
+    SH
+    env = {
+      "GH_STUB_HEAD_SHA" => "a" * 40,
+      "GH_STUB_OUTPUT" => output,
+      "GH_STUB_STATUS" => gh_status.to_s,
+      "REPO" => "shakacode/agent-workflows",
+      "REVIEW_CHECK_NAMES_JSON" => "[]",
+      "REVIEW_UNAVAILABLE_WAIVERS_JSON" => "[]",
+      "REVIEW_WAIVER_INVALIDATIONS_JSON" => "[]",
+      "REVIEW_WAIT_PRS" => "227"
+    }
+    Open3.capture3(env, "/bin/sh", stdin_data: gh_stub + shipped_review_wait_loop)
+  end
+
+  def shipped_review_wait_loop
+    start_marker = "  for REVIEW_WAIT_PR in ${REVIEW_WAIT_PRS}; do\n"
+    end_marker = "  done\nfi\n```"
+    start_index = @address_review.index(start_marker)
+    raise "missing shipped review-wait loop" unless start_index
+
+    end_index = @address_review.index(end_marker, start_index)
+    raise "missing end of shipped review-wait loop" unless end_index
+
+    @address_review[start_index...(end_index + "  done\n".length)]
+  end
 
   def read(path)
     File.read(File.join(ROOT, path), encoding: "UTF-8")
