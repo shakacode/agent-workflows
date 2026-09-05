@@ -10,6 +10,7 @@ source "$ROOT/test/agent_stack/command_install_test.bash"
 source "$ROOT/test/agent_stack/upgrade_test.bash"
 source "$ROOT/test/agent_stack/repository_test.bash"
 source "$ROOT/test/agent_stack/path_safety_test.bash"
+source "$ROOT/test/agent_stack/portable_dashboard_test.bash"
 
 tests=(
   test_sync_installs_commands_modules_and_links
@@ -41,6 +42,12 @@ tests=(
   test_runtime_paths_are_private_and_not_symlinks
   test_no_install_and_help_contracts
   test_value_options_return_usage_for_missing_or_empty_operands
+  test_portable_dashboard_sync_installs_component_command
+  test_portable_dashboard_no_install_keeps_lifecycle_command_out_of_generic_setup
+  test_portable_dashboard_prerequisites_fail_before_install_mutation
+  test_portable_dashboard_rebuilds_nested_locked_esbuild_with_preflighted_node
+  test_portable_dashboard_refuses_unmanaged_command_before_dependency_install
+  test_portable_dashboard_documentation_covers_public_lifecycle
 )
 
 for test_name in "${tests[@]}"; do

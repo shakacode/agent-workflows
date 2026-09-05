@@ -270,9 +270,17 @@ bin/agent-stack sync
 `agent-stack` is ShakaCode-specific stack tooling, not part of the generic
 workflow-pack install path for consumer repositories.
 
-It keeps editable source checkouts in `~/src`, private runtime configuration
-under `~/.agent-workflows`, compatibility symlinks under `~/codex/agent-repos`,
-and installs the shorter `agent-stack` command for future runs:
+Install Node.js 22.12.0 or newer and npm 10 or newer before the first sync.
+The checked-out dashboard package can declare a newer Node.js floor.
+`agent-stack sync` checks both tools before it installs dependencies or
+commands. If the check fails, install the reported version and run the sync
+again.
+
+It keeps editable source checkouts in `~/src`, private stack runtime state
+under `~/.agent-workflows`, dashboard configuration under
+`~/.config/agent-coordination-dashboard`, compatibility symlinks under
+`~/codex/agent-repos`, and installs the shorter `agent-stack` command for
+future runs:
 
 ```text
 ~/src/agent-workflows
@@ -280,7 +288,6 @@ and installs the shorter `agent-stack` command for future runs:
 ~/src/agent-coordination-dashboard
 
 ~/.agent-workflows/
-  env
   cache/
   logs/
   state/
@@ -290,47 +297,146 @@ After the first sync, update the stack with `agent-stack sync`. Select companion
 mode once with `agent-stack sync --delivery-mode plugin-companion`; later syncs
 replay the install metadata when the option is omitted.
 
-### Verify The Stack After Sync
+The sync uses the dashboard checkout's committed `package-lock.json`, builds
+that checkout, and exposes `agent-coordination-dashboard` beside `agent-stack`
+and `agent-coord`. It does not copy dashboard lifecycle behavior into this
+repository. The generic `bin/install-agent-workflows` command does not install
+the dashboard or other optional ShakaCode stack tools.
+
+### Configure And Start The Dashboard
 
 `agent-stack sync` updates the source checkouts and installed tools. It does not
 restart the coordination dashboard or active agent runners.
 
-The installed `agent-dashboard` launcher comes from the dashboard repo's setup.
-Install or upgrade that launcher before this recovery sequence, and confirm it
-supports the current-shell environment handoff described below. Restarting an
-older launcher that still relies on a long-lived background session's environment
-can reuse the same stale credentials.
+The dashboard's default protected environment file is
+`~/.config/agent-coordination-dashboard/env`. Set `AGENT_COORD_ENV_FILE` when
+you want the coordination CLI to use another file, then pass that same path to
+the dashboard with `--config-env-file`. The dashboard does not read
+`AGENT_COORD_ENV_FILE` implicitly. Pass the same path to both commands as shown
+below.
 
-Use this sequence after a sync:
+Create the file without putting secrets in the repository or shell history:
+
+```bash
+dashboard_env_file="${AGENT_COORD_ENV_FILE:-$HOME/.config/agent-coordination-dashboard/env}"
+mkdir -p "$(dirname "$dashboard_env_file")"
+umask 077
+touch "$dashboard_env_file"
+chmod 600 "$dashboard_env_file"
+```
+
+Edit the file in a private editor. Use plain `KEY=value` assignments from the
+dashboard and coordination documentation. For the HTTP backend, the file
+normally includes these keys:
+
+```text
+AGENT_COORD_API_URL=https://coord.example.test
+AGENT_COORD_API_TOKEN=replace-with-machine-token
+```
+
+The file must be a regular file that the current user owns, with mode `0600`.
+The dashboard rejects unsafe files and shell syntax. On each `start` or
+`restart`, it clears managed coordination API values before it applies the
+selected file. If you remove the API URL and token from the file, the new
+dashboard process cannot inherit the old values and returns to filesystem mode.
+
+Verify the coordination backend from the exact selected file before the first
+start. Then start and inspect the dashboard:
 
 ```bash
 agent-stack sync
-agent-coord doctor --json
-agent-dashboard restart
-agent-dashboard status
+env -u AGENT_COORD_API_URL -u AGENT_COORD_API_TOKEN \
+  -u AGENT_COORD_MACHINE_ID -u AGENT_COORD_BACKEND -u AGENT_COORD_REF \
+  -u AGENT_COORD_STATE_ROOT -u AGENT_COORD_STATUS_STATE_ROOT \
+  -u AGENT_COORD_LOCAL -u AGENT_COORD_POLICY \
+  AGENT_COORD_ENV_FILE="$dashboard_env_file" agent-coord doctor --deep
+agent-coordination-dashboard start --config-env-file "$dashboard_env_file"
+agent-coordination-dashboard status
+agent-coordination-dashboard logs
+agent-stack doctor --deep
 ```
 
-Run the doctor and dashboard restart from the same terminal. If the coordination
-credentials were just provisioned or rotated, first open a new terminal so the
-current `AGENT_COORD_API_URL` and `AGENT_COORD_API_TOKEN` are loaded from the
-machine's shell configuration. Do not restart the dashboard until
-`agent-coord doctor --json` succeeds. When a wrapper syncs multiple machines,
-repeat the doctor, restart, and status checks on each machine; a remote source
-sync does not refresh that machine's existing dashboard process.
+Use `agent-coordination-dashboard open` to open the managed URL. `start` is
+idempotent. If the dashboard is already running after its environment file
+changes, use `restart`; a repeated `start` does not reload configuration.
 
-A background launcher must copy the invoking shell's current coordination API
-environment into the new dashboard process. In particular, a tmux-based
-launcher must securely inject the API URL and token into the new process instead
-of relying on the long-lived tmux server environment, which may still contain an
-older token. Tokens must not appear in process arguments or pane commands. The
-launcher must also pass empty values when the invoking shell has unset the HTTP
-backend so stale tmux values cannot select it again.
+### Diagnose Dashboard Problems
 
-If the dashboard reports `401` while `agent-coord doctor --json` succeeds in the
-same terminal, restart only the dashboard. Restarting Codex does not refresh the
-dashboard process. Existing agent tasks also do not need to restart merely
-because the stack was synced; follow [Active Batches](#active-batches) when a
-task genuinely needs newly installed workflow instructions.
+Use the component-owned commands before changing process state:
+
+```bash
+agent-coordination-dashboard status
+agent-coordination-dashboard logs
+agent-coordination-dashboard doctor --stack-json --deep
+env -u AGENT_COORD_API_URL -u AGENT_COORD_API_TOKEN \
+  -u AGENT_COORD_MACHINE_ID -u AGENT_COORD_BACKEND -u AGENT_COORD_REF \
+  -u AGENT_COORD_STATE_ROOT -u AGENT_COORD_STATUS_STATE_ROOT \
+  -u AGENT_COORD_LOCAL -u AGENT_COORD_POLICY \
+  AGENT_COORD_ENV_FILE="$dashboard_env_file" agent-coord doctor --deep
+agent-stack doctor --deep
+```
+
+The dashboard command owns lifecycle state, process ownership, health, and
+logs. The coordination CLI owns backend diagnosis. `agent-stack doctor`
+aggregates those component contracts; it does not recreate their checks or
+restart a process.
+
+### Rotate A Coordination Token
+
+Write the replacement token to the protected file, keep its mode `0600`, and
+use this order:
+
+```bash
+chmod 600 "$dashboard_env_file"
+env -u AGENT_COORD_API_URL -u AGENT_COORD_API_TOKEN \
+  -u AGENT_COORD_MACHINE_ID -u AGENT_COORD_BACKEND -u AGENT_COORD_REF \
+  -u AGENT_COORD_STATE_ROOT -u AGENT_COORD_STATUS_STATE_ROOT \
+  -u AGENT_COORD_LOCAL -u AGENT_COORD_POLICY \
+  AGENT_COORD_ENV_FILE="$dashboard_env_file" agent-coord doctor --deep
+agent-coordination-dashboard restart --config-env-file "$dashboard_env_file"
+agent-coordination-dashboard status
+agent-stack doctor --deep
+```
+
+Do not restart the dashboard until the coordination doctor succeeds. The
+restart loads the selected file into a new managed process. It does not depend
+on a terminal multiplexer or a long-lived shell environment, so no terminal or
+agent-runner restart is required. A `401` after the restart means that the
+dashboard and CLI diagnostics need further backend or scope investigation; use
+`logs` and the deep component doctors above.
+
+### Stop Or Remove The Dashboard
+
+Stop the owned process without removing the stack:
+
+```bash
+agent-coordination-dashboard stop
+```
+
+For the default full-stack layout, remove the installed command and dashboard
+source checkout only after `stop` succeeds:
+
+```bash
+rm "$HOME/.local/bin/agent-coordination-dashboard"
+rm -rf "$HOME/src/agent-coordination-dashboard"
+```
+
+This leaves the protected environment file, lifecycle logs, and lifecycle
+state for recovery or audit. Remove
+`~/.config/agent-coordination-dashboard/` and
+`~/.local/state/agent-coordination-dashboard/` separately only when you no
+longer need those private files. A later `agent-stack sync` restores the public
+checkout and command. Removing a personal alias or private launcher does not
+remove this lifecycle functionality.
+
+The public dashboard defaults to port `4319`. A process from an older launcher
+on another port is not owned by this command. Stop it through its original
+owner before starting the public lifecycle command; `agent-stack` never signals
+an unverified process.
+
+Existing agent tasks do not need to restart merely because the stack was
+synced. Follow [Active Batches](#active-batches) when a task genuinely needs
+newly installed workflow instructions.
 
 ### Full Stack Doctor
 

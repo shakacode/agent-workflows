@@ -4,6 +4,7 @@ Usage: agent-stack <sync|doctor> [options]
 
 Keeps the ShakaCode agent stack in a hacker-friendly local layout.
 This is ShakaCode stack tooling, not the generic workflow-pack installer.
+Sync installs the public agent-coordination-dashboard lifecycle command.
 
 Default source checkouts:
   ~/src/agent-workflows
@@ -42,5 +43,8 @@ Environment URL overrides:
   AGENT_STACK_AGENT_WORKFLOWS_URL
   AGENT_STACK_AGENT_COORDINATION_URL
   AGENT_STACK_AGENT_COORDINATION_DASHBOARD_URL
+
+Dashboard install prerequisites:
+  Node.js >=22.12.0 and npm >=10 (the checked-out package may raise the Node.js floor)
 USAGE
 }
