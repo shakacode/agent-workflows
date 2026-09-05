@@ -88,6 +88,17 @@ class WorkflowBehaviorTest < Minitest::Test
     assert_raises(WorkflowBehavior::Error) { WorkflowBehavior.report(data) }
   end
 
+  def test_rejects_padded_evidence_references_before_reading_receipts
+    %w[provenance_ref evidence_ref usage_receipt].each do |field|
+      [" UNKNOWN ", " receipt.json "].each do |value|
+        data = executed
+        data["trials"].first[field] = value
+        error = assert_raises(WorkflowBehavior::Error) { WorkflowBehavior.report(data) }
+        assert_equal "invalid evidence reference", error.message
+      end
+    end
+  end
+
   def test_usage_receipt_must_bind_trial_and_preserves_unknown_tokens
     Dir.mktmpdir do |dir|
       data = executed

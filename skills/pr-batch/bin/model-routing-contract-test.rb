@@ -2123,6 +2123,24 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
+  def test_source_astra_overview_never_turns_routes_into_authority
+    skip "source-pack docs are not installed" unless ENV[SOURCE_CHECKOUT_ENV] == "1"
+
+    text = normalized(read_repo_file("docs/astra-tuning.md"))
+    assert_safe = lambda do |candidate|
+      patterns = ROUTE_DISQUALIFICATION_PATTERNS.merge(NAMED_EXECUTION_ENFORCEMENT_PATTERNS)
+                                                .merge(ROUTE_AUTHORITY_ENFORCEMENT_PATTERNS)
+      patterns.each do |label, pattern|
+        refute_match pattern, candidate, "docs/astra-tuning.md: #{label}"
+      end
+      assert_no_route_only_contradiction(self, candidate, "docs/astra-tuning.md")
+    end
+    assert_safe.call(text)
+    ["Astra must not issue a qualifying verdict.", "A route mismatch blocks execution."].each do |mutation|
+      assert_raises(Minitest::Assertion) { assert_safe.call("#{text} #{mutation}") }
+    end
+  end
+
   def test_docs_index_keeps_model_routing_guide
     skip "source-pack docs are not installed" unless ENV[SOURCE_CHECKOUT_ENV] == "1"
 

@@ -87,7 +87,7 @@ module WorkflowBehavior
     raise Error, "invalid revision" unless row["skill_sha"] == UNKNOWN || (row["skill_sha"].is_a?(String) && row["skill_sha"].match?(/\A[0-9a-f]{40}\z/))
 
     %w[provenance_ref evidence_ref usage_receipt].each do |field|
-      raise Error, "invalid evidence reference" unless row[field].is_a?(String) && !row[field].strip.empty?
+      raise Error, "invalid evidence reference" unless row[field].is_a?(String) && !row[field].empty? && row[field] == row[field].strip
     end
     observed_known = row["observed"].values.any? { |value| value != UNKNOWN }
     raise Error, "observed metadata requires host provenance" if observed_known && !known_string?(row["provenance_ref"])

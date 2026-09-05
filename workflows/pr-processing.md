@@ -7,6 +7,8 @@ GPT-5.6 recommendations below for the listed roles; those recommendations and
 planning tables remain the established comparison baseline. Keep explicit user
 routes, verified host support, portable fallback, and independent evidence rules.
 This is an unmeasured pilot, not a measured promotion.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
 
 Use this workflow when an agent is assigned an issue, an existing PR, a PR review-fix pass, or a multi-PR landing plan. The goal is to reduce review turns, CI churn, and follow-up issue noise by doing more local work before asking GitHub to spend reviewer or runner time.
 

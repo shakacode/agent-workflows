@@ -17,6 +17,12 @@ bounded routes and use deterministic helpers for mechanical work. An unavailable
 preferred route alone never blocks a lane. Independence, scope, authority and
 current-head evidence still qualify reviews.
 
+If a partial or pinned installation lacks the resolver or central data, continue
+with established or portable advisory routes and record the unavailable pilot.
+Missing optional profile assets do not block ordinary work or invalidate an
+independent review. Use the [complete pack installation](installation-and-upgrades.md)
+to access the pilot; do not duplicate its data into an isolated skill.
+
 The central file also owns the established planning table used for comparison.
 Legacy Sol/Terra and Claude prose and historical replay fixtures remain baseline
 evidence. The pilot supersedes their named Codex preferences for its listed roles.

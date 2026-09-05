@@ -5,6 +5,8 @@ For Codex route preferences, consult the unmeasured `astra-pilot-v1`
 `bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
 recommendations below for listed roles; retain those as comparison baselines.
 Routes remain advisory and never qualify a verdict or replace host evidence.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
 
 Use this workflow when checking whether active, stale, dead (lost-heartbeat),
 blocked, stalled, done, released, done-unmerged, or recently merged agent runs

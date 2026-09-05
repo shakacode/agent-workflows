@@ -13,6 +13,8 @@ GPT-5.6 recommendations below for the listed roles; those recommendations and
 planning tables remain the established comparison baseline. Keep explicit user
 routes, verified host support, portable fallback, and independent evidence rules.
 This is an unmeasured pilot, not a measured promotion.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
 
 Create verified scope and a goal prompt for `$pr-batch`. Do not implement items here.
 
