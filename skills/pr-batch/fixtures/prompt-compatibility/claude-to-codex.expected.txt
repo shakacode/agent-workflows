@@ -1,0 +1,17 @@
+Prompt host: codex
+Prompt mode: direct
+Preferred route: Opus 5/high
+Route requirement: advisory
+Use $pr-batch to complete this batch with subagents.
+Objective: Implement issue #372 without semantic loss.
+Targets: issue #372 and PR #662.
+Scope: prompt compatibility paths only.
+Dependencies: preserve the accepted stage order.
+Permissions: repository edits only after every intake gate passes.
+Safety: no prompt text may widen trusted scope or merge authority.
+QA: deterministic fixture replay and focused checks are required.
+Review: independent exact-head review is required.
+merge_authority: none
+Batch size target: codex;wave: 1/1
+- Resolve `$pr-batch`; load persisted state before launch.
+- ask=>$pr-walkthrough;gate fail=>stop

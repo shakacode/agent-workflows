@@ -1093,6 +1093,10 @@ coordinator-chosen session word. The coordinator records the handle before
 dispatch; workers copy it unchanged.
 
 ```text
+Prompt host: <codex|claude|portable>
+Prompt mode: <goal|direct|batch>
+Preferred route: <model/class>/<effort>|default
+Route requirement: advisory
 Use $pr-batch to complete this batch with subagents.
 
 Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
@@ -1105,8 +1109,6 @@ Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
@@ -2005,8 +2007,8 @@ too-expensive route. This is distinct from the closeout-only generic
 continuation prompt below.
 
 Before resuming, keep the current goal. Near its top, replace any conflicting
-static model-group line with the compact `Coordinator model/effort preference:`
-and `Worker model/effort preferences:` fields from the Plan To Goal template. Do not clear the
+static model-group line with the compact `Preferred route:` metadata and
+`Worker model/effort preferences:` field from the Plan To Goal template. Do not clear the
 goal; its objective, targets, `merge_authority`, QA decision, and completion
 contract remain authoritative.
 
@@ -2022,11 +2024,13 @@ or verified runtime roster.
 Use this prompt after filling the route placeholders:
 
 ```text
-Use $pr-batch to recover and continue this in-flight batch.
+Prompt host: portable
+Prompt mode: batch
+Preferred route: <model/class>/<effort>
+Route requirement: advisory
+Use the pr-batch skill to recover and continue this in-flight batch.
 Continue the existing goal; do not clear it or start a new batch.
 
-Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Treat model/effort as advisory during recovery. Preserve unavailable observations
 as UNKNOWN and continue with the same ownership, fencing, validation, and review
 gates.
@@ -2141,7 +2145,11 @@ ambiguous target or lane set are literal `UNKNOWN` and stop continuation; never
 infer a handle from free-form text.
 
 ```text
-Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
+Prompt host: portable
+Prompt mode: batch
+Preferred route: default
+Route requirement: advisory
+Use the pr-batch skill to continue PR-batch closeout, not to start a new implementation batch.
 
 Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>
 
@@ -2182,7 +2190,7 @@ Goal completion contract:
 - When that blocker publishes an exact future retry time, schedule the same-thread heartbeat for that time because neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that exact published time; use it as the single scheduled mechanism for that blocker and gate; do not start or retain either watcher mode for the same gate, and create or update its durable record before stopping or replacing any existing watcher so no wake is lost. Follow the Scheduled Retry Heartbeat rule in the Goal Mode Completion Contract for its conditions, durable record, wake-time gate replay, single-instance update, and terminal cleanup.
 - Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
-- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
+- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use the pr-walkthrough skill when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
 
 Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```

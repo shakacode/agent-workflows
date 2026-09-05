@@ -474,6 +474,8 @@ The installer writes:
 - `<target>/docs/user-facing-coordination.md`
 - `<target>/docs/writing-style.md`
 - `<target>/docs/writing-style-asd-ste100.md`
+- `<target>/docs/host-adapter/contract.md`
+- `<target>/docs/schemas/prompt-compatibility-v1.schema.json`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
 - `<target>/bin/agent-workflow-writing-style`
@@ -496,8 +498,9 @@ The metadata file records host, artifact mode, skill delivery mode, source
 clone, pack version, source revision, branch, remote, and install time. Copy
 installs also record `managed_skill_copy_fingerprints`,
 `managed_pack_doc_copy_fingerprints`, and `managed_pack_root_copy_fingerprints`,
-including every installed `<target>/docs/solutions/*` document and the
-third-party notice. On repeat installation, these fingerprints
+including every installed prompt-compatibility contract, schema, and
+`<target>/docs/solutions/*` document, plus the third-party notice. On repeat
+installation, these fingerprints
 prove that an installed managed copy has not been edited even when the recorded
 Git object is unavailable; an exact recorded-revision or current-source match is
 the backward-compatible fallback for older metadata. The installer refuses to
@@ -663,6 +666,26 @@ Some workflow steps name host-specific tools, such as `codex review`, Claude
 Code slash commands, or `/simplify`. Treat those as available-tool branches:
 use them only when the current host actually provides them, and record the
 fallback when it does not. The repo seam still controls repository policy.
+
+### Converting A Prompt For This Host
+
+Generated batch prompts declare `Prompt host`, `Prompt mode`, `Preferred
+route`, and `Route requirement: advisory`. At intake, the installed workflow
+compares that declaration with the active Codex or Claude runner.
+
+If the result is `conversion-required`, the displayed converted prompt is inert:
+
+1. Stop the current task; do not approve or continue execution there.
+2. Copy the complete converted prompt exactly as displayed.
+3. Start a new task in the named active host and paste the converted prompt.
+4. Let the new task classify it again. Only `compatible` or `portable` may
+   continue into ordinary trust, safety, QA, review, and merge gates.
+
+If host evidence is ambiguous or the metadata is invalid, no converted prompt
+is emitted. Resolve the active host or obtain a newly generated prompt; do not
+guess from mentions of Codex, Claude, a model, or an installed home. Conversion
+never changes route authority, target scope, permissions, or merge authority,
+and a preferred model/effort remains advisory.
 
 ## Active Batches
 

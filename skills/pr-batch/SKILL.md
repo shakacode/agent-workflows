@@ -534,9 +534,16 @@ workflow rules instead of duplicating them.
 `GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
-Use this template when creating Codex goal text:
+Render the four metadata placeholders and skill sigils for the selected target
+using the canonical prompt-compatibility rules in the resolved prompt-intake
+component. Use Codex `goal` only when Goal delivery was explicitly requested;
+ordinary Codex delivery uses `batch`.
 
 ```text
+Prompt host: <codex|claude|portable>
+Prompt mode: <goal|direct|batch>
+Preferred route: <model/class>/<effort>|default
+Route requirement: advisory
 Use $pr-batch to complete this batch with subagents.
 
 Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
@@ -549,8 +556,6 @@ Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle

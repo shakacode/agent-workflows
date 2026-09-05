@@ -1,0 +1,3 @@
+/goal
+Use $pr-batch to complete the verified batch.
+Objective: Preserve unmistakable legacy Codex input.
