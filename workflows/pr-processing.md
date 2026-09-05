@@ -1172,7 +1172,7 @@ Canonical rules: [Human-First PR Description Contract](pr-batch-integration-clos
 
 ### Batch Handoff Format
 
-Canonical rules: [Batch Handoff Format](pr-batch-integration-closeout.md#batch-handoff-format). This heading remains as a compatibility route and must not mirror the component.
+Canonical rules: [Batch Handoff Format](pr-batch-integration-closeout.md#batch-handoff-format). This heading remains as a compatibility route and must not mirror the component. The component's compact terminal structure seam for single-repo batches at or below `compact_terminal_structure_max_lanes` applies here too.
 
 ### Unblock Block
 
@@ -1272,7 +1272,11 @@ below. Any rule that requires an exact user-visible string is exempt from every
 reduction in this section and is never omitted, abbreviated, or paraphrased:
 the `Next:` instruction, the `Action needed:` line, the `coordination:`
 declaration, the exact `Conversation status:` line, an HST-v1 actionable
-notification, a required receipt line, and a Lane Card.
+notification, a required receipt line, and a Lane Card. For single-repo batches
+at or below `compact_terminal_structure_max_lanes`, those required strings may
+be rendered once in one compact terminal structure; larger or multi-repo
+batches keep the existing split closing stack. The `compact_terminal_structure_max_lanes`
+seam keeps that boundary explicit and mechanically testable.
 
 **Typed narration checkpoints.** The coordinator emits user-visible text only at
 one of exactly these five checkpoints:
@@ -1415,10 +1419,13 @@ enforced narration budget requires an explicit separate decision after a real
 dataset exists.
 
 **Deferred: one closing block.** `OC-v1` leaves the required closing stack
-unchanged. The Lane Card, the `Next:` instruction, the `Action needed:` line,
-the required receipt, and the exact `Conversation status:` line keep their
-current separate forms and order. Collapsing them into a single terminal
-structure is deliberately out of scope for `OC-v1` and is tracked in
+unchanged except for the compact terminal structure used by single-repo batches
+at or below `compact_terminal_structure_max_lanes`. The Lane Card, the
+`Next:` instruction, the `Action needed:` line, the required receipt, and the
+exact `Conversation status:` line keep their required forms and order, but the
+same facts may be rendered once in one human-readable terminal structure for
+that seam-bound case. Larger or multi-repo batches keep the existing split
+closing stack. This consolidation is tracked in
 [issue 484](https://github.com/shakacode/agent-workflows/issues/484).
 
 ### Cross-Task Target Membership Gate
@@ -2333,7 +2340,7 @@ Canonical rules: [Integration And PR Publication](pr-batch-integration-closeout.
 
 ### Coordinator Closeout Lane
 
-Canonical rules: [Coordinator Closeout Lane](pr-batch-integration-closeout.md#coordinator-closeout-lane). This heading remains as a compatibility route and must not mirror the component.
+Canonical rules: [Coordinator Closeout Lane](pr-batch-integration-closeout.md#coordinator-closeout-lane). This heading remains as a compatibility route and must not mirror the component. The component's compact terminal structure seam for single-repo batches at or below `compact_terminal_structure_max_lanes` applies here too.
 
 ## Self-Review Gate
 

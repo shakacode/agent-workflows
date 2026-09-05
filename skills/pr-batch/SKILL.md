@@ -83,7 +83,10 @@ required safety stop.
 
 `OC-v1` is presentation only. It relaxes no evidence, verification, or
 `UNKNOWN`-honesty rule, drops no required exact string, deletes no durable copy
-another contract requires, and collapses no closing structure.
+another contract requires, and collapses no closing structure except for the
+compact terminal structure allowed for single-repo batches at or below
+`compact_terminal_structure_max_lanes`; the required receipt and final
+`Conversation status:` line still stay intact.
 
 ## Single-Target Mode
 
