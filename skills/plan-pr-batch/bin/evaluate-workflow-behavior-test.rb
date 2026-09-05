@@ -54,6 +54,27 @@ class WorkflowBehaviorTest < Minitest::Test
     assert_equal "unmeasured", WorkflowBehavior.report(data)["trials"].first["route_measurement"]
   end
 
+  def test_established_comparator_rejects_astra_requests_but_preserves_fallback_evidence
+    data = executed
+    row = data["trials"].first
+    row["variant"] = "established-route"
+    error = assert_raises(WorkflowBehavior::Error) { WorkflowBehavior.report(data) }
+    assert_equal "established-route requires a non-Astra requested route", error.message
+
+    row["requested"]["model"] = "gpt-5.6-sol"
+    assert_equal "unmeasured", WorkflowBehavior.report(data)["trials"].first["route_measurement"]
+    row["observed"]["model"] = "gpt-5.6-sol"
+    assert_equal "eligible", WorkflowBehavior.report(data)["trials"].first["route_measurement"]
+    row["observed"]["model"] = "UNKNOWN"
+    assert_equal "unmeasured", WorkflowBehavior.report(data)["trials"].first["route_measurement"]
+    row["requested"]["model"] = "UNKNOWN"
+    row["observed"]["model"] = "gpt-6-astra"
+    result = WorkflowBehavior.report(data)["trials"].first
+    assert_equal "unmeasured", result["route_measurement"]
+    assert_equal "UNKNOWN", result["requested"]["model"]
+    assert_equal "gpt-6-astra", result["observed"]["model"]
+  end
+
   def test_rejects_duplicate_unknown_identity_unrun_outcomes_and_private_payloads
     mutations = [
       ->(data) { data["trials"] << data["trials"].first.dup },
@@ -95,6 +116,24 @@ class WorkflowBehaviorTest < Minitest::Test
         data["trials"].first[field] = value
         error = assert_raises(WorkflowBehavior::Error) { WorkflowBehavior.report(data) }
         assert_equal "invalid evidence reference", error.message
+      end
+    end
+  end
+
+  def test_malformed_usage_receipt_nesting_raises_domain_error
+    Dir.mktmpdir do |dir|
+      data = executed
+      row = data["trials"].first
+      row["usage_receipt"] = "usage.json"
+      malformed = [
+        3,
+        { "schema" => "batch-usage-receipt-v1", "batch" => 3 },
+        { "schema" => "batch-usage-receipt-v1", "batch" => { "id" => row["id"], "usage" => 3 } },
+        { "schema" => "batch-usage-receipt-v1", "batch" => { "id" => row["id"], "usage" => { "descendant_inclusive" => 3 } } }
+      ]
+      malformed.each do |receipt|
+        File.write(File.join(dir, "usage.json"), JSON.generate(receipt))
+        assert_raises(WorkflowBehavior::Error) { WorkflowBehavior.report(data, dir) }
       end
     end
   end

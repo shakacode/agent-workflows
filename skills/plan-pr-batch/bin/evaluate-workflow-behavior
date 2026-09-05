@@ -95,6 +95,10 @@ module WorkflowBehavior
       raise Error, "Astra variant requires an Astra requested route"
     end
 
+    if row["variant"] == "established-route" && row["requested"]["model"] == "gpt-6-astra"
+      raise Error, "established-route requires a non-Astra requested route"
+    end
+
     if row["status"] == "unexecuted"
       unless (%w[action completed usage_receipt] + METRICS).all? { |field| row[field] == UNKNOWN }
         raise Error, "unexecuted trial cannot have outcomes"
@@ -117,11 +121,15 @@ module WorkflowBehavior
     return UNKNOWN if row["usage_receipt"] == UNKNOWN
 
     receipt = parse(File.read(File.expand_path(row["usage_receipt"], directory)))
-    unless receipt["schema"] == "batch-usage-receipt-v1" && receipt.dig("batch", "id") == row["id"]
+    unless receipt.is_a?(Hash) && receipt["schema"] == "batch-usage-receipt-v1" &&
+           receipt["batch"].is_a?(Hash) && receipt["batch"]["id"] == row["id"]
       raise Error, "usage receipt schema or trial binding mismatch"
     end
 
-    values = receipt.dig("batch", "usage", "descendant_inclusive")
+    receipt_usage = receipt["batch"]["usage"]
+    raise Error, "invalid receipt usage" unless receipt_usage.is_a?(Hash)
+
+    values = receipt_usage["descendant_inclusive"]
     exact_keys!(values, TOKENS)
     raise Error, "invalid receipt tokens" unless values.values.all? { |value| value == UNKNOWN || (value.is_a?(Integer) && value >= 0) }
 
