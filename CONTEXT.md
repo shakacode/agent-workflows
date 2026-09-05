@@ -260,6 +260,12 @@ The required audience class in every agent-posted GitHub comment envelope:
 `decision` (the four desk-card fields visible, detail collapsed).
 _Avoid_: comment type, severity, priority (a decision's priority is a card field)
 
+**Integration pass**:
+One **Control tower** tick's sweep of the **Merge backlog**: merge what passes
+the exact-head gates, remediate small blockers, adopt orphaned drafts, and
+label what needs the human, in that order.
+_Avoid_: drain (reserved for cancellation), cleanup, sweep
+
 ## Relationships
 
 - **Batch → Wave → Lane → Instance**: when wave scheduling is used, a
@@ -324,3 +330,5 @@ _Avoid_: comment type, severity, priority (a decision's priority is a card field
 - "phase" also appears in release phase / phase-gating policy — resolved: use **Worker phase** for lane progress and "release phase" for branch or release-train gate context.
 - "stuck" was also used for the PR portfolio — resolved: **Merge backlog**
   names the PRs; **Wedged** and dead stay reserved for workers.
+- "drain the backlog" collided with **Drain** — resolved: **Drain** stays the
+  cancellation signal; backlog reduction is an **Integration pass**.
