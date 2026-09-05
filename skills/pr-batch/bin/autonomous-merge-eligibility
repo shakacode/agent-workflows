@@ -12,7 +12,7 @@ require_relative "../lib/autonomous_merge_evidence"
 require_relative "../lib/autonomous_merge_runtime_trust"
 require_relative "../lib/current_integration_evidence"
 
-default_calibration = File.expand_path("../fixtures/autonomous-merge-reviewed-heads-calibration.json", __dir__)
+default_calibration = AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
 options = { calibration_decision: default_calibration }
 OptionParser.new do |parser|
   parser.on("--repo-root PATH") { |value| options[:repo_root] = value }
@@ -75,8 +75,13 @@ emit_unknown("--trusted-base is required") unless options[:trusted_base]
 
 repo_root = options.fetch(:repo_root)
 trusted_base = options.fetch(:trusted_base)
+begin
+  git_command = AutonomousMergeRuntimeTrust.trusted_git_executable
+rescue AutonomousMergeRuntimeTrust::ExecutableError => e
+  emit_unknown(e.message)
+end
 base_sha, base_status = Open3.capture2(
-  "git", "-C", repo_root, "rev-parse", "--verify", "#{trusted_base}^{commit}"
+  git_command, "-C", repo_root, "rev-parse", "--verify", "#{trusted_base}^{commit}"
 )
 emit_unknown("trusted base is unavailable: #{trusted_base}") unless base_status.success?
 trusted_helper_claim = options[:trusted_helper_provenance]
@@ -84,7 +89,8 @@ runtime_trust = AutonomousMergeRuntimeTrust.verify(
   repo_root:,
   base_sha: base_sha.strip,
   claim: trusted_helper_claim,
-  calibration_path: options.fetch(:calibration_decision)
+  calibration_path: options.fetch(:calibration_decision),
+  git_command:
 )
 unless runtime_trust.accepted
   emit_unknown(runtime_trust.errors.join("; "))
@@ -232,7 +238,7 @@ end
 
 policy_path = ".agents/agent-workflow.yml"
 policy_entry, policy_entry_status = Open3.capture2(
-  "git", "-C", repo_root, "ls-tree", "--name-only", base_sha.strip, "--", policy_path
+  git_command, "-C", repo_root, "ls-tree", "--name-only", base_sha.strip, "--", policy_path
 )
 unless policy_entry_status.success?
   emit_unknown("trusted-base policy presence cannot be established",
@@ -240,7 +246,7 @@ unless policy_entry_status.success?
 end
 if policy_entry.lines.map(&:strip).include?(policy_path)
   policy_yaml, policy_status = Open3.capture2(
-    "git", "-C", repo_root, "show", "#{base_sha.strip}:#{policy_path}"
+    git_command, "-C", repo_root, "show", "#{base_sha.strip}:#{policy_path}"
   )
   unless policy_status.success?
     emit_unknown("trusted-base policy cannot be retrieved",
@@ -250,7 +256,7 @@ if policy_entry.lines.map(&:strip).include?(policy_path)
   trusted_policy_yaml = policy_yaml
   policy = AutonomousMergePolicy.parse(policy_yaml)
   policy_blob, blob_status = Open3.capture2(
-    "git", "-C", repo_root, "rev-parse", "#{base_sha.strip}:#{policy_path}"
+    git_command, "-C", repo_root, "rev-parse", "#{base_sha.strip}:#{policy_path}"
   )
   policy_provenance = if blob_status.success?
                         "git:#{base_sha.strip}:#{policy_path}@#{policy_blob.strip}"

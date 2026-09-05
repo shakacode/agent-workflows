@@ -2,11 +2,13 @@
 # frozen_string_literal: true
 
 require "digest"
+require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
 require "rbconfig"
 require "tempfile"
+require "tmpdir"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
 STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
@@ -201,6 +203,67 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
+  def stage_lane(id, head_sha: "1" * 40)
+    {
+      "id" => id,
+      "maker" => "maker-#{id}",
+      "checker" => "checker-#{id}",
+      "head_sha" => head_sha,
+      "base_sha" => "a" * 40,
+      "preparation" => {
+        "source_patch_inspection" => "plan-state://preparation/source-patch",
+        "collision_domain_mapping" => "plan-state://preparation/collision-domains",
+        "semantic_adaptation_notes" => "plan-state://preparation/semantic-adaptation",
+        "validation_review_plan" => "plan-state://preparation/validation-review",
+        "evidence_templates" => "plan-state://preparation/evidence-templates"
+      }
+    }
+  end
+
+  def stage_dependency_replay(stage_lanes, edges, gate_lanes)
+    stage_lanes_by_id = stage_lanes.to_h { |record| [record.fetch("id"), record] }
+    gate_lanes_by_id = gate_lanes.to_h { |record| [record.fetch("id"), record] }
+    live_edges = edges.map do |edge|
+      target_held = gate_lanes_by_id.dig(edge["to"], "permissions", "patch_edit") == false
+      if target_held
+        { "id" => edge["id"], "state" => "pending" }
+      else
+        evidence = { "evidence_ref" => "plan-state://evidence/#{edge['id']}" }
+        case edge["type"]
+        when "validation_open"
+          target = stage_lanes_by_id.fetch(edge["to"])
+          evidence.merge!("head_sha" => target.fetch("head_sha"), "base_sha" => target.fetch("base_sha"))
+          {
+            "id" => edge["id"],
+            "state" => "satisfied",
+            "evidence" => evidence,
+            "base_movement" => {
+              "status" => "unchanged",
+              "semantic_overlap" => false,
+              "required_dependency" => false,
+              "conflict_or_base_sensitive" => false,
+              "consumer_policy" => false
+            }
+          }
+        when "merge_order"
+          evidence.merge!(
+            "terminal_state" => "merged",
+            "head_sha" => stage_lanes_by_id.fetch(edge["from"]).fetch("head_sha")
+          )
+          { "id" => edge["id"], "state" => "satisfied", "evidence" => evidence }
+        else
+          { "id" => edge["id"], "state" => "satisfied", "evidence" => evidence }
+        end
+      end
+    end
+    {
+      "contract" => "stage-dependency-gate",
+      "version" => 1,
+      "lanes" => stage_lanes,
+      "edges" => live_edges
+    }
+  end
+
   def input_for(lanes: [lane], maps: nil, edges: [], groups: [], premises: [], gate_lanes: nil,
                 backend: "generic", active_wave: "wave-a", batch_plan_id: "batch-plan-1",
                 lifecycle_states: [], reservations: nil)
@@ -233,6 +296,49 @@ class BatchPlanPreflightTest < Minitest::Test
     end
     gate_lanes ||= lanes.map { |record| gate_lane(record.fetch("id")) }
     plan_id = "trusted-plan-1"
+    dependency_plan = {
+      "contract" => "stage-dependency-plan",
+      "version" => 1,
+      "id" => plan_id,
+      "edges" => edges
+    }
+    stage_lanes = lanes.map { |record| stage_lane(record.fetch("id")) }
+    dependency_replay = stage_dependency_replay(stage_lanes, edges, gate_lanes)
+    valid_edges = edges.all? do |edge|
+      edge.is_a?(Hash) &&
+        %w[edit validation_open merge_order].include?(edge["type"]) &&
+        stage_lanes.map { |record| record.fetch("id") }.include?(edge["from"]) &&
+        stage_lanes.map { |record| record.fetch("id") }.include?(edge["to"])
+    end
+    dependency_gate = if valid_edges
+                        evaluate_stage_dependency_gate(
+                          dependency_plan,
+                          lanes: dependency_replay.fetch("lanes"),
+                          edges: dependency_replay.fetch("edges")
+                        )
+                      else
+                        {
+                          "contract" => "stage-dependency-gate",
+                          "version" => 1,
+                          "status" => "eligible",
+                          "trusted_plan_id" => plan_id,
+                          "trusted_plan_binding" => stage_dependency_plan_binding(dependency_plan),
+                          "lanes" => gate_lanes,
+                          "checker_verdict" => { "status" => "eligible", "blockers" => [] },
+                          "critical_path" => {
+                            "lane_ids" => lanes.map { |record| record.fetch("id") },
+                            "edge_count" => edges.length,
+                            "tie_breaker" => "maximum-dependency-hops-then-lexicographic-lane-id-sequence",
+                            "assignments" => []
+                          },
+                          "downstream_requirements" => {
+                            "final_combined_tip_validation" => "required-via-repo-seam",
+                            "preserved_gates" => %w[
+                              exact_head_ci independent_review unresolved_threads merge_readiness
+                            ]
+                          }
+                        }
+                      end
     input = {
       "type" => "batch-plan-preflight",
       "version" => 1,
@@ -246,35 +352,64 @@ class BatchPlanPreflightTest < Minitest::Test
       },
       "file_touch_map" => maps,
       "lane_lifecycle_states" => lifecycle_states,
-      "stage_dependency_plan" => {
-        "contract" => "stage-dependency-plan",
-        "version" => 1,
-        "id" => plan_id,
-        "edges" => edges
-      },
-      "stage_dependency_gate" => {
-        "contract" => "stage-dependency-gate",
-        "version" => 1,
-        "status" => "eligible",
-        "trusted_plan_id" => plan_id,
-        "lanes" => gate_lanes,
-        "checker_verdict" => { "status" => "eligible", "blockers" => [] },
-        "critical_path" => {
-          "lane_ids" => lanes.map { |record| record.fetch("id") },
-          "edge_count" => edges.length,
-          "tie_breaker" => "maximum-dependency-hops-then-lexicographic-lane-id-sequence",
-          "assignments" => []
-        },
-        "downstream_requirements" => {
-          "final_combined_tip_validation" => "required-via-repo-seam",
-          "preserved_gates" => %w[exact_head_ci independent_review unresolved_threads merge_readiness]
-        }
-      }
+      "stage_dependency_plan" => dependency_plan,
+      "stage_dependency_replay" => dependency_replay,
+      "stage_dependency_gate" => dependency_gate
     }
-    input.fetch("stage_dependency_gate")["trusted_plan_binding"] =
-      stage_dependency_plan_binding(input.fetch("stage_dependency_plan"))
     input["expansion_path_reservations"] = reservations unless reservations.nil?
     input
+  end
+
+  def test_replay_envelope_is_required_well_formed_and_known
+    mutations = {
+      "missing" => ["stage-dependency-replay-missing", lambda do |input|
+        input.delete("stage_dependency_replay")
+      end],
+      "not an object" => ["stage-dependency-replay-invalid", lambda do |input|
+        input["stage_dependency_replay"] = []
+      end],
+      "extra field" => ["stage-dependency-replay-invalid", lambda do |input|
+        input.fetch("stage_dependency_replay")["caller_override"] = "/tmp/gate"
+      end],
+      "unknown nested fact" => ["stage-dependency-replay-unknown", lambda do |input|
+        input.dig("stage_dependency_replay", "lanes", 0)["head_sha"] = "UNKNOWN"
+      end]
+    }
+
+    mutations.each do |label, (expected_code, mutate)|
+      input = input_for
+      mutate.call(input)
+      result, _stderr, status = evaluate(input)
+
+      refute status.success?, label
+      assert_equal [expected_code], result.fetch("violations").map { |item| item.fetch("code") }, label
+      assert_empty result.dig("launch", "eligible_lane_ids"), label
+      assert_empty result.dig("launch", "held_lane_ids"), label
+      assert_empty result.dig("launch", "completed_lane_ids"), label
+    end
+  end
+
+  def test_stale_satisfied_edit_gate_rejects_changed_replay_facts_before_launch
+    lanes = [lane("foundation"), lane("consumer")]
+    edge = {
+      "id" => "foundation-before-consumer",
+      "from" => "foundation",
+      "to" => "consumer",
+      "type" => "edit"
+    }
+    input = input_for(lanes:, edges: [edge])
+    input.dig("stage_dependency_replay", "edges", 0)["state"] = "pending"
+    input.dig("stage_dependency_replay", "edges", 0).delete("evidence")
+
+    result, _stderr, status = evaluate(input)
+
+    refute status.success?
+    assert_equal "rejected", result.fetch("status")
+    assert_equal(
+      ["stage-dependency-replay-mismatch"],
+      result.fetch("violations").map { |item| item.fetch("code") }
+    )
+    assert_empty result.dig("launch", "eligible_lane_ids")
   end
 
   def test_ordinary_durable_lane_state_advances_serialized_work_without_trust_material
@@ -2246,5 +2381,289 @@ class BatchPlanPreflightTest < Minitest::Test
     refute status.success?
     assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                     "stage-dependency-gate-lane-invalid"
+  end
+
+  # --- Adversarial fixed-sibling trust fixtures (issue #636) -----------------
+  #
+  # `batch-plan-preflight` reruns its fixed sibling `stage-dependency-gate`
+  # from the pack that loaded it. These fixtures build a throwaway copy of that
+  # pack and attack the copy only; the live installed helper is never chmodded,
+  # replaced, or removed.
+
+  # The trust rule rejects any pack ancestor that is group- or world-writable,
+  # so the fixture pack needs a parent whose whole realpath chain is already
+  # safe. Sandboxes rooted under a mode-1777 `/tmp` do not qualify, so fall
+  # back through the checkout and the home directory before skipping.
+  PACK_FIXTURE_TMP_PARENT_ENV = "BATCH_PLAN_PREFLIGHT_TEST_TMP_PARENT"
+
+  def safe_pack_ancestry?(directory)
+    path = File.realpath(directory)
+    loop do
+      stat = File.lstat(path)
+      return false unless stat.directory?
+      return false unless [0, Process.uid].include?(stat.uid)
+      return false unless (stat.mode & 0o022).zero?
+      break if path == File.dirname(path)
+
+      path = File.dirname(path)
+    end
+    true
+  rescue SystemCallError
+    false
+  end
+
+  def safe_pack_fixture_parent
+    home = begin
+      Dir.home
+    rescue ArgumentError
+      nil
+    end
+    candidates = [ENV[PACK_FIXTURE_TMP_PARENT_ENV], File.expand_path("../../..", __dir__), home]
+    candidates.compact.uniq.find { |directory| Dir.exist?(directory) && safe_pack_ancestry?(directory) }
+  end
+
+  def with_isolated_pack(name)
+    parent = safe_pack_fixture_parent
+    if parent.nil?
+      skip(
+        "No parent directory with a fully non-group/world-writable realpath chain is available; " \
+        "set #{PACK_FIXTURE_TMP_PARENT_ENV} to one to run the fixed-sibling trust fixtures."
+      )
+    end
+
+    Dir.mktmpdir(name, parent) do |root|
+      File.chmod(0o700, root)
+      pack = File.join(root, "pack")
+      preflight_bin = File.join(pack, "skills", "plan-pr-batch", "bin")
+      gate_bin = File.join(pack, "skills", "pr-batch", "bin")
+      FileUtils.mkdir_p([preflight_bin, gate_bin], mode: 0o755)
+      fixture_helper = File.join(preflight_bin, File.basename(HELPER))
+      fixture_gate = File.join(gate_bin, File.basename(STAGE_DEPENDENCY_GATE))
+      FileUtils.cp(HELPER, fixture_helper)
+      FileUtils.cp(STAGE_DEPENDENCY_GATE, fixture_gate)
+      File.chmod(0o755, fixture_helper)
+      File.chmod(0o755, fixture_gate)
+      yield(root, pack, fixture_helper, fixture_gate)
+    end
+  end
+
+  def violation_codes(result)
+    result.fetch("violations").map { |item| item.fetch("code") }
+  end
+
+  def test_safe_installed_pack_fixture_accepts_and_actually_reruns_its_fixed_sibling
+    with_isolated_pack("batch-plan-preflight-safe-pack") do |_root, _pack, fixture_helper, fixture_gate|
+      result, stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+      assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+
+      tampered = input_for
+      tampered.fetch("stage_dependency_gate")["status"] = "gated"
+      mismatch, _mismatch_stderr, mismatch_status = evaluate(tampered, helper: fixture_helper)
+
+      refute mismatch_status.success?, "The fixture pack must rerun its own fixed sibling, not trust the caller."
+      assert_equal ["stage-dependency-replay-mismatch"], violation_codes(mismatch)
+      assert_empty mismatch.dig("launch", "eligible_lane_ids")
+
+      # Bind execution to this pack's sibling rather than the live installed
+      # one: replacing only the fixture sibling, at the same owner and mode,
+      # must change the outcome.
+      File.write(fixture_gate, "#!/usr/bin/env ruby\n# frozen_string_literal: true\n\nexit 1\n")
+      File.chmod(0o755, fixture_gate)
+      stub, _stub_stderr, stub_status = evaluate(input_for, helper: fixture_helper)
+
+      refute stub_status.success?
+      assert_equal ["stage-dependency-replay-execution-failed"], violation_codes(stub)
+    end
+  end
+
+  def test_group_writable_pack_ancestor_fails_closed
+    with_isolated_pack("batch-plan-preflight-group-writable") do |_root, pack, fixture_helper, _fixture_gate|
+      File.chmod(0o775, File.join(pack, "skills"))
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal "rejected", result.fetch("status")
+      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result)
+      assert_empty result.dig("launch", "eligible_lane_ids")
+    end
+  end
+
+  def test_world_writable_pack_ancestor_fails_closed
+    with_isolated_pack("batch-plan-preflight-world-writable") do |_root, pack, fixture_helper, _fixture_gate|
+      File.chmod(0o757, File.join(pack, "skills", "pr-batch"))
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal "rejected", result.fetch("status")
+      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result)
+      assert_empty result.dig("launch", "eligible_lane_ids")
+    end
+  end
+
+  def test_world_writable_pack_root_above_the_pack_fails_closed
+    with_isolated_pack("batch-plan-preflight-world-writable-root") do |root, _pack, fixture_helper, _fixture_gate|
+      File.chmod(0o1777, root)
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result)
+    ensure
+      File.chmod(0o700, root)
+    end
+  end
+
+  # Ordered routes for building a sibling the pack owner does not own. The
+  # first two construct real foreign ownership; the third is the documented
+  # deterministic substitute for platforms that permit neither.
+  FOREIGN_SIBLING_DONOR_DIRECTORIES = %w[
+    /usr/bin
+    /bin
+    /usr/sbin
+    /sbin
+    /usr/libexec
+    /usr/local/bin
+    /Library/Developer/CommandLineTools/usr/bin
+    /opt/homebrew/bin
+  ].freeze
+
+  FOREIGN_SIBLING_DONOR_ATTEMPTS_PER_DIRECTORY = 3
+
+  # Ordered, bounded donor candidates: regular executable files with no
+  # group/other write bits that the pack owner does not own, on the same device
+  # as the fixture. Sealed system volumes can still refuse the hard link, so
+  # the caller tries each candidate in turn.
+  def foreign_owned_donors(same_device_as)
+    device = File.stat(same_device_as).dev
+    FOREIGN_SIBLING_DONOR_DIRECTORIES.flat_map do |directory|
+      next [] unless Dir.exist?(directory)
+
+      entries = begin
+        Dir.children(directory).sort
+      rescue SystemCallError
+        []
+      end
+      entries.filter_map do |entry|
+        candidate = File.join(directory, entry)
+        stat = begin
+          File.lstat(candidate)
+        rescue SystemCallError
+          next
+        end
+        next unless stat.file? && stat.dev == device
+        next if stat.uid == Process.uid
+        next unless (stat.mode & 0o022).zero? && (stat.mode & 0o111).positive?
+
+        candidate
+      end.first(FOREIGN_SIBLING_DONOR_ATTEMPTS_PER_DIRECTORY)
+    end
+  end
+
+  # Replace the fixed sibling with one the pack owner does not own, preferring a
+  # real foreign-owned file. Returns the route label that succeeded.
+  def substitute_foreign_owned_sibling(root, fixture_gate)
+    begin
+      File.chown(1, nil, fixture_gate)
+      return "chown" if File.lstat(fixture_gate).uid != Process.uid
+    rescue SystemCallError
+      nil
+    end
+
+    # A hard link keeps the donor inode's foreign uid while staying a regular
+    # executable file with no group/other write bits, so ownership is the only
+    # trust predicate this route breaks.
+    foreign_owned_donors(File.dirname(fixture_gate)).each do |donor|
+      File.delete(fixture_gate) if File.exist?(fixture_gate)
+      begin
+        File.link(donor, fixture_gate)
+      rescue SystemCallError
+        next
+      end
+      return "hardlink:#{donor}" if File.lstat(fixture_gate).uid != Process.uid
+    end
+
+    # Documented deterministic substitute: the fixed sibling is swapped for a
+    # symlink to an identical helper the attacker owns outside the pack. lstat
+    # sees a symlink instead of the pack owner's regular file, so the same
+    # fail-closed resolution rejects it and the outside copy never runs.
+    attacker_gate = File.join(root, "attacker-owned-stage-dependency-gate")
+    FileUtils.cp(STAGE_DEPENDENCY_GATE, attacker_gate)
+    File.chmod(0o755, attacker_gate)
+    File.delete(fixture_gate) if File.exist?(fixture_gate) || File.symlink?(fixture_gate)
+    File.symlink(attacker_gate, fixture_gate)
+    "symlink-substitute"
+  end
+
+  def test_foreign_owned_fixed_sibling_fails_closed
+    with_isolated_pack("batch-plan-preflight-foreign-owner") do |root, _pack, fixture_helper, fixture_gate|
+      route = substitute_foreign_owned_sibling(root, fixture_gate)
+      context = "foreign-ownership route: #{route}"
+
+      # Guard the fixture itself, so a route that silently stopped constructing
+      # what it advertises cannot pass on some other predicate.
+      if route == "symlink-substitute"
+        assert_predicate File.lstat(fixture_gate), :symlink?, context
+      else
+        refute_equal Process.uid, File.lstat(fixture_gate).uid, context
+        assert_predicate File.lstat(fixture_gate), :file?, context
+        assert_equal 0, File.lstat(fixture_gate).mode & 0o022, context
+        assert_predicate File.lstat(fixture_gate).mode & 0o111, :positive?, context
+      end
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?, context
+      assert_equal "rejected", result.fetch("status"), context
+      assert_equal ["stage-dependency-helper-unsafe"], violation_codes(result), context
+      assert_empty result.dig("launch", "eligible_lane_ids"), context
+    end
+  end
+
+  def test_missing_fixed_sibling_fails_closed
+    with_isolated_pack("batch-plan-preflight-missing-sibling") do |_root, _pack, fixture_helper, fixture_gate|
+      File.delete(fixture_gate)
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal "rejected", result.fetch("status")
+      assert_equal ["stage-dependency-helper-missing"], violation_codes(result)
+      assert_empty result.dig("launch", "eligible_lane_ids")
+    end
+  end
+
+  def test_missing_fixed_sibling_directory_fails_closed
+    with_isolated_pack("batch-plan-preflight-missing-sibling-dir") do |_root, pack, fixture_helper, _fixture_gate|
+      FileUtils.rm_rf(File.join(pack, "skills", "pr-batch"))
+
+      result, _stderr, status = evaluate(input_for, helper: fixture_helper)
+
+      refute status.success?
+      assert_equal ["stage-dependency-helper-missing"], violation_codes(result)
+    end
+  end
+
+  def test_live_installed_pack_helper_and_sibling_are_left_untouched
+    live = [HELPER, STAGE_DEPENDENCY_GATE]
+    before = live.to_h { |path| [path, [Digest::SHA256.file(path).hexdigest, File.lstat(path).mode]] }
+
+    with_isolated_pack("batch-plan-preflight-live-pack-guard") do |_root, _pack, fixture_helper, fixture_gate|
+      File.chmod(0o777, fixture_gate)
+      evaluate(input_for, helper: fixture_helper)
+    end
+
+    live.each do |path|
+      assert_path_exists path
+      assert_predicate File.lstat(path), :file?
+      assert_equal 0, File.lstat(path).mode & 0o022, "#{path} must keep no group/other write bit"
+      assert_equal before.fetch(path), [Digest::SHA256.file(path).hexdigest, File.lstat(path).mode],
+                   "#{path} content and mode must be untouched by the adversarial fixtures"
+    end
   end
 end
