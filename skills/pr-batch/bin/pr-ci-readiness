@@ -35,6 +35,9 @@ require "time"
 module PrCiReadiness
   class Error < StandardError; end
 
+  VALIDATION_WORKFLOW = "Validate"
+  DRAFT_HEAD_VALIDATION_CHECK = "validate (draft head)"
+
   module_function
 
   # Parse a `gh pr checks --json name,state,bucket,link,workflow` payload into rows.
@@ -83,9 +86,37 @@ module PrCiReadiness
     [row["workflow"].to_s, row["name"].to_s]
   end
 
+  def non_draft_head_rows(rows)
+    rows.reject { |row| draft_head_validation_row?(row) && evidence_row_state(row) != "UNKNOWN" }
+  end
+
+  def draft_head_validation_row?(row)
+    row.is_a?(Hash) &&
+      row["workflow"].to_s == VALIDATION_WORKFLOW &&
+      row["name"].to_s == DRAFT_HEAD_VALIDATION_CHECK
+  end
+
+  def non_draft_head_actions_rows(rows)
+    validate_run_urls = rows.filter_map do |row|
+      row["url"].to_s if row.is_a?(Hash) && row["kind"] == "run" && row["name"] == VALIDATION_WORKFLOW
+    end
+    draft_run_urls = rows.filter_map do |row|
+      next unless row.is_a?(Hash) && row["name"] == DRAFT_HEAD_VALIDATION_CHECK
+
+      validate_run_urls.find { |url| row["url"].to_s.start_with?("#{url}/job/") }
+    end
+    rows.reject do |row|
+      next false unless row.is_a?(Hash)
+
+      draft_run_urls.any? { |url| row["url"].to_s == url || row["url"].to_s.start_with?("#{url}/job/") }
+    end
+  end
+
   # Preserve required cancellations unless a current row with the exact same
   # workflow/name identity supersedes them. Full-list cancellations are noise.
   def readiness_rows(rows, required_used:, required_cancellations: [])
+    rows = non_draft_head_rows(rows)
+    required_cancellations = non_draft_head_rows(required_cancellations)
     current_rows = active_rows(rows)
     gate_rows = required_used ? rows : current_rows + required_cancellations
     current_contexts = current_rows.map { |row| check_identity(row) }
@@ -171,7 +202,7 @@ module PrCiReadiness
     source:, head_sha:, complete:, rows:, checked_at:, error: nil,
     informational_rows: [], gates_verdict: true
   )
-    normalized_rows = rows.is_a?(Array) ? rows : []
+    normalized_rows = non_draft_head_rows(rows.is_a?(Array) ? rows : [])
     row_states = normalized_rows.map { |row| evidence_row_state(row) }
     state =
       # Non-gating scopes preserve completeness and error diagnostics without
@@ -231,6 +262,7 @@ module PrCiReadiness
     actions_complete:, check_runs:, check_runs_complete:, statuses:,
     statuses_complete:, errors: {}, gate_advisory_rows: true
   )
+    actions_rows = non_draft_head_actions_rows(actions_rows)
     # required_rows may still contain a non-Hash entry that survived
     # readiness classification upstream (kept, not dropped, so it remains
     # visible below in the required_status_check_rollup scope's own rows and
@@ -775,7 +807,11 @@ module PrCiReadiness
       rows = []
       current_runs = runs.group_by { |run| [run["workflow_id"], run["event"]] }
       current_runs = current_runs.values.map do |group|
-        group.max_by { |run| [run["run_number"], run["run_attempt"], run["id"]] }
+        non_cancelled = group.reject do |run|
+          run["status"] == "completed" && run["conclusion"] == "cancelled"
+        end
+        candidates = non_cancelled.empty? ? group : non_cancelled
+        candidates.max_by { |run| [run["run_number"], run["run_attempt"], run["id"]] }
       end
       current_runs.sort_by! { |run| [run["workflow_id"], run["event"]] }
       current_runs.each do |run|

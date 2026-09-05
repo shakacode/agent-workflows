@@ -88,14 +88,6 @@ echo "== routing doc links =="
 ruby bin/validate-doc-links-test.rb
 ruby bin/validate-doc-links
 
-echo "== installer and stack suites (contain source-revision tests) =="
-if ((skipped_cleanliness_dependent_suites)); then
-  echo "SKIP: installer and stack suites that contain source-revision tests (skills/ working tree is dirty)" >&2
-else
-  bash bin/install-agent-workflows-test.bash
-  bash bin/agent-stack-test.bash
-fi
-
 echo "== doctor tests =="
 if ((skipped_cleanliness_dependent_suites)); then
   echo "RUN: doctor tests (not source-revision dependent)" >&2
@@ -191,6 +183,14 @@ actual = RuboCop::Version::STRING
 abort "Expected RuboCop #{version}, got #{actual}" unless actual == version
 RUBY
 rubocop "_${RUBOCOP_VERSION}_"
+
+echo "== installer and stack suites (contain source-revision tests) =="
+if ((skipped_cleanliness_dependent_suites)); then
+  echo "SKIP: installer and stack suites that contain source-revision tests (skills/ working tree is dirty)" >&2
+else
+  bash bin/install-agent-workflows-test.bash
+  bash bin/agent-stack-test.bash
+fi
 
 if ((skipped_cleanliness_dependent_suites)); then
   echo "PARTIAL COVERAGE: installer and stack suites that contain source-revision tests were skipped because skills/ has uncommitted changes." >&2
