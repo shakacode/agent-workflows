@@ -507,6 +507,58 @@ the original installed content or move personal content to a distinct path
 before retrying. The status and upgrade helpers use the metadata so they can run
 from either the source clone or the installed host.
 
+Flat copy installs additionally record `managed_runtime_manifest_digests`. The
+installer computes each entry from the source pack while it installs, so the
+expected value is installation state rather than output learned from the
+installed helper it authenticates. The `autonomous-merge` entry is the
+length-framed runtime manifest digest that
+`skills/pr-batch/bin/autonomous-merge-eligibility` recomputes over its own
+runtime closure and the shipped calibration decision. Supply it as the
+`verified-installed-pack:<64-hex-digest>` trusted-helper provenance claim when
+running that gate from an installed pack:
+
+```bash
+status="$(agent-workflows-status --host claude --json)" && rc=0 || rc=$?
+case "$rc" in
+  0 | 1) ;;                  # UP_TO_DATE or UPGRADE_AVAILABLE; only these are worth checking
+  *) echo "install state is unusable; do not source a digest from it" >&2; exit 1 ;;
+esac
+digest="$(printf '%s' "$status" |
+  jq -r '.runtime_manifest_digests["autonomous-merge"] // empty')"
+[ -n "$digest" ] || { echo "no autonomous-merge digest recorded" >&2; exit 1; }
+```
+
+Read the digest only through `agent-workflows-status`. It opens
+`<target>/.agent-workflows-install.json` with `O_NOFOLLOW`, so a metadata path
+replaced by a symlink is refused rather than followed. It also withholds the
+digests entirely on `CHECK_FAILED`, when the managed `bin/agent_doctor`
+ownership marker no longer verifies, and for a target reached through a
+symlinked ancestor, since `O_NOFOLLOW` guards only the final path component
+and a redirected home could otherwise supply the expected value. Point
+`--target` at the real agent home; a symlinked home still reports version and
+upgrade state normally, it just publishes no digest. These guards assume the
+agent home itself is trusted: nothing this helper can do survives an attacker
+who rewrites the home or its ancestry while a batch runs, because the
+coordinator goes on to execute the pack's helpers from that same path. Bind the
+pack directory once, outside the evaluated repository, before launching any
+gate, as the closeout workflow requires. Reading the file directly with `jq`,
+`cat`, or any ordinary tool follows a planted symlink and can hand the gate an
+expected digest chosen by whoever planted it, which is exactly the trust the
+claim is supposed to carry. Do not put the helper in a pipeline under
+`set -o pipefail` either: it exits non-zero for `UPGRADE_AVAILABLE` and
+`NOT_INSTALLED`, and an install with an upgrade available still carries a
+usable digest. Keep the `// empty` guard so an install that records no digest
+yields an empty string rather than the literal `null`. Symlink installs and
+plugin-companion installs record no runtime manifest digests, because neither
+installs the complete flat runtime closure the digest describes; use a
+trusted-base materialization there. An install whose source pack is missing
+part of that closure, or that runs under a Ruby too old to load the runtime
+library, records nothing rather than failing: such a host cannot run the gate
+either. Installs made before this key existed omit it, and the gate keeps
+failing closed until the pack is reinstalled or upgraded. Passing a non-default
+`--calibration-decision` changes the manifest, so the recorded digest no longer
+applies.
+
 ## Status Checks
 
 For the full three-repository contributor stack, start with

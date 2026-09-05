@@ -12,16 +12,38 @@ require_relative "../lib/autonomous_merge_evidence"
 require_relative "../lib/autonomous_merge_runtime_trust"
 require_relative "../lib/current_integration_evidence"
 
-default_calibration = File.expand_path("../fixtures/autonomous-merge-reviewed-heads-calibration.json", __dir__)
+default_calibration = AutonomousMergeRuntimeTrust::DEFAULT_CALIBRATION_PATH
 options = { calibration_decision: default_calibration }
 OptionParser.new do |parser|
-  parser.on("--repo-root PATH") { |value| options[:repo_root] = value }
-  parser.on("--trusted-base REV") { |value| options[:trusted_base] = value }
-  parser.on("--trusted-helper-provenance PROVENANCE") { |value| options[:trusted_helper_provenance] = value }
-  parser.on("--calibration-decision PATH") { |value| options[:calibration_decision] = value }
-  parser.on("--repo OWNER/REPO") { |value| options[:repo] = value }
-  parser.on("--pr NUMBER", Integer) { |value| options[:pr] = value }
-  parser.on("--semantic-assessment PATH") { |value| options[:semantic_assessment] = value }
+  parser.banner = "Usage: autonomous-merge-eligibility [options]"
+  parser.on("--repo-root PATH", "Evaluated repository checkout") { |value| options[:repo_root] = value }
+  parser.on("--trusted-base REV", "Trusted base revision to evaluate against") { |value| options[:trusted_base] = value }
+  parser.on(
+    "--trusted-helper-provenance PROVENANCE",
+    "Expected identity of this runtime, established independently of the evaluated repository.",
+    "Accepted forms:",
+    "  trusted-base:<40-hex-sha>            every runtime source is byte-identical to that commit tree",
+    "  verified-installed-pack:<64-hex-digest>  the length-framed runtime manifest digest recorded at",
+    "                                       install time in the agent home's",
+    "                                       .agent-workflows-install.json under",
+    "                                       managed_runtime_manifest_digests[\"autonomous-merge\"]",
+    "The flag states an expected identity; it cannot create trust. Never derive the",
+    "digest from this pack's own output or from the evaluated repository."
+  ) { |value| options[:trusted_helper_provenance] = value }
+  parser.on(
+    "--calibration-decision PATH",
+    "Calibration decision to use (default: the shipped fixture, which is the decision",
+    "covered by the recorded verified-installed-pack digest)"
+  ) { |value| options[:calibration_decision] = value }
+  parser.on("--repo OWNER/REPO", "Repository for live objective collection") { |value| options[:repo] = value }
+  parser.on("--pr NUMBER", Integer, "Pull request number for live objective collection") { |value| options[:pr] = value }
+  parser.on("--semantic-assessment PATH", "Semantic assessment JSON from outside the evaluated repository") do |value|
+    options[:semantic_assessment] = value
+  end
+  parser.on("-h", "--help", "Show help") do
+    puts parser
+    exit 0
+  end
 end.parse!
 
 @verified_runtime_trust = nil

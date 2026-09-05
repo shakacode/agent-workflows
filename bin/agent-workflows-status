@@ -7,6 +7,7 @@ require "open3"
 require "rbconfig"
 
 load File.expand_path("agent-workflows-delivery-state", __dir__)
+require_relative "agent_doctor/install_ownership"
 
 module AgentWorkflowsStatus
   METADATA_NAME = ".agent-workflows-install.json"
@@ -78,14 +79,76 @@ module AgentWorkflowsStatus
 
   def read_metadata(target)
     path = metadata_path(target)
-    return nil unless File.file?(path)
+    bytes = read_metadata_bytes(path)
+    return nil unless bytes
 
-    metadata = JSON.parse(File.binread(path).force_encoding("UTF-8").scrub)
+    metadata = JSON.parse(bytes.force_encoding("UTF-8").scrub)
     raise "invalid metadata #{path}: expected a JSON object" unless metadata.is_a?(Hash)
 
+    validate_runtime_manifest_digests!(path, metadata)
     metadata
   rescue JSON::ParserError => e
     raise "invalid metadata #{path}: #{e.message}"
+  end
+
+  # Installation state is the trusted source for verified-installed-pack digests, so refuse a
+  # redirected metadata path at the syscall level, the way the installer's own reader does. A
+  # File.symlink? test ahead of the read could be raced by a swap in the target directory.
+  def read_metadata_bytes(path)
+    raise "invalid metadata #{path}: platform cannot refuse to follow symlinks" unless File.const_defined?(:NOFOLLOW)
+
+    file = nil
+    begin
+      file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    rescue Errno::ENOENT
+      return nil
+    rescue Errno::ELOOP
+      raise "invalid metadata #{path}: refusing to follow a symlink"
+    end
+
+    begin
+      opened = file.stat
+      return nil unless opened.file?
+
+      file.binmode
+      bytes = file.read
+      file.rewind
+      # An fstat pair on one handle is a tautology, so compare the path's own lstat with the
+      # handle we read, the way the installer's reader does: that catches the path being
+      # replaced, and the re-read catches the content changing, mid-read.
+      current = File.lstat(path)
+      unless current.file? && !current.symlink? &&
+             current.dev == opened.dev && current.ino == opened.ino && file.read == bytes
+        raise "invalid metadata #{path}: changed while being read"
+      end
+
+      bytes
+    rescue Errno::ENOENT
+      raise "invalid metadata #{path}: changed while being read"
+    ensure
+      file&.close
+    end
+  rescue SystemCallError => e
+    raise "invalid metadata #{path}: #{e.message}"
+  end
+
+  # Corruption here must not read as "this install predates the key". The installer treats the
+  # same shape violations as fatal, so surface them instead of folding them into "not recorded".
+  # Keep these two patterns in step with invalid_runtime_digests in bin/install-agent-workflows,
+  # which validates the same map as it is written. Both are lowercase-only on purpose: the
+  # digest is supplied verbatim as a verified-installed-pack claim, whose grammar is lowercase.
+  def validate_runtime_manifest_digests!(path, metadata)
+    return unless metadata.key?("managed_runtime_manifest_digests")
+
+    digests = metadata["managed_runtime_manifest_digests"]
+    valid = digests.is_a?(Hash) && digests.all? do |name, digest|
+      valid_name = name.is_a?(String) && name.match?(/\A[a-z0-9][a-z0-9-]*\z/)
+      valid_digest = digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/)
+      valid_name && valid_digest
+    end
+    return if valid
+
+    raise "invalid metadata #{path}: managed_runtime_manifest_digests is malformed"
   end
 
   def version_for(source)
@@ -169,7 +232,46 @@ module AgentWorkflowsStatus
     { "superpowers" => AgentWorkflowsDeliveryState.superpowers_state(host, target) }
   end
 
-  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil, checked_remote: false, reason: nil, delivery_state: nil)
+  # Expected verified-installed-pack digests recorded by the installer. Reported so a
+  # coordinator can read installation state instead of the helper being evaluated.
+  # read_metadata has already rejected a malformed map, so an empty result means
+  # "this install recorded none", never "this install's metadata is corrupt".
+  def runtime_manifest_digests(metadata)
+    digests = metadata["managed_runtime_manifest_digests"]
+    digests.is_a?(Hash) && !digests.empty? ? digests : nil
+  end
+
+  # Flat-copy digests stay publishable only while the managed workflow doctor tree still
+  # verifies against its recorded ownership marker. The skill fingerprints already cover the
+  # copied runtime closure outside bin/agent_doctor.
+  def managed_workflow_doctor_verified?(target)
+    doctor_root = File.join(target, "bin/agent_doctor")
+    marker = File.join(doctor_root, ".agent-workflows-managed")
+    return false unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+
+    AgentDoctor::InstallOwnership.verify(doctor_root, marker)
+  rescue SystemCallError
+    false
+  end
+
+  # Publish the trust anchor only from installation state this helper could actually vouch for.
+  # CHECK_FAILED means it could not check the install. A target reached through a symlinked
+  # ancestor could have been redirected wholesale, and O_NOFOLLOW guards only the final
+  # component; ordinary version reporting still works there, so a legitimately symlinked agent
+  # home stays usable for everything except sourcing a digest.
+  def publishable_runtime_manifest_digests(status, target_redirected, target, metadata)
+    return nil if status == "CHECK_FAILED"
+    return nil if target_redirected
+
+    digests = runtime_manifest_digests(metadata)
+    return nil unless digests
+    return nil unless managed_workflow_doctor_verified?(target)
+
+    digests
+  end
+
+  def status_payload(status, target:, source:, host:, metadata: {}, available_revision: nil,
+                     checked_remote: false, reason: nil, delivery_state: nil, target_redirected: true)
     payload = {
       "status" => status,
       "host" => host,
@@ -184,7 +286,8 @@ module AgentWorkflowsStatus
       "guidance" => delivery_state&.fetch("guidance", nil),
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
       "native" => delivery_state&.fetch("native", nil),
-      "flat" => delivery_state&.fetch("flat", nil)
+      "flat" => delivery_state&.fetch("flat", nil),
+      "runtime_manifest_digests" => publishable_runtime_manifest_digests(status, target_redirected, target, metadata)
     }
     payload["superpowers"] = delivery_state.fetch("superpowers") if delivery_state&.key?("superpowers")
     payload
@@ -234,6 +337,9 @@ module AgentWorkflowsStatus
     end
 
     host, target = resolve_host_and_target(options.fetch(:host), options[:target])
+    # Resolved before the read, so publishing a trust anchor is decided on the path state that
+    # gated that read rather than on state observed afterwards.
+    target_redirected = !AgentWorkflowsDeliveryState.symlinked_target_component(target).nil?
     begin
       metadata = read_metadata(target)
     rescue RuntimeError, SystemCallError, JSON::ParserError, TypeError => e
@@ -306,7 +412,8 @@ module AgentWorkflowsStatus
       metadata:,
       available_revision: revision,
       checked_remote: options.fetch(:fetch),
-      delivery_state: delivery
+      delivery_state: delivery,
+      target_redirected:
     )
   rescue ArgumentError, RuntimeError, SystemCallError, JSON::ParserError, TypeError => e
     status_payload("CHECK_FAILED", target: options[:target], source: options[:source], host: options[:host], reason: e.message)

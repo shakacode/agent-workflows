@@ -10,8 +10,10 @@ require "minitest/autorun"
 require "open3"
 require "rbconfig"
 require "tmpdir"
+require_relative "agent_doctor/install_ownership"
 
 SCRIPT = File.expand_path("agent-workflows-status", __dir__)
+REPO_ROOT = File.expand_path("..", __dir__)
 
 class AgentWorkflowsStatusTest < Minitest::Test
   def setup
@@ -221,6 +223,226 @@ class AgentWorkflowsStatusTest < Minitest::Test
         assert_equal 0, status.exitstatus, out
         assert_equal "UP_TO_DATE", payload.fetch("status")
         refute payload.key?("superpowers"), out
+      end
+    end
+  end
+
+  def test_status_json_surfaces_recorded_runtime_manifest_digests
+    digest = "a" * 64
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        doctor_root = File.join(target, "bin/agent_doctor")
+        FileUtils.mkdir_p(doctor_root)
+        marker = File.join(doctor_root, ".agent-workflows-managed")
+        File.write(marker, "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n")
+        write_metadata(
+          target,
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "",
+          "managed_runtime_manifest_digests" => { "autonomous-merge" => digest }
+        )
+
+        out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert_equal({ "autonomous-merge" => digest }, payload.fetch("runtime_manifest_digests"))
+      end
+    end
+  end
+
+  def test_tampered_workflow_doctor_tree_withholds_runtime_manifest_digests
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      install_env = {
+        "AGENT_WORKFLOWS_CODEX_EXECUTABLE" => @fake_codex,
+        "QA_SUPERPOWERS_CATALOG_ROOT" => @superpowers_catalog_root
+      }
+      install_output, install_status = Open3.capture2e(
+        install_env,
+        File.join(REPO_ROOT, "bin/install-agent-workflows"),
+        "--host", "codex", "--target", target, "--mode", "copy", "--delivery-mode", "flat"
+      )
+      assert_equal 0, install_status.exitstatus, install_output
+
+      File.open(File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb"), "a") do |file|
+        file.puts("# tamper")
+      end
+
+      out, status = run_status({}, "--target", target, "--host", "codex", "--json")
+      payload = JSON.parse(out)
+
+      assert_equal 0, status.exitstatus, out
+      assert_equal "UP_TO_DATE", payload.fetch("status")
+      assert_nil payload.fetch("runtime_manifest_digests")
+    end
+  end
+
+  def test_metadata_path_disappearing_mid_read_becomes_check_failed
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      digest = "a" * 64
+      source = File.join(target, "source")
+      FileUtils.mkdir_p(source)
+      File.write(File.join(source, "VERSION"), "9.9.9\n")
+      doctor_root = File.join(target, "bin/agent_doctor")
+      FileUtils.mkdir_p(doctor_root)
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+      write_metadata(
+        target,
+        "version" => "9.9.9",
+        "source" => source,
+        "source_revision" => "",
+        "managed_runtime_manifest_digests" => { "autonomous-merge" => digest }
+      )
+      injection = File.join(target, "lstat-race.rb")
+      File.write(injection, <<~RUBY)
+        class << File
+          alias_method :qa_original_lstat, :lstat
+
+          def lstat(path, *args)
+            raise Errno::ENOENT, path if path == ENV.fetch("QA_METADATA_PATH")
+
+            qa_original_lstat(path, *args)
+          end
+        end
+      RUBY
+
+      out, status = run_status(
+        {
+          "QA_METADATA_PATH" => File.join(target, ".agent-workflows-install.json"),
+          "RUBYOPT" => "-r#{injection}"
+        },
+        "--target", target, "--host", "claude", "--json"
+      )
+      payload = JSON.parse(out)
+
+      assert_equal 3, status.exitstatus, out
+      assert_equal "CHECK_FAILED", payload.fetch("status")
+      assert_includes payload.fetch("reason"), "changed while being read"
+      assert_nil payload.fetch("runtime_manifest_digests")
+    end
+  end
+
+  def test_status_json_reports_null_runtime_manifest_digests_for_legacy_installs
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(target, "version" => "9.9.9", "source" => source, "source_revision" => "")
+
+        out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 0, status.exitstatus, out
+        assert payload.key?("runtime_manifest_digests"), out
+        assert_nil payload.fetch("runtime_manifest_digests")
+      end
+    end
+  end
+
+  def test_malformed_runtime_manifest_digests_are_check_failed
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        write_metadata(
+          target,
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "",
+          "managed_runtime_manifest_digests" => { "autonomous-merge" => "not-a-digest" }
+        )
+
+        out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 3, status.exitstatus, out
+        assert_equal "CHECK_FAILED", payload.fetch("status")
+        assert_includes payload.fetch("reason"), "managed_runtime_manifest_digests is malformed"
+        assert_nil payload.fetch("runtime_manifest_digests")
+      end
+    end
+  end
+
+  def test_symlinked_install_metadata_is_check_failed
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        elsewhere = File.join(source, "elsewhere.json")
+        File.write(
+          elsewhere,
+          "#{JSON.pretty_generate(
+            'version' => '9.9.9',
+            'source' => source,
+            'source_revision' => '',
+            'managed_runtime_manifest_digests' => { 'autonomous-merge' => 'a' * 64 }
+          )}\n"
+        )
+        File.symlink(elsewhere, File.join(target, ".agent-workflows-install.json"))
+
+        out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+        payload = JSON.parse(out)
+
+        assert_equal 3, status.exitstatus, out
+        assert_equal "CHECK_FAILED", payload.fetch("status")
+        assert_includes payload.fetch("reason"), "refusing to follow a symlink"
+        assert_nil payload.fetch("runtime_manifest_digests")
+      end
+    end
+  end
+
+  def test_check_failed_withholds_recorded_runtime_manifest_digests
+    Dir.mktmpdir("agent-workflows-status-test") do |target|
+      write_metadata(
+        target,
+        "version" => "9.9.9",
+        "source" => File.join(target, "missing-source"),
+        "source_revision" => "",
+        "managed_runtime_manifest_digests" => { "autonomous-merge" => "a" * 64 }
+      )
+
+      out, status = run_status({}, "--target", target, "--host", "claude", "--json")
+      payload = JSON.parse(out)
+
+      assert_equal 3, status.exitstatus, out
+      assert_equal "CHECK_FAILED", payload.fetch("status")
+      assert_nil payload.fetch("runtime_manifest_digests"), out
+    end
+  end
+
+  def test_symlinked_target_ancestor_withholds_runtime_manifest_digests
+    Dir.mktmpdir("agent-workflows-status-test") do |root|
+      real_home = File.join(root, "real-home")
+      linked_home = File.join(root, "linked-home")
+      FileUtils.mkdir_p(real_home)
+      File.symlink(real_home, linked_home)
+      Dir.mktmpdir("agent-workflows-status-source") do |source|
+        File.write(File.join(source, "VERSION"), "9.9.9\n")
+        doctor_root = File.join(real_home, "bin/agent_doctor")
+        FileUtils.mkdir_p(doctor_root)
+        File.write(
+          File.join(doctor_root, ".agent-workflows-managed"),
+          "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+        )
+        metadata = {
+          "version" => "9.9.9",
+          "source" => source,
+          "source_revision" => "",
+          "managed_runtime_manifest_digests" => { "autonomous-merge" => "a" * 64 }
+        }
+        write_metadata(real_home, metadata)
+
+        direct, direct_status = run_status({}, "--target", real_home, "--host", "claude", "--json")
+        linked, linked_status = run_status({}, "--target", linked_home, "--host", "claude", "--json")
+
+        assert_equal 0, direct_status.exitstatus, direct
+        assert_equal 0, linked_status.exitstatus, linked
+        assert_equal({ "autonomous-merge" => "a" * 64 },
+                     JSON.parse(direct).fetch("runtime_manifest_digests"), direct)
+        assert_equal "UP_TO_DATE", JSON.parse(linked).fetch("status"), linked
+        assert_nil JSON.parse(linked).fetch("runtime_manifest_digests"), linked
       end
     end
   end

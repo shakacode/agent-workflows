@@ -1609,9 +1609,8 @@ eligibility and neither value grants the missing human judgment.
 
 Resolve the trusted current base SHA and fetch it. Execute the read-only
 evaluator from a trusted-base materialization or verified installed Agent Workflows pack.
-Its expected digest must be established independently of the PR. A repo-local
-fallback is usable only after materializing every runtime source from the
-trusted base; never execute evaluator, calibration decision, or library code
+A repo-local fallback is usable only after materializing every runtime source
+from the trusted base; never execute evaluator, calibration decision, or library code
 modified by the PR head. Resolve the source-pack or installed `.agents` layout
 at that commit, fail closed if either complete runtime set is absent, and
 materialize it outside the evaluated checkout:
@@ -1660,11 +1659,12 @@ Then pass the corresponding provenance claim:
   --semantic-assessment "${TRUSTED_SEMANTIC_ASSESSMENT_JSON}"
 ```
 
-For an independently verified installed pack, use
+For a verified installed pack, use
 `verified-installed-pack:<64-lowercase-sha256>` instead, after binding
-`TRUSTED_PR_BATCH_SKILL_DIR` to the independently verified pack directory.
-The expected digest is trusted coordinator or installation
-state, not output learned from the helper being evaluated. The evaluator
+`TRUSTED_PR_BATCH_SKILL_DIR` to that pack. The digest is coordinator or
+installation state, not output from the evaluated helper: read it only from
+`agent-workflows-status --json`, which refuses a redirected metadata path. An
+install publishing none stays `UNKNOWN`. The evaluator
 mechanically recomputes a length-framed manifest over the executing evaluator
 and closeout helpers, decision/evidence/policy/trust libraries (including
 `autonomous_merge_runtime_trust.rb`), and selected calibration decision.

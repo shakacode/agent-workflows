@@ -75,6 +75,10 @@ module AutonomousMergeRuntimeTrust
     skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json
     .agents/skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json
   ].freeze
+  DEFAULT_CALIBRATION_PATH = File.expand_path(
+    "../fixtures/autonomous-merge-reviewed-heads-calibration.json", __dir__
+  )
+  ACCEPTED_CLAIM_FORMS = "trusted-base:<40-hex-sha> or verified-installed-pack:<64-hex-digest>"
 
   module_function
 
@@ -98,10 +102,27 @@ module AutonomousMergeRuntimeTrust
 
       accepted(claim, sources.transform_values { |source| source.fetch(:path) })
     else
-      rejected(claim, ["trusted helper provenance is missing or invalid"])
+      rejected(claim, [unestablished_claim_failure(claim)])
     end
   rescue SystemCallError => e
     rejected(claim, ["runtime trust verification failed: #{e.message}"])
+  end
+
+  # The expected digest for a pack installed with its shipped calibration decision.
+  # Installation records this value so a coordinator can supply
+  # `verified-installed-pack:<digest>` from installation state rather than from
+  # the helper being evaluated.
+  def default_installed_pack_digest
+    installed_pack_digest(runtime_sources(DEFAULT_CALIBRATION_PATH))
+  end
+
+  def unestablished_claim_failure(claim)
+    if claim.nil? || claim.to_s.empty?
+      "trusted helper provenance was not supplied; pass #{ACCEPTED_CLAIM_FORMS} " \
+        "established independently of the evaluated repository"
+    else
+      "trusted helper provenance claim is not a recognized form; expected #{ACCEPTED_CLAIM_FORMS}"
+    end
   end
 
   def installed_pack_digest(sources)

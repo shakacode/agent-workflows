@@ -34,6 +34,9 @@ Installed paths:
   <target>/bin/upgrade-agent-workflows
   <target>/lib/agent-workflows/secure_github_actions_scanner.rb (plugin-companion mode only)
   <target>/.agent-workflows-install.json
+    A flat copy install with a complete autonomous-merge runtime closure records
+    managed_runtime_manifest_digests["autonomous-merge"], the expected
+    verified-installed-pack digest for that runtime.
 USAGE
 }
 
@@ -274,7 +277,21 @@ read_installed_metadata_value() {
           !valid_name || !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/i)
         end
       end
-      if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints
+      # Deliberately stricter than the fingerprint checks above: these digests are supplied
+      # verbatim as verified-installed-pack claims, whose grammar is lowercase-only.
+      # Keep these patterns in step with validate_runtime_manifest_digests! in
+      # bin/agent-workflows-status, which validates the same map as it is read back.
+      invalid_runtime_digests = if metadata.key?("managed_runtime_manifest_digests")
+                                  digests = metadata["managed_runtime_manifest_digests"]
+                                  !digests.is_a?(Hash) || digests.any? do |name, digest|
+                                    !name.is_a?(String) || !name.match?(/\A[a-z0-9][a-z0-9-]*\z/) ||
+                                      !digest.is_a?(String) || !digest.match?(/\A[0-9a-f]{64}\z/)
+                                  end
+                                else
+                                  false
+                                end
+      if invalid_string || invalid_required_value || invalid_enum || invalid_fingerprints ||
+         invalid_runtime_digests
         puts "corrupt"
         exit
       end
@@ -1839,6 +1856,26 @@ validate_delivery_mode() {
   esac
 }
 
+# Runs in its own interpreter on purpose. `load` executes source-pack code at top level, and the
+# metadata writer must not share a process with it: that writer performs the security-sensitive
+# O_NOFOLLOW/renameat metadata commit, and loaded code could redefine anything it relies on.
+compute_autonomous_merge_runtime_digest() {
+  local library="${1:-$repo_root/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb}"
+  [[ -f "$library" && ! -L "$library" ]] || return 0
+  ruby -e '
+    begin
+      load ARGV.fetch(0)
+      digest = AutonomousMergeRuntimeTrust.default_installed_pack_digest
+      abort "unexpected runtime manifest digest" unless digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/)
+      print digest
+    rescue ScriptError, SystemCallError
+      # Exactly the two degrade-quietly cases: a missing or unreadable runtime source, and a Ruby
+      # too old to parse the library. Neither host can run the gate, so record nothing rather than
+      # failing the install. Any other error escapes and fails the install loudly.
+    end
+  ' "$library"
+}
+
 prepare_metadata() {
   local metadata_path="$target/$metadata_name"
   local metadata_tmp="$metadata_path.tmp"
@@ -1873,7 +1910,8 @@ prepare_metadata() {
         end
       end
     end
-    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, *pack_docs = ARGV
+    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at,
+      *pack_docs = ARGV
     directory_fingerprint = lambda do |root|
       entries = []
       Find.find(root) do |entry|
@@ -1912,6 +1950,7 @@ prepare_metadata() {
                        else
                          {}
                        end
+    runtime_manifest_digests = {}
     root_fingerprints = if mode == "copy"
                           name = "THIRD_PARTY-NOTICES.md"
                           root_file = File.join(source, name)
@@ -1935,7 +1974,8 @@ prepare_metadata() {
       "installed_at" => installed_at,
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints,
-      "managed_pack_root_copy_fingerprints" => root_fingerprints
+      "managed_pack_root_copy_fingerprints" => root_fingerprints,
+      "managed_runtime_manifest_digests" => runtime_manifest_digests
     }
     serialized_metadata = JSON.pretty_generate(metadata) + "\n"
     abort unless File.const_defined?(:NOFOLLOW)
@@ -1987,6 +2027,47 @@ prepare_metadata() {
   if [[ "$prepare_status" -ne 0 ]]; then
     echo "METADATA_PREPARE_BLOCKED: could not safely create $metadata_tmp; preserved any path that exists there." >&2
     echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite an unverified path." >&2
+    return 68
+  fi
+}
+
+refresh_prepared_metadata_runtime_digest() {
+  local metadata_tmp="$target/$metadata_name.tmp"
+  local runtime_library="$target/skills/pr-batch/lib/autonomous_merge_runtime_trust.rb"
+  local runtime_manifest_digest refresh_status=0
+  if [[ "$mode" != "copy" || "$delivery_mode" != "flat" ]]; then
+    return 0
+  fi
+
+  # Refresh the runtime digest after the runtime closure has been copied, so the
+  # committed metadata reflects the installed bytes rather than the source tree
+  # that was inspected earlier in the install.
+  if ! runtime_manifest_digest="$(compute_autonomous_merge_runtime_digest "$runtime_library")"; then
+    echo "RUNTIME_DIGEST_FAILED: could not compute the autonomous-merge runtime manifest digest from $target." >&2
+    echo "The installed runtime closure raised an unexpected error; fix the pack and retry." >&2
+    return 68
+  fi
+  if [[ -z "$runtime_manifest_digest" ]]; then
+    return 0
+  fi
+
+  prepared_metadata_attestation="$(
+    ruby -rjson -rdigest -e '
+      path, digest = ARGV
+      metadata = JSON.parse(File.read(path))
+      digests = metadata.fetch("managed_runtime_manifest_digests")
+      digests["autonomous-merge"] = digest
+      serialized = JSON.pretty_generate(metadata) + "\n"
+      temp_path = "#{path}.rewrite-#{Process.pid}"
+      File.write(temp_path, serialized)
+      File.rename(temp_path, path)
+      stat = File.stat(path)
+      print "#{stat.dev}:#{stat.ino}|#{Digest::SHA256.hexdigest(serialized)}"
+    ' "$metadata_tmp" "$runtime_manifest_digest" 2>/dev/null
+  )" || refresh_status=$?
+  if [[ "$refresh_status" -ne 0 ]]; then
+    echo "RUNTIME_DIGEST_FAILED: could not refresh the autonomous-merge runtime manifest digest in $metadata_tmp." >&2
+    echo "The installed runtime metadata could not be rewritten safely; fix the pack and retry." >&2
     return 68
   fi
 }
@@ -4144,6 +4225,8 @@ else
     ln -sfn "$repo_root/bin/$helper" "$destination"
   done
 fi
+
+refresh_prepared_metadata_runtime_digest
 
 if [[ "$delivery_mode" = "plugin-companion" ]]; then
   scanner_companion_dir="$target/lib/agent-workflows"
