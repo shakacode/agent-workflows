@@ -602,7 +602,8 @@ module CloseoutEvidenceReplay
 
   def github_url?(value, github_host: nil)
     configured_host = normalize_github_host(github_host)
-    http_urls(value).any? do |url|
+    urls = http_urls(value)
+    urls.any? && urls.all? do |url|
       uri = parse_https_url(url)
       next false unless uri
 

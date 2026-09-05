@@ -908,6 +908,30 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes qa.fetch("missing"), "interaction_evidence"
   end
 
+  def test_v2_github_destination_rejects_mixed_trusted_and_untrusted_urls
+    trusted_url = "https://example.ghe.com/example/repo/pull/123#trusted"
+    untrusted_url = "https://evil.ghe.com/example/repo/pull/456#untrusted"
+    visual = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before #{untrusted_url} after #{trusted_url}"
+      ),
+      github_host: "example.ghe.com"
+    ).fetch("qa_evidence")
+    interaction = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before and after #{trusted_url}",
+        "interaction_change" => "yes",
+        "interaction_evidence" => "clip: #{untrusted_url} #{trusted_url}"
+      ),
+      github_host: "example.ghe.com"
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", visual.fetch("verdict")
+    assert_includes visual.fetch("missing"), "visual_evidence.github_url"
+    assert_equal "UNKNOWN", interaction.fetch("verdict")
+    assert_includes interaction.fetch("missing"), "interaction_evidence"
+  end
+
   def test_v2_github_destination_scopes_interaction_clip_to_configured_enterprise_host
     visual = "durable: before and after https://github.example.test/example/repo/pull/123#visual"
     overrides = {
