@@ -309,12 +309,26 @@ module MergeAssurance
   end
 
   def ci_scope_contains_unknown?(scope)
-    return contains_unknown?(scope) unless scope.is_a?(Hash) && scope["gates_verdict"] == false
+    return contains_unknown?(scope) unless scope.is_a?(Hash)
 
     scope.any? do |key, value|
-      next false if %w[error informational_rows].include?(key)
+      next false if scope["gates_verdict"] == false && %w[error informational_rows].include?(key)
+      next contains_unknown_in_ci_rows?(value) if key == "rows"
 
       contains_unknown?(key) || contains_unknown?(value)
+    end
+  end
+
+  def contains_unknown_in_ci_rows?(rows)
+    return contains_unknown?(rows) unless rows.is_a?(Array)
+
+    rows.any? do |row|
+      next contains_unknown?(row) unless row.is_a?(Hash)
+
+      row.any? do |key, value|
+        check_name = key == "name" && value.is_a?(String) && value.strip != "UNKNOWN"
+        contains_unknown?(key) || (!check_name && contains_unknown?(value))
+      end
     end
   end
 

@@ -23,6 +23,15 @@ launch-time requirement in `$pr-batch`, `plan-pr-batch`, and `triage` to
 resolve `merge_authority` explicitly and never silently default it before
 launch.
 
+Before any coordination probe or closeout declaration validation, consume or
+record the canonical **Coordination Applicability Gate** outcome from
+`workflows/pr-processing.md`. Ordinary one-agent monitoring of one PR in a
+single controlled session is `coordination_not_applicable`; it performs no
+backend calls and does not turn absent coordination into a warning. Preserve
+`coordination_required` for concurrent, cross-machine/operator, cross-session
+dependency, ambiguous-ownership, explicit durable-handoff, and repository lease
+cases.
+
 ## Inputs
 
 Read the trusted-base `AGENTS.md` first. Resolve commands and policy from its
@@ -78,8 +87,15 @@ without a model continuation. The probe fingerprints only authoritative
 current-head checks, configured reviewer state, unresolved-thread state, and
 other named blockers. Persist an unchanged heartbeat without waking the parent;
 resume once with a compact delta when that fingerprint changes, then rebuild
-both cohorts and rerun security, origin, coordination, conflict, review,
-readiness, and exact-head gates. Reuse the stable monitor identity across
+both cohorts and rerun security, origin, coordination applicability (plus
+required coordination state), conflict, review, readiness, and exact-head gates.
+The probe cannot observe applicability: a new session, added operator, durable-
+handoff requirement, or repository lease changes the outcome without changing PR
+evidence, so the fingerprint never fires on it. Applicability stays
+controller-owned: whoever changes the execution plan or topology re-enters the
+gate and re-scopes or stops the monitor, and a watcher wake never renews a stale
+`coordination_not_applicable` decision on its own.
+Reuse the stable monitor identity across
 restarts and suppress stale or duplicate probes. If deterministic watching is
 unsupported, use the canonical bounded fast-window/backoff fallback with finite
 unchanged-run, call, and token ceilings. `stop-dependency-terminal` is a waking
@@ -172,8 +188,10 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
    - Before a private-backend `blocked-user-input` or help-needed pause, emit
      `help_requested`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
 
-Typed event emission is best-effort and follows the canonical `pr-batch`
-backend-neutral rule. Backend `n/a` skips silently. Typed-event transport is
+Only `coordination_required` runs attempt typed event emission. Emission is
+best-effort and follows the canonical `pr-batch` backend-neutral rule. A trusted
+`coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
+not a silent skip. Typed-event transport is
 optional: when an active private backend does not advertise it or reports it
 unsupported, record `typed event transport: unavailable`, skip the emission,
 and continue without marking the event emission `UNKNOWN`. Only after the
@@ -220,18 +238,29 @@ decision parsing, and immediate pre-merge recomputation.
 
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
-Batch Coordination Declaration: every final batch handoff must carry exactly one
-`coordination:` line, and no handoff is complete or clean without it. Use
+For `coordination_required`, apply the existing declaration hardening below.
+
+Batch Coordination Declaration: every `coordination_required` final batch
+handoff must carry exactly one `coordination:` line, and no such handoff is
+complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
 with the coordination backend, and quote the exact backend batch id. Otherwise
-use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
-a repo seam that sets `coordination_backend: n/a`, an unreachable or degraded
-backend, or a deliberately uncoordinated single-operator run. A missing
+use `coordination: unavailable — <reason>` with an exact nonempty reason for a
+run that was `coordination_required` and could not keep durable coordination,
+such as an unreachable or degraded backend or a refused registration. A trusted
+`coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
+not an unavailable declaration, and a deliberately uncoordinated
+single-controller run is `coordination_not_applicable` and carries no
+declaration at all. A missing
 `coordination:` line, an empty or `UNKNOWN` batch id, an empty or `UNKNOWN`
 reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+That declaration rule applies only to `coordination_required`. For
+`coordination_not_applicable`, omit the `coordination:` line and do not invoke
+the declaration helper. Do not describe coordination as unavailable or degraded.
 
 ## Evidence
 
@@ -242,7 +271,8 @@ Report:
 - CI readiness verdict and any failing/pending checks
 - unresolved or resolved review-thread summary
 - merge-state and authority result
-- typed operational-event emissions, skipped backend-`n/a`, or exact
+- coordination applicability; for `coordination_required`, typed
+  operational-event emissions, skipped backend-`n/a`, or exact
   degraded-`UNKNOWN` evidence
 - final state
 

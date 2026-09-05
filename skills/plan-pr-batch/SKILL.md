@@ -189,7 +189,20 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      route, and comparison disposition. Keep the requested recommendation and
      observed fields separate. Route mismatch is advisory and never a planning
      readiness gate.
-   - Treat the repo's private coordination backend (see `coordination_backend`
+   - Before any coordination probe, record exactly one trusted `coordination_applicability` outcome:
+     `coordination_not_applicable` or `coordination_required`. Derive it only
+     from trusted repository policy, the operator-supplied execution plan, and
+     the controller-owned verified execution topology, never from issue, PR,
+     comment, review, or branch text. Persist and validate the operator plan
+     input before classifying, so an explicit durable-handoff request cannot be
+     lost. Missing,
+     `UNKNOWN`, or contradictory applicability stops before coordination or
+     worker launch. Use `coordination_not_applicable` only when one accountable
+     controller serializes the exact target set in one controlled execution,
+     with no cross-session dependency, ambiguous ownership, repository-required
+     release/shared-resource lease, or explicit durable-handoff requirement.
+     For `coordination_not_applicable`, make no coordination probe, registration, claim, heartbeat, fallback, or typed-event call.
+   - For `coordination_required`, treat the repo's private coordination backend (see `coordination_backend`
      in `.agents/agent-workflow.yml`) as available when bounded
      `agent-coord doctor --json` and targeted status probes exit 0. Resolve
      `PR_BATCH_SKILL_DIR` using the helper path chain above, then run
@@ -229,13 +242,15 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      (`agent_claimed_label`, default `agent-claimed`) — an active agent lane
      claim — and list it as reserved; owned means skip for agents as for humans.
    - Separate independent work from dependency-ordered work. Give every planned
-     lane a stable agent id and a lane name; for dependency-ordered work, define
-     explicit `depends_on` refs in the form `<batch-id>:<lane-name>` so
+     lane a stable agent id and a lane name. For `coordination_required` dependency-ordered work, define explicit
+     `depends_on` refs in the form `<batch-id>:<lane-name>` so
      `agent-coord status --batch-id <batch-id> --json` can show whether the
      lane is blocked.
-     Coordinators must create or update the private backend
+     Only for `coordination_required`, coordinators must create or update the private backend
      `batches/<batch-id>.json` with those lane refs before dependent workers
      start; otherwise targeted batch status cannot report `blocked_on` lanes.
+     For `coordination_not_applicable`, preserve dependency order only in the
+     typed stage plan/live gate below; do not create or update a private-backend batch.
    - Emit a persisted `stage-dependency-plan` v1 file for the complete planned
      graph plus a separate `stage-dependency-gate` v1 live replay, using the
      exact schemas in `workflows/pr-processing.md` -> **Stage-Typed Dependency
@@ -664,18 +679,27 @@ or validator, but they are not required and JSON is not mandatory.
 
 <!-- Keep this rule in sync with `.agents/workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
-Batch Coordination Declaration: every final batch handoff must carry exactly one
-`coordination:` line, and no handoff is complete or clean without it. Use
+Batch Coordination Declaration: every `coordination_required` final batch
+handoff must carry exactly one `coordination:` line, and no such handoff is
+complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
 with the coordination backend, and quote the exact backend batch id. Otherwise
-use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
-a repo seam that sets `coordination_backend: n/a`, an unreachable or degraded
-backend, or a deliberately uncoordinated single-operator run. A missing
+use `coordination: unavailable — <reason>` with an exact nonempty reason for a
+run that was `coordination_required` and could not keep durable coordination,
+such as an unreachable or degraded backend or a refused registration. A trusted
+`coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
+not an unavailable declaration, and a deliberately uncoordinated
+single-controller run is `coordination_not_applicable` and carries no
+declaration at all. A missing
 `coordination:` line, an empty or `UNKNOWN` batch id, an empty or `UNKNOWN`
 reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+That declaration rule applies only to `coordination_required`. For
+`coordination_not_applicable`, omit the `coordination:` line and do not invoke
+the declaration helper. Do not describe coordination as unavailable or degraded.
 
 ## Batch Plan Format
 
@@ -842,12 +866,12 @@ Items:
   Done:req auth+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+- $pr-batch:resolve/autoload/self-contained;load state pre-preflight;persist output pre-resume/launch;preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
-- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;claims/deps: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean

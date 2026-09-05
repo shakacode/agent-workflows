@@ -13,6 +13,7 @@ require_relative "../lib/autonomous_merge_runtime_trust"
 
 SCRIPT = File.expand_path("merge-assurance", __dir__)
 load SCRIPT
+load File.expand_path("pr-ci-readiness", __dir__)
 
 class MergeAssuranceTest < Minitest::Test
   HEAD_SHA = "a" * 40
@@ -2313,6 +2314,51 @@ class MergeAssuranceTest < Minitest::Test
     )
 
     assert_equal true, result.fetch("eligible")
+  end
+
+  def test_ci_accepts_unknown_substring_only_in_authenticated_check_name
+    ci_result = ready_ci
+    scope = PrCiReadiness.evidence_scope(
+      source: "github.pull_request.status_check_rollup.required",
+      head_sha: HEAD_SHA,
+      complete: true,
+      rows: [{ "workflow" => "CI", "name" => "Approval UNKNOWN state", "bucket" => "pass" }],
+      checked_at: "2026-07-30T11:59:00Z"
+    )
+    assert_equal "READY", scope.fetch("state")
+    ci_result.fetch("scopes")["required_status_check_rollup"] = scope
+
+    accepted = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal true, accepted.fetch("eligible"), accepted.fetch("failures", []).join("; ")
+
+    scope.fetch("rows").first["name"] = "UNKNOWN"
+    literal_unknown = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, literal_unknown.fetch("eligible")
+    assert_includes literal_unknown.fetch("failures"), "ci_result contains UNKNOWN"
+
+    scope.fetch("rows").first["name"] = "Approval UNKNOWN state"
+    scope.fetch("rows").first["workflow"] = "Approval UNKNOWN state"
+    blocked = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, blocked.fetch("eligible")
+    assert_includes blocked.fetch("failures"), "ci_result contains UNKNOWN"
   end
 
   def test_ci_rejects_invalid_informational_rows

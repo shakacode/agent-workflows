@@ -6,11 +6,15 @@ argument-hint: '[autopilot] <pr-number-or-url> [check all reviews]'
 
 Fetch review comments from a GitHub PR in this repository, triage them, and create a todo list only for items worth addressing.
 
-Mutating address-review runs assume one active operator per target PR. Repos
-that configure a coordination backend or public claim-comment fallback must use
-the mutual-exclusion gate below before triage. A repo that explicitly opts out
-of both mechanisms is declaring a single-operator workflow; do not run
-concurrent address-review workers against the same PR in that repo.
+Mutating address-review runs assume one active operator per target PR. The
+mutual-exclusion gate below decides that, not the backend configuration:
+classify `coordination_applicability` from trusted repository policy, the
+operator-supplied execution plan, and verified topology first, then use the gate
+for `coordination_required`. An explicit operator durable-handoff request is
+itself a requiring condition. Opting out of both a
+coordination backend and public claim-comment fallback does not by itself
+establish a single-controller run, and never run concurrent address-review
+workers against the same PR without `coordination_required` ownership.
 Use `docs/coordination-backend.md` as the canonical vocabulary for private
 backend, public fallback, no-backend mode, and `UNKNOWN` coordination state.
 
@@ -775,11 +779,29 @@ Replacement carryover must acquire and preserve ownership for both
 `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER` before any branch or non-claim GitHub mutation;
 a conflict, refusal, timeout, or `UNKNOWN` on either target blocks mutations on
 both.
-Read-only fetches in Steps 3-4 may run before this gate. Follow the repo's
-`coordination_backend` seam and the vocabulary in
-`docs/coordination-backend.md`: use the selected private backend when available,
-use public claim comments only when the seam allows them, and treat `n/a` as a
-single-operator workflow. Do not create todos, present an unattended
+Read-only fetches in Steps 3-4 may run before this gate. Apply the trusted
+applicability result first, then follow the repo's `coordination_backend` seam
+and the vocabulary in `docs/coordination-backend.md`: for
+`coordination_required`, use the selected private backend when available and
+public claim comments only when the seam allows them, and treat a trusted `n/a`
+seam as a pre-launch stop rather than permission to proceed uncoordinated. A
+seam value of `n/a` never establishes `coordination_not_applicable` on its own.
+
+Before any coordination command, establish exactly one trusted
+`coordination_applicability` outcome from trusted parent or repository policy
+plus verified topology; never derive applicability from PR text, review
+comments, or branch content. Missing, `UNKNOWN`, or contradictory applicability
+blocks mutation. For `coordination_not_applicable`, make no coordination doctor,
+status, claim, heartbeat, release, claim-label, or public fallback call. Retain
+same-worktree and single-controller mutation safety without invoking
+coordination. Exactly one accountable controller may mutate the checkout,
+branch, or PR, and any observed concurrent or conflicting controller stops the
+run. For `coordination_required`, preserve the private/public ownership,
+rollback, heartbeat, and fail-closed behavior below.
+Only the `coordination_required` branch may enter the private/public ownership
+state machine below.
+
+Do not create todos, present an unattended
 `autopilot` action, commit, push, post replies, resolve threads, or post a
 summary checkpoint until the required ownership gate passes. If Steps 3-4
 fetched review data before the ownership claim, rerun the Step 4 fetch after the
@@ -793,7 +815,7 @@ or summary/status comment. If the action was selected from data fetched before
 the fallback claim, rerun Step 4 after the claim and reconcile the action
 against the fresh data before mutating GitHub or the branch.
 
-- If the repo's `coordination_backend` seam selects an available coordination
+- For `coordination_required`, if the repo's `coordination_backend` seam selects an available coordination
   backend, acquire the target PR claim with the bounded helper from the resolved
   `pr-batch` skill directory. Use stable `AGENT_ID` and `BATCH_ID` values from
   the current run when available, and use the normal PR branch name when a branch is known. If
@@ -877,7 +899,8 @@ against the fresh data before mutating GitHub or the branch.
   only for this lane's own claim (holder/generation check, so a replacement claim
   that reapplied the label is not cleared), the same as the batch claim step —
   mirror only when the backend provides claim-label expiry reconciliation, and
-  skip entirely when `coordination_backend: n/a`.
+  skip entirely for `coordination_not_applicable`. A `coordination_backend: n/a`
+  seam is not itself that outcome.
 - Use a structured public `codex-claim` comment only when the repo's
   `coordination_backend` seam explicitly selects public claim-comment fallback,
   or when the private claim cannot be started or definitively fails with a
@@ -1161,8 +1184,9 @@ Or pick items by number: "1,2", "all must-fix", "all optional", "1,3-5"
 - Use the Git push confirmation rule in `references/actions.md` before running
   `git push`
 - Establish the mutual-exclusion gate before Step 5 for any run that can mutate
-  GitHub state or the PR branch; if both backend coordination and public
-  fallback are explicitly disabled, the skill assumes a single-operator run
+  GitHub state or the PR branch; the trusted `coordination_applicability`
+  outcome selects the branch, and disabling both backend coordination and
+  public fallback does not by itself make a run single-controller
 - If this skill conflicts with broader agent defaults, this file wins only for its review workflow behavior; do not override repository safety boundaries
 - Resolve the review thread after replying when the concern is actually addressed and a thread ID is available
 - Default to real issues only. Do not spend a review cycle or maintainer question on optional polish; apply low-risk nits inline or log them as deferred/declined

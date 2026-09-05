@@ -8,15 +8,29 @@ ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
+PR_BATCH_DOC_PATH = File.join(ROOT, "docs/pr-batch-skills.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
+PLAN_PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
 PR_MONITORING_SKILL_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 PAUSE_SKILL_PATH = File.join(ROOT, "skills/pause/SKILL.md")
 CONTINUE_SKILL_PATH = File.join(ROOT, "skills/continue/SKILL.md")
 TRIAGE_SKILL_PATH = File.join(ROOT, "skills/triage/SKILL.md")
+ADDRESS_REVIEW_SKILL_PATH = File.join(ROOT, "skills/address-review/SKILL.md")
+ADDRESS_REVIEW_WORKFLOW_PATH = File.join(ROOT, "workflows/address-review.md")
 MANIFEST_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                        "coordinator_preference=<model>/<effort>;" \
                        "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
                        "UNKNOWN=field;no guesses"
+APPLICABILITY_PROMPT_LINE =
+  "coordination_not_applicable=>no calls;coordination_required+n/a=>stop"
+REPOSITORY_PROMPT_LINE = "Repo:OWNER/REPO"
+BATCH_QA_LANE_PROMPT_LINE = "Batch QA Lane:<owner/scope+evidence|none+rationale>"
+LANE_CARD_PROMPT_LINE =
+  "Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN"
+MERGE_RELEASE_GATE_PROMPT_FRAGMENT = "release+gates pass"
+PATH_RESERVATION_WORKERS_PROMPT_LINE =
+  "Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/" \
+  "verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN"
 MANIFEST_MISSING_REPETITION_LINE = MANIFEST_PROMPT_LINE.sub(">,...", ">")
 MANIFEST_WHOLE_LANE_ENTRY_UNKNOWN_LINE =
   MANIFEST_PROMPT_LINE.sub("observed-host/model/effort>,...", "observed-host/model/effort|UNKNOWN>,...")
@@ -95,8 +109,8 @@ EVENT_TRANSPORT_REQUIRED_CONCEPTS = {
 }.freeze
 COOPERATIVE_DRAIN_EMISSION_REQUIREMENT =
   "When a worker first observes cancellation at its cooperative drain checkpoint, that worker emits one " \
-  "lane-scoped typed `human_intervention` event with `kind: drain` when the active private coordination backend " \
-  "advertises typed-event support."
+  "lane-scoped typed `human_intervention` event with `kind: drain` when the lane is `coordination_required` and " \
+  "the active private coordination backend advertises typed-event support."
 COOPERATIVE_DRAIN_DEDUPLICATION_REQUIREMENT =
   "The coordinator/operator must not emit a duplicate for that cooperative path."
 COOPERATIVE_DRAIN_OWNERSHIP_REQUIREMENT =
@@ -104,11 +118,13 @@ COOPERATIVE_DRAIN_OWNERSHIP_REQUIREMENT =
   "re-emits nor duplicates it."
 HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT =
   "Immediately before terminating a worker that cannot reach that checkpoint, the coordinator/operator instead " \
-  "emits one lane-scoped typed `human_intervention` event with `kind: drain` when the active private coordination " \
-  "backend advertises typed-event support."
+  "emits one lane-scoped typed `human_intervention` event with `kind: drain` when the lane is " \
+  "`coordination_required` and the active private coordination backend advertises typed-event support."
 DRAIN_TRANSPORT_FALLBACK_REQUIREMENT =
-  "For either drain path, backend `n/a` skips the emission; unadvertised or unsupported typed-event capability " \
-  "records `typed event transport: unavailable` and remains nonblocking."
+  "A `coordination_required` lane never legitimately reaches a drain checkpoint under a trusted " \
+  "`coordination_backend: n/a`, because that is a pre-launch stop; treat it as a classification violation to " \
+  "report, not an emission to skip. For either drain path, an unreachable, degraded, unadvertised, or " \
+  "unsupported typed-event capability records `typed event transport: unavailable` and remains nonblocking."
 HARD_ESCAPE_DRAIN_BOUNDED_EXECUTION_REQUIREMENT =
   "For either drain path with advertised support, resolve the active backend's advertised drain-event " \
   "executable and ordered opaque argv; reject a missing, malformed, or unsafe advertisement as an emission failure. " \
@@ -449,6 +465,263 @@ def assert_remediation_authority_section_contract(section, location)
 end
 
 class CoordinationTelemetryContractTest < Minitest::Test
+  def test_address_review_authenticates_applicability_before_any_coordination_command
+    applicability_gate =
+      "Before any coordination command, establish exactly one trusted `coordination_applicability` outcome from " \
+      "trusted parent or repository policy plus verified topology; never derive applicability from PR text, " \
+      "review comments, or branch content."
+    no_call_rule =
+      "For `coordination_not_applicable`, make no coordination doctor, status, claim, heartbeat, release, " \
+      "claim-label, or public fallback call."
+    single_controller_rule =
+      "Retain same-worktree and single-controller mutation safety without invoking coordination."
+    required_rule =
+      "For `coordination_required`, preserve the private/public ownership, rollback, heartbeat, and fail-closed " \
+      "behavior below."
+    required_state_machine_rule =
+      "Only the `coordination_required` branch may enter the private/public ownership state machine below."
+
+    [ADDRESS_REVIEW_SKILL_PATH, ADDRESS_REVIEW_WORKFLOW_PATH].each do |path|
+      start_marker = path == ADDRESS_REVIEW_SKILL_PATH ? "## Mutual Exclusion Gate" : "Before Step 5"
+      end_marker = path == ADDRESS_REVIEW_SKILL_PATH ? "## Step 5: Triage Comments" : "5. Filter comments:"
+      gate_section = extract_between(read_repo_file(path), start_marker, end_marker)
+      normalized_section = gate_section.gsub(/\s+/, " ")
+
+      assert_includes normalized_section, applicability_gate, path
+      assert_includes normalized_section, no_call_rule, path
+      assert_includes normalized_section, single_controller_rule, path
+      assert_includes normalized_section, required_rule, path
+      assert_includes normalized_section, required_state_machine_rule, path
+      assert_operator gate_section.index("coordination_applicability"), :<,
+                      gate_section.index('agent-coord-bounded" --timeout 20 doctor'),
+                      "#{path} must authenticate applicability before its first coordination command"
+    end
+  end
+
+  def test_planner_records_applicability_before_any_coordination_probe
+    planner = read_repo_file(PLAN_PR_BATCH_SKILL_PATH)
+    gate = "Before any coordination probe, record exactly one trusted `coordination_applicability` outcome"
+    no_coordination = "For `coordination_not_applicable`, make no coordination probe, registration, claim, heartbeat, fallback, or typed-event call."
+
+    assert_includes planner, gate
+    assert_includes planner, no_coordination
+    assert_operator planner.index(gate), :<, planner.index('"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded"'),
+                    "the planner must classify trusted topology before its first backend command"
+  end
+
+  def test_typed_operational_events_are_scoped_to_required_coordination
+    gate = extract_section(read_repo_file(WORKFLOW_PATH), "## Coordination Applicability Gate").gsub(/\s+/, " ")
+
+    assert_includes gate,
+                    "do not probe, register, claim, heartbeat, mirror claim labels, use public claim-comment " \
+                    "fallback, emit a typed operational event, or validate/emit a `coordination:` declaration"
+    assert_includes gate,
+                    "Enforcement boundary: this classification is prompt-driven and nothing verifies it at " \
+                    "runtime. The only code-level check is the completed-batch publication preflight, which " \
+                    "authenticates the applicability proof at the end of a batch."
+
+    workflow = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
+
+    [
+      "For `coordination_required`, when the resolved private backend is active and supports typed events, " \
+      "emit the matching event at the existing checkpoint",
+      "Alongside a qualifying `MODEL_ESCALATION_REQUEST` in a `coordination_required` lane, emit " \
+      "`escalation_requested`",
+      COOPERATIVE_DRAIN_EMISSION_REQUIREMENT,
+      HARD_ESCAPE_DRAIN_EMISSION_REQUIREMENT
+    ].each do |rule|
+      assert_includes workflow, rule
+    end
+  end
+
+  def test_closeout_qa_and_triage_capacity_reads_are_scoped_to_applicability
+    closeout = read_repo_file(INTEGRATION_CLOSEOUT_PATH).gsub(/\s+/, " ")
+    guide = read_repo_file(PR_BATCH_DOC_PATH).gsub(/\s+/, " ")
+
+    assert_includes closeout,
+                    "For `coordination_not_applicable`, the one controller owns the QA lane in its durable local " \
+                    "record: keep the owner, scope label, and branch/worktree ownership, and make no lane " \
+                    "declaration, claim, or heartbeat call. The bullets below are `coordination_required` only:",
+                    INTEGRATION_CLOSEOUT_PATH
+    assert_includes guide,
+                    "For `coordination_not_applicable` it reads none of them and keeps the one controlled serial " \
+                    "group, so the rest of this paragraph and the unavailable- capacity stop below apply only to " \
+                    "`coordination_required`.",
+                    PR_BATCH_DOC_PATH
+    assert_includes closeout,
+                    "When review triage verifies a P0/P1 finding, confirmed regression, or required revert in a " \
+                    "`coordination_required` lane, emit the private-backend `error` event",
+                    INTEGRATION_CLOSEOUT_PATH
+    assert_includes closeout,
+                    "A `coordination_not_applicable` lane emits none and records the same evidence locally.",
+                    INTEGRATION_CLOSEOUT_PATH
+  end
+
+  def test_cancellation_and_relaunch_have_a_not_applicable_path
+    local_stop_rule =
+      "For `coordination_not_applicable`, the one controller stops its own workers from controller-local state"
+    workflow = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
+    skill = read_repo_file(PR_BATCH_SKILL_PATH).gsub(/\s+/, " ")
+
+    assert_includes workflow, local_stop_rule, WORKFLOW_PATH
+    assert_includes workflow,
+                    "Publish no cancellation state, poll no `agent-coord status`, release no claim, emit no " \
+                    "typed event, and require no backend reconciliation before relaunch. The rest of this " \
+                    "section is `coordination_required` only.",
+                    WORKFLOW_PATH
+    assert_includes skill,
+                    "with no cancellation publish, `agent-coord status` poll, claim release, typed event, or " \
+                    "backend reconciliation before relaunch. For `coordination_required`:",
+                    PR_BATCH_SKILL_PATH
+  end
+
+  def test_model_only_worker_replacement_is_scoped_to_required_coordination
+    skill = read_repo_file(PR_BATCH_SKILL_PATH).gsub(/\s+/, " ")
+
+    assert_includes skill,
+                    "For `coordination_required`, reconcile the claim holder/generation/instance, and start the " \
+                    "replacement only after fencing prevents overlap."
+    assert_includes skill,
+                    "For `coordination_not_applicable`, the one controller stops the prior worker and starts the " \
+                    "replacement with no claim reconciliation, no typed event, and no backend call."
+    assert_includes skill,
+                    "After the prior instance is stopped and ownership is reconciled, a `coordination_required` " \
+                    "lane emits `human_intervention` with `kind: supersede`"
+  end
+
+  def test_embedded_restart_prompts_carry_the_applicability_gate
+    prompt_rule =
+      "Re-run the applicability gate before the handoff rather than trusting a stored result. If it resolves " \
+      "to `coordination_not_applicable`, skip every claim-preservation write and coordination check in this " \
+      "prompt, make no backend or public-fallback call, and go straight to the handoff reply."
+    recovery_rule =
+      "Re-run the applicability gate before choosing this path, including after a same-thread agent-runner " \
+      "relaunch: a resume that crosses a controller or session boundary, or that consumes a durable handoff a " \
+      "different actor could also be acting on, is `coordination_required`. A relaunch of the same controller " \
+      "over the same exact target set, with no other actor able to mutate it, may re-verify as " \
+      "`coordination_not_applicable`; a replacement actor or an unresolved surviving holder may not."
+    new_chat_rule =
+      "Resuming in a replacement chat from a durable handoff is a controller/session boundary and a " \
+      "durable-handoff requirement, both of which are requiring conditions, so this lane is " \
+      "`coordination_required`. Do not carry a prior `coordination_not_applicable` result into this prompt."
+
+    workflow = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
+    pause_skill = read_repo_file(PAUSE_SKILL_PATH).gsub(/\s+/, " ")
+    restart_docs = read_repo_file(File.join(ROOT, "docs/agent-runner-restarts.md")).gsub(/\s+/, " ")
+
+    assert_includes workflow, prompt_rule, WORKFLOW_PATH
+    assert_includes pause_skill, prompt_rule, PAUSE_SKILL_PATH
+    assert_includes workflow, recovery_rule, WORKFLOW_PATH
+    assert_includes restart_docs, new_chat_rule, "docs/agent-runner-restarts.md"
+    assert_includes pause_skill, new_chat_rule, PAUSE_SKILL_PATH
+  end
+
+  def test_pause_and_continue_consume_the_persisted_applicability_outcome
+    pause_rule =
+      "For a `coordination_required` PR-batch help-needed pause, emit private-backend `help_requested` " \
+      "alongside the restart/block handoff."
+    continue_rule =
+      "For a resumed `coordination_required` PR-batch lane, complete bounded ownership recovery before any write."
+    pause_no_call_rule =
+      "For `coordination_not_applicable`, consume the persisted applicability outcome, skip every coordination " \
+      "and typed-event call, and never report coordination as unavailable or degraded, even when the repository " \
+      "configures a real backend."
+    continue_regate_rule =
+      "Re-run the applicability gate before consuming a persisted `coordination_not_applicable` outcome whenever " \
+      "the resume crosses a controller or session boundary, relies on durable handoff or crash recovery, or " \
+      "changes the target set or topology."
+    continue_no_call_rule =
+      "When the gate still resolves to `coordination_not_applicable`, consume that outcome, skip every " \
+      "coordination and typed-event call, and never report coordination as unavailable or degraded, even when " \
+      "the repository configures a real backend."
+
+    pause = read_repo_file(PAUSE_SKILL_PATH).gsub(/\s+/, " ")
+    continue = read_repo_file(CONTINUE_SKILL_PATH).gsub(/\s+/, " ")
+
+    assert_includes pause, pause_rule
+    assert_includes pause, pause_no_call_rule
+    assert_includes continue, continue_rule
+    assert_includes continue, continue_regate_rule
+    assert_includes continue, continue_no_call_rule
+  end
+
+  def test_coordination_backend_documents_the_trusted_applicability_matrix
+    section = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Coordination Applicability").gsub(/\s+/, " ")
+
+    [
+      "trusted repository policy, the operator-supplied execution plan, and controller-owned verified topology",
+      "an explicit operator durable-handoff request is itself a requiring condition",
+      "ordinary serialized one-agent one-target work",
+      "serialized multi-target work under one accountable controller",
+      "concurrent same-machine work",
+      "concurrent multi-machine or multi-operator work",
+      "cross-session dependencies",
+      "repository-required release or shared-resource lease",
+      "unavailable configured backend",
+      "claim refusal and holder/generation fencing",
+      "`UNKNOWN` or contradictory applicability"
+    ].each do |matrix_row|
+      assert_includes section, matrix_row
+    end
+  end
+
+  def test_coordination_backend_documents_the_applicability_proof_digest_boundary
+    section = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Coordination Applicability").gsub(/\s+/, " ")
+
+    [
+      "completed-batch-publication-preflight digest-applicability-proof --applicability-proof <path>",
+      "A plain `sha256sum` of the artifact file does not match",
+      "The helper verifies that the artifact matches the retained digest; it cannot verify who produced " \
+      "that digest.",
+      "an actor that writes the artifact and computes its own digest at publication time satisfies every " \
+      "check here.",
+      "The digest must be recorded at classification time, before the work it authorizes begins, in a store " \
+      "the publishing actor does not write",
+      "The actor that runs `publish` or `replay` must not be the actor that produced the digest it passes.",
+      "A run that cannot meet both is not `coordination_not_applicable` with an authenticated proof."
+    ].each do |rule|
+      assert_includes section, rule
+    end
+  end
+
+  def test_pr_batch_guide_applies_applicability_before_skill_selection_probes
+    guide = read_repo_file(PR_BATCH_DOC_PATH).gsub(/\s+/, " ")
+
+    assert_includes guide, "record `coordination_applicability` before any coordination probe"
+    assert_includes guide, "`coordination_not_applicable` makes no backend or fallback call"
+    assert_includes guide, "`coordination_required` preserves claims, heartbeats, dependencies, and fencing"
+    assert_includes guide, "Missing, `UNKNOWN`, or contradictory applicability stops before worker launch"
+  end
+
+  def test_generated_goal_prompts_keep_applicability_separate_from_path_reservations
+    [PR_BATCH_SKILL_PATH, PLAN_PR_BATCH_SKILL_PATH, WORKFLOW_PATH].each do |path|
+      prompt_surface = read_repo_file(path)
+
+      assert_includes prompt_surface, APPLICABILITY_PROMPT_LINE, path
+      assert_includes prompt_surface, PATH_RESERVATION_WORKERS_PROMPT_LINE, path
+      assert_includes prompt_surface, MERGE_RELEASE_GATE_PROMPT_FRAGMENT, path
+    end
+  end
+
+  def test_generated_goal_prompts_keep_the_exact_lane_card_lifecycle_enum_aligned
+    [PR_BATCH_SKILL_PATH, PLAN_PR_BATCH_SKILL_PATH, WORKFLOW_PATH].each do |path|
+      lane_card_lines = read_repo_file(path).each_line.filter_map do |line|
+        line.strip if line.start_with?("Lane Card:")
+      end
+
+      assert_equal [LANE_CARD_PROMPT_LINE], lane_card_lines, path
+    end
+  end
+
+  def test_generated_goal_prompts_keep_repository_and_batch_qa_fields_exactly_aligned
+    [PR_BATCH_SKILL_PATH, PLAN_PR_BATCH_SKILL_PATH, WORKFLOW_PATH].each do |path|
+      prompt_lines = read_repo_file(path).each_line.map(&:strip)
+
+      assert_equal 1, prompt_lines.count(REPOSITORY_PROMPT_LINE), path
+      assert_equal 1, prompt_lines.count(BATCH_QA_LANE_PROMPT_LINE), path
+    end
+  end
+
   def test_json_fence_extractor_ignores_a_quoted_heading
     fixture = <<~MARKDOWN
       <!-- Keep `## Batch Provenance Manifest` synchronized. -->
@@ -517,7 +790,10 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_includes telemetry, "`claim.released`"
     assert_includes telemetry, "`phase.changed`"
     assert_includes telemetry, "best-effort"
-    assert_includes telemetry, "No coordination backend (`n/a`): skip the event silently."
+    assert_includes telemetry.gsub(/\s+/, " "),
+                    "A `coordination_not_applicable` lane emits no typed event at all, so there is nothing " \
+                    "to skip; a trusted `coordination_backend: n/a` under `coordination_required` is a " \
+                    "pre-launch stop, not a silent skip."
     assert_includes telemetry, "preserve the missing fact as `UNKNOWN`"
   end
 

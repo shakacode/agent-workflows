@@ -122,7 +122,8 @@ MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host
 DISPATCHER_PREFLIGHT_PROMPT_LINE = "- Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile."
 DISPATCH_PLAN_PROMPT_LINE = "Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle"
 COORDINATION_DEPENDENCY_PROMPT_LINE =
-  "- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; " \
+  "- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;" \
+  "claims/deps: stable ids+heartbeats; " \
   "register before launch when supported; claim refusal=>stop; push holder/generation check; " \
   "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
@@ -273,8 +274,8 @@ TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
   "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
 GOAL_PROMPT_FALLBACK_LINE =
-  "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
-  "persist output before resume/launch; preflight issue/PR only."
+  "- $pr-batch:resolve/autoload/self-contained;load state pre-preflight;" \
+  "persist output pre-resume/launch;preflight issue/PR only."
 ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
                               "chg=>redo/stop;gate fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
@@ -983,6 +984,27 @@ require_phrases(
   prompt_intake_text,
   required_prompt_intake_title_phrases,
   "workflows/pr-batch-intake.md verified batch-title rules"
+)
+
+require_phrases(
+  triage_skill_text,
+  [
+    "For `coordination_required`, if profiles or inboxes are unavailable",
+    "For `coordination_required`, split the wave into",
+    "up to `N` non-empty capacity-derived groups.",
+    "For `coordination_not_applicable`, keep the one controlled serial group."
+  ],
+  "triage coordination applicability scoping"
+)
+require_phrases(
+  skill_text,
+  [
+    "For `coordination_required` dependency-ordered work, define explicit",
+    "Only for `coordination_required`, coordinators must create or update",
+    "For `coordination_not_applicable`, preserve dependency order only in the",
+    "typed stage plan/live gate below; do not create or update a private-backend batch."
+  ],
+  "plan-pr-batch dependency coordination applicability scoping"
 )
 
 require_occurrence_count(

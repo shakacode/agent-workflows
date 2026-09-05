@@ -102,6 +102,15 @@ the sole owner of canonical target v1, durable override provenance, trust
 handoff, short-invocation expansion, duplicate handling, and the verified
 intake facts consumed below. Do not restate or reinterpret that contract here.
 
+### Coordination Applicability
+
+Before any coordination operation, apply the canonical
+[Coordination Applicability Gate](../../workflows/pr-processing.md#coordination-applicability-gate)
+and persist its outcome. Ordinary one-agent, one-target serialized work is
+`coordination_not_applicable`; do not contact a backend or warn about
+coordination merely because this skill calls it a batch of one. This relaxes no
+target-identity or foreign-target control-transfer guard.
+
 ### Single-Target Launch
 
 When no planner/triage handoff supplies dependency artifacts, synthesize and
@@ -201,9 +210,10 @@ facts remain fail-closed and stop before mutation.
   [automatic interactive exact-diff walkthrough](../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)
   before the one final merge decision. Do not silently default it.
 
-The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
-a one-row file-touch map, a Batch QA Lane decision, current-head review and CI
-checks, and the canonical terminal state and handoff evidence.
+The single lane still gets a Lane Card, claim/heartbeat behavior when
+`coordination_required` and configured, a one-row file-touch map, a Batch QA
+Lane decision, current-head review and CI checks, and the canonical terminal
+state and handoff evidence.
 
 Resolve the target repo's `base_branch` from `.agents/agent-workflow.yml` when present, otherwise from the `AGENTS.md`
 **Agent Workflow Configuration** seam. If neither declares it, report
@@ -567,17 +577,16 @@ Items:
   Done:req auth+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+- $pr-batch:resolve/autoload/self-contained;load state pre-preflight;persist output pre-resume/launch;preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
-- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;claims/deps: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
-
 ```
 
 ## Question And Decision Handling
@@ -587,11 +596,14 @@ Classify every unresolved question before continuing:
 - **Blocking question**: the implementation, validation, or merge decision would be unsafe without maintainer input. Stop work on that target until answered. Subagents should return the blocking question to the coordinator instead of guessing. For multi-machine batches, post a structured issue or PR comment and, if the repo defines a pending-question marker in `AGENTS.md`, apply that marker. A worker handoff should include the question/comment URL as that target's blocked final state.
 - **Non-blocking decision**: a reasonable local decision can be made without increasing merge risk. Continue work, but add a clearly formatted decision note inside the PR description's `Agent details` disclosure so later review across merged PRs can surface these items quickly.
 
-For a private-backend blocking stop, emit `help_requested` alongside the prose
+For a `coordination_required` private-backend blocking stop, emit
+`help_requested` alongside the prose
 handoff. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
 When a worker verifies a P0/P1 finding, confirmed regression, or required
-revert, emit `error` with `severity`, `category`, and `message`. Backend `n/a`
-skips these signals. Typed-event transport is optional: when an active private
+revert, emit `error` with `severity`, `category`, and `message`. Both signals are
+`coordination_required` only: a `coordination_not_applicable` batch emits
+neither and makes no backend call, and a trusted `coordination_backend: n/a`
+under `coordination_required` is a pre-launch stop, not a silent skip. Typed-event transport is optional: when an active private
 backend does not advertise it or reports it unsupported, record
 `typed event transport: unavailable`, skip the emission, and continue without
 marking the event emission `UNKNOWN`. Only after the transport is advertised
@@ -649,9 +661,10 @@ Use [.agents/workflows/pr-processing.md](../../workflows/pr-processing.md) as th
 canonical source for coordination state and worker rules. Keep this skill as a
 routing entry point; do not duplicate the full protocol here.
 
-In short: exact lane assignments beat labels; a selected private backend is the
-source of truth when bounded health and target-scoped status probes pass; claim
-refusals hard-stop machine agents; workers heartbeat at phase transitions;
+In short: apply the canonical applicability gate first. For
+`coordination_required`, exact lane assignments beat labels; a selected private
+backend is the source of truth when bounded health and target-scoped status
+probes pass; claim refusals hard-stop machine agents; workers heartbeat at phase transitions;
 dependency-sensitive lanes re-check coordination before rebase, push, readiness,
 and closeout; broad status reads are audit-only; exact independent lanes may
 proceed in claim-only mode only after the canonical workflow allows it; and
@@ -715,14 +728,17 @@ Use the canonical [Integration And PR Publication](../../workflows/pr-batch-inte
 When the goal, targets, scope, and lane identity stay stable but a worker needs
 a different model/effort role, use
 [Worker Model Replacement And Escalation](../../workflows/pr-processing.md#worker-model-replacement-and-escalation)
-instead of cancelling the batch. Stop the old worker, capture or reconstruct its
-`MODEL_REPLACEMENT_HANDOFF`, reconcile the claim holder/generation/instance, and
-start the replacement only after fencing prevents overlap. For already-running
+instead of cancelling the batch. Stop the old worker and capture or reconstruct
+its `MODEL_REPLACEMENT_HANDOFF`. For `coordination_required`, reconcile the
+claim holder/generation/instance, and start the replacement only after fencing
+prevents overlap. For `coordination_not_applicable`, the one controller stops
+the prior worker and starts the replacement with no claim reconciliation, no
+typed event, and no backend call. For already-running
 batches that need the staged route policy, use the canonical
 [Model-Routing Recovery Prompt](../../workflows/pr-processing.md#model-routing-recovery-prompt).
-After the prior instance is stopped and ownership is reconciled, emit
-`human_intervention` with `kind: supersede` (or `kind: takeover` for abandoned
-ownership) when a private backend is active.
+After the prior instance is stopped and ownership is reconciled, a
+`coordination_required` lane emits `human_intervention` with `kind: supersede`
+(or `kind: takeover` for abandoned ownership) when a private backend is active.
 
 ### Normal Agent-Runner Restart
 
@@ -739,7 +755,12 @@ unless the coordinator explicitly cancels it.
 To stop an in-flight batch — for example to relaunch it with updated skills,
 workflow rules, or targets — follow the canonical
 [Cancelling Or Stopping A Batch](../../workflows/pr-processing.md#cancelling-or-stopping-a-batch)
-protocol instead of waiting out claim leases. In short: a coordinator or maintainer
+protocol instead of waiting out claim leases. For `coordination_not_applicable`,
+the one controller stops its own workers from controller-local state and records
+the stopped lanes in the durable local batch record, with no cancellation
+publish, `agent-coord status` poll, claim release, typed event, or backend
+reconciliation before relaunch. For `coordination_required`: a coordinator or
+maintainer
 marks the batch or specific lanes cancelled in the selected private backend (see
 [coordination-backend.md](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md)
 → **Cancellation**); workers drain at their next safe checkpoint, finishing an
@@ -750,16 +771,21 @@ from a checkout that already has the updated `.agents/skills/...` and
 `.agents/workflows/...` files — a still-running worker keeps its old skill text.
 When a worker first observes cancellation at its cooperative drain checkpoint,
 that worker emits one lane-scoped typed `human_intervention` event with
-`kind: drain` when the active private coordination backend advertises
-typed-event support. The coordinator/operator must not emit a duplicate for
+`kind: drain` when the lane is `coordination_required` and the active private
+coordination backend advertises typed-event support. The coordinator/operator
+must not emit a duplicate for
 that cooperative path. The cooperative worker path remains worker-owned at
 that checkpoint; the coordinator/operator neither re-emits nor duplicates it.
 Immediately before terminating a worker that cannot
 reach that checkpoint, the coordinator/operator instead emits one lane-scoped
-typed `human_intervention` event with `kind: drain` when the active private
-coordination backend advertises typed-event support. For either drain path,
-backend `n/a` skips the emission; unadvertised or unsupported typed-event
-capability records `typed event transport: unavailable` and remains
+typed `human_intervention` event with `kind: drain` when the lane is
+`coordination_required` and the active private coordination backend advertises
+typed-event support. A `coordination_required` lane never legitimately reaches a
+drain checkpoint under a trusted `coordination_backend: n/a`, because that is a
+pre-launch stop; treat it as a classification violation to report, not an
+emission to skip. For either drain path, an unreachable, degraded, unadvertised,
+or unsupported typed-event capability records
+`typed event transport: unavailable` and remains
 nonblocking. For either drain path with advertised support, resolve the active
 backend's advertised drain-event executable and ordered opaque argv;
 reject a missing, malformed, or unsafe advertisement as an emission failure.

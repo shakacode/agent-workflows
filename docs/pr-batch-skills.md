@@ -3,6 +3,16 @@
 Use this guide when deciding between issue triage, planning, single-lane direct
 work, and execution skills for agent batch work.
 
+Whichever skill owns the run, record `coordination_applicability` before any
+coordination probe using trusted repository policy and controller-owned verified
+topology. `coordination_not_applicable` makes no backend or fallback call, even
+when the repository config names a real backend. `coordination_required`
+preserves claims, heartbeats, dependencies, and fencing and fails closed when
+its configured backend is unavailable. Missing, `UNKNOWN`, or contradictory
+applicability stops before worker launch. See
+[Coordination Applicability](coordination-backend.md#coordination-applicability)
+for the complete matrix and completed-batch proof contract.
+
 When one coordinator runs multiple batches across machines, desktop apps, or
 repositories, use the target repo's coordination backend plus
 [workflows/pr-processing.md](../workflows/pr-processing.md) for claims,
@@ -188,9 +198,12 @@ Use `$triage` when the coordinator wants the generated equivalent of a manual
 release or batch snapshot: all open issues and PRs, dependency edges, live
 coordination state, and a capacity-aware split into implementation groups.
 
-`$triage` is not a fixed-lane batch planner. It must read the current
+`$triage` is not a fixed-lane batch planner. For `coordination_required`, it
+must read the current
 `agent-coord` capacity profiles, inbox config, claims, and heartbeats before
-phase 2. The group count is derived by summing registered
+phase 2. For `coordination_not_applicable` it reads none of them and keeps the
+one controlled serial group, so the rest of this paragraph and the unavailable-
+capacity stop below apply only to `coordination_required`. The group count is derived by summing registered
 `max_concurrent_batches`, bounding that total by enabled inboxes, and subtracting
 live, blocked, and reserved lanes. If any of those inputs cannot be verified,
 phase 2 stops instead of inventing a group count. The value is never committed in
@@ -454,18 +467,27 @@ record it and proceed to consolidated triage instead of parking in
 
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
 
-Batch Coordination Declaration: every final batch handoff must carry exactly one
-`coordination:` line, and no handoff is complete or clean without it. Use
+Batch Coordination Declaration: every `coordination_required` final batch
+handoff must carry exactly one `coordination:` line, and no such handoff is
+complete or clean without it. Use
 `coordination: registered <batch-id>` only when this batch actually registered
 with the coordination backend, and quote the exact backend batch id. Otherwise
-use `coordination: unavailable — <reason>` with an exact nonempty reason, such as
-a repo seam that sets `coordination_backend: n/a`, an unreachable or degraded
-backend, or a deliberately uncoordinated single-operator run. A missing
+use `coordination: unavailable — <reason>` with an exact nonempty reason for a
+run that was `coordination_required` and could not keep durable coordination,
+such as an unreachable or degraded backend or a refused registration. A trusted
+`coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
+not an unavailable declaration, and a deliberately uncoordinated
+single-controller run is `coordination_not_applicable` and carries no
+declaration at all. A missing
 `coordination:` line, an empty or `UNKNOWN` batch id, an empty or `UNKNOWN`
 reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+That declaration rule applies only to `coordination_required`. For
+`coordination_not_applicable`, omit the `coordination:` line and do not invoke
+the declaration helper. Do not describe coordination as unavailable or degraded.
 
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Unblock Block`. -->
 

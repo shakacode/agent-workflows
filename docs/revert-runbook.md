@@ -437,8 +437,16 @@ jq -e --arg id "${STAGE_DEPENDENCY_PLAN_ID}" \
   || { echo "plan id mismatch: UNKNOWN"; exit 1; }
 
 jq '.edges[]' "${STAGE_DEPENDENCY_PLAN_PATH}"
+
+# `coordination_required` only. A `coordination_not_applicable` revert reads the
+# controller-owned local live state instead and runs no coordination command.
 agent-coord status --batch-id "${BATCH_ID}" --json
 ```
+
+Apply the applicability gate before this discovery, not after it. For
+`coordination_not_applicable`, the immutable plan file and the controller's own
+durable live record supply the edge states; make no coordination call, and do
+not treat an absent backend as missing scope.
 
 **Do not filter to `merge_order`.** `stage-dependency-plan` v1 has three edge
 types — `edit`, `validation_open`, `merge_order` — and per
@@ -676,13 +684,20 @@ the original lane's identifiers cannot produce the "genuinely new lane" the
 already-`done` path in section 3 requires — it reopens history against a lane
 whose first terminal event is immutable.
 
-The claim carries: the repository, `REPAIR_TARGET` as the canonical target, the
+Apply the applicability gate before this sequence. A
+`coordination_not_applicable` revert skips the bounded status check and the
+claim entirely, makes no backend call, and records ownership in the durable
+local handoff. A `coordination_required` revert against a trusted
+`coordination_backend: n/a` is a pre-launch stop: do not create the branch and
+do not proceed on the durable handoff alone.
+
+For `coordination_required` with a usable backend, the claim carries: the
+repository, `REPAIR_TARGET` as the canonical target, the
 repair batch and lane identifiers, the acting agent identity, and
 `REVERT_BRANCH`. Run the bounded status check first, then claim. As with every
 coordination command in section 3, this is *this* repo's `coordination_backend`
 seam rather than a portable requirement — a consumer repo claims through its own
-configured backend, and backend `n/a` skips the claim and records ownership in
-the durable handoff instead. No invocation is given here on purpose: it cannot
+configured backend. No invocation is given here on purpose: it cannot
 be exercised by the replay harness, and an unreplayable recipe in this document
 has a poor track record.
 
@@ -1030,7 +1045,16 @@ and is part of what the post-incident review needs to see.
 
 ### Coordination events and terminal state
 
-Record these against the original lane. Backend `n/a` skips silently; an
+This whole section is `coordination_required` only. A
+`coordination_not_applicable` revert is local: record the revert decision, its
+evidence, and its terminal state in the controller's own durable record, and run
+none of the `agent-coord` event or terminal-state commands below.
+
+For `coordination_required`, record these against the original lane. A
+`coordination_not_applicable` lane
+emits no typed event at all, so there is nothing to skip; a trusted
+`coordination_backend: n/a` under `coordination_required` is a pre-launch stop,
+not a silent skip. An
 advertised typed-event transport that fails records best-effort `UNKNOWN`
 evidence and does not block the revert. Extending that same rule: a transport
 the backend does not advertise, or reports unsupported, means skip the emission

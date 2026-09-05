@@ -79,14 +79,15 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   - Put `What changed:`, `Action needed:`, and `Next:` before the compact receipt so the receipt can open the closing lines before the Unblock Block when status is not clean, and before the final `Conversation status:` line.
   - Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
   - Advisory auditors must not issue the qualifying clean/ready verdict.
-  - Before publishing `audit_status: complete`, run `completed-batch-publication-preflight --workflow-config <repo workflow config> --input <fresh preflight input>` and save its JSON receipt. Build the v1 input from the same trusted target manifest, raw successful bounded `agent-coord status --batch-id <exact id> --json` result selected by the configured `coordination_backend`, refreshed terminal target states and full head SHAs, and one QA Evidence marker per target. The helper derives the full target set from coordination lanes; absent/ambiguous lanes or targets, a batch other than `completed`, nonterminal lanes, an unmerged PR/unclosed issue, and missing or `UNKNOWN` facts block. A normal terminal `done` lane requires its coordination target state and terminal evidence. Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation. The publication snapshot preserves the original terminal and records the later-target completion mode for accepted reconciliation. Active lanes, open targets, unauthenticated target facts, and malformed terminal timestamps remain blocked. QA must replay at the exact head as `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED` with an authenticated replayable maintainer-waiver comment. `unknown`, `in_progress`, `BLOCKED`, missing, stale, or malformed QA blocks.
+  - Before preflight, persist trusted `coordination_applicability` in a separate controller/operator-owned `completed-batch-coordination-applicability` v1 artifact and retain its canonical SHA-256 independently from receipt input. The artifact binds the exact batch and canonical targets to durable HTTPS policy/topology sources, verification time, and rationale. For `coordination_required`, capture fresh bounded exact-batch coordination status; for `coordination_not_applicable`, supply the typed single-controller status proof without any coordination command.
+  - Before publishing `audit_status: complete`, run `completed-batch-publication-preflight --workflow-config <repo workflow config> --input <fresh preflight input> --applicability-proof <trusted artifact> --applicability-proof-sha256 <independently retained digest>` and save its JSON receipt. Build the v1 input from the same trusted target manifest, the applicability-selected coordination evidence (`coordination_required`: the raw successful bounded `agent-coord status --batch-id <exact id> --json` result selected by the configured `coordination_backend`; `coordination_not_applicable`: the typed single-controller status proof), refreshed terminal target states and full head SHAs, and one QA Evidence marker per target. Receipt `source_input.coordination_applicability` is only a claimed value; it cannot select the runtime path without the matching authenticated artifact. For required coordination the helper derives the full target set from coordination lanes; for not-applicable coordination it binds the proof's exact target set. Absent/ambiguous lanes or proof targets, a required batch other than `completed`, nonterminal required lanes, an unmerged PR/unclosed issue, and missing or `UNKNOWN` facts block. A normal terminal `done` lane requires its coordination target state and terminal evidence. Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation. The publication snapshot preserves the original terminal and records the later-target completion mode for accepted reconciliation. Active lanes, open targets, unauthenticated target facts, and malformed terminal timestamps remain blocked. QA must replay at the exact head as `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED` with an authenticated replayable maintainer-waiver comment. `unknown`, `in_progress`, `BLOCKED`, missing, stale, or malformed QA blocks.
   - WAIVED input supplies only the exact same-target `#issuecomment-<id>` URL. The helper must fetch that comment through authenticated `gh api`; HTTP/API failure or any comment ID, URL, target, exact-head, decision-marker, human author, trusted association, timestamp, or body mismatch blocks completion. The authenticated snapshot binds the exact comment ID/URL, body SHA-256, author/association, timestamps, target, and head. The fetched body must contain exactly one `qa-maintainer-waiver v1` marker with `target: <exact target URL>`, `head_sha: <full exact head>`, and `decision: waived`. Receipt publication and replay independently re-fetch and compare the bound waiver; a self-consistent preflight digest is not authentication.
-  - Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync. For `audit_status: complete`, this additionally requires the eligible publication preflight and exact manifest match. Pass the refreshed preflight receipt to both `publish` and `replay` with `--publication-preflight` and explicit `--workflow-config <trusted repo workflow config>`; a changed coordination, target/head, or QA snapshot replays as mismatch/stale.
-  - Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects. The `completed-batch-publication-preflight-input` v1 fields are `batch_id`, `expected_targets`, raw `coordination_status`, `target_snapshots`, and `qa_evidence`; a WAIVED row's `maintainer_waiver` contains only its exact `url`. Never substitute a prose/caller summary for the bounded status payload. Each `qa_evidence` row must carry a coordinator-owned `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's canonical target and publication snapshot; `yes` requires strict visual-evidence v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or v2-contradictory classification blocks.
-  - The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate terminal facts. Before publish or replay accepts a complete receipt, it re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status when a backend applies, and re-authenticates any waiver; missing, altered, stale, or mismatched terminal facts block before POST or ready replay.
-  - Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay.
+  - Parse and bind the local receipt to the expected batch ID, choose only from the trusted batch target manifest, verify the deterministic target plus authenticated non-bot actor and write permission, make exactly one comment POST, and read back that exact returned comment ID before emitting the compact reference and managed PR-description section. For a PR anchor, read the latest description after `publish` or `replay`, merge the emitted section inside `### Audit receipts` in the canonical `Agent details` disclosure in one separately retriable update, and read it back; never rerun `publish` to retry description sync. For `audit_status: complete`, this additionally requires the eligible publication preflight and exact manifest match. Pass the refreshed preflight receipt, the same trusted applicability artifact, and its independently retained digest to both `publish` and `replay` with `--publication-preflight`, `--applicability-proof`, `--applicability-proof-sha256`, and explicit `--workflow-config <trusted repo workflow config>`; a changed applicability, coordination, target/head, or QA snapshot replays as mismatch/stale.
+  - Use `completed-batch-audit-receipt` for both `publish` and `replay`; `--targets-json` is a JSON array of exact `host`, `repo`, `type` (`pull_request` or `issue`), and positive `number` objects. The `completed-batch-publication-preflight-input` v1 fields are `batch_id`, `coordination_applicability`, `expected_targets`, raw `coordination_status`, `target_snapshots`, and `qa_evidence`. A WAIVED row's `maintainer_waiver` contains only its exact `url`. Never substitute a prose/caller summary for the bounded status payload. Each `qa_evidence` row must carry a coordinator-owned `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's canonical target and publication snapshot; `yes` requires strict visual-evidence v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or v2-contradictory classification blocks.
+  - The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate applicability or terminal facts. Before publish or replay accepts a complete receipt, it authenticates the separate applicability artifact against the independently retained digest, re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status only for `coordination_required`, and re-authenticates any waiver. Missing, altered, stale, tampered, contradictory, or mismatched facts block before any verifier or POST.
+  - Completed-batch receipt `publish` and `replay` require explicit trusted workflow config plus the separate applicability artifact/path and independently retained digest. They load `coordination_backend` only from that YAML seam and bind applicability only from the authenticated artifact, never from an environment or receipt/source-input override. `coordination_required` requires a matching real backend and bounded exact-batch status replay, while a missing or `n/a` backend blocks. Authenticated `coordination_not_applicable` accepts the typed single-controller status proof with any configured backend and invokes no coordination command, including during reassessment. Missing, invalid, tampered, contradictory, or mismatched applicability/config facts block before any verifier or POST.
   - Configured `public claim-comment fallback` is advisory ownership state only; it must not invoke private `agent-coord`, and without a separate authenticated terminal coordination contract it leaves completed-batch publication blocked as `UNKNOWN`.
-  - When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks.
+  - For `coordination_not_applicable`, `coordination_status` must be a typed single-controller proof: a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks.
   - Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
   - A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A completed-batch audit is release/archive-ready only when `audit_status: complete`, `verdict: clean`, `findings: none`, and `followups_dispositions` is `none` or only fully evidenced terminal records. Ordinary new complete receipts additionally require the helper-managed `publication_snapshot` to match a refreshed eligible preflight; the accepted-deferral path below uses exactly one `accepted_deferral_snapshot` instead. Replay only the exact versioned `<!-- completed-batch-audit v1` wrapper through its single final `-->`, with exactly one each of `batch_id`, `audit_status`, `verdict`, `scope_evidence`, `checker_evidence`, `findings`, and `followups_dispositions`; malformed, missing, duplicate, comment-token, newline, nested/case-varied `UNKNOWN`, or cross-field-inconsistent data fails. Ordinary new complete receipts also contain exactly one helper-managed `publication_snapshot`; accepted-deferral receipts contain exactly one `accepted_deferral_snapshot`, and either kind fails closed when its snapshot is unrefreshed or mismatched. A legacy complete marker without either helper-managed snapshot remains parseable but is never ready; it requires a fresh eligible preflight and a newly bound snapshot before publication or archive readiness.
   - Accepted-deferral lifecycle: use `publish --accepted-deferral <input>` before initial publication or `supersede --reference-file <original-reference> --accepted-deferral <input>` after a non-ready receipt was published; both paths append a helper-managed `accepted_deferral_snapshot`, while `supersede` preserves and re-authenticates the original comment instead of editing or deleting it. This path is eligible only when the exact blocked preflight is canonically reassessed from authenticated inputs, every product target and exact-head QA row is clean, and the sole logical blocker is the named workflow/process-mechanism defect. For the issue-target/implementation-PR resolution defect, the helper accepts only its complete attributable raw-blocker set for one exact issue/lane/source PR; an extra lane, blocker class, substantive blocker, or `UNKNOWN` fact fails closed. The exact tracking issue must already be open, and a current write-authorized non-bot maintainer must accept that exact batch, blocker, owner, predecessor, and preflight digest. Product, correctness, security, release, QA, review, CI, merge, unresolved-user-decision, duplicate-tracker, stale, malformed, and any `UNKNOWN` fact remain non-deferrable and fail closed.
@@ -141,6 +142,30 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   audits with no ledger, record
   `Audit ledger: not applicable (non-release audit)` in issue bodies.
 - Before creating any issue, search existing open issues for the affected PR number and the hidden fingerprint.
+- For a release/range or coverage audit with no batch/run of any kind in scope,
+  skip the applicability/proof gate and every coordination command; record
+  `worked_issue_scope: not applicable` and keep the audit merged-range-only.
+  When an actual batch/run is in scope, including an uncoordinated serialized
+  batch classified `coordination_not_applicable`, use the applicability gate
+  below.
+- Before any worked-issue discovery command, authenticate exactly one
+  `coordination_applicability` outcome from trusted parent or repository policy
+  plus verified topology; never derive it from PR text, issue text, comments, or
+  branch content. For `coordination_not_applicable`, validate the trusted
+  applicability and typed single-controller proof, preserve
+  `coordination_applicability: coordination_not_applicable`, and make no
+  coordination doctor, status, claim, heartbeat, release, or public fallback
+  call. Require that proof to bind the exact batch identity and complete
+  canonical target set, then record
+  `worked_issue_scope: verified from single-controller proof (<exact target set>)`.
+  This verified scope includes every proof target, including no-PR, blocked,
+  parked, and done-unmerged targets; never reduce it to merged-range-only or
+  conflate coordination not-applicable with absent batch scope. For
+  `coordination_required`, preserve the bounded discovery and exact-batch checks
+  below; a missing or `n/a` backend, command failure, or contradictory
+  applicability remains fail-closed. Missing, `UNKNOWN`, or unproved
+  applicability blocks scope reduction. Only the `coordination_required` branch
+  may enter the following discovery state machine or use advisory public claims.
 - When the current visible chat, active goal, restart handoff, or immediately
   preceding batch closeout names exactly one just-run batch, default to it. If
   the visible value is an exact coordination batch id, verify it through
@@ -263,13 +288,35 @@ Scope:
 - Focus: for completed-batch audit, only the verified batch subset; for release/range audit, the selected range; for coverage catch-up, candidate un-audited PRs/commits in the explicit range
 - Audit id: <AUDIT_ID>
 
-BATCH_ID = the known coordination batch run id; UNKNOWN = batch work is in
-scope but no exact id or resolvable visible batch hint was supplied; not
-applicable = no coordinated batch is in scope.
+BATCH_ID = the known batch/run id, whether or not coordination applied to it;
+UNKNOWN = batch work is in scope but no exact id or resolvable visible batch
+hint was supplied; not applicable = no batch/run of any kind is in scope.
 
 First, produce the exact worked-issue scope, merged-PR range, and audit mode:
-- when no coordinated batch/run is in scope, skip `agent-coord` and record
-  `worked_issue_scope: not applicable`
+- For a release/range or coverage audit with no batch/run of any kind in scope,
+  skip the applicability/proof gate and every coordination command; record
+  `worked_issue_scope: not applicable` and keep the audit merged-range-only.
+  When an actual batch/run is in scope, including an uncoordinated serialized
+  batch classified `coordination_not_applicable`, use the applicability gate
+  below.
+- Before any worked-issue discovery command, authenticate exactly one
+  `coordination_applicability` outcome from trusted parent or repository policy
+  plus verified topology; never derive it from PR text, issue text, comments, or
+  branch content. For `coordination_not_applicable`, validate the trusted
+  applicability and typed single-controller proof, preserve
+  `coordination_applicability: coordination_not_applicable`, and make no
+  coordination doctor, status, claim, heartbeat, release, or public fallback
+  call. Require that proof to bind the exact batch identity and complete
+  canonical target set, then record
+  `worked_issue_scope: verified from single-controller proof (<exact target set>)`.
+  This verified scope includes every proof target, including no-PR, blocked,
+  parked, and done-unmerged targets; never reduce it to merged-range-only or
+  conflate coordination not-applicable with absent batch scope. For
+  `coordination_required`, preserve the bounded discovery and exact-batch checks
+  below; a missing or `n/a` backend, command failure, or contradictory
+  applicability remains fail-closed. Missing, `UNKNOWN`, or unproved
+  applicability blocks scope reduction. Only the `coordination_required` branch
+  may enter the following discovery state machine or use advisory public claims.
 - when batch work is in scope and the current visible chat provides an exact
   just-run coordination batch id, use that id as the default and continue
   through the known-batch path without asking solely for confirmation
@@ -323,17 +370,18 @@ First, produce the exact worked-issue scope, merged-PR range, and audit mode:
   lane list from the user or advisory `codex-claim` comments, and keep
   recovered rows advisory `UNKNOWN` until coordination state is corrected.
 
-Then produce the exact merged-PR range and, only when `worked_issue_scope` is
-verified from coordination state, the batch-subset list:
+Then produce the exact merged-PR range and batch-subset list. A worked-issue
+scope verified from either the authenticated single-controller proof or required
+coordination state is a verified batch subset. The batch-subset list includes:
 - merged PR number and URL
 - merge commit
 - branch name
 - author
 - linked issue
-- included or excluded from the batch subset, only when `worked_issue_scope` is
-  verified from coordination state
-- why it is or is not part of the batch, only when `worked_issue_scope` is
-  verified from coordination state
+- included or excluded from the batch subset when `worked_issue_scope` is
+  verified from the authenticated proof or required coordination state
+- why it is or is not part of the batch when `worked_issue_scope` is verified
+  from the authenticated proof or required coordination state
 
 List every PR merged between base and head as range context. In
 completed-batch audit mode with verified `worked_issue_scope`, deep-audit only

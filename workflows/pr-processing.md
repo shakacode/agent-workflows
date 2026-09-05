@@ -72,6 +72,61 @@ a blocker exhausted its bounded retries and needs intervention, or
 closeout/archive completed; delete the heartbeat when its gate clears or
 becomes durably terminal. The automation never owns the task or next action.
 
+## Coordination Applicability Gate
+
+Record exactly one trusted applicability outcome before any coordination command
+or runtime declaration validation: `coordination_not_applicable` or
+`coordination_required`. Derive it from trusted repository policy, the operator's
+execution plan, and verified topology facts, never from issue, PR, comment, or
+review text. An `UNKNOWN` or contradictory outcome stops before coordination or
+worker launch.
+
+Use `coordination_not_applicable` when one accountable controller owns the exact
+target set and runs every mutation serially in one controlled execution, with no
+cross-session dependency, ambiguous ownership, repository-required release or
+shared-resource lease, or explicit durable-handoff requirement. This includes an
+ordinary one-agent, one-target PR and may include a multi-target batch serialized
+by that one controller. One internal maker remains part of that controlled
+execution only when it is the sole active mutator, is fenced to the exact
+target, and returns control before another mutation starts. For this outcome,
+do not probe, register, claim, heartbeat, mirror claim labels, use public
+claim-comment fallback, emit a typed operational event, or validate/emit a
+`coordination:` declaration. A coordinator-owned local stage-dependency plan
+remains required, but local dependency state is sufficient only while the same
+controller preserves the serial order.
+
+Use `coordination_required` when independently running sessions can mutate the
+same target set, work spans machines or accountable operators, a dependency must
+survive a controller/session boundary, repository policy requires a release or
+shared-resource lease, ownership is ambiguous, or the operator explicitly opts
+into durable handoff or crash recovery. A configured backend then preserves the
+existing registration, claim, heartbeat, dependency, holder/generation,
+claim-refusal, fallback, and declaration gates. If no backend is configured,
+reclassify only after reducing the topology to one controlled serial session that
+actually removes every requiring condition; otherwise stop before launch with the
+specific missing-coordination blocker.
+
+The applicability decision never creates target identity or authority. Canonical
+issue/existing-PR launch identity remains required, and a foreign task remains
+evidence-only unless an explicit trusted control transfer and exact target
+membership are both verified.
+
+Enforcement boundary: this classification is prompt-driven and nothing verifies
+it at runtime. The only code-level check is the completed-batch publication
+preflight, which authenticates the applicability proof at the end of a batch.
+A misclassified `coordination_not_applicable` run therefore skips claims,
+heartbeats, and fencing for the whole session with nothing to catch it earlier,
+which is a weaker guarantee than the fail-closed behavior `coordination_required`
+gets once a backend is in play. Treat the decision as a trusted controller input,
+record it with its policy and topology sources, and reclassify through this gate
+rather than in passing.
+
+Supported adoption levels are: ordinary workflow use with no coordination setup;
+multiple sessions on one machine with an optional zero-config local store; and
+multiple machines/operators with an organization-operated shared backend URL and
+scoped machine token. Backend users do not deploy the backend or authenticate to
+its infrastructure provider.
+
 ## Default Operating Model
 
 1. Resolve the work item:
@@ -86,9 +141,13 @@ becomes durably terminal. The automation never owns the task or next action.
    - For assigned issues, an acceptable outcome may be an issue comment explaining why no PR should be created.
    - When the value, priority, or proposed fix scope is unclear, use `.agents/skills/evaluate-issue/SKILL.md` before implementation (or `.agents/workflows/evaluate-issue.md` for agents without skill support).
 3. Isolate the work:
+   - Run the **Coordination Applicability Gate** and persist its trusted outcome
+     before any backend doctor, status, registration, claim, heartbeat, label
+     mirror, or public fallback action.
    - Fetch/prune `main`, confirm the expected repository root, and verify nested repo paths before assigning work.
-   - When the repo's private coordination backend (see `coordination_backend`
-     in `.agents/agent-workflow.yml`) is available, acquire an `agent-coord`
+   - Only for `coordination_required`, when the repo's private coordination
+     backend (see `coordination_backend` in `.agents/agent-workflow.yml`) is
+     available, acquire an `agent-coord`
      claim for each issue/PR/ad-hoc lane before creating that lane's worktree or
      branch. Resolve `PR_BATCH_SKILL_DIR` in this order: explicit environment
      variable; the loaded skill's base directory when the host exposes it;
@@ -1123,17 +1182,16 @@ Items:
   Done:req auth+PR/no-PR evidence|no-fix rationale
 Execution rules:
 Base:repo/AGENTS;fetch/prune origin;verify $pr-batch+workflow;unresolved=>UNKNOWN
-- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; persist output before resume/launch; preflight issue/PR only.
+- $pr-batch:resolve/autoload/self-contained;load state pre-preflight;persist output pre-resume/launch;preflight issue/PR only.
 - Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory.
 - Dispatch: pending->persist/reissue token; active->no launch; input->decision; fence->stop/reconcile.
 Current wave:each target/lane exactly once;one target/lane/worker;overlap=>integration advisory;deps/resv/UNKNOWN=>coord
 Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-risk/verify-down;Verify live GitHub before edits;unverifiable=>UNKNOWN
-- For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
+- coordination_not_applicable=>no calls;coordination_required+n/a=>stop;claims/deps: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
-
 ```
 
 ### Question And Decision Handling
@@ -1537,6 +1595,12 @@ identity is known; it never creates or resumes a worker.
 
 Use exact lane assignments as the primary coordination mechanism. Labels are useful for dashboards, but stale labels are expected after restarts.
 
+Apply the backend operations in this section only after the **Coordination
+Applicability Gate** records `coordination_required`. For
+`coordination_not_applicable`, retain exact target/lane ownership in the
+controller's local plan and skip every backend, heartbeat, claim-label mirror,
+and public claim-comment operation in this section.
+
 - Use a maintainer-applied eligibility label such as `codex-ready` only if the repo has adopted it.
 - Use a temporary `codex-wip` label only as a visible hint; do not treat it as the durable lock.
 - Mirror an active lane claim on the claimed issue/PR with the seam's claim
@@ -1554,8 +1618,9 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   until the daemon reconciles it. Enable mirroring only when the backend provides
   that expiry reconciliation (see `docs/coordination-backend.md`); without a
   reconciler, a crashed claim would leave a stale label that excludes a released
-  item indefinitely, so do not mirror. Skip label mirroring entirely when
-  `coordination_backend: n/a` (single-operator). Adopt the claim label per repo
+  item indefinitely, so do not mirror. Skip label mirroring entirely for
+  `coordination_not_applicable`, which is an applicability outcome, not an
+  inference from `coordination_backend: n/a`. Adopt the claim label per repo
   the same way `codex-ready`/`codex-wip` are (a one-time `gh label create`),
   before mirroring.
 - Owned means skip is symmetric for humans and agents: a human assignee (see the
@@ -1609,15 +1674,18 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   heartbeat and preserve unsupported metadata, or explicit `UNKNOWN`, in the
   Lane Card, PR evidence, and final handoff. Never pass an unadvertised flag and
   do not infer support from a different backend implementation.
-- When the trusted repo seam sets `coordination_backend: n/a`, skip private
-  claims and public claim comments. Treat the run as intentionally
-  single-operator, and record that single-operator assumption in the Lane Card and final handoff
-  rather than reporting coordination as healthy or `UNKNOWN`.
+- When the trusted repo seam sets `coordination_backend: n/a` and applicability is
+  `coordination_not_applicable`, skip private claims and public claim comments and
+  record the trusted single-operator assumption in the Lane Card and final handoff
+  as applicability evidence, without a `coordination:` declaration.
+  If applicability is `coordination_required`, `n/a` is not a waiver: serialize
+  into one controlled session and re-evaluate, or stop before launch.
 - For an ad-hoc lane when the configured private backend is unavailable, public claim fallback is unavailable because there is no issue or PR comment surface.
-  Stop before branching; require a coordination target or explicit no-backend single-operator approval.
+  Stop before branching; require a coordination target, or a trusted `coordination_not_applicable` outcome from the applicability gate.
   Do not invent a public claim surface or silently
   proceed without an ownership guard.
-- Acquire an `agent-coord claim` for each issue/PR/ad-hoc lane before creating that
+- For `coordination_required`, acquire an `agent-coord claim` for each
+  issue/PR/ad-hoc lane before creating that
   lane's worktree or branch. A refused claim is a hard stop for machine agents:
   report the holder, heartbeat liveness, and target instead of creating a
   competing branch.
@@ -1715,10 +1783,13 @@ Backend `n/a` keeps the same provenance in durable coordinator state, while a
 degraded registration remains `UNKNOWN` with retry evidence.
 
 Typed operational-signal events supplement the existing prose packet, Lane
-Card, heartbeat, and final handoff; they never replace them. When the resolved
-private backend is active and supports typed events, emit the matching event at
+Card, heartbeat, and final handoff; they never replace them. For
+`coordination_required`, when the resolved private backend is active and
+supports typed events, emit the matching event at
 the existing checkpoint and attach the known batch, lane, agent, repository,
-target, branch, and status context. Required typed payload fields are:
+target, branch, and status context. A `coordination_not_applicable` lane emits
+no typed event and makes no backend call, even when a real backend is
+configured. Required typed payload fields are:
 
 | Checkpoint | Typed event | Required fields |
 | ---------- | ----------- | --------------- |
@@ -1740,7 +1811,9 @@ valid; preserve the missing fact as `UNKNOWN` in the handoff.
 
 Emission is best-effort for the in-flight operation: a failed event write does
 not turn a successful claim, handoff, pause, or drain into a failed operation.
-No coordination backend (`n/a`): skip the event silently. Typed-event transport
+A `coordination_not_applicable` lane emits no typed event at all, so there is
+nothing to skip; a trusted `coordination_backend: n/a` under
+`coordination_required` is a pre-launch stop, not a silent skip. Typed-event transport
 is optional: when an active private backend does not advertise it or reports it
 unsupported, record `typed event transport: unavailable`, skip the emission,
 and continue without marking the event emission `UNKNOWN`. Only after the
@@ -1827,12 +1900,13 @@ Before replacing a responsive worker:
    handoff and live-state reconciliation. Record host-observed values only when
    exposed; otherwise keep them `UNKNOWN`.
 
-Alongside a qualifying `MODEL_ESCALATION_REQUEST`, emit
-`escalation_requested` with `from_route`, `to_route`, and the packet's
+Alongside a qualifying `MODEL_ESCALATION_REQUEST` in a `coordination_required`
+lane, emit `escalation_requested` with `from_route`, `to_route`, and the packet's
 `evidence`. After the old instance is stopped and ownership is reconciled,
 emit `human_intervention` with `kind: supersede` for a same-lane replacement or
 `kind: takeover` when recovering abandoned ownership. These events supplement,
-not replace, the handoff and fencing proof.
+not replace, the handoff and fencing proof. A `coordination_not_applicable`
+lane emits none of them.
 
 The old and replacement instances must not overlap. A replacement may not edit,
 push, refresh the old holder's claim, or start another target until the old
@@ -1895,6 +1969,10 @@ Pause for agent-runner restart now.
 Do not start new targets, spawn workers, create branches or worktrees, push,
 request CI, poll reviews, merge, or change repository files. Limit work to the
 minimal status checks and claim-preservation write needed for the handoff.
+Re-run the applicability gate before the handoff rather than trusting a stored
+result. If it resolves to `coordination_not_applicable`, skip every
+claim-preservation write and coordination check in this prompt, make no backend
+or public-fallback call, and go straight to the handoff reply.
 If this lane already owns a private backend claim, send one heartbeat update,
 using a paused or operator-restart reason if the backend supports it; otherwise
 send a plain heartbeat preserving the current status. If it is using only the
@@ -1972,7 +2050,18 @@ saved handoff instead of assuming the old worker will resume. The first resume
 or replacement action is bounded status recovery: re-check the worktree, branch,
 HEAD SHA, uncommitted changes, current PR/check state, and either private
 claim/heartbeat state or active public `codex-claim` fallback comments before
-continuing. Recompute live dependencies and runnable work from that snapshot;
+continuing. Re-run the applicability gate before choosing this path, including
+after a same-thread agent-runner relaunch: a resume that crosses
+a controller or session boundary, or that consumes a durable handoff a different
+actor could also be acting on, is
+`coordination_required`. A relaunch of the same controller over the same exact
+target set, with no other actor able to mutate it, may re-verify as
+`coordination_not_applicable`; a replacement actor or an unresolved surviving
+holder may not. Only when the gate resolves to
+`coordination_not_applicable` does bounded status recovery use the
+local worktree, branch, HEAD SHA, uncommitted changes, and live GitHub PR/check
+state only; it then makes no coordination or public-fallback call, and every claim,
+heartbeat, holder, and fallback clause below is `coordination_required` only. Recompute live dependencies and runnable work from that snapshot;
 a saved handoff order is a stale hint, not permission to block on its first
 pending item. If bounded status shows a private backend claim is stale or dead but
 still held by this same stable agent/thread id with no cancellation or
@@ -2112,10 +2201,13 @@ Mode Completion Contract. The final handoff reports links, tests, blockers,
 next actions, initial/final model and effort, credible attempts, replacement
 handoffs, escalation requests/dispositions, escalation role, return to initial
 tier, remaining risk/UNKNOWN, human decisions, QA evidence, and final state. It
-must also carry exactly one coordination declaration: `coordination: registered <batch-id>`
+must also carry exactly one coordination declaration only when the recorded
+applicability outcome is `coordination_required`: `coordination: registered <batch-id>`
 when this batch registered with the coordination backend, or
 `coordination: unavailable — <reason>` with an exact nonempty reason that is not
-`UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
+`UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff. That
+requirement applies only to `coordination_required`; for
+`coordination_not_applicable`, omit the declaration.
 ```
 
 ### Generic PR-Batch Continuation Prompt
@@ -2184,7 +2276,7 @@ Goal completion contract:
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 - With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
 
-Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
+Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. When the recorded applicability outcome is `coordination_required`, it must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff. That requirement applies only to `coordination_required`; for `coordination_not_applicable`, omit the declaration.
 ```
 
 Pressure scenarios this prompt must satisfy:
@@ -2198,8 +2290,18 @@ Pressure scenarios this prompt must satisfy:
 
 A coordinator or maintainer can stop an in-flight batch — for example to relaunch
 it with updated skills, workflow rules, or targets — without waiting out claim
-leases. Stopping is a **cooperative drain backed by a hard process-level escape
-hatch**, not a single kill switch:
+leases.
+
+For `coordination_not_applicable`, the one controller stops its own workers from
+controller-local state: signal each worker to drain at its next safe checkpoint,
+or terminate a wedged worker at the process level, then record the stopped lanes
+in the durable local batch record. Publish no cancellation state, poll no
+`agent-coord status`, release no claim, emit no typed event, and require no
+backend reconciliation before relaunch. The rest of this section is
+`coordination_required` only.
+
+For `coordination_required`, stopping is a **cooperative drain backed by a hard
+process-level escape hatch**, not a single kill switch:
 
 - **Drain signal (preferred).** Cancellation is coordinator-published batch state,
   exactly like `depends_on` / `blocked_on` and the release phase: only a
@@ -2230,8 +2332,8 @@ hatch**, not a single kill switch:
   next checkpoint, and a wedged worker requires the hard escape hatch.
   When a worker first observes cancellation at its cooperative drain checkpoint,
   that worker emits one lane-scoped typed `human_intervention` event with
-  `kind: drain` when the active private coordination backend advertises
-  typed-event support. The coordinator/operator must not emit a duplicate for
+  `kind: drain` when the lane is `coordination_required` and the active private
+  coordination backend advertises typed-event support. The coordinator/operator must not emit a duplicate for
   that cooperative path. The cooperative worker path remains worker-owned at
   that checkpoint; the coordinator/operator neither re-emits nor duplicates it.
 - **Hard escape hatch.** For a wedged or unresponsive worker that is not reaching a
@@ -2240,11 +2342,15 @@ hatch**, not a single kill switch:
      is `UNKNOWN` if the backend is unavailable.
   2. Immediately before terminating a worker that cannot reach that checkpoint,
      the coordinator/operator instead emits one lane-scoped typed
-     `human_intervention` event with `kind: drain` when the active private
-     coordination backend advertises typed-event support. For either drain path,
-     backend `n/a` skips the emission; unadvertised or unsupported typed-event
-     capability records `typed event transport: unavailable` and remains
-     nonblocking. For either drain path with advertised support, resolve the
+     `human_intervention` event with `kind: drain` when the lane is
+     `coordination_required` and the active private coordination backend
+     advertises typed-event support. A `coordination_required` lane never
+     legitimately reaches a drain checkpoint under a trusted
+     `coordination_backend: n/a`, because that is a pre-launch stop; treat it as
+     a classification violation to report, not an emission to skip. For either
+     drain path, an unreachable, degraded, unadvertised, or unsupported
+     typed-event capability records `typed event transport: unavailable` and
+     remains nonblocking. For either drain path with advertised support, resolve the
      active backend's advertised drain-event executable and ordered opaque argv;
      reject a missing, malformed, or unsafe advertisement as an emission
      failure. Run that exact executable and separate argv without shell
