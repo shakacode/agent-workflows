@@ -220,6 +220,62 @@ _Avoid_: kill, stop (bare)
 Coordinator-recorded cancellation when available, then process-level termination plus manual claim/worktree cleanup, for a wedged worker that cannot reach a checkpoint.
 _Avoid_: force kill (without the cleanup steps it names)
 
+### Integration
+
+These terms define the intended integration contract. Label automation and
+comment-envelope enforcement are follow-up work, not implemented by this ADR.
+
+**Merge backlog**:
+The open PRs, drafts included, whose remaining step is a merge decision or a
+mechanical unblock such as a rebase or a stale bot-review dismissal, not
+implementation.
+_Avoid_: stuck PRs, open PR count
+
+**Control tower**:
+The persistent per-repository role, served by one bounded task session per
+attention interval, that integrates ready work under the merge authority it
+was granted, remediates small blockers, and routes only outcome-changing
+decisions to the human.
+_Avoid_: sweeper, merge bot, the batch (a batch ends; the role outlives its
+sessions)
+
+**Human-attention label**:
+A GitHub label stating that the next action on a PR belongs to the human:
+`human-attention:walkthrough` (read the published walkthrough first) or
+`human-attention:merge` (agents recommend merge; the human's exact-head
+approval on the PR is the remaining step, after which the **Control tower**
+submits the merge through the guarded path).
+_Avoid_: ready to merge, needs review, approved, merge click
+
+**Needs-rebase**:
+The `needs-rebase` label a planned GitHub Action will apply while a PR conflicts
+with its base and remove when it no longer does; it queues mechanical work for the
+**Control tower** and is never a human signal.
+_Avoid_: conflicting (the raw GitHub field), blocked
+
+**Disposition**:
+The **Control tower**'s per-PR classification: exactly one of the throughput
+plan's R12 names `accelerate`, `continue`, `hold`, `replace`, `close`, or
+`integration-ready`, where the control-tower prompts add that `close` requires
+evidence of duplicate, superseded, or invalid work. The integration contract in
+[ADR 0005](docs/adr/0005-merge-authority-lives-in-the-control-tower.md) also keeps
+the branch when closing a PR.
+_Avoid_: triage state, verdict, status
+
+**Comment kind**:
+The required audience class in every agent-posted GitHub comment envelope:
+`bookkeeping` (agent-to-agent, fully collapsed under one summary line),
+`info` (human-readable, `Action needed: none`, detail collapsed), or
+`decision` (the four desk-card fields visible, detail collapsed).
+_Avoid_: comment type, severity, priority (a decision's priority is a card field)
+
+**Integration pass**:
+One **Control tower** tick's sweep of the **Merge backlog** plus every
+unclaimed draft: merge what passes the exact-head gates, remediate small
+blockers, give each unclaimed draft a **Disposition**, and label what needs the
+human, in that order.
+_Avoid_: drain (reserved for cancellation), cleanup, sweep
+
 ## Relationships
 
 - **Batch → Wave → Lane → Instance**: when wave scheduling is used, a
@@ -253,6 +309,21 @@ _Avoid_: force kill (without the cleanup steps it names)
   worker instances never overlap.
 - A **Claim** is held by exactly one **Instance**; **Supersede (claim operation)** replaces the instance for the same **Lane identity**, **Takeover** replaces the owner after the holder is **Dead** or a fallback claim expires — both bump the **Generation** when the backend supports fencing.
 - **Worker phase** answers "is it progressing?"; **Live/Stale/Dead** answers "is it running?"; **Wedged** is live without worker-phase progress.
+- A **Merge backlog** item belongs to the repository **Control tower** once
+  the **Lane** that opened it ends; a lane never keeps a PR alive to merge it.
+- A **Human-attention label** is applied by the **Control tower** after the
+  autonomous-merge eligibility gate hands a PR to the human, and stripped by
+  the planned CI automation when the head changes. Until that automation exists,
+  the tower must recheck the head and remove stale labels before human handoff.
+  A CI-triggered agent may read, review, label, and
+  draft an assessment; it never pushes or merges.
+- Every agent-posted GitHub comment carries exactly one **Comment kind**; a
+  `decision` comment is the same card the Human Attention Desk mirrors, and
+  only a `decision` may accompany a **Human-attention label**.
+- A `bookkeeping` comment is one per agent task per PR and is edited in place;
+  a `decision` comment is never edited after a human could have replied; an
+  `info` comment appends so each walkthrough section stays separately
+  replyable.
 - **Drain** is observed at worker phase transitions; the **Hard escape hatch** is for workers that stop reaching them.
 
 ## Example dialogue
@@ -269,3 +340,7 @@ _Avoid_: force kill (without the cleanup steps it names)
 - "restart" previously mixed ordinary agent-runner resume prompts with backend-fenced replacement — resolved: use restart/resume handoffs for the former, and **Supersede (claim operation)** only for explicit same-lane replacement when the backend supports fencing.
 - "supersede" also appears in CI/review triage for superseded workflow rows — resolved: **Supersede (claim operation)** is only the same-lane ownership replacement; use "superseded check row" or similar in CI contexts.
 - "phase" also appears in release phase / phase-gating policy — resolved: use **Worker phase** for lane progress and "release phase" for branch or release-train gate context.
+- "stuck" was also used for the PR portfolio — resolved: **Merge backlog**
+  names the PRs; **Wedged** and dead stay reserved for workers.
+- "drain the backlog" collided with **Drain** — resolved: **Drain** stays the
+  cancellation signal; backlog reduction is an **Integration pass**.
