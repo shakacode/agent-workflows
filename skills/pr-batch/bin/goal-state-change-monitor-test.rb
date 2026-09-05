@@ -15,6 +15,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
     {
       "contract" => "goal-state-change-observation",
       "version" => 1,
+      "plan_identity" => "plan-a",
       "monitor_id" => "thread-393:checks",
       "capability" => "deterministic-watcher",
       "task_status" => "resumable",
@@ -1963,6 +1964,33 @@ class GoalStateChangeMonitorTest < Minitest::Test
 
       persisted = JSON.parse(File.read(state_path))
       assert_equal "thread-393:checks", persisted.fetch("monitor_id")
+      assert_equal "plan-a", persisted.fetch("plan_identity")
+      assert_equal 2, persisted.fetch("probe_sequence")
+    end
+  end
+
+  def test_restart_sequence_rejects_cross_plan_reuse_of_monitor_state
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      _current, current_stderr, current_status = run_helper(
+        state_path,
+        observation("probe_sequence" => 2, "observed_at" => "2026-08-09T00:30:00Z")
+      )
+      assert current_status.success?, current_stderr
+
+      rejected, rejected_stderr, rejected_status = run_helper(
+        state_path,
+        observation("plan_identity" => "plan-b", "probe_sequence" => 3)
+      )
+
+      assert_nil rejected
+      refute rejected_status.success?
+      assert_includes rejected_stderr, '"reason":"plan-identity-collision"'
+
+      persisted = JSON.parse(File.read(state_path))
+      assert_equal "plan-a", persisted.fetch("plan_identity")
       assert_equal 2, persisted.fetch("probe_sequence")
     end
   end
