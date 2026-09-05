@@ -32,6 +32,8 @@ that no valid user-global override takes precedence. Record the fallback source 
 limitation. If that verification is unavailable, hold prose authoring and return
 the precise resolution problem to the coordinator while independent work continues.
 A nonzero resolver exit is not proof of missing tooling: inspect its error.
+Until the error is classified and the existing fallback preconditions are
+verified, hold prose authoring while independent authorized work continues.
 An explicit malformed repository value blocks authoring; never bypass it with
 the default. The coordinator asks the user only if the resolution needs a decision
 outside existing authority.

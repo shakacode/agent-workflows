@@ -24,7 +24,8 @@ result must not be relabeled as passing.
 
 Run the `bin/verification-evidence-reuse` helper adjacent to this skill with a
 JSON object on stdin: `version: 1`, `repeat_required: true|false`, `current`, and
-`evidence`. Both contexts contain `head_sha`, `base_sha` (40 lowercase hex digits),
+`evidence`. Both contexts contain `head_sha`, `base_sha` (full SHA-1 or SHA-256
+object IDs: 40 or 64 lowercase hex digits, with the same format for head and base),
 `environment`, `configuration` (nonempty verified identifiers), `command`,
 `covered_paths` (nonempty string arrays), and `working_tree: "clean"`. Evidence
 also contains `kind: "local-command"`, `outcome: "pass"`, and `evidence_ref`.

@@ -22,7 +22,10 @@ module VerificationEvidenceReuse
 
   def self.valid_context?(context)
     return false unless context.is_a?(Hash)
-    return false unless %w[head_sha base_sha].all? { |key| context[key].is_a?(String) && context[key].match?(/\A[0-9a-f]{40}\z/) }
+
+    object_ids = context.values_at("head_sha", "base_sha")
+    return false unless object_ids.all? { |value| value.is_a?(String) && value.match?(/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/) }
+    return false unless object_ids.map(&:length).uniq.one?
     return false unless %w[environment configuration].all? { |key| known_string?(context[key]) }
 
     %w[command covered_paths].all? do |key|

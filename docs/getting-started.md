@@ -244,7 +244,9 @@ All selected checks passed. The branch is ready for a PR update.
 
 The shape is what matters: the agent reads the seam first, picks checks that
 cover the changed files, runs them in order, and reports each command with a
-PASS or FAIL line, stopping on the first failure. That reporting contract is
+PASS or FAIL line. On failure, pause the sequence for bounded diagnosis and
+correction, then continue within the authorized scope; required checks remain
+gates until they pass. That reporting contract is
 defined in `skills/verify/SKILL.md`.
 
 If the agent cannot find the skill, re-check Step 1 (`agent-workflows-status`
@@ -498,7 +500,8 @@ skill or document that implements it.
   ([tdd skill](../skills/tdd/SKILL.md)).
 - **Run `verify` before every PR create or update** — the same Step 3
   loop: checks chosen from the repo seam, one PASS or FAIL line per
-  command, stop on the first failure.
+  command, pause on failure for bounded diagnosis and correction, then continue
+  within the authorized scope. Required checks must still pass.
 - **Prove a bug fix, do not assert it.** The `verify-pr-fix` skill
   reproduces the failure before the fix, confirms it is gone after, and
   states plainly what was not exercised — evidence before assertions

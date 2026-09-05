@@ -30,6 +30,34 @@ class VerificationEvidenceReuseTest < Minitest::Test
     assert_equal "local-command-only", result["scope"]
   end
 
+  def test_native_sha256_context_can_be_reused
+    input = request
+    %w[current evidence].each do |side|
+      input[side]["head_sha"] = "a" * 64
+      input[side]["base_sha"] = "b" * 64
+    end
+
+    assert_equal "reusable", VerificationEvidenceReuse.call(input)["status"]
+    input["current"]["head_sha"] = "c" * 64
+    assert_equal "rerun", VerificationEvidenceReuse.call(input)["status"]
+  end
+
+  def test_object_ids_require_full_consistent_formats
+    [39, 41, 63, 65].each do |length|
+      input = request
+      %w[current evidence].each do |side|
+        input[side]["head_sha"] = "a" * length
+        input[side]["base_sha"] = "b" * length
+      end
+      assert_equal "rerun", VerificationEvidenceReuse.call(input)["status"], length
+    end
+    %w[head_sha base_sha].each do |field|
+      input = request
+      %w[current evidence].each { |side| input[side][field] = "a" * 64 }
+      assert_equal "rerun", VerificationEvidenceReuse.call(input)["status"], field
+    end
+  end
+
   def test_each_context_change_invalidates_evidence
     VerificationEvidenceReuse::CONTEXT_FIELDS.each do |field|
       input = request
