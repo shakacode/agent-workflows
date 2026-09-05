@@ -8,6 +8,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Added
 
+- **Add batch-status issue/PR targeting with machine and task deep links, scheduled retry heartbeats, documented launch modes with an explicit native-task consent boundary, and native GitHub `blocked-by` dependency conventions.** [PR 362](https://github.com/shakacode/agent-workflows/pull/362) by [justin808](https://github.com/justin808).
 - **Add the dedicated `structural-review` workflow for codebase-health findings and the evidence-first `fix-flaky-tests` workflow, and retain both as accepted replayable review-receipt sources while continuing to reject arbitrary sources.** [PR 346](https://github.com/shakacode/agent-workflows/pull/346) and [PR 347](https://github.com/shakacode/agent-workflows/pull/347) by [justin808](https://github.com/justin808).
 - **Add GitHub intake templates that turn this pack's own prose contracts into structured fields: a `process-gap` issue form whose required `Mechanism target` dropdown, `Motivating miss`, `Replay evidence or park reason`, and `Non-goal` inputs mirror the Process Gap Disposition section, a `follow-up` issue form requiring motivating evidence, affected paths, decided direction, and done-when criteria so a self-contained body is the default, and a pull request template in the Human-First PR Description Contract layout whose test-plan checkboxes state their three resolution paths, keeping blank issues enabled so agent-authored issues pay no friction.** [issue 467](https://github.com/shakacode/agent-workflows/issues/467).
 - **Add `docs/operator-handbook.md`, a router that maps the classes of decision reserved for a human — merge authority, filtered-target confirmation, blocking questions, high-impact change approval, security capability lifts, preflight risk acknowledgments, trust triage for non-allowlisted authors, review and QA waivers, release mode, phase, and RC merge, post-merge audit scope, revert consideration, follow-up tracking, and the typed operator-facing signal events — to the canonical section that governs each, adding no new rules of its own.** [issue 465](https://github.com/shakacode/agent-workflows/issues/465).
@@ -59,6 +60,7 @@ All notable changes to this portable workflow pack are documented here.
 
 #### Changed
 
+- **Separate planning-pass route assessment from later coordinator, worker, and checker routes.** [PR 450](https://github.com/shakacode/agent-workflows/pull/450) by [justin808](https://github.com/justin808).
 - **Ship portable `autonomous_merge.safe_path_groups` defaults for `documentation` and `tests`, merged additively with consumer configuration so a consumer can add includes and excludes but never remove a portable exclude, allow a group declaring only `exclude` to tighten the portable set without widening it, and cover every built-in policy path with the portable excludes so a safe classification cannot contradict path evidence.** [issue 474](https://github.com/shakacode/agent-workflows/issues/474).
 - **Require every terminal workflow handoff to translate status and durable evidence into one unambiguous `Next:` instruction: name the exact reply or new-task action when follow-ups remain, name the task-owned continuation when work proceeds automatically, or explicitly say `Archive this task.` when the archive gate passes.**
 - **Give each user-visible task one explicit coordinator across internal workers, external requests, walkthroughs, and heartbeat wakeups; route existing authority without redundant prompts, ask one exact question for new authority, generate prompts for separate scope, and keep no-change monitors silent and self-cleaning. Copy-install fingerprints now fence every managed skill and pack document so repeat upgrades refuse modified, nested-personal, or unowned-symlink collisions while still supporting untouched non-Git upgrades.**
@@ -97,6 +99,10 @@ All notable changes to this portable workflow pack are documented here.
 - **Clarify completed-batch post-merge audit scope, release/range audits, and coverage catch-up for explicit un-audited PR or commit ranges.**
 - **Start pasteable batch prompts with a short title that includes a repository-derived project abbreviation, optional A/B/C split marker, and `MM-DD HH:MM` from the local shell `date` command.**
 - **Default post-merge audits to creating follow-up issues from the deduped issue plan unless the user requests report-only/no issue creation.**
+
+#### Improved
+
+- **Improve address-review checkpoint readability by collapsing detailed artifacts by default while preserving parser-sensitive state.** [PR 373](https://github.com/shakacode/agent-workflows/pull/373) by [justin808](https://github.com/justin808).
 
 #### Fixed
 
