@@ -149,7 +149,7 @@ becomes durably terminal. The automation never owns the task or next action.
 5. Self-review before every push or PR-ready signal.
 6. Run local validation based on changed areas.
 7. Run the pre-push AI review and simplify gate when the change is non-trivial or high-risk.
-8. Update the PR body, issue, or one concise PR comment with exact verification evidence, churn notes, and remaining gaps. Only a PR body uses the [Human-First PR Description Contract](#human-first-pr-description-contract); issue and comment destinations keep concise evidence suited to that destination. Every PR body must include a self-contained why/rationale summary; link issues as supporting context, but do not require reviewers to open an issue to understand why the PR exists.
+8. Update the PR body, issue, or one concise PR comment with exact verification evidence, churn notes, and remaining gaps. Only a PR body uses the [Human-First PR Description Contract](#human-first-pr-description-contract); issue and comment destinations keep concise evidence suited to that destination. Every PR body must include a self-contained why/rationale summary; link issues as supporting context, but do not require reviewers to open an issue to understand why the PR exists. After every review-fix push, apply the canonical final-head refresh or supersession rules in [QA And Evidence](pr-batch-integration-closeout.md#qa-and-evidence) before requesting readiness.
 9. Only then request review, hosted CI, or merge readiness.
 
 ## Stage-Typed Dependency Gate
@@ -1133,7 +1133,6 @@ Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
-
 ```
 
 ### Question And Decision Handling

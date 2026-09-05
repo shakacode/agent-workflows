@@ -109,6 +109,50 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     MARKER
   end
 
+  def qa_supersession_marker(head_sha:, required:)
+    <<~MARKER
+      <!-- qa-evidence-supersession v1
+      head_sha: #{head_sha}
+      required: #{required}
+      supersedes: pr_body
+      -->
+    MARKER
+  end
+
+  def review_fix_supersession_input(
+    input,
+    target_numbers: [10_049, 10_048, 10_036],
+    skip_target_numbers: []
+  )
+    target_numbers = Array(target_numbers).map(&:to_i)
+    skip_target_numbers = Array(skip_target_numbers).map(&:to_i)
+    input.fetch("expected_targets").select! { |target| target_numbers.include?(target.fetch("number")) }
+    input.fetch("target_snapshots").select! { |snapshot| target_numbers.include?(snapshot.dig("target", "number")) }
+    input.fetch("qa_evidence").select! { |row| target_numbers.include?(row.dig("target", "number")) }
+    input.dig("coordination_status", "batches", 0, "lanes").select! do |lane|
+      target_number = Integer(lane.fetch("targets").first, 10)
+      target_numbers.include?(target_number)
+    end
+    input.fetch("qa_evidence").each do |row|
+      target_number = row.dig("target", "number")
+      next if skip_target_numbers.include?(target_number)
+
+      head_sha = input.fetch("target_snapshots")
+                      .find { |snapshot| snapshot.dig("target", "number") == target_number }
+                      .fetch("head_sha")
+      required = row.fetch("evidence").match(/^required: (\w+)$/m).captures.first
+      status = row.fetch("evidence").match(/^status: (\w+)$/m).captures.first
+      release_blocking = row.fetch("evidence").match(/^release_blocking: (\w+)$/m).captures.first
+      evidence = qa_v2_evidence(head_sha:, user_visible_ui_change: "no")
+      evidence = evidence.sub("required: yes", "required: #{required}")
+      evidence = evidence.sub("status: satisfied", "status: #{status}")
+      evidence = evidence.sub("release_blocking: clear", "release_blocking: #{release_blocking}")
+      row["evidence"] = evidence + qa_supersession_marker(head_sha:, required:)
+    end
+    input["require_qa_supersession"] = true
+    input
+  end
+
   def assess_input(
     input,
     backend: BACKEND,
@@ -1198,6 +1242,44 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute v2_result.fetch("eligible")
     assert_includes v2_result.fetch("blockers"),
                     "shakacode/hichee#pull_request:10049 QA UI classification contradicts trusted input"
+  end
+
+  def test_review_fix_supersession_comment_requires_the_adjacent_marker
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    input = review_fix_supersession_input(input)
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal "ELIGIBLE", result.fetch("verdict")
+    qa_verdicts = result.dig("snapshot", "qa").each_with_object({}) do |row, verdicts|
+      verdicts[row.dig("target", "number")] = row.fetch("verdict")
+    end
+    assert_equal(
+      {
+        10_036 => "SATISFIED",
+        10_048 => "SATISFIED",
+        10_049 => "SATISFIED"
+      },
+      qa_verdicts
+    )
+  end
+
+  def test_review_fix_supersession_comment_missing_marker_blocks_current_head_publication
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    input = review_fix_supersession_input(
+      input,
+      skip_target_numbers: [input.fetch("expected_targets").first.fetch("number")]
+    )
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_equal "BLOCKED", result.fetch("verdict")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10049 QA disposition is UNKNOWN"
+    qa_row = result.dig("snapshot", "qa").find { |row| row.dig("target", "number") == 10_049 }
+    assert_equal "UNKNOWN", qa_row.fetch("verdict")
   end
 
   def test_missing_or_invalid_trusted_ui_classification_blocks

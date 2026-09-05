@@ -527,6 +527,22 @@ For `required: no`, record `status: not_applicable` and
 `release_blocking: not_applicable`. Replay treats any other terminal pair as an
 inconsistent omission record and returns `UNKNOWN`.
 
+After each review-fix push, the integration owner re-fetches the head,
+reruns/reclassifies QA, and refreshes the PR-body block/marker. To preserve a
+stale body, publish/read back one comment with adjacent `qa-evidence v2` plus:
+
+```markdown
+<!-- qa-evidence-supersession v1
+head_sha: <full 40-character final PR head SHA>
+required: <yes | no>
+supersedes: pr_body
+-->
+```
+
+Replay it with `--expected-head-sha <SHA> --require-qa-supersession`. The helper
+requires one exact-field current-head supersession matching the adjacent QA
+head/classification; else `UNKNOWN`. Prose is invalid; preserve history.
+
 Use `visual_evidence_blocked_reason` only with `human_attachment_pending`;
 missing or extra values replay as `UNKNOWN`.
 
@@ -968,20 +984,20 @@ The closeout lane is:
    Use the resolved
    `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"` helper against
    the PR body, handoff comment, or saved evidence file when QA or
-   priority-disposition replay is part of the readiness claim. For each PR that
-   requires QA, re-fetch its full 40-character current head SHA after all
-   planned commits and pushes. A commit after QA invalidates the earlier QA
-   evidence: rerun the affected automated and manual QA at the new head, then
-   refresh `Tested at` and `head_sha`; never update the evidence marker alone.
+   priority-disposition replay is part of the readiness claim. For each PR,
+   re-fetch the final full SHA and reclassify QA after all pushes. Later commits
+   invalidate evidence. Never update the evidence marker alone: rerun affected
+   QA and refresh `Tested at`, `head_sha`, and the classification together.
    Run the helper separately for that PR or target with
    `--expected-head-sha <full-final-head-SHA>`. Add
    `--require-visual-evidence-v2` in the same invocation for every current
    user-visible UI change; this flag is invalid without
    `--expected-head-sha <full-final-head-SHA>`. Add
    `--require-priority-dispositions` whenever the merge ledger or handoff relies
-   on fixed, waived, or deferred priority findings. If the head changes again before
-   readiness or merge, repeat this checklist and replay; missing or mismatched
-   final-head evidence is `UNKNOWN` and blocks readiness.
+   on fixed, waived, or deferred priority findings. For the supersession-comment
+   path above, add `--require-qa-supersession`. If the head changes again, repeat
+   this checklist and replay; missing or mismatched final-head evidence is
+   `UNKNOWN` and blocks readiness.
 7. When trusted repository policy selects production or release work, route the
    integrated head and exact-head evidence to the downstream
    **Release Mode Preflight** owner through the

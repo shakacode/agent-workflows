@@ -11,7 +11,13 @@ SCRIPT = File.expand_path("closeout-evidence-replay", __dir__)
 load SCRIPT unless defined?(CloseoutEvidenceReplay)
 
 class CloseoutEvidenceReplayTest < Minitest::Test
-  def run_replay(body, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
+  def run_replay(
+    body,
+    expected_head_sha: nil,
+    require_priority_dispositions: false,
+    require_visual_evidence_v2: false,
+    require_qa_supersession: false
+  )
     Tempfile.create("closeout-evidence") do |file|
       file.write(body)
       file.flush
@@ -19,6 +25,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       command.concat(["--expected-head-sha", expected_head_sha]) if expected_head_sha
       command << "--require-priority-dispositions" if require_priority_dispositions
       command << "--require-visual-evidence-v2" if require_visual_evidence_v2
+      command << "--require-qa-supersession" if require_qa_supersession
       command << file.path
       out, status = Open3.capture2e(*command)
       assert status.success?, out
@@ -92,6 +99,20 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes out, "Fail when priority evidence is missing or explicitly not_applicable"
     assert_includes out, "Fail when current UI evidence lacks the durable visual-evidence v2 contract"
     assert_includes out, "hosted-qa-evidence v1"
+    assert_includes out, "Require a QA supersession marker replacing stale PR-body evidence"
+  end
+
+  def test_qa_supersession_requires_expected_head_sha
+    out, status = Open3.capture2e(
+      "ruby",
+      SCRIPT,
+      "--require-qa-supersession",
+      "-",
+      stdin_data: v2_marker
+    )
+
+    assert_equal 64, status.exitstatus
+    assert_includes out, "--require-qa-supersession requires --expected-head-sha"
   end
 
   def test_strict_visual_gate_requires_expected_head_sha
@@ -1642,6 +1663,298 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", data.fetch("priority_finding_dispositions").fetch("verdict")
     assert_equal 1, data.fetch("qa_evidence").fetch("marker_count")
     assert_equal 1, data.fetch("priority_finding_dispositions").fetch("marker_count")
+  end
+
+  def test_review_fix_supersession_handles_changed_head_and_qa_required_classification
+    stale_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    stale_pr_body = v2_marker(
+      "head_sha" => stale_head_sha,
+      "tested_at" => "PR #641 head #{stale_head_sha}"
+    )
+
+    stale_replay = run_replay(stale_pr_body, expected_head_sha: final_head_sha)
+    assert_equal "UNKNOWN", stale_replay.fetch("overall_verdict")
+
+    final_comment = v2_marker(
+      "required" => "no",
+      "status" => "not_applicable",
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}; QA not required after review fixes",
+      "scope" => "final documentation-only review-fix diff",
+      "automated_checks" => "not applicable: no executable behavior changed",
+      "manual_checks" => "not applicable: no runtime surface changed",
+      "user_visible_ui_change" => "no",
+      "visual_evidence_destination" => "not_applicable",
+      "visual_evidence" => "not applicable: no user-visible UI change",
+      "paint_check" => "not applicable: no rendered surface changed",
+      "interaction_change" => "no",
+      "interaction_evidence" => "not applicable: no interaction behavior changed",
+      "visual_fix" => "no",
+      "negative_control" => "not applicable: no visual fix",
+      "release_blocking" => "not_applicable"
+    ) + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: no
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    final_replay = run_replay(
+      final_comment,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    assert_equal "SATISFIED", final_replay.fetch("overall_verdict")
+    assert_equal "NOT_APPLICABLE", final_replay.fetch("qa_evidence").fetch("verdict")
+    supersession = final_replay.fetch("qa_evidence_supersession")
+    assert_equal "SATISFIED", supersession.fetch("verdict")
+    assert_equal "no", supersession.fetch("fields").fetch("required")
+    assert_equal final_head_sha, supersession.fetch("fields").fetch("head_sha")
+  end
+
+  def test_qa_supersession_uses_current_marker_from_preserved_history
+    stale_head_sha = "1111111111111111111111111111111111111111"
+    final_head_sha = "2222222222222222222222222222222222222222"
+    stale_supersession = <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{stale_head_sha}
+      required: yes
+      supersedes: pr_body
+      -->
+    MARKDOWN
+    final_supersession = <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: yes
+      supersedes: pr_body
+      -->
+    MARKDOWN
+    evidence = v2_marker(
+      "head_sha" => stale_head_sha,
+      "tested_at" => "PR #641 head #{stale_head_sha}"
+    ) + stale_supersession + v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) + final_supersession
+
+    replay = CloseoutEvidenceReplay.replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "SATISFIED", replay.fetch("overall_verdict")
+    assert_equal "SATISFIED", supersession.fetch("verdict")
+    assert_equal 1, supersession.fetch("marker_count")
+    assert_equal final_head_sha, supersession.fetch("fields").fetch("head_sha")
+  end
+
+  def test_qa_supersession_rejects_non_adjacent_supersession_comment
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) + <<~MARKDOWN
+
+      This supersession was posted in a separate comment.
+
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: yes
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_equal "UNKNOWN", supersession.fetch("verdict")
+    assert_includes supersession.fetch("missing"),
+                    "qa-evidence-supersession v1 marker must be adjacent to qa-evidence v2 marker"
+  end
+
+  def test_qa_supersession_rejects_required_classification_mismatch
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: no
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_equal "UNKNOWN", supersession.fetch("verdict")
+    assert_includes supersession.fetch("missing"), "required.qa_evidence_mismatch"
+  end
+
+  def test_qa_supersession_requires_adjacent_v2_evidence
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v1_marker(head_sha: final_head_sha) + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: yes
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_equal "UNKNOWN", supersession.fetch("verdict")
+    assert_includes supersession.fetch("missing"), "qa_evidence.marker_version"
+  end
+
+  def test_qa_supersession_reports_multiple_adjacent_v2_markers_without_false_mismatches
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) * 2 + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: yes
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_includes supersession.fetch("missing"), "exactly one qa-evidence marker is required"
+    refute_includes supersession.fetch("missing"), "head_sha.qa_evidence_mismatch"
+    refute_includes supersession.fetch("missing"), "required.qa_evidence_mismatch"
+  end
+
+  def test_present_qa_supersession_is_fail_closed_in_current_head_mode_without_requirement_flag
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: no
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(evidence, expected_head_sha: final_head_sha)
+
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_includes replay.fetch("qa_evidence_supersession").fetch("missing"),
+                    "required.qa_evidence_mismatch"
+  end
+
+  def test_preserved_qa_supersession_does_not_poison_historical_replay
+    historical_head_sha = "1111111111111111111111111111111111111111"
+    evidence = v2_marker(
+      "head_sha" => historical_head_sha,
+      "tested_at" => "historical PR head #{historical_head_sha}"
+    ) + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: 2222222222222222222222222222222222222222
+      required: no
+      supersedes: pr_body
+      -->
+    MARKDOWN
+
+    replay = run_replay(evidence)
+
+    assert_equal "SATISFIED", replay.fetch("overall_verdict")
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "NOT_APPLICABLE", supersession.fetch("verdict")
+    assert_equal "qa supersession was not requested for historical replay",
+                 supersession.fetch("reason")
+  end
+
+  def test_qa_supersession_rejects_unexpected_fields_and_case_mismatched_required
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = v2_marker(
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}"
+    ) + <<~MARKDOWN
+      <!-- qa-evidence-supersession v1
+      head_sha: #{final_head_sha}
+      required: Yes
+      supersedes: pr_body
+      note: unexpected
+      -->
+    MARKDOWN
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_includes supersession.fetch("errors"), "scalar keys must be exactly head_sha, required, supersedes"
+    assert_includes supersession.fetch("missing"), "required"
+  end
+
+  def test_required_qa_supersession_rejects_plain_exact_head_prose_and_marker
+    final_head_sha = "2222222222222222222222222222222222222222"
+    evidence = <<~MARKDOWN + v2_marker(
+      Detailed final verification for PR #641 head #{final_head_sha}.
+
+      The final diff is documentation-only, so no browser QA is required.
+    MARKDOWN
+      "required" => "no",
+      "status" => "not_applicable",
+      "head_sha" => final_head_sha,
+      "tested_at" => "PR #641 head #{final_head_sha}; QA not required after review fixes",
+      "user_visible_ui_change" => "no",
+      "visual_evidence_destination" => "not_applicable",
+      "visual_evidence" => "not applicable: no user-visible UI change",
+      "paint_check" => "not applicable: no rendered surface changed",
+      "interaction_change" => "no",
+      "interaction_evidence" => "not applicable: no interaction behavior changed",
+      "visual_fix" => "no",
+      "negative_control" => "not applicable: no visual fix",
+      "release_blocking" => "not_applicable"
+    )
+
+    replay = run_replay(
+      evidence,
+      expected_head_sha: final_head_sha,
+      require_qa_supersession: true
+    )
+
+    supersession = replay.fetch("qa_evidence_supersession")
+    assert_equal "UNKNOWN", replay.fetch("overall_verdict")
+    assert_equal "UNKNOWN", supersession.fetch("verdict")
+    assert_includes supersession.fetch("missing"), "qa-evidence-supersession v1 marker missing"
   end
 
   def test_expected_final_head_aggregates_all_current_head_qa_markers
