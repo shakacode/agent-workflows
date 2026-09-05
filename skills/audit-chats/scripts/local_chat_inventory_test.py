@@ -27,6 +27,8 @@ class LocalChatInventoryTest(unittest.TestCase):
             "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 ("active", "", None, "/a", 20, 20000, 19, 19000, 0, "vscode", "user", None, 1, "p"),
+                ("state-only", "State only", None, "/h", 17, 17000, 16, 16000, 0, "vscode", "user", None, 0, None),
+                ("missing-active", "Missing active", None, "/i", 28, 28000, 27, 27000, 0, "vscode", "user", None, 0, None),
                 ("archived", "old", None, "/b", 10, 10000, 9, 9000, 1, "vscode", "user", None, 0, None),
                 ("aged-archived", "aged", None, "/e", 8, 8000, 7, 7000, 1, "vscode", "user", None, 0, None),
                 ("agent-created", "worker", None, "/f", 18, 18000, 17, 17000, 0, "vscode", "agent_created_thread", None, 0, None),
@@ -48,6 +50,7 @@ class LocalChatInventoryTest(unittest.TestCase):
             [
                 ("local", "active", "Visible task", "vscode", "/a", 21, 19, 0),
                 ("local", "catalog-only", "Catalog task", "vscode", "/g", 20, 18, 0),
+                ("local", "missing-active", "Missing task", "vscode", "/i", 28, 27, 1),
                 ("local", "archived", "Archived task", "vscode", "/b", 99, 9, 1),
                 ("local", "worker", "Internal worker", "vscode", "/c", 31, 29, 0),
                 ("local", "exec", "Command", "exec", "/d", 41, 39, 0),
@@ -73,7 +76,7 @@ class LocalChatInventoryTest(unittest.TestCase):
         result = self.run_script()
         self.assertEqual("desktop-catalog", result["scope"])
         self.assertEqual(
-            ["active", "catalog-only"],
+            ["active", "catalog-only", "state-only"],
             [task["id"] for task in result["tasks"]],
         )
         self.assertEqual("Visible task", result["tasks"][0]["title"])
@@ -82,10 +85,17 @@ class LocalChatInventoryTest(unittest.TestCase):
         self.assertIsNone(result["tasks"][1]["archived"])
         self.assertFalse(result["tasks"][1]["state_available"])
 
+    def test_catalog_tombstone_excludes_unarchived_state_but_not_known_archived(self):
+        self.assertNotIn("missing-active", [task["id"] for task in self.run_script()["tasks"]])
+
+        result = self.run_script("--include-archived")
+        self.assertNotIn("missing-active", [task["id"] for task in result["tasks"]])
+        self.assertIn("archived", [task["id"] for task in result["tasks"]])
+
     def test_can_include_archived_tasks_without_including_workers(self):
         result = self.run_script("--include-archived")
         self.assertEqual(
-            ["active", "catalog-only", "archived", "aged-archived"],
+            ["active", "catalog-only", "state-only", "archived", "aged-archived"],
             [task["id"] for task in result["tasks"]],
         )
 
@@ -93,9 +103,10 @@ class LocalChatInventoryTest(unittest.TestCase):
         (self.home / "sqlite/codex-dev.db").unlink()
         result = self.run_script()
         self.assertEqual("state-vscode-fallback", result["scope"])
-        self.assertEqual("", result["tasks"][0]["title"])
-        self.assertEqual(19, result["tasks"][0]["recency_at"])
-        self.assertEqual(20, result["tasks"][0]["updated_at"])
+        active = next(task for task in result["tasks"] if task["id"] == "active")
+        self.assertEqual("", active["title"])
+        self.assertEqual(19, active["recency_at"])
+        self.assertEqual(20, active["updated_at"])
 
     def test_unsupported_catalog_uses_state_fallback(self):
         catalog_path = self.home / "sqlite/codex-dev.db"
@@ -106,7 +117,10 @@ class LocalChatInventoryTest(unittest.TestCase):
         result = self.run_script()
         self.assertEqual("state-vscode-fallback", result["scope"])
         self.assertIn("unsupported", result["warning"])
-        self.assertEqual(["active"], [task["id"] for task in result["tasks"]])
+        self.assertEqual(
+            ["missing-active", "active", "state-only"],
+            [task["id"] for task in result["tasks"]],
+        )
 
     def test_state_schema_requires_archive_and_source_columns(self):
         state_path = self.home / "state_5.sqlite"

@@ -27,8 +27,10 @@ Use the app task-list tool for live pins, recent tasks, task status, source kind
 and deep links. Its non-pinned result may be capped. When local filesystem access
 is available, run `scripts/local_chat_inventory.py` from this skill to enumerate
 the full local Codex Desktop catalog read-only, then union and deduplicate it
-with the app result by task id. Do not label a limited ChatGPT result as the
-complete cloud history.
+with the app result by task id. The app result owns live status, pins, source,
+and deep links; local inventory supplies fields absent there. Surface conflicts
+for refresh rather than selecting a winner. Do not label a limited ChatGPT
+result as the complete cloud history.
 
 Exclude internal workers, review agents, command-execution sessions, and other
 non-user-visible descendants. Include a user-visible task created by another

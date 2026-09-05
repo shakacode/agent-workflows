@@ -47,8 +47,6 @@ def catalog_rows(path: Path) -> dict[str, dict[str, object]]:
                 continue
             if row.get("host_id") not in (None, "local"):
                 continue
-            if bool(row.get("missing_candidate")):
-                continue
             rows[str(row["thread_id"])] = row
         return rows
     finally:
@@ -136,6 +134,10 @@ def build_inventory(codex_home: Path, include_archived: bool) -> dict[str, objec
     for thread_id in candidate_ids:
         row = state.get(thread_id, {})
         catalog_row = catalog.get(thread_id, {})
+        if catalog_row.get("missing_candidate") and not (
+            include_archived and row and bool(row.get("archived"))
+        ):
+            continue
         if row and not include_archived and bool(row.get("archived")):
             continue
         if row.get("agent_path"):
