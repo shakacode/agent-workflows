@@ -89,11 +89,13 @@ authority, merge without asking the user to perform the authorized mechanical
 action. Continue to use the repository submission policy and all exact-head
 assurance gates; autonomous authority does not bypass them.
 
-When current exact-diff human approval is genuinely required, first publish the
-complete exact-diff PR walkthrough if human understanding is the blocker. Put
+When current exact-diff human approval is genuinely required and human
+understanding is the blocker, use `$pr-walkthrough`. Direct chat requests remain
+live and read-only. Publish only when the user or an authorized workflow
+explicitly selects publication with comment authority. In that mode, put
 the orientation and all conceptual sections on GitHub in one pass under
 `$pr-walkthrough`'s mandatory inline-thread and no-anchor-stop rules, and let the owning task consume replies
-asynchronously. Use live interaction only when the maintainer explicitly asks.
+asynchronously. A publication-authority blocker is not an explicit skip.
 Then refresh readiness and present the full exact head SHA, the sorted gate set,
 and rollback status before asking one final question that names the exact
 approval needed. Walkthrough participation is not approval, and any head change

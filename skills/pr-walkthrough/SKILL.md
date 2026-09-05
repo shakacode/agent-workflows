@@ -217,6 +217,11 @@ question or stale/`UNKNOWN` evidence, name the exact required answer or repair
 and say whether to reply here or start a new task. The walkthrough summary and
 coverage ledger are evidence, not a next step.
 
+Before archiving a standalone published-review task, include its durable review
+URL and tell the user: to handle later GitHub replies, unarchive and resume this
+same task with that review URL. Reply consumption occurs on that explicit resume,
+not automatically while the task is archived; no new owner or monitor is needed.
+
 ## Boundaries
 
 - Remain read-only unless the user or an authorized repository workflow

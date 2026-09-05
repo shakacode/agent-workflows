@@ -12,6 +12,7 @@ class PrWalkthroughContractTest < Minitest::Test
   PR_MONITORING = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
   OPENAI_METADATA = File.join(ROOT, "skills/pr-walkthrough/agents/openai.yaml")
   GETTING_STARTED = File.join(ROOT, "docs/getting-started.md")
+  COORDINATION = File.join(ROOT, "docs/user-facing-coordination.md")
 
   def test_skill_is_exact_diff_interactive_and_complete
     skill = File.read(SKILL).gsub(/\s+/, " ")
@@ -106,6 +107,29 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_includes pr_batch,
                     "[automatic GitHub-native exact-diff walkthrough]" \
                     "(../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)"
+  end
+
+  def test_general_routing_preserves_direct_chat_authority
+    [WORKFLOW, COORDINATION].each do |path|
+      text = File.read(path).gsub(/\s+/, " ")
+
+      assert_includes text, "Direct chat requests"
+      assert_includes text, "the user or an authorized workflow explicitly selects publication with comment authority"
+    end
+
+    workflow = File.read(WORKFLOW).gsub(/\s+/, " ")
+    assert_includes workflow, "Direct chat requests use live, read-only interaction."
+    coordination = File.read(COORDINATION).gsub(/\s+/, " ")
+    assert_includes coordination, "Direct chat requests remain live and read-only."
+    assert_includes coordination, "A publication-authority blocker is not an explicit skip."
+  end
+
+  def test_archived_standalone_publication_has_an_explicit_reply_resume_route
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+
+    assert_includes skill, "Before archiving a standalone published-review task, include its durable review URL"
+    assert_includes skill, "unarchive and resume this same task with that review URL"
+    assert_includes skill, "Reply consumption occurs on that explicit resume, not automatically while the task is archived"
   end
 
   def test_async_reply_consumption_needs_no_undefined_cutoff

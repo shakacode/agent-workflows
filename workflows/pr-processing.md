@@ -52,10 +52,11 @@ For post-merge audits after a concurrent batch or before a release candidate, us
 For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversarial-pr-review/SKILL.md` when skills are available. Reusable Codex, Claude, and comparison prompts live in `.agents/workflows/adversarial-pr-review.md`.
 
 For a human-oriented explanation of a PR, use
-`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It prepares
-the complete exact-diff explanation, publishes the conceptual sections as
-separately replyable GitHub threads, and lets the owning task consume questions
-asynchronously. Live interaction is an explicit fallback.
+`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. Direct chat
+requests use live, read-only interaction. When the user or an authorized workflow
+explicitly selects publication with comment authority, it prepares the complete
+exact-diff explanation, publishes separately replyable GitHub threads, and lets
+the owning task consume questions asynchronously.
 
 ## User-Facing Coordination Contract
 
