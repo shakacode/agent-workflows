@@ -1894,6 +1894,10 @@ prepare_metadata() {
     end
     skill_fingerprints = if mode == "copy" && delivery_mode == "flat"
                            Dir.children(File.join(source, "skills")).sort.each_with_object({}) do |name, fingerprints|
+                             # copy_children_preserving_unrelated never installs a hidden
+                             # entry, so recording one would name content that is not there.
+                             next if name.start_with?(".")
+
                              root = File.join(source, "skills", name)
                              next unless File.directory?(root) && !File.symlink?(root)
 
@@ -3240,15 +3244,27 @@ validate_scanner_companion_ancestors() {
 copy_children_preserving_unrelated() {
   local source_dir="$1"
   local target_dir="$2"
-  local source_path destination
+  local skip_hidden="${3:-0}"
+  local source_path destination name dotglob_enabled=0
+  shopt -q dotglob && dotglob_enabled=1
   ensure_real_directory "$target_dir"
 
-  for source_path in "$source_dir"/*; do
-    [[ -e "$source_path" ]] || continue
-    destination="$target_dir/$(basename "$source_path")"
-    rm -rf "$destination"
-    rsync -a "$source_path" "$target_dir/"
-  done
+  (
+    unset GLOBIGNORE
+    [[ "$dotglob_enabled" = "0" ]] || shopt -s dotglob
+    for source_path in "$source_dir"/*; do
+      [[ -e "$source_path" ]] || continue
+      name="$(basename "$source_path")"
+      # Skill receipts exclude hidden names, so the corresponding copy must do the
+      # same even when inherited shell options make the glob include them.
+      if [[ "$skip_hidden" = "1" && "$name" = .* ]]; then
+        continue
+      fi
+      destination="$target_dir/$name"
+      rm -rf "$destination"
+      rsync -a "$source_path" "$target_dir/"
+    done
+  )
 }
 
 workflow_doctor_copy_matches_source() {
@@ -3521,7 +3537,7 @@ verify_third_party_notices_destination() {
 }
 
 verify_install_destinations() {
-  local destination helper skill source_path
+  local destination helper skill skill_name source_path
 
   if [[ "$mode" = "copy" ]]; then
     for destination in "$target/bin" "$target/workflows" "$target/docs" "$target/docs/solutions"; do
@@ -3572,7 +3588,9 @@ verify_install_destinations() {
     if [[ "$delivery_mode" = "flat" ]]; then
       for skill in "$repo_root"/skills/*; do
         [[ -d "$skill" ]] || continue
-        destination="$target/skills/$(basename "$skill")"
+        skill_name="$(basename "$skill")"
+        [[ "$skill_name" != .* ]] || continue
+        destination="$target/skills/$skill_name"
         if [[ ( -e "$destination" || -L "$destination" ) && ! -L "$destination" ]]; then
           echo "Refusing to replace non-symlink path: $destination" >&2
           exit 1
@@ -4080,7 +4098,7 @@ if [[ "$mode" = "copy" ]]; then
   copy_pack_third_party_notices
   if [[ "$delivery_mode" = "flat" ]]; then
     ensure_real_directory "$target/skills"
-    copy_children_preserving_unrelated "$repo_root/skills" "$target/skills"
+    copy_children_preserving_unrelated "$repo_root/skills" "$target/skills" 1
   fi
   ensure_real_directory "$target/workflows"
   ensure_real_directory "$target/docs"
@@ -4123,7 +4141,11 @@ else
     mkdir -p "$target/skills"
     for skill in "$repo_root"/skills/*; do
       [[ -d "$skill" ]] || continue
-      destination="$target/skills/$(basename "$skill")"
+      skill_name="$(basename "$skill")"
+      # Same hidden-entry rule as copy mode: never depend on glob options an
+      # inherited BASHOPTS or GLOBIGNORE can change.
+      [[ "$skill_name" != .* ]] || continue
+      destination="$target/skills/$skill_name"
       if [[ -e "$destination" && ! -L "$destination" ]]; then
         echo "Refusing to replace non-symlink path: $destination" >&2
         exit 1

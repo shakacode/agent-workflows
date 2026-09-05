@@ -4647,6 +4647,273 @@ test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history() {
   ' "$modified_target/.agent-workflows-install.json"
 }
 
+test_flat_copy_migrates_uncommitted_skill_to_companion_with_recorded_revision() {
+  local tmp source target modified_target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/uncommitted-migration"
+  printf '%s\n' '---' 'name: uncommitted-migration' \
+    'description: Exercise migration of a fingerprinted uncommitted skill.' \
+    '---' '' '# Uncommitted Migration' > "$source/skills/uncommitted-migration/SKILL.md"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/flat.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints")
+    abort metadata.inspect unless metadata["source_revision"].match?(/\A[0-9a-f]{40}\z/)
+    abort metadata.inspect unless fingerprints.key?("uncommitted-migration")
+  ' "$target/.agent-workflows-install.json"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion >"$tmp/companion.out"
+
+  [[ ! -e "$target/skills/uncommitted-migration" ]] || \
+    fail "companion migration retained the fingerprinted uncommitted flat skill"
+  [[ ! -e "$target/skills/pr-batch" ]] || \
+    fail "companion migration retained a committed managed flat skill"
+  assert_file "$source/skills/uncommitted-migration/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+  ' "$target/.agent-workflows-install.json"
+
+  modified_target="$tmp/modified-codex-home"
+  "$source/bin/install-agent-workflows" --host codex --target "$modified_target" \
+    --mode copy --delivery-mode flat >"$tmp/modified-flat.out"
+  printf '\npersonal uncommitted migration edit\n' >> \
+    "$modified_target/skills/uncommitted-migration/SKILL.md"
+  write_native_scw_state codex "$modified_target"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$modified_target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "migration accepted a modified fingerprinted uncommitted skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'personal uncommitted migration edit' \
+    "$modified_target/skills/uncommitted-migration/SKILL.md" || \
+    fail "blocked migration changed the modified uncommitted skill"
+  assert_file "$modified_target/skills/pr-batch/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$modified_target/.agent-workflows-install.json"
+}
+
+test_empty_copy_receipt_preserves_revision_matching_target_skill() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$tmp/committed-pr-batch" "$target/skills"
+  cp -R "$source/skills/pr-batch/." "$tmp/committed-pr-batch/"
+  cp -R "$tmp/committed-pr-batch" "$target/skills/pr-batch"
+  find "$source/skills" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/flat.out"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata.fetch("managed_skill_copy_fingerprints") == {}
+    abort metadata.inspect unless metadata["source_revision"].match?(/\A[0-9a-f]{40}\z/)
+  ' "$target/.agent-workflows-install.json"
+  write_native_scw_state codex "$target"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "empty copy receipt authorized removing a preserved target skill"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  cmp -s "$tmp/committed-pr-batch/SKILL.md" "$target/skills/pr-batch/SKILL.md" || \
+    fail "blocked empty-receipt migration changed the preserved target skill"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_hidden_source_skill_entry_is_never_recorded_or_migrated() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/.shadow"
+  printf 'shadow payload\n' > "$source/skills/.shadow/notes.md"
+  mkdir -p "$target/skills/.shadow"
+  printf 'shadow payload\n' > "$target/skills/.shadow/notes.md"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode flat >"$tmp/flat.out"
+
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints")
+    abort metadata.inspect if fingerprints.keys.any? { |name| name.start_with?(".") }
+  ' "$target/.agent-workflows-install.json"
+  assert_file "$target/skills/.shadow/notes.md"
+  write_native_scw_state codex "$target"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode copy --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "migration accepted a personal hidden entry under skills"
+  assert_contains "$output" "DELIVERY_MODE_CONFLICT"
+  grep -qxF 'shadow payload' "$target/skills/.shadow/notes.md" || \
+    fail "blocked migration removed or changed the personal hidden entry"
+  assert_file "$target/skills/pr-batch/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "flat"
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_inherited_dotglob_does_not_change_the_installed_skill_set() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/.shadow"
+  printf 'shadow payload\n' > "$source/skills/.shadow/notes.md"
+
+  # An inherited BASHOPTS entry makes "$dir"/* expand to hidden children on
+  # Bash 4+, so the copy loop must exclude them without relying on glob options.
+  env BASHOPTS=dotglob "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat >"$tmp/flat.out"
+
+  [[ ! -e "$target/skills/.shadow" ]] || \
+    fail "inherited dotglob installed a hidden source entry"
+  assert_file "$target/skills/pr-batch/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_skill_copy_fingerprints")
+    abort metadata.inspect if fingerprints.keys.any? { |name| name.start_with?(".") }
+    abort metadata.inspect unless fingerprints.key?("pr-batch")
+  ' "$target/.agent-workflows-install.json"
+  write_native_scw_state codex "$target"
+
+  env BASHOPTS=dotglob "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode plugin-companion >"$tmp/companion.out"
+
+  [[ ! -e "$target/skills/pr-batch" ]] || \
+    fail "companion migration retained a managed flat skill under inherited dotglob"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_inherited_dotglob_does_not_change_the_symlinked_skill_set() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/.shadow"
+  printf 'shadow payload\n' > "$source/skills/.shadow/notes.md"
+  git -C "$source" add skills/.shadow
+  git -C "$source" commit --quiet -m "commit hidden skill"
+
+  # Symlink mode uses its own skills/* loop, which must apply the same
+  # hidden-entry rule as copy mode so the managed inventory stays consistent.
+  env BASHOPTS=dotglob "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode symlink --delivery-mode flat >"$tmp/flat.out"
+
+  [[ ! -e "$target/skills/.shadow" ]] || \
+    fail "inherited dotglob symlinked a hidden source entry"
+  assert_symlink "$target/skills/pr-batch"
+  write_native_scw_state codex "$target"
+
+  env BASHOPTS=dotglob "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode symlink --delivery-mode plugin-companion >"$tmp/companion.out"
+
+  [[ ! -e "$target/skills/pr-batch" ]] || \
+    fail "companion migration retained a managed flat symlink under inherited dotglob"
+  assert_file "$source/skills/.shadow/notes.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata["delivery_mode"] == "plugin-companion"
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_inherited_dotglob_symlink_preflight_ignores_hidden_source_entry() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/.shadow" "$target/skills/.shadow"
+  printf 'source shadow\n' > "$source/skills/.shadow/notes.md"
+  printf 'personal shadow\n' > "$target/skills/.shadow/notes.md"
+  git -C "$source" add skills/.shadow
+  git -C "$source" commit --quiet -m "commit hidden skill"
+
+  env BASHOPTS=dotglob "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode symlink --delivery-mode flat >"$tmp/flat.out"
+
+  assert_symlink "$target/skills/pr-batch"
+  grep -qxF 'personal shadow' "$target/skills/.shadow/notes.md" || \
+    fail "symlink preflight changed an unrelated hidden target entry"
+}
+
+test_bash_env_globignore_does_not_change_the_installed_skill_set() {
+  local tmp source target bash_env
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  bash_env="$tmp/bash-env"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/globignore-fixture"
+  printf 'globignore fixture\n' > "$source/skills/globignore-fixture/SKILL.md"
+  printf 'GLOBIGNORE=%q\n' "$source/skills/globignore-fixture" > "$bash_env"
+
+  BASH_ENV="$bash_env" "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat >"$tmp/flat.out"
+
+  assert_file "$target/skills/globignore-fixture/SKILL.md"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect unless metadata.fetch("managed_skill_copy_fingerprints").key?("globignore-fixture")
+  ' "$target/.agent-workflows-install.json"
+}
+
+test_inherited_dotglob_preserves_hidden_workflow_copy() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/workflows/.hidden-fixture"
+  printf 'hidden workflow\n' > "$source/workflows/.hidden-fixture/notes.md"
+
+  env BASHOPTS=dotglob "$source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode copy --delivery-mode flat >"$tmp/flat.out"
+
+  assert_file "$target/workflows/.hidden-fixture/notes.md"
+}
+
 test_copy_metadata_fingerprint_matches_delivery_state_verifier() {
   local tmp source target recorded_fingerprint verified_fingerprint
   tmp="$(mktemp -d)"
@@ -8658,6 +8925,14 @@ main() {
     test_repeat_flat_copy_install_blocks_modified_recorded_targets
     test_repeat_flat_copy_install_uses_fingerprints_without_git_history
     test_flat_copy_migrates_to_companion_with_fingerprints_without_git_history
+    test_flat_copy_migrates_uncommitted_skill_to_companion_with_recorded_revision
+    test_empty_copy_receipt_preserves_revision_matching_target_skill
+    test_hidden_source_skill_entry_is_never_recorded_or_migrated
+    test_inherited_dotglob_does_not_change_the_installed_skill_set
+    test_inherited_dotglob_does_not_change_the_symlinked_skill_set
+    test_inherited_dotglob_symlink_preflight_ignores_hidden_source_entry
+    test_bash_env_globignore_does_not_change_the_installed_skill_set
+    test_inherited_dotglob_preserves_hidden_workflow_copy
     test_copy_metadata_fingerprint_matches_delivery_state_verifier
     test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc
     test_repeat_copy_install_blocks_modified_solution_document

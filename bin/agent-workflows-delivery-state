@@ -587,7 +587,7 @@ module AgentWorkflowsDeliveryState
     return unless metadata&.fetch("mode", nil) == "copy"
 
     fingerprints = metadata.fetch("managed_skill_copy_fingerprints", nil)
-    return unless fingerprints.is_a?(Hash) && !fingerprints.empty?
+    return unless fingerprints.is_a?(Hash)
     return unless fingerprints.all? do |name, digest|
       valid_name = name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
       valid_digest = digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/i)
@@ -631,6 +631,20 @@ module AgentWorkflowsDeliveryState
       "state" => "ambiguous", "paths" => present.sort,
       "removable" => [], "blocking" => blocking.sort
     }
+  end
+
+  def installed_skill_paths(skills_path)
+    return {} unless File.directory?(skills_path) && !File.symlink?(skills_path)
+
+    Dir.children(skills_path).each_with_object({}) do |name, paths|
+      path = File.join(skills_path, name)
+      stat = File.lstat(path)
+      paths[path] = [stat.dev, stat.ino]
+    rescue SystemCallError
+      next
+    end
+  rescue SystemCallError
+    nil
   end
 
   def managed_flat_inventory(target:, source:, delivery_mode:, collision_names: [])
@@ -696,40 +710,90 @@ module AgentWorkflowsDeliveryState
 
     removable = []
     legacy_flat = metadata && prior_delivery_mode == "flat"
-    names, snapshot = if legacy_flat && recorded_revision_unavailable
-                        [recorded_fingerprints ? recorded_fingerprints.keys.sort : [], nil]
-                      elsif legacy_flat
-                        skill_names(source, metadata)
-                      else
-                        [collision_names, nil]
-                      end
-    recorded_names = names.to_h { |name| [name, true] }
-    blocking = if legacy_flat && File.directory?(skills_path) && !File.symlink?(skills_path)
-                 Dir.children(skills_path).filter_map do |name|
-                   File.join(skills_path, name) unless recorded_names.key?(name)
-                 end
-               else
-                 []
-               end
+    fingerprint_names = recorded_fingerprints ? recorded_fingerprints.keys : []
+    # A copy receipt fingerprints every skill the flat install placed, so it is the
+    # complete inventory of what the installer owns. The recorded revision is only a
+    # verification snapshot for the names both sources agree on: a dirty checkout can
+    # add a skill the revision lacks, and can delete one the revision still carries.
+    snapshot_backed_names, names, snapshot = if legacy_flat && recorded_revision_unavailable
+                                               [[], fingerprint_names, nil]
+                                             elsif legacy_flat
+                                               revision_names, revision_snapshot = skill_names(source, metadata)
+                                               if recorded_fingerprints
+                                                 [revision_names & fingerprint_names, fingerprint_names, revision_snapshot]
+                                               else
+                                                 [revision_names, revision_names, revision_snapshot]
+                                               end
+                                             else
+                                               [[], collision_names, nil]
+                                             end
+    if legacy_flat
+      unless metadata["mode"] == "symlink"
+        # A copy receipt cannot prove whether an inherited glob option
+        # installed a hidden entry or merely fingerprinted an unrelated one. Keep
+        # those names fail-closed. Symlink ownership remains provable from the exact
+        # recorded link target, including installs made before the hidden-name guard.
+        snapshot_backed_names = snapshot_backed_names.grep_v(/\A\./)
+        names = names.grep_v(/\A\./)
+      end
+      names = names.sort
+    end
+    snapshot_backed = snapshot_backed_names.to_h { |name| [name, true] }
+    # Two recorded names can resolve to one installed entry, for example a case-only
+    # rename recorded on a case-insensitive volume. Use filesystem identity to find
+    # that entry, then key it by its real directory path: distinct hard-linked
+    # directory entries can share an identity and must not be collapsed. This also
+    # preserves the installed spelling if staging later has to restore the entry.
+    installed_paths = installed_skill_paths(skills_path)
+    unless installed_paths
+      return {
+        "state" => "unknown",
+        "removable" => [],
+        "blocking" => [skills_path],
+        "reason" => "skills inventory changed during inspection: #{skills_path}"
+      }
+    end
+    installed_paths_by_identity = installed_paths.each_with_object(Hash.new { |hash, key| hash[key] = [] }) do |(path, identity), paths|
+      paths[identity] << path
+    end
+    entries = {}
     names.each do |name|
       path = File.join(target, "skills", name)
       next unless File.exist?(path) || File.symlink?(path)
 
-      fingerprint_owned = legacy_flat && recorded_skill_copy_fingerprint_matches?(path, metadata, name)
-      unless legacy_flat && (snapshot || fingerprint_owned)
-        blocking << path
+      begin
+        stat = File.lstat(path)
+      rescue SystemCallError
         next
       end
+      identity = [stat.dev, stat.ino]
+      candidates = installed_paths_by_identity.fetch(identity, [])
+      installed_path = candidates.find { |candidate| File.basename(candidate) == name } ||
+                       candidates.find { |candidate| File.basename(candidate).casecmp?(name) } || path
+      entry = (entries[installed_path] ||= { path: installed_path, owned: false })
 
-      if File.symlink?(path)
-        resolved = File.expand_path(File.readlink(path), File.dirname(path))
-        allowed = [metadata["source"], source].compact.map { |root| File.expand_path(File.join(root, "skills", name)) }
-        (allowed.include?(resolved) ? removable : blocking) << path
-      elsif fingerprint_owned || matches_directory_snapshot?(path, snapshot, name)
-        removable << path
-      else
-        blocking << path
-      end
+      fingerprint_owned = legacy_flat && recorded_skill_copy_fingerprint_matches?(path, metadata, name)
+      # Names carried only by a fingerprint have no entry in the recorded revision,
+      # so they must earn ownership from that fingerprint alone.
+      name_snapshot = snapshot_backed.key?(name) ? snapshot : nil
+      next unless legacy_flat && (name_snapshot || fingerprint_owned)
+
+      entry[:owned] ||= if File.symlink?(path)
+                          resolved = File.expand_path(File.readlink(path), File.dirname(path))
+                          allowed = [metadata["source"], source].compact.map do |root|
+                            File.expand_path(File.join(root, "skills", name))
+                          end
+                          allowed.include?(resolved)
+                        else
+                          fingerprint_owned || (name_snapshot && matches_directory_snapshot?(path, name_snapshot, name))
+                        end
+    end
+    # An installed directory entry that no recorded name resolves to is not
+    # installer-owned. Entries use their real paths, so case aliases deduplicate while
+    # distinct hard links remain independently visible here.
+    blocking = legacy_flat ? installed_paths.keys.reject { |path| entries.key?(path) } : []
+    entries.each_value do |entry|
+      (entry.fetch(:owned) ? removable : blocking) << entry.fetch(:path)
     end
 
     { "state" => if blocking.empty?
