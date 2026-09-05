@@ -83,6 +83,16 @@ class SecurityFloorContractTest < Minitest::Test
     refute_includes @skill, "Add `--fail-on-high-risk-files`"
   end
 
+  def test_trusted_base_high_risk_acceptance_stays_in_the_floor_adapter
+    normalized_floor = @floor.gsub(/\s+/, " ")
+
+    assert_includes normalized_floor, "`pr_security_preflight.trusted_base_high_risk_acceptance`"
+    assert_includes normalized_floor, "`TRUSTED_BASE_HIGH_RISK_ACCEPTED` receipt"
+    assert_includes normalized_floor, "This waives only `high-risk-files`; manual acknowledgement remains distinct"
+    assert_includes normalized_floor, "Rerun preflight after any base movement"
+    refute_includes @skill, "`TRUSTED_BASE_HIGH_RISK_ACCEPTED`"
+  end
+
   def test_result_is_stage_bound_and_preserves_every_target_security_fact
     normalized_floor = @floor.gsub(/\s+/, " ")
     normalized_intake = @intake.gsub(/\s+/, " ")

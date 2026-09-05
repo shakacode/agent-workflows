@@ -9,13 +9,150 @@ require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
+require "rbconfig"
 require "shellwords"
+require "socket"
 require "tmpdir"
+require "uri"
 require "yaml"
 
 require_relative "../lib/git_probe_env"
 
 SCRIPT = File.expand_path("pr-security-preflight", __dir__)
+REAL_GIT = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |directory|
+  candidate = File.join(directory, "git")
+  candidate if File.file?(candidate) && File.executable?(candidate)
+end.first || raise("git executable not found")
+load SCRIPT
+
+TestCommandStatus = Struct.new(:exitstatus) do
+  def success?
+    exitstatus.zero?
+  end
+end
+
+TestSignaledCommandStatus = Struct.new(:termsig) do
+  def success?
+    false
+  end
+
+  def exitstatus
+    nil
+  end
+end
+
+def resolve_process_state_executable(path: ENV.fetch("PATH", ""), fixed_candidates: %w[/usr/bin/ps /bin/ps])
+  fixed_candidates.each do |candidate|
+    canonical_candidate = canonical_process_state_executable(candidate)
+    next unless canonical_candidate
+    next unless process_state_root_owned?(canonical_candidate)
+
+    return canonical_candidate
+  end
+
+  rejected_roots = [
+    File.realpath(File.expand_path("../../..", __dir__)),
+    File.realpath(Dir.tmpdir),
+    File.realpath(Dir.home)
+  ]
+  candidates = path.split(File::PATH_SEPARATOR).filter_map do |directory|
+    next if directory.empty?
+    next unless File.absolute_path(directory) == directory
+
+    File.join(directory, "ps")
+  end
+  candidates.each do |candidate|
+    canonical_candidate = canonical_process_state_executable(candidate)
+    next unless canonical_candidate
+    next unless process_state_fallback_trusted?(canonical_candidate, rejected_roots:)
+
+    return canonical_candidate
+  end
+
+  raise "ps is unavailable"
+end
+
+def canonical_process_state_executable(candidate)
+  return unless File.absolute_path(candidate) == candidate
+  return unless File.file?(candidate) && File.executable?(candidate)
+
+  File.realpath(candidate)
+rescue ArgumentError, SystemCallError
+  nil
+end
+
+def process_state_root_owned?(candidate)
+  File.stat(candidate).uid.zero?
+rescue SystemCallError
+  false
+end
+
+def process_state_fallback_trusted?(canonical_candidate, rejected_roots:, writable: File.method(:writable?))
+  return false if rejected_roots.any? do |root|
+    canonical_candidate == root || canonical_candidate.start_with?("#{root}#{File::SEPARATOR}")
+  end
+
+  candidate_ancestor = canonical_candidate
+  loop do
+    return false if writable.call(candidate_ancestor)
+
+    parent = File.dirname(candidate_ancestor)
+    return true if parent == candidate_ancestor
+
+    candidate_ancestor = parent
+  end
+end
+
+class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
+  attr_reader :fetch_environments, :fetch_roots
+
+  def initialize(base_sha:, fetched_policy:, expected_merge_sha:, fetch_fail: false, checkout_matches: true,
+                 trusted_ref: "refs/heads/main", trusted_ref_sha: nil)
+    super()
+    @base_sha = base_sha
+    @fetched_policy = fetched_policy
+    @expected_merge_sha = expected_merge_sha
+    @fetch_fail = fetch_fail
+    @checkout_matches = checkout_matches
+    @trusted_ref = trusted_ref
+    @trusted_ref_sha = trusted_ref_sha || base_sha
+    @fetch_environments = []
+    @fetch_roots = []
+  end
+
+  def with_isolated_base(_remote_url, _ref)
+    return [nil, "fetch of trusted remote/ref failed: simulated failure"] if @fetch_fail
+
+    Dir.mktmpdir("pr-security-preflight-test-operations") do |fetch_root|
+      @fetch_environments << trusted_git_probe_env
+      @fetch_roots << fetch_root
+      yield fetch_root, @base_sha
+    end
+  end
+
+  def fetched_policy(_root, _base_sha, repo:)
+    yaml = @fetched_policy.is_a?(String) ? @fetched_policy : YAML.dump(@fetched_policy)
+    trusted_base_policy_from_yaml(yaml, repo:)
+  end
+
+  def trusted_ref_anchor(_root, _remote_url, operator_ref:)
+    ref = operator_ref || @trusted_ref
+    source = operator_ref ? "operator-environment:#{TRUSTED_BASE_REF_ENV}" : "authenticated-remote-default-head"
+    [{ ref:, sha: operator_ref ? nil : @trusted_ref_sha, source: }, nil]
+  end
+
+  def ancestor?(_root, merge_sha, _base_sha)
+    return [true, nil] if merge_sha == @expected_merge_sha
+
+    [false, "PR merge result is not an ancestor of fetched trusted base: simulated non-ancestor"]
+  end
+
+  def checkout_matches_fetched_base?(_root, _base_sha, _policy_ref)
+    return [true, nil] if @checkout_matches
+
+    [false, "trusted checkout HEAD does not match freshly fetched trusted base"]
+  end
+end
 
 class PrSecurityPreflightTest < Minitest::Test
   def test_self_reports_canonical_helper_path_and_digest
@@ -1038,6 +1175,59 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_ordinary_git_probe_uses_path_resolved_git
+    Dir.mktmpdir("pr-security-preflight-path-git") do |dir|
+      marker = File.join(dir, "git.log")
+      wrapper = File.join(dir, "git")
+      File.write(wrapper, <<~SH)
+        #!/bin/sh
+        printf 'executed\n' >> #{Shellwords.shellescape(marker)}
+        exec #{Shellwords.shellescape(REAL_GIT)} "$@"
+      SH
+      FileUtils.chmod(0o755, wrapper)
+
+      _stdout, _stderr, status = with_env("PATH" => "#{dir}#{File::PATH_SEPARATOR}#{ENV.fetch('PATH')}") do
+        capture_git_probe("git", "--version")
+      end
+
+      assert status.success?
+      assert(File.readlines(marker).all? { |line| line == "executed\n" })
+      refute_empty File.readlines(marker)
+    end
+  end
+
+  def test_trusted_git_metadata_probe_runs_with_scrubbed_environment
+    Dir.mktmpdir("pr-security-preflight-trusted-metadata") do |dir|
+      marker = File.join(dir, "metadata-env.log")
+      wrapper = File.join(dir, "trusted-git")
+      File.write(wrapper, <<~SH)
+        #!/bin/sh
+        printf '%s|%s\n' "${GIT_TRACE-unset}" "${PREFLIGHT_METADATA_SENTINEL-unset}" > #{Shellwords.shellescape(marker)}
+        exec #{Shellwords.shellescape(REAL_GIT)} "$@"
+      SH
+      FileUtils.chmod(0o755, wrapper)
+
+      original = Object.instance_method(:resolve_trusted_git_executable)
+      Object.send(:define_method, :resolve_trusted_git_executable) { wrapper }
+      Object.send(:private, :resolve_trusted_git_executable)
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = nil
+      TrustedGitState.local_env_vars = nil
+
+      with_env("GIT_TRACE" => "1", "PREFLIGHT_METADATA_SENTINEL" => "ambient") do
+        trusted_git_local_env_vars
+      end
+
+      assert_equal "unset|unset\n", File.read(marker)
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+      Object.send(:define_method, :resolve_trusted_git_executable, original) if original
+      Object.send(:private, :resolve_trusted_git_executable)
+    end
+  end
+
   def test_explicit_trust_config_in_mismatched_repo_is_global
     with_fake_gh("warning-issue") do |env, _trust_config_path, _log_path, dir|
       other_root = File.join(dir, "other")
@@ -1716,6 +1906,2019 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_accepts_exact_merged_same_repository_ancestor
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, '"repository":"owner/repo"'
+      assert_includes out, '"pr":123'
+      assert_includes out, %("head_sha":"#{provenance.fetch(:head_sha)}")
+      assert_includes out, %("merge_sha":"#{provenance.fetch(:merge_sha)}")
+      assert_includes out, %("base_sha":"#{provenance.fetch(:base_sha)}")
+      assert_includes out, %("policy_source":"#{provenance.fetch(:base_sha)}:.agents/agent-workflow.yml")
+      assert_includes out, '"policy_ref_anchor":"authenticated-remote-default-head"'
+      assert_includes out, %("policy_ref_anchor_sha":"#{provenance.fetch(:base_sha)}")
+      assert_includes out, '"high_risk_paths":[".github/workflows/test.yml","AGENTS.md"]'
+      refute_includes out, "Acknowledged security preflight findings:"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_trusted_base_rejects_feature_branch_that_selects_itself_as_trust_anchor
+    policy = trusted_base_policy("ref" => "refs/heads/feature/self-anchor")
+    with_trusted_base_preflight(
+      policy:,
+      fetched_policy: policy,
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_GRAPH_BASE_REF" => "feature/self-anchor",
+        "PREFLIGHT_TEST_REST_BASE_REF" => "feature/self-anchor"
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "trusted-base policy ref does not match independently authenticated ref"
+    end
+  end
+
+  def test_trusted_base_accepts_nondefault_ref_only_with_operator_owned_anchor
+    policy = trusted_base_policy("ref" => "refs/heads/release/trusted")
+    with_trusted_base_preflight(
+      policy:,
+      fetched_policy: policy,
+      fixture_env_overrides: {
+        TRUSTED_BASE_REF_ENV => "refs/heads/release/trusted",
+        "PREFLIGHT_TEST_GRAPH_BASE_REF" => "release/trusted",
+        "PREFLIGHT_TEST_REST_BASE_REF" => "release/trusted"
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, %("policy_ref_anchor":"operator-environment:#{TRUSTED_BASE_REF_ENV}")
+    end
+  end
+
+  def test_trusted_base_rejects_malformed_operator_owned_ref_anchor
+    with_trusted_base_preflight(
+      fixture_env_overrides: { TRUSTED_BASE_REF_ENV => "main" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "#{TRUSTED_BASE_REF_ENV} must name one full refs/heads/... ref"
+    end
+  end
+
+  def test_manual_high_risk_acknowledgement_stays_distinct_from_trusted_base_receipt
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_script(
+        env,
+        "--repo",
+        "owner/repo",
+        "--trust-config",
+        trust_config_path,
+        "--strict-trust",
+        "--fail-on-high-risk-files",
+        "--acknowledge-risk",
+        "123:high-risk-files",
+        "123",
+        chdir: repo_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "Acknowledged security preflight findings:"
+      assert_includes out, "#123: high-risk files changed"
+      refute_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_trusted_base_rejects_open_unmerged_pr
+    with_trusted_base_preflight(
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_PR_STATE" => "open",
+        "PREFLIGHT_TEST_PR_MERGED" => "false",
+        "PREFLIGHT_TEST_GRAPH_STATE" => "OPEN"
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "repository/state/head/merge facts are missing or inconsistent"
+    end
+  end
+
+  def test_trusted_base_rejects_fork_or_foreign_repository
+    cases = {
+      "fork head" => {
+        "PREFLIGHT_TEST_CROSS_REPOSITORY" => "true",
+        "PREFLIGHT_TEST_GRAPH_HEAD_REPO" => "contributor/repo",
+        "PREFLIGHT_TEST_HEAD_REPO" => "contributor/repo"
+      },
+      "foreign base" => { "PREFLIGHT_TEST_BASE_REPO" => "other/repo" }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "repository/state/head/merge facts are missing or inconsistent", label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_head_or_merge_api_mismatch
+    cases = {
+      "head mismatch" => { "PREFLIGHT_TEST_REST_HEAD_SHA" => "e" * 40 },
+      "merge mismatch" => { "PREFLIGHT_TEST_REST_MERGE_SHA" => "d" * 40 }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "GraphQL and REST #{label.split.first} SHAs do not match"
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_missing_or_mismatched_base_ref_provenance
+    cases = {
+      "missing GraphQL base ref" => { "PREFLIGHT_TEST_GRAPH_BASE_REF" => "" },
+      "missing REST base ref" => { "PREFLIGHT_TEST_REST_BASE_REF" => "" },
+      "GraphQL base ref mismatch" => { "PREFLIGHT_TEST_GRAPH_BASE_REF" => "develop" },
+      "REST base ref mismatch" => { "PREFLIGHT_TEST_REST_BASE_REF" => "release" },
+      "cross-API base ref mismatch" => {
+        "PREFLIGHT_TEST_GRAPH_BASE_REF" => "develop",
+        "PREFLIGHT_TEST_REST_BASE_REF" => "release"
+      }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "base ref", label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_missing_or_conflicting_rest_author
+    cases = {
+      "missing REST author" => { "PREFLIGHT_TEST_MISSING_REST_AUTHOR" => "1" },
+      "conflicting REST author" => { "PREFLIGHT_TEST_REST_AUTHOR_LOGIN" => "other-maintainer" }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "PR author", label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_non_ancestor_merge_result
+    unrelated_sha = "f" * 40
+    with_trusted_base_preflight(
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_GRAPH_MERGE_SHA" => unrelated_sha,
+        "PREFLIGHT_TEST_REST_MERGE_SHA" => unrelated_sha
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "PR merge result is not an ancestor of fetched trusted base"
+    end
+  end
+
+  def test_trusted_base_does_not_override_independent_security_stops
+    cases = {
+      "untrusted source actor" => {
+        "PREFLIGHT_TEST_AUTHOR_LOGIN" => "unknown-user",
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]'
+      },
+      "hidden participant" => {
+        "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"},{"login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]'
+      },
+      "untrusted interaction" => { "PREFLIGHT_TEST_UNTRUSTED_COMMENT" => "1" },
+      "suspicious finding" => { "PREFLIGHT_TEST_SUSPICIOUS_DIFF" => "1" },
+      "incomplete API coverage" => { "PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL" => "2" }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out,
+                        "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean",
+                        label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_hidden_trusted_bot_participant
+    with_trusted_base_preflight(
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"login":"coderabbitai[bot]","url":"https://github.com/apps/coderabbitai","__typename":"Bot"}]'
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      trust_coderabbit(trust_config_path)
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out,
+                      "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"
+    end
+  end
+
+  def test_trusted_base_rejects_graphql_connection_count_mismatch_without_next_page
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out,
+                      "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"
+    end
+  end
+
+  def test_trusted_base_rejects_duplicate_graphql_node_identities
+    cases = {
+      "participant nodes" => {
+        "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"},' \
+          '{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+      },
+      "timeline nodes" => {
+        "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+        "PREFLIGHT_TEST_TIMELINE_NODES" =>
+          '[{"id":"event-1","__typename":"IssueComment","author":{"login":"justin808"}},' \
+          '{"id":"event-1","__typename":"IssueComment","author":{"login":"justin808"}}]'
+      },
+      "commit-author nodes" => {
+        "PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL" => "2",
+        "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" =>
+          '[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},' \
+          '{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]'
+      },
+      "participant identity unavailable" => {
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+      },
+      "participant login bound to conflicting IDs" => {
+        "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"},' \
+          '{"id":"participant-2","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+      },
+      "timeline identity unavailable" => {
+        "PREFLIGHT_TEST_TIMELINE_NODES" =>
+          '[{"id":"UNKNOWN","__typename":"IssueComment","author":{"login":"justin808"}}]'
+      },
+      "timeline nested actor identity unavailable" => {
+        "PREFLIGHT_TEST_TIMELINE_NODES" =>
+          '[{"id":"event-1","__typename":"ClosedEvent","actor":' \
+          '{"login":"justin808","__typename":"User"}}]'
+      },
+      "timeline nested author login bound to conflicting ID" => {
+        "PREFLIGHT_TEST_TIMELINE_NODES" =>
+          '[{"id":"event-1","__typename":"IssueComment","author":' \
+          '{"id":"actor-2","login":"justin808","__typename":"User"}}]'
+      },
+      "commit-author identity unavailable" => {
+        "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" => '[{"user":{"login":"justin808"}}]'
+      }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "GitHub API coverage findings:", label
+        refute_includes out, "GitHub API coverage findings: none", label
+        assert_match(/(?:participants|timelineItems|timeline actors|commit authors) (?:duplicate node id|node identity unavailable|login has conflicting node ids)/,
+                     out,
+                     label)
+        assert_includes out, "#123: GitHub API coverage truncated", label
+        assert_includes out,
+                        "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean",
+                        label
+      end
+    end
+  end
+
+  def test_graphql_node_id_conflicts_are_canonical_api_coverage_findings
+    cases = {
+      "participant presentation" => {
+        connection: "participants",
+        overrides: {
+          "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+          "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+            '[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"},' \
+            '{"id":"actor-1","login":"trusted-collaborator","url":"https://github.com/trusted-collaborator","__typename":"User"}]',
+          "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+          "PREFLIGHT_TEST_TIMELINE_NODES" =>
+            '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,' \
+            '"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-2",' \
+            '"login":"justin808","__typename":"User"}}]}}},' \
+            '{"id":"comment-event-1","__typename":"IssueComment","author":{"login":"trusted-collaborator"}}]'
+        }
+      },
+      "timeline typename" => {
+        connection: "timelineItems",
+        overrides: {
+          "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+          "PREFLIGHT_TEST_TIMELINE_NODES" =>
+            '[{"id":"event-1","__typename":"IssueComment","author":{"login":"justin808"}},' \
+            '{"id":"event-1","__typename":"MentionedEvent","actor":{"login":"justin808"}}]'
+        }
+      },
+      "nested author presentation" => {
+        connection: "commit authors",
+        overrides: {
+          "PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL" => "2",
+          "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" =>
+            '[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},' \
+            '{"user":{"id":"actor-1","login":"trusted-collaborator","__typename":"User"}}]'
+        }
+      }
+    }
+
+    cases.each do |label, test_case|
+      with_trusted_base_preflight(fixture_env_overrides: test_case.fetch(:overrides)) do |env, trust_config_path, repo_root, _provenance|
+        write_trust_config(trust_config_path, users: %w[justin808 trusted-collaborator])
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "GitHub API coverage findings:", label
+        assert_includes out,
+                        "#{test_case.fetch(:connection)} node id has conflicting representations",
+                        label
+        assert_includes out, "#123: GitHub API coverage truncated", label
+      end
+    end
+  end
+
+  def test_graphql_node_id_conflicts_across_connections_are_canonical_api_coverage_findings
+    cases = {
+      "participant reused by timeline item" => {
+        expected_finding: "timelineItems node id has conflicting representations",
+        overrides: {
+          "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+            '[{"id":"shared-identity","login":"justin808","url":"https://github.com/justin808",' \
+            '"__typename":"User"}]',
+          "PREFLIGHT_TEST_TIMELINE_NODES" =>
+            '[{"id":"shared-identity","__typename":"IssueComment","author":{"login":"justin808"}}]'
+        }
+      },
+      "participant reused by nested author" => {
+        expected_finding: "commit authors node id has conflicting representations",
+        overrides: {
+          "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+            '[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808",' \
+            '"__typename":"User"}]',
+          "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" =>
+            '[{"user":{"id":"actor-1","login":"trusted-collaborator","__typename":"User"}}]'
+        }
+      },
+      "author reused across commits" => {
+        expected_finding: "commit authors node id has conflicting representations",
+        overrides: {
+          "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+          "PREFLIGHT_TEST_TIMELINE_NODES" =>
+            '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":' \
+            '{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":' \
+            '[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}},' \
+            '{"id":"commit-event-2","__typename":"PullRequestCommit","commit":{"authors":' \
+            '{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":' \
+            '[{"user":{"id":"actor-1","login":"trusted-collaborator","__typename":"User"}}]}}}]'
+        }
+      }
+    }
+
+    cases.each do |label, test_case|
+      with_trusted_base_preflight(fixture_env_overrides: test_case.fetch(:overrides)) do |env, trust_config_path, repo_root, _provenance|
+        write_trust_config(trust_config_path, users: %w[justin808 trusted-collaborator])
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "GitHub API coverage findings:", label
+        refute_includes out, "GitHub API coverage findings: none", label
+        assert_includes out, test_case.fetch(:expected_finding), label
+        assert_includes out, "#123: GitHub API coverage truncated", label
+      end
+    end
+  end
+
+  def test_graphql_login_bound_to_conflicting_node_ids_across_connections_blocks_trusted_base_acceptance
+    overrides = {
+      "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+        '[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]',
+      "PREFLIGHT_TEST_COMMIT_AUTHOR_NODES" =>
+        '[{"user":{"id":"actor-2","login":"justin808","__typename":"User"}}]'
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "GitHub API coverage findings:"
+      assert_includes out, "commit authors login has conflicting node ids"
+      assert_includes out, "#123: GitHub API coverage truncated"
+    end
+  end
+
+  def test_timeline_nested_author_login_bound_to_conflicting_node_id_fails_closed
+    target = {
+      "participants" => {
+        "totalCount" => 1,
+        "nodes" => [
+          {
+            "id" => "actor-1",
+            "login" => "justin808",
+            "url" => "https://github.com/justin808",
+            "__typename" => "User"
+          }
+        ]
+      },
+      "timelineItems" => {
+        "totalCount" => 1,
+        "nodes" => [
+          {
+            "id" => "comment-1",
+            "__typename" => "IssueComment",
+            "author" => { "id" => "actor-2", "login" => "justin808", "__typename" => "User" }
+          }
+        ]
+      }
+    }
+
+    finding = graph_node_identity_coverage_findings(target).fetch(0)
+    assert_equal "timeline actors", finding.fetch(:connection)
+    assert_equal "login has conflicting node ids", finding.fetch(:reason)
+  end
+
+  def test_same_nested_actor_on_multiple_timeline_events_remains_valid
+    actor = { "id" => "actor-1", "login" => "justin808", "__typename" => "User" }
+    target = {
+      "participants" => {
+        "totalCount" => 1,
+        "nodes" => [actor.merge("url" => "https://github.com/justin808")]
+      },
+      "timelineItems" => {
+        "totalCount" => 2,
+        "nodes" => [
+          { "id" => "comment-1", "__typename" => "IssueComment", "author" => actor.dup },
+          { "id" => "closed-1", "__typename" => "ClosedEvent", "actor" => actor.dup }
+        ]
+      }
+    }
+
+    assert_empty graph_node_identity_coverage_findings(target)
+  end
+
+  def test_timeline_nested_actor_missing_or_conflicting_identity_fails_closed
+    cases = {
+      "missing id" => [
+        [
+          { "id" => "comment-1", "__typename" => "IssueComment",
+            "author" => { "login" => "justin808", "__typename" => "User" } }
+        ],
+        "node identity unavailable"
+      ],
+      "unknown id" => [
+        [
+          { "id" => "closed-1", "__typename" => "ClosedEvent",
+            "actor" => { "id" => "UNKNOWN", "login" => "justin808", "__typename" => "User" } }
+        ],
+        "node identity unavailable"
+      ],
+      "conflicting representation" => [
+        [
+          { "id" => "comment-1", "__typename" => "IssueComment",
+            "author" => { "id" => "actor-1", "login" => "justin808", "__typename" => "User" } },
+          { "id" => "review-1", "__typename" => "PullRequestReview",
+            "author" => { "id" => "actor-1", "login" => "other-user", "__typename" => "User" } }
+        ],
+        "node id has conflicting representations"
+      ]
+    }
+
+    cases.each do |label, (nodes, expected_reason)|
+      target = {
+        "participants" => { "totalCount" => 0, "nodes" => [] },
+        "timelineItems" => { "totalCount" => nodes.size, "nodes" => nodes }
+      }
+
+      finding = graph_node_identity_coverage_findings(target).fetch(0)
+      assert_equal "timeline actors", finding.fetch(:connection), label
+      assert_equal expected_reason, finding.fetch(:reason), label
+    end
+  end
+
+  def test_graphql_node_id_compatible_recurrence_across_connections_remains_valid
+    overrides = {
+      "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+        '[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "GitHub API coverage findings: none"
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_standard_timeline_node_types_with_stable_identities_remain_valid
+    target = {
+      "participants" => { "totalCount" => 0, "nodes" => [] },
+      "timelineItems" => {
+        "totalCount" => 3,
+        "nodes" => [
+          { "id" => "merged-event-1", "__typename" => "MergedEvent" },
+          { "id" => "labeled-event-1", "__typename" => "LabeledEvent" },
+          { "id" => "assigned-event-1", "__typename" => "AssignedEvent" }
+        ]
+      }
+    }
+
+    assert_empty graph_node_identity_coverage_findings(target)
+    assert_includes PR_TIMELINE_NODES_FRAGMENT, "... on Node { id }"
+  end
+
+  def test_standard_timeline_node_types_without_stable_identities_fail_closed
+    [nil, "", "UNKNOWN"].each do |id|
+      target = {
+        "participants" => { "totalCount" => 0, "nodes" => [] },
+        "timelineItems" => {
+          "totalCount" => 1,
+          "nodes" => [{ "id" => id, "__typename" => "LabeledEvent" }]
+        }
+      }
+
+      finding = graph_node_identity_coverage_findings(target).fetch(0)
+      assert_equal "timelineItems", finding.fetch(:connection)
+      assert_equal "node identity unavailable", finding.fetch(:reason)
+    end
+  end
+
+  def test_graph_coverage_identity_validation_is_explicit_for_pr_targets
+    target = {
+      "participants" => {
+        "totalCount" => 1,
+        "pageInfo" => { "hasNextPage" => false },
+        "nodes" => [{ "login" => "justin808", "url" => "https://github.com/justin808", "__typename" => "User" }]
+      },
+      "timelineItems" => {
+        "totalCount" => 0,
+        "pageInfo" => { "hasNextPage" => false },
+        "nodes" => []
+      }
+    }
+
+    findings = graph_coverage_findings(
+      target,
+      include_target_author: false,
+      include_node_identities: true
+    )
+
+    assert_includes findings.map { |finding| finding.fetch(:connection) }, "participants"
+  end
+
+  def test_trusted_pr_source_depends_only_on_complete_source_actor_coverage
+    target = {
+      "headRefOid" => "a" * 40,
+      "author" => { "login" => "justin808" },
+      "participants" => {
+        "totalCount" => 1,
+        "pageInfo" => { "hasNextPage" => false },
+        "nodes" => [{ "login" => "justin808", "url" => "https://github.com/justin808", "__typename" => "User" }]
+      },
+      "timelineItems" => {
+        "totalCount" => 1,
+        "pageInfo" => { "hasNextPage" => false },
+        "nodes" => [{
+          "id" => "commit-event-1",
+          "__typename" => "PullRequestCommit",
+          "commit" => {
+            "authors" => {
+              "totalCount" => 1,
+              "pageInfo" => { "hasNextPage" => false },
+              "nodes" => [{ "user" => { "id" => "actor-1", "login" => "justin808", "__typename" => "User" } }]
+            }
+          }
+        }]
+      }
+    }
+    coverage_findings = graph_coverage_findings(
+      target,
+      include_target_author: true,
+      include_node_identities: true
+    )
+    trust_config = {
+      trusted_users: Set["justin808"],
+      trusted_bots: Set.new,
+      trusted_metadata_bots: Set.new,
+      trusted_teams: []
+    }
+
+    assert_equal(["participants"], coverage_findings.map { |finding| finding.fetch(:connection) })
+    assert trusted_pr_source?(
+      "owner/repo",
+      target,
+      trust_config:,
+      team_cache: {}
+    )
+  end
+
+  def test_trusted_base_rejects_duplicate_graphql_node_identities_across_pages
+    cases = {
+      "participant nodes" => {
+        "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+        "PREFLIGHT_TEST_PARTICIPANT_HAS_NEXT" => "true",
+        "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+          '[{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]',
+        "PREFLIGHT_TEST_PARTICIPANT_PAGE_NODES" =>
+          '[{"id":"participant-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+      },
+      "timeline nodes" => {
+        "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+        "PREFLIGHT_TEST_TIMELINE_HAS_NEXT" => "true",
+        "PREFLIGHT_TEST_TIMELINE_NODES" =>
+          '[{"id":"event-1","__typename":"IssueComment","author":{"login":"justin808"}}]',
+        "PREFLIGHT_TEST_TIMELINE_PAGE_NODES" =>
+          '[{"id":"event-1","__typename":"IssueComment","author":{"login":"justin808"}}]'
+      }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "GitHub API coverage findings:", label
+        assert_includes out, "duplicate node id", label
+        assert_includes out, "#123: GitHub API coverage truncated", label
+        assert_includes out,
+                        "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean",
+                        label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_missing_or_malformed_graphql_connection_counts
+    cases = {
+      "missing participant count" => { "PREFLIGHT_TEST_MISSING_PARTICIPANT_TOTAL" => "1" },
+      "null timeline count" => { "PREFLIGHT_TEST_TIMELINE_TOTAL" => "null" },
+      "string commit-author count" => { "PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL" => '"1"' },
+      "nonboolean commit-author page metadata" => { "PREFLIGHT_TEST_COMMIT_AUTHOR_HAS_NEXT" => "0" }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out,
+                        "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean",
+                        label
+      end
+    end
+  end
+
+  def test_trusted_base_requires_exact_complete_opt_in_in_bootstrap_and_fetched_base
+    exact = trusted_base_policy.fetch("pr_security_preflight").fetch("trusted_base_high_risk_acceptance")
+    extra_key_policy = trusted_base_policy(
+      exact.merge("rationale" => "not part of the closed schema")
+    )
+    wrong_repo_policy = trusted_base_policy(exact.merge("repository" => "other/repo"))
+    malformed_ref_policy = trusted_base_policy(exact.merge("ref" => "main"))
+    malformed_remote_policy = trusted_base_policy(exact.merge("remote" => "--upload-pack=evil"))
+
+    [
+      ["missing policy", {}, {}],
+      ["extra policy key", extra_key_policy, extra_key_policy],
+      ["foreign policy repository", wrong_repo_policy, wrong_repo_policy],
+      ["malformed ref", malformed_ref_policy, malformed_ref_policy],
+      ["malformed remote", malformed_remote_policy, malformed_remote_policy],
+      ["PR-head-only policy", trusted_base_policy, {}],
+      ["base-moved policy", trusted_base_policy, trusted_base_policy(exact.merge("remote" => "upstream"))]
+    ].each do |label, bootstrap_policy, fetched_policy|
+      with_trusted_base_preflight(policy: bootstrap_policy, fetched_policy:) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "Trusted-base high-risk acceptance unavailable:", label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_duplicate_yaml_keys
+    duplicate_policy_yaml = <<~YAML
+      pr_security_preflight:
+        trusted_base_high_risk_acceptance:
+          enabled: true
+          repository: owner/repo
+          remote: origin
+          remote: origin
+          ref: refs/heads/main
+    YAML
+
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      File.write(File.join(repo_root, ".agents", "agent-workflow.yml"), duplicate_policy_yaml)
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "workflow config YAML contains duplicate key"
+    end
+
+    with_trusted_base_preflight(fetched_policy: duplicate_policy_yaml) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "workflow config YAML contains duplicate key"
+    end
+  end
+
+  def test_trusted_base_rejects_malformed_yaml_and_wrong_policy_types
+    cases = {
+      "malformed YAML" => "pr_security_preflight: [\n",
+      "wrong root type" => "- pr_security_preflight\n",
+      "wrong container type" => "pr_security_preflight: []\n",
+      "wrong policy type" => <<~YAML,
+        pr_security_preflight:
+          trusted_base_high_risk_acceptance: true
+      YAML
+      "wrong enabled type" => <<~YAML,
+        pr_security_preflight:
+          trusted_base_high_risk_acceptance:
+            enabled: "true"
+            repository: owner/repo
+            remote: origin
+            ref: refs/heads/main
+      YAML
+      "wrong repository type" => <<~YAML,
+        pr_security_preflight:
+          trusted_base_high_risk_acceptance:
+            enabled: true
+            repository: [owner/repo]
+            remote: origin
+            ref: refs/heads/main
+      YAML
+      "wrong remote type" => <<~YAML,
+        pr_security_preflight:
+          trusted_base_high_risk_acceptance:
+            enabled: true
+            repository: owner/repo
+            remote: 1
+            ref: refs/heads/main
+      YAML
+      "wrong ref type" => <<~YAML
+        pr_security_preflight:
+          trusted_base_high_risk_acceptance:
+            enabled: true
+            repository: owner/repo
+            remote: origin
+            ref: true
+      YAML
+    }
+
+    cases.each do |label, policy_yaml|
+      ["bootstrap", "fetched base"].each do |source|
+        options = source == "fetched base" ? { fetched_policy: policy_yaml } : {}
+        with_trusted_base_preflight(**options) do |env, trust_config_path, repo_root, _provenance|
+          if source == "bootstrap"
+            File.write(File.join(repo_root, ".agents", "agent-workflow.yml"), policy_yaml)
+          end
+          out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+          assert_trusted_base_blocked(out, status)
+          assert_includes out, "Trusted-base high-risk acceptance unavailable:", "#{source}: #{label}"
+        end
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_duplicate_non_scalar_yaml_mapping_keys_before_load
+    policy_yaml = <<~YAML
+      pr_security_preflight:
+        trusted_base_high_risk_acceptance:
+          enabled: true
+          repository: owner/repo
+          ? [shadow]
+          : first
+          ? [shadow]
+          : second
+          remote: origin
+          ref: refs/heads/main
+    YAML
+
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      File.write(File.join(repo_root, ".agents", "agent-workflow.yml"), policy_yaml)
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "workflow config YAML contains non-scalar mapping key"
+    end
+  end
+
+  def test_trusted_base_rejects_unverifiable_remote_or_fresh_fetch
+    missing_remote_policy = trusted_base_policy(
+      trusted_base_policy.fetch("pr_security_preflight").fetch("trusted_base_high_risk_acceptance").merge(
+        "remote" => "upstream"
+      )
+    )
+    cases = [
+      ["missing configured remote", missing_remote_policy, {}],
+      ["failed fresh fetch", trusted_base_policy, { "PREFLIGHT_TEST_FETCH_FAIL" => "1" }]
+    ]
+
+    cases.each do |label, policy, overrides|
+      with_trusted_base_preflight(policy:, fetched_policy: policy, fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "Trusted-base high-risk acceptance unavailable:", label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_bootstrap_checkout_not_bound_to_fetched_base
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_CHECKOUT_MISMATCH" => "1" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "trusted checkout HEAD does not match freshly fetched trusted base"
+    end
+  end
+
+  def test_trusted_base_rejects_remote_default_movement_during_fetch
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_TRUSTED_REF_SHA" => "d" * 40 }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "authenticated remote default ref moved during trusted-base verification"
+    end
+  end
+
+  def test_trusted_base_fetch_uses_distinct_network_timeout_without_fetching
+    calls = []
+    original = Object.instance_method(:capture_trusted_git_probe)
+    Object.send(:define_method, :capture_trusted_git_probe) do |*args, **options|
+      calls << [args, options]
+      ["", "simulated fetch timeout", nil]
+    end
+    Object.send(:private, :capture_trusted_git_probe)
+
+    _base_sha, error = fetch_trusted_base("/tmp/isolated", "https://github.com/owner/repo.git", "refs/heads/main")
+
+    assert_includes error, "fetch of trusted remote/ref failed"
+    refute_includes error, "private repositories must configure"
+    assert_equal 300, TRUSTED_BASE_FETCH_TIMEOUT_SECONDS
+    assert_equal TRUSTED_BASE_FETCH_TIMEOUT_SECONDS, calls.fetch(0).fetch(1).fetch(:timeout_seconds)
+  ensure
+    Object.send(:define_method, :capture_trusted_git_probe, original) if original
+    Object.send(:private, :capture_trusted_git_probe)
+  end
+
+  def test_trusted_git_probe_timeout_terminates_the_spawned_process_group
+    Dir.mktmpdir("trusted-git-timeout") do |dir|
+      pid_path = File.join(dir, "pids")
+      script = <<~SH
+        trap '' TERM
+        (trap '' TERM; sleep 1) &
+        grandchild=$!
+        printf '%s\n%s\n' "$$" "$grandchild" > #{Shellwords.shellescape(pid_path)}
+        wait
+      SH
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = "/bin/sh"
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv::LOCAL_ENV_VARS_FALLBACK
+      started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      _stdout, stderr, status = capture_trusted_git_probe("-c", script, timeout_seconds: 0.05)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at
+
+      assert_nil status
+      assert_includes stderr, "timed out after 0.05s"
+      assert_operator elapsed, :<, 0.75
+      pids = File.readlines(pid_path, chomp: true).map { |pid| Integer(pid, 10) }
+      assert_equal 2, pids.size
+      pids.each { |pid| assert_process_absent(pid) }
+    ensure
+      TrustedGitState.executable = previous_executable
+      TrustedGitState.local_env_vars = previous_local_env_vars
+    end
+  end
+
+  def test_process_execution_liveness_distinguishes_running_process_from_zombie
+    zombie_reader, zombie_writer = IO.pipe
+    zombie_pid = Process.spawn(
+      RbConfig.ruby, "-e", 'STDOUT.write("exited")',
+      out: zombie_writer
+    )
+    zombie_writer.close
+    assert_equal "exited", zombie_reader.read
+    running_pid = Process.spawn(RbConfig.ruby, "-e", "loop { sleep 1 }")
+
+    assert process_executing?(running_pid)
+    refute process_executing?(zombie_pid)
+  ensure
+    zombie_reader&.close
+    zombie_writer&.close unless zombie_writer&.closed?
+    begin
+      Process.kill("KILL", running_pid) if running_pid
+    rescue Errno::ESRCH
+      nil
+    end
+    [running_pid, zombie_pid].compact.each do |pid|
+      Process.waitpid(pid)
+    rescue Errno::ECHILD
+      nil
+    end
+  end
+
+  def test_process_execution_liveness_ignores_path_shim_reporting_z_for_live_process
+    Dir.mktmpdir("untrusted-ps") do |dir|
+      shim = File.join(dir, "ps")
+      File.write(shim, "#!/bin/sh\nprintf 'Z\\n'\n")
+      FileUtils.chmod(0o755, shim)
+      previous_path = ENV.fetch("PATH", nil)
+      ENV["PATH"] = dir
+      running_pid = Process.spawn(RbConfig.ruby, "-e", "loop { sleep 1 }")
+
+      assert process_executing?(running_pid)
+    ensure
+      ENV["PATH"] = previous_path
+      begin
+        Process.kill("KILL", running_pid) if running_pid
+      rescue Errno::ESRCH
+        nil
+      end
+      Process.waitpid(running_pid) if running_pid
+    end
+  end
+
+  def test_process_state_executable_rejects_home_path_shim
+    Dir.mktmpdir("untrusted-portable-ps", Dir.home) do |dir|
+      shim = File.join(dir, "ps")
+      File.write(shim, "#!/bin/sh\nprintf 'Z\\n'\n")
+      FileUtils.chmod(0o755, shim)
+
+      assert_raises(RuntimeError) do
+        resolve_process_state_executable(path: dir, fixed_candidates: [])
+      end
+    end
+  end
+
+  def test_process_state_executable_rejects_temp_path_candidates_and_aliases
+    Dir.mktmpdir("untrusted-portable-ps") do |dir|
+      install_process_state_executable(dir)
+      Dir.mktmpdir("portable-ps-alias", Dir.home) do |alias_parent|
+        alias_dir = File.join(alias_parent, "bin")
+        File.symlink(dir, alias_dir)
+
+        [dir, alias_dir].each do |candidate_dir|
+          assert_raises(RuntimeError) do
+            resolve_process_state_executable(path: candidate_dir, fixed_candidates: [])
+          end
+        end
+      end
+    end
+  end
+
+  def test_process_state_executable_rejects_repository_path_candidates_and_aliases
+    repository_root = File.expand_path("../../..", __dir__)
+    Dir.mktmpdir("untrusted-portable-ps", repository_root) do |dir|
+      install_process_state_executable(dir)
+      Dir.mktmpdir("portable-ps-alias", Dir.home) do |alias_parent|
+        alias_dir = File.join(alias_parent, "bin")
+        File.symlink(dir, alias_dir)
+
+        [dir, alias_dir].each do |candidate_dir|
+          assert_raises(RuntimeError) do
+            resolve_process_state_executable(path: candidate_dir, fixed_candidates: [])
+          end
+        end
+      end
+    end
+  end
+
+  def test_process_state_fallback_trust_allows_immutable_non_fhs_installation
+    candidate = "/nix/store/00000000000000000000000000000000-procps/bin/ps"
+    rejected_roots = [
+      File.realpath(File.expand_path("../../..", __dir__)),
+      File.realpath(Dir.tmpdir),
+      File.realpath(Dir.home)
+    ]
+
+    assert process_state_fallback_trusted?(
+      candidate,
+      rejected_roots:,
+      writable: ->(_path) { false }
+    )
+    refute process_state_fallback_trusted?(
+      candidate,
+      rejected_roots:,
+      writable: ->(path) { path == "/nix/store" }
+    )
+  end
+
+  def test_process_state_fixture_is_portable_without_fixed_ps_candidates
+    Dir.mktmpdir("portable-ps-fixture") do |dir|
+      executable = install_process_state_executable(dir, source_candidates: [])
+
+      assert File.executable?(executable)
+      assert system(executable)
+    end
+  end
+
+  def test_trusted_base_operations_use_real_git_for_ancestry_and_checkout_binding
+    Dir.mktmpdir("trusted-base-real-git") do |repo_root|
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      File.write(File.join(repo_root, "first.txt"), "first\n")
+      git! "-C", repo_root, "add", "first.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "first"
+      first_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+      File.write(File.join(repo_root, "second.txt"), "second\n")
+      git! "-C", repo_root, "add", "second.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "second"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+      git! "-C", repo_root, "checkout", "--quiet", "-b", "side", first_sha
+      File.write(File.join(repo_root, "side.txt"), "side\n")
+      git! "-C", repo_root, "add", "side.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "side"
+      side_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+      git! "-C", repo_root, "checkout", "--quiet", "main"
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      operations = TrustedBaseHighRiskOperations.new
+
+      ancestor, ancestor_error = operations.ancestor?(repo_root, first_sha, base_sha)
+      assert ancestor, ancestor_error
+      refute operations.ancestor?(repo_root, side_sha, base_sha).first
+      checkout_matches, checkout_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      assert checkout_matches, checkout_error
+      untracked_path = File.join(repo_root, "untracked.txt")
+      File.write(untracked_path, "untracked content\n")
+      untracked_matches, untracked_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      assert untracked_matches, untracked_error
+      FileUtils.rm_f(untracked_path)
+      File.write(File.join(repo_root, "first.txt"), "dirty tracked content\n")
+      dirty_matches, dirty_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      refute dirty_matches
+      assert_equal "trusted checkout has tracked working-tree changes", dirty_error
+      git! "-C", repo_root, "restore", "--worktree", "first.txt"
+      File.write(File.join(repo_root, "first.txt"), "staged tracked content\n")
+      git! "-C", repo_root, "add", "first.txt"
+      staged_matches, staged_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      refute staged_matches
+      assert_equal "trusted checkout has staged tracked changes", staged_error
+      git! "-C", repo_root, "restore", "--staged", "--worktree", "first.txt"
+      git! "-C", repo_root, "checkout", "--quiet", "-b", "same-commit-other-branch"
+      refute operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      ).first
+      git! "-C", repo_root, "checkout", "--quiet", "--detach", base_sha
+      detached_matches, detached_error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      assert detached_matches, detached_error
+      refute operations.checkout_matches_fetched_base?(
+        repo_root,
+        first_sha,
+        "refs/heads/main"
+      ).first
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
+
+  def test_checkout_binding_rejects_hidden_index_flags_and_local_diff_overrides
+    Dir.mktmpdir("trusted-base-checkout-flags") do |repo_root|
+      tracked_path = File.join(repo_root, "tracked.txt")
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      File.write(tracked_path, "trusted\n")
+      git! "-C", repo_root, "add", "tracked.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "trusted"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      operations = TrustedBaseHighRiskOperations.new
+
+      git! "-C", repo_root, "update-index", "--skip-worktree", "tracked.txt"
+      File.write(tracked_path, "skip-worktree change\n")
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has index-hidden tracked entries", error
+      git! "-C", repo_root, "update-index", "--no-skip-worktree", "tracked.txt"
+      git! "-C", repo_root, "restore", "--worktree", "tracked.txt"
+
+      git! "-C", repo_root, "update-index", "--assume-unchanged", "tracked.txt"
+      File.write(tracked_path, "assume-unchanged change\n")
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has index-hidden tracked entries", error
+      git! "-C", repo_root, "update-index", "--no-assume-unchanged", "tracked.txt"
+      git! "-C", repo_root, "restore", "--worktree", "tracked.txt"
+
+      git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+      git! "-C", repo_root, "config", "--worktree", "core.fileMode", "false"
+      File.chmod(0o755, tracked_path)
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has tracked working-tree changes", error
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
+
+  def test_git_object_ids_are_exactly_sha1_or_sha256_length
+    assert_match GIT_OBJECT_ID_PATTERN, "a" * 40
+    assert_match GIT_OBJECT_ID_PATTERN, "b" * 64
+    refute_match GIT_OBJECT_ID_PATTERN, "c" * 41
+    refute_match GIT_OBJECT_ID_PATTERN, "d" * 63
+  end
+
+  def test_authenticated_remote_default_ref_probe_requires_exact_symref_receipt
+    calls = []
+    response = [
+      "ref: refs/heads/main\tHEAD\n#{'e' * 40}\tHEAD\n",
+      "",
+      TestCommandStatus.new(0)
+    ]
+    original_capture = Object.instance_method(:capture_trusted_git_probe)
+    Object.send(:define_method, :capture_trusted_git_probe) do |*args, **options|
+      calls << [args, options]
+      response
+    end
+    Object.send(:private, :capture_trusted_git_probe)
+
+    anchor, error = trusted_remote_default_ref("/verified/repo", "https://github.com/owner/repo.git")
+    assert_nil error
+    assert_equal "refs/heads/main", anchor.fetch(:ref)
+    assert_equal "e" * 40, anchor.fetch(:sha)
+    assert_equal ["-C", "/verified/repo", "ls-remote", "--symref", "--exit-code",
+                  "https://github.com/owner/repo.git", "HEAD"], calls.first.first
+    assert_equal({ timeout_seconds: TRUSTED_BASE_FETCH_TIMEOUT_SECONDS }, calls.first.last)
+
+    malformed_outputs = [
+      "#{'e' * 40}\tHEAD\n",
+      "ref: refs/heads/main\tHEAD\n#{'e' * 41}\tHEAD\n",
+      "ref: refs/heads/feature\tHEAD\n#{'e' * 40}\tHEAD",
+      "ref: refs/tags/release\tHEAD\n#{'e' * 40}\tHEAD\n"
+    ]
+    malformed_outputs.each do |output|
+      response = [output, "", TestCommandStatus.new(0)]
+      malformed_anchor, malformed_error = trusted_remote_default_ref(
+        "/verified/repo", "https://github.com/owner/repo.git"
+      )
+      assert_nil malformed_anchor
+      assert_includes malformed_error, "malformed output"
+    end
+  ensure
+    Object.send(:define_method, :capture_trusted_git_probe, original_capture) if original_capture
+    Object.send(:private, :capture_trusted_git_probe)
+  end
+
+  def test_public_github_https_trusted_base_fetch_remains_credential_free
+    calls = []
+    original_capture = Object.instance_method(:capture_trusted_git_probe)
+    original_run_gh = Object.instance_method(:run_gh)
+    Object.send(:define_method, :run_gh) { |*| raise "trusted fetch must not invoke gh auth" }
+    Object.send(:private, :run_gh)
+    Object.send(:define_method, :capture_trusted_git_probe) do |*args, **options|
+      calls << [args, options]
+      if args.include?("fetch")
+        ["", "", TestCommandStatus.new(0)]
+      else
+        ["d" * 40, "", TestCommandStatus.new(0)]
+      end
+    end
+    Object.send(:private, :capture_trusted_git_probe)
+
+    base_sha, error = fetch_trusted_base(
+      "/tmp/isolated", "https://github.com/owner/repo.git", "refs/heads/main"
+    )
+
+    assert_nil error
+    assert_equal "d" * 40, base_sha
+    fetch_args, fetch_options = calls.fetch(0)
+    assert_includes fetch_args, "https://github.com/owner/repo.git"
+    assert_equal({ timeout_seconds: TRUSTED_BASE_FETCH_TIMEOUT_SECONDS }, fetch_options)
+  ensure
+    Object.send(:define_method, :capture_trusted_git_probe, original_capture) if original_capture
+    Object.send(:private, :capture_trusted_git_probe)
+    Object.send(:define_method, :run_gh, original_run_gh) if original_run_gh
+    Object.send(:private, :run_gh)
+  end
+
+  def test_failed_github_https_trusted_base_fetch_guides_private_repositories_to_ssh
+    observed_env = nil
+    original_capture = Object.instance_method(:capture_trusted_git_probe)
+    original_run_gh = Object.instance_method(:run_gh)
+    Object.send(:define_method, :run_gh) { |*| raise "trusted fetch must not invoke gh auth" }
+    Object.send(:private, :run_gh)
+    Object.send(:define_method, :capture_trusted_git_probe) do |*|
+      observed_env = trusted_git_probe_env
+      ["", "authentication required", TestCommandStatus.new(1)]
+    end
+    Object.send(:private, :capture_trusted_git_probe)
+    ambient = {
+      "GH_TOKEN" => "ghp_ambient_secret",
+      "GITHUB_TOKEN" => "github_ambient_secret",
+      "GIT_ASKPASS" => "/tmp/ambient-askpass",
+      "GIT_CONFIG_PARAMETERS" => "'credential.helper=!attacker'"
+    }
+
+    _base_sha, error = with_env(ambient) do
+      fetch_trusted_base("/tmp/isolated", "https://github.com/owner/repo.git", "refs/heads/main")
+    end
+
+    assert_includes error, "GitHub HTTPS trusted-base verification is credential-free and public-only"
+    assert_includes error, "private repositories must configure the trusted remote with GitHub SSH"
+    ambient.each_key { |name| refute observed_env.key?(name), "trusted fetch inherited #{name}" }
+  ensure
+    Object.send(:define_method, :capture_trusted_git_probe, original_capture) if original_capture
+    Object.send(:private, :capture_trusted_git_probe)
+    Object.send(:define_method, :run_gh, original_run_gh) if original_run_gh
+    Object.send(:private, :run_gh)
+  end
+
+  def test_failed_github_ssh_trusted_base_fetch_does_not_emit_https_private_guidance
+    original_capture = Object.instance_method(:capture_trusted_git_probe)
+    Object.send(:define_method, :capture_trusted_git_probe) do |*|
+      ["", "SSH authentication failed", TestCommandStatus.new(1)]
+    end
+    Object.send(:private, :capture_trusted_git_probe)
+
+    _base_sha, error = fetch_trusted_base(
+      "/tmp/isolated", "git@github.com:owner/repo.git", "refs/heads/main"
+    )
+
+    assert_includes error, "SSH authentication failed"
+    refute_includes error, "GitHub HTTPS trusted-base verification"
+    refute_includes error, "private repositories must configure"
+  ensure
+    Object.send(:define_method, :capture_trusted_git_probe, original_capture) if original_capture
+    Object.send(:private, :capture_trusted_git_probe)
+  end
+
+  def test_failed_non_github_https_fetch_does_not_emit_private_github_guidance
+    original_capture = Object.instance_method(:capture_trusted_git_probe)
+    Object.send(:define_method, :capture_trusted_git_probe) do |*|
+      ["", "connection failed", TestCommandStatus.new(1)]
+    end
+    Object.send(:private, :capture_trusted_git_probe)
+
+    _base_sha, error = fetch_trusted_base(
+      "/tmp/isolated", "https://example.invalid/owner/repo.git", "refs/heads/main"
+    )
+
+    assert_includes error, "connection failed"
+    refute_includes error, "GitHub HTTPS trusted-base verification"
+    refute_includes error, "private repositories must configure"
+  ensure
+    Object.send(:define_method, :capture_trusted_git_probe, original_capture) if original_capture
+    Object.send(:private, :capture_trusted_git_probe)
+  end
+
+  def test_trusted_base_rejects_worktree_scoped_url_rewrite
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+      git! "-C", repo_root, "config", "--worktree", "url.https://attacker.invalid/.insteadOf", "https://github.com/"
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "worktree url.*.insteadOf rewrites make trusted remote provenance ambiguous"
+    end
+  end
+
+  def test_trusted_base_rejects_local_and_worktree_scoped_remote_urls
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+      git! "-C", repo_root, "config", "--worktree", "--add", "remote.origin.url",
+           "https://attacker.invalid/owner/repo.git"
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out,
+                      'trusted remote "origin" URL entries across local and worktree scopes make provenance ambiguous'
+    end
+  end
+
+  def test_trusted_base_accepts_unselected_fork_remote
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      git! "-C", repo_root, "remote", "add", "contributor",
+           "https://github.com/contributor/repo.git"
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_trusted_base_blocks_when_worktree_config_probe_times_out
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+      git! "-C", repo_root, "config", "--worktree", "remote.origin.url",
+           "https://attacker.invalid/owner/repo.git"
+
+      matcher = lambda do |args|
+        args.include?("--type=bool") && args.last == "extensions.worktreeConfig"
+      end
+      with_trusted_git_probe_fault(matcher, ["", "simulated timeout", nil]) do
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "extensions.worktreeConfig probe"
+      end
+    end
+  end
+
+  def test_trusted_base_config_probe_failures_block_acceptance
+    valid_url = "https://github.com/owner/repo.git"
+    hostile_url = "https://attacker.invalid/owner/repo.git"
+    cases = [
+      {
+        label: "extensions.worktreeConfig fatal",
+        query: ["--local", "--type=bool", "--get", "extensions.worktreeConfig"],
+        response: ["", "fatal: simulated extension failure", TestCommandStatus.new(128)],
+        error: "local extensions.worktreeConfig probe",
+        setup: lambda do |repo_root|
+          git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+          git! "-C", repo_root, "config", "--worktree", "remote.origin.url", hostile_url
+        end
+      },
+      *%i[timeout fatal].map do |failure|
+        {
+          label: "local remote URL #{failure}",
+          query: ["--local", "--get-all", "remote.origin.url"],
+          response: trusted_git_probe_failure_response(failure),
+          error: 'local trusted remote "origin" URL probe',
+          setup: lambda do |repo_root|
+            git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+            git! "-C", repo_root, "remote", "set-url", "origin", hostile_url
+            git! "-C", repo_root, "config", "--worktree", "remote.origin.url", valid_url
+          end
+        }
+      end,
+      *%i[timeout fatal].map do |failure|
+        {
+          label: "worktree remote URL #{failure}",
+          query: ["--worktree", "--get-all", "remote.origin.url"],
+          response: trusted_git_probe_failure_response(failure),
+          error: 'worktree trusted remote "origin" URL probe',
+          setup: lambda do |repo_root|
+            git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+            git! "-C", repo_root, "config", "--worktree", "remote.origin.url", hostile_url
+          end
+        }
+      end,
+      *%i[timeout fatal].map do |failure|
+        {
+          label: "local unsafe-config scan #{failure}",
+          query: ["--local", "--includes", "--null", "--name-only", "--get-regexp", ".*"],
+          response: trusted_git_probe_failure_response(failure),
+          error: "local trusted fetch configuration probe",
+          setup: lambda do |repo_root|
+            git! "-C", repo_root, "config", "--local", "http.proxy", "https://proxy.invalid"
+          end
+        }
+      end,
+      *%i[timeout fatal].map do |failure|
+        {
+          label: "worktree unsafe-config scan #{failure}",
+          query: ["--worktree", "--includes", "--null", "--name-only", "--get-regexp", ".*"],
+          response: trusted_git_probe_failure_response(failure),
+          error: "worktree trusted fetch configuration probe",
+          setup: lambda do |repo_root|
+            git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+            git! "-C", repo_root, "config", "--worktree", "http.proxy", "https://proxy.invalid"
+          end
+        }
+      end
+    ]
+
+    cases.each do |test_case|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        test_case.fetch(:setup).call(repo_root)
+        matcher = ->(args) { args.drop(3) == test_case.fetch(:query) }
+        with_trusted_git_probe_fault(matcher, test_case.fetch(:response)) do
+          out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+          assert_trusted_base_blocked(out, status)
+          assert_includes out, test_case.fetch(:error), test_case.fetch(:label)
+        end
+      end
+    end
+  end
+
+  def test_trusted_base_blocks_exit_zero_empty_or_malformed_trusted_fetch_config_output
+    malformed_outputs = {
+      "empty output" => "",
+      "blank record" => "\0",
+      "unterminated record" => "safe.record",
+      "empty record between keys" => "safe.record\0\0safe.other\0"
+    }
+    scopes = {
+      "local" => lambda do |_repo_root|
+        nil
+      end,
+      "worktree" => lambda do |repo_root|
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+      end
+    }
+
+    scopes.each do |scope, setup|
+      malformed_outputs.each do |output_label, output|
+        label = "#{scope} #{output_label}"
+        with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+          setup.call(repo_root)
+          matcher = lambda do |args|
+            args.drop(3).reject { |arg| arg == "--null" } ==
+              ["--#{scope}", "--includes", "--name-only", "--get-regexp", ".*"]
+          end
+          response = [output.dup, String.new, TestCommandStatus.new(0)]
+          with_trusted_git_probe_fault(matcher, response) do
+            out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+            assert_trusted_base_blocked(out, status)
+            assert_includes out, "#{scope} trusted fetch configuration probe returned malformed output", label
+            refute_includes out, "SECURITY_PREFLIGHT_OK", label
+          end
+        end
+      end
+    end
+  end
+
+  def test_trusted_base_config_scan_accepts_exit_one_absence
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      matcher = lambda do |args|
+        args.drop(3) == ["--local", "--includes", "--null", "--name-only", "--get-regexp", ".*"]
+      end
+      with_trusted_git_probe_fault(matcher, [String.new, String.new, TestCommandStatus.new(1)]) do
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert status.success?, out
+        assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+        assert_includes out, "SECURITY_PREFLIGHT_OK"
+        refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      end
+    end
+  end
+
+  def test_trusted_base_config_scan_accepts_git_valid_section_and_subsection_names
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      config_path = File.join(repo_root, ".git", "config")
+      File.open(config_path, "ab") do |config|
+        config.write(<<~CONFIG)
+
+          [-leading]
+            key = value
+          [.leading]
+            key = value
+        CONFIG
+        config.write("[safe \"quoted\rsubsection\"]\n  key = value\n")
+      end
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_trusted_base_config_probe_positive_controls
+    cases = {
+      "missing extension key with local URL" => lambda do |_repo_root|
+        nil
+      end,
+      "explicit false with local URL" => lambda do |repo_root|
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+        git! "-C", repo_root, "config", "--worktree", "remote.origin.url",
+             "https://attacker.invalid/owner/repo.git"
+        git! "-C", repo_root, "config", "--worktree", "http.proxy", "https://proxy.invalid"
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "false"
+      end,
+      "enabled extension with empty worktree config" => lambda do |repo_root|
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+      end,
+      "duplicate safe records" => lambda do |repo_root|
+        git! "-C", repo_root, "config", "--local", "--add", "safe.duplicate", "first"
+        git! "-C", repo_root, "config", "--local", "--add", "safe.duplicate", "second"
+      end,
+      "unusual valid subsection and key records" => lambda do |repo_root|
+        git! "-C", repo_root, "config", "--local", "safe.https://example.com/path.key-name", "value"
+        git! "-C", repo_root, "config", "--local", "123.safe-key", "value"
+      end,
+      "enabled extension with only one worktree URL" => lambda do |repo_root|
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "true"
+        git! "-C", repo_root, "config", "--local", "--unset-all", "remote.origin.url"
+        git! "-C", repo_root, "config", "--worktree", "remote.origin.url",
+             "https://github.com/owner/repo.git"
+      end
+    }
+
+    cases.each do |label, setup|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        setup.call(repo_root)
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert status.success?, "#{label}: #{out}"
+        assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED", label
+        assert_includes out, "SECURITY_PREFLIGHT_OK", label
+        refute_includes out, "SECURITY_PREFLIGHT_BLOCKED", label
+      end
+    end
+  end
+
+  def test_trusted_base_blocks_malformed_or_signaled_extension_probe_results
+    cases = {
+      "malformed boolean output" => ["enabled\n", "", TestCommandStatus.new(0)],
+      "signaled status" => ["", "simulated signal", TestSignaledCommandStatus.new(9)],
+      "malformed status" => ["", "simulated malformed status", Object.new]
+    }
+
+    cases.each do |label, response|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        matcher = ->(args) { args.include?("--type=bool") && args.last == "extensions.worktreeConfig" }
+        with_trusted_git_probe_fault(matcher, response) do
+          out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+          assert_trusted_base_blocked(out, status)
+          assert_includes out, "extensions.worktreeConfig probe", label
+        end
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_plain_http_for_non_loopback_github_host
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      git! "-C", repo_root, "remote", "set-url", "origin", "http://github.com/owner/repo.git"
+      production_host_env = env.merge(
+        "GH_HOST" => "github.com",
+        "PREFLIGHT_TEST_REPO_URL" => "https://github.com/owner/repo"
+      )
+
+      out, status = run_trusted_base_preflight(production_host_env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "must resolve to github.com/owner/repo over exact GitHub HTTPS or SSH"
+    end
+  end
+
+  def test_trusted_base_rejects_https_non_github_host_selected_by_gh_host
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      remote_url = "https://github.company.example/owner/repo.git"
+      git! "-C", repo_root, "remote", "set-url", "origin", remote_url
+      alternate_host_env = env.merge(
+        "GH_HOST" => "github.company.example",
+        "PREFLIGHT_TEST_REPO_URL" => remote_url
+      )
+
+      out, status = run_trusted_base_preflight(alternate_host_env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "must resolve to github.com/owner/repo over exact GitHub HTTPS or SSH"
+    end
+  end
+
+  def test_trusted_base_accepts_exact_github_ssh_remote_metadata
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      git! "-C", repo_root, "remote", "set-url", "origin", "git@github.com:owner/repo.git"
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_trusted_base_rejects_credentialed_wrong_user_and_wrong_repository_remotes
+    remote_urls = [
+      "https://token@github.com/owner/repo.git",
+      "ssh://mallory@github.com/owner/repo.git",
+      "https://github.com/other/repo.git"
+    ]
+
+    remote_urls.each do |remote_url|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        git! "-C", repo_root, "remote", "set-url", "origin", remote_url
+
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "must resolve to github.com/owner/repo over exact GitHub HTTPS or SSH"
+      end
+    end
+  end
+
+  def test_production_cli_rejects_loopback_http_even_with_gh_host_and_fake_tools
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      install_path_git_attacker(env, provenance.fetch(:path_git_marker))
+      Dir.mktmpdir("pr-security-preflight-loopback") do |http_root|
+        with_static_http_server(http_root) do |port, http_request_log|
+          remote_url = "http://127.0.0.1:#{port}/owner/repo.git"
+          git! "-C", repo_root, "remote", "set-url", "origin", remote_url
+          production_env = env.merge(
+            "GH_HOST" => "127.0.0.1:#{port}",
+            "PREFLIGHT_TEST_REPO_URL" => remote_url
+          )
+          out, status = run_script(
+            production_env,
+            "--repo",
+            "owner/repo",
+            "--trust-config",
+            trust_config_path,
+            "--strict-trust",
+            "--fail-on-high-risk-files",
+            "123",
+            chdir: repo_root
+          )
+
+          assert_trusted_base_blocked(out, status)
+          assert_includes out, "must resolve to github.com/owner/repo over exact GitHub HTTPS or SSH"
+          assert_only_ordinary_path_git_probes(provenance.fetch(:path_git_marker))
+          assert_empty File.read(http_request_log), "production CLI fetched from loopback HTTP"
+        end
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_local_or_worktree_proxy_configuration
+    cases = {
+      "local HTTP proxy" => ["--local", "http.proxy", "https://proxy.invalid"],
+      "worktree remote proxy" => ["--worktree", "remote.origin.proxy", "https://proxy.invalid"]
+    }
+
+    cases.each do |label, (scope, key, value)|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "true" if scope == "--worktree"
+        git! "-C", repo_root, "config", scope, key, value
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "make trusted remote provenance ambiguous", label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_additional_fetch_affecting_git_config
+    cases = {
+      "alternate SSH executable" => ["--local", "core.sshCommand", "/tmp/attacker-ssh"],
+      "alternate credential helper" => ["--local", "credential.helper", "!attacker"],
+      "alternate upload-pack executable" => ["--local", "remote.origin.uploadpack", "/tmp/attacker-upload-pack"],
+      "alternate Git proxy" => ["--local", "core.gitproxy", "/tmp/attacker-proxy"],
+      "disabled TLS verification" => ["--worktree", "http.sslVerify", "false"],
+      "alternate CA" => ["--local", "http.sslCAInfo", "/tmp/attacker-ca.pem"],
+      "extra authorization header" => ["--worktree", "http.extraHeader", "Authorization: attacker"]
+    }
+
+    cases.each do |label, (scope, key, value)|
+      with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+        git! "-C", repo_root, "config", "extensions.worktreeConfig", "true" if scope == "--worktree"
+        git! "-C", repo_root, "config", scope, key, value
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "make trusted remote provenance ambiguous", label
+      end
+    end
+  end
+
+  def test_trusted_base_scrubs_inherited_fetch_environment
+    inherited = {
+      "GIT_SSH" => "/tmp/attacker-ssh",
+      "GIT_SSH_COMMAND" => "/tmp/attacker-ssh --capture",
+      "GIT_SSL_NO_VERIFY" => "1",
+      "GIT_SSL_CAINFO" => "/tmp/attacker-ca.pem",
+      "GIT_ASKPASS" => "/tmp/attacker-askpass",
+      "SSH_ASKPASS" => "/tmp/attacker-askpass",
+      "HTTP_PROXY" => "https://proxy.invalid",
+      "HTTPS_PROXY" => "https://proxy.invalid",
+      "ALL_PROXY" => "socks5://proxy.invalid",
+      "GIT_CONFIG_PARAMETERS" => "'http.extraHeader=Authorization: attacker'"
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: inherited) do |env, trust_config_path, repo_root, provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      operations = provenance.fetch(:operations)
+      assert_equal 1, operations.fetch_environments.size
+      fetch_env = operations.fetch_environments.first
+      inherited.each do |name, value|
+        refute_equal value, fetch_env[name], "trusted fetch inherited unsafe #{name} value"
+      end
+      refute fetch_env.key?("PATH"), "trusted fetch inherited PATH"
+      assert_equal "https:ssh", fetch_env.fetch("GIT_ALLOW_PROTOCOL")
+      assert_includes fetch_env.fetch("GIT_SSH_COMMAND"), "-o BatchMode=yes"
+      assert_equal 1, operations.fetch_roots.size
+      refute operations.fetch_roots.first.start_with?("#{repo_root}/"), "trusted fetch ran inside consumer root"
+    end
+  end
+
+  def test_trusted_base_does_not_execute_git_from_inherited_path
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      install_path_git_attacker(env, provenance.fetch(:path_git_marker))
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_only_ordinary_path_git_probes(provenance.fetch(:path_git_marker))
+    end
+  end
+
+  def test_trusted_base_fails_closed_when_no_trusted_git_candidate_exists
+    original = Object.instance_method(:resolve_trusted_git_executable)
+    Object.send(:define_method, :resolve_trusted_git_executable) do
+      raise "no pinned system Git executable is available"
+    end
+    Object.send(:private, :resolve_trusted_git_executable)
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+    TrustedGitState.executable = nil
+    TrustedGitState.local_env_vars = nil
+
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "no pinned system Git executable is available"
+    end
+  ensure
+    TrustedGitState.executable = previous_executable if defined?(previous_executable)
+    TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    Object.send(:define_method, :resolve_trusted_git_executable, original) if original
+    Object.send(:private, :resolve_trusted_git_executable)
+  end
+
+  def test_trusted_git_operator_executable_override_is_canonicalized
+    Dir.mktmpdir("trusted-git-installation", Dir.home) do |dir|
+      executable = File.join(dir, "git-real")
+      configured = File.join(dir, "git")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+      File.symlink(executable, configured)
+
+      resolved = with_env("PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE" => configured) do
+        resolve_trusted_git_executable
+      end
+
+      assert_equal File.realpath(executable), resolved
+    end
+  end
+
+  def test_trusted_ssh_operator_executable_override_is_canonicalized
+    Dir.mktmpdir("trusted-ssh-installation", Dir.home) do |dir|
+      executable = File.join(dir, "ssh-real")
+      configured = File.join(dir, "ssh")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+      File.symlink(executable, configured)
+
+      resolved = with_env("PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE" => configured) do
+        resolve_trusted_ssh_executable
+      end
+
+      assert_equal File.realpath(executable), resolved
+    end
+  end
+
+  def test_trusted_ssh_operator_executable_override_rejects_untrusted_candidates
+    Dir.mktmpdir("trusted-ssh-temp") do |temporary_dir|
+      executable = File.join(temporary_dir, "ssh")
+      File.write(executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, executable)
+
+      error = with_env("PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE" => executable) do
+        assert_raises(RuntimeError) { resolve_trusted_ssh_executable }
+      end
+
+      assert_includes error.message, "PR_SECURITY_PREFLIGHT_TRUSTED_SSH_EXECUTABLE"
+    end
+  end
+
+  def test_trusted_git_operator_executable_override_rejects_untrusted_candidates
+    Dir.mktmpdir("trusted-git-nonexec", Dir.home) do |operator_dir|
+      Dir.mktmpdir("trusted-git-temp") do |temporary_dir|
+        non_executable = File.join(operator_dir, "git")
+        temporary_executable = File.join(temporary_dir, "git")
+        File.write(non_executable, "#!/bin/sh\nexit 0\n")
+        File.write(temporary_executable, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, temporary_executable)
+        cases = {
+          "empty" => "",
+          "relative" => "relative/git",
+          "unknown sentinel" => "UNKNOWN",
+          "missing" => "/definitely-missing-pr-security-preflight/git",
+          "non-executable" => non_executable,
+          "working-directory controlled" => SCRIPT,
+          "temporary-directory controlled" => temporary_executable
+        }
+
+        cases.each do |label, candidate|
+          error = assert_raises(RuntimeError, label) do
+            with_env("PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE" => candidate) do
+              resolve_trusted_git_executable
+            end
+          end
+          assert_includes error.message, "PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE", label
+        end
+      end
+    end
+  end
+
+  def test_trusted_git_operator_executable_override_rejects_repository_parent_of_cwd
+    nested_cwd = File.join(Dir.pwd, "docs")
+
+    error = assert_raises(RuntimeError) do
+      with_env("PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE" => SCRIPT) do
+        Dir.chdir(nested_cwd) { resolve_trusted_git_executable }
+      end
+    end
+
+    assert_includes error.message, "PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE"
+  end
+
+  def test_trusted_git_operator_executable_override_rejects_original_temp_after_tmpdir_redirect
+    Dir.mktmpdir("trusted-git-original-temp") do |original_temp|
+      Dir.mktmpdir("trusted-git-redirected-temp", Dir.home) do |redirected_temp|
+        candidate = File.join(original_temp, "git")
+        File.write(candidate, "#!/bin/sh\nexit 0\n")
+        FileUtils.chmod(0o755, candidate)
+
+        error = with_env("TMPDIR" => redirected_temp, "PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE" => candidate) do
+          assert_equal File.realpath(redirected_temp), File.realpath(Dir.tmpdir)
+          assert_raises(RuntimeError) { resolve_trusted_git_executable }
+        end
+
+        assert_includes error.message, "PR_SECURITY_PREFLIGHT_TRUSTED_GIT_EXECUTABLE"
+      end
+    end
+  end
+
+  def test_public_preflight_rejects_absent_policy_before_resolving_trusted_git
+    original = Object.instance_method(:resolve_trusted_git_executable)
+    resolver_calls = 0
+    Object.send(:define_method, :resolve_trusted_git_executable) do
+      resolver_calls += 1
+      raise "forced trusted Git resolver failure"
+    end
+    Object.send(:private, :resolve_trusted_git_executable)
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+    TrustedGitState.executable = nil
+    TrustedGitState.local_env_vars = nil
+
+    with_trusted_base_preflight(policy: {}, fetched_policy: {}) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "pr_security_preflight mapping is missing"
+      refute_includes out, "forced trusted Git resolver failure"
+      assert_equal 0, resolver_calls
+    end
+  ensure
+    TrustedGitState.executable = previous_executable if defined?(previous_executable)
+    TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    Object.send(:define_method, :resolve_trusted_git_executable, original) if original
+    Object.send(:private, :resolve_trusted_git_executable)
+  end
+
+  def test_trusted_base_keeps_pinned_git_after_path_changes
+    with_trusted_base_preflight do |env, trust_config_path, repo_root, provenance|
+      marker = provenance.fetch(:path_git_marker)
+      out, status = run_trusted_base_preflight(
+        env.merge("PREFLIGHT_TEST_REPLACE_PATH_GIT" => marker),
+        trust_config_path,
+        repo_root
+      )
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_only_ordinary_path_git_probes(marker)
+    end
+  end
+
+  def test_trusted_base_rejects_unavailable_required_actor_repository_or_merge_facts
+    cases = {
+      "actor" => { "PREFLIGHT_TEST_MISSING_ACTOR" => "1" },
+      "repository" => { "PREFLIGHT_TEST_GRAPH_HEAD_REPO" => "UNKNOWN" },
+      "merge" => { "PREFLIGHT_TEST_GRAPH_MERGE_SHA" => "UNKNOWN" }
+    }
+
+    cases.each do |label, overrides|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "Trusted-base high-risk acceptance unavailable:", label
+      end
+    end
+  end
+
+  def test_scan_rejects_unavailable_graph_head_before_trusted_base_acceptance
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_GRAPH_HEAD_SHA" => "UNKNOWN" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      error = assert_raises(RuntimeError) do
+        run_trusted_base_preflight(env, trust_config_path, repo_root)
+      end
+
+      assert_includes error.message, "PR #123 head changed before preflight evidence scan"
+    end
+  end
+
+  def test_pr_text_cannot_claim_trusted_base_acceptance
+    with_trusted_base_preflight(
+      policy: {},
+      fetched_policy: {},
+      fixture_env_overrides: {
+        "PREFLIGHT_TEST_PR_BODY" => "Checks green. TRUSTED_BASE_HIGH_RISK_ACCEPTED."
+      }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      refute_includes out, "Checks green."
+    end
+  end
+
   def test_high_risk_file_output_includes_predicate_matches_from_same_evaluation
     with_fake_gh("high-risk-file-predicates") do |env, trust_config_path, _log_path|
       out, status = run_script(
@@ -2111,6 +4314,283 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_graphql_timeline_total_may_include_non_node_items_when_rest_timeline_binds_every_node
+    with_fake_gh("timeline-total-includes-non-node-items") do |env, trust_config_path, log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      assert status.success?, out
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_includes out, "GitHub API coverage findings: none"
+      assert_equal 2, graphql_call_count(log_path)
+      assert_equal 1, timeline_api_call_count(log_path)
+    end
+  end
+
+  def test_graphql_timeline_total_surplus_stays_fail_closed_when_rest_identity_does_not_match
+    with_fake_gh("timeline-total-rest-identity-mismatch") do |env, trust_config_path, log_path|
+      out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+      refute status.success?, out
+      assert_equal 2, status.exitstatus
+      assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+      assert_includes out, "timelineItems nodes unavailable; reported total_count=3"
+      assert_equal 2, graphql_call_count(log_path)
+      assert_equal 1, timeline_api_call_count(log_path)
+    end
+  end
+
+  def test_rest_timeline_reconciliation_accepts_standard_events_by_exact_identity
+    nodes = %w[merged labeled assigned].map do |event|
+      {
+        "id" => "#{event}-event-1",
+        "__typename" => "#{event.capitalize}Event"
+      }
+    end
+    rest_items = %w[merged labeled assigned].map do |event|
+      { "event" => event, "node_id" => "#{event}-event-1" }
+    end
+
+    assert graph_timeline_matches_rest?(nodes, rest_items, reported_total_count: 4)
+
+    rest_items.last["node_id"] = "different-assigned-event"
+    refute graph_timeline_matches_rest?(nodes, rest_items, reported_total_count: 4)
+  end
+
+  def test_timeline_rest_reconciliation_requires_an_ordinary_event_node_id
+    graph_nodes = [{ "id" => "comment-event-1", "__typename" => "IssueComment" }]
+    rest_items = [{ "event" => "commented", "node_id" => nil }]
+
+    refute graph_timeline_matches_rest?(graph_nodes, rest_items, reported_total_count: 2)
+  end
+
+  def test_timeline_total_surplus_requires_exact_review_and_reply_accounting
+    graph_nodes = [
+      {
+        "id" => "commit-event-1",
+        "__typename" => "PullRequestCommit",
+        "commit" => { "oid" => "a" * 40 }
+      },
+      { "id" => "review-node-1", "__typename" => "PullRequestReview" }
+    ]
+    rest_items = [
+      { "event" => "committed", "node_id" => "commit-object-1", "sha" => "a" * 40 },
+      {
+        "event" => "reviewed",
+        "id" => 501,
+        "node_id" => "review-node-1",
+        "user" => { "login" => "reviewer" },
+        "state" => "commented",
+        "submitted_at" => "2026-08-30T04:00:00Z"
+      }
+    ]
+    reviews = [
+      {
+        "id" => 501,
+        "node_id" => "review-node-1",
+        "user" => { "login" => "reviewer" },
+        "state" => "COMMENTED",
+        "submitted_at" => "2026-08-30T04:00:00Z"
+      },
+      {
+        "id" => 502,
+        "node_id" => "review-node-2",
+        "user" => { "login" => "maintainer" },
+        "state" => "COMMENTED",
+        "submitted_at" => "2026-08-30T04:01:00Z"
+      }
+    ]
+    review_comments = [
+      {
+        "id" => 601,
+        "node_id" => "comment-node-1",
+        "pull_request_review_id" => 501,
+        "in_reply_to_id" => nil,
+        "user" => { "login" => "reviewer" }
+      },
+      {
+        "id" => 602,
+        "node_id" => "comment-node-2",
+        "pull_request_review_id" => 502,
+        "in_reply_to_id" => 601,
+        "user" => { "login" => "maintainer" }
+      }
+    ]
+
+    assert graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 3
+    )
+
+    refute graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 4
+    )
+    review_comments.last["in_reply_to_id"] = 999
+    refute graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 3
+    )
+    review_comments.last["in_reply_to_id"] = 601
+    reviews << reviews.first.dup
+    refute graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 3
+    )
+    reviews.pop
+    reviews.last["user"] = nil
+    refute graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 3
+    )
+    reviews.last["user"] = { "login" => "maintainer" }
+    review_comments.last["pull_request_review_id"] = 999
+    refute graph_timeline_matches_complete_rest?(
+      graph_nodes,
+      rest_items,
+      reviews:,
+      review_comments:,
+      reported_total_count: 3
+    )
+  end
+
+  def test_timeline_total_surplus_requires_exact_filtered_and_page_counts
+    connection = { "totalCount" => 3, "filteredCount" => 2, "pageCount" => 2 }
+    assert graph_timeline_filtered_cardinality_matches?(
+      connection,
+      accumulated_node_count: 2,
+      initial_page_node_count: 2
+    )
+
+    connection["filteredCount"] = 3
+    refute graph_timeline_filtered_cardinality_matches?(
+      connection,
+      accumulated_node_count: 2,
+      initial_page_node_count: 2
+    )
+    connection["filteredCount"] = 2
+    connection["pageCount"] = 1
+    refute graph_timeline_filtered_cardinality_matches?(
+      connection,
+      accumulated_node_count: 2,
+      initial_page_node_count: 2
+    )
+  end
+
+  def test_timeline_rest_reconciliation_rejects_empty_nodes_when_graphql_reported_items
+    refute graph_timeline_matches_rest?([], [], reported_total_count: 1)
+  end
+
+  def test_cross_reference_without_rest_node_id_requires_complete_matching_alternate_identity
+    graph_node = {
+      "id" => "cross-event-1",
+      "__typename" => "CrossReferencedEvent",
+      "createdAt" => "2026-08-30T03:21:05Z",
+      "actor" => { "id" => "actor-1", "login" => "justin808", "__typename" => "User" },
+      "source" => {
+        "id" => "issue-563",
+        "number" => 563,
+        "url" => "https://github.com/owner/repo/issues/563",
+        "__typename" => "Issue"
+      }
+    }
+    rest_item = {
+      "event" => "cross-referenced",
+      "node_id" => nil,
+      "created_at" => "2026-08-30T03:21:05Z",
+      "actor" => { "node_id" => "actor-1", "login" => "justin808", "type" => "User" },
+      "source" => {
+        "type" => "issue",
+        "issue" => {
+          "node_id" => "issue-563",
+          "number" => 563,
+          "html_url" => "https://github.com/owner/repo/issues/563"
+        }
+      }
+    }
+
+    assert graph_timeline_matches_rest?([graph_node], [rest_item], reported_total_count: 2)
+
+    mutations = {
+      "missing GraphQL event id" => ->(graph, _rest) { graph.delete("id") },
+      "missing GraphQL createdAt" => ->(graph, _rest) { graph.delete("createdAt") },
+      "missing REST actor id" => ->(_graph, rest) { rest.fetch("actor").delete("node_id") },
+      "actor login mismatch" => ->(_graph, rest) { rest.fetch("actor")["login"] = "other" },
+      "source type mismatch" => ->(_graph, rest) { rest.fetch("source")["type"] = "pull_request" },
+      "missing REST source id" => ->(_graph, rest) { rest.dig("source", "issue").delete("node_id") },
+      "source number mismatch" => ->(_graph, rest) { rest.dig("source", "issue")["number"] = 564 },
+      "source URL mismatch" => ->(_graph, rest) { rest.dig("source", "issue")["html_url"] = "https://example.invalid" }
+    }
+    mutations.each do |label, mutate|
+      mutated_graph = JSON.parse(JSON.generate(graph_node))
+      mutated_rest = JSON.parse(JSON.generate(rest_item))
+      mutate.call(mutated_graph, mutated_rest)
+
+      refute graph_timeline_matches_rest?(
+        [mutated_graph],
+        [mutated_rest],
+        reported_total_count: 2
+      ), label
+    end
+  end
+
+  def test_cross_reference_derives_pull_request_source_from_rest_pull_request_link
+    graph_node = {
+      "id" => "cross-event-pr-1",
+      "__typename" => "CrossReferencedEvent",
+      "createdAt" => "2026-08-30T04:00:00Z",
+      "actor" => { "id" => "actor-1", "login" => "justin808", "__typename" => "User" },
+      "source" => {
+        "id" => "pr-564",
+        "number" => 564,
+        "url" => "https://github.com/owner/repo/pull/564",
+        "__typename" => "PullRequest"
+      }
+    }
+    rest_item = {
+      "event" => "cross-referenced",
+      "node_id" => nil,
+      "created_at" => "2026-08-30T04:00:00Z",
+      "actor" => { "node_id" => "actor-1", "login" => "justin808", "type" => "User" },
+      "source" => {
+        "type" => "issue",
+        "issue" => {
+          "node_id" => "pr-564",
+          "number" => 564,
+          "html_url" => "https://github.com/owner/repo/pull/564",
+          "pull_request" => { "html_url" => "https://github.com/owner/repo/pull/564" }
+        }
+      }
+    }
+
+    assert graph_timeline_matches_rest?([graph_node], [rest_item], reported_total_count: 2)
+
+    [nil, {}, "not-an-object", { "html_url" => "javascript:alert(1)" }].each do |malformed|
+      malformed_rest = JSON.parse(JSON.generate(rest_item))
+      malformed_rest.dig("source", "issue")["pull_request"] = malformed
+
+      refute graph_timeline_matches_rest?(
+        [graph_node],
+        [malformed_rest],
+        reported_total_count: 2
+      ), malformed.inspect
+    end
+  end
+
   def test_paginated_timeline_items_are_merged_before_visibility_and_coverage_checks
     with_fake_gh("paginated-timeline") do |env, trust_config_path, log_path|
       out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
@@ -2120,6 +4600,26 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, "GitHub API coverage findings: none"
       assert_includes out, "Untrusted or hidden participant findings: none"
       assert_equal 2, graphql_call_count(log_path)
+    end
+  end
+
+  def test_every_paginated_graphql_page_requires_complete_consistent_metadata
+    modes = %w[
+      paginated-timeline-initial-null-count
+      paginated-timeline-fetched-null-count
+      paginated-timeline-intermediate-nonboolean-page-info
+      paginated-participants-fetched-null-count
+    ]
+
+    modes.each do |mode|
+      with_fake_gh(mode) do |env, trust_config_path, _log_path|
+        out, status = run_script(env, "--repo", "owner/repo", "--trust-config", trust_config_path, "123")
+
+        refute status.success?, "#{mode}:\n#{out}"
+        assert_equal 2, status.exitstatus, mode
+        assert_includes out, "SECURITY_PREFLIGHT_BLOCKED", mode
+        assert_includes out, "#123: GitHub API coverage truncated", mode
+      end
     end
   end
 
@@ -2919,6 +5419,46 @@ class PrSecurityPreflightTest < Minitest::Test
 
   private
 
+  def install_process_state_executable(directory, source_candidates: %w[/usr/bin/ps /bin/ps])
+    source = source_candidates.find { |path| File.executable?(path) }
+    destination = File.join(directory, "ps")
+    if source
+      FileUtils.cp(source, destination)
+    else
+      File.write(destination, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, destination)
+    end
+    destination
+  end
+
+  def assert_process_absent(pid)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+    loop do
+      unless process_executing?(pid)
+        assert true
+        return
+      end
+      break unless Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+
+      sleep 0.01
+    end
+
+    flunk "process #{pid} survived trusted Git probe timeout"
+  end
+
+  def process_executing?(pid)
+    Process.kill(0, pid)
+    ps = resolve_process_state_executable
+
+    stdout, _stderr, status = Open3.capture3(ps, "-p", pid.to_s, "-o", "state=")
+    state = stdout.strip
+    return true unless status.success? && !state.empty?
+
+    !state.start_with?("Z")
+  rescue Errno::ESRCH
+    false
+  end
+
   def assert_trust_config_evidence(out, path:, source:)
     lines = out.lines.map(&:chomp)
     assert_includes lines, "Trust config: #{File.expand_path(path)}"
@@ -2952,6 +5492,190 @@ class PrSecurityPreflightTest < Minitest::Test
 
   def init_git_root(root)
     raise "git init failed in #{root}" unless system(clean_git_env, "git", "-C", root, "init", "--quiet")
+  end
+
+  def with_trusted_base_preflight(policy: trusted_base_policy, fetched_policy: policy, fixture_env_overrides: {})
+    with_fake_gh("trusted-base-high-risk") do |env, trust_config_path, _log_path, dir|
+      repo_root = File.join(dir, "consumer")
+      FileUtils.mkdir_p(repo_root)
+      head_sha = "a" * 40
+      merge_sha = "b" * 40
+      base_sha = "c" * 40
+      remote_url = "https://github.com/owner/repo.git"
+      git! "-C", repo_root, "init", "--quiet"
+      git! "-C", repo_root, "remote", "add", "origin", remote_url
+      write_workflow_policy(repo_root, policy)
+      path_git_marker = File.join(dir, "path-git.log")
+      File.write(path_git_marker, "")
+      operations = TestTrustedBaseHighRiskOperations.new(
+        base_sha:,
+        fetched_policy:,
+        expected_merge_sha: merge_sha,
+        fetch_fail: fixture_env_overrides["PREFLIGHT_TEST_FETCH_FAIL"] == "1",
+        checkout_matches: fixture_env_overrides["PREFLIGHT_TEST_CHECKOUT_MISMATCH"] != "1",
+        trusted_ref_sha: fixture_env_overrides["PREFLIGHT_TEST_TRUSTED_REF_SHA"]
+      )
+      @trusted_base_operations ||= {}
+      @trusted_base_operations[repo_root] = operations
+
+      provenance = { base_sha:, head_sha:, merge_sha:, operations:, path_git_marker: }
+      fixture_env = env.merge(
+        "GH_HOST" => "github.com",
+        "PREFLIGHT_TEST_REPO_URL" => remote_url,
+        "PREFLIGHT_TEST_HEAD_SHA" => head_sha,
+        "PREFLIGHT_TEST_MERGE_SHA" => merge_sha
+      ).merge(
+        fixture_env_overrides.reject do |key, _value|
+          %w[
+            PREFLIGHT_TEST_FETCH_FAIL PREFLIGHT_TEST_CHECKOUT_MISMATCH PREFLIGHT_TEST_TRUSTED_REF_SHA
+          ].include?(key)
+        end
+      )
+      yield fixture_env, trust_config_path, repo_root, provenance
+    ensure
+      @trusted_base_operations&.delete(repo_root)
+    end
+  end
+
+  def run_trusted_base_preflight(env, trust_config_path, repo_root)
+    status = nil
+    stdout, stderr = with_env(env.merge(clean_git_env)) do
+      Dir.chdir(repo_root) do
+        capture_io do
+          status = run_preflight(
+            [
+              "--repo",
+              "owner/repo",
+              "--trust-config",
+              trust_config_path,
+              "--strict-trust",
+              "--fail-on-high-risk-files",
+              "123"
+            ],
+            trusted_base_operations: @trusted_base_operations.fetch(repo_root)
+          )
+        end
+      end
+    end
+    [stdout + stderr, TestCommandStatus.new(status)]
+  end
+
+  def with_trusted_git_probe_fault(matcher, response)
+    original = Object.instance_method(:capture_trusted_git_probe)
+    Object.send(:define_method, :capture_trusted_git_probe) do |*args, **options|
+      matcher.call(args) ? response : original.bind(self).call(*args, **options)
+    end
+    Object.send(:private, :capture_trusted_git_probe)
+    yield
+  ensure
+    Object.send(:define_method, :capture_trusted_git_probe, original)
+    Object.send(:private, :capture_trusted_git_probe)
+  end
+
+  def trusted_git_probe_failure_response(failure)
+    return ["", "simulated timeout", nil] if failure == :timeout
+
+    ["", "fatal: simulated failure", TestCommandStatus.new(128)]
+  end
+
+  def assert_trusted_base_blocked(out, status)
+    refute status.success?, out
+    assert_equal 2, status.exitstatus, out
+    assert_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    assert_includes out, "#123: high-risk files changed"
+    refute_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+  end
+
+  def assert_only_ordinary_path_git_probes(marker)
+    invocations = File.readlines(marker, chomp: true)
+    refute_empty invocations
+    allowed = invocations.all? do |line|
+      line.match?(/\Aexecuted (?:rev-parse --local-env-vars|(?:-C .+ )?rev-parse --show-toplevel)\z/)
+    end
+    assert allowed, "PATH Git handled a trusted-base operation: #{invocations.inspect}"
+  end
+
+  def trusted_base_policy(overrides = {})
+    {
+      "pr_security_preflight" => {
+        "trusted_base_high_risk_acceptance" => {
+          "enabled" => true,
+          "repository" => "owner/repo",
+          "remote" => "origin",
+          "ref" => "refs/heads/main"
+        }.merge(overrides)
+      }
+    }
+  end
+
+  def write_workflow_policy(root, policy)
+    path = File.join(root, ".agents", "agent-workflow.yml")
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, policy.is_a?(String) ? policy : YAML.dump(policy))
+  end
+
+  def install_path_git_attacker(env, marker)
+    clean_git_env # Resolve the test harness's own Git metadata before installing the attacker.
+    wrapper = File.join(env.fetch("PATH").split(File::PATH_SEPARATOR).first, "git")
+    File.write(wrapper, <<~SH)
+      #!/usr/bin/env bash
+      printf 'executed %s\n' "$*" >> #{Shellwords.shellescape(marker)}
+      exec #{Shellwords.shellescape(REAL_GIT)} "$@"
+    SH
+    FileUtils.chmod(0o755, wrapper)
+  end
+
+  def with_static_http_server(root)
+    server = TCPServer.new("127.0.0.1", 0)
+    request_log = File.join(File.dirname(root), "http-requests.log")
+    File.write(request_log, "")
+    thread = Thread.new do
+      loop do
+        client = server.accept
+        request_line = client.gets.to_s
+        headers = []
+        while (line = client.gets)
+          break if line == "\r\n"
+
+          headers << line
+        end
+        File.open(request_log, "a") { |file| file.write(request_line, *headers) }
+        request_path = request_line.split[1].to_s.split("?", 2).first
+        decoded_path = URI.decode_www_form_component(request_path)
+        candidate = File.expand_path(".#{decoded_path}", root)
+        allowed = candidate.start_with?("#{File.expand_path(root)}/") && File.file?(candidate)
+
+        if allowed
+          body = File.binread(candidate)
+          client.write("HTTP/1.1 200 OK\r\nContent-Length: #{body.bytesize}\r\nConnection: close\r\n\r\n")
+          client.write(body) unless request_line.start_with?("HEAD ")
+        else
+          client.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        end
+      ensure
+        client&.close
+      end
+    rescue IOError, Errno::EBADF
+      nil
+    end
+
+    yield server.addr[1], request_log
+  ensure
+    server&.close
+    thread&.join
+  end
+
+  def git!(*args)
+    return if system(clean_git_env, REAL_GIT, *args)
+
+    raise "git command failed: #{args.shelljoin}"
+  end
+
+  def git_output!(*args)
+    stdout, status = Open3.capture2(clean_git_env, REAL_GIT, *args)
+    raise "git command failed: #{args.shelljoin}" unless status.success?
+
+    stdout.strip
   end
 
   def clean_git_env
@@ -3025,6 +5749,10 @@ class PrSecurityPreflightTest < Minitest::Test
     File.readlines(log_path).count { |line| line.start_with?("api graphql") }
   end
 
+  def timeline_api_call_count(log_path)
+    File.readlines(log_path).count { |line| line.include?("repos/owner/repo/issues/123/timeline?per_page=100") }
+  end
+
   def canonical_bot_query_call_count(log_path)
     File.readlines(log_path).count { |line| line.include?("query CanonicalBot") }
   end
@@ -3067,8 +5795,8 @@ class PrSecurityPreflightTest < Minitest::Test
             timelineItems: {
               totalCount: 101,
               pageInfo: { hasNextPage: true, endCursor: "timeline-page-1" },
-              nodes: Array.new(100) do
-                { __typename: "MentionedEvent", actor: { login: "issue-author" } }
+              nodes: Array.new(100) do |index|
+                { id: "timeline-event-#{index}", __typename: "MentionedEvent", actor: { login: "issue-author" } }
               end
             }
           }
@@ -3082,12 +5810,47 @@ class PrSecurityPreflightTest < Minitest::Test
             timelineItems: {
               totalCount: 101,
               pageInfo: { hasNextPage: false, endCursor: nil },
-              nodes: [{ __typename: "IssueComment", author: { login: "justin808" } }]
+              nodes: [{ id: "timeline-event-100", __typename: "IssueComment", author: { login: "justin808" } }]
             }
           }
         }
       }
     )
+    paginated_timeline_initial_null_count = JSON.parse(paginated_timeline_first).tap do |payload|
+      payload.dig("data", "repository", "issue", "timelineItems")["totalCount"] = nil
+    end.to_json
+    paginated_timeline_fetched_null_count = JSON.parse(paginated_timeline_second).tap do |payload|
+      payload.dig("data", "repository", "issue", "timelineItems")["totalCount"] = nil
+    end.to_json
+    paginated_timeline_intermediate_nonboolean_page_info = JSON.generate(
+      data: {
+        repository: {
+          issue: {
+            timelineItems: {
+              totalCount: 102,
+              pageInfo: { hasNextPage: 0, endCursor: "timeline-page-2" },
+              nodes: [{ id: "timeline-event-100", __typename: "IssueComment", author: { login: "justin808" } }]
+            }
+          }
+        }
+      }
+    )
+    paginated_timeline_final_third_page = JSON.generate(
+      data: {
+        repository: {
+          issue: {
+            timelineItems: {
+              totalCount: 102,
+              pageInfo: { hasNextPage: false, endCursor: nil },
+              nodes: [{ id: "timeline-event-101", __typename: "IssueComment", author: { login: "justin808" } }]
+            }
+          }
+        }
+      }
+    )
+    paginated_timeline_first_expanded_total = JSON.parse(paginated_timeline_first).tap do |payload|
+      payload.dig("data", "repository", "issue", "timelineItems")["totalCount"] = 102
+    end.to_json
     paginated_timeline_missing_page_info = JSON.generate(
       data: {
         repository: {
@@ -3121,8 +5884,8 @@ class PrSecurityPreflightTest < Minitest::Test
             timelineItems: {
               totalCount: 2501,
               pageInfo: { hasNextPage: true, endCursor: "timeline-page-0" },
-              nodes: Array.new(100) do
-                { __typename: "MentionedEvent", actor: { login: "justin808" } }
+              nodes: Array.new(100) do |index|
+                { id: "page-cap-event-#{index}", __typename: "MentionedEvent", actor: { login: "justin808" } }
               end
             }
           }
@@ -3140,8 +5903,13 @@ class PrSecurityPreflightTest < Minitest::Test
             participants: {
               totalCount: 101,
               pageInfo: { hasNextPage: true, endCursor: "participants-page-1" },
-              nodes: Array.new(100) do
-                { login: "coderabbitai[bot]", url: "https://github.com/apps/coderabbitai", __typename: "Bot" }
+              nodes: Array.new(100) do |index|
+                {
+                  id: "participant-#{index}",
+                  login: "coderabbitai[bot]",
+                  url: "https://github.com/apps/coderabbitai",
+                  __typename: "Bot"
+                }
               end
             },
             timelineItems: {
@@ -3160,12 +5928,15 @@ class PrSecurityPreflightTest < Minitest::Test
             participants: {
               totalCount: 101,
               pageInfo: { hasNextPage: false, endCursor: nil },
-              nodes: [{ login: "justin808", url: "https://github.com/justin808", __typename: "User" }]
+              nodes: [{ id: "participant-100", login: "justin808", url: "https://github.com/justin808", __typename: "User" }]
             }
           }
         }
       }
     )
+    paginated_participants_fetched_null_count = JSON.parse(paginated_participants_second).tap do |payload|
+      payload.dig("data", "repository", "issue", "participants")["totalCount"] = nil
+    end.to_json
 
     <<~SH
       #!/usr/bin/env bash
@@ -3190,7 +5961,10 @@ class PrSecurityPreflightTest < Minitest::Test
           bare-bot-missing-id-participant|cached-bare-bot-alias-participants|\
           human-bot-basename-participant|\
           paginated-timeline|paginated-timeline-missing-page-info|paginated-timeline-page-fetch-failure|\
-          paginated-timeline-cursor-cycle|paginated-timeline-partial-error|paginated-participants)
+          paginated-timeline-cursor-cycle|paginated-timeline-partial-error|paginated-participants|\
+          paginated-timeline-initial-null-count|paginated-timeline-fetched-null-count|\
+          paginated-timeline-intermediate-nonboolean-page-info|\
+          paginated-participants-fetched-null-count)
             return 0
             ;;
           *)
@@ -3211,6 +5985,14 @@ class PrSecurityPreflightTest < Minitest::Test
       }
 
       if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        if [ -n "${PREFLIGHT_TEST_REPLACE_PATH_GIT:-}" ]; then
+          cat > "$(dirname "$0")/git" <<'GIT_WRAPPER'
+      #!/usr/bin/env bash
+      printf 'executed %s\n' "$*" >> "${PREFLIGHT_TEST_REPLACE_PATH_GIT}"
+      exec #{Shellwords.shellescape(REAL_GIT)} "$@"
+      GIT_WRAPPER
+          chmod +x "$(dirname "$0")/git"
+        fi
         if [ "$mode" = "repo-view-failure" ]; then
           printf 'simulated repo view failure\\n' >&2
           exit 1
@@ -3239,9 +6021,10 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
-        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
-          cat <<'JSON'
-      {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"","user":{"login":"justin808"},"pull_request":{}}
+        if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ] || [ "$mode" = "trusted-base-high-risk" ]; then
+          pr_body="${PREFLIGHT_TEST_PR_BODY:-}"
+          cat <<JSON
+      {"number":123,"title":"Test PR","html_url":"https://github.com/owner/repo/pull/123","body":"${pr_body}","user":{"login":"justin808"},"pull_request":{}}
       JSON
         elif [ "$mode" = "blocking-issue" ]; then
           cat <<'JSON'
@@ -3281,6 +6064,29 @@ class PrSecurityPreflightTest < Minitest::Test
       JSON
         fi
         exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123" ]; then
+        if [ "$mode" = "trusted-base-high-risk" ]; then
+          head_sha="${PREFLIGHT_TEST_REST_HEAD_SHA:-${PREFLIGHT_TEST_HEAD_SHA}}"
+          merge_sha="${PREFLIGHT_TEST_REST_MERGE_SHA:-${PREFLIGHT_TEST_MERGE_SHA}}"
+          state="${PREFLIGHT_TEST_PR_STATE:-closed}"
+          merged="${PREFLIGHT_TEST_PR_MERGED:-true}"
+          merged_at="${PREFLIGHT_TEST_PR_MERGED_AT:-2026-08-28T00:00:00Z}"
+          head_repo="${PREFLIGHT_TEST_HEAD_REPO:-owner/repo}"
+          base_repo="${PREFLIGHT_TEST_BASE_REPO:-owner/repo}"
+          rest_base_ref="${PREFLIGHT_TEST_REST_BASE_REF-main}"
+          if [ "${PREFLIGHT_TEST_MISSING_REST_AUTHOR:-}" = "1" ]; then
+            rest_author_json=null
+          else
+            rest_author_login="${PREFLIGHT_TEST_REST_AUTHOR_LOGIN:-justin808}"
+            rest_author_json="$(printf '{\"login\":\"%s\"}' "$rest_author_login")"
+          fi
+          cat <<JSON
+      {"number":123,"state":"${state}","merged":${merged},"merged_at":"${merged_at}","user":${rest_author_json},"head":{"sha":"${head_sha}","repo":{"full_name":"${head_repo}"}},"base":{"ref":"${rest_base_ref}","repo":{"full_name":"${base_repo}"}},"merge_commit_sha":"${merge_sha}"}
+      JSON
+          exit 0
+        fi
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
@@ -3335,45 +6141,112 @@ class PrSecurityPreflightTest < Minitest::Test
       {"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}
       JSON
           fi
+        elif [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ]; then
+          cat <<'JSON'
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":3,"filteredCount":2,"pageCount":2,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"oid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}},{"id":"review-node-1","__typename":"PullRequestReview","author":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}}}
+      JSON
+        elif [ "$mode" = "trusted-base-high-risk" ]; then
+          if [[ "$*" == *"after=participant-page-1"* ]]; then
+            participant_page_nodes="${PREFLIGHT_TEST_PARTICIPANT_PAGE_NODES}"
+            cat <<JSON
+      {"data":{"repository":{"pullRequest":{"participants":{"totalCount":${PREFLIGHT_TEST_PARTICIPANT_TOTAL},"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":${participant_page_nodes}}}}}}
+      JSON
+            exit 0
+          fi
+          if [[ "$*" == *"after=timeline-page-1"* ]]; then
+            timeline_page_nodes="${PREFLIGHT_TEST_TIMELINE_PAGE_NODES}"
+            cat <<JSON
+      {"data":{"repository":{"pullRequest":{"timelineItems":{"totalCount":${PREFLIGHT_TEST_TIMELINE_TOTAL},"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":${timeline_page_nodes}}}}}}
+      JSON
+            exit 0
+          fi
+          head_sha="${PREFLIGHT_TEST_GRAPH_HEAD_SHA:-${PREFLIGHT_TEST_HEAD_SHA}}"
+          merge_sha="${PREFLIGHT_TEST_GRAPH_MERGE_SHA:-${PREFLIGHT_TEST_MERGE_SHA}}"
+          state="${PREFLIGHT_TEST_GRAPH_STATE:-MERGED}"
+          cross_repository="${PREFLIGHT_TEST_CROSS_REPOSITORY:-false}"
+          head_repo="${PREFLIGHT_TEST_GRAPH_HEAD_REPO:-owner/repo}"
+          graph_base_ref="${PREFLIGHT_TEST_GRAPH_BASE_REF-main}"
+          author_login="${PREFLIGHT_TEST_AUTHOR_LOGIN:-justin808}"
+          participant_total="${PREFLIGHT_TEST_PARTICIPANT_TOTAL:-1}"
+          if [ "${PREFLIGHT_TEST_MISSING_PARTICIPANT_TOTAL:-}" = "1" ]; then
+            participant_count_field=""
+          else
+            participant_count_field="$(printf '%s' '"totalCount":' "$participant_total" ',')"
+          fi
+          participant_nodes="${PREFLIGHT_TEST_PARTICIPANT_NODES:-}"
+          if [ -z "$participant_nodes" ]; then
+            participant_nodes='[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]'
+          fi
+          participant_has_next="${PREFLIGHT_TEST_PARTICIPANT_HAS_NEXT:-false}"
+          participant_end_cursor=null
+          if [ "$participant_has_next" = "true" ]; then
+            participant_end_cursor='"participant-page-1"'
+          fi
+          commit_author_total="${PREFLIGHT_TEST_COMMIT_AUTHOR_TOTAL:-1}"
+          commit_author_has_next="${PREFLIGHT_TEST_COMMIT_AUTHOR_HAS_NEXT:-false}"
+          commit_author_nodes="${PREFLIGHT_TEST_COMMIT_AUTHOR_NODES:-}"
+          timeline_total="${PREFLIGHT_TEST_TIMELINE_TOTAL:-1}"
+          timeline_has_next="${PREFLIGHT_TEST_TIMELINE_HAS_NEXT:-false}"
+          timeline_end_cursor=null
+          if [ "$timeline_has_next" = "true" ]; then
+            timeline_end_cursor='"timeline-page-1"'
+          fi
+          if [ "${PREFLIGHT_TEST_MISSING_ACTOR:-}" = "1" ]; then
+            author_json=null
+            commit_user_json=null
+          else
+            author_json="$(printf '{"login":"%s"}' "$author_login")"
+            commit_user_json="$(printf '{"id":"actor-1","login":"%s","__typename":"User"}' "$author_login")"
+          fi
+          if [ -z "$commit_author_nodes" ]; then
+            commit_author_nodes="$(printf '[{"user":%s}]' "$commit_user_json")"
+          fi
+          timeline_nodes="${PREFLIGHT_TEST_TIMELINE_NODES:-}"
+          if [ -z "$timeline_nodes" ]; then
+            timeline_nodes="$(printf '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":%s,"pageInfo":{"hasNextPage":%s,"endCursor":null},"nodes":%s}}}]' "$commit_author_total" "$commit_author_has_next" "$commit_author_nodes")"
+          fi
+          cat <<JSON
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","state":"${state}","mergedAt":"2026-08-28T00:00:00Z","isCrossRepository":${cross_repository},"baseRefName":"${graph_base_ref}","headRefOid":"${head_sha}","headRepository":{"nameWithOwner":"${head_repo}"},"mergeCommit":{"oid":"${merge_sha}"},"author":${author_json},"participants":{${participant_count_field}"pageInfo":{"hasNextPage":${participant_has_next},"endCursor":${participant_end_cursor}},"nodes":${participant_nodes}},"timelineItems":{"totalCount":${timeline_total},"pageInfo":{"hasNextPage":${timeline_has_next},"endCursor":${timeline_end_cursor}},"nodes":${timeline_nodes}}}}}}
+      JSON
         elif [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}]}}}}}
       JSON
         elif [ "$mode" = "truncated-timeline-warning-diff" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":101,"pageInfo":{"hasNextPage":true,"endCursor":"timeline-page-1"},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":101,"pageInfo":{"hasNextPage":true,"endCursor":"timeline-page-1"},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}]}}}}}
       JSON
         elif [ "$mode" = "truncated-commit-authors" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":11,"pageInfo":{"hasNextPage":true,"endCursor":"author-page-1"},"nodes":[{"user":{"login":"justin808"}},{"user":{"login":"justin808"}},{"user":{"login":"justin808"}},{"user":{"login":"justin808"}},{"user":{"login":"justin808"}},{"user":{"login":"justin808"}},{"user":{"login":"justin808"}},{"user":{"login":"justin808"}},{"user":{"login":"justin808"}},{"user":{"login":"justin808"}}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":11,"pageInfo":{"hasNextPage":true,"endCursor":"author-page-1"},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},{"user":{"id":"actor-1","login":"justin808","__typename":"User"}},{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}]}}}}}
       JSON
         elif [ "$mode" = "unknown-commit-author" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":null}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":null}]}}}]}}}}}
       JSON
         elif [ "$mode" = "missing-pr-author-warning-diff" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":null,"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":null,"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}]}}}}}
       JSON
         elif [ "$mode" = "untrusted-warning-diff" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"unknown-user"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"unknown-user"}}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"unknown-user"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-unknown","login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-unknown","login":"unknown-user","__typename":"User"}}]}}}]}}}}}
       JSON
         elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"PullRequestCommit","commit":{"authors":{"nodes":[{"user":{"login":"justin808"}}]}}}]}}}}}
+      {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]}}}]}}}}}
       JSON
         elif [ "$mode" = "untrusted-participant" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":2,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"},{"login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
+      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":2,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"},{"id":"actor-unknown","login":"unknown-user","url":"https://github.com/unknown-user","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
       JSON
         elif [ "$mode" = "trusted-hidden-participant" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"issue-author"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
+      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"issue-author"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
       JSON
         elif [ "$mode" = "deleted-account-participant" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":2,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"},{"login":null,"url":"https://github.com/ghost","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
+      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":2,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"},{"login":null,"url":"https://github.com/ghost","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
       JSON
         elif [ "$mode" = "missing-issue-author" ]; then
           cat <<'JSON'
@@ -3385,7 +6258,7 @@ class PrSecurityPreflightTest < Minitest::Test
       JSON
         elif [ "$mode" = "missing-timeline-nodes" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false}}}}}}
+      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false}}}}}}
       JSON
         elif [ "$mode" = "paginated-timeline-page-cap" ]; then
           if printf '%s\\n' "$*" | grep -q 'after=timeline-page-'; then
@@ -3399,13 +6272,15 @@ class PrSecurityPreflightTest < Minitest::Test
               end_cursor="$(printf '"timeline-page-%s"' "$next_cursor")"
             fi
             cat <<JSON
-      {"data":{"repository":{"issue":{"timelineItems":{"totalCount":2501,"pageInfo":{"hasNextPage":${has_next},"endCursor":${end_cursor}},"nodes":[{"__typename":"MentionedEvent","actor":{"login":"justin808"}}]}}}}}
+      {"data":{"repository":{"issue":{"timelineItems":{"totalCount":2501,"pageInfo":{"hasNextPage":${has_next},"endCursor":${end_cursor}},"nodes":[{"id":"page-cap-event-${next_cursor}00","__typename":"MentionedEvent","actor":{"login":"justin808"}}]}}}}}
       JSON
           else
             printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_page_cap_first)}
           fi
-        elif [ "$mode" = "paginated-timeline" ] || [ "$mode" = "paginated-timeline-missing-page-info" ] || [ "$mode" = "paginated-timeline-page-fetch-failure" ] || [ "$mode" = "paginated-timeline-cursor-cycle" ] || [ "$mode" = "paginated-timeline-partial-error" ]; then
-          if printf '%s\\n' "$*" | grep -q 'after=timeline-page-1'; then
+        elif [ "$mode" = "paginated-timeline" ] || [ "$mode" = "paginated-timeline-missing-page-info" ] || [ "$mode" = "paginated-timeline-page-fetch-failure" ] || [ "$mode" = "paginated-timeline-cursor-cycle" ] || [ "$mode" = "paginated-timeline-partial-error" ] || [ "$mode" = "paginated-timeline-initial-null-count" ] || [ "$mode" = "paginated-timeline-fetched-null-count" ] || [ "$mode" = "paginated-timeline-intermediate-nonboolean-page-info" ]; then
+          if printf '%s\\n' "$*" | grep -q 'after=timeline-page-2'; then
+            printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_final_third_page)}
+          elif printf '%s\\n' "$*" | grep -q 'after=timeline-page-1'; then
             if [ "$mode" = "paginated-timeline-missing-page-info" ]; then
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_missing_page_info)}
             elif [ "$mode" = "paginated-timeline-page-fetch-failure" ]; then
@@ -3413,19 +6288,31 @@ class PrSecurityPreflightTest < Minitest::Test
               exit 1
             elif [ "$mode" = "paginated-timeline-cursor-cycle" ]; then
               cat <<'JSON'
-      {"data":{"repository":{"issue":{"timelineItems":{"totalCount":101,"pageInfo":{"hasNextPage":true,"endCursor":"timeline-page-1"},"nodes":[{"__typename":"IssueComment","author":{"login":"justin808"}}]}}}}}
+      {"data":{"repository":{"issue":{"timelineItems":{"totalCount":101,"pageInfo":{"hasNextPage":true,"endCursor":"timeline-page-1"},"nodes":[{"id":"timeline-event-100","__typename":"IssueComment","author":{"login":"justin808"}}]}}}}}
       JSON
             elif [ "$mode" = "paginated-timeline-partial-error" ]; then
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_partial_error)}
+            elif [ "$mode" = "paginated-timeline-fetched-null-count" ]; then
+              printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_fetched_null_count)}
+            elif [ "$mode" = "paginated-timeline-intermediate-nonboolean-page-info" ]; then
+              printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_intermediate_nonboolean_page_info)}
             else
               printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_second)}
             fi
+          elif [ "$mode" = "paginated-timeline-initial-null-count" ]; then
+            printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_initial_null_count)}
+          elif [ "$mode" = "paginated-timeline-intermediate-nonboolean-page-info" ]; then
+            printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_first_expanded_total)}
           else
             printf '%s\\n' #{Shellwords.shellescape(paginated_timeline_first)}
           fi
-        elif [ "$mode" = "paginated-participants" ]; then
+        elif [ "$mode" = "paginated-participants" ] || [ "$mode" = "paginated-participants-fetched-null-count" ]; then
           if printf '%s\\n' "$*" | grep -q 'after=participants-page-1'; then
-            printf '%s\\n' #{Shellwords.shellescape(paginated_participants_second)}
+            if [ "$mode" = "paginated-participants-fetched-null-count" ]; then
+              printf '%s\\n' #{Shellwords.shellescape(paginated_participants_fetched_null_count)}
+            else
+              printf '%s\\n' #{Shellwords.shellescape(paginated_participants_second)}
+            fi
           else
             printf '%s\\n' #{Shellwords.shellescape(paginated_participants_first)}
           fi
@@ -3435,7 +6322,7 @@ class PrSecurityPreflightTest < Minitest::Test
       JSON
         elif [ "$mode" = "reaction-only-participant" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"issue-author"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
+      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"issue-author"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
       JSON
         elif [ "$mode" = "trusted-bot-participant" ]; then
           cat <<'JSON'
@@ -3461,7 +6348,7 @@ class PrSecurityPreflightTest < Minitest::Test
       JSON
         elif [ "$mode" = "metadata-bot-comment" ]; then
           cat <<'JSON'
-      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":2,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"},{"login":"github-actions[bot]","url":"https://github.com/apps/github-actions","__typename":"Bot"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"IssueComment","author":{"login":"github-actions[bot]"}}]}}}}}
+      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":2,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"},{"login":"github-actions[bot]","url":"https://github.com/apps/github-actions","__typename":"Bot"}]},"timelineItems":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"__typename":"IssueComment","author":{"login":"github-actions[bot]"}}]}}}}}
       JSON
         elif [ "$mode" = "metadata-bot-author" ] || [ "$mode" = "metadata-bot-author-warning-body" ]; then
           cat <<'JSON'
@@ -3469,7 +6356,7 @@ class PrSecurityPreflightTest < Minitest::Test
       JSON
         else
           cat <<'JSON'
-      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
+      {"data":{"repository":{"issue":{"number":123,"title":"Test issue","url":"https://github.com/owner/repo/issues/123","author":{"login":"justin808"},"participants":{"totalCount":1,"pageInfo":{"hasNextPage":false},"nodes":[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"}]},"timelineItems":{"totalCount":0,"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}
       JSON
         fi
         exit 0
@@ -3477,6 +6364,17 @@ class PrSecurityPreflightTest < Minitest::Test
 
       # These fake responses model `gh api --paginate --slurp`, which wraps
       # raw GitHub REST pages in an outer array. An empty first page is `[[]]`.
+      if [ "$1" = "api" ] && [ "$2" = "-H" ] && [ "$3" = "Accept: application/vnd.github+json" ] && [ "$4" = "repos/owner/repo/issues/123/timeline?per_page=100" ]; then
+        if [ "$mode" = "timeline-total-includes-non-node-items" ]; then
+          printf '[[{"event":"committed","node_id":"commit-object-1","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"event":"reviewed","id":501,"node_id":"review-node-1","user":{"login":"justin808"},"state":"commented","submitted_at":"2026-08-30T04:00:00Z"}]]'
+        elif [ "$mode" = "timeline-total-rest-identity-mismatch" ]; then
+          printf '[[{"event":"committed","node_id":"different-commit-object","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},{"event":"reviewed","id":501,"node_id":"review-node-1","user":{"login":"justin808"},"state":"commented","submitted_at":"2026-08-30T04:00:00Z"}]]'
+        else
+          printf '[[]]'
+        fi
+        exit 0
+      fi
+
       if [ "$mode" = "repo-local-maintainer-targets" ] && [ "$1" = "api" ] && [[ "$2" == repos/acme/widgets/issues/*/comments?per_page=100 ]]; then
         comments_path="${2%/comments?per_page=100}"
         number="${comments_path##*/}"
@@ -3494,7 +6392,7 @@ class PrSecurityPreflightTest < Minitest::Test
       [[{"id":701,"html_url":"https://github.com/owner/repo/issues/123#issuecomment-701","user":{"login":"github-actions[bot]"},"body":"${blocked_issue_body}"}]]
       JSON
           exit 0
-        elif [ "$mode" = "untrusted-comment" ]; then
+        elif [ "$mode" = "untrusted-comment" ] || { [ "$mode" = "trusted-base-high-risk" ] && [ "${PREFLIGHT_TEST_UNTRUSTED_COMMENT:-}" = "1" ]; }; then
           cat <<'JSON'
       [[{"id":702,"html_url":"https://github.com/owner/repo/issues/123#issuecomment-702","user":{"login":"unknown-user"},"body":"Looks good to me."}]]
       JSON
@@ -3508,7 +6406,11 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123/comments?per_page=100" ]; then
-        if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ]; then
+        if [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ]; then
+          cat <<'JSON'
+      [[{"id":601,"node_id":"comment-node-1","html_url":"https://github.com/owner/repo/pull/123#discussion_r601","pull_request_review_id":501,"in_reply_to_id":null,"user":{"login":"justin808"},"body":"Top-level review comment."},{"id":602,"node_id":"comment-node-2","html_url":"https://github.com/owner/repo/pull/123#discussion_r602","pull_request_review_id":502,"in_reply_to_id":601,"user":{"login":"justin808"},"body":"Maintainer reply."}]]
+      JSON
+        elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ]; then
           cat <<JSON
       [[{"id":901,"html_url":"https://github.com/owner/repo/pull/123#discussion_r901","user":{"login":"coderabbitai[bot]"},"body":"${blocked_review_body}"}]]
       JSON
@@ -3527,7 +6429,11 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123/reviews?per_page=100" ]; then
-        if [ "$mode" = "metadata-bot-review" ]; then
+        if [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ]; then
+          cat <<'JSON'
+      [[{"id":501,"node_id":"review-node-1","html_url":"https://github.com/owner/repo/pull/123#pullrequestreview-501","user":{"login":"justin808"},"body":"","state":"COMMENTED","submitted_at":"2026-08-30T04:00:00Z"},{"id":502,"node_id":"review-node-2","html_url":"https://github.com/owner/repo/pull/123#pullrequestreview-502","user":{"login":"justin808"},"body":"","state":"COMMENTED","submitted_at":"2026-08-30T04:01:00Z"}]]
+      JSON
+        elif [ "$mode" = "metadata-bot-review" ]; then
           cat <<JSON
       [[{"id":801,"html_url":"https://github.com/owner/repo/pull/123#pullrequestreview-801","user":{"login":"coderabbitai[bot]"},"body":"${blocked_review_body}"}]]
       JSON
@@ -3563,12 +6469,16 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "-H" ] && [ "$3" = "Accept: application/vnd.github+json" ] && [ "$4" = "repos/owner/repo/issues/123/reactions?per_page=100" ]; then
-        printf '[[{"user":{"login":"justin808"}}]]'
+        printf '[[{"user":{"id":"actor-1","login":"justin808","__typename":"User"}}]]'
         exit 0
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/pulls/123/files?per_page=100" ]; then
-        if [ "$mode" = "high-risk-file-predicates" ]; then
+        if [ "$mode" = "trusted-base-high-risk" ]; then
+          cat <<'JSON'
+      [[{"filename":".github/workflows/test.yml"},{"filename":"AGENTS.md"}]]
+      JSON
+        elif [ "$mode" = "high-risk-file-predicates" ]; then
           cat <<'JSON'
       [[{"filename":".github/workflows/test.yml"},{"filename":"skills/pr-batch/bin/security-floor-contract-test.rb"},{"filename":"AGENTS.md"},{"filename":".agents/bin/test"},{"filename":"docs/safe.md"}]]
       JSON
@@ -3591,7 +6501,9 @@ class PrSecurityPreflightTest < Minitest::Test
         fi
         base_oid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         changed_files=1
-        if [ "$mode" = "high-risk-file-predicates" ]; then
+        if [ "$mode" = "trusted-base-high-risk" ]; then
+          changed_files=2
+        elif [ "$mode" = "high-risk-file-predicates" ]; then
           changed_files=5
         elif [ "$mode" = "truncated-pr-files" ]; then
           changed_files=2
@@ -3611,10 +6523,15 @@ class PrSecurityPreflightTest < Minitest::Test
       if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
         for arg in "$@"; do
           if [ "$arg" = "--name-only" ]; then
+            if [ "$mode" = "trusted-base-high-risk" ]; then
+              printf '.github/workflows/test.yml\nAGENTS.md\n'
+              exit 0
+            fi
             if [ "$mode" = "high-risk-file-predicates" ]; then
               printf '.github/workflows/test.yml\nskills/pr-batch/bin/security-floor-contract-test.rb\nAGENTS.md\n.agents/bin/test\ndocs/safe.md\n'
               exit 0
-            elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+            fi
+            if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
               printf 'docs/safe.md\n'
               exit 0
             fi
@@ -3622,6 +6539,31 @@ class PrSecurityPreflightTest < Minitest::Test
             exit 0
           fi
         done
+        if [ "$mode" = "trusted-base-high-risk" ]; then
+          if [ "${PREFLIGHT_TEST_SUSPICIOUS_DIFF:-}" = "1" ]; then
+            cat <<'DIFF'
+      diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+      index 0000000..1111111 100644
+      --- a/.github/workflows/test.yml
+      +++ b/.github/workflows/test.yml
+      +rm -rf tmp/build
+      DIFF
+            exit 0
+          fi
+          cat <<'DIFF'
+      diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+      index 0000000..1111111 100644
+      --- a/.github/workflows/test.yml
+      +++ b/.github/workflows/test.yml
+      +safe workflow change
+      diff --git a/AGENTS.md b/AGENTS.md
+      index 0000000..1111111 100644
+      --- a/AGENTS.md
+      +++ b/AGENTS.md
+      +safe agent guidance
+          DIFF
+          exit 0
+        fi
         if [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ]; then
           cat <<'DIFF'
       diff --git a/docs/safe.md b/docs/safe.md
@@ -3631,7 +6573,8 @@ class PrSecurityPreflightTest < Minitest::Test
       +safe docs
       DIFF
           exit 0
-        elif [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
+        fi
+        if [ "$mode" = "resolved-trusted-bot-review-comment" ] || [ "$mode" = "untrusted-resolver-trusted-bot-review-comment" ] || [ "$mode" = "unresolved-trusted-bot-review-comment" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ]; then
           cat <<'DIFF'
       diff --git a/docs/safe.md b/docs/safe.md
       index 0000000..1111111 100644
