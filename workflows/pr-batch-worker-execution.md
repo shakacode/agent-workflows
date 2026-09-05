@@ -77,7 +77,10 @@ does not redefine scope or substitute a new diagnosis.
 3. Handle necessary path discovery through **Path Expansion** below before
    editing a newly discovered path.
 4. Run the cheapest focused behavioral check, inspect the diff, and correct a
-   small explainable failure on the same worker route.
+   small explainable failure on the same worker route. Before a focused check
+   that is classified as a heavyweight test, review, or QA root, apply the
+   host-local [Heavy-Root Capacity Admission](pr-batch-capacity-admission.md)
+   contract on the host that will execute it.
 5. Repeat the edit/check/self-review cycle until the focused checks pass or a
    meaningful stop condition applies. Never weaken verification to obtain a
    pass.

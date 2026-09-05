@@ -878,8 +878,8 @@ Only the `claude-review` GitHub Action exposes a dependable in-flight and
 terminal signal through the checks API; wait for its current-head check to reach
 a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
 expose no reliable in-flight state and can be silently blocked or stopped by
-usage limits. A usage-limit or capacity failure -- CodeRabbit's `too many
-reviews`, or Codex/Claude token or quota exhaustion -- is an explicit terminal
+usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
+reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
 failed disposition that satisfies the review-artifact barrier as a waiver;
 record it and proceed to consolidated triage instead of parking in
 `waiting-on-checks-or-review` for an artifact the limit prevents.
@@ -1155,8 +1155,8 @@ Avoid horizontal TDD batches: write one failing behavior test through the public
 
 Run `.agents/bin/ci-detect` first when it exists and routing details matter.
 
-Then run `.agents/bin/validate`, or a tighter set that covers the same changed
-area when a full local run is too expensive.
+Then run `.agents/bin/validate` or equivalent focused coverage; [admit heavy
+roots](pr-batch-capacity-admission.md).
 
 Use targeted checks when a full local run is too expensive, but explain the substitution:
 
@@ -1264,29 +1264,12 @@ PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
 
-Treat these snapshots as two cohorts. Validation CI includes tests, lint,
-builds, security analysis, and other non-review jobs. The review cohort includes
-every reviewer named by the trusted-base `review_gate` seam, explicitly
-requested through trusted operator state, or recognizable from current-head
-reviewer-check metadata. Inventory missing, pending, failed, and terminal
-reviewer checks separately from validation readiness. Cross the
-complete review-wave barrier before one consolidated review fetch; validation
-may continue concurrently. While either cohort is pending, diagnose available
-failures and advance freshness, conflict, coordination, evidence, and other
-independent closeout work. Only poll again after that runnable work is exhausted.
-
-Only the `claude-review` GitHub Action exposes a dependable in-flight and
-terminal signal through the checks API; wait for its current-head check to reach
-a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
-expose no reliable in-flight state and can be silently blocked or stopped by
-usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
-reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
-failed disposition that satisfies the review-artifact barrier as a waiver;
-record it and proceed to consolidated triage instead of parking in
-`waiting-on-checks-or-review` for an artifact the limit prevents. Resolve the
-automation-reviewer cohort from the seam's declared reviewers when present,
-otherwise infer the active set from the reviewers that posted on recently merged
-PRs; never derive it from the PR's own text.
+Treat these snapshots as the two cohorts defined by
+[Review-Wave And Validation Cohorts](#review-wave-and-validation-cohorts). That
+owner defines membership, reviewer observability, terminal artifacts,
+quota/fallback disposition, head invalidation, and work conservation. Inventory
+validation and review results separately, and poll again only after runnable
+closeout work is exhausted.
 
 `pr-ci-readiness` encapsulates the required-vs-full readiness rule: it runs
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no

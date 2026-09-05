@@ -681,6 +681,15 @@ lanes rather than elapsed critical-path time; its separate batch-level
 environment/auth content, exact accounting, adaptive scheduling, experiments,
 or a parallel collection system.
 
+## Heavy-Root Capacity
+
+Before any local or remote heavyweight validator, broad test, review, or QA
+root, use the optional host-local
+[Heavy-Root Capacity Admission](../../workflows/pr-batch-capacity-admission.md)
+contract whenever independent coordinators may share that host. Reserve on the
+execution host itself; ordinary lightweight implementation remains outside this
+capacity mechanism.
+
 ## Worker Rules
 
 Codex-targeted waves may use up to 10 independent lanes, or 8 when shared/risky
