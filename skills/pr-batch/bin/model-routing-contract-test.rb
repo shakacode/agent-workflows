@@ -170,16 +170,42 @@ PLANNING_PASS_DISPOSITION_EXPECTATIONS = {
 }.freeze
 
 MODEL_ROUTING_GUIDE_PATH = "docs/agent-workflows-model-routing.md"
+ROUTE_PROVENANCE_SECTION_HEADING = "## Requested Versus Observed Route Provenance"
 ROUTE_DISPOSITION_TABLE_HEADING = "### Disposition Table"
-ROUTE_PROVENANCE_RULES = [
-  "A requested route is an instruction; an observed route is host-reported evidence of what actually executed. The two are separate fields and never collapse into one.",
-  "Requested-route prose in a plan, handoff, comment, or PR description is never presentable as observed execution evidence; only host-reported session metadata binds.",
-  "A route mismatch, unavailability, inherited route, or `UNKNOWN` observed tuple must be recorded honestly and must exclude that execution from route-measurement evidence; it never alone stops otherwise valid work.",
-  "A worker records its own observed model/effort separately from the coordinator; an inherited pair is a route mismatch even when the inherited route is stronger than the requested one.",
-  "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule",
-  "An explicitly user-selected override remains a user override rather than an implicit fallback, and its requested and observed tuples are recorded separately.",
-  "An authorized fallback is explicit, recorded before launch, and names the authority that approved it. An unrecorded fallback is a silent substitution and takes that row's disposition."
-].freeze
+ROUTE_PROVENANCE_RULES = {
+  "requested-versus-observed" => [
+    "A requested route is an instruction; an observed route is host-reported evidence of what actually executed.",
+    "The two are separate fields and never collapse into one."
+  ],
+  "requested-prose-is-not-observation" => [
+    "Requested-route prose in a plan, handoff, comment, or PR description is never presentable as observed execution evidence; only host-reported session metadata binds."
+  ],
+  "mismatches-continue-unmeasured" => [
+    "A route mismatch, unavailability, inherited route, or `UNKNOWN` observed tuple must be recorded honestly and must exclude that execution from route-measurement evidence; it never alone stops otherwise valid work."
+  ],
+  "worker-observation-is-independent" => [
+    "A worker records its own observed model/effort separately from the coordinator; an inherited pair is a route mismatch even when the inherited route is stronger than the requested one."
+  ],
+  "nested-spawns-are-workers" => [
+    "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule; inheritance through a nested spawn is the exact mechanism that silently defeated an exact requested implementation route in batch AW D."
+  ],
+  "user-override-is-not-fallback" => [
+    "An explicitly user-selected override remains a user override rather than an implicit fallback, and its requested and observed tuples are recorded separately."
+  ],
+  "fallback-requires-prior-authority" => [
+    "An authorized fallback is explicit, recorded before launch, and names the authority that approved it.",
+    "An unrecorded fallback is a silent substitution and takes that row's disposition."
+  ]
+}.freeze
+ROUTE_PROVENANCE_RULE_PREFIXES = {
+  "requested-versus-observed" => ["A requested route is an instruction", "The two are separate fields"],
+  "requested-prose-is-not-observation" => ["Requested-route prose in a plan"],
+  "mismatches-continue-unmeasured" => ["A route mismatch, unavailability, inherited route"],
+  "worker-observation-is-independent" => ["A worker records its own observed model/effort"],
+  "nested-spawns-are-workers" => ["Collaboration, review-fix, and helper subagents spawned inside a lane"],
+  "user-override-is-not-fallback" => ["An explicitly user-selected override remains a user override"],
+  "fallback-requires-prior-authority" => ["An authorized fallback is explicit", "An unrecorded fallback"]
+}.freeze
 AW_D_ROUTE_REPLAY = [
   { pr: 146, role: "implementation", case_id: "bound-exact-match", disposition: "proceed" },
   { pr: 146, role: "review and QA", case_id: "bound-exact-match", disposition: "proceed" },
@@ -886,6 +912,74 @@ def route_dispositions(text)
   rows.to_h
 end
 
+def route_provenance_section(text)
+  visible_text = strip_html_comments(text)
+  lines = visible_text.lines
+  heading_index = lines.index { |line| line.strip == ROUTE_PROVENANCE_SECTION_HEADING }
+  return unless heading_index
+
+  heading_level = ROUTE_PROVENANCE_SECTION_HEADING[/\A#+/].length
+  lines.drop(heading_index + 1).take_while do |line|
+    next_heading = line[/\A(#+)\s+/, 1]
+    next_heading.nil? || next_heading.length > heading_level
+  end.join
+end
+
+def unfenced_top_level_prose(text)
+  fence_marker = nil
+  fence_container_indent = 0
+
+  text.lines.filter_map do |line|
+    if fence_marker
+      if markdown_fence_closing_line?(line, fence_marker, fence_container_indent)
+        fence_marker = nil
+        fence_container_indent = 0
+      end
+      next
+    end
+
+    if (fence_marker = markdown_fence_opening_marker(line))
+      fence_container_indent = markdown_fence_list_content_indent(line)
+      next
+    end
+
+    next if line.match?(/^\s{0,3}(?:>|[-*+]\s+|\d+[.)]\s+|\#{1,6}(?:\s|$)|\|)/)
+    next if line.match?(/\A(?: {4}|\t)/)
+
+    line
+  end.join
+end
+
+def route_provenance_rules(text)
+  section = route_provenance_section(text)
+  return unless section
+
+  sentences = unfenced_top_level_prose(section).split(/\n\s*\n/).flat_map do |paragraph|
+    normalized(paragraph).split(/(?<=[.!?])\s+/)
+  end
+  ROUTE_PROVENANCE_RULE_PREFIXES.to_h do |rule_id, prefixes|
+    rule_sentences = prefixes.flat_map do |prefix|
+      sentences.select { |sentence| sentence.start_with?(prefix) }
+    end
+    [rule_id, rule_sentences]
+  end
+end
+
+def replace_normalized_phrase(text, phrase, replacement)
+  phrase_pattern = Regexp.new(phrase.split(/\s+/).map { |word| Regexp.escape(word) }.join("\\s+"))
+  text.sub(phrase_pattern, replacement)
+end
+
+def route_provenance_mutant_with_fenced_decoy(text, rule_id, replacement)
+  rule = ROUTE_PROVENANCE_RULES.fetch(rule_id).join(" ")
+  mutant = replace_normalized_phrase(text, rule, replacement)
+  raise "#{rule_id} mutation did not change the route-provenance rule" if mutant == text
+
+  evidence_heading = "### Evidence Status"
+  decoy = "#{evidence_heading}\n\n```text\n#{rule}\n```"
+  mutant.sub(evidence_heading, decoy)
+end
+
 def mutate_route_disposition(text, case_id, disposition)
   text.sub(/(^\|\s*`#{Regexp.escape(case_id)}`[^\n]*\|\s*)`[A-Za-z_-]+`(\s*\|\s*$)/) do
     "#{Regexp.last_match(1)}`#{disposition}`#{Regexp.last_match(2)}"
@@ -902,10 +996,9 @@ def duplicate_route_disposition(text, case_id, disposition)
 end
 
 def assert_route_provenance_contract(test, text, label)
+  test.assert_equal ROUTE_PROVENANCE_RULES, route_provenance_rules(text),
+                    "#{label} must carry one visible normative sentence for every route-provenance rule"
   guide = normalized(text)
-  ROUTE_PROVENANCE_RULES.each do |rule|
-    test.assert_includes guide, rule, "#{label} must carry the exact route-provenance rule: #{rule}"
-  end
   test.refute_includes guide, "MODEL_ROUTE_MISMATCH",
                        "#{label} must not restore the former hard route-mismatch disposition"
   test.refute forbidden_route_only_contradiction?(text),
@@ -1422,48 +1515,54 @@ class ModelRoutingContractTest < Minitest::Test
     assert_aw_d_route_replay(self, read_repo_file(MODEL_ROUTING_GUIDE_PATH), MODEL_ROUTING_GUIDE_PATH)
   end
 
-  def test_route_provenance_rule_mutants_preserve_advisory_continuation
+  def test_route_provenance_parser_rejects_semantic_mutants_with_exact_rule_decoys
     text = read_repo_file(MODEL_ROUTING_GUIDE_PATH)
     assert_route_provenance_contract(self, text, MODEL_ROUTING_GUIDE_PATH)
-    guide = normalized(text)
     mutants = {
-      "collapsed requested into observed" => guide.sub("never collapse into one", "may be recorded as one field"),
-      "prose accepted as evidence" => guide.sub(
-        "is never presentable as observed execution evidence",
-        "should not usually be presented as observed execution evidence"
+      "collapsed requested into observed" => route_provenance_mutant_with_fenced_decoy(
+        text,
+        "requested-versus-observed",
+        "A requested route and an observed route may be recorded as one field."
       ),
-      "mismatch admitted as route-measurement evidence" => guide.sub(
-        "must exclude that execution from route-measurement evidence",
-        "may include that execution as route-measurement evidence"
+      "prose accepted as evidence" => route_provenance_mutant_with_fenced_decoy(
+        text,
+        "requested-prose-is-not-observation",
+        "Requested-route prose in a plan may be presented as observed execution evidence."
       ),
-      "mismatch stops otherwise valid work" => guide.sub(
-        "never alone stops otherwise valid work",
-        "stops otherwise valid work"
+      "mismatch admitted as route-measurement evidence" => route_provenance_mutant_with_fenced_decoy(
+        text,
+        "mismatches-continue-unmeasured",
+        "A route mismatch, unavailability, inherited route, or `UNKNOWN` observed tuple may count as route-measurement evidence."
       ),
-      "worker provenance inherits coordinator observation" => guide.sub(
-        "A worker records its own observed model/effort separately from the coordinator",
-        "A worker records the coordinator's observed model/effort as its own"
+      "worker provenance inherits coordinator observation" => route_provenance_mutant_with_fenced_decoy(
+        text,
+        "worker-observation-is-independent",
+        "A worker records its own observed model/effort from the coordinator's observation."
       ),
-      "nested spawns exempted" => guide.sub(
-        "Collaboration, review-fix, and helper subagents spawned inside a lane are workers for this rule",
-        "Nested subagents are exempt from this rule"
+      "nested spawns exempted" => route_provenance_mutant_with_fenced_decoy(
+        text,
+        "nested-spawns-are-workers",
+        "Collaboration, review-fix, and helper subagents spawned inside a lane are exempt from this rule."
       ),
-      "user override reduced to generic handling" => guide.sub(
-        "An explicitly user-selected override remains a user override rather than an implicit fallback, and its requested and observed tuples are recorded separately.",
-        "User overrides are handled separately."
+      "user override reduced to generic handling" => route_provenance_mutant_with_fenced_decoy(
+        text,
+        "user-override-is-not-fallback",
+        "An explicitly user-selected override remains eligible for implicit fallback handling."
       ),
-      "authorized fallback recorded after launch" => guide.sub(
-        "An authorized fallback is explicit, recorded before launch, and names the authority that approved it. An unrecorded fallback is a silent substitution and takes that row's disposition.",
-        "An authorized fallback is explicit, recorded after launch, and names the authority that approved it. An unrecorded fallback is a silent substitution and takes that row's disposition."
-      ),
-      "unrecorded fallback treated as authorized" => guide.sub(
-        "An authorized fallback is explicit, recorded before launch, and names the authority that approved it. An unrecorded fallback is a silent substitution and takes that row's disposition.",
-        "An authorized fallback is explicit, recorded before launch, and names the authority that approved it. An unrecorded fallback is an authorized fallback and takes that row's disposition."
+      "fallback recorded after launch" => route_provenance_mutant_with_fenced_decoy(
+        text,
+        "fallback-requires-prior-authority",
+        "An authorized fallback may be recorded after launch without naming the authority."
       )
     }
 
     mutants.each do |mutation, mutant|
-      refute_equal guide, mutant, "#{mutation} mutant did not change the guide text"
+      ROUTE_PROVENANCE_RULES.each_value do |sentences|
+        sentences.each do |sentence|
+          assert_includes normalized(mutant), sentence,
+                          "#{mutation} mutant must retain the exact expected text as a non-normative decoy"
+        end
+      end
       assert_raises(Minitest::Assertion, "model-routing guide accepted #{mutation}") do
         assert_route_provenance_contract(self, mutant, "#{MODEL_ROUTING_GUIDE_PATH} #{mutation} mutant")
       end
