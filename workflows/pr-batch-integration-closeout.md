@@ -1580,9 +1580,12 @@ automatically publish the complete exact-diff PR walkthrough before asking for
 merge approval. Use `$pr-walkthrough` when available; otherwise apply its
 contract inline: inspect the complete diff and build the full coverage map.
 Prepare every conceptual section up front. Publish one PR-level orientation and
-all sections to GitHub in one pass, using separately replyable review comments
-on representative changed lines where useful and without waiting for repeated
-chat turns. The owning task consumes PR replies asynchronously. Use a live
+all sections to GitHub in one pass under `$pr-walkthrough`'s mandatory
+inline-thread and no-anchor-stop rules: use one `COMMENT` review, with a separately
+replyable inline thread per concept on an honest changed line. If any concept
+has no honest anchor, explain the limitation and stop; do not claim complete
+threaded coverage. Publish without waiting for repeated chat turns. The owning task consumes
+PR replies asynchronously. Use a live
 interactive walkthrough only when the maintainer explicitly requests one.
 
 Use full mode for large or complex PRs and concise mode for smaller cohesive

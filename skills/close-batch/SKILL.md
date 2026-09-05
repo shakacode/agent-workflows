@@ -93,11 +93,15 @@ closeout. When human attention is genuinely required, choose one route.
 
 Start `$pr-walkthrough` for the exact current diff when the maintainer asks to
 understand a PR or when the recorded `ask` authority reaches its walkthrough
-gate. Prepare the complete map, then publish the orientation and every concept
-to GitHub in one pass with separately replyable threads where useful. The
-owning task consumes replies asynchronously; use live interaction only when the
-maintainer explicitly asks. Do not repeat a walkthrough completed for the same
-diff identity. After publication, refresh readiness, then
+gate. A direct chat request uses live, read-only interaction; it does not grant
+comment authority. Use published-review mode when the recorded `ask` workflow
+selects it or the user explicitly requests it with comment authority.
+Prepare the complete map, then publish the orientation and every concept
+to GitHub in one pass under `$pr-walkthrough`'s mandatory inline-thread and
+no-anchor-stop rules. The owning task consumes replies asynchronously; after
+publication, use live interaction only when the maintainer explicitly asks.
+Do not repeat a walkthrough completed for the same
+diff identity. After the walkthrough, refresh readiness, then
 ask the merge question separately only if the same diff is still clean and a
 decision is required. Walkthrough participation never grants merge authority.
 

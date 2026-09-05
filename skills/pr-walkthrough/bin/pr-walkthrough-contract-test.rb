@@ -59,7 +59,7 @@ class PrWalkthroughContractTest < Minitest::Test
       phrases = [
         "automatically publish the complete exact-diff PR walkthrough",
         "Prepare every conceptual section up front",
-        "separately replyable review comments",
+        "mandatory inline-thread and no-anchor-stop rules",
         "without waiting for repeated chat turns",
         "The owning task consumes PR replies asynchronously",
         "After publication or an explicit skip, refresh the diff identity and ordinary readiness.",

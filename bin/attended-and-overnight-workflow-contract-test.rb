@@ -121,18 +121,28 @@ class AttendedAndOvernightWorkflowContractTest < Minitest::Test
 
   def test_portfolio_refresh_uses_real_bases_and_refreshes_non_github_destinations
     prose = normalize_prose(@doc)
+    classification = @doc.lines.find { |line| line.start_with?("| Classify the portfolio |") }
 
-    assert_includes prose, "each PR's exact configured or per-PR base branch"
+    refute_nil classification
+    assert_includes classification, "each PR's exact configured or per-PR base branch"
+    assert_includes classification, "every active task handoff"
+    assert_includes classification, "every active run record defined by the selected workflow"
+    assert_includes classification, "For each item, record its next authorized action"
+    assert_includes classification, "informs the next launch wave and integration order"
     refute_includes prose, "current `main` or base"
     assert_includes prose, "for each wholly non-GitHub trusted-ad-hoc run, also refresh its existing durable plan or backend destination"
   end
 
   def test_walkthrough_is_complete_github_native_and_asynchronous_by_default
-    prose = normalize_prose(@doc)
+    prose = @doc.lines.find { |line| line.start_with?("| Walk through or retarget |") }
 
+    refute_nil prose
     assert_includes prose, "publish the orientation and every conceptual section to the PR in one pass"
-    assert_includes prose, "Prefer separately replyable review threads"
-    assert_includes prose, "let the owning task consume replies asynchronously"
+    assert_includes prose, "one COMMENT-only review with one separately replyable inline thread per concept"
+    assert_includes prose, "each on an honest changed line"
+    assert_includes prose, "If no honest anchor exists, state the limitation in the review body and stop"
+    assert_includes prose, "instead of claiming complete coverage"
+    assert_includes prose, "Let the owning task consume replies asynchronously"
     assert_includes prose, "live one-section-at-a-time walkthrough only when the maintainer explicitly asks"
   end
 

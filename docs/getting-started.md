@@ -279,7 +279,7 @@ are separately replyable on GitHub — and only then asks one final merge
 question. The owning task consumes your thread replies asynchronously; live
 exploration remains available when you explicitly ask for it. The walkthrough itself is not approval:
 if the diff changes or a gate starts failing in the meantime, the merge
-question is withheld and the walkthrough restarts or stops.
+question is withheld: rebuild and republish the walkthrough or stop.
 
 Invoke the skill in your agent host from the adopted repository, naming one
 exact issue — in Codex, type the prompt below; in Claude Code, ask for the
