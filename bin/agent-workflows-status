@@ -184,7 +184,8 @@ module AgentWorkflowsStatus
       "guidance" => delivery_state&.fetch("guidance", nil),
       "delivery_mode" => delivery_state&.fetch("delivery_mode", nil) || metadata.fetch("delivery_mode", "flat"),
       "native" => delivery_state&.fetch("native", nil),
-      "flat" => delivery_state&.fetch("flat", nil)
+      "flat" => delivery_state&.fetch("flat", nil),
+      "bin" => delivery_state&.fetch("bin", nil)
     }
     payload["superpowers"] = delivery_state.fetch("superpowers") if delivery_state&.key?("superpowers")
     payload
