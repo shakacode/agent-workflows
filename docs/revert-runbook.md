@@ -26,7 +26,8 @@ Commands below use one stable placeholder set:
 
 | Placeholder | Meaning |
 | --- | --- |
-| `REPO` | `OWNER/REPO_NAME`, as `gh --repo` takes it |
+| `REPO` | `[HOST/]OWNER/REPO_NAME`, as `gh --repo` takes it |
+| `REPO_HOST`, `REPO_PATH` | the authenticated GitHub host and `OWNER/REPO_NAME`, derived from `gh repo view` before URL or API-path checks |
 | `OWNER`, `REPO_NAME` | the two halves separately, for `gh api graphql` |
 | `BASE` | the repo's `base_branch` seam, e.g. `main` |
 | `BASE_TIP` | `origin/${BASE}` as it stood when scope analysis began |
@@ -45,6 +46,12 @@ Commands below use one stable placeholder set:
 | `REPAIR_PR` | the PR that actually repaired the harm — the revert *or* a forward fix |
 | `REPAIR_PR_URL` | `REPAIR_PR`'s HTML URL, derived in [checkpoint B](#coordination-events-and-terminal-state); unset until a repair merges |
 | `EVIDENCE_URL` | the durable URL a terminal release cites — `REPAIR_PR_URL` on the repair path, the accepted-risk record's URL on the no-repair path, and **unset** when neither exists |
+| `DECIDING_OPERATOR_GITHUB_LOGIN` | the GitHub login of the operator who made the successor decision, captured from that authorization rather than inferred from the comment |
+| `RELEASE_BATCH_ID`, `RELEASE_TARGET` | the batch and canonical target of the **one** non-terminal lane currently being verified and released |
+| `SUCCESSOR_DECISION_COMMENT_ID` | the numeric id of that lane's GitHub issue comment containing the exact successor-decision marker |
+| `SUCCESSOR_STATE` | the verified successor fact — literal `present` or `absent`; keep it `UNKNOWN` until [verified](#verify-the-successor-state) |
+| `SUCCESSOR_DECISION_REF` | the authenticated decision comment URL derived from GitHub, never typed independently |
+| `NAMED_SUCCESSOR` | the verified same-repo issue/PR URL, or canonical target URL backing a successor lane, when `SUCCESSOR_STATE=present`; otherwise unset |
 
 - `REPO`, `BASE` (the repo's `base_branch` seam), and the current base tip SHA,
   recorded as `BASE_TIP`:
@@ -210,11 +217,18 @@ N=$(gh api graphql \
 ```
 
 Where GraphQL is unavailable, page the REST endpoint and sum — same answer, one
-request per 100 commits:
+request per 100 commits. Keep `pipefail` local to the subshell so later expected
+nonzero exits stay inspectable, and fail closed before `N` is used:
 
 ```bash
-N=$(gh api "repos/${REPO}/pulls/${PR}/commits" --paginate --jq 'length' \
-  | awk '{s+=$1} END {print s}')
+N=$(
+  set -o pipefail
+  gh api "repos/${REPO}/pulls/${PR}/commits" --paginate --jq 'length' \
+    | awk '{s+=$1} END {print s}'
+) || {
+  echo "paged commit count is UNKNOWN: stop before using N" >&2
+  exit 1
+}
 ```
 
 Note `-F n=` for the PR number: GraphQL needs a JSON integer for `$n:Int!`, and
@@ -387,11 +401,13 @@ Three outcomes, three treatments:
 - **Maps to a PR** — recover that PR's landed range and treat the whole range as
   the unit, exactly as above.
 - **Confirmed direct commit** (the lookup succeeded and returned nothing) — the
-  commit is its own closure unit, of exactly one commit. Admit it, and revert it
-  in the same reverse-landing order by its parent shape. Nothing is lost by
-  admitting it: the range machinery exists to answer "how many commits did this
-  PR land", and for a direct commit that answer is one, known exactly. Refusing
-  the case would be fail-closed theatre over the easiest unit in the document.
+  commit is its own closure unit, of exactly one commit. Admit it, and order it
+  by the same rule as every other unit: reverse dependency order first, then
+  reverse landing order for incomparable units. Revert it by its parent shape.
+  Nothing is lost by admitting it: the range machinery exists to answer "how
+  many commits did this PR land", and for a direct commit that answer is one,
+  known exactly. Refusing the case would be fail-closed theatre over the easiest
+  unit in the document.
 - **Lookup failed** — `UNKNOWN`. Stop, or widen to the enclosing batch closure.
   Do not read "the request errored" as "there is no PR": a network failure, a
   token without the scope, and a genuinely direct commit all produce no PR
@@ -416,7 +432,12 @@ Two artifacts declare lane dependency, and both are authoritative for scope:
   carries `edges[]`, each binding `from` (predecessor lane), `to` (dependent
   lane), and `type`. Every lane reachable from the failing lane by following
   edges forward — **of any type** — is a candidate for joint revert. Take the
-  transitive closure, not just direct successors.
+  transitive closure, not just direct successors. A declared `edit` or
+  `validation_open` edge can legitimately select a unit that landed before the
+  suspect PR. A `merge_order` dependent cannot legitimately land before its
+  predecessor; if history says it did, the plan or gate evidence is inconsistent
+  and therefore `UNKNOWN`. Stop and investigate or widen to the enclosing batch
+  closure instead of treating that ordering as expected.
 
 Read `type` from the **immutable `stage-dependency-plan` file**, which is the
 only one of the two artifacts whose edges carry it; the mutable
@@ -450,14 +471,19 @@ commits but blocks push and PR open, `merge_order` blocks merge alone. That is a
 scheduling distinction, not a dependency-direction one. For revert scope all
 three mean the same thing — the `to` lane's landed work was produced or
 validated in a world where the `from` lane exists — so all three belong in the
-closure.
+closure. Only `edit` and `validation_open` may legitimately select an
+earlier-landed dependent. A `merge_order` edge requires the predecessor to be
+merged before the dependent can merge, so the opposite landing order is a
+bypassed gate or corrupt-plan finding, not a supported closure case.
 
 `edit` is the most dangerous type to omit, not the least. A lane blocked on an
 `edit` edge could not create a branch until its predecessor was satisfied, so it
 is the case where a later PR most likely builds on the suspect PR's *behavior*
 without touching the suspect PR's *files* — which means it also passes the
 disjoint-file check in [Decision rule](#decision-rule). Filtering the edges and
-relying on file overlap therefore misses it twice.
+relying on file overlap therefore misses it twice. For `edit` and
+`validation_open`, landing time does not change membership; a contradictory
+`merge_order` landing remains `UNKNOWN`.
 
 `STAGE_DEPENDENCY_PLAN_PATH` and `STAGE_DEPENDENCY_PLAN_ID` both come from the
 trusted coordinator handoff, per
@@ -465,6 +491,35 @@ trusted coordinator handoff, per
 never from a file discovered by searching the worktree. A missing, malformed, or
 mismatched plan, or one whose id does not tie to `${BATCH_ID}`, is `UNKNOWN`:
 widen the scope or stop, exactly as for an absent plan.
+
+The commit-to-PR query in
+[Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr)
+only walks `${SHA}^1..${BASE_TIP}`. It therefore cannot discharge a reachable
+`to` lane that landed before the suspect PR. Reconcile **every** lane selected
+by the transitive dependency walk against its durable lane handoff, including
+the verified `pr_url` in its Lane Card, and record exactly one outcome:
+
+- **Landed PR** — verify the URL belongs to `${REPO}`, ask GitHub for its merged
+  state and merge commit, and confirm that landed commit is on the first-parent
+  history ending at `${BASE_TIP}`. Then run
+  [Recover each PR's landed range](#recover-each-prs-landed-range) for that PR,
+  add its complete `REVERT_LIST` to the closure, and add the whole range to
+  `PATHS` before applying the decision rule. Do this even when the landed commit
+  is earlier than `${SHA}`.
+- **Landed direct commit** — accept only an exact commit SHA carried by the
+  durable handoff, confirmed on that same first-parent history, whose
+  commit-to-PR lookup succeeds and returns no PR. Add it as the one-commit unit
+  described above and add its paths to `PATHS`.
+- **Did not land** — accept only a terminal no-PR handoff or a verified GitHub
+  PR that is still unmerged. Record the evidence; there is no landed unit to
+  add.
+
+An issue target, branch name, commit subject, absent `pr_url`, or an
+`UNKNOWN`/non-terminal handoff is not artifact identity. If any selected lane
+cannot be reconciled to one of those three outcomes, or the handoff and GitHub
+or git disagree, the closure is `UNKNOWN`: stop or widen to the enclosing batch
+closure. Do not let the later-only commit walk silently stand in for this lane
+reconciliation.
 
 When the backend is `n/a`, the manifest lives in the durable coordinator
 handoff instead of a registration surface; read it there. When neither the
@@ -482,13 +537,19 @@ Check both; disagreement is itself a finding worth recording.
 Neither query filters on `--merges`, for the reason above.
 
 ```bash
-# Everything that landed after the suspect commit, on the base branch's
-# first-parent line. These are the commits a revert can collide with.
+# First-parent commits that landed after the suspect commit. These are one side
+# of the scope check.
 git log --ancestry-path --first-parent --format='%h %s' "${SHA}..${BASE_TIP}"
 
 # Everything that touched the same files, in either direction.
 git log --first-parent --format='%h %s' "${BASE_TIP}" -- "${PATHS[@]}"
 ```
+
+A unit selected by a declared `edit` or `validation_open` edge that landed
+before `${SHA}` will not appear in the first, `${SHA}..${BASE_TIP}` query;
+recover it through the lane reconciliation above and keep it in the closure.
+Its paths can appear in the second, unbounded query — treat that hit as evidence
+to reconcile, not as expected noise.
 
 `"${PATHS[@]}"` is quoted deliberately: see
 [Build the path set](#build-the-path-set) for why an unquoted expansion turns a
@@ -511,23 +572,41 @@ the similarity threshold, is recorded as a delete plus an add, and is not
 followed by anything.
 
 Run both of these and reconcile them by hand. Neither is sufficient alone and
-the pair is still not a proof:
+the pair is still not a proof. Set `OLDEST_IN_SCOPE_SHA` to the oldest landed
+commit across the closure units recovered so far, including every
+earlier-landed unit selected by the dependency plan. An unknown boundary must
+stop the scan instead of falling back to `${SHA}` or unbounded history:
 
 ```bash
+case "${OLDEST_IN_SCOPE_SHA:-UNKNOWN}" in
+  ''|UNKNOWN)
+    echo "oldest in-scope commit is UNKNOWN: stop before rename scan" >&2
+    exit 1
+    ;;
+esac
+
 # 1. Rename-aware history, one pathspec per invocation as --follow requires.
 for p in "${PATHS[@]}"; do
   printf '=== %s\n' "$p"
-  git --no-pager log --follow --format='%h %s' "${BASE_TIP}" -- "$p"
+  git --no-pager log --follow --format='%h %s' \
+    "${OLDEST_IN_SCOPE_SHA}^1..${BASE_TIP}" -- "$p"
 done
 
-# 2. Every rename that landed in the window, at a loosened similarity
-#    threshold, whether or not either side is currently in PATHS.
+# 2. Every rename from immediately before the oldest known closure unit through
+#    BASE_TIP, at a loosened threshold, whether or not either side is in PATHS.
 git --no-pager log --first-parent --find-renames=30% --diff-filter=R \
-  --name-status --format='%h %s' "${SHA}..${BASE_TIP}"
+  --name-status --format='%h %s' \
+  "${OLDEST_IN_SCOPE_SHA}^1..${BASE_TIP}"
 ```
 
 If query 2 shows a rename whose source **or** destination is in `PATHS`, add the
 other side to `PATHS` and re-run the whole cross-check — a rename can chain.
+If dependency reconciliation adds a closure unit older than the current
+`OLDEST_IN_SCOPE_SHA`, move the boundary to that unit and re-run too. Continue
+until neither `PATHS` nor the oldest boundary changes; only then fix
+`PRE_BATCH_SHA` to `${OLDEST_IN_SCOPE_SHA}^1`. This is bounded at the oldest
+known closure unit while still covering a rename that landed between an
+earlier-dependent unit and the suspect PR.
 
 What neither query catches is a rewrite-plus-rename that scores below even the
 loosened threshold; git has no record linking the two paths, so no pathspec
@@ -544,20 +623,23 @@ Revert **one PR** when all of the following hold:
 - no edge of **any** type names its lane as a `from`; and
 - the union of the file sets across the PR's **entire landed range** is disjoint
   from the file set of every later landed commit on `BASE`; and
-- no later landed commit's content depends on symbols, files, or schema any
+- no later landed commit on `BASE` depends on symbols, files, or schema any
   commit in that range introduced.
 
 Compare whole ranges, not individual commits: a later commit that depends on any
 one member of a rebased series depends on the PR, and testing member-by-member
 can find each individual commit "independent" while the PR as a whole is not.
 
-Otherwise **unwind the closure**: the suspect PR's range plus every later
-closure unit that depends on it, transitively — a later PR's whole range, or a
-later direct commit on its own, per
-[Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr). If any input to that test is
-`UNKNOWN`, take the wider scope or stop for the operator. A too-wide revert is
-a review problem; a too-narrow revert leaves the base branch in a state that
-never existed and that nothing has ever validated.
+Otherwise **unwind the closure**: the suspect PR's range plus every closure
+unit that depends on it, transitively. Include later-landed dependents of every
+edge type. A declared `edit` or `validation_open` edge can also add
+earlier-landed units even though they are not part of the later-commit comparison
+above. A dependent PR contributes its whole landed range, and a direct commit
+stands on its own, per
+[Landed commits that belong to no PR](#landed-commits-that-belong-to-no-pr).
+If any input to that test is `UNKNOWN`, take the wider scope or stop for the
+operator. A too-wide revert is a review problem; a too-narrow revert leaves the
+base branch in a state that never existed and that nothing has ever validated.
 
 Note that a `--merges`-filtered enumeration fails this test in the *unsafe*
 direction: it makes the disjointness check trivially true by hiding the later
@@ -565,12 +647,19 @@ commits it should compare against.
 
 ## 2. Revert Order
 
-Revert in **reverse landing order**: newest in-scope commit first, oldest last.
-Every intermediate commit on the revert branch should be a state the code could
-plausibly have been in. Forward order does not merely conflict more — it
-produces intermediate trees that git reports as successful and that are
-actually broken, because a dependent merge is still present after its
-dependency has been removed.
+Revert in **reverse dependency order**: every dependent unit comes out before
+the unit it depends on. When two units are incomparable in the dependency
+graph, break ties by reverse landing order so the result stays deterministic:
+newest in-scope commit first, oldest last. If a unit selected by `edit` or
+`validation_open` landed before the suspect PR, keep it ahead of the predecessor
+it depends on so the dependent is reverted before the predecessor it built on.
+That edge case is intentional: preserving a safe intermediate tree takes
+precedence over the historical-plausibility heuristic below. Every intermediate
+commit on the revert branch should be a state the code could plausibly have been
+in, except for that dependency-before-predecessor ordering requirement. Forward
+order does not merely conflict more — it produces intermediate trees that git
+reports as successful and that are actually broken, because a dependent merge
+is still present after its dependency has been removed.
 
 ### Build the revert on a branch
 
@@ -751,9 +840,9 @@ git revert --continue --no-edit
 git revert --abort
 ```
 
-Revert every commit in every in-scope PR's landed list, newest to oldest. For a
-rebase-merged PR that is N commits; for a squash or merge PR it is exactly one,
-regardless of how many commits the PR contained.
+Revert every commit in every in-scope PR's landed list in reverse dependency
+order. For a rebase-merged PR that is N commits; for a squash or merge PR it is
+exactly one, regardless of how many commits the PR contained.
 
 **Give each PR's range to a single `git revert` invocation.** Do not loop
 one-SHA-at-a-time. `git revert` is a sequencer: handed a range it queues every
@@ -782,9 +871,11 @@ once, queues them in `.git/sequencer/todo`, and `--continue` resumes through the
 queue. It is also why the list is built with `--first-parent`, never with a
 `A..B` range.
 
-Run one such invocation per in-scope PR, taking the PRs newest-first. Keep `-m`
-scoped to a single merge commit; never hand a mixed-shape set to one invocation
-and rely on `-m` applying correctly across it.
+Run one such invocation per in-scope PR, taking the PRs in reverse dependency
+order and breaking ties by reverse landing order. When dependency order and
+landing order line up, that is newest-first. Keep `-m` scoped to a single
+merge commit; never hand a mixed-shape set to one invocation and rely on `-m`
+applying correctly across it.
 
 Confirm the list's shape rather than assuming it. The classifier in section 1
 already labelled every commit; the list handed to the bare form must be
@@ -832,10 +923,11 @@ spanning several PRs runs one invocation per PR in series, so aborting the
 second one leaves the first PR's revert commits sitting on the branch. This is a
 consequence of the one-invocation-per-PR structure, not of `--abort` itself.
 
-Do not try to resume from that state. Re-running the closure newest-first hits
-the already-reverted PR and stops with `nothing to commit, working tree clean`
-and a nonzero status, before reaching the PRs that still need reverting —
-verified. It looks like an inexplicable failure and it hides the remaining work.
+Do not try to resume from that state. Re-running the closure in reverse
+dependency order hits the already-reverted PR and stops with `nothing to commit,
+working tree clean` and a nonzero status, before reaching the PRs that still
+need reverting — verified. It looks like an inexplicable failure and it hides
+the remaining work.
 
 Abandon the whole branch and rebuild it, which is safe precisely because the
 branch is disposable at this point — it holds nothing but revert commits and has
@@ -1183,38 +1275,236 @@ still reach a defensible state rather than dangling with an open
   handoff. An accepted risk that is written down is a decision; one that is not
   is an unexplained dangling lane.
 
+#### Verify the successor state
+
+Do not derive `absent` from an empty search, an unset variable, or a stale lane
+list. The deciding operator records the decision as a GitHub issue comment on
+the canonical target of the lane being closed, using exactly one of each marker
+line:
+
+```text
+Release batch: <exact batch id>
+Successor state: <present|absent>
+Named successor: <same-repo issue/PR URL|none>
+```
+
+Verify and release **one lane at a time**. For a non-terminal original lane,
+set `RELEASE_BATCH_ID` / `RELEASE_TARGET` to `BATCH_ID` / `TARGET`. On the
+no-repair path, start over for the repair lane with `REPAIR_BATCH_ID` /
+`REPAIR_TARGET` and that target's own decision-comment id. Never reuse the
+first lane's derived values for the second. A repair lane released `done` after
+a repair merges does not use successor state.
+
+Run this block immediately before releasing the selected lane. It fetches the
+comment, verifies its author and canonical target, binds its marker to the
+selected batch, derives the state and named successor from the fetched body,
+and verifies a named successor against GitHub. Missing, duplicated, mismatched,
+or mistyped evidence fails closed:
+
+```bash
+SUCCESSOR_STATE=UNKNOWN
+SUCCESSOR_DECISION_REF=UNKNOWN
+unset NAMED_SUCCESSOR TERMINAL
+
+# `build-UNKNOWN-42` is a valid opaque id; only an exact UNKNOWN field is invalid.
+case "${RELEASE_BATCH_ID-}" in
+  ''|UNKNOWN|*$'\n'*|*$'\r'*)
+    echo "release batch id is empty, multiline, or UNKNOWN: stop before verification" >&2
+    exit 1
+    ;;
+esac
+case "${RELEASE_TARGET-}" in
+  ''|UNKNOWN|*$'\n'*|*$'\r'*)
+    echo "release target is empty, multiline, or UNKNOWN: stop before verification" >&2
+    exit 1
+    ;;
+esac
+case "${SUCCESSOR_DECISION_COMMENT_ID:-UNKNOWN}" in
+  ''|UNKNOWN|*[!0-9]*)
+    echo "successor decision comment id is invalid: stop" >&2
+    exit 1
+    ;;
+esac
+case "${DECIDING_OPERATOR_GITHUB_LOGIN:-UNKNOWN}" in
+  ''|UNKNOWN)
+    echo "deciding operator GitHub login is UNKNOWN: stop" >&2
+    exit 1
+    ;;
+esac
+
+REPO_IDENTITY_JSON=$(gh repo view "${REPO}" \
+  --json nameWithOwner,url) || exit 1
+REPO_PATH=$(printf '%s' "${REPO_IDENTITY_JSON}" \
+  | jq -er '.nameWithOwner') || exit 1
+REPO_URL=$(printf '%s' "${REPO_IDENTITY_JSON}" \
+  | jq -er '.url') || exit 1
+case "${REPO_PATH}" in
+  ''|/*|*/|*/*/*|*$'\n'*|*$'\r'*)
+    echo "authenticated repository path is invalid: stop" >&2
+    exit 1
+    ;;
+  */*) ;;
+  *)
+    echo "authenticated repository path is not OWNER/REPO_NAME: stop" >&2
+    exit 1
+    ;;
+esac
+case "${REPO_URL}" in
+  https://*) ;;
+  *)
+    echo "authenticated repository URL is not HTTPS: stop" >&2
+    exit 1
+    ;;
+esac
+REPO_HOST=${REPO_URL#https://}
+REPO_HOST=${REPO_HOST%%/*}
+if [ -z "${REPO_HOST}" ] \
+  || [ "${REPO_URL}" != "https://${REPO_HOST}/${REPO_PATH}" ]; then
+  echo "authenticated repository URL does not match host and path: stop" >&2
+  exit 1
+fi
+
+TARGET_JSON=$(gh issue view "${RELEASE_TARGET}" --repo "${REPO}" \
+  --json number,url 2>/dev/null) \
+  || TARGET_JSON=$(gh pr view "${RELEASE_TARGET}" --repo "${REPO}" \
+    --json number,url) \
+  || exit 1
+TARGET_NUMBER=$(printf '%s' "${TARGET_JSON}" | jq -er '.number') || exit 1
+TARGET_URL=$(printf '%s' "${TARGET_JSON}" | jq -er '.url') || exit 1
+case "${TARGET_URL}" in
+  "https://${REPO_HOST}/${REPO_PATH}/issues/"*|\
+    "https://${REPO_HOST}/${REPO_PATH}/pull/"*) ;;
+  *)
+    echo "release target did not resolve inside REPO: stop" >&2
+    exit 1
+    ;;
+esac
+EXPECTED_ISSUE_API_URL=$(gh api --hostname "${REPO_HOST}" \
+  "repos/${REPO_PATH}/issues/${TARGET_NUMBER}" \
+  --jq '.url') || exit 1
+
+DECISION_JSON=$(gh api --hostname "${REPO_HOST}" \
+  "repos/${REPO_PATH}/issues/comments/${SUCCESSOR_DECISION_COMMENT_ID}") \
+  || exit 1
+DECISION_AUTHOR=$(printf '%s' "${DECISION_JSON}" \
+  | jq -er '.user.login') || exit 1
+DECISION_ISSUE_API_URL=$(printf '%s' "${DECISION_JSON}" \
+  | jq -er '.issue_url') || exit 1
+SUCCESSOR_DECISION_REF=$(printf '%s' "${DECISION_JSON}" \
+  | jq -er '.html_url') || exit 1
+DECISION_BODY=$(printf '%s' "${DECISION_JSON}" \
+  | jq -er '.body') || exit 1
+
+if [ "${DECISION_AUTHOR}" != "${DECIDING_OPERATOR_GITHUB_LOGIN}" ]; then
+  echo "successor decision author does not match deciding operator: stop" >&2
+  exit 1
+fi
+if [ "${DECISION_ISSUE_API_URL}" != "${EXPECTED_ISSUE_API_URL}" ]; then
+  echo "successor decision comment belongs to a different target: stop" >&2
+  exit 1
+fi
+
+DECISION_BATCH=$(printf '%s\n' "${DECISION_BODY}" | awk '
+  { sub(/\r$/, "") }
+  index($0, "Release batch: ") == 1 { n++; v=substr($0, 16) }
+  END { if (n != 1) exit 1; print v }
+') || { echo "release-batch marker is missing or duplicated: stop" >&2; exit 1; }
+SUCCESSOR_STATE=$(printf '%s\n' "${DECISION_BODY}" | awk '
+  { sub(/\r$/, "") }
+  index($0, "Successor state: ") == 1 { n++; v=substr($0, 18) }
+  END { if (n != 1) exit 1; print v }
+') || { echo "successor-state marker is missing or duplicated: stop" >&2; exit 1; }
+DECISION_NAMED_SUCCESSOR=$(printf '%s\n' "${DECISION_BODY}" | awk '
+  { sub(/\r$/, "") }
+  index($0, "Named successor: ") == 1 { n++; v=substr($0, 18) }
+  END { if (n != 1) exit 1; print v }
+') || { echo "named-successor marker is missing or duplicated: stop" >&2; exit 1; }
+
+if [ "${DECISION_BATCH}" != "${RELEASE_BATCH_ID}" ]; then
+  echo "successor decision names a different batch: stop" >&2
+  exit 1
+fi
+case "${SUCCESSOR_STATE:-UNKNOWN}" in
+  present)
+    NAMED_SUCCESSOR=${DECISION_NAMED_SUCCESSOR}
+    case "${NAMED_SUCCESSOR:-UNKNOWN}" in
+      "https://${REPO_HOST}/${REPO_PATH}/issues/"*|\
+        "https://${REPO_HOST}/${REPO_PATH}/pull/"*) ;;
+      *)
+        echo "named successor is not a same-repo issue/PR URL: stop" >&2
+        exit 1
+        ;;
+    esac
+    VERIFIED_SUCCESSOR=$(gh issue view "${NAMED_SUCCESSOR}" \
+      --repo "${REPO}" --json url --jq '.url' 2>/dev/null) \
+      || VERIFIED_SUCCESSOR=$(gh pr view "${NAMED_SUCCESSOR}" \
+        --repo "${REPO}" --json url --jq '.url') \
+      || exit 1
+    if [ "${VERIFIED_SUCCESSOR}" != "${NAMED_SUCCESSOR}" ]; then
+      echo "named successor URL did not verify exactly: stop" >&2
+      exit 1
+    fi
+    TERMINAL=superseded
+    ;;
+  absent)
+    if [ "${DECISION_NAMED_SUCCESSOR}" != none ]; then
+      echo "absent decision must name successor as none: stop" >&2
+      exit 1
+    fi
+    unset NAMED_SUCCESSOR
+    TERMINAL=abandoned
+    ;;
+  *)
+    echo "successor state is UNKNOWN: stop before terminal release" >&2
+    exit 1
+    ;;
+esac
+```
+
+Record `RELEASE_BATCH_ID`, `RELEASE_TARGET`, `SUCCESSOR_DECISION_REF`,
+`SUCCESSOR_STATE`, and `NAMED_SUCCESSOR` (or literal `none`) in that lane's
+terminal handoff. The fetched comment and exact GitHub lookups are the evidence.
+
 **Terminal state depends on whether the lane has already closed.**
 
 *Lane not yet terminal* (`planned`, `claimed`, `active`, `blocked`) — close it
 now, choosing between the two non-`done` terminal values:
 
-**Build the arguments conditionally.** `--evidence-url` is optional and must be
-either a real HTTP(S) URL or absent — an empty string is rejected and the
-closeout fails, leaving the lane open. Do not print one command that passes the
-flag unconditionally and rely on the reader to drop it: the same block then
-serves both the repair and the accepted-risk paths, and it is correct as run.
+**Build the arguments conditionally.** `--terminal` comes from `TERMINAL`,
+derived by the verified block above, and `--evidence-url` is optional and must
+be either a real HTTP(S) URL or absent — an empty string is rejected and the
+closeout fails, leaving the lane open. Do not change `SUCCESSOR_STATE`,
+`NAMED_SUCCESSOR`, or `TERMINAL` between verification and release.
+
+When an array is available, build the optional flag instead of typing one
+unconditional command and relying on the reader to drop it. The same block then
+serves both the repair and accepted-risk paths, and it is correct as run:
 
 ```bash
-RELEASE_ARGS=(--terminal superseded --pr-state "${PR_STATE}"
-  --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}")
+RELEASE_ARGS=(--pr-state "${PR_STATE}" --batch-id "${RELEASE_BATCH_ID}"
+  --repo "${REPO}" --target "${RELEASE_TARGET}")
+RELEASE_ARGS+=(--terminal "${TERMINAL}")
 if [ -n "${EVIDENCE_URL:-}" ]; then
   RELEASE_ARGS+=(--evidence-url "${EVIDENCE_URL}")
 fi
 agent-coord release "${RELEASE_ARGS[@]}"
 ```
 
-Where an array is not available, the two forms are separate commands, never one
-command with an optionally-empty flag:
+Where an array is not available, run the same per-lane verification and then
+branch on `EVIDENCE_URL` independently so all four valid combinations stay
+valid:
 
 ```bash
-# a durable evidence URL exists
-agent-coord release --terminal superseded --pr-state "${PR_STATE}" \
-  --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}" \
-  --evidence-url "${EVIDENCE_URL}"
-
-# no durable URL exists — omit the flag entirely
-agent-coord release --terminal superseded --pr-state "${PR_STATE}" \
-  --batch-id "${BATCH_ID}" --repo "${REPO}" --target "${TARGET}"
+if [ -n "${EVIDENCE_URL:-}" ]; then
+  agent-coord release --terminal "${TERMINAL}" --pr-state "${PR_STATE}" \
+    --batch-id "${RELEASE_BATCH_ID}" --repo "${REPO}" \
+    --target "${RELEASE_TARGET}" \
+    --evidence-url "${EVIDENCE_URL}"
+else
+  agent-coord release --terminal "${TERMINAL}" --pr-state "${PR_STATE}" \
+    --batch-id "${RELEASE_BATCH_ID}" --repo "${REPO}" \
+    --target "${RELEASE_TARGET}"
+fi
 ```
 
 - Use `superseded` when a named successor — a new lane, issue, or PR — will
@@ -1334,14 +1624,22 @@ An agent **may not**, without an explicit operator decision:
    `MERGE_STYLE` with a `case`** — two unconditional assignments both run and
    the rebase one wins. Read the list before using it. An unverifiable list is
    `UNKNOWN`: widen or stop.
-4. Build `PATHS` from the landed range's `--name-only -z` output into a bash
-   array, and expand it only as `"${PATHS[@]}"`. Run the `--follow` and
-   `--find-renames` cross-check before recording any disjointness result.
-5. Compute the revert closure from the batch manifest, dependency-plan edges of
-   **every** type, and
-   git, comparing whole ranges. Map every in-scope commit to a PR: a confirmed
-   direct commit is a closure unit of one, and a failed lookup is `UNKNOWN`.
-   Fail closed to the wider scope on any `UNKNOWN`.
+4. Seed the declared closure from the batch manifest and dependency-plan edges
+   of **every** type. Reconcile every selected lane to its authenticated landed
+   PR, landed direct commit, or terminal no-land evidence; recover
+   earlier-landed ranges explicitly and establish `OLDEST_IN_SCOPE_SHA`. Build
+   `PATHS` from every recovered range's `--name-only -z` output into a bash
+   array, and expand it only as `"${PATHS[@]}"`.
+5. Complete the closure against git, comparing whole ranges. Map every in-scope
+   commit to a PR: a confirmed
+   direct commit is a closure unit of one, a unit selected by `edit` or
+   `validation_open` stays in scope even when it landed before the suspect PR,
+   and a failed lookup or contradictory `merge_order` landing is `UNKNOWN`.
+   Run the `--follow` and `--find-renames` cross-check from
+   `${OLDEST_IN_SCOPE_SHA}^1`; when reconciliation expands `PATHS` or adds an
+   older closure unit, move the boundary and repeat. Fail closed to the wider
+   scope on any `UNKNOWN`, and record no disjointness result before paths and
+   the boundary both reach a fixed point.
    Fix `PRE_BATCH_SHA` as `${OLDEST_IN_SCOPE_SHA}^1`.
 6. Decide revert versus forward fix, and write down why.
 7. Re-fetch and confirm `origin/${BASE}` still matches `BASE_TIP`; rerun scope
@@ -1355,12 +1653,14 @@ An agent **may not**, without an explicit operator decision:
 8. If you turn on `rerere` for the closure, capture `RERERE_PRIOR` first and
    restore it on **every** exit path — merged repair included, not only
    abandonment.
-9. Revert **every commit in every in-scope list**, newest first, by handing the
-   whole list to one `git revert` invocation (`-m 1` on a merge commit, alone).
-   On conflict: resolve and `--continue`, or `--abort` and re-scope — never
-   `--skip`, and never leave a partial sequence. Abandoning a multi-PR closure
-   also needs `git checkout -B "${REVERT_BRANCH}" "${BASE_TIP}"`, because
-   `--abort` only cancels the invocation it is run from.
+9. Revert **every commit in every in-scope list** in reverse dependency order,
+   breaking ties by reverse landing order, by handing each whole list to one
+   `git revert` invocation (`-m 1` on a merge commit, alone). Within each list,
+   `git revert` still queues newest first on its own. On conflict: resolve and
+   `--continue`, or `--abort` and re-scope — never `--skip`, and never leave a
+   partial sequence. Abandoning a multi-PR closure also needs
+   `git checkout -B "${REVERT_BRANCH}" "${BASE_TIP}"`, because `--abort` only
+   cancels the invocation it is run from.
 10. Classify every conflicting hunk as dependent or independent; stop and
     re-scope if an independent hunk cannot be preserved.
 11. Validate the branch, and diff the final tree against `PRE_BATCH_SHA`.
@@ -1381,9 +1681,13 @@ An agent **may not**, without an explicit operator decision:
     or `abandoned`; release the repair lane claimed in step 7 as `done` under
     `REPAIR_BATCH_ID` / `REPAIR_LANE`; restore `RERERE_PRIOR`; reclassify the
     worked issue as `regressed`. Build the release arguments conditionally so
-    `--evidence-url` is present only when `EVIDENCE_URL` is set. If no repair
-    lands at all, skip checkpoint B but still close **both** lanes terminally
-    (omitting `--evidence-url` when no durable URL exists), close the draft
-    revert PR, restore `RERERE_PRIOR`, reclassify the worked issue `regressed`,
-    and record the accepted-risk decision and its operator in the durable
-    handoff.
+    `--terminal` follows the executable successor-state verification above;
+    bind that verification to the original lane's target and batch, record its
+    authenticated `SUCCESSOR_DECISION_REF`, and include `--evidence-url` only
+    when `EVIDENCE_URL` is set. If no repair lands at all,
+    skip checkpoint B but still close **both** lanes terminally (omitting
+    `--evidence-url` when no durable URL exists), rerunning verification with a
+    separate authenticated decision on each lane's own target and batch. Close
+    the draft revert PR, restore `RERERE_PRIOR`, reclassify the worked issue
+    `regressed`, and record the accepted-risk decision and its operator in the
+    durable handoff.
