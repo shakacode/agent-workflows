@@ -1543,6 +1543,11 @@ evidence for required status checks, GitHub Actions, Dependabot, and other
 checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
 must migrate to the scoped v2 result.
 
+Treat CI as successful only through the result contract's normalized successful
+state (`READY` for `pr-ci-readiness` v2). Provider-specific conclusions are
+inputs to that normalization, not portable gate values; a missing, stale,
+nonterminal, failed, unrecognized, future, or `UNKNOWN` value is not success.
+
 Then run the repo's merge ledger (see `merge_ledger` in
 `.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
 `--changelog-classification`
@@ -1575,6 +1580,50 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 
 ### Ask Merge Authority Walkthrough Gate
 
+Before entering this gate, establish current-integration readiness from trusted
+live facts: require that the exact head contains the current base by
+requiring this command to exit zero:
+
+```bash
+GIT_GRAFT_FILE=/dev/null git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"
+```
+
+Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh here; do not
+introduce a second, differently-named pair for the identical base/head facts.
+
+Require the exact-head `pr-ci-readiness` v2 normalized successful state:
+its aggregate `verdict` equal to `READY`, not an individual scope's `state` —
+a scope can report `state: READY` while the top-level `verdict` is
+`NOT_READY` or `UNKNOWN`.
+
+This sequencing checklist neither defines an evidence schema nor replaces the
+later [Merge Assurance Gate](#merge-assurance-gate). Do not claim or consume its
+machine `current-integration-evidence` here. Missing, stale, mismatched,
+non-successful, unrecognized, future, or `UNKNOWN` facts keep the target in
+`waiting-on-checks-or-review` and do not start the walkthrough. Trust
+ancestry's exit `1` only when `git rev-parse --is-shallow-repository`
+reports `false`; a shallow graph or any other nonzero exit is `UNKNOWN` per
+the missing-facts rule above, regardless of CI. Emit a banner only on
+failure: proven-behind ancestry leads with **PR IS BEHIND THE CURRENT BASE —
+NOT MERGE-READY.**, adding **AND CI FAILED** if CI `verdict` also fails, and
+routes to [Integration And PR Publication](#integration-and-pr-publication)
+step 3 to reconcile the base — a proven-behind head does not clear through
+`waiting-on-checks-or-review` polling. Clean ancestry with CI `verdict` not
+`READY` leads with **CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED
+SUCCESSFUL STATE — NOT MERGE-READY.** No banner when both pass.
+
+The self-contained compact fallback encodes this checklist inline as
+`head>=base+V=READY` and waits on either failure without this gate's
+dual-banner distinction; if that wait persists, check whether ancestry
+specifically failed — it never clears through waiting alone.
+
+Immediately before starting the walkthrough, re-fetch and re-resolve both
+the live base and the exact head into fresh `TRUSTED_BASE_SHA`/
+`CURRENT_HEAD_SHA` values, then re-run the ancestry check against them —
+either can advance during evidence collection, and rerunning against a
+stale value proves nothing. A changed head also makes the collected CI
+evidence stale: restart this gate from the top instead of reusing it.
+
 When `merge_authority` is `ask` and every ordinary gate is clean,
 automatically start the exact-diff PR walkthrough before asking for merge
 approval. Use `$pr-walkthrough` when available; otherwise apply its read-only
@@ -1590,14 +1639,18 @@ architecture, or difficult rollback may require full mode below those limits.
 Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
 
-After it completes or is skipped, refresh the diff identity and ordinary
-readiness. If the diff identity changed, invalidate the walkthrough and
-readiness evidence, then restart the walkthrough or stop. If an ordinary gate
-newly fails, stop. Ask one final merge decision only when the refreshed diff
-identity matches the recorded identity, ordinary readiness remains clean, and
-merge is allowed; a completed walkthrough must have explained that same diff
-identity. Walkthrough participation is not merge approval. Merge still requires
-the explicit authority decision.
+After it completes or is skipped, refresh the diff identity, ordinary
+readiness, current base, and checklist above. A changed base is a changed
+diff identity: invalidate the walkthrough and readiness evidence and restart
+or stop even when the checklist above still passes for the same head — do
+not reuse a walkthrough whose comparison base moved. Stop
+if the checklist above no longer passes for the current head/base, even
+without a base change. Stop if any ordinary gate newly fails. Ask one final
+merge decision only when the refreshed diff matches the recorded identity,
+ordinary readiness and current-integration readiness are clean, and merge is
+allowed; a completed walkthrough must cover that diff. Walkthrough
+participation is not merge approval. Merge still requires the explicit
+authority decision.
 
 ### Autonomous Merge Eligibility Gate
 

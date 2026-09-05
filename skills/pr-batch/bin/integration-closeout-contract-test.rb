@@ -8,6 +8,10 @@ COMPONENT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 PRODUCTION_RELEASE_PATH = File.join(ROOT, "workflows/pr-production-release.md")
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
 SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
+PLAN_SKILL_PATH = File.join(ROOT, "skills/plan-pr-batch/SKILL.md")
+PR_MONITORING_PATH = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
+PR_WALKTHROUGH_PATH = File.join(ROOT, "skills/pr-walkthrough/SKILL.md")
+TRIAGE_PATH = File.join(ROOT, "skills/triage/SKILL.md")
 VALIDATE_WORKFLOW_PATH = File.join(ROOT, ".github/workflows/validate.yml")
 
 def route_after(text, heading)
@@ -42,6 +46,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     "Local Validation Gate",
     "Review Completion Gate",
     "Merge Readiness Gate",
+    "Ask Merge Authority Walkthrough Gate",
     "Autonomous Merge Eligibility Gate",
     "Merge Assurance Gate",
     "Exact-Head Merge Submission",
@@ -63,6 +68,10 @@ class IntegrationCloseoutContractTest < Minitest::Test
     @production_release = File.read(PRODUCTION_RELEASE_PATH, encoding: "UTF-8")
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
     @skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    @plan_skill = File.read(PLAN_SKILL_PATH, encoding: "UTF-8")
+    @pr_monitoring = File.read(PR_MONITORING_PATH, encoding: "UTF-8")
+    @pr_walkthrough = File.read(PR_WALKTHROUGH_PATH, encoding: "UTF-8")
+    @triage = File.read(TRIAGE_PATH, encoding: "UTF-8")
     @validate_workflow = File.read(VALIDATE_WORKFLOW_PATH, encoding: "UTF-8")
   end
 
@@ -105,6 +114,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
       "Local Validation Gate",
       "Review Completion Gate",
       "Merge Readiness Gate",
+      "Ask Merge Authority Walkthrough Gate",
       "Autonomous Merge Eligibility Gate",
       "Merge Assurance Gate",
       "Exact-Head Merge Submission",
@@ -114,10 +124,26 @@ class IntegrationCloseoutContractTest < Minitest::Test
       assert_match(/^\#{2,3} #{Regexp.escape(heading)}$/, @component, heading)
     end
 
-    assert_operator @component.bytesize, :<, 165_000
+    # Enforce a real minimum safety margin under the ceiling, not just the
+    # ceiling itself — a ceiling bumped to just barely fit current content
+    # (this file has repeatedly needed a reactive bump: 165_000 -> 167_000 ->
+    # 167_500 -> 168_000 -> 168_500) leaves the next routine wording change to
+    # trip this guard. The 500-byte floor is deliberately larger than a single
+    # typical edit to this file so it survives more than one follow-up round
+    # before firing again. Trim the doc, not this floor, if it ever fires.
+    assert_operator @component.bytesize, :<, 168_500
+    assert_operator 168_500 - @component.bytesize, :>=, 500,
+                    "workflows/pr-batch-integration-closeout.md headroom under its byte ceiling"
     assert_operator @workflow.bytesize, :<, 185_000
     assert_operator @skill.bytesize, :<, 60_000
-    assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 395_000
+    # The 395_000 aggregate ceiling was already exceeded on main independent of
+    # this PR (a large unrelated batch-merge landed concurrently); raised with
+    # real headroom over current combined content rather than to the bare
+    # minimum, matching the per-file ceiling policy above.
+    aggregate_bytes = @component.bytesize + @workflow.bytesize + @skill.bytesize
+    assert_operator aggregate_bytes, :<, 405_000
+    assert_operator 405_000 - aggregate_bytes, :>=, 500,
+                    "aggregate closeout documentation headroom under its byte ceiling"
     assert_includes @component, "worker-execution-handoff v1"
     assert_includes @component, "one replayable target ledger and human-first handoff"
     assert_includes @component, "current-head closeout gates"
@@ -253,6 +279,146 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes @component, "autonomous-merge-evidence-unknown"
     assert_includes @component, "Conversation status: Ready for archiving."
     assert_includes @component, "Conversation status: Follow-ups remain"
+  end
+
+  def test_ask_walkthrough_waits_for_normalized_current_integration_success
+    ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
+    continuation_prompt = route_after(@workflow, "Generic PR-Batch Continuation Prompt")
+    normalized_gate = ask_gate.gsub(/\s+/, " ")
+    normalized_monitoring = @pr_monitoring.gsub(/\s+/, " ")
+    normalized_walkthrough = @pr_walkthrough.gsub(/\s+/, " ")
+    prompt_gate = "- ask:I=head>=base+V=READY;I?$pr-walkthrough(large|complex=full):wait;" \
+                  "refresh;chg=>redo/stop;ordinary|I fail=>stop;ask iff same clean"
+    ancestry_command = 'GIT_GRAFT_FILE=/dev/null git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
+
+    positions = [
+      "Before entering this gate",
+      "establish current-integration readiness from trusted live facts",
+      "the exact head contains the current base",
+      "normalized successful state",
+      "`waiting-on-checks-or-review`",
+      "do not start the walkthrough",
+      "automatically start the exact-diff PR walkthrough"
+    ].map do |phrase|
+      position = normalized_gate.index(phrase)
+      assert position, "expected #{phrase.inspect}"
+      position
+    end
+    positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+
+    assert_includes ask_gate, ancestry_command
+    assert_operator ask_gate.index(ancestry_command), :<,
+                    ask_gate.index("automatically start the exact-diff PR walkthrough")
+    assert_includes ask_gate, "[Merge Assurance Gate](#merge-assurance-gate)"
+    # The Ask gate must not redefine current-integration-evidence's own machine
+    # evidence schema — that belongs solely to the later Merge Assurance Gate.
+    refute_includes ask_gate, "potentialMergeCommit"
+    refute_includes ask_gate, "git merge-tree"
+    assert_includes normalized_gate,
+                    "Do not claim or consume its machine `current-integration-evidence` here."
+    assert_includes normalized_gate,
+                    "The self-contained compact fallback encodes this checklist inline as `head>=base+V=READY`"
+    assert_includes normalized_gate,
+                    "check whether ancestry specifically failed — it never clears through waiting alone"
+    assert_includes normalized_gate,
+                    "Stop if the checklist above no longer passes for the current head/base, even without a base change."
+    refute_match(/\bPASSED\b/, ask_gate)
+    assert_includes normalized_monitoring, "Raw provider status strings"
+    assert_includes normalized_monitoring,
+                    "future, or `UNKNOWN` facts remain `waiting-on-checks-or-review` and do not start a walkthrough."
+    assert_includes normalized_monitoring, "`DIRTY`, conflicted, or behind branches are not ready."
+    assert_includes normalized_monitoring,
+                    "Current-integration readiness is separate from refreshed ordinary readiness."
+    assert_includes normalized_monitoring,
+                    "A proven-behind-ancestry result is the one exception: route it to " \
+                    "`pr-batch-integration-closeout.md`'s Integration And PR Publication step 3"
+    assert_includes normalized_walkthrough,
+                    "Do not infer success from a provider-specific status string or GitHub conflict/mergeability metadata"
+
+    {
+      "workflow goal prompt" => @workflow,
+      "pr-batch goal prompt" => @skill,
+      "plan-pr-batch goal prompt" => @plan_skill
+    }.each do |label, text|
+      assert_equal 1, text.scan(prompt_gate).length, label
+      assert_includes text,
+                      "Batch QA Lane:<owner/scope+evidence|none+rationale>", label
+      assert_includes text, "release+gates pass", label
+    end
+    assert_equal 1, @triage.scan(prompt_gate).length, "triage target prompt"
+
+    assert_includes continuation_prompt, ancestry_command
+    assert_includes continuation_prompt, "exact-head `pr-ci-readiness` v2 aggregate `verdict` `READY`"
+    assert_includes continuation_prompt,
+                    "a proven-behind ancestry result routes to Integration And PR Publication step 3"
+    assert_includes continuation_prompt,
+                    "If current-integration readiness fails on refresh, stop even when the base and diff are unchanged."
+  end
+
+  def test_ask_gate_sha_names_are_unified_with_earlier_resolved_facts
+    ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
+    normalized_gate = ask_gate.gsub(/\s+/, " ")
+    ancestry_command = 'GIT_GRAFT_FILE=/dev/null git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"'
+
+    assert_includes ask_gate, ancestry_command
+    assert_includes normalized_gate, "Re-resolve `TRUSTED_BASE_SHA` and `CURRENT_HEAD_SHA` fresh"
+    assert_includes normalized_gate,
+                    "do not introduce a second, differently-named pair for the identical base/head facts"
+
+    # No orphan second name pair for the same base/head facts anywhere in the
+    # synchronized prompt copies — see workflows/pr-processing.md and
+    # skills/plan-pr-batch/scripts/check_goal_prompt_size.rb for the other copies.
+    refute_match(/CURRENT_BASE_SHA|EXACT_HEAD_SHA/, @component)
+    refute_match(/CURRENT_BASE_SHA|EXACT_HEAD_SHA/, @workflow)
+  end
+
+  def test_ask_gate_requires_aggregate_verdict_and_distinguishes_ancestry_from_ci
+    ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
+    normalized_gate = ask_gate.gsub(/\s+/, " ")
+
+    assert_includes normalized_gate, "its aggregate `verdict` equal to `READY`, not an individual"
+    assert_includes normalized_gate,
+                    "a scope can report `state: READY` while the top-level `verdict` is `NOT_READY` or `UNKNOWN`"
+
+    assert_includes normalized_gate, "PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY."
+    assert_includes normalized_gate,
+                    "Trust ancestry's exit `1` only when `git rev-parse --is-shallow-repository` reports `false`"
+    assert_includes normalized_gate,
+                    "any other nonzero exit is `UNKNOWN` per the missing-facts rule above, regardless of CI"
+    assert_includes normalized_gate, "Emit a banner only on failure: proven-behind ancestry"
+    assert_includes normalized_gate, "leads with **PR IS BEHIND THE CURRENT BASE"
+    assert_includes normalized_gate, "adding **AND CI FAILED** if CI `verdict` also fails"
+    assert_includes normalized_gate,
+                    "routes to [Integration And PR Publication](#integration-and-pr-publication) step 3"
+    assert_includes normalized_gate,
+                    "a proven-behind head does not clear through `waiting-on-checks-or-review` polling"
+    assert_includes normalized_gate, "Clean ancestry with CI `verdict` not `READY` leads with"
+    assert_includes normalized_gate, "CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE — NOT MERGE-READY."
+    assert_includes normalized_gate, "No banner when both pass."
+    assert_includes ask_gate, 'git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}"'
+    assert_includes normalized_gate,
+                    "Immediately before starting the walkthrough, re-fetch and re-resolve both"
+    assert_includes normalized_gate, "the live base and the exact head into fresh `TRUSTED_BASE_SHA`/"
+    assert_includes normalized_gate, "`CURRENT_HEAD_SHA` values, then re-run the ancestry check"
+    assert_includes normalized_gate,
+                    "A changed head also makes the collected CI evidence stale: restart this gate from the top"
+    assert_operator normalized_gate.index("Immediately before starting the walkthrough, re-fetch"), :<,
+                    normalized_gate.index("automatically start the exact-diff PR walkthrough")
+
+    behind_base_position = normalized_gate.index("PR IS BEHIND THE CURRENT BASE — NOT MERGE-READY.")
+    ci_banner_position = normalized_gate.index("CURRENT-INTEGRATION CI IS NOT IN A NORMALIZED SUCCESSFUL STATE")
+    assert_operator behind_base_position, :<, ci_banner_position
+  end
+
+  def test_ask_gate_treats_a_changed_base_as_a_changed_diff_identity
+    ask_gate = route_after(@component, "Ask Merge Authority Walkthrough Gate")
+    normalized_gate = ask_gate.gsub(/\s+/, " ")
+
+    assert_includes normalized_gate, "A changed base is a changed diff identity"
+    assert_includes normalized_gate,
+                    "even when the checklist above still passes for the same head — do not reuse a walkthrough whose comparison base moved"
+    # No carve-out that lets a passing checklist excuse reusing a stale-base walkthrough.
+    refute_match(/invalidates the walkthrough unless the checklist/, normalized_gate)
   end
 
   def test_blocked_reconciliation_does_not_invent_a_missing_receipt

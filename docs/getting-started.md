@@ -273,12 +273,22 @@ Four plain-word definitions first:
   a default for you.
 
 For a first lane, choose `ask`. Here is what `ask` actually does: once the
-PR's ordinary gates are clean, the coordinator automatically starts a
-`$pr-walkthrough` — an exact-diff explanation of the PR, one conceptual
-change at a time, with room for your questions between changes — and only
-then asks one final merge question. The walkthrough itself is not approval:
-if the diff changes or a gate starts failing in the meantime, the merge
-question is withheld and the walkthrough restarts or stops.
+PR's ordinary gates are clean, the coordinator also checks that the exact
+head contains the current base and that exact-head CI reports the
+normalized `READY` state — a PR that is merely green can still be behind
+the current base or resting on a stale CI run. Only when both checks pass
+does the coordinator automatically start a `$pr-walkthrough` — an exact-diff
+explanation of the PR, one conceptual change at a time, with room for your
+questions between changes — and only then ask one final merge question. If
+the PR is behind the current base, the coordinator reconciles the base
+instead of waiting — a stale branch never clears on its own. If only the CI
+check has not reported `READY`, the coordinator waits
+(`waiting-on-checks-or-review`) instead of starting the walkthrough. The
+walkthrough itself is not approval: before asking that final question, the
+coordinator re-checks the diff, the ordinary gates, and the same
+current-integration checklist (base and CI) — if the diff changed, a gate
+started failing, or that checklist no longer passes, the merge question is
+withheld and the walkthrough restarts or stops.
 
 Invoke the skill in your agent host from the adopted repository, naming one
 exact issue — in Codex, type the prompt below; in Claude Code, ask for the
@@ -308,8 +318,9 @@ Launching the worker for lane issue-42.
 Worker: branch 42-fix-empty-config-crash pushed with 2 commits.
 .agents/bin/validate PASS, .agents/bin/test PASS. PR #57 opened.
 
-Checks on PR #57: all green. merge_authority is ask, so starting the
-walkthrough.
+Checks on PR #57: all green. Exact head contains the current base and
+exact-head CI reports normalized `READY`. merge_authority is ask, so
+starting the walkthrough.
 
 Walkthrough (1/2): the config loader now returns a documented default when
 the file is empty instead of raising. Questions before the next change?
