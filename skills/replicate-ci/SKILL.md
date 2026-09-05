@@ -40,12 +40,12 @@ gh api --hostname <HOST> --method GET --paginate --slurp \
   repos/<OWNER>/<REPO>/actions/workflows/<WORKFLOW_ID_OR_FILE>/runs \
   -f head_sha='<HEAD_SHA>' -F per_page=100 |
   jq '[.[].workflow_runs[] | {databaseId: .id, attempt: .run_attempt, conclusion: .conclusion, headSha: .head_sha, event: .event, workflowName: .name, number: .run_number, createdAt: .created_at, url: .html_url}]'
-gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
+gh run view <RUN_ID> --repo <HOST>/<OWNER>/<REPO> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
 gh api --hostname <HOST> --method GET --paginate --slurp \
   repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs \
   -F per_page=100 |
   jq '[.[].jobs[] | {name: .name, conclusion: .conclusion, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}]'
-gh run view <RUN_ID> --attempt <N> --log
+gh run view <RUN_ID> --repo <HOST>/<OWNER>/<REPO> --attempt <N> --log
 ```
 
 Keep every fetched run until invocation equivalence has been derived; do not
