@@ -234,15 +234,18 @@ four thresholds, add reason-tagged human-review paths and policy paths, extend
 the portable documentation/test safe groups, and identify generated paths for
 reporting:
 
-ADR 0003 is the source of truth for these copied portable defaults. File, line,
-and commit maxima are enforced; `max_reviewed_heads` is shadow-only until a
-checked calibration artifact explicitly graduates it to enforcement.
+ADR 0003 is the source of truth for these copied portable defaults. File,
+reviewable-line, and commit maxima are enforced against reviewable metrics;
+raw total changed lines stay fail-closed as a backstop, and `max_reviewed_heads`
+is shadow-only until a checked calibration artifact explicitly graduates it to
+enforcement.
 
 ```yaml
 autonomous_merge:
   thresholds:
     max_changed_files: 29
     max_changed_lines: 999
+    max_total_changed_lines: 20000
     max_commits: 9
     max_reviewed_heads: 3
   human_review_paths:
@@ -275,14 +278,19 @@ portable group excludes the built-in autonomous-merge policy surface -
 `AGENTS.md`/`CLAUDE.md`, `**/SKILL.md`, `workflows/**`, `.agents/**`,
 `docs/adr/**`, and the autonomous-merge helpers - so a repository cannot widen
 its includes into a positive safe classification for a policy path.
+Portable generated_paths defaults ship for lockfiles. Consumer generated_paths
+are added to the portable defaults; a consumer can never remove a portable
+generated default.
 
 Thresholds are inclusive maxima: the next value triggers human review. A value
 above a portable default also requires
 `threshold_relaxation.rationale`. Duplicate/unknown keys, wrong scalar types,
-invalid enums or globs, and malformed mappings fail closed. Safe and generated
+invalid enums or globs, and malformed mappings fail closed. Safe
 classifications never subtract common hard, repository path, size, churn,
-rollback, or maintainer-concern gates. The evaluator always reads this mapping
-from the trusted base, so a PR cannot weaken its own policy.
+rollback, or maintainer-concern gates. Generated classifications subtract the
+reviewable size gates only when they do not overlap `human_review_paths`; the
+raw total backstop still counts every line. The evaluator always reads this
+mapping from the trusted base, so a PR cannot weaken its own policy.
 
 Glob patterns are repository-root-relative. A complete `**` path component
 crosses zero or more components; `*`, `?`, and valid bracket classes remain

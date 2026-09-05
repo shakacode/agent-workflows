@@ -27,12 +27,17 @@ GMCC_HUMAN_DECISION_BINDING = "auto=>exact verdict/head/sorted-gates/rollback;me
                               "autonomous-merge-eligible|human-approved-for-current-head+" \
                               "durable-decision(proven+merge-authority)"
 THRESHOLD_DOCUMENTATION_PARITY = "ADR 0003 is the source of truth for these copied portable defaults. " \
-                                 "File, line, and commit maxima are enforced; max_reviewed_heads is " \
-                                 "shadow-only until a checked calibration artifact explicitly graduates " \
-                                 "it to enforcement."
+                                 "File, reviewable-line, and commit maxima are enforced against reviewable " \
+                                 "metrics; " \
+                                 "raw total changed lines stay fail-closed as a backstop, and " \
+                                 "max_reviewed_heads is shadow-only until a checked calibration artifact " \
+                                 "explicitly graduates it to enforcement."
 SAFE_PATH_GROUP_DOCUMENTATION_PARITY = "Portable safe_path_groups defaults ship for documentation and tests. " \
                                        "Consumer include and exclude patterns are added to the portable sets; " \
                                        "a consumer can never remove a portable exclude."
+GENERATED_PATH_DOCUMENTATION_PARITY = "Portable generated_paths defaults ship for lockfiles. Consumer " \
+                                     "generated_paths are added to the portable defaults; a consumer can " \
+                                     "never remove a portable generated default."
 
 class AutonomousMergeContractTest < Minitest::Test
   def test_runtime_records_are_keyword_structs_compatible_with_ruby_three_one
@@ -88,6 +93,8 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes workflow, "mechanically recomputes a length-framed manifest"
     assert_includes workflow, "remain coordinator procedures"
     assert_match(/`merge_authority`\s+remains separate from\s+eligibility/, workflow)
+    assert_includes workflow, "reviewable_changed_lines"
+    assert_includes workflow, "total-changed-lines-limit"
   end
 
   def test_goal_generation_surfaces_carry_both_autonomous_stop_states
@@ -109,6 +116,16 @@ class AutonomousMergeContractTest < Minitest::Test
   def test_copied_threshold_defaults_document_reviewed_heads_as_shadow_only
     %w[docs/seam-design.md examples/agent-workflow.yml].each do |path|
       assert_includes normalized_policy_prose(path), THRESHOLD_DOCUMENTATION_PARITY, path
+    end
+  end
+
+  def test_copied_generated_path_defaults_are_documented_additively
+    %w[
+      docs/adr/0003-smarter-autonomous-merge-gates.md
+      docs/seam-design.md
+      examples/agent-workflow.yml
+    ].each do |path|
+      assert_includes normalized_policy_prose(path), GENERATED_PATH_DOCUMENTATION_PARITY, path
     end
   end
 
@@ -213,6 +230,29 @@ class AutonomousMergeContractTest < Minitest::Test
     refute_empty policy.errors
     assert_equal AutonomousMergePolicy::PORTABLE_THRESHOLDS, policy.thresholds
     assert_equal AutonomousMergePolicy.portable_safe_path_groups, policy.safe_path_groups
+    assert_equal AutonomousMergePolicy.portable_generated_paths, policy.generated_paths
+  end
+
+  def test_portable_generated_path_defaults_are_additive_and_cannot_be_removed
+    portable = AutonomousMergePolicy::PORTABLE_GENERATED_PATHS
+    absent = AutonomousMergePolicy.parse("{}")
+    empty = AutonomousMergePolicy.parse(<<~YAML)
+      autonomous_merge:
+        generated_paths: []
+    YAML
+    partial = AutonomousMergePolicy.parse(<<~YAML)
+      autonomous_merge:
+        generated_paths:
+          - dist/generated/**
+    YAML
+
+    [absent, empty, partial].each do |policy|
+      assert_empty policy.errors
+      portable.each do |pattern|
+        assert_includes policy.generated_paths, pattern
+      end
+    end
+    assert_includes partial.generated_paths, "dist/generated/**"
   end
 
   # A consumer that only wants to tighten the portable set writes a group with

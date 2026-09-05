@@ -877,7 +877,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_equal "none", explicit_none.fetch("safe_class")
   end
 
-  def test_generated_paths_are_reporting_only_and_all_generated_lines_still_count
+  def test_generated_paths_discount_reviewable_size_gates_and_keep_raw_totals_intact
     result = evaluate(policy_yaml: <<~YAML) do |base_sha|
       autonomous_merge:
         generated_paths:
@@ -890,11 +890,75 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
 
     assert_equal 1_000, result.dig("metrics", "changed_lines")
-    assert_equal ["changed-lines-limit"], result.fetch("triggered_gates")
+    assert_equal 0, result.dig("metrics", "reviewable_changed_files")
+    assert_equal 0, result.dig("metrics", "reviewable_changed_lines")
+    assert_equal [], result.fetch("triggered_gates")
+    assert_equal "autonomous-merge-eligible", result.fetch("verdict")
     assert_includes result.fetch("path_matches"), {
       "path" => "generated/client.rb",
       "classification" => "generated"
     }
+  end
+
+  def test_human_review_paths_win_over_generated_path_overlaps_without_discounting_lines
+    result = evaluate(policy_yaml: <<~YAML) do |base_sha|
+      autonomous_merge:
+        human_review_paths:
+          - id: generated-review
+            pattern: generated/**
+            reason: policy
+        generated_paths:
+          - generated/**
+    YAML
+      evidence(
+        base_sha:,
+        files: [file("generated/client.rb", additions: 500)]
+      )
+    end
+
+    assert_equal 500, result.dig("metrics", "changed_lines")
+    assert_equal 1, result.dig("metrics", "changed_files")
+    assert_equal 1, result.dig("metrics", "reviewable_changed_files")
+    assert_equal 500, result.dig("metrics", "reviewable_changed_lines")
+    assert_equal ["repo-path:generated-review"], result.fetch("triggered_gates")
+    assert_equal "human-approval-required", result.fetch("verdict")
+  end
+
+  def test_generated_raw_total_backstop_stays_fail_closed
+    result = evaluate(policy_yaml: <<~YAML) do |base_sha|
+      autonomous_merge:
+        generated_paths:
+          - generated/**
+    YAML
+      evidence(
+        base_sha:,
+        files: [file("generated/client.rb", additions: 20_001)]
+      )
+    end
+
+    assert_equal 20_001, result.dig("metrics", "changed_lines")
+    assert_equal 0, result.dig("metrics", "reviewable_changed_lines")
+    assert_equal ["total-changed-lines-limit"], result.fetch("triggered_gates")
+    assert_equal "human-approval-required", result.fetch("verdict")
+  end
+
+  def test_policy_surface_changes_cannot_self_discount_generated_file_churn
+    result = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: [
+          file("generated/client.rb", additions: 1_000),
+          file(".agents/agent-workflow.yml", additions: 1)
+        ]
+      )
+    end
+
+    assert_equal 1_001, result.dig("metrics", "changed_lines")
+    assert_equal 1_001, result.dig("metrics", "reviewable_changed_lines")
+    assert_equal 2, result.dig("metrics", "reviewable_changed_files")
+    assert_includes result.fetch("triggered_gates"), "autonomous-merge-policy-change"
+    assert_includes result.fetch("triggered_gates"), "changed-lines-limit"
+    assert_equal "human-approval-required", result.fetch("verdict")
   end
 
   def test_exact_head_human_decision_requires_durable_marker_exact_gate_set_and_proven_provenance
