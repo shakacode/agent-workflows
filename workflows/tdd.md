@@ -22,6 +22,7 @@ RED -> GREEN -> REFACTOR -> repeat
    - Confirm the test fails for the right reason: the missing behavior or reproduced bug.
    - If it fails because of a typo, missing import, bad fixture, or harness problem, fix the test setup before touching production code.
    - If it passes immediately, do not proceed to GREEN: the test describes existing behavior; tighten or replace it until you have watched the intended failure.
+   - If the change is prose-only or otherwise has no semantic harness, record `NO_HARNESS` honestly; do not invent fake prose coverage for `skills/**` or `workflows/**` changes.
 3. GREEN: write the smallest production change that makes that test pass.
    - Do not add production code before a failing test exists.
    - Do not add speculative behavior for future tests.
@@ -29,6 +30,7 @@ RED -> GREEN -> REFACTOR -> repeat
 4. REFACTOR: improve while green.
    - Remove duplication, clarify names, and simplify structure only with tests passing.
    - Rerun the targeted test after each meaningful refactor step.
+   - If the pre-fix change spans multiple hunks or files, revert the smallest self-consistent set of hunks that still runs. If one hunk cannot stand alone, fall back to the full local revert of the behavior's files rather than forcing a broken partial revert.
 5. Repeat with the next behavior.
    - Add one new failing test at a time.
    - Keep each cycle narrow enough that a failure clearly points to the current behavior.
@@ -38,7 +40,7 @@ RED -> GREEN -> REFACTOR -> repeat
 - Never refactor while RED.
 - Never batch-write all tests before implementation; use vertical slices.
 - Never claim a bug is fixed without evidence: prefer a regression test that failed before the fix and passes after it.
-- Only when a direct automated regression test is not practical, document why, then use the closest useful local verification through `.agents/bin/test` or the repo's documented manual surface to capture before and after behavior.
+- Only when a direct automated regression test is not practical, document why, then use the closest useful local verification through `.agents/bin/test` or the repo's documented manual surface to capture before and after behavior. For a two-behavior change, report two receipts: one `COVERAGE` line for the runnable behavior and one `COVERAGE SKIPPED NO_HARNESS` line for the prose-only behavior.
 - Before handoff or PR creation, run `.agents/bin/validate` in addition to the targeted tests used during the loop.
 
 ## Before Pushing
