@@ -23,12 +23,13 @@ class UserFacingCoordinationContractTest < Minitest::Test
   README = "README.md"
   SKILL_GUIDE = "docs/skills.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
-  GMCC_V4 = "GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or " \
-            "threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
+  GMCC_V5 = "GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|" \
+            "threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
             "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
-            "stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact " \
-            "verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR " \
-            "human-approved-for-current-head+durable-decision(proven-human+merge-authority);" \
+            "stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;" \
+            "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;" \
+            "auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|" \
+            "human-approved-for-current-head+durable-decision(proven+merge-authority);" \
             "else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close " \
             "PR/target/issue."
   HST_ACTIONABLE_SUMMARY = "HST-v1 actionable material state change: a decision or action is required, " \
@@ -152,6 +153,67 @@ class UserFacingCoordinationContractTest < Minitest::Test
     end
   end
 
+  def test_oc_v1_is_present_on_the_three_documented_surfaces
+    workflow = normalized_section(
+      WORKFLOW,
+      "### Coordinator Output Contract",
+      end_heading: /^###\s+/
+    )
+    doc = normalized_section(DOC, "## Output Contract", end_heading: /^##\s+/)
+    skill = normalized_section(PR_BATCH, "## Coordinator Output Contract", end_heading: /^##\s+/)
+
+    [workflow, doc, skill].each do |text|
+      assert_includes text, "OC-v1"
+    end
+  end
+
+  def test_oc_v1_workflow_section_pins_the_ordering_exemptions_and_closing_stack
+    text = normalized_section(
+      WORKFLOW,
+      "### Coordinator Output Contract",
+      end_heading: /^###\s+/
+    )
+
+    assert_ordered(text, "dispatch", "pr-open", "decision-required", "merge-decision", "final-handoff")
+
+    [
+      "direct answer to a user question",
+      "explicitly requested status report",
+      "another contract requires the coordinator to show",
+      "immediate stop required by a non-negotiable safety rule"
+    ].each do |phrase|
+      assert_includes text, phrase
+    end
+
+    [
+      "Next:",
+      "Action needed:",
+      "coordination:",
+      "Conversation status:",
+      "HST-v1",
+      "Lane Card"
+    ].each do |phrase|
+      assert_includes text, phrase
+    end
+
+    assert_includes text, "shadow-only"
+    assert_includes text, "never gates readiness"
+    assert_includes text, "never blocks a handoff"
+    assert_includes text, "The Lane Card, the `Next:` instruction, the `Action needed:` line"
+    assert_includes text, "Collapsing them into a single terminal structure is deliberately out of scope"
+  end
+
+  def test_coordinator_narration_volume_marker_is_shadow_only_in_the_two_fyi_surfaces
+    skill = normalized_section(PR_BATCH, "## Coordinator Output Contract", end_heading: /^##\s+/)
+    closeout = normalized_section(INTEGRATION_CLOSEOUT, "### Batch Handoff Format", end_heading: /^###\s+/)
+
+    assert_includes skill, "coordinator-narration-volume v1"
+    assert_includes skill, "FYI / decisions made at closeout"
+    assert_includes closeout, "coordinator-narration-volume v1"
+    assert_includes closeout, "FYI / decisions made"
+    assert_includes closeout, "informational and never substitutes for a readiness gate"
+  end
+
   def test_readiness_separates_four_authority_facts
     text = normalized(DOC)
     assert_ordered(
@@ -172,10 +234,10 @@ class UserFacingCoordinationContractTest < Minitest::Test
                     "merge without asking the user to perform the authorized mechanical action"
   end
 
-  def test_coordination_changes_preserve_exact_gmcc_v4_merge_authority_clauses
+  def test_coordination_changes_preserve_exact_gmcc_v5_merge_authority_clauses
     [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
-      assert_includes text, GMCC_V4, path
+      assert_includes text, GMCC_V5, path
       refute_includes text, "GMCC-v3:", path
     end
   end
@@ -230,6 +292,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
   def test_terminal_handoffs_name_one_unambiguous_next_step_or_archive
     contract = normalized(DOC)
     assert_includes contract, "A durable issue, receipt, or blocker list is evidence, not a next step."
+    assert_includes contract,
+                    "Preserve any required receipt before the closing stack: the Unblock Block when the status is not clean, then the final `Conversation status:` line."
+    refute_includes contract, "receipt immediately before the final `Conversation status:` line"
     assert_includes contract, "`Next: Archive this task.`"
     assert_includes contract,
                     "state the smallest action that clears the blocker and whether to reply here or start a new task"

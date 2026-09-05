@@ -19,10 +19,6 @@ module CurrentIntegrationEvidence
   SYSTEM_TOOL_DIRS = %w[
     /opt/homebrew/bin /usr/local/bin /usr/bin /bin /usr/sbin /sbin
   ].freeze
-  BUILTIN_HIGH_RISK_PATTERNS = %w[
-    .github/workflows/**
-    .github/actions/**
-  ].freeze
   GRAPHQL = <<~GRAPHQL
     query($owner: String!, $name: String!, $number: Int!, $qualifiedBase: String!) {
       repository(owner: $owner, name: $name) {
@@ -310,12 +306,27 @@ module CurrentIntegrationEvidence
   end
 
   def policy_path?(path, policy)
-    patterns = BUILTIN_HIGH_RISK_PATTERNS +
-               AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS + policy.policy_paths
-    patterns.any? { |pattern| AutonomousMergePolicy.match?(pattern, path) } ||
+    patterns = AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS + policy.policy_paths
+    github_actions_path?(path) ||
+      patterns.any? { |pattern| AutonomousMergePolicy.match?(pattern, path) } ||
       policy.human_review_paths.any? do |rule|
         AutonomousMergePolicy.match?(rule.fetch("pattern"), path)
       end
+  end
+
+  # Generated templates can ship workflows or actions to downstream
+  # repositories. Treat a canonical `.github/workflows/` or `.github/actions/`
+  # directory at any depth as high risk while still requiring a file below it.
+  def github_actions_path?(path)
+    return false unless path.is_a?(String)
+
+    components = path.split("/", -1)
+    return false if components.empty? || path.start_with?("/") || path.include?("\\") || path.include?("\0")
+    return false if components.any? { |component| component.empty? || %w[. ..].include?(component) }
+
+    components.each_cons(3).any? do |first, second, _file|
+      first == ".github" && %w[workflows actions].include?(second)
+    end
   end
 
   def canonical_paths(paths, label)
