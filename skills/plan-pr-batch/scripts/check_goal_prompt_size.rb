@@ -6,6 +6,10 @@ require "stringio"
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
 GOAL_PROMPT_MIN_HEADROOM = 300
+# The codex mixed-route fixture is intentionally close to CODEX_GOAL_PROMPT_CHAR_LIMIT
+# (that hard limit cannot be raised), but it must still carry a real, non-accidental
+# safety margin rather than trending toward zero one small line addition at a time.
+CODEX_MIXED_ROUTE_MIN_SAFETY_MARGIN = 15
 # Set by bin/validate in this source pack; installed copies must not infer docs ownership from target files.
 SOURCE_CHECKOUT_ENV = "AGENT_WORKFLOWS_SOURCE_CHECKOUT"
 TEXT_FENCE = "```text\n"
@@ -273,10 +277,10 @@ TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
   "- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; " \
   "verify `$pr-batch`+workflow; unresolved=>UNKNOWN."
 GOAL_PROMPT_FALLBACK_LINE =
-  "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
-  "persist output before resume/launch; preflight issue/PR only."
-ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
-                              "chg=>redo/stop;gate fail=>stop;ask iff same clean"
+  "- Resolve `$pr-batch`; load state before preflight; " \
+  "persist pre-resume/launch; PR/issue only"
+ASK_WALKTHROUGH_PROMPT_LINE = "- ask:I=head>=base+V=READY;I?$pr-walkthrough(large|complex=full):wait;" \
+                              "refresh;chg=>redo/stop;ordinary|I fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
 READY_ITEM_DONE_WHEN_LINE =
   "Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale."
@@ -348,11 +352,14 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.",
   "Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.",
   "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.",
-  "With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval.",
-  "After it completes or is skipped, refresh the diff identity and ordinary readiness.",
+  "With `ask`, after ordinary gates are clean, establish current-integration readiness before approval:",
+  'GIT_GRAFT_FILE=/dev/null git --no-replace-objects merge-base --is-ancestor "${TRUSTED_BASE_SHA}" "${CURRENT_HEAD_SHA}"',
+  "exact-head `pr-ci-readiness` v2 aggregate `verdict` `READY`",
+  "After it completes or is skipped, refresh the diff identity, ordinary readiness, and current-integration readiness.",
   "If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop.",
+  "If current-integration readiness fails on refresh, stop even when the base and diff are unchanged.",
   "If an ordinary gate newly fails, stop.",
-  "Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity.",
+  "Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness and current-integration readiness remain clean, and merge is allowed; a completed walkthrough must have explained that same diff identity.",
   "Walkthrough participation is not merge approval.",
   "Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state."
 ].freeze
@@ -1470,6 +1477,14 @@ budget_checks.each do |label, result|
         "#{target_label} mixed-route preemptive-split fixture must stay under #{limit} while " \
         "breaching the #{GOAL_PROMPT_MIN_HEADROOM}-character headroom floor; got " \
         "#{mixed_route_fallback_chars} chars and #{mixed_route_headroom} chars of headroom"
+      )
+    end
+    if mixed_route_headroom < CODEX_MIXED_ROUTE_MIN_SAFETY_MARGIN
+      abort_with_failure(
+        "#{target_label} mixed-route fallback prompt has only #{mixed_route_headroom} chars of " \
+        "headroom under Codex's fixed #{limit}-char limit, below the " \
+        "#{CODEX_MIXED_ROUTE_MIN_SAFETY_MARGIN}-char safety floor; trim a compact goal-prompt " \
+        "line rather than letting real batches trend toward the hard limit"
       )
     end
     realistic_checks[label].fetch(:split_route_groups)[target] = {}

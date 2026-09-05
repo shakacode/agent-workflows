@@ -148,23 +148,45 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
    - `DIRTY`, conflicted, or behind branches are not ready.
    - Rebase or merge base updates only when safe and consistent with repo
      policy.
+   - Before an `ask` walkthrough, apply the canonical current-integration gate
+     from `pr-batch-integration-closeout.md`: resolve the exact head and current
+     base, then require that the head contains that base and that exact-head
+     `pr-ci-readiness` v2 aggregate `verdict` — not an individual scope's
+     `state` — has normalized successful state `READY`. This
+     checklist does not claim or
+     consume the later machine `current-integration-evidence` contract. Raw
+     provider status strings and GitHub conflict or mergeability metadata are
+     not portable success values. Missing, stale, mismatched, non-successful,
+     unrecognized, future, or `UNKNOWN` facts remain
+     `waiting-on-checks-or-review` and do not start a walkthrough. A
+     proven-behind-ancestry result is the one exception: route it to
+     `pr-batch-integration-closeout.md`'s Integration And PR Publication step
+     3 for base reconciliation instead — that state never clears through
+     `waiting-on-checks-or-review` polling.
 
 5. **Apply authority.**
    - `auto_merge_when_gates_pass`: merge only if ordinary readiness and the
      exact-head autonomous eligibility gate pass, or a qualifying exact-head
      human risk decision produces `human-approved-for-current-head`.
-   - `ask`: when gates are clean, automatically start the exact-diff PR
-     walkthrough before approval. Use `$pr-walkthrough` when available, use
+   - `ask`: when gates are clean and the current-integration gate above passes,
+     automatically start the exact-diff PR walkthrough before approval. Use
+     `$pr-walkthrough` when available, use
      full interactive mode for large or complex PRs and concise interactive
      mode for smaller cohesive PRs, and do not repeat a walkthrough completed
      for the same diff identity. Honor an explicit request to skip it. After it
      completes or is skipped, refresh the diff identity and ordinary readiness.
-     If the diff identity changed, invalidate the walkthrough and readiness
-     evidence, then restart the walkthrough or stop. If an ordinary gate newly
-     fails, stop. Ask one final merge decision only when the refreshed diff
-     identity matches the recorded identity, ordinary readiness remains clean,
-     and merge is allowed; a completed walkthrough must have explained that same
-     diff identity. Walkthrough participation is not merge approval. If approval
+     Also refresh the current base and re-apply the canonical current-integration
+     gate from `pr-batch-integration-closeout.md` in full — do not restate only
+     its changed-base case here. If the diff identity changed, invalidate the
+     walkthrough and readiness evidence, then restart the walkthrough or stop.
+     Stop if the re-applied gate no longer passes for the current head/base,
+     even without a base change. If an ordinary gate newly fails, stop. Ask one
+     final merge decision only when the refreshed diff identity matches the
+     recorded identity, ordinary readiness and current-integration readiness
+     remain clean, and merge is allowed; a completed walkthrough must have
+     explained that same diff identity.
+     Current-integration readiness is separate from refreshed ordinary readiness.
+     Walkthrough participation is not merge approval. If approval
      is declined or not granted by handoff,
      record `ready-no-merge-authority` and do not ask again for the same decision.
    - `none`: hand off as `ready-no-merge-authority` when checks, review

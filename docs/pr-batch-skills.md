@@ -359,14 +359,21 @@ multi-lane packing and collision mechanics; QA, validation, review, CI,
 readiness, handoff, and closeout remain unchanged.
 
 Choose `ask` when a human should understand the exact-diff PR before deciding:
-after ordinary gates are clean, the coordinator automatically starts
-`$pr-walkthrough`, explains one conceptual change at a time in full mode for
-large or complex PRs (concise mode for smaller cohesive PRs), then refreshes the
-diff identity and readiness. A changed identity invalidates the walkthrough and
-restarts or stops it; a newly failing gate stops it. The coordinator asks the
-one final merge question only when the refreshed identity matches the recorded
-identity and readiness remains clean; a completed walkthrough must have
-explained that same diff. The walkthrough itself is not approval.
+after ordinary gates are clean, the coordinator also requires that the exact
+head contains the current base and that exact-head CI reports the normalized
+`READY` state — green ordinary checks alone are not enough. Only when both
+hold does it automatically start `$pr-walkthrough`, explaining one conceptual
+change at a time in full mode for large or complex PRs (concise mode for
+smaller cohesive PRs), then refresh the diff identity and readiness. If the PR
+is behind the current base, the coordinator reconciles the base instead of
+waiting — a stale branch never clears on its own. If only the CI check has
+not reported `READY`, the coordinator waits (`waiting-on-checks-or-review`)
+instead of starting the walkthrough. A changed identity invalidates the
+walkthrough and restarts or
+stops it; a newly failing gate stops it. The coordinator asks the one final
+merge question only when the refreshed identity matches the recorded identity
+and readiness remains clean; a completed walkthrough must have explained that
+same diff. The walkthrough itself is not approval.
 
 If a prerequisite PR is already ready and only its human review and merge
 decision remains under `ask`, `$pr-batch` reports `blocked-user-input` instead
