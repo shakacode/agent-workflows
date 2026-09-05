@@ -1,6 +1,6 @@
 ---
 name: secure-github-actions
-description: Audit GitHub Actions workflows and composite actions for expression injection, broad reusable-workflow secret inheritance, mutable or undocumented external references, and actions outside a closed trusted allowlist.
+description: Audit GitHub Actions workflows and composite actions for expression injection, broad reusable-workflow secret inheritance, mutable or undocumented external references, and actions outside a closed trusted allowlist. Use when assessing GitHub Actions trust boundaries.
 argument-hint: '[consumer repository root]'
 ---
 
