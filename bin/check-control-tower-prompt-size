@@ -1,0 +1,74 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Checks that every paste-ready prompt block in docs/control-tower-prompts.md
+# stays within a conciseness budget. The budget is not a platform limit: the
+# Codex goal field caps at 4,000 characters and the repository keeps 300 of
+# headroom there, so 3,700 is the hard ceiling for that host. A prompt that
+# fills the ceiling has no room for the next fix and is slower to read on any
+# host, so the budget sits well below it. Rules the prompts once restated
+# belong to the Snapshot And Desk Contract in the same document; a prompt that
+# outgrows the budget is the signal to move text back there.
+module ControlTowerPromptSize
+  DOCUMENT = "docs/control-tower-prompts.md"
+  CHAR_LIMIT = 3_000
+  # Level-two headings that introduce a paste-ready prompt. The contract
+  # heading ends the prompt region; its fenced examples are schemas, not prompts.
+  PROMPT_HEADING = /\A## (?<name>.*\b(?:Goal|Template)\b.*?)\s*\z/
+  CONTRACT_HEADING = "## Snapshot And Desk Contract"
+  PROMPT_FENCE_OPEN = /\A```text\s*\z/
+  FENCE_CLOSE = /\A```\s*\z/
+
+  Prompt = Struct.new(:name, :chars, keyword_init: true)
+
+  module_function
+
+  def run(root)
+    prompts, failures = measure(File.read(File.join(root, DOCUMENT), encoding: "UTF-8"))
+    prompts.each do |prompt|
+      verdict = prompt.chars <= CHAR_LIMIT ? "OK" : "FAIL"
+      puts "#{verdict} #{prompt.name}: #{prompt.chars}/#{CHAR_LIMIT} chars"
+    end
+    failures << "no prompt block found under #{DOCUMENT}" if prompts.empty?
+    failures.concat(prompts.reject { |prompt| prompt.chars <= CHAR_LIMIT }
+                           .map { |prompt| "#{prompt.name} exceeds #{CHAR_LIMIT} characters" })
+    return 0 if failures.empty?
+
+    warn failures.join("\n")
+    1
+  end
+
+  # Returns [prompts, failures]. A prompt section without a ```text fence is a
+  # failure because a missing block would otherwise pass silently.
+  def measure(text)
+    prompts = []
+    failures = []
+    section = nil
+    body = nil
+    text.each_line(chomp: true) do |line|
+      break if line.strip == CONTRACT_HEADING
+
+      if body
+        if line.match?(FENCE_CLOSE)
+          prompts << Prompt.new(name: section, chars: body.join("\n").length)
+          section = nil
+          body = nil
+        else
+          body << line
+        end
+        next
+      end
+
+      if (match = PROMPT_HEADING.match(line))
+        failures << "#{section} has no ```text prompt block" if section
+        section = match[:name]
+      elsif section && line.match?(PROMPT_FENCE_OPEN)
+        body = []
+      end
+    end
+    failures << "#{section} has no ```text prompt block" if section
+    [prompts, failures]
+  end
+end
+
+exit ControlTowerPromptSize.run(ARGV[0] || File.expand_path("..", __dir__)) if $PROGRAM_NAME == __FILE__
