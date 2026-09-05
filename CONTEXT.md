@@ -223,22 +223,26 @@ _Avoid_: force kill (without the cleanup steps it names)
 ### Integration
 
 **Merge backlog**:
-The open, non-draft PRs whose remaining step is a merge decision or a
+The open PRs, drafts included, whose remaining step is a merge decision or a
 mechanical unblock such as a rebase or a stale bot-review dismissal, not
 implementation.
 _Avoid_: stuck PRs, open PR count
 
 **Control tower**:
-The per-repository standing agent task that integrates ready work under the
-merge authority it was granted, remediates small blockers, and routes only
-outcome-changing decisions to the human.
-_Avoid_: sweeper, merge bot, the batch (a batch ends; the tower does not)
+The persistent per-repository role, served by one bounded task session per
+attention interval, that integrates ready work under the merge authority it
+was granted, remediates small blockers, and routes only outcome-changing
+decisions to the human.
+_Avoid_: sweeper, merge bot, the batch (a batch ends; the role outlives its
+sessions)
 
 **Human-attention label**:
 A GitHub label stating that the next action on a PR belongs to the human:
 `human-attention:walkthrough` (read the published walkthrough first) or
-`human-attention:merge` (agents recommend merge; only the merge click remains).
-_Avoid_: ready to merge, needs review, approved
+`human-attention:merge` (agents recommend merge; the human's exact-head
+approval on the PR is the remaining step, after which the **Control tower**
+submits the merge through the guarded path).
+_Avoid_: ready to merge, needs review, approved, merge click
 
 **Needs-rebase**:
 The `needs-rebase` label a GitHub Action applies while a PR conflicts with its
@@ -247,10 +251,10 @@ base and removes when it no longer does; it queues mechanical work for the
 _Avoid_: conflicting (the raw GitHub field), blocked
 
 **Disposition**:
-The **Control tower**'s per-PR classification from the throughput plan's R12,
-exactly one of `accelerate`, `continue`, `hold`, `replace`, `close`, or
-`integration-ready`; `close` requires evidence of duplicate, superseded, or
-invalid work and keeps the branch.
+The **Control tower**'s per-PR classification: exactly one of the throughput
+plan's R12 names `accelerate`, `continue`, `hold`, `replace`, `close`, or
+`integration-ready`, where the control-tower prompts add that `close` requires
+evidence of duplicate, superseded, or invalid work and keeps the branch.
 _Avoid_: triage state, verdict, status
 
 **Comment kind**:
@@ -261,9 +265,10 @@ The required audience class in every agent-posted GitHub comment envelope:
 _Avoid_: comment type, severity, priority (a decision's priority is a card field)
 
 **Integration pass**:
-One **Control tower** tick's sweep of the **Merge backlog**: merge what passes
-the exact-head gates, remediate small blockers, adopt orphaned drafts, and
-label what needs the human, in that order.
+One **Control tower** tick's sweep of the **Merge backlog** plus every
+unclaimed draft: merge what passes the exact-head gates, remediate small
+blockers, give each unclaimed draft a **Disposition**, and label what needs the
+human, in that order.
 _Avoid_: drain (reserved for cancellation), cleanup, sweep
 
 ## Relationships

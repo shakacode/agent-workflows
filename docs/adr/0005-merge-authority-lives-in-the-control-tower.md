@@ -25,10 +25,13 @@ lane's integration closeout, so a PR whose lane ended had no merger. The
    repositories is `auto_merge_when_gates_pass`, gated by
    [ADR 0003](0003-smarter-autonomous-merge-gates.md) and the thresholds in
    `.agents/agent-workflow.yml`.
-2. The per-repository control tower is the standing merger. A PR belongs to
-   the tower once the lane that opened it ends. Each tower tick runs an
-   integration pass: merge what passes the exact-head gates, remediate small
-   blockers, adopt orphaned drafts under the R12 disposition rules, and label
+2. The per-repository control tower is the standing merger: a persistent
+   role served by one bounded task session per attention interval. A session
+   publishes terminal state when its interval ends and the next session
+   continues the role. A PR belongs to the tower once the lane that opened it
+   ends. Each tower tick runs an integration pass over the merge backlog and
+   every unclaimed draft: merge what passes the exact-head gates, remediate
+   small blockers, give each unclaimed draft an R12 disposition, and label
    only what needs the human.
 3. A CI-triggered agent, such as the Claude review Action, keeps
    `contents: read`. It may review, classify, apply labels, and draft the
@@ -38,7 +41,9 @@ lane's integration closeout, so a PR whose lane ended had no merger. The
    now and `Validate` once it is change-aware. GitHub Free private
    repositories have no rulesets; there the gate scripts are the only merge
    guard, and a `human-attention:merge` card must state that checks are green
-   at the exact head SHA.
+   at the exact head SHA. The human answers with an exact-head approval on the
+   PR and the tower submits the merge; the human never presses the merge
+   button.
 
 ## Considered Options
 
@@ -59,7 +64,9 @@ lane's integration closeout, so a PR whose lane ended had no merger. The
 - The tower prompt must carry the authority grant explicitly; it cannot be
   inferred from repository policy.
 - `pr-merge-submit` with a fresh merge-assurance receipt stays the only merge
-  path. No GitHub auto-merge toggle and no merge queue is enabled.
+  path, for agent and human decisions alike. A human approval is a PR comment
+  bound to the exact head, not a merge click. No GitHub auto-merge toggle and
+  no merge queue is enabled.
 - The human sees a `human-attention:*` label only when the gate hands a PR
   over, so the label stays rare and meaningful.
 - Terms for the merge backlog, control tower, integration pass, disposition,
