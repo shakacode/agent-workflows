@@ -13,17 +13,17 @@ class PrWalkthroughContractTest < Minitest::Test
   OPENAI_METADATA = File.join(ROOT, "skills/pr-walkthrough/agents/openai.yaml")
   GETTING_STARTED = File.join(ROOT, "docs/getting-started.md")
 
-  def test_skill_is_exact_diff_github_native_and_complete
+  def test_skill_is_exact_diff_interactive_and_complete
     skill = File.read(SKILL).gsub(/\s+/, " ")
 
     phrases = [
       "Record a diff identity",
-      "Inspect the complete file list and diff before drafting the first published section.",
-      "Prepare every section before publishing any of them.",
-      "Prefer one GitHub `COMMENT` review tied to the exact head",
-      "publish every conceptual section in that same submission as a separate inline review comment",
-      "Publish all prepared sections in one pass.",
-      "Do not wait for `next`"
+      "Inspect the complete file list and diff before presenting Step 1.",
+      "**Live mode** is the default for a walkthrough requested in the current chat.",
+      "**Published-review mode** applies only when the user or an authorized repository workflow explicitly requests a complete walkthrough on GitHub.",
+      "Present exactly one conceptual change per response.",
+      "Then stop. Do not include the next conceptual change in the same response.",
+      "Advance only after explicit readiness"
     ]
     positions = phrases.map do |phrase|
       position = skill.index(phrase)
@@ -33,9 +33,9 @@ class PrWalkthroughContractTest < Minitest::Test
     positions.each_cons(2) { |before, after| assert_operator before, :<, after }
 
     stale_positions = [
-      "If the diff identity changes during preparation or before publication",
+      "If the diff identity changes during the walkthrough",
       "invalidate the coverage ledger",
-      "rebuild the complete package before publishing"
+      "rebuild the map before advancing or returning control"
     ].map do |phrase|
       position = skill.index(phrase)
       assert position, "expected #{phrase.inspect}"
@@ -43,13 +43,13 @@ class PrWalkthroughContractTest < Minitest::Test
     end
     stale_positions.each_cons(2) { |before, after| assert_operator before, :<, after }
 
-    assert_includes skill, "Keep every section concise and conversational."
+    assert_includes skill, "Choose the delivery mode separately from depth:"
+    assert_includes skill, "Keep each response concise and conversational."
     assert_includes skill, "guidance, not required headings or a checklist"
-    assert_includes skill, "Full mode means complete coverage and more sections when needed, not verbose comments."
+    assert_includes skill, "Full mode means complete coverage and more steps when needed, not verbose responses."
     assert_includes skill, "Maintain a private coverage ledger"
     assert_includes skill, "PR link, diff identity, purpose, and prior behavior;"
     assert_includes skill, "Walkthrough participation is not merge approval."
-    assert_includes skill, "Use live interactive mode only when the maintainer explicitly asks for live exploration."
   end
 
   def test_ask_authority_automatically_walks_through_before_merge_decision
@@ -113,9 +113,10 @@ class PrWalkthroughContractTest < Minitest::Test
     phrases = [
       "The current task remains the sole user-facing coordinator.",
       "The walkthrough is an internal explanatory phase, not another task or owner.",
+      "**Live mode** is the default for a walkthrough requested in the current chat.",
+      "Questions may continue in the threads or, only when the user explicitly asks, in a separate live walkthrough.",
       "The current owning task consumes the PR discussion",
-      "Use live interactive mode only when the maintainer explicitly asks",
-      "retains control after publishing the exact-diff walkthrough",
+      "return control to the current task after the exact-diff walkthrough",
       "ask its one final merge decision separately"
     ]
     positions = phrases.map do |phrase|
@@ -126,14 +127,13 @@ class PrWalkthroughContractTest < Minitest::Test
     positions.each_cons(2) { |before, after| assert_operator before, :<, after }
   end
 
-  def test_picker_and_getting_started_use_github_native_default
+  def test_picker_defaults_to_live_mode_and_getting_started_ask_flow_publishes
     metadata = File.read(OPENAI_METADATA).gsub(/\s+/, " ")
 
-    assert_includes metadata, "Publish a complete PR walkthrough on GitHub"
-    assert_includes metadata, "publish a complete exact-diff walkthrough"
-    assert_includes metadata, "separately replyable GitHub comments"
-    assert_includes metadata, "use live interaction only if I explicitly ask"
-    refute_includes metadata, "one change at a time"
+    assert_includes metadata, "Explain a pull request one change at a time"
+    assert_includes metadata, "walk me through this PR one change at a time"
+    refute_includes metadata, "publish a complete exact-diff walkthrough"
+    refute_includes metadata, "use live interaction only if I explicitly ask"
 
     guide = File.read(GETTING_STARTED).gsub(/\s+/, " ")
     phrases = [
@@ -153,5 +153,9 @@ class PrWalkthroughContractTest < Minitest::Test
     assert_operator guide.scan("separately replyable review thread").length, :>=, 2
     refute_includes guide, "Questions before the next change?"
     refute_includes guide, "Walkthrough (1/2):"
+
+    assert_includes guide, "Asked for in chat, it runs live and read-only:"
+    assert_includes guide, "pauses for your questions before continuing"
+    refute_includes guide, "Ask for live exploration if you prefer one concept at a time in chat."
   end
 end

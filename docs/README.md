@@ -43,7 +43,7 @@ and implementation plans are collected in the final reference section.
 | Finish and archive a stale PR-batch task | Use the `$close-batch` skill |
 | Run repository control towers with one prioritized, deep-linked human-attention desk | [Control Tower And Human Attention Desk](control-tower-prompts.md) |
 | Understand task ownership, cross-task requests, approvals, and heartbeat communication | [User-Facing Coordination](user-facing-coordination.md) |
-| Understand a PR through a complete, replyable GitHub walkthrough | Use the `$pr-walkthrough` skill |
+| Understand a PR one conceptual change and rationale at a time | Use the `$pr-walkthrough` skill |
 | Decide whether an issue or proposed fix is worth doing | [Issue And Fix Evaluation](issue-evaluation.md) |
 | Route coordinators and workers by capability, cost, risk, and escalation evidence | [Cost-aware model routing](agent-workflows-model-routing.md) |
 | Use Compound Engineering inside an Agent Workflows lane | [Using Compound Engineering With Agent Workflows](compound-engineering.md) |

@@ -404,12 +404,14 @@ For an unreviewed PR on a branch inside your own repository, written by a
 person you already trust to push there, use two skills in order: understand
 first, judge second.
 
-First, ask for the `pr-walkthrough` skill — the same guided tour that
-Step 4's `ask` merge authority starts automatically. The agent maps the whole
-exact diff into conceptual changes, then publishes every section as a replyable
-GitHub thread in one pass. It is explicitly not a code review or approval;
-finishing the tour approves nothing. Ask for live exploration if you prefer
-one concept at a time in chat.
+First, ask for the `pr-walkthrough` skill — the same exact-diff tour that
+Step 4's `ask` merge authority publishes automatically. Asked for in chat, it
+runs live and read-only: the agent maps the whole exact diff into conceptual
+changes, then explains one change at a time — problem, what changed, why
+this approach, effect and risk, proof — and pauses for your questions before
+continuing. It is explicitly not a code review and not approval; finishing
+the tour approves nothing. Ask for a published walkthrough instead when you
+want every section as a replyable GitHub thread in one pass, as in Step 4.
 
 Then, ask for the `adversarial-pr-review` skill. It is a skeptical,
 report-only red-team pass over correctness, security, compatibility,
