@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "stringio"
+require "json"
 
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
@@ -13,36 +14,9 @@ PLANNING_PASS_ROUTE_ROW =
   /^\|\s*`(?<classification>[a-z-]+)`\s*\|\s*`(?<neutral>[^`]+)`\s*\|\s*`(?<codex>[^`]+)`\s*\|\s*`(?<claude>[^`]+)`\s*\|\s*$/
 PLANNING_PASS_DISPOSITION_ROW =
   /^\|\s*`(?<case_id>[A-Za-z-]+)`\s*\|\s*`(?<disposition>[a-z-]+)`\s*\|\s*`(?<max_reviews>[01])`\s*\|\s*`(?<compare>yes|no)`\s*\|\s*`(?<restart>yes|no)`\s*\|\s*$/
-PLANNING_PASS_ACCEPTANCE_CASES = [
-  {
-    id: "simple",
-    classification: "affirmatively-simple",
-    neutral: "balanced/medium",
-    codex: "Terra/medium",
-    claude: "Sonnet 5/medium"
-  },
-  {
-    id: "routine multi-lane",
-    classification: "routine-multi-lane",
-    neutral: "balanced/high",
-    codex: "Terra/high",
-    claude: "Sonnet 5/high"
-  },
-  {
-    id: "uncertain single target",
-    classification: "default-or-uncertain-single-target",
-    neutral: "strongest/high",
-    codex: "Sol/high",
-    claude: "Opus 5/high"
-  },
-  {
-    id: "pinned high risk",
-    classification: "pinned-high-risk-or-escalation",
-    neutral: "strongest/xhigh",
-    codex: "Sol/xhigh",
-    claude: "Opus 5/xhigh"
-  }
-].freeze
+PLANNING_PASS_ACCEPTANCE_CASES = JSON.parse(
+  File.read(File.expand_path("../references/model-routing-profiles.json", __dir__))
+).fetch("legacy_planning_cases").map { |entry| entry.transform_keys(&:to_sym) }.freeze
 PLANNING_PASS_DISPOSITION_CASES = [
   {
     id: "stronger current",
@@ -841,24 +815,12 @@ host_aware_batch_sizing_phrase_checks = {
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
     ["less than 300 characters of headroom", 1],
-    ["Default single-target future coordinator: Sol/high", 1],
-    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
-    ["Default single-target future coordinator: Opus 5/high", 1],
-    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
-    ["Opus 5/xhigh exception:", 1],
-    ["`claude-profile v1`", 1],
     ["subagents alone do", 1]
   ],
   "skills/plan-pr-batch/SKILL.md" => [
     ["`codex`: up to 10 independent items, or 8", 1],
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
-    ["Default single-target future coordinator: Sol/high", 1],
-    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
-    ["Default single-target future coordinator: Opus 5/high", 1],
-    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
-    ["Opus 5/xhigh exception:", 1],
-    ["`claude-profile v1`", 1],
     ["If any field needed for comparison is `UNKNOWN`, make no", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
@@ -951,12 +913,6 @@ if enforce_restart_docs_drift
   host_aware_batch_sizing_phrase_checks["docs/pr-batch-skills.md"] = [
     ["Codex-targeted waves may use up to 10", 1],
     ["Claude and generic waves use up to 5", 1],
-    ["Default single-target future coordinator: Sol/high", 1],
-    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
-    ["Default single-target future coordinator: Opus 5/high", 1],
-    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
-    ["Opus 5/xhigh exception:", 1],
-    ["`claude-profile v1`", 1],
     ["at most one bounded independent", 1]
   ]
   host_aware_batch_sizing_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text

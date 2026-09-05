@@ -1,5 +1,13 @@
 # Adversarial PR Review Workflow
 
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../skills/plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Use this workflow when a PR needs a skeptical release-risk review from Codex,
 Claude, or both. It is intentionally stricter than a normal PR review.
 

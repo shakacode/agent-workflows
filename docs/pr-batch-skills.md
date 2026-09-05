@@ -1,5 +1,13 @@
 # PR Batch Skills Usage
 
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../skills/plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Use this guide when deciding between issue triage, planning, single-lane direct
 work, and execution skills for agent batch work.
 
