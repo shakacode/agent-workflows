@@ -258,7 +258,7 @@ LEGACY_PROJECT_ABBREVIATION_PHRASES = [
 ARCHIVE_READINESS_HANDOFF_RULE = "End the final user-visible message carrying the batch handoff with the exact archive-readiness status line, either `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.`, selected by the [Coordinator Closeout Lane](#coordinator-closeout-lane) rules rather than by any criteria restated here. A final batch handoff without one of those two exact lines is incomplete, because the operator cannot tell whether the conversation is safe to archive. This requirement binds the batch-level final message only. A lane-level worker handoff never carries an archive-readiness status line, because a worker closes out one lane and cannot observe whether the batch is safe to archive; a worker that emits one is reporting a state it does not own. A planning chat uses its own prompt-only or parent-orchestrator archive expectation instead of this rule. Workers and planning chats read this section for the canonical readiness vocabulary above, which does bind them."
 UNBLOCK_BLOCK_SCOPE_RULE = "Any conversation that stops non-clean — every final `Conversation status: Follow-ups remain — <each exact action or blocker>.` — must let the operator act without reading anything above the closing lines. Emit exactly one `Unblock:` block as the last thing before that status line."
 UNBLOCK_BLOCK_COVERAGE_RULE = "One numbered entry per exact blocker in the same normalized blocker union rendered in the `Conversation status` line. Never drop a blocker, never add one that is missing from that union, and never merge two blockers into one entry."
-UNBLOCK_BLOCK_ORDER_RULE = "Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order. Mark every entry whose position differs from its status-line position with `(reordered)` after the owner tag, so a skimming operator reads the divergence as deliberate rather than as a mismatch."
+UNBLOCK_BLOCK_ORDER_RULE = "Order entries so an operator-owned action that would unblock other entries comes first; otherwise keep the status-line order. Mark the entry you promoted ahead of status-line order with `(reordered)` after the owner tag, so a skimming operator reads the deliberate promotion rather than a mismatch."
 UNBLOCK_BLOCK_OWNER_RULE = "`[you]` means the operator must act before anything else moves, including any manual resume prompt they have to paste after a runner restart. `[agent]` means this thread resumes on its own through a real trigger — name it, such as the 15-minute monitor wake or the bounded watch window. Never tag work `[agent]` when it cannot continue without the operator; manual resume instructions are always `[you]`. `[external]` means a check, bot, or third party is being waited on — name it, name the condition that clears it, and say plainly that no operator action is required."
 UNBLOCK_BLOCK_SMALLEST_ACTION_RULE = "Each entry is the smallest next step, not the remaining plan. A `[you]` action is executable as written: an exact shell command, prompt, URL, or question. An `[agent]` entry names the exact trigger and clearing condition. An `[external]` entry gives the exact wait instruction and clearing condition and says no operator action is required."
 UNBLOCK_BLOCK_HELP_RULE = "Each `Help:` line offers one genuinely different route to clearing that same blocker — waive, rerun, reassign, cancel the lane or batch, escalate to a named owner, or the exact skill or workflow section that performs it — or exactly `none — <reason>` when no alternative exists. Do not restate the primary action as its own help."
@@ -1773,7 +1773,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_operator unblock_index, :<, status_index
   end
 
-  def test_unblock_block_example_marks_every_entry_moved_from_status_order
+  def test_unblock_block_example_marks_only_the_promoted_entry
     canonical = extract_markdown_section(@unblock_workflow, "## Unblock Block", end_heading: /^##\s+/)
     example = canonical.split("Worked example").last
     entries = example.lines.grep(/^\d+\. \[/)
@@ -1782,7 +1782,8 @@ class GoalCompletionContractTest < Minitest::Test
     assert_equal 2, entries.length
     refute_nil status_line
     assert_match(/^1\. \[you\] \(reordered\).*PR #123/, entries.fetch(0))
-    assert_match(/^2\. \[external\] \(reordered\).*PR #124/, entries.fetch(1))
+    assert_match(/^2\. \[external\] Wait for hosted CI .*PR #124/, entries.fetch(1))
+    refute_match(/\(reordered\)/, entries.fetch(1))
     assert_match(/Wait for hosted CI .* — it clears when the queued run finishes; no action needed from you/, entries.fetch(1))
     assert_operator status_line.index("PR #124"), :<, status_line.index("PR #123")
   end
