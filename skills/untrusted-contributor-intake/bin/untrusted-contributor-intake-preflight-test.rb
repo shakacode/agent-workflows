@@ -23,10 +23,20 @@ METADATA_BLOCKED = /BLOCKED: metadata resolution is invalid/
 CANONICAL_BLOCKED = /BLOCKED: canonical authority absent or invalid/
 CANONICAL_UNTRUSTED = /BLOCKED: canonical authority is not trusted/
 
+GH_OPERATIONAL_REASON_CODES = {
+  "authentication failed" => "GH_AUTHENTICATION",
+  "API rate limit exceeded" => "GH_RATE_LIMIT",
+  "dial tcp: network is unreachable" => "GH_NETWORK_TRANSPORT",
+  "Could not resolve to a PullRequest" => "GH_NOT_FOUND",
+  "GraphQL: Could not resolve to a Repository with the name 'octo-org/hello-world'. (repository)" => "GH_NOT_FOUND",
+  "unexpected operational failure" => "GH_UNCLASSIFIED"
+}.freeze
+
 GH_STUB = <<~SH
   #!/bin/sh
   printf 'GH_HOST=%s GH_REPO=%s %s\\n' "${GH_HOST-unset}" "${GH_REPO-unset}" "$*" >> "${GH_LOG}"
   printf '%s' "${GH_STUB_OUTPUT}"
+  printf '%s' "${GH_STUB_STDERR}" >&2
   exit "${GH_STUB_STATUS}"
 SH
 
@@ -38,6 +48,7 @@ def run_preflight(
   trusted_scheme: "https",
   trusted_repo: "octo-org/hello-world",
   gh_output: "",
+  gh_stderr: "",
   gh_status: 0,
   argv: nil,
   ambient: {},
@@ -55,6 +66,7 @@ def run_preflight(
     environment = AMBIENT_ENV_KEYS.to_h { |key| [key, nil] }.merge(
       "GH_LOG" => log_path,
       "GH_STUB_OUTPUT" => gh_output,
+      "GH_STUB_STDERR" => gh_stderr,
       "GH_STUB_STATUS" => gh_status.to_s,
       "PATH" => "#{directory}:#{ENV.fetch('PATH')}"
     ).merge(ambient)
@@ -383,7 +395,7 @@ class UntrustedContributorIntakePreflightTest < Minitest::Test
       )
 
       refute success, "expected #{pr_ref.inspect} to be BLOCKED, got #{output.inspect}"
-      assert_match PR_REF_BLOCKED, output
+      assert_equal "BLOCKED: exact PR reference is invalid\n", output
       assert_empty calls
     end
   end
@@ -404,15 +416,33 @@ class UntrustedContributorIntakePreflightTest < Minitest::Test
       )
 
       refute success, "expected #{pr_ref.inspect} to be BLOCKED, got #{output.inspect}"
-      assert_match METADATA_BLOCKED, output
+      assert_equal "BLOCKED: metadata resolution is invalid\n", output
       assert_empty calls
     end
   end
 
-  def test_blocks_malformed_or_failed_metadata_records_after_exactly_one_lookup
+  def test_reports_fixed_reason_codes_for_failed_metadata_lookups_without_emitting_captured_text
+    GH_OPERATIONAL_REASON_CODES.each do |gh_stderr, reason_code|
+      hostile_stderr_sentinel = "hostile-stderr-sentinel"
+      success, output, calls = run_preflight(
+        pr_ref: "42",
+        gh_output: "hostile-stdout-sentinel",
+        gh_stderr: "#{gh_stderr}; #{hostile_stderr_sentinel}",
+        gh_status: 1
+      )
+
+      refute success
+      # Keep captured operational text out of assertion diffs if this regresses.
+      assert output == "BLOCKED: metadata resolution is invalid; reason_code=#{reason_code}\n"
+      refute output.include?(gh_stderr)
+      refute output.include?(hostile_stderr_sentinel)
+      refute output.include?("hostile-stdout-sentinel")
+      assert_equal 1, calls.length
+    end
+  end
+
+  def test_keeps_malformed_successful_metadata_on_the_generic_blocked_path
     [
-      { gh_output: "", gh_status: 1 },
-      { gh_output: "42|https://github.com/octo-org/hello-world/pull/42", gh_status: 1 },
       { gh_output: "" },
       { gh_output: "42" },
       { gh_output: "|https://github.com/octo-org/hello-world/pull/42" },
@@ -428,7 +458,7 @@ class UntrustedContributorIntakePreflightTest < Minitest::Test
       success, output, calls = run_preflight(pr_ref: "42", **scenario)
 
       refute success, "expected #{scenario.inspect} to be BLOCKED, got #{output.inspect}"
-      assert_match METADATA_BLOCKED, output
+      assert_equal "BLOCKED: metadata resolution is invalid\n", output
       assert_equal 1, calls.length
     end
   end
@@ -450,7 +480,7 @@ class UntrustedContributorIntakePreflightTest < Minitest::Test
       )
 
       refute status.success?
-      assert_match METADATA_BLOCKED, stderr
+      assert_equal "BLOCKED: metadata resolution is invalid; reason_code=GH_COMMAND_UNAVAILABLE\n", stderr
     end
   end
 
