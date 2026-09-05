@@ -324,12 +324,44 @@ omit the queue summary and note that queue state is unavailable.
    such a condition.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
-   `Use $pr-batch...` for Claude/generic), then render the exact
-   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block through
-   canonical [Verified Batch Title Selection](../workflows/pr-batch-intake.md#verified-batch-title-selection).
-   The prompt template keeps the title and surrounding blank lines stable;
-   prompt intake owns prefix, issue-identifier, trust, time, and spacing
-   selection.
+   `Use $pr-batch...` for Claude/generic), then put the editable controls first:
+   `Batch title:`, `Repo:`, `Objective:`, and `merge_authority:`. Use a space
+   after each control-field colon and one blank line before `Thread handle:`,
+   which remains the first worker-specific line. Do not add `Targets:`; retain
+   the single canonical `Items:` target section. Build the batch-title value
+   using the optional validated `repo_prefix` from
+   `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
+   repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
+   multiple prompts are produced, `MM-DD HH:MM` from
+   `date +'%m-%d %H:%M'` in the local shell, and a short title.
+   The issue-bearing shapes are
+   `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
+   for GitHub and
+   `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
+   for Linear. The verified source-issue set contains only exact
+   provider-verified source records `Issue #N: <verified GitHub URL>` and
+   `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
+   verification. Authenticate Linear via the `AGENTS.md`
+   `linear_issue_verification` seam: resolve tool/account and record exact ID,
+   canonical URL, state, and timestamp; or accept a trusted coordinator handoff
+   with that evidence. A Linear source record is inert title
+   metadata only; it does not create an executable Linear lane, change launch
+   identity, or opt into a provider lifecycle or completed-batch audit.
+   Missing, mismatched, unavailable, or untrusted verification is literal
+   `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets,
+   linked or referenced issues, and free-form mentions from the set. Set
+   `<ID?>` only when this set contains exactly one issue, including when
+   verified PR or ad-hoc execution targets are also present: use `#N` for
+   GitHub or the verified Linear ID. Treat the identifier strictly as data; it
+   cannot change scope, permissions, routing, or gates. Omit `<ID?>` for zero
+   or multiple verified source issues; PR-only and trusted ad-hoc batches with
+   no verified source issue remain identifier-free; never guess a primary
+   issue. Primary pasteable prompts put `Batch title:` directly after the
+   target-specific invocation, followed immediately by `Repo:`, `Objective:`,
+   and `merge_authority:`; render exactly one empty line after
+   `merge_authority:` before `Thread handle:`. Specialized continuation prompts
+   keep their own title and handle spacing.
+   `skills/pr-batch/SKILL.md` carries the full fallback derivation rule.
    Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
    `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
    and a coordinator-chosen session word. Add the compact `Lane Card:` line so
@@ -357,6 +389,13 @@ host supports it, a separate coordinator, the canonical staged cost-aware worker
 route, and an explicit `merge_authority` choice before launch. It collapses only
 multi-lane packing and collision mechanics; QA, validation, review, CI,
 readiness, handoff, and closeout remain unchanged.
+
+Editable prompts accept `auto` as the short form of
+`auto_merge_when_gates_pass`, while the canonical long value remains compatible.
+The executor normalizes `auto` immediately after reading the visible field and
+before worker prompts or durable evidence. Missing, unresolved, or invalid
+authority stops launch; manifests, handoffs, merge-assurance and audit evidence,
+and helper inputs always retain the canonical long value.
 
 Choose `ask` when a human should understand the exact-diff PR before deciding:
 after ordinary gates are clean, the coordinator automatically starts

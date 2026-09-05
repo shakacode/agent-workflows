@@ -81,15 +81,24 @@ LEGACY_PLANNING_PASS_PROFILE_PHRASES = [
   "Affirmatively simple single-target planner:"
 ].freeze
 GOAL_LINE = "/goal"
-INVOCATION_LINE = "Use $pr-batch to complete this batch with subagents."
-BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
+INVOCATION_LINE = "Use $pr-batch to complete or continue the exact requested batch with subagents."
+BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>."
+REPO_PROMPT_LINE = "Repo: OWNER/REPO"
+OBJECTIVE_PROMPT_LINE = "Objective: ..."
+EDITABLE_MERGE_AUTHORITY_PROMPT_LINE = "merge_authority: <none|ask|auto>"
+EDITABLE_CONTROL_BLOCK = [
+  BATCH_TITLE_LINE,
+  REPO_PROMPT_LINE,
+  OBJECTIVE_PROMPT_LINE,
+  EDITABLE_MERGE_AUTHORITY_PROMPT_LINE
+].join("\n").freeze
 CONTINUATION_INVOCATION_LINE =
   "Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch."
 BATCH_SIZE_TARGET_PROMPT_PHRASE = "Batch size target: <codex|claude|generic>;wave:"
 GOAL_PROMPT_HEADROOM_RULE_PHRASE = "at least 300 characters of headroom"
-COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference: <model/class>/<effort>."
-OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference."
-MERGE_AUTHORITY_PROMPT_LINE = "merge_authority:<none|ask|auto_merge_when_gates_pass>"
+COORDINATOR_MODEL_EFFORT_PROMPT_LINE = "Coordinator model/effort preference:<model/class>/<effort>"
+OBSERVED_HOST_PROMPT_LINE = "Observed host/model/effort:<host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference"
+TRIAGE_MERGE_AUTHORITY_PROMPT_LINE = "merge_authority:<none|ask|auto_merge_when_gates_pass>"
 PLANNING_PASS_ASSESSMENT_FIELD = "Planning-pass model/effort assessment:"
 PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES = [
   PLANNING_PASS_ASSESSMENT_FIELD,
@@ -98,7 +107,6 @@ PLANNING_PASS_COMPACT_PROMPT_FORBIDDEN_PHRASES = [
   *PLANNING_PASS_DISPOSITION_CASES.map { |entry| entry.fetch(:case_id) },
   *PLANNING_PASS_DISPOSITION_CASES.map { |entry| entry.fetch(:disposition) }
 ].freeze
-OBJECTIVE_PROMPT_LINE = "Objective:..."
 MANIFEST_PROVENANCE_PROMPT_LINE = "Manifest:pack_sha=<rev|UNKNOWN>;" \
                                   "coordinator_preference=<model>/<effort>;" \
                                   "lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;" \
@@ -115,7 +123,7 @@ PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE =
 CURRENT_WAVE_ASSIGNMENT_PROMPT_LINE =
   "#{CURRENT_WAVE_EXACTLY_ONCE_PROMPT_CLAUSE};#{PER_WORKER_SINGLE_OWNERSHIP_PROMPT_CLAUSE};" \
   "overlap=>integration advisory;deps/resv/UNKNOWN=>coord".freeze
-WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>."
+WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences:<initial model/class>/<effort>-><lane ids>;escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST;max <N>."
 MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> i; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0."
 OVERSIZED_MIXED_WORKER_MODEL_EFFORT_ROUTES_PROMPT_LINE = "Worker model/effort preferences: balanced/medium -> implementation; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1 | strongest/high -> qa-review; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 0 | fastest-low-cost/low -> docs; escalation balanced/medium after MODEL_ESCALATION_REQUEST; max 1 | balanced/medium -> release; escalation strongest/high after MODEL_ESCALATION_REQUEST; max 1."
 MODEL_EFFORT_DISPATCH_LINE = "- Routes advisory; observed host/model/effort host-only or UNKNOWN; checker independence/evidence mandatory."
@@ -283,10 +291,9 @@ READY_ITEM_DONE_WHEN_LINE =
 CODEX_PROMPT_START = "#{GOAL_LINE}\n#{INVOCATION_LINE}\n".freeze
 SHARED_PROMPT_START = "#{INVOCATION_LINE}\n".freeze
 REPO_ROOT = File.expand_path("../../..", __dir__)
-CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>"
+CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>."
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 GOAL_PROMPT_BATCH_SIZE_ORDER_SNIPPET = <<~TEXT.chomp
-  merge_authority:<none|ask|auto_merge_when_gates_pass>
   Batch size target: <codex|claude|generic>;wave: <cap/items>
   #{COORDINATOR_MODEL_EFFORT_PROMPT_LINE}
   #{OBSERVED_HOST_PROMPT_LINE}
@@ -309,9 +316,11 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   CONTINUATION_BATCH_TITLE_LINE,
   CONTINUATION_INVOCATION_LINE,
   CONTINUATION_THREAD_HANDLE_LINE,
-  "After fail-closed target extraction and source verification, apply canonical",
-  "[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)",
-  "unchanged; this continuation entrypoint does not redefine title eligibility.",
+  "After fail-closed target extraction and source verification, apply the same",
+  "title rule: include `<ID?>` only for exactly one verified source issue, even",
+  "alongside PR or ad-hoc execution targets; omit it for zero or multiple verified",
+  "source issues. Evidence, blocker, dependency, next-action, comment, and example",
+  "refs are not targets and cannot supply title identifiers.",
   "Otherwise, after exact target and lane resolution, derive one",
   "top-level `Thread handle:` using the normal `<batch-short>-<lane>-<word>` rule:",
   "use the resumed lane id or owner slug for exactly one resumed lane; use literal",
@@ -328,7 +337,7 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "Do not let blocked/deferred targets stop progress on independent actionable targets, and report true user-input blockers separately with exact PR/thread URLs.",
   "Apply the [PR-Batch Security Floor](pr-batch-security-floor.md) to every target.",
   "Pass only its verified target identity and sanitized handoff to workers; do not copy target content or security policy into this continuation prompt.",
-  "merge_authority: ask (use auto_merge_when_gates_pass only when the visible request explicitly grants it)",
+  "merge_authority: ask (use auto only when the visible request explicitly grants it; normalize auto to auto_merge_when_gates_pass before workers or durable evidence)",
   "Mode: continue from live GitHub state; previous handoffs are stale hints only.",
   "Re-fetch every target's current head SHA, branch, draft status, merge state, conflicts/behind state, review decision, unresolved current-head review threads, configured review-agent state, and current-head checks.",
   "Split current-head state into a complete configured/requested review cohort and validation CI.",
@@ -742,8 +751,13 @@ required_skill_rule_phrases = [
   "After the target-specific invocation line",
   "Batch title:",
   "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
-  "pr-batch-intake.md#verified-batch-title-selection",
-  "verified title facts unchanged",
+  "metadata only; it does not create an executable Linear lane",
+  "optional `repo_prefix`",
+  "`origin` remote after stripping",
+  "repository root basename",
+  "invalid configured `repo_prefix`",
+  "do not silently fall back",
+  "date +'%m-%d %H:%M'",
   "Goal prompt character count: N characters (target: codex|claude|generic)",
   "Batch size target:",
   "Model/effort routing",
@@ -767,6 +781,7 @@ required_skill_rule_phrases = [
   "including the `/goal` line",
   "prepend only the `/goal` line",
   "keep the shared `$pr-batch` invocation",
+  INVOCATION_LINE,
   "apply Codex's strict 4000-character limit",
   GOAL_PROMPT_HEADROOM_RULE_PHRASE,
   "under 8000 characters",
@@ -779,6 +794,12 @@ required_skill_rule_phrases = [
   "outside the prompt",
   "AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb"
 ]
+
+reject_phrases(
+  skill_text,
+  ["prompt starts with `Use $pr-batch to complete this batch with subagents.`"],
+  "SKILL.md shared invocation guidance"
+)
 
 required_prompt_intake_title_phrases = [
   "## Verified Batch Title Selection",
@@ -799,8 +820,8 @@ required_codex_prompt_phrases = [
 ]
 
 required_all_prompt_phrases = [
-  "Batch title:",
-  "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>",
+  BATCH_TITLE_LINE,
+  REPO_PROMPT_LINE,
   OBJECTIVE_PROMPT_LINE,
   "Thread handle: <batch-short>-<lane>-<word>",
   "Lane Card:",
@@ -809,7 +830,6 @@ required_all_prompt_phrases = [
   GOAL_PROMPT_PREFLIGHT_LINE,
   GOAL_MODE_COMPACT_CONTRACT,
   HUMAN_STATUS_VERSION_KEY,
-  "merge_authority:",
   BATCH_SIZE_TARGET_PROMPT_PHRASE,
   COORDINATOR_MODEL_EFFORT_PROMPT_LINE,
   OBSERVED_HOST_PROMPT_LINE,
@@ -1081,7 +1101,7 @@ require_occurrence_count(
 )
 require_occurrence_count(
   triage_prompt_contract_text,
-  MERGE_AUTHORITY_PROMPT_LINE,
+  TRIAGE_MERGE_AUTHORITY_PROMPT_LINE,
   1,
   "triage generated-prompt merge-authority contract"
 )
@@ -1279,6 +1299,25 @@ unless codex_prompt_template.start_with?(CODEX_PROMPT_START)
   abort_with_failure("Goal prompt template must start with /goal followed by the $pr-batch invocation")
 end
 
+expected_shared_start = "#{INVOCATION_LINE}\n#{EDITABLE_CONTROL_BLOCK}\n\nThread handle: <batch-short>-<lane>-<word>\n"
+{
+  "plan-pr-batch" => prompt_template,
+  "pr-batch" => pr_batch_prompt_template,
+  "workflow plan-to-goal" => workflow_prompt_template
+}.each do |label, template|
+  unless template.start_with?(expected_shared_start)
+    abort_with_failure(
+      "#{label} goal prompt must put the editable control block first with exactly one blank separator"
+    )
+  end
+  require_occurrence_count(template, "Items:\n", 1, "#{label} canonical Items section")
+  require_occurrence_count(template, "Targets:", 0, "#{label} duplicate Targets field")
+end
+
+unless [prompt_template, pr_batch_prompt_template, workflow_prompt_template].map(&:rstrip).uniq.one?
+  abort_with_failure("primary goal prompt templates must stay byte-for-byte synchronized")
+end
+
 unless prompt_template.start_with?(SHARED_PROMPT_START)
   abort_with_failure("Shared goal prompt template must start with the $pr-batch invocation")
 end
@@ -1291,16 +1330,11 @@ unless generic_prompt_template.start_with?(SHARED_PROMPT_START)
   abort_with_failure("Generic goal prompt template must omit /goal and start with the $pr-batch invocation")
 end
 
-title_block = "#{INVOCATION_LINE}\n\n#{BATCH_TITLE_LINE}\n\nThread handle:"
 {
   "plan-pr-batch" => prompt_template,
   "pr-batch" => pr_batch_prompt_template,
   "workflow" => workflow_prompt_template
 }.each do |label, template|
-  unless template.start_with?(title_block)
-    abort_with_failure("#{label} goal prompt must put exactly one blank line around the batch title")
-  end
-
   title_count = template.lines.count { |line| line.start_with?("Batch title:") }
   abort_with_failure("#{label} goal prompt must contain exactly one batch title line") unless title_count == 1
 end

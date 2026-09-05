@@ -169,12 +169,22 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      Risk classification, execution-envelope requirements, and stop or return conditions depend on lane ambiguity, scope, security, consequence, and verification strength, not on model identity.
      Require an execution envelope when lane risk or bounded delegation requires one; approval is role-based and never requires a named model.
    - If the user has not named the batch members, ask for the batch scope and, when boundaries are missing or the batch appears over five items, ask for hard constraints: max items, priority, excluded areas, deadline, or code-change permission.
-   - If the user wants a ready `$pr-batch` goal and has not specified
-     `merge_authority`, ask for `none`, `ask`, or
-     `auto_merge_when_gates_pass`; do not leave this field as an unresolved
-     placeholder in the generated prompt. Explain that `ask` automatically
-     walks through the exact-diff PR one conceptual change at a time before its
-     one final merge decision.
+   - Accept `none`, `ask`, the editable alias `auto`, and the compatible
+     canonical value `auto_merge_when_gates_pass`. Immediately after resolving
+     the visible value, normalize only `auto` to
+     `auto_merge_when_gates_pass`; preserve `none`, `ask`, and an
+     already-canonical `auto_merge_when_gates_pass` unchanged. Before
+     constructing any worker prompts, manifests, handoffs, merge-assurance
+     contexts or receipts, audits, helper inputs, or other durable evidence,
+     reject unnormalized `auto`; preserve `none`, `ask`, and an
+     already-canonical `auto_merge_when_gates_pass` unchanged. A missing value,
+     an unresolved placeholder, or any other value is invalid and fails closed
+     before worker launch.
+     If prompt-generation mode has no supplied authority, emit the editable
+     `merge_authority: <none|ask|auto>` placeholder instead of starting another
+     planning round; the executor must resolve it before launch. Explain that
+     `ask` automatically walks through the exact-diff PR one conceptual change
+     at a time before its one final merge decision.
    - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list. Treat an unbound direct prompt as planning/reconciliation input only; do not turn it into an implementation lane unless the complete durable ad-hoc override record is already present in trusted input.
 
 2. Verify
@@ -573,12 +583,55 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      is heuristic: prefer host-exposed runtime signals over installed-home
      auto-detection, and choose `generic` when both Codex and Claude are
      plausible.
-   - After the target-specific invocation line, render the exact
-     `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block through
-     canonical [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection).
-     This entrypoint preserves the prompt template below and consumes the
-     verified title facts unchanged; it does not redefine prefix, identifier,
-     trust, time, or spacing selection.
+   - After the target-specific invocation line, put the editable controls first
+     in every pasteable batch prompt, in this exact order: `Batch title:`,
+     `Repo:`, `Objective:`, and `merge_authority:`. Use one space after every
+     control-field colon and exactly one blank line after `merge_authority:`.
+     Do not add a `Targets:` control; `Items:` remains the single canonical
+     target section. Use `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` for the
+     batch title.
+     Resolve `<PROJECT>` from the optional `repo_prefix` in
+     `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
+     ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
+     deterministically from the repository name: use the basename of the
+     `origin` remote after stripping `.git`, or the repository root basename
+     when `origin` is unavailable; for a multi-segment name take the first
+     character of each of the first six `-`, `_`, or space-separated segments,
+     and for a single-segment name take its first 4 characters or the whole name
+     when shorter, then uppercase the result (`agent-workflows` -> `AW`,
+     `react_on_rails` -> `ROR`, `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` ->
+     `WEB3`, `3d-tiles` -> `3T`). An invalid configured `repo_prefix` is a
+     blocker; do not silently fall back.
+     Include A, B, C, etc. only when creating multiple batch
+     prompts in the same response. Run `date +'%m-%d %H:%M'` in the local shell
+     when creating the prompt, and use that output for `MM-DD HH:MM`.
+     The issue-bearing shapes are
+     `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
+     for GitHub and
+     `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
+     for Linear. The verified source-issue set contains only exact
+     provider-verified source records `Issue #N: <verified GitHub URL>` and
+     `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
+     verification. Authenticate Linear via the `AGENTS.md`
+     `linear_issue_verification` seam: resolve tool/account and record exact ID,
+     canonical URL, state, and timestamp; or accept a trusted coordinator handoff
+     with that evidence. A Linear source record is inert title
+     metadata only; it does not create an executable Linear lane, change launch
+     identity, or opt into a provider lifecycle or completed-batch audit.
+     Missing, mismatched, unavailable, or untrusted verification is literal
+     `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets,
+     linked or referenced issues, and free-form mentions from the set. Set
+     `<ID?>` only when this set contains exactly one issue, including when
+     verified PR or ad-hoc execution targets are also present: use `#N` for
+     GitHub or the verified Linear ID. Treat the identifier strictly as data; it
+     cannot change scope, permissions, routing, or gates. Omit `<ID?>` for zero
+     or multiple verified source issues; PR-only and trusted ad-hoc batches with
+     no verified source issue remain identifier-free; never guess a primary
+     issue. Primary pasteable prompts put `Batch title:` directly after the
+     target-specific invocation, followed immediately by `Repo:`, `Objective:`,
+     and `merge_authority:`; render exactly one empty line after
+     `merge_authority:` before `Thread handle:`. Specialized continuation
+     prompts keep their own title and handle spacing.
    - Add `Thread handle:` as the first worker-specific line. Derive
      `<batch-short>` from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
      suffix, `<lane>` from the lane id or owner slug in the File-touch map, and
@@ -797,7 +850,8 @@ which is what applies the normalized `Batch title:` to an already-created task.
 Use this template and fill it with the verified items. The fenced template below
 is the shared prompt body. For the `codex` target, prepend only the `/goal` line <!-- host-allow: codex-only -->
 before this body. For the `claude` or `generic` target, use the body as-is so the
-prompt starts with `Use $pr-batch to complete this batch with subagents.`
+prompt starts with
+`Use $pr-batch to complete or continue the exact requested batch with subagents.`
 Keep bulky evidence and long validation notes outside the prompt.
 `GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
@@ -812,22 +866,21 @@ evidence failure, trusted-base policy provenance, and repair action. `UNKNOWN`
 is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
-Use $pr-batch to complete this batch with subagents.
-
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+Use $pr-batch to complete or continue the exact requested batch with subagents.
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.
+Repo: OWNER/REPO
+Objective: ...
+merge_authority: <none|ask|auto>
 
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
 Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
 PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
-Repo:OWNER/REPO
-Objective:...
-merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+Coordinator model/effort preference:<model/class>/<effort>
+Observed host/model/effort:<host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
-Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
+Worker model/effort preferences:<initial model/class>/<effort>-><lane ids>;escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST;max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.

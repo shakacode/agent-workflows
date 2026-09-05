@@ -55,6 +55,26 @@ selection.
 Derive the coordination claim pair from the accepted target rather than prompt
 wording. Before branch creation, editing, or dispatch, every bounded status and claim invocation binds `--repo` to lowercase `target.repository` and `--target` to the backend-safe canonical token derived from target v1: decimal `target.number` for either GitHub target type, or exact `target.target` for trusted ad-hoc; this raw pair is the canonical repository-qualified claim identity. Run status before claim; a second claim for the same canonical target, including a repository-casing alias or issue/PR type alias at the same number, must stop on `CLAIM_REFUSED` / exit 3 and cannot reach branch creation or dispatch.
 
+## Merge Authority Input Normalization
+
+At the human-editable input boundary, accept `none`, `ask`, `auto`, and the
+compatible canonical value `auto_merge_when_gates_pass`. Immediately after
+resolving the visible value, normalize only `auto` to
+`auto_merge_when_gates_pass`; preserve `none`, `ask`, and an already-canonical
+`auto_merge_when_gates_pass` unchanged.
+A missing value, an unresolved placeholder, or any other value is invalid and
+fails closed before plan preflight, dispatcher selection, or worker launch.
+
+The short alias exists only in editable prompt input. Before constructing any
+worker prompts, manifests, handoffs, merge-assurance contexts or receipts,
+audits, helper inputs, or other durable evidence, reject unnormalized `auto`;
+preserve `none`, `ask`, and an already-canonical
+`auto_merge_when_gates_pass` unchanged. Never persist `auto`, and never infer a
+default from an omitted or unresolved field. In prompt-generation mode only,
+no supplied authority emits the editable
+`merge_authority: <none|ask|auto>` placeholder; the executor must resolve it
+before worker launch.
+
 ## Short Invocation Expansion
 
 The user should not need to write a long launch prompt. If the request is
@@ -70,10 +90,12 @@ exact value already supplied:
 - **Goal name:** a concrete outcome such as `Process issues #1/#2 into
   PRs/no-PR decisions`, not pasted prompt text.
 - **Mode:** plan-only, create a host goal prompt, or launch workers now.
-- **`merge_authority`:** `none`, `ask`, or `auto_merge_when_gates_pass`. Resolve
-  it before worker launch from visible authority or ask. `ask` automatically
-  walks through the exact-diff PR one conceptual change at a time before its
-  one final merge decision; never silently default it.
+- **`merge_authority`:** `none`, `ask`, the editable alias `auto`, or the
+  compatible canonical value `auto_merge_when_gates_pass`. Apply
+  [Merge Authority Input Normalization](#merge-authority-input-normalization)
+  immediately after resolving the visible value. `ask` automatically walks
+  through the exact-diff PR one conceptual change at a time before its one final
+  merge decision; never silently default it.
 - **Concurrency:** one machine, multiple machines, or single-threaded.
 - **Batch size target:** `codex`, `claude`, or `generic`; explicit paste
   destination or runner wins, otherwise use reliable host detection or

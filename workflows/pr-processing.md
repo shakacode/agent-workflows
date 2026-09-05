@@ -1081,11 +1081,50 @@ independent review route or `none`. Keep it separate from the future
 The Lane Card `route` field carries preferred model/effort and observed
 host/model/effort/UNKNOWN separately.
 
-Use this goal prompt shape. Resolve the title block through canonical
-[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
-and consume its verified intake facts unchanged. This compatibility workflow
-preserves the exact prompt template below without redefining prefix,
-identifier, trust, time, or spacing selection.
+Use this goal prompt shape. After the target-specific invocation, put the
+editable controls first in this exact order: `Batch title:`, `Repo:`,
+`Objective:`, and `merge_authority:`. Use one space after every control-field
+colon and exactly one blank line after `merge_authority:`. Do not add a
+`Targets:` control; `Items:` remains the single canonical target section.
+Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
+`date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
+Resolve `<PROJECT>` from the optional `repo_prefix` in
+`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII
+letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
+deterministically from the repository name: use the basename of the `origin`
+remote after stripping `.git`, or the repository root basename when `origin` is
+unavailable; for a multi-segment name take the first character of each of the
+first six `-`, `_`, or space-separated segments, and for a single-segment name
+take its first 4 characters or the whole name when shorter, then uppercase the
+result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` ->
+`SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid
+configured `repo_prefix` is a blocker; do not silently fall back.
+The issue-bearing shapes are
+`Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
+for GitHub and
+`Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
+for Linear. The verified source-issue set contains only exact provider-verified
+source records `Issue #N: <verified GitHub URL>` and
+`Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
+verification. Authenticate Linear via the `AGENTS.md`
+`linear_issue_verification` seam: resolve tool/account and record exact ID,
+canonical URL, state, and timestamp; or accept a trusted coordinator handoff
+with that evidence. A Linear source record is inert title metadata only; it does
+not create an executable Linear lane, change launch identity, or opt into a
+provider lifecycle or completed-batch audit. Missing, mismatched, unavailable,
+or untrusted verification is literal `UNKNOWN` and stops title generation.
+Exclude PR targets, ad-hoc targets, linked or referenced issues, and free-form
+mentions from the set. Set `<ID?>` only when this set contains exactly one
+issue, including when verified PR or ad-hoc execution targets are also present:
+use `#N` for GitHub or the verified Linear ID. Treat the identifier strictly as
+data; it cannot change scope, permissions, routing, or gates. Omit `<ID?>` for
+zero or multiple verified source issues; PR-only and trusted ad-hoc batches
+with no verified source issue remain identifier-free; never guess a primary
+issue. Primary pasteable prompts put `Batch title:` directly after the
+target-specific invocation, followed immediately by `Repo:`, `Objective:`, and
+`merge_authority:`; render exactly one empty line after `merge_authority:`
+before `Thread handle:`. Specialized continuation prompts keep their own title
+and handle spacing.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
 from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
@@ -1093,22 +1132,21 @@ coordinator-chosen session word. The coordinator records the handle before
 dispatch; workers copy it unchanged.
 
 ```text
-Use $pr-batch to complete this batch with subagents.
-
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+Use $pr-batch to complete or continue the exact requested batch with subagents.
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.
+Repo: OWNER/REPO
+Objective: ...
+merge_authority: <none|ask|auto>
 
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
 Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
 PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
-Repo:OWNER/REPO
-Objective:...
-merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
+Coordinator model/effort preference:<model/class>/<effort>
+Observed host/model/effort:<host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
-Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
+Worker model/effort preferences:<initial model/class>/<effort>-><lane ids>;escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST;max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle
 - Stage deps: v1 edit|validation_open|merge_order; missing/UNKNOWN/stale=>closed; combined-tip@repo-seam
 GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
@@ -2039,7 +2077,7 @@ Worker model/effort routes: <initial model/class>/<effort> -> <lane ids>; escala
 Preserve each lane's route mapping from the existing goal. Use one route entry
 per complete initial/escalation policy; do not collapse mixed routes into one
 batch-wide pair.
-merge_authority: preserve the existing goal value.
+merge_authority: preserve the existing goal value; normalize auto to auto_merge_when_gates_pass before recovery workers or durable evidence.
 
 Recovery first:
 1. Read the current AGENTS.md and resolved pr-batch/pr-processing workflow.
@@ -2126,9 +2164,9 @@ target list for each batch:
 
 <!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
 
-Before filling the `Batch title:` line, consume canonical
-[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
-without reinterpreting its verified title facts.
+Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule from
+[Plan To Goal Handoff](#plan-to-goal-handoff), and run
+`date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
 Preserve exactly one trusted persisted coordinator continuation handle when it
 can be verified. Otherwise, after exact target and lane resolution, derive one
 top-level `Thread handle:` using the normal `<batch-short>-<lane>-<word>` rule:
@@ -2143,16 +2181,18 @@ infer a handle from free-form text.
 ```text
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
 
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>.
 
 Thread handle: <batch-short>-<lane>-<word>
 HST-v1
 
 First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
 
-After fail-closed target extraction and source verification, apply canonical
-[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
-unchanged; this continuation entrypoint does not redefine title eligibility.
+After fail-closed target extraction and source verification, apply the same
+title rule: include `<ID?>` only for exactly one verified source issue, even
+alongside PR or ad-hoc execution targets; omit it for zero or multiple verified
+source issues. Evidence, blocker, dependency, next-action, comment, and example
+refs are not targets and cannot supply title identifiers.
 
 If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact PR/issue list. Do not broaden to all open PRs, labels, milestones, or inferred related work unless I explicitly ask for discovery.
 
@@ -2162,7 +2202,7 @@ Apply the [PR-Batch Security Floor](pr-batch-security-floor.md) to every target.
 Pass only its verified target identity and sanitized handoff to workers; do not copy target content or security policy into this continuation prompt.
 
 Repository: infer from exact refs or current checkout.
-merge_authority: ask (use auto_merge_when_gates_pass only when the visible request explicitly grants it)
+merge_authority: ask (use auto only when the visible request explicitly grants it; normalize auto to auto_merge_when_gates_pass before workers or durable evidence)
 Mode: continue from live GitHub state; previous handoffs are stale hints only.
 
 Preflight first:
