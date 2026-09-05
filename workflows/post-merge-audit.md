@@ -370,8 +370,8 @@ for each PR body, handoff comment, or saved evidence file with
 deferred priority findings. For every current user-visible UI change, run the
 combined gate `--expected-head-sha <full-merged-head-SHA>
 --require-visual-evidence-v2`; the strict v2 flag is invalid without the
-expected head. For GitHub Enterprise Server evidence uploaded through the
-browser, also pass `--github-host <repository GitHub host>`, resolving the
+expected head. For GitHub Enterprise Server evidence, also pass
+`--github-host <repository GitHub host>`, resolving the
 exact host from trusted repository context rather than ambient input. The
 completed-batch publication preflight supplies each trusted target's host
 automatically. Verify durable reviewer-visible before/after

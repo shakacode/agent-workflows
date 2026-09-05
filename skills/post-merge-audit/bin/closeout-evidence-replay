@@ -481,7 +481,7 @@ module CloseoutEvidenceReplay
     negative_control:,
     performance_impact:,
     performance_evidence:,
-    github_host:
+    github_host: nil
   )
     if visual_evidence.start_with?("durable:")
       validate_durable_visual_evidence(visual_evidence, destination, missing, github_host: github_host)
@@ -599,7 +599,6 @@ module CloseoutEvidenceReplay
       host = uri.host.downcase
       authority = uri.port == 443 ? host : "#{host}:#{uri.port}"
       accepted_host = DURABLE_GITHUB_EVIDENCE_HOSTS.include?(host) ||
-                      (host.end_with?(".ghe.com") && host.split(".").length == 3) ||
                       authority == configured_host
       accepted_host && uri.path && !uri.path.empty? && uri.path != "/"
     end

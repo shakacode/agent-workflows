@@ -896,11 +896,10 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes interaction.fetch("missing"), "interaction_evidence"
   end
 
-  def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
+  def test_v2_github_destination_accepts_current_and_legacy_public_attachment_hosts
     hosts = %w[
       github.com/example/repo/pull/123#visual
       user-images.githubusercontent.com/123/before.png
-      example.ghe.com/example/repo/pull/123#visual
     ]
 
     hosts.each do |host_and_path|
@@ -909,6 +908,27 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "SATISFIED", qa.fetch("verdict"), host_and_path
     end
+  end
+
+  def test_v2_github_destination_accepts_matching_ghe_cloud_tenant
+    evidence = "durable: before and after https://example.ghe.com/example/repo/pull/123#visual"
+    qa = run_replay(
+      v2_marker("visual_evidence" => evidence),
+      github_host: "example.ghe.com"
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+  end
+
+  def test_v2_github_destination_rejects_unrelated_ghe_cloud_tenant
+    evidence = "durable: before and after https://evil.ghe.com/example/repo/pull/123#visual"
+    qa = run_replay(
+      v2_marker("visual_evidence" => evidence),
+      github_host: "example.ghe.com"
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.github_url"
   end
 
   def test_v2_github_destination_rejects_non_tenant_ghe_hosts
