@@ -775,7 +775,8 @@ module CompletedBatchAuditReceipt
     targets:,
     publication_preflight:,
     coordination_backend:,
-    accepted_tracking_issue: nil
+    accepted_tracking_issue: nil,
+    allow_legacy_product_evidence: false
   )
     return unless input.is_a?(Hash) && input.keys.sort == %w[contract decision_url version]
     return unless input["contract"] == ACCEPTED_DEFERRAL_INPUT_CONTRACT && input["version"] == 1
@@ -784,7 +785,8 @@ module CompletedBatchAuditReceipt
       publication_preflight,
       expected_batch_id:,
       targets:,
-      coordination_backend:
+      coordination_backend:,
+      allow_legacy_replay: allow_legacy_product_evidence
     )
 
     predecessor = accepted_deferral_predecessor_snapshot(
@@ -893,7 +895,35 @@ module CompletedBatchAuditReceipt
       coordination_backend:,
       accepted_tracking_issue: snapshot["tracking_issue"]
     )
-    refreshed == snapshot
+    return true if refreshed == snapshot
+
+    legacy_preflight = accepted_deferral_legacy_preflight(
+      publication_preflight,
+      expected_batch_id:,
+      targets: deterministic_targets(expected_targets),
+      coordination_backend:
+    )
+    return false unless legacy_preflight
+
+    legacy_product_evidence = {
+      "receipt_digest" => legacy_preflight.fetch("receipt_digest"),
+      "snapshot_digest" => legacy_preflight.fetch("snapshot_digest"),
+      "blockers" => legacy_preflight.fetch("blockers")
+    }
+    return false unless snapshot["product_evidence"] == legacy_product_evidence
+
+    legacy_refreshed = accepted_deferral_assessment(
+      snapshot.fetch("input"),
+      predecessor_marker:,
+      predecessor_receipt:,
+      expected_batch_id:,
+      targets: deterministic_targets(expected_targets),
+      publication_preflight: legacy_preflight,
+      coordination_backend:,
+      accepted_tracking_issue: snapshot["tracking_issue"],
+      allow_legacy_product_evidence: true
+    )
+    legacy_refreshed == snapshot
   rescue Error, KeyError, TypeError, ArgumentError
     false
   end
@@ -995,23 +1025,39 @@ module CompletedBatchAuditReceipt
     end
   end
 
-  def accepted_deferral_product_evidence?(preflight, expected_batch_id:, targets:, coordination_backend:)
+  def accepted_deferral_product_evidence?(
+    preflight,
+    expected_batch_id:,
+    targets:,
+    coordination_backend:,
+    allow_legacy_replay: false
+  )
     return false unless accepted_deferral_preflight_integrity?(
       preflight,
       expected_batch_id:,
       targets:,
       coordination_backend:
     )
-    return false unless accepted_deferral_preflight_reassessed?(
+
+    current_reassessment = accepted_deferral_preflight_reassessed?(
       preflight,
       expected_batch_id:,
       targets:,
       coordination_backend:
     )
+    legacy_reassessment = allow_legacy_replay && accepted_deferral_legacy_preflight_reassessed?(
+      preflight,
+      expected_batch_id:,
+      targets:,
+      coordination_backend:
+    )
+    return false unless current_reassessment || legacy_reassessment
     return false unless preflight["eligible"] == false && preflight["verdict"] == "BLOCKED"
 
     blockers = preflight["blockers"]
-    return false unless accepted_deferral_target_resolution_blockers?(preflight, targets, blockers)
+    return false unless legacy_reassessment ||
+                        accepted_deferral_target_resolution_blockers?(preflight, targets, blockers)
+
     return false if nested_unknown?(preflight)
 
     coordination = preflight.dig("snapshot", "coordination")
@@ -1041,10 +1087,27 @@ module CompletedBatchAuditReceipt
 
     target_rows.all? { |row| accepted_deferral_target_evidence?(row) } &&
       qa_rows.each_with_index.all? do |row, index|
-        row.is_a?(Hash) && row["verdict"] == "SATISFIED" && row["status"] == "satisfied" &&
-          row["maintainer_waiver"].nil? && row["head_sha"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
-          row["head_sha"] == target_rows.fetch(index)["head_sha"] &&
-          row["evidence_sha256"].to_s.match?(CompletedBatchPublicationPreflight::DIGEST_PATTERN)
+        return false unless row.is_a?(Hash)
+
+        target = validated_target(row["target"])
+        return false unless target
+
+        if headless_issue_target?(target, target_rows.fetch(index)["head_sha"])
+          source = parse_target_url(target_rows.fetch(index)["source"])
+          return false unless source && source.fetch("type") == "pull_request"
+          return false unless same_repository_identity?(source, target)
+
+          live_pr = gh_api(source.fetch("host"), "repos/#{source.fetch('repo')}/pulls/#{source.fetch('number')}")
+          row["verdict"] == "SATISFIED" && row["status"] == "satisfied" &&
+            row["maintainer_waiver"].nil? && row["head_sha"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
+            row["head_sha"] == live_pr.dig("head", "sha").to_s.downcase &&
+            row["evidence_sha256"].to_s.match?(CompletedBatchPublicationPreflight::DIGEST_PATTERN)
+        else
+          row["verdict"] == "SATISFIED" && row["status"] == "satisfied" &&
+            row["maintainer_waiver"].nil? && row["head_sha"].to_s.match?(/\A[0-9a-f]{40}\z/) &&
+            row["head_sha"] == target_rows.fetch(index)["head_sha"] &&
+            row["evidence_sha256"].to_s.match?(CompletedBatchPublicationPreflight::DIGEST_PATTERN)
+        end
       end
   rescue KeyError, TypeError
     false
@@ -1071,6 +1134,66 @@ module CompletedBatchAuditReceipt
     false
   end
 
+  def accepted_deferral_legacy_preflight_reassessed?(preflight, expected_batch_id:, targets:, coordination_backend:)
+    return false unless accepted_deferral_preflight_integrity?(
+      preflight,
+      expected_batch_id:,
+      targets:,
+      coordination_backend:
+    )
+
+    refreshed = CompletedBatchPublicationPreflight.assess(
+      preflight.fetch("source_input"),
+      coordination_backend:,
+      waiver_verifier: method(:authenticated_publication_waiver_comment),
+      target_verifier: method(:authenticated_publication_target_snapshot),
+      coordination_verifier: method(:authenticated_publication_coordination_status)
+    )
+    legacy = accepted_deferral_legacy_preflight(
+      refreshed,
+      expected_batch_id:,
+      targets:,
+      coordination_backend:
+    )
+    legacy && CompletedBatchPublicationPreflight.canonicalize(legacy) ==
+      CompletedBatchPublicationPreflight.canonicalize(preflight)
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def accepted_deferral_legacy_preflight(preflight, expected_batch_id:, targets:, coordination_backend:)
+    return unless accepted_deferral_preflight_integrity?(
+      preflight,
+      expected_batch_id:,
+      targets:,
+      coordination_backend:
+    )
+    return unless preflight["eligible"] == false && preflight["verdict"] == "BLOCKED"
+
+    # Legacy replay must rebuild the pre-#522 blocker trio from authenticated
+    # source input, even when current publication logic emits newer blockers.
+    target = validated_target(targets.first)
+    source_input = preflight.fetch("source_input")
+    target_row = source_input.fetch("target_snapshots").first
+    lane = accepted_deferral_target_resolution_lane(source_input, target, target_row.fetch("source"))
+    return unless lane
+
+    label = "#{target.fetch('repo')}#issue:#{target.fetch('number')}"
+    legacy = JSON.parse(JSON.generate(preflight))
+    legacy["blockers"] = [
+      "coordination lane #{lane.fetch('name')} target is absent or ambiguous",
+      "#{label} is absent from resolved coordination scope",
+      "#{label} target state/head is not authenticated or fresh"
+    ]
+    legacy.dig("snapshot", "coordination")["lanes"] = []
+    legacy["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(legacy.fetch("snapshot"))
+    unsigned = legacy.reject { |key, _value| key == "receipt_digest" }
+    legacy["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+    legacy
+  rescue KeyError, TypeError
+    nil
+  end
+
   def accepted_deferral_target_resolution_blockers?(preflight, targets, blockers)
     return false unless blockers.is_a?(Array) && blockers.all? { |blocker| blocker.is_a?(String) }
     return false unless targets.one?
@@ -1085,7 +1208,9 @@ module CompletedBatchAuditReceipt
     target_row = target_rows.first
     return false unless same_target_identity?(target_row.fetch("target"), target)
     return false unless target_row.fetch("state") == "closed"
-    return false unless target_row.fetch("head_sha").to_s.downcase.match?(/\A[0-9a-f]{40}\z/)
+
+    headless_issue_target = headless_issue_target?(target, target_row.fetch("head_sha"))
+    return false unless headless_issue_target || target_row.fetch("head_sha").to_s.downcase.match?(/\A[0-9a-f]{40}\z/)
 
     source_pr = parse_target_url(target_row.fetch("source"))
     return false unless source_pr && source_pr.fetch("type") == "pull_request"
@@ -1100,16 +1225,33 @@ module CompletedBatchAuditReceipt
     snapshot_row = snapshot_rows.first
     return false unless same_target_identity?(snapshot_row.fetch("target"), target)
     return false unless snapshot_row.fetch("state") == "closed"
-    return false unless snapshot_row.fetch("head_sha") == target_row.fetch("head_sha").downcase
+    return false unless if headless_issue_target
+                          snapshot_row.fetch("head_sha").nil?
+                        else
+                          snapshot_row.fetch("head_sha") == target_row.fetch("head_sha").downcase
+                        end
     return false unless same_target_urls?(snapshot_row.fetch("source"), target_row.fetch("source"))
-    return false unless snapshot_row["verification_source"].nil?
+
+    expected_verification_source = headless_issue_target ? "authenticated gh api" : nil
+    return false unless snapshot_row["verification_source"] == expected_verification_source
 
     label = "#{target.fetch('repo')}#issue:#{target.fetch('number')}"
-    expected = [
-      "coordination lane #{lane.fetch('name')} target is absent or ambiguous",
-      "#{label} is absent from resolved coordination scope",
-      "#{label} target state/head is not authenticated or fresh"
-    ]
+    source_label = "#{source_pr.fetch('repo')}#pull_request:#{source_pr.fetch('number')}"
+    expected = ["#{source_label} is outside the trusted batch target manifest"]
+    expected << "#{label} target state/head is not authenticated or fresh" unless headless_issue_target
+    case lane["pr_state"]
+    when "closed"
+      expected << "#{source_label} coordination target state is not merged"
+    when "merged"
+      expected.concat(
+        [
+          "#{label} coordination and target state disagree",
+          "#{label} coordination target state is not closed"
+        ]
+      )
+    else
+      return false
+    end
     blockers.sort == expected.sort
   rescue KeyError, TypeError, ArgumentError
     false
@@ -1130,8 +1272,7 @@ module CompletedBatchAuditReceipt
     return unless lanes.is_a?(Array)
 
     candidates = lanes.select do |lane|
-      lane.is_a?(Hash) && lane["targets"].is_a?(Array) &&
-        lane["targets"].map(&:to_s) == [target.fetch("number").to_s] &&
+      lane.is_a?(Hash) && accepted_deferral_lane_target_matches?(lane, target) &&
         same_target_urls?(lane["pr_url"], source_url) &&
         accepted_deferral_lane_identity_urls_match?(lane, target)
     end
@@ -1140,6 +1281,18 @@ module CompletedBatchAuditReceipt
     lane = candidates.first
     name = CompletedBatchPublicationPreflight.normalized_known_string(lane["name"])
     lane.merge("name" => name) if name
+  end
+
+  def headless_issue_target?(target, head_sha)
+    target.fetch("type") == "issue" && (head_sha.nil? || head_sha.to_s.downcase == "not_applicable")
+  end
+
+  def accepted_deferral_lane_target_matches?(lane, target)
+    selectors = lane["targets"]
+    return false unless selectors.is_a?(Array) && selectors.one?
+
+    type, number = CompletedBatchPublicationPreflight.lane_target_selector(selectors.first)
+    number == target.fetch("number") && (!type || type == target.fetch("type"))
   end
 
   def accepted_deferral_lane_identity_urls_match?(lane, target)
@@ -1213,7 +1366,7 @@ module CompletedBatchAuditReceipt
     return false unless row["state"] == expected_state
 
     head_sha = row["head_sha"].to_s.downcase
-    return false unless head_sha.match?(/\A[0-9a-f]{40}\z/)
+    return false unless headless_issue_target?(target, row["head_sha"]) || head_sha.match?(/\A[0-9a-f]{40}\z/)
 
     source = parse_target_url(row["source"])
     return false unless source && source.fetch("type") == "pull_request"
@@ -1226,8 +1379,10 @@ module CompletedBatchAuditReceipt
     return false if target.fetch("type") == "pull_request" && !live_target.key?("pull_request")
 
     live_pr = gh_api(source.fetch("host"), "repos/#{source.fetch('repo')}/pulls/#{source.fetch('number')}")
-    same_target_url?(live_pr["html_url"], source) && live_pr["merged_at"].to_s != "" &&
-      live_pr.dig("head", "sha").to_s.downcase == head_sha
+    return false unless same_target_url?(live_pr["html_url"], source) && live_pr["merged_at"].to_s != ""
+    return true if headless_issue_target?(target, row["head_sha"])
+
+    live_pr.dig("head", "sha").to_s.downcase == head_sha
   rescue Error, KeyError, TypeError, ArgumentError
     false
   end

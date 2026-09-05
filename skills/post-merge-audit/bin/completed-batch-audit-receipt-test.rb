@@ -206,9 +206,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     targets = [accepted_deferral_target]
     preflight = accepted_deferral_publication_preflight(targets.first)
     assert_equal [
-      "coordination lane ror-d-issue-4731 target is absent or ambiguous",
-      "shakacode/react_on_rails#issue:4731 is absent from resolved coordination scope",
-      "shakacode/react_on_rails#issue:4731 target state/head is not authenticated or fresh"
+      "shakacode/react_on_rails#pull_request:4918 is outside the trusted batch target manifest",
+      "shakacode/react_on_rails#issue:4731 target state/head is not authenticated or fresh",
+      "shakacode/react_on_rails#pull_request:4918 coordination target state is not merged"
     ], preflight.fetch("blockers")
 
     with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
@@ -472,6 +472,30 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_accepted_deferral_accepts_a_canonical_typed_issue_lane_selector
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target, lane_targets: ["issue:4731"])
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      assert CompletedBatchAuditReceipt.accepted_deferral_product_evidence?(
+        preflight,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        coordination_backend: REAL_BACKEND
+      )
+    end
+
+    wrong_type = accepted_deferral_publication_preflight(target, lane_targets: ["pr:4731"])
+    with_accepted_deferral_api(wrong_type, accepted_deferral_api(wrong_type)) do
+      refute CompletedBatchAuditReceipt.accepted_deferral_product_evidence?(
+        wrong_type,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        coordination_backend: REAL_BACKEND
+      )
+    end
+  end
+
   def test_accepted_deferral_binds_shorthand_blocker_to_its_exact_tracking_issue
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
@@ -671,6 +695,250 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       )
       refute replay.fetch("ready")
       assert_equal ["completed-batch-audit accepted deferral mismatch or stale"], replay.fetch("blockers")
+    end
+  end
+
+  def test_accepted_deferral_replay_preserves_pre_issue_522_product_evidence
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    current_preflight = accepted_deferral_publication_preflight(target)
+    legacy_preflight = legacy_accepted_deferral_publication_preflight(current_preflight)
+    current_terminal = nil
+
+    with_accepted_deferral_api(current_preflight, accepted_deferral_api(current_preflight)) do
+      current_terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: current_preflight,
+        coordination_backend: REAL_BACKEND
+      )
+    end
+
+    current_state = CompletedBatchAuditReceipt.marker_state(current_terminal)
+    snapshot = CompletedBatchAuditReceipt.accepted_deferral_snapshot(
+      current_state.fields.fetch("accepted_deferral_snapshot")
+    )
+    legacy_snapshot = JSON.parse(JSON.generate(snapshot))
+    legacy_snapshot["product_evidence"] = {
+      "receipt_digest" => legacy_preflight.fetch("receipt_digest"),
+      "snapshot_digest" => legacy_preflight.fetch("snapshot_digest"),
+      "blockers" => legacy_preflight.fetch("blockers")
+    }
+    legacy_api = accepted_deferral_api(legacy_preflight)
+    decision_comment = legacy_api.call(
+      "github.com", "repos/shakacode/react_on_rails/issues/comments/5400000000"
+    )
+    legacy_snapshot.fetch("decision")["body_sha256"] =
+      "sha256:#{Digest::SHA256.hexdigest(decision_comment.fetch('body'))}"
+    legacy_terminal = accepted_deferral_terminal_from_snapshot(legacy_snapshot)
+
+    with_accepted_deferral_api(current_preflight, legacy_api) do
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        legacy_terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: [target],
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: current_preflight
+      )
+
+      assert replay.fetch("ready"), replay.fetch("blockers").join("\n")
+      assert_empty replay.fetch("blockers")
+
+      assert_raises(CompletedBatchAuditReceipt::AcceptedDeferralError) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: legacy_preflight,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
+  def test_accepted_deferral_replay_accepts_headless_issue_snapshots
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(target, issue_head_sha: "not_applicable")
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: preflight,
+        coordination_backend: REAL_BACKEND
+      )
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: [target],
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: preflight
+      )
+
+      assert replay.fetch("ready"), replay.fetch("blockers").join("\n")
+      assert_empty replay.fetch("blockers")
+    end
+  end
+
+  def test_accepted_deferral_replay_rejects_headless_issue_snapshots_with_forged_pr_head
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    preflight = accepted_deferral_publication_preflight(
+      target,
+      issue_head_sha: "not_applicable",
+      implementation_pr_head_sha: "d" * 40
+    )
+
+    with_accepted_deferral_api(preflight, accepted_deferral_api(preflight)) do
+      assert_raises(CompletedBatchAuditReceipt::AcceptedDeferralError) do
+        CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+          blocked,
+          input:,
+          expected_batch_id: "ror-d-issue-4731-20260817",
+          targets: [target],
+          publication_preflight: preflight,
+          coordination_backend: REAL_BACKEND
+        )
+      end
+    end
+  end
+
+  def test_accepted_deferral_replay_preserves_legacy_evidence_when_lane_pr_state_is_merged
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    template_preflight = accepted_deferral_publication_preflight(target)
+    current_preflight = accepted_deferral_publication_preflight(target, lane_pr_state: "merged")
+    legacy_preflight = legacy_accepted_deferral_publication_preflight(current_preflight)
+    template_terminal = nil
+
+    with_accepted_deferral_api(template_preflight, accepted_deferral_api(template_preflight)) do
+      template_terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: template_preflight,
+        coordination_backend: REAL_BACKEND
+      )
+    end
+
+    current_state = CompletedBatchAuditReceipt.marker_state(template_terminal)
+    snapshot = CompletedBatchAuditReceipt.accepted_deferral_snapshot(
+      current_state.fields.fetch("accepted_deferral_snapshot")
+    )
+    legacy_snapshot = JSON.parse(JSON.generate(snapshot))
+    legacy_snapshot["product_evidence"] = {
+      "receipt_digest" => legacy_preflight.fetch("receipt_digest"),
+      "snapshot_digest" => legacy_preflight.fetch("snapshot_digest"),
+      "blockers" => legacy_preflight.fetch("blockers")
+    }
+    legacy_api = accepted_deferral_api(legacy_preflight)
+    decision_comment = legacy_api.call(
+      "github.com", "repos/shakacode/react_on_rails/issues/comments/5400000000"
+    )
+    legacy_snapshot.fetch("decision")["body_sha256"] =
+      "sha256:#{Digest::SHA256.hexdigest(decision_comment.fetch('body'))}"
+    legacy_terminal = accepted_deferral_terminal_from_snapshot(legacy_snapshot)
+
+    with_accepted_deferral_api(current_preflight, legacy_api) do
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        legacy_terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: [target],
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: current_preflight
+      )
+
+      assert replay.fetch("ready"), replay.fetch("blockers").join("\n")
+      assert_empty replay.fetch("blockers")
+    end
+  end
+
+  def test_accepted_deferral_replay_ignores_new_terminal_blockers_when_reconstructing_legacy_evidence
+    blocked = File.read(
+      File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"), encoding: "UTF-8"
+    )
+    input = JSON.parse(
+      File.read(File.join(FIXTURES, "completed-batch-accepted-deferral-ror.json"), encoding: "UTF-8")
+    )
+    target = accepted_deferral_target
+    current_preflight = accepted_deferral_publication_preflight(target)
+    legacy_preflight = legacy_accepted_deferral_publication_preflight(current_preflight)
+    current_terminal = nil
+
+    with_accepted_deferral_api(current_preflight, accepted_deferral_api(current_preflight)) do
+      current_terminal = CompletedBatchAuditReceipt.terminalize_accepted_deferral(
+        blocked,
+        input:,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        targets: [target],
+        publication_preflight: current_preflight,
+        coordination_backend: REAL_BACKEND
+      )
+    end
+
+    current_state = CompletedBatchAuditReceipt.marker_state(current_terminal)
+    snapshot = CompletedBatchAuditReceipt.accepted_deferral_snapshot(
+      current_state.fields.fetch("accepted_deferral_snapshot")
+    )
+    legacy_snapshot = JSON.parse(JSON.generate(snapshot))
+    legacy_snapshot["product_evidence"] = {
+      "receipt_digest" => legacy_preflight.fetch("receipt_digest"),
+      "snapshot_digest" => legacy_preflight.fetch("snapshot_digest"),
+      "blockers" => legacy_preflight.fetch("blockers")
+    }
+    legacy_api = accepted_deferral_api(legacy_preflight)
+    decision_comment = legacy_api.call(
+      "github.com", "repos/shakacode/react_on_rails/issues/comments/5400000000"
+    )
+    legacy_snapshot.fetch("decision")["body_sha256"] =
+      "sha256:#{Digest::SHA256.hexdigest(decision_comment.fetch('body'))}"
+    legacy_terminal = accepted_deferral_terminal_from_snapshot(legacy_snapshot)
+
+    current_with_extra_blocker = JSON.parse(JSON.generate(current_preflight))
+    current_with_extra_blocker["blockers"] << "shakacode/react_on_rails#issue:4731 coordination terminal evidence is absent"
+    current_with_extra_blocker["eligible"] = false
+    current_with_extra_blocker["verdict"] = "BLOCKED"
+    unsigned = current_with_extra_blocker.reject { |key, _value| key == "receipt_digest" }
+    current_with_extra_blocker["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+
+    with_accepted_deferral_api(current_with_extra_blocker, legacy_api) do
+      replay = CompletedBatchAuditReceipt.replay_marker(
+        legacy_terminal,
+        expected_batch_id: "ror-d-issue-4731-20260817",
+        expected_targets: [target],
+        coordination_backend: REAL_BACKEND,
+        publication_preflight: current_with_extra_blocker
+      )
+
+      assert replay.fetch("ready"), replay.fetch("blockers").join("\n")
+      assert_empty replay.fetch("blockers")
     end
   end
 
@@ -3603,9 +3871,13 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     blockers: nil,
     extra_unattributed_lane_names: [],
     coordination_repo: "shakacode/react_on_rails",
-    lane_identity_fields: {}
+    lane_identity_fields: {},
+    lane_targets: ["4731"],
+    lane_pr_state: "closed",
+    issue_head_sha: "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e",
+    implementation_pr_head_sha: "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e"
   )
-    head_sha = "c1f53daf1ab6453cd9a3ea3a513c0ce25fc97c6e"
+    headless_issue = issue_head_sha == "not_applicable"
     coordination_status = {
       "scope" => { "kind" => "batch", "batch_id" => "ror-d-issue-4731-20260817" },
       "batches" => [{
@@ -3617,11 +3889,11 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         "lanes" => [
           {
             "name" => "ror-d-issue-4731",
-            "targets" => ["4731"],
+            "targets" => lane_targets,
             "status" => "done",
             "terminal" => "done",
             "closed_at" => "2026-08-17T20:00:00Z",
-            "pr_state" => "closed",
+            "pr_state" => lane_pr_state,
             "pr_url" => "https://github.com/shakacode/react_on_rails/pull/4918",
             "evidence_url" => "https://github.com/shakacode/react_on_rails/pull/4918",
             **lane_identity_fields
@@ -3637,20 +3909,37 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         ]
       }]
     }
-    qa_evidence = <<~MARKER
-      <!-- qa-evidence v1
-      required: yes
-      status: satisfied
-      head_sha: #{head_sha}
-      tested_at: PR/head #{head_sha}
-      scope: PR #4918 exact head
-      automated_checks: focused tests
-      manual_checks: not applicable: no manual surface
-      findings: none
-      release_blocking: clear
-      process_gap_disposition: script
-      -->
-    MARKER
+    qa_evidence = if headless_issue
+                    <<~MARKER
+                      <!-- qa-evidence v1
+                      required: yes
+                      status: satisfied
+                      head_sha: #{implementation_pr_head_sha}
+                      tested_at: PR/head #{implementation_pr_head_sha}
+                      scope: issue #4731 headless accept-deferral
+                      automated_checks: focused tests
+                      manual_checks: not applicable: no manual surface
+                      findings: none
+                      release_blocking: clear
+                      process_gap_disposition: script
+                      -->
+                    MARKER
+                  else
+                    <<~MARKER
+                      <!-- qa-evidence v1
+                      required: yes
+                      status: satisfied
+                      head_sha: #{issue_head_sha}
+                      tested_at: PR/head #{issue_head_sha}
+                      scope: PR #4918 exact head
+                      automated_checks: focused tests
+                      manual_checks: not applicable: no manual surface
+                      findings: none
+                      release_blocking: clear
+                      process_gap_disposition: script
+                      -->
+                    MARKER
+                  end
     source_input = {
       "contract" => "completed-batch-publication-preflight-input",
       "version" => 1,
@@ -3660,7 +3949,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "target_snapshots" => [{
         "target" => target,
         "state" => "closed",
-        "head_sha" => head_sha,
+        "head_sha" => issue_head_sha,
         "source" => "https://github.com/shakacode/react_on_rails/pull/4918"
       }],
       "qa_evidence" => [{
@@ -3693,6 +3982,36 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
     end
     result
+  end
+
+  def legacy_accepted_deferral_publication_preflight(current)
+    legacy = JSON.parse(JSON.generate(current))
+    target = legacy.fetch("targets").fetch(0)
+    lane = legacy.dig("source_input", "coordination_status", "batches", 0, "lanes", 0)
+    label = "#{target.fetch('repo')}#issue:#{target.fetch('number')}"
+    legacy["blockers"] = [
+      "coordination lane #{lane.fetch('name')} target is absent or ambiguous",
+      "#{label} is absent from resolved coordination scope",
+      "#{label} target state/head is not authenticated or fresh"
+    ]
+    legacy.dig("snapshot", "coordination")["lanes"] = []
+    legacy["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(legacy.fetch("snapshot"))
+    unsigned = legacy.reject { |key, _value| key == "receipt_digest" }
+    legacy["receipt_digest"] = CompletedBatchPublicationPreflight.digest(unsigned)
+    legacy
+  end
+
+  def accepted_deferral_terminal_from_snapshot(snapshot)
+    fields = CompletedBatchAuditReceipt.accepted_deferral_terminal_fields(snapshot)
+    ordered = CompletedBatchAuditReceipt::LEGACY_FIELDS.flat_map do |field|
+      line = "#{field}: #{fields.fetch(field)}\n"
+      if field == "scope_evidence"
+        [line, "accepted_deferral_snapshot: #{fields.fetch('accepted_deferral_snapshot')}\n"]
+      else
+        [line]
+      end
+    end.join
+    "<!-- completed-batch-audit v1\n#{ordered}-->\n"
   end
 
   def accepted_deferral_predecessor_receipt(marker)

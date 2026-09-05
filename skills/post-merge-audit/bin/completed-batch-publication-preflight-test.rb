@@ -74,6 +74,37 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input
   end
 
+  def issue_with_pr_input(lane_pr_state: "merged", target_spelling: "10036")
+    input = no_pr_input
+    issue_number = 10_036
+    pr_number = 10_049
+    issue_target = input.fetch("expected_targets").find { |row| row.fetch("number") == issue_number }
+    pr_target = input.fetch("expected_targets").find { |row| row.fetch("number") == pr_number }
+    input["expected_targets"] = [issue_target, pr_target]
+
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == [issue_number.to_s] }
+    lane["targets"] = [target_spelling]
+    lane["pr_url"] = "https://github.com/shakacode/hichee/pull/#{pr_number}"
+    lane.delete("issue_url")
+    lane["pr_state"] = lane_pr_state
+    lane["evidence_url"] = lane.fetch("pr_url")
+    input.dig("coordination_status", "batches", 0)["lanes"] = [lane]
+
+    issue_snapshot = input.fetch("target_snapshots").find do |row|
+      row.dig("target", "number") == issue_number
+    end
+    issue_snapshot.delete("no_pr_evidence")
+    issue_snapshot["source"] = "https://github.com/shakacode/hichee/issues/#{issue_number}"
+    input["target_snapshots"] = input.fetch("target_snapshots").select do |row|
+      [issue_number, pr_number].include?(row.dig("target", "number"))
+    end
+    input["qa_evidence"] = input.fetch("qa_evidence").select do |row|
+      [issue_number, pr_number].include?(row.dig("target", "number"))
+    end
+    input
+  end
+
   def qa_v2_evidence(head_sha:, user_visible_ui_change:)
     ui_change = user_visible_ui_change == "yes"
     destination = ui_change ? "github_pr" : "not_applicable"
@@ -132,6 +163,27 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
 
       raw_head_sha = row["head_sha"].to_s.downcase
       head_sha = raw_head_sha.match?(CompletedBatchPublicationPreflight::SHA_PATTERN) ? raw_head_sha : nil
+      {
+        "target" => target,
+        "state" => row.fetch("state"),
+        "head_sha" => head_sha,
+        "completed_at" => row.fetch("completed_at", "2026-08-01T00:00:00Z"),
+        "verification_source" => "authenticated gh api"
+      }
+    end
+  end
+
+  def strict_target_verifier(input)
+    lambda do |target:|
+      row = input.fetch("target_snapshots").find { |candidate| candidate.fetch("target") == target }
+      next unless row
+
+      raw_head_sha = row["head_sha"].to_s.downcase
+      head_sha = if target.fetch("type") == "issue"
+                   nil
+                 elsif raw_head_sha.match?(CompletedBatchPublicationPreflight::SHA_PATTERN)
+                   raw_head_sha
+                 end
       {
         "target" => target,
         "state" => row.fetch("state"),
@@ -1233,6 +1285,274 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal snapshot.fetch("no_pr_evidence"), issue_snapshot.fetch("no_pr_evidence")
     issue_qa = result.dig("snapshot", "qa").find { |row| row.dig("target", "number") == number }
     assert_equal "NOT_APPLICABLE", issue_qa.fetch("verdict")
+  end
+
+  def test_issue_targeted_lane_publishes_its_complementary_merged_pr
+    input = issue_with_pr_input
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    target_types = result.fetch("targets").map { |target| target.fetch("type") }
+    assert_equal %w[pull_request issue], target_types
+    issue_snapshot = result.dig("snapshot", "targets").find do |row|
+      row.dig("target", "type") == "issue"
+    end
+    assert_equal "closed", issue_snapshot.fetch("state")
+    assert_nil issue_snapshot.fetch("head_sha")
+    assert_nil issue_snapshot.fetch("no_pr_evidence")
+    pr_snapshot = result.dig("snapshot", "targets").find do |row|
+      row.dig("target", "type") == "pull_request"
+    end
+    assert_equal "merged", pr_snapshot.fetch("state")
+    assert_match CompletedBatchPublicationPreflight::SHA_PATTERN, pr_snapshot.fetch("head_sha")
+    qa_verdicts = result.dig("snapshot", "qa").to_h do |row|
+      [row.dig("target", "type"), row.fetch("verdict")]
+    end
+    assert_equal({ "issue" => "NOT_APPLICABLE", "pull_request" => "SATISFIED" }, qa_verdicts)
+  end
+
+  def test_issue_targeted_lane_uses_authenticated_terminal_state_for_each_target
+    %w[merged closed].each do |lane_pr_state|
+      input = issue_with_pr_input(lane_pr_state:)
+
+      result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+      assert result.fetch("eligible"), "#{lane_pr_state}: #{result.fetch('blockers').join("\n")}"
+      lanes = result.dig("snapshot", "coordination", "lanes")
+      lane_target_types = lanes.map { |lane| lane.dig("target", "type") }
+      target_states = result.dig("snapshot", "targets").map { |row| row.fetch("state") }
+      assert_equal %w[pull_request issue], lane_target_types
+      assert_equal %w[merged closed], target_states
+    end
+  end
+
+  def test_issue_targeted_lane_rejects_a_scalar_that_matches_neither_terminal_target
+    input = issue_with_pr_input(lane_pr_state: "open")
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 coordination target state is not closed"
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10049 coordination target state is not merged"
+  end
+
+  def test_typed_lane_targets_resolve_to_their_declared_types
+    issue_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
+    }
+    pr_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 156
+    }
+    expected_targets = [issue_target, pr_target]
+
+    {
+      "issue:130" => issue_target,
+      "pull_request:156" => pr_target,
+      "pr:156" => pr_target
+    }.each do |spelling, expected|
+      targets = CompletedBatchPublicationPreflight.targets_for_lane(
+        { "targets" => [spelling] },
+        "shakacode/hichee",
+        expected_targets
+      )
+
+      assert_equal [expected], targets, spelling
+    end
+  end
+
+  def test_issue_url_and_produced_pr_url_are_complementary_lane_targets
+    issue_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
+    }
+    pr_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 156
+    }
+
+    targets = CompletedBatchPublicationPreflight.targets_for_lane(
+      {
+        "targets" => ["issue:130"],
+        "issue_url" => "https://github.com/shakacode/hichee/issues/130",
+        "pr_url" => "https://github.com/shakacode/hichee/pull/156"
+      },
+      "shakacode/hichee",
+      [issue_target, pr_target]
+    )
+
+    assert_equal [issue_target, pr_target], targets
+  end
+
+  def test_mixed_case_complementary_urls_canonicalize_to_expected_targets
+    input = issue_with_pr_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes", 0)
+    lane["issue_url"] = "https://github.com/ShakaCode/HIChee/issues/10036"
+    lane["pr_url"] = "https://github.com/ShakaCode/HIChee/pull/10049"
+    lane["evidence_url"] = lane["pr_url"]
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(
+      result,
+      expected_targets: input.fetch("expected_targets")
+    )
+  end
+
+  def test_explicit_complementary_target_identity_is_order_independent
+    issue_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
+    }
+    pr_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 156
+    }
+    lane = {
+      "issue_url" => "https://github.com/shakacode/hichee/issues/130",
+      "pr_url" => "https://github.com/shakacode/hichee/pull/156"
+    }
+
+    [%w[issue:130 pr:156], %w[pr:156 issue:130]].each do |spelling|
+      targets = CompletedBatchPublicationPreflight.targets_for_lane(
+        lane.merge("targets" => spelling),
+        "shakacode/hichee",
+        [issue_target, pr_target]
+      )
+
+      assert_equal [issue_target, pr_target].sort_by { |target| target.fetch("type") },
+                   targets.sort_by { |target| target.fetch("type") }, spelling.inspect
+    end
+  end
+
+  def test_issue_identity_url_cannot_collapse_into_the_produced_pr_url
+    issue_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
+    }
+    pr_target = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 156
+    }
+    produced_pr_url = "https://github.com/shakacode/hichee/pull/156"
+
+    targets = CompletedBatchPublicationPreflight.targets_for_lane(
+      {
+        "targets" => ["issue:130"],
+        "issue_url" => produced_pr_url,
+        "pr_url" => produced_pr_url
+      },
+      "shakacode/hichee",
+      [issue_target, pr_target]
+    )
+
+    assert_empty targets
+  end
+
+  def test_produced_pr_is_not_treated_as_complementary_to_multiple_issue_targets
+    first_issue = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "issue", "number" => 130
+    }
+    second_issue = first_issue.merge("number" => 131)
+    produced_pr = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 156
+    }
+
+    targets = CompletedBatchPublicationPreflight.targets_for_lane(
+      {
+        "targets" => ["issue:130", "issue:131"],
+        "pr_url" => "https://github.com/shakacode/hichee/pull/156"
+      },
+      "shakacode/hichee",
+      [first_issue, second_issue, produced_pr]
+    )
+
+    assert_empty targets
+  end
+
+  def test_url_target_cannot_identify_only_a_subset_of_same_type_lane_targets
+    first_pr = {
+      "host" => "github.com", "repo" => "shakacode/hichee", "type" => "pull_request", "number" => 155
+    }
+    second_pr = first_pr.merge("number" => 156)
+
+    targets = CompletedBatchPublicationPreflight.targets_for_lane(
+      {
+        "targets" => ["pr:155", "pr:156"],
+        "pr_url" => "https://github.com/shakacode/hichee/pull/155"
+      },
+      "shakacode/hichee",
+      [first_pr, second_pr]
+    )
+
+    assert_empty targets
+  end
+
+  def test_issue_targeted_lane_fails_closed_without_strict_issue_authentication
+    input = issue_with_pr_input
+    issue_snapshot = input.fetch("target_snapshots").find do |row|
+      row.dig("target", "type") == "issue"
+    end
+    issue_snapshot["head_sha"] = "a" * 40
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 target state/head is not authenticated or fresh"
+  end
+
+  def test_issue_targeted_done_lane_still_requires_terminal_evidence
+    input = issue_with_pr_input
+    input.dig("coordination_status", "batches", 0, "lanes", 0).delete("evidence_url")
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 coordination terminal evidence is absent"
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10049 coordination terminal evidence is absent"
+  end
+
+  def test_issue_resolved_by_pr_rejects_qa_bound_to_an_unrelated_head
+    input = issue_with_pr_input
+    issue_qa = input.fetch("qa_evidence").find { |row| row.dig("target", "type") == "issue" }
+    issue_qa["evidence"] = qa_v2_evidence(head_sha: "b" * 40, user_visible_ui_change: "no")
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 QA evidence contradicts issue-resolved-by-PR disposition"
+  end
+
+  def test_issue_resolved_by_pr_rejects_a_malformed_not_applicable_qa_marker
+    input = issue_with_pr_input
+    issue_qa = input.fetch("qa_evidence").find { |row| row.dig("target", "type") == "issue" }
+    issue_qa["evidence"] = issue_qa.fetch("evidence").sub(
+      "release_blocking: not_applicable",
+      "release_blocking: clear"
+    )
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 QA evidence contradicts issue-resolved-by-PR disposition"
+  end
+
+  def test_issue_resolved_by_pr_rejects_stale_no_pr_evidence
+    input = issue_with_pr_input
+    issue_snapshot = input.fetch("target_snapshots").find { |row| row.dig("target", "type") == "issue" }
+    issue_snapshot["no_pr_evidence"] = {
+      "url" => "https://github.com/shakacode/hichee/issues/10036",
+      "rationale" => "closed issue; no implementation PR was created",
+      "target" => JSON.parse(JSON.generate(issue_snapshot.fetch("target")))
+    }
+
+    result = assess_input(input, target_verifier: strict_target_verifier(input))
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 no-PR evidence contradicts complementary produced PR"
   end
 
   def test_no_pr_issue_rejects_head_bound_satisfied_qa
