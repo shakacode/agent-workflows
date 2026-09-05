@@ -33,7 +33,12 @@ module AutonomousMergeCloseout
   INSTALLED_PACK_PROVENANCE_PATTERN = /\Averified-installed-pack:[0-9a-f]{64}\z/
   METRIC_KEYS = %w[changed_files changed_lines commits reviewed_heads].freeze
   SAFE_CLASSES = %w[none documentation tests formatting-comments].freeze
-  SHADOW_GATE_SHAPES = [[], ["reviewed-heads-limit"]].freeze
+  SHADOW_GATE_SHAPES = [
+    [],
+    %w[reviewed-heads-limit],
+    %w[stale-approval-satisfiable],
+    %w[reviewed-heads-limit stale-approval-satisfiable]
+  ].freeze
   SHADOW_EVIDENCE_SHAPES = [
     [],
     ["submitted-review-head-missing"],
@@ -58,6 +63,12 @@ module AutonomousMergeCloseout
     "public-compatibility" => "changes a public compatibility contract",
     "reviewed-heads-limit" => "crosses the repository's reviewed-head limit for autonomous merge",
     "security-auth-privacy" => "changes security, authentication, privacy, or a trust boundary"
+  }.freeze
+  SHADOW_GATE_EXPLANATIONS = {
+    "reviewed-heads-limit" =>
+      "The repository's reviewed-head shadow limit was exceeded, so the exact review-head mix needs attention before the gate graduates.",
+    "stale-approval-satisfiable" =>
+      "Branch protection can still read satisfied on a stale approval because stale reviews are retained and a new push does not force reapproval."
   }.freeze
   GATE_EXPLANATIONS = {
     "architectural-product-judgment" =>
@@ -405,6 +416,8 @@ module AutonomousMergeCloseout
       "head_sha" => result.fetch("head_sha"),
       "gate_explanations" => gate_explanations,
       "triggered_gates" => result.fetch("triggered_gates"),
+      "shadow_triggered_gates" => result.fetch("shadow_triggered_gates"),
+      "shadow_evidence_unknown" => result.fetch("shadow_evidence_unknown"),
       "rollback_assessment" => result["rollback_assessment"],
       "policy_provenance" => result["policy_provenance"],
       "evidence_failures" => result.fetch("evidence_failures"),
@@ -431,6 +444,12 @@ module AutonomousMergeCloseout
           reason = "#{reason}: #{markdown_code_literal(path.fetch('detail'))}" if path.key?("detail")
           lines << "  Path evidence: #{markdown_code_literal(path.fetch('path'))} (#{reason})"
         end
+      end
+    end
+    unless closeout.fetch("shadow_triggered_gates").empty?
+      lines.concat(["", "Shadow gate signals:"])
+      closeout.fetch("shadow_triggered_gates").each do |gate|
+        lines << "- `#{gate}` — #{SHADOW_GATE_EXPLANATIONS.fetch(gate)}"
       end
     end
     unless closeout.fetch("evidence_failures").empty?

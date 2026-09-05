@@ -62,6 +62,10 @@ module AutonomousMergeEvidence
       raise CollectionError, "head or base moved during evidence collection"
     end
 
+    branch_protection = normalize_branch_protection(
+      api.call("#{prefix}/branches/#{initial_base_ref}/protection")
+    )
+
     unless final_force_push_watermark == initial_force_push_watermark
       raise CollectionError, "force-push watermark changed during evidence collection"
     end
@@ -89,6 +93,8 @@ module AutonomousMergeEvidence
       "head_sha" => initial_head,
       "base_sha" => initial_base,
       "base_ref" => initial_base_ref,
+      "branch_protection_complete" => true,
+      "branch_protection" => branch_protection,
       "files_complete" => true,
       "files" => files.map { |file| normalize_file(file) },
       "commits_complete" => true,
@@ -263,6 +269,63 @@ module AutonomousMergeEvidence
     end
 
     { "state" => state, "commit_id" => commit_id }
+  end
+
+  def normalize_branch_protection_enabled(value)
+    case value
+    when true, false
+      value
+    when Hash
+      value["enabled"]
+    end
+  end
+
+  def normalize_branch_protection(protection)
+    raise CollectionError, "malformed GitHub branch protection evidence" unless protection.is_a?(Hash)
+
+    required_reviews = protection["required_pull_request_reviews"]
+    unless required_reviews.is_a?(Hash)
+      raise CollectionError, "GitHub branch protection required_pull_request_reviews must be a mapping"
+    end
+
+    required_count = required_reviews["required_approving_review_count"]
+    dismiss_stale_reviews = required_reviews["dismiss_stale_reviews"]
+    require_last_push_approval = required_reviews["require_last_push_approval"]
+    enforce_admins = normalize_branch_protection_enabled(protection["enforce_admins"])
+    required_status_checks = protection["required_status_checks"]
+    contexts = if required_status_checks.is_a?(Hash)
+                 Array(required_status_checks["contexts"]).filter_map do |context|
+                   context.to_s.strip.empty? ? nil : context.to_s
+                 end.uniq.sort
+               else
+                 []
+               end
+
+    unless required_count.is_a?(Integer) && required_count >= 0
+      raise CollectionError, "GitHub branch protection required_approving_review_count must be a nonnegative integer"
+    end
+    unless [true, false].include?(dismiss_stale_reviews)
+      raise CollectionError, "GitHub branch protection dismiss_stale_reviews must be boolean"
+    end
+    unless [true, false].include?(require_last_push_approval)
+      raise CollectionError, "GitHub branch protection require_last_push_approval must be boolean"
+    end
+    unless [true, false].include?(enforce_admins)
+      raise CollectionError, "GitHub branch protection enforce_admins must be boolean"
+    end
+    unless contexts.all? { |context| context.is_a?(String) && !context.strip.empty? }
+      raise CollectionError, "GitHub branch protection required_status_checks.contexts must be strings"
+    end
+
+    {
+      "required_pull_request_reviews" => {
+        "required_approving_review_count" => required_count,
+        "dismiss_stale_reviews" => dismiss_stale_reviews,
+        "require_last_push_approval" => require_last_push_approval
+      },
+      "enforce_admins" => enforce_admins,
+      "required_status_checks" => { "contexts" => contexts }
+    }
   end
 
   def full_sha?(value)

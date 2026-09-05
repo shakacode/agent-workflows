@@ -101,7 +101,9 @@ module MergeAssurance
   ].freeze
   AUTONOMOUS_SHADOW_GATE_SHAPES = [
     [],
-    ["reviewed-heads-limit"]
+    %w[reviewed-heads-limit],
+    %w[stale-approval-satisfiable],
+    %w[reviewed-heads-limit stale-approval-satisfiable]
   ].freeze
   AUTONOMOUS_SHADOW_EVIDENCE_SHAPES = [
     [],

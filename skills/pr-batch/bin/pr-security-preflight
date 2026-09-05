@@ -1520,6 +1520,173 @@ def participant_findings(repo:, target:, visible:, permission_cache:, trust_conf
   findings
 end
 
+def normalize_branch_protection_enabled(value)
+  case value
+  when true, false
+    value
+  when Hash
+    value["enabled"]
+  end
+end
+
+def merge_feasibility_unknown(
+  reason:, repo:, branch:, head_sha:, author_login:, actor_login: nil,
+  required_approving_review_count: nil, required_status_checks_contexts: [],
+  eligible_distinct_approver_logins: [], stale_approving_review_logins: [],
+  dismiss_stale_reviews: nil, require_last_push_approval: nil,
+  enforce_admins: nil, permissions_admin: nil, self_approval_impossible: nil,
+  stale_approval_satisfiable: nil
+)
+  {
+    status: "UNKNOWN",
+    reason:,
+    repository: repo,
+    branch:,
+    head_sha:,
+    acting_identity: actor_login,
+    pr_author: author_login,
+    required_approving_review_count: required_approving_review_count,
+    required_status_checks_contexts: required_status_checks_contexts,
+    eligible_distinct_approver_logins: eligible_distinct_approver_logins,
+    stale_approving_review_logins: stale_approving_review_logins,
+    dismiss_stale_reviews:,
+    require_last_push_approval:,
+    enforce_admins:,
+    permissions_admin:,
+    self_approval_impossible:,
+    stale_approval_satisfiable:,
+    expected_terminal: "autonomous-merge-evidence-unknown (#{reason})"
+  }
+end
+
+def merge_feasibility_for_target(repo:, target:, rest:)
+  branch = target["baseRefName"]
+  head_sha = target["headRefOid"]
+  author_login = target.dig("author", "login")
+  unless branch.is_a?(String) && !branch.strip.empty?
+    return merge_feasibility_unknown(
+      reason: "base branch name is unavailable",
+      repo:,
+      branch: branch,
+      head_sha:,
+      author_login:
+    )
+  end
+
+  actor_login = nil
+  permissions_admin = nil
+  branch_protection = nil
+  begin
+    actor_login = run_gh_json("api", "user").fetch("login")
+    repo_payload = run_gh_json("api", "repos/#{repo}")
+    permissions_admin = repo_payload.dig("permissions", "admin")
+    branch_protection = run_gh_json("api", "repos/#{repo}/branches/#{branch}/protection")
+  rescue StandardError => e
+    return merge_feasibility_unknown(
+      reason: "branch protection or acting identity is unavailable: #{e.message.lines.first&.strip}",
+      repo:,
+      branch:,
+      head_sha:,
+      author_login:,
+      actor_login:,
+      permissions_admin:
+    )
+  end
+
+  required_reviews = branch_protection["required_pull_request_reviews"]
+  unless required_reviews.is_a?(Hash)
+    return merge_feasibility_unknown(
+      reason: "required pull request review policy is unavailable",
+      repo:,
+      branch:,
+      head_sha:,
+      author_login:,
+      actor_login:,
+      permissions_admin:
+    )
+  end
+
+  required_count = required_reviews["required_approving_review_count"]
+  dismiss_stale_reviews = required_reviews["dismiss_stale_reviews"]
+  require_last_push_approval = required_reviews["require_last_push_approval"]
+  enforce_admins = normalize_branch_protection_enabled(branch_protection["enforce_admins"])
+  required_status_checks_contexts = Array(branch_protection.dig("required_status_checks", "contexts"))
+                                    .filter_map { |context| context.to_s.strip.empty? ? nil : context.to_s }
+                                    .uniq.sort
+
+  if [required_count, dismiss_stale_reviews, require_last_push_approval, enforce_admins].any?(&:nil?)
+    return merge_feasibility_unknown(
+      reason: "branch protection facts are incomplete",
+      repo:,
+      branch:,
+      head_sha:,
+      author_login:,
+      actor_login:,
+      permissions_admin:,
+      required_approving_review_count: required_count,
+      required_status_checks_contexts: required_status_checks_contexts,
+      dismiss_stale_reviews: dismiss_stale_reviews,
+      require_last_push_approval: require_last_push_approval,
+      enforce_admins: enforce_admins
+    )
+  end
+
+  reviews = Array(rest.fetch(:reviews))
+  current_head_approvals = reviews.select do |review|
+    review["state"] == "APPROVED" && review["commit_id"] == head_sha
+  end
+  eligible_distinct_approver_logins = current_head_approvals.filter_map { |review| review.dig("user", "login") }
+  eligible_distinct_approver_logins.reject! { |login| login == author_login }
+  eligible_distinct_approver_logins.uniq!
+  eligible_distinct_approver_logins.sort!
+  stale_approving_reviews = reviews.select do |review|
+    review["state"] == "APPROVED" && review["commit_id"].is_a?(String) && review["commit_id"] != head_sha
+  end
+  stale_approving_review_logins = stale_approving_reviews.filter_map { |review| review.dig("user", "login") }
+  stale_approving_review_logins.uniq!
+  stale_approving_review_logins.sort!
+  stale_approval_satisfiable = dismiss_stale_reviews == false &&
+                               require_last_push_approval == false &&
+                               stale_approving_review_logins.any?
+  self_approval_impossible = actor_login == author_login && required_count.to_i.positive?
+  admin_bypass_available = permissions_admin == true && enforce_admins == false
+
+  feasible = required_count.to_i <= 0 || eligible_distinct_approver_logins.length >= required_count.to_i
+  status = feasible ? "feasible" : "infeasible"
+  reason = if status == "infeasible"
+             if self_approval_impossible && eligible_distinct_approver_logins.empty?
+               "main requires #{required_count} approving review(s); acting identity is the PR author"
+             elsif eligible_distinct_approver_logins.empty?
+               "main requires #{required_count} approving review(s); no eligible distinct approver is visible"
+             else
+               "main requires #{required_count} approving review(s); only #{eligible_distinct_approver_logins.length} eligible distinct approver(s) are visible"
+             end
+           end
+  expected_terminal = status == "infeasible" ? "ready-human-review-required (#{reason})" : nil
+
+  {
+    status:,
+    reason:,
+    repository: repo,
+    branch:,
+    head_sha:,
+    acting_identity: actor_login,
+    pr_author: author_login,
+    required_approving_review_count: required_count,
+    required_status_checks_contexts: required_status_checks_contexts,
+    eligible_distinct_approver_logins: eligible_distinct_approver_logins,
+    stale_approving_review_logins: stale_approving_review_logins,
+    dismiss_stale_reviews: dismiss_stale_reviews,
+    require_last_push_approval: require_last_push_approval,
+    enforce_admins: enforce_admins,
+    permissions_admin: permissions_admin,
+    admin_bypass_available: admin_bypass_available,
+    self_approval_impossible: self_approval_impossible,
+    stale_approval_satisfiable: stale_approval_satisfiable,
+    expected_terminal: expected_terminal
+  }
+end
+
 def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_reactions:, permission_cache:,
                 trust_config:, team_cache:, canonical_bot_cache:)
   issue = issue_payload(repo, number)
@@ -1578,6 +1745,8 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     require_unchanged_pull_request_snapshot!(diff_snapshot, pull_request_snapshot(repo, number), number)
   end
 
+  merge_feasibility = target_is_pr ? merge_feasibility_for_target(repo:, target:, rest:) : nil
+
   {
     changed_file_count: diff_snapshot&.fetch(:changed_file_count),
     diff_identity:,
@@ -1598,6 +1767,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     risky_file_findings:,
     suspicious: suspicious_findings.fetch(:suspicious),
     suspicious_warnings: suspicious_findings.fetch(:suspicious_warnings),
+    merge_feasibility:,
     target:,
     target_is_pr:,
     metadata_only_interactions:,
@@ -1864,6 +2034,39 @@ def print_file_findings(result)
   end
 end
 
+def print_merge_feasibility(feasibility)
+  return unless feasibility.is_a?(Hash)
+
+  puts "  Merge feasibility preflight: #{feasibility.fetch(:status)}"
+  puts "    Repository: #{feasibility.fetch(:repository)}"
+  puts "    Base branch: #{feasibility.fetch(:branch)}"
+  puts "    Acting identity: #{feasibility.fetch(:acting_identity) || 'UNKNOWN'}"
+  puts "    PR author: #{feasibility.fetch(:pr_author) || 'UNKNOWN'}"
+  puts "    Required approving review count: #{feasibility.fetch(:required_approving_review_count) || 'UNKNOWN'}"
+  puts "    Eligible distinct approvers: " \
+       "#{feasibility.fetch(:eligible_distinct_approver_logins).empty? ? 'none' : feasibility.fetch(:eligible_distinct_approver_logins).join(', ')}"
+  puts "    Self-approval: #{feasibility.fetch(:self_approval_impossible) ? 'impossible' : 'not required'}"
+  puts "    dismiss_stale_reviews: #{feasibility.fetch(:dismiss_stale_reviews).nil? ? 'UNKNOWN' : feasibility.fetch(:dismiss_stale_reviews)}"
+  puts "    require_last_push_approval: #{feasibility.fetch(:require_last_push_approval).nil? ? 'UNKNOWN' : feasibility.fetch(:require_last_push_approval)}"
+  puts "    permissions.admin: #{feasibility.fetch(:permissions_admin).nil? ? 'UNKNOWN' : feasibility.fetch(:permissions_admin)}"
+  puts "    enforce_admins: #{feasibility.fetch(:enforce_admins).nil? ? 'UNKNOWN' : feasibility.fetch(:enforce_admins)}"
+  admin_bypass_available = feasibility.fetch(:admin_bypass_available)
+  admin_bypass = if admin_bypass_available.nil?
+                   "UNKNOWN"
+                 elsif admin_bypass_available
+                   "available"
+                 else
+                   "unavailable"
+                 end
+  puts "    Admin bypass: #{admin_bypass}"
+  puts "    Required status checks: " \
+       "#{feasibility.fetch(:required_status_checks_contexts).empty? ? 'none' : feasibility.fetch(:required_status_checks_contexts).join(', ')}"
+  puts "    Stale approving reviews: " \
+       "#{feasibility.fetch(:stale_approving_review_logins).empty? ? 'none' : feasibility.fetch(:stale_approving_review_logins).join(', ')}"
+  puts "    Reported condition: stale-approval-satisfiable" if feasibility.fetch(:stale_approval_satisfiable)
+  puts "    Expected terminal: #{feasibility.fetch(:expected_terminal)}" if feasibility.fetch(:expected_terminal)
+end
+
 def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowledged_risks:, fail_on_high_risk_files:,
                       strict_trust:)
   target_label = result.fetch(:target_is_pr) ? "PR" : "Issue"
@@ -1883,6 +2086,7 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
   print_suspicious_findings(result.fetch(:suspicious))
   print_suspicious_warning_findings(result.fetch(:suspicious_warnings))
   print_file_findings(result)
+  print_merge_feasibility(result.fetch(:merge_feasibility))
   record_blockers(
     result,
     overall_blockers,
@@ -1912,6 +2116,7 @@ pr_query = <<~GRAPHQL
         number
         title
         url
+        baseRefName
         headRefOid
         author { login }
         participants(first:100) {

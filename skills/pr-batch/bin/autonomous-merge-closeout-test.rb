@@ -238,6 +238,23 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     ], result.fetch("gate_explanations")
   end
 
+  def test_shadow_gate_signals_render_the_stale_approval_advisory
+    source = evaluator_result(
+      gates: ["security-auth-privacy"],
+      shadow_triggered_gates: ["stale-approval-satisfiable"]
+    )
+
+    markdown, markdown_status = render(source)
+    json, json_status = render(source, format: "json")
+
+    assert markdown_status.success?, markdown
+    assert_includes markdown, "Shadow gate signals:"
+    assert_includes markdown, "stale-approval-satisfiable"
+    assert_includes markdown, "stale approval because stale reviews are retained"
+    assert json_status.success?, json
+    assert_equal ["stale-approval-satisfiable"], JSON.parse(json).fetch("shadow_triggered_gates")
+  end
+
   def test_markdown_renders_pr_controlled_paths_as_literal_code_without_changing_json
     adversarial_path =
       "app/services/checkout/](evil)[Click *here*](https://evil.example/x)<script>|#_ ` `` ```\nnext.rb"
@@ -712,7 +729,19 @@ class AutonomousMergeCloseoutTest < Minitest::Test
       "files" => files,
       "commits" => [{ "sha" => "c" * 40 }],
       "reviews" => [],
-      "decision_comments" => []
+      "decision_comments" => [],
+      "branch_protection_complete" => true,
+      "branch_protection" => {
+        "required_pull_request_reviews" => {
+          "required_approving_review_count" => 1,
+          "dismiss_stale_reviews" => true,
+          "require_last_push_approval" => true
+        },
+        "enforce_admins" => false,
+        "required_status_checks" => {
+          "contexts" => ["ci"]
+        }
+      }
     }
     calibration = File.join(
       repo_root,
@@ -810,12 +839,14 @@ class AutonomousMergeCloseoutTest < Minitest::Test
                        "deletions" => file.fetch("deletions")
                      }
                    end
-                 when "repos/owner/repo/pulls/42/commits?per_page=100&page=1"
+                when "repos/owner/repo/pulls/42/commits?per_page=100&page=1"
                    objective.fetch("commits")
-                 when "repos/owner/repo/pulls/42/reviews?per_page=100&page=1"
+                when "repos/owner/repo/pulls/42/reviews?per_page=100&page=1"
                    objective.fetch("reviews")
                  when "repos/owner/repo/issues/42/comments?per_page=100&page=1"
                    objective.fetch("decision_comments")
+                 when "repos/owner/repo/branches/main/protection"
+                   objective.fetch("branch_protection")
                  else
                    warn "unexpected GitHub API path: #{request}"
                    exit 1
@@ -847,6 +878,8 @@ class AutonomousMergeCloseoutTest < Minitest::Test
     verdict: "human-approval-required",
     head_sha: HEAD_SHA,
     path_matches: [],
+    shadow_triggered_gates: [],
+    shadow_evidence_unknown: [],
     rollback_assessment: "code-only-rollback-established",
     evidence_failures: [],
     policy_provenance: "git:#{BASE_SHA}:#{POLICY_PATH}@#{POLICY_BLOB_SHA}"
@@ -872,8 +905,8 @@ class AutonomousMergeCloseoutTest < Minitest::Test
       "path_matches" => path_matches,
       "safe_class" => "none",
       "triggered_gates" => gates,
-      "shadow_triggered_gates" => [],
-      "shadow_evidence_unknown" => [],
+      "shadow_triggered_gates" => shadow_triggered_gates,
+      "shadow_evidence_unknown" => shadow_evidence_unknown,
       "rollback_assessment" => rollback_assessment,
       "human_decision_evidence" => { "status" => "none" },
       "current_integration" => current_integration,
