@@ -6,6 +6,12 @@ argument-hint: '[PR URL or number; defaults to current branch]'
 
 # Adversarial PR Review
 
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+
 Run a skeptical, report-only review of a PR. This is a red-team gate, not a
 normal style review and not a code-editing workflow.
 

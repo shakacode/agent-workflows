@@ -1,5 +1,13 @@
 # Cost-Aware Agent Model Routing
 
+For new Codex planning, resolve the advisory `astra-pilot-v1` profile from
+[central routing data](../skills/plan-pr-batch/references/model-routing-profiles.json) with the plan skill's
+`bin/model-routing-profile --role <role>`. Its named preferences supersede the
+GPT-5.6 recommendations below for the listed roles; those recommendations and
+planning tables remain the established comparison baseline. Keep explicit user
+routes, verified host support, portable fallback, and independent evidence rules.
+This is an unmeasured pilot, not a measured promotion.
+
 Use this guide with `$plan-pr-batch`, `$pr-batch`, and the canonical
 [PR Processing Workflow](../workflows/pr-processing.md). It separates the
 high-leverage coordinator from the higher-volume worker fleet, starts workers on

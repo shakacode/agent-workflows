@@ -6,6 +6,14 @@ argument-hint: '[issue/PR numbers, labels, milestone, or search query]'
 
 # Plan PR Batch
 
+For new Codex planning, resolve the advisory `astra-pilot-v1` profile from
+[central routing data](references/model-routing-profiles.json) with the plan skill's
+`bin/model-routing-profile --role <role>`. Its named preferences supersede the
+GPT-5.6 recommendations below for the listed roles; those recommendations and
+planning tables remain the established comparison baseline. Keep explicit user
+routes, verified host support, portable fallback, and independent evidence rules.
+This is an unmeasured pilot, not a measured promotion.
+
 Create verified scope and a goal prompt for `$pr-batch`. Do not implement items here.
 
 If the request is vague feature or bug intent, use `$spec` first to produce requirements, design, and tasks before planning the batch.

@@ -1,0 +1,55 @@
+{
+  "schema": "workflow-behavior-scenarios-v1",
+  "scenarios": [
+    {
+      "id": "authorized-completion",
+      "prompt": "Continue the authorized implementation and PR after the first check passes.",
+      "expected_action": "continue-authorized-work"
+    },
+    {
+      "id": "bounded-step",
+      "prompt": "User explicitly requests one next step only; that step is finished.",
+      "expected_action": "stop-at-requested-boundary"
+    },
+    {
+      "id": "repeated-failure",
+      "prompt": "The same failure occurs three times without new evidence.",
+      "expected_action": "diagnose-or-return-to-coordinator"
+    },
+    {
+      "id": "spec-in-implementation",
+      "prompt": "An authorized implementation requires a specification that is now finished.",
+      "expected_action": "continue-authorized-work"
+    },
+    {
+      "id": "standalone-spec",
+      "prompt": "The user requests a standalone specification only; it is finished.",
+      "expected_action": "stop-at-requested-boundary"
+    },
+    {
+      "id": "missing-authority",
+      "prompt": "A consequential scope or security decision requires authority the coordinator does not possess.",
+      "expected_action": "ask-user-with-evidence"
+    },
+    {
+      "id": "local-worker-choice",
+      "prompt": "A worker asks about a routine local choice inside existing authority.",
+      "expected_action": "coordinator-resolves"
+    },
+    {
+      "id": "reusable-verification",
+      "prompt": "Unchanged local evidence covers the same inputs; no repo rule requires repetition. Current-head remote gates still apply.",
+      "expected_action": "reuse-local-refresh-remote"
+    },
+    {
+      "id": "user-correction",
+      "prompt": "A user corrects a requirement while an independent tool is running.",
+      "expected_action": "incorporate-correction-reconcile-tool"
+    },
+    {
+      "id": "optional-route-unavailable",
+      "prompt": "A preferred route is unavailable and a suitable host route exists.",
+      "expected_action": "continue-record-fallback"
+    }
+  ]
+}

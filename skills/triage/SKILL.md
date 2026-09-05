@@ -6,6 +6,12 @@ argument-hint: '[repo, scope, or batch objective]'
 
 # Triage
 
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+
 Use this skill when a coordinator wants a generated replacement for a manual
 issue/PR batch snapshot: complete inventory, dependency graph, live coordination
 state, and a capacity-aware split into ready `$pr-batch` prompts.
