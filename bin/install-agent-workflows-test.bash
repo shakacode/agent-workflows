@@ -7078,6 +7078,7 @@ test_installed_prompt_guard_ignores_unowned_docs() {
   set -e
   [[ "$status" -eq 0 ]] || fail "expected installed prompt guard to pass, got $status: $output"
   assert_contains "$output" "All checks passed."
+  assert_contains "$output" "codex_goal_prompt_template_headroom="
 }
 
 test_installed_doctor_initializes_consumer_repo() {

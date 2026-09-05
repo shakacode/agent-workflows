@@ -596,7 +596,7 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      degrade to `UNKNOWN` when the backend does not provide them, while `pr_url`
      may use the verified GitHub PR URL from PR-open/current PR state.
    - For the `codex` target, keep the fenced goal prompt under 4000 characters
-     total with at least 300 characters of headroom, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
+     total, including the `/goal` line. The static template's remaining headroom is advisory, not a fatal CI condition; the guard script warns when it dips below that reserve and reports `codex_goal_prompt_template_headroom` so shrinking room stays visible while bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
      For the `claude` or `generic` target, do not prepend the Codex-only
      `/goal` wrapper; keep the shared `$pr-batch` invocation and do not apply Codex's strict 4000-character limit. <!-- host-allow: codex-only -->
      Still keep the prompt compact, measured, under 8000 characters, and free of
@@ -616,8 +616,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      Require `MODEL_ESCALATION_REQUEST` before a worker moves
      to a stronger route as a deliberate escalation, while ordinary host route
      substitution remains advisory metadata.
-     When route entries themselves cause the overflow or breach the 300-character
-     headroom floor, split along route groups so each generated goal carries only
+     When route entries themselves cause the overflow or breach the advisory
+     300-character reserve, split along route groups so each generated goal carries only
      the included lanes' complete routes;
      preserve omitted lanes and routes in the Batch Plan for later prompts.
    - Before responding, measure only the text inside the goal-prompt fence,
@@ -625,7 +625,7 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      print `Goal prompt character count: N characters (target: codex|claude|generic)`
      after the fence.
    - For Codex, if the measured prompt is 4000 characters or more, shrink by moving detail to the Batch Plan. Also split
-     before overflow when less than 300 characters of headroom remain. Output only
+     before overflow when less than 300 characters of headroom remain; the 300-character reserve is advisory, not a fatal CI condition. Output only
      the first ready goal; list omitted ready items in the Batch Plan for later goal prompts.
    - For Claude or generic targets, do not split solely because the prompt is
      4000 characters or more. Split only when the prompt is too large for the
