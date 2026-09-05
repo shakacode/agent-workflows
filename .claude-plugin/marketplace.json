@@ -8,7 +8,7 @@
     {
       "name": "scw",
       "source": "./",
-      "description": "Portable Codex and Claude workflow pack for ShakaCode repositories."
+      "description": "Portable Codex and Claude workflow pack."
     }
   ]
 }
