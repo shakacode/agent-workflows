@@ -61,6 +61,9 @@ ruby bin/agent-workflows-trust-audit-test.rb
 echo "== repository security policy =="
 ruby bin/repository-security-policy-test.rb
 
+echo "== attended and overnight workflow doc contract =="
+ruby bin/attended-and-overnight-workflow-contract-test.rb
+
 echo "== secure GitHub Actions gate =="
 ruby skills/secure-github-actions/bin/secure-github-actions-scan-test.rb
 ruby skills/secure-github-actions/bin/secure-github-actions-review-lens-test.rb

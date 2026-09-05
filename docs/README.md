@@ -39,6 +39,7 @@ and implementation plans are collected in the final reference section.
 | --- | --- |
 | Understand what each skill does and when to use it | [Skill Guide](skills.md) |
 | Choose between issue triage, one-PR lanes, batch planning, and batch execution | [PR Batch Skills Usage](pr-batch-skills.md) |
+| Run an attended work window or leave authorized work moving overnight | [Attended And Overnight Workflow](attended-and-overnight-workflow.md) |
 | Finish and archive a stale PR-batch task | Use the `$close-batch` skill |
 | Run repository control towers with one prioritized, deep-linked human-attention desk | [Control Tower And Human Attention Desk](control-tower-prompts.md) |
 | Understand task ownership, cross-task requests, approvals, and heartbeat communication | [User-Facing Coordination](user-facing-coordination.md) |

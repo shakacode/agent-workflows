@@ -273,12 +273,13 @@ Four plain-word definitions first:
   a default for you.
 
 For a first lane, choose `ask`. Here is what `ask` actually does: once the
-PR's ordinary gates are clean, the coordinator automatically starts a
-`$pr-walkthrough` — an exact-diff explanation of the PR, one conceptual
-change at a time, with room for your questions between changes — and only
-then asks one final merge question. The walkthrough itself is not approval:
+PR's ordinary gates are clean, the coordinator automatically publishes a
+`$pr-walkthrough` — a complete exact-diff explanation whose conceptual sections
+are separately replyable on GitHub — and only then asks one final merge
+question. The owning task consumes your thread replies asynchronously; live
+exploration remains available when you explicitly ask for it. The walkthrough itself is not approval:
 if the diff changes or a gate starts failing in the meantime, the merge
-question is withheld and the walkthrough restarts or stops.
+question is withheld: rebuild and republish the walkthrough or stop.
 
 Invoke the skill in your agent host from the adopted repository, naming one
 exact issue — in Codex, type the prompt below; in Claude Code, ask for the
@@ -309,25 +310,31 @@ Worker: branch 42-fix-empty-config-crash pushed with 2 commits.
 .agents/bin/validate PASS, .agents/bin/test PASS. PR #57 opened.
 
 Checks on PR #57: all green. merge_authority is ask, so starting the
-walkthrough.
+GitHub-native walkthrough.
 
-Walkthrough (1/2): the config loader now returns a documented default when
-the file is empty instead of raising. Questions before the next change?
-> no
+GitHub walkthrough published on PR #57 for the exact comparison
+`main@0123456` -> `89abcde`:
+- Orientation and complete two-section agenda: COMMENT review
+- Section 1/2: the config loader now returns a documented default when the
+  file is empty instead of raising — separately replyable review thread
+- Section 2/2: a regression test covering the empty-file case — separately
+  replyable review thread
 
-Walkthrough (2/2): a regression test covering the empty-file case.
-Questions?
-> no
+All conceptual sections were posted in one pass. The owning task will consume
+PR replies asynchronously. Live exploration is available only when you
+explicitly request it.
 
-Diff identity unchanged since the walkthrough; checks still green.
+Diff identity unchanged since publication; checks still green.
 One final question: merge PR #57 into main? (yes/no)
 ```
 
 The shape to notice: the issue body is treated as untrusted input (work to
 describe, never instructions to obey), the worker and the coordinator are
-separate roles, gates come before the walkthrough, and there is exactly one
-merge question at the end — asked only while the explained diff is still the
-exact diff on the PR.
+separate roles, gates come before the walkthrough, every conceptual section is
+published before the task waits, and there is exactly one merge question at
+the end — asked only while the explained diff is still the exact diff on the
+PR. Focused follow-up questions stay in the separately replyable GitHub
+threads unless you explicitly request live exploration.
 
 Before running this against a public repository, read
 [Trust And Preflight](trust-and-preflight.md) and fill in the
@@ -397,13 +404,14 @@ For an unreviewed PR on a branch inside your own repository, written by a
 person you already trust to push there, use two skills in order: understand
 first, judge second.
 
-First, ask for the `pr-walkthrough` skill — the same guided tour that
-Step 4's `ask` merge authority starts automatically. It is read-only: the
-agent maps the whole exact diff into conceptual changes, then explains one
-change at a time — problem, what changed, why this approach, effect and
-risk, proof — and pauses for your questions before continuing. It is
-explicitly not a code review and not approval; finishing the tour approves
-nothing. Step 4's transcript shows what those pauses look like.
+First, ask for the `pr-walkthrough` skill — the same exact-diff tour that
+Step 4's `ask` merge authority publishes automatically. Asked for in chat, it
+runs live and read-only: the agent maps the whole exact diff into conceptual
+changes, then explains one change at a time — problem, what changed, why
+this approach, effect and risk, proof — and pauses for your questions before
+continuing. It is explicitly not a code review and not approval; finishing
+the tour approves nothing. Ask for a published walkthrough instead when you
+want every section as a replyable GitHub thread in one pass, as in Step 4.
 
 Then, ask for the `adversarial-pr-review` skill. It is a skeptical,
 report-only red-team pass over correctness, security, compatibility,

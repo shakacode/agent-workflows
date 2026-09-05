@@ -153,14 +153,17 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
    - `auto_merge_when_gates_pass`: merge only if ordinary readiness and the
      exact-head autonomous eligibility gate pass, or a qualifying exact-head
      human risk decision produces `human-approved-for-current-head`.
-   - `ask`: when gates are clean, automatically start the exact-diff PR
-     walkthrough before approval. Use `$pr-walkthrough` when available, use
-     full interactive mode for large or complex PRs and concise interactive
-     mode for smaller cohesive PRs, and do not repeat a walkthrough completed
-     for the same diff identity. Honor an explicit request to skip it. After it
-     completes or is skipped, refresh the diff identity and ordinary readiness.
+   - `ask`: when gates are clean, automatically publish the complete exact-diff PR
+     walkthrough before approval. Use `$pr-walkthrough` when available. Prepare
+     every conceptual section up front, then publish the orientation and all
+     sections to GitHub in one pass under its mandatory inline-thread and
+     no-anchor-stop rules, without waiting for repeated chat turns. The owning task
+     consumes PR replies asynchronously; use a live interactive walkthrough only
+     when the maintainer explicitly requests one. Do not repeat a walkthrough
+     completed for the same diff identity, and honor an explicit request to skip
+     it. After publication or an explicit skip, refresh the diff identity and ordinary readiness.
      If the diff identity changed, invalidate the walkthrough and readiness
-     evidence, then restart the walkthrough or stop. If an ordinary gate newly
+     evidence, then rebuild and republish the walkthrough or stop. If an ordinary gate newly
      fails, stop. Ask one final merge decision only when the refreshed diff
      identity matches the recorded identity, ordinary readiness remains clean,
      and merge is allowed; a completed walkthrough must have explained that same

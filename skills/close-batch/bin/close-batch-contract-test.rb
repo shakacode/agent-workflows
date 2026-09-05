@@ -100,11 +100,17 @@ class CloseBatchContractTest < Minitest::Test
     assert_includes @normalized, "For a `batch-coordinator` task, run the completed-batch audit when the canonical workflow requires it."
   end
 
-  def test_attention_is_interactive_and_does_not_grant_merge_authority
+  def test_attention_is_github_native_and_does_not_grant_merge_authority
     walkthrough = [
       "Start `$pr-walkthrough` for the exact current diff",
-      "one conceptual change per response",
-      "refresh readiness after the walkthrough",
+      "A direct chat request uses live, read-only interaction; it does not grant comment authority",
+      "Use published-review mode when the recorded `ask` workflow selects it or the user explicitly requests it with comment authority",
+      "Prepare the complete map",
+      "publish the orientation and every concept to GitHub in one pass",
+      "mandatory inline-thread and no-anchor-stop rules",
+      "The owning task consumes replies asynchronously",
+      "use live interaction only when the maintainer explicitly asks",
+      "After the walkthrough, refresh readiness",
       "ask the merge question separately"
     ]
     decision = [
