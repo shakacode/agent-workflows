@@ -1,0 +1,138 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "yaml"
+
+module ValidateClaudeSkillMetadata
+  BASELINE_FIELDS = %w[name description argument-hint].freeze
+  DOCUMENTED_CLAUDE_FIELDS = %w[
+    when_to_use
+    user-invocable
+    disable-model-invocation
+    allowed-tools
+    disallowed-tools
+    model
+    effort
+    context
+    agent
+    hooks
+    paths
+    shell
+  ].freeze
+  KNOWN_FIELDS = (BASELINE_FIELDS + DOCUMENTED_CLAUDE_FIELDS).freeze
+  DESCRIPTION_LENGTH = (25..1536)
+  KEBAB_CASE_NAME = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
+  TRIGGER_PHRASE = /\bUse (when|before|after|only|for)\b/i
+
+  module_function
+
+  def validate_root(root)
+    skill_paths(root).flat_map { |path| validate_file(path, root) }
+  end
+
+  def skill_paths(root)
+    Dir.glob(File.join(root, "skills", "*", "SKILL.md")).sort
+  end
+
+  def validate_file(path, root)
+    relative_path = relative_path(path, root)
+    frontmatter = load_frontmatter(path, relative_path)
+    return [frontmatter] if frontmatter.is_a?(String)
+
+    failures = []
+    validate_known_fields(frontmatter, relative_path, failures)
+    validate_name(frontmatter["name"], path, relative_path, failures)
+    validate_description(frontmatter["description"], relative_path, failures)
+    validate_argument_hint(frontmatter, relative_path, failures)
+    failures
+  end
+
+  def load_frontmatter(path, relative_path)
+    text = File.read(path, encoding: "UTF-8")
+    return "#{relative_path}: missing YAML frontmatter" unless text.start_with?("---\n")
+
+    closing = text.index("\n---\n", 4)
+    return "#{relative_path}: unterminated YAML frontmatter" if closing.nil?
+
+    metadata = YAML.safe_load(text[4...closing], aliases: false) || {}
+    return metadata if metadata.is_a?(Hash)
+
+    "#{relative_path}: frontmatter must be a mapping"
+  rescue Psych::Exception => e
+    "#{relative_path}: invalid YAML: #{e.message}"
+  end
+
+  def validate_known_fields(metadata, relative_path, failures)
+    metadata.each_key do |key|
+      next if KNOWN_FIELDS.include?(key)
+
+      closest = nearest_known_field(key.to_s)
+      hint = closest ? "; did you mean #{closest.inspect}?" : ""
+      failures << "#{relative_path}: unknown frontmatter key #{key.inspect}#{hint}"
+    end
+  end
+
+  def validate_name(name, path, relative_path, failures)
+    folder = File.basename(File.dirname(path))
+    failures << "#{relative_path}: name must match folder #{folder.inspect}" unless name == folder
+    failures << "#{relative_path}: name must use kebab-case" unless name.is_a?(String) && name.match?(KEBAB_CASE_NAME)
+  end
+
+  def validate_description(description, relative_path, failures)
+    unless description.is_a?(String) && DESCRIPTION_LENGTH.cover?(description.length)
+      failures << "#{relative_path}: description must be 25-1536 characters"
+      return
+    end
+
+    failures << "#{relative_path}: description must not have leading or trailing whitespace" unless description == description.strip
+    return if description.match?(TRIGGER_PHRASE)
+
+    failures << "#{relative_path}: description must include an explicit Use when/before/after/only/for trigger phrase"
+  end
+
+  def validate_argument_hint(metadata, relative_path, failures)
+    return unless metadata.key?("argument-hint")
+
+    value = metadata["argument-hint"]
+    return if value.is_a?(String) && !value.strip.empty?
+
+    failures << "#{relative_path}: argument-hint must be a non-empty string when present"
+  end
+
+  def nearest_known_field(key)
+    KNOWN_FIELDS.min_by { |field| levenshtein_distance(key, field) }
+  end
+
+  def levenshtein_distance(left, right)
+    previous = (0..right.length).to_a
+    left.chars.each_with_index do |left_character, row|
+      current = [row + 1]
+      right.chars.each_with_index do |right_character, column|
+        current << [
+          current[column] + 1,
+          previous[column + 1] + 1,
+          previous[column] + (left_character == right_character ? 0 : 1)
+        ].min
+      end
+      previous = current
+    end
+    previous.last
+  end
+
+  def relative_path(path, root)
+    path.delete_prefix("#{File.expand_path(root)}/")
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  root = File.expand_path(ARGV.fetch(0, File.join(__dir__, "..")))
+  failures = ValidateClaudeSkillMetadata.validate_root(root)
+
+  if failures.empty?
+    count = ValidateClaudeSkillMetadata.skill_paths(root).length
+    puts "PASS #{count} skills"
+  else
+    warn failures.join("\n")
+    exit 1
+  end
+end

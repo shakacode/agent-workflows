@@ -1,7 +1,6 @@
 ---
 name: run-ci
 description: Analyze current branch changes with the repo CI detector and run user-selected local CI jobs. Use when the user asks to run, reproduce, or choose local CI checks.
-argument-hint: ''
 ---
 
 # Run CI Command
