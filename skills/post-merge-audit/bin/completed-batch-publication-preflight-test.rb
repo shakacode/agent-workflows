@@ -1058,6 +1058,24 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal baseline.fetch("snapshot_digest"), replay.fetch("snapshot_digest")
   end
 
+  def test_validated_target_rejects_hosts_that_evidence_replay_cannot_normalize
+    target = {
+      "host" => "github.example.test",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_049
+    }
+
+    assert_nil CompletedBatchPublicationPreflight.validated_target(target.merge("host" => "-github.example.test"))
+    assert_nil CompletedBatchPublicationPreflight.validated_target(
+      target.merge("host" => "#{'a' * 64}.example.test")
+    )
+    assert_equal(
+      target.merge("host" => "github.example.test:8443"),
+      CompletedBatchPublicationPreflight.validated_target(target.merge("host" => "GITHUB.EXAMPLE.TEST:8443"))
+    )
+  end
+
   def test_receipt_binds_the_exact_raw_source_input
     input = fixture("completed-batch-publication-hichee-terminal.json")
     result = assess_input(input)

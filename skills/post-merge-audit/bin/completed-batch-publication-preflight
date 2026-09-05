@@ -932,11 +932,11 @@ module CompletedBatchPublicationPreflight
     return unless value.is_a?(Hash)
     return unless value.keys.map(&:to_s).sort == %w[host number repo type]
 
-    host = value["host"].to_s.downcase
+    host = CloseoutEvidenceReplay.normalize_github_host(value["host"].to_s)
     repo = value["repo"].to_s
     type = value["type"].to_s
     number = Integer(value["number"], exception: false)
-    return unless host.match?(/\A[A-Za-z0-9.-]+(?::\d+)?\z/)
+    return unless host
     return unless repo.match?(%r{\A[^/\s]+/[^/\s]+\z})
     return unless %w[pull_request issue].include?(type) && number&.positive?
 
