@@ -40,6 +40,7 @@ and implementation plans are collected in the final reference section.
 | Understand what each skill does and when to use it | [Skill Guide](skills.md) |
 | Choose between issue triage, one-PR lanes, batch planning, and batch execution | [PR Batch Skills Usage](pr-batch-skills.md) |
 | Finish and archive a stale PR-batch task | Use the `$close-batch` skill |
+| Run repository control towers with one prioritized, deep-linked human-attention desk | [Control Tower And Human Attention Desk](control-tower-prompts.md) |
 | Understand task ownership, cross-task requests, approvals, and heartbeat communication | [User-Facing Coordination](user-facing-coordination.md) |
 | Understand a PR one conceptual change and rationale at a time | Use the `$pr-walkthrough` skill |
 | Decide whether an issue or proposed fix is worth doing | [Issue And Fix Evaluation](issue-evaluation.md) |
@@ -54,6 +55,7 @@ and implementation plans are collected in the final reference section.
 | Find where a human decision is required, and the rule that governs each one | [Operator Handbook](operator-handbook.md) |
 | Configure trusted GitHub actors and public-PR preflight | [Trust And Preflight](trust-and-preflight.md) |
 | Understand the broader prompt-injection safety posture | [Security Posture](security-posture.md) |
+| Report a suspected vulnerability in this pack | [Security Policy](../SECURITY.md) |
 | Configure claims, heartbeats, cancellation, and fail-closed coordination state | [Coordination Backend](coordination-backend.md) |
 | Apply consumer-repository release branch policy | [Release Branching](release-branching.md) |
 | Pause or resume work around an agent runner restart | [Agent Runner Restarts](agent-runner-restarts.md) |
@@ -87,3 +89,4 @@ useful technical references, but are secondary to the user journeys above.
 | Superpowers architecture decision | [ADR 0004: Compose Superpowers Inside Agent Workflows](adr/0004-compose-superpowers-inside-agent-workflows.md) |
 | Component-owned stack doctor implementation plan | [Component-Owned Agent Stack Doctor Plan](plans/2026-07-12-001-feat-master-stack-doctor-plan.md) |
 | Portable dashboard lifecycle implementation plan | [Portable Dashboard Lifecycle Plan](plans/2026-07-13-001-feat-portable-dashboard-lifecycle-plan.md) |
+| Multi-repository control towers and shared Human Attention Desk design | [Multi-Repository Control Towers And Human Attention Desk](plans/2026-09-02-multi-repository-control-tower-and-human-attention-desk.md) |
