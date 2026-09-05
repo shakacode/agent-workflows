@@ -23,6 +23,7 @@ class PrMergeSubmitTest < Minitest::Test
   ADVANCED_BASE_SHA = "d" * 40
   MERGE_COMMIT_SHA = "c" * 40
   SOURCE_REPO_POLICY = Object.new.freeze
+  SOURCE_REVIEW_GATE = Object.new.freeze
 
   # A gh deadline has to be sized against what the scenario needs to SUCCEED,
   # not just against the hang it is meant to catch.
@@ -424,13 +425,13 @@ class PrMergeSubmitTest < Minitest::Test
     assert_includes log, "mergePullRequest"
   end
 
-  def test_direct_graphql_errors_pin_open_queue_configuration_failures
+  def test_direct_queue_configuration_races_fail_before_mutation
     %w[direct_graphql_error_queue_enabled direct_graphql_error_in_queue].each do |mode|
       result, log, = run_cli(mode:)
 
       assert_equal 1, result.fetch(:status).exitstatus, mode
       assert_equal "Error: #{DIRECT_QUEUE_ERROR}\n", result.fetch(:stderr), mode
-      assert_includes log, "mergePullRequest", mode
+      refute_includes log, "mergePullRequest", mode
     end
   end
 
@@ -466,6 +467,7 @@ class PrMergeSubmitTest < Minitest::Test
     result, log, guard_log, _attacker_log, fixture_head = run_cli(
       mode: "guard_success",
       merge_submission: guarded_direct_policy,
+      review_gate: "n/a",
       body: "Detailed merge body"
     )
 
@@ -482,17 +484,70 @@ class PrMergeSubmitTest < Minitest::Test
     refute_includes log, "enqueuePullRequest"
     refute_includes log, "mergePullRequest"
     argv = guard_log.lines.map(&:chomp)
+    merge_assurance_receipt = argv.fetch(15)
+    assert_equal File.absolute_path(merge_assurance_receipt), merge_assurance_receipt
     assert_equal [
       "--repo", "owner/repo", "--host", HOST, "--pr", "42",
       "--expected-head", fixture_head, "--expected-base", "main",
       "--expected-base-sha", payload.dig("guard", "trusted_base_sha"),
-      "--method", "squash"
-    ], argv.first(14)
-    assert_equal "--merge-assurance-receipt", argv[14]
-    assert_equal File.absolute_path(argv[15]), argv[15]
-    assert_equal [
+      "--method", "squash",
+      "--merge-assurance-receipt", merge_assurance_receipt,
       "--subject", "Fix the thing (#42)", "--body", "Detailed merge body"
-    ], argv.last(4)
+    ], argv
+  end
+
+  def test_structured_review_gate_rejects_queue_disabled_guarded_direct_before_guard_validation
+    result, log, guard_log = run_cli(
+      mode: "guard_ambiguous",
+      merge_submission: guarded_direct_policy,
+      review_gate: structured_review_gate,
+      guard_fixture: :modified_after_commit
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr),
+                    "structured review_gate cannot be enforced adjacent to a consumer-owned guarded-direct mutation"
+    assert_includes result.fetch(:stderr), "use direct submission"
+    assert_includes result.fetch(:stderr), "mutation-adjacent consumer protocol"
+    refute_includes result.fetch(:stderr), "Merge Queue"
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "mergePullRequest"
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_structured_review_gate_rejects_when_queue_flips_to_disabled_before_enqueue
+    result, log, guard_log = run_cli(
+      mode: "queue_flip_disabled",
+      merge_submission: guarded_direct_policy,
+      review_gate: structured_review_gate,
+      guard_fixture: :modified_after_commit
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr),
+                    "structured review_gate cannot be enforced adjacent to a consumer-owned guarded-direct mutation"
+    assert_equal(2, log.lines.count { |line| line.include?("number=42") })
+    refute_includes log, "enqueuePullRequest"
+    assert_empty guard_log
+  end
+
+  def test_missing_or_legacy_review_gate_never_inherits_not_applicable_guard_authority
+    { "missing" => nil, "legacy" => "AI reviewers are advisory." }.each do |label, review_gate|
+      result, log, guard_log = run_cli(
+        mode: "guard_ambiguous",
+        merge_submission: guarded_direct_policy,
+        review_gate:,
+        guard_fixture: :modified_after_commit
+      )
+
+      assert_equal 1, result.fetch(:status).exitstatus, label
+      assert_includes result.fetch(:stderr),
+                      "guarded-direct submission requires trusted-base review_gate: n/a",
+                      label
+      assert_equal(2, log.lines.count { |line| line.include?("number=42") }, label)
+      assert_empty guard_log, label
+    end
   end
 
   def test_guard_executes_identity_bound_bytes_when_live_path_is_swapped_after_validation
@@ -524,7 +579,7 @@ class PrMergeSubmitTest < Minitest::Test
       timeout_result.fetch(:stderr)
     )
     assert_includes timeout_result.fetch(:stderr), "do not retry blindly"
-    assert_equal(3, timeout_log.lines.count { |line| line.include?("number=42") })
+    assert_equal(4, timeout_log.lines.count { |line| line.include?("number=42") })
 
     interrupt_result, interrupt_log, interrupt_guard_log = run_cli(
       mode: "guard_interrupt",
@@ -538,7 +593,7 @@ class PrMergeSubmitTest < Minitest::Test
       interrupt_result.fetch(:stderr)
     )
     assert_includes interrupt_result.fetch(:stderr), "do not retry blindly"
-    assert_equal(3, interrupt_log.lines.count { |line| line.include?("number=42") })
+    assert_equal(4, interrupt_log.lines.count { |line| line.include?("number=42") })
     refute_empty interrupt_guard_log
   end
 
@@ -740,11 +795,18 @@ class PrMergeSubmitTest < Minitest::Test
       :@merge_assurance_receipt,
       { "bindings" => { "base" => { "sha" => BASE_SHA } } }
     )
+    runner.instance_variable_set(
+      :@configured_review_replayer,
+      ->(**_kwargs) { { "verdict" => "READY", "mutation_eligible" => true } }
+    )
     runner.define_singleton_method(:materialize_trusted_base_repository!) { |directory| directory }
     runner.define_singleton_method(:guarded_direct_launch_command!) do |_bytes, executable|
       [[executable], nil]
     end
     runner.define_singleton_method(:guard_timeout_seconds) { 0.1 }
+    runner.define_singleton_method(:revalidate_mutation_assurance!) do |_options|
+      { "isInMergeQueue" => false, "mergeQueueEntry" => nil, "isMergeQueueEnabled" => false }
+    end
     runner.define_singleton_method(:run_process) do |*_args, **_kwargs|
       raise PrMergeSubmit::UnknownOutcome,
             "guarded-direct executable process group did not exit after forced termination; " \
@@ -757,7 +819,9 @@ class PrMergeSubmitTest < Minitest::Test
       {
         repo: "owner/repo", host: HOST, pr: 42, expected_head: HEAD_SHA,
         expected_base: "main", method: "squash",
-        merge_assurance_receipt: "/tmp/receipt.json", subject: nil, body: nil
+        merge_assurance_receipt: "/tmp/receipt.json",
+        configured_review_receipt: "/tmp/configured-review-receipt.json",
+        subject: nil, body: nil
       }
     )
 
@@ -1055,24 +1119,16 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty guard_log
   end
 
-  def test_enabled_merge_queue_enqueues_the_same_head_without_a_direct_attempt
+  def test_structured_review_gate_rejects_enabled_merge_queue
     result, log, guard_log = run_cli(
-      mode: "queue", merge_submission: guarded_direct_policy
+      mode: "queue_guarded", merge_submission: guarded_direct_policy, review_gate: structured_review_gate
     )
 
-    assert result.fetch(:status).success?, result.fetch(:stderr)
-    payload = JSON.parse(result.fetch(:stdout))
-    assert_equal "merge_queue", payload.fetch("submission")
-    assert_equal "squash", payload.fetch("direct_method_requested")
-    refute payload.key?("requested_method")
-    assert_equal HEAD_SHA, payload.fetch("expected_head")
-    assert_equal "main", payload.fetch("expected_base")
-    assert_equal "MQE_1", payload.dig("merge_queue_entry", "id")
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr),
+                    "structured review_gate cannot be durably enforced by Merge Queue"
     assert_empty guard_log
-    assert_includes log, "enqueuePullRequest"
-    assert_includes log, "expectedHeadOid=#{HEAD_SHA}"
-    assert_includes log, "GH_HOST=#{HOST} api graphql"
-    assert_equal 3, log.scan("GraphQL-Features: merge_queue").length
+    refute_includes log, "enqueuePullRequest"
     refute_includes log, "--auto"
   end
 
@@ -1137,8 +1193,39 @@ class PrMergeSubmitTest < Minitest::Test
     payload = JSON.parse(result.fetch(:stdout))
     assert_equal "merge_queue", payload.fetch("submission")
     assert_equal "MQE_1", payload.dig("merge_queue_entry", "id")
+    assert_equal 1, log.lines.count("configured-review-replay\n")
     refute_includes log, "enqueuePullRequest"
     refute_includes log, "mergePullRequest"
+  end
+
+  def test_structured_review_gate_rejects_an_existing_exact_queue_entry
+    result, log = run_cli(
+      mode: "already_queued", merge_submission: merge_queue_policy,
+      review_gate: structured_review_gate
+    )
+
+    assert_equal 1, result.fetch(:status).exitstatus
+    assert_includes result.fetch(:stderr),
+                    "structured review_gate cannot be durably enforced by Merge Queue"
+    refute_includes log, "configured-review-replay"
+    refute_includes log, "enqueuePullRequest"
+    refute_includes log, "mergePullRequest"
+  end
+
+  def test_exact_queue_races_reject_structured_review_gate
+    {
+      "guarded-direct refresh" => ["guard_becomes_queued", guarded_direct_policy],
+      "pre-enqueue refresh" => ["queue_guarded_becomes_queued", guarded_direct_policy]
+    }.each do |label, (mode, policy)|
+      result, log = run_cli(mode:, merge_submission: policy, review_gate: structured_review_gate)
+
+      assert_equal 1, result.fetch(:status).exitstatus, label
+      assert_includes result.fetch(:stderr),
+                      "structured review_gate cannot be durably enforced by Merge Queue", label
+      refute_includes log, "configured-review-replay", label
+      refute_includes log, "enqueuePullRequest", label
+      refute_includes log, "mergePullRequest", label
+    end
   end
 
   def test_initial_queue_membership_with_a_merge_commit_is_not_exact_queue_proof
@@ -1513,6 +1600,175 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty log
   end
 
+  def test_configured_review_receipt_flag_is_required_before_any_gh_call
+    result, log = run_cli(mode: "direct", include_configured_review_receipt: false)
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "--configured-review-receipt is required"
+    assert_empty log
+  end
+
+  def test_direct_replays_configured_review_immediately_before_mutation
+    result, log = run_cli(mode: "direct")
+
+    assert result.fetch(:status).success?, result.fetch(:stderr)
+    lines = log.lines
+    mutation_index = lines.index { |line| line.include?("mergePullRequest") }
+    replay_index = lines.index("configured-review-replay\n")
+    refute_nil mutation_index
+    refute_nil replay_index
+    assert_operator replay_index, :<, mutation_index
+    post_replay_metadata_index = lines.each_index.find do |index|
+      index > replay_index && index < mutation_index && lines.fetch(index).include?("query=query($owner")
+    end
+    refute_nil post_replay_metadata_index
+  end
+
+  def test_direct_revalidates_merge_assurance_and_live_bindings_after_review_replay
+    cases = {
+      "configured_review_expires_merge_receipt" => {
+        receipt_mode: :valid,
+        error: "merge-assurance receipt is stale"
+      },
+      "configured_review_moves_head" => {
+        receipt_mode: :valid,
+        error: "PR head moved"
+      },
+      "configured_review_changes_tracker" => {
+        receipt_mode: :semantic,
+        error: "semantic GitHub Actions tracker issue body binding mismatch"
+      }
+    }
+
+    failures = cases.filter_map do |mode, expectation|
+      result, log = run_cli(mode:, receipt_mode: expectation.fetch(:receipt_mode))
+
+      next if !result.fetch(:status).success? &&
+              result.fetch(:stderr).include?(expectation.fetch(:error)) &&
+              !log.include?("mergePullRequest")
+
+      "#{mode}: status=#{result.fetch(:status).exitstatus} stderr=#{result.fetch(:stderr).inspect}"
+    end
+
+    assert_empty failures
+  end
+
+  def test_enqueue_revalidates_merge_assurance_and_live_bindings_after_review_replay
+    cases = {
+      "configured_review_queue_expires_merge_receipt" => {
+        receipt_mode: :valid,
+        error: "merge-assurance receipt is stale"
+      },
+      "configured_review_queue_moves_head" => {
+        receipt_mode: :valid,
+        error: "PR head moved"
+      },
+      "configured_review_queue_changes_tracker" => {
+        receipt_mode: :semantic,
+        error: "semantic GitHub Actions tracker issue body binding mismatch"
+      }
+    }
+
+    failures = cases.filter_map do |mode, expectation|
+      result, log = run_cli(
+        mode:,
+        merge_submission: merge_queue_policy,
+        receipt_mode: expectation.fetch(:receipt_mode)
+      )
+
+      next if !result.fetch(:status).success? &&
+              result.fetch(:stderr).include?(expectation.fetch(:error)) &&
+              !log.include?("enqueuePullRequest")
+
+      "#{mode}: status=#{result.fetch(:status).exitstatus} stderr=#{result.fetch(:stderr).inspect}"
+    end
+
+    assert_empty failures
+  end
+
+  def test_guarded_direct_revalidates_merge_assurance_and_live_bindings_after_review_replay
+    cases = {
+      "configured_review_guard_expires_merge_receipt" => {
+        receipt_mode: :valid,
+        error: "merge-assurance receipt is stale"
+      },
+      "configured_review_guard_moves_head" => {
+        receipt_mode: :valid,
+        error: "PR head moved"
+      },
+      "configured_review_guard_changes_tracker" => {
+        receipt_mode: :semantic,
+        error: "semantic GitHub Actions tracker issue body binding mismatch"
+      }
+    }
+
+    failures = cases.filter_map do |mode, expectation|
+      result, _log, guard_log = run_cli(
+        mode:,
+        merge_submission: guarded_direct_policy,
+        review_gate: "n/a",
+        receipt_mode: expectation.fetch(:receipt_mode)
+      )
+
+      next if !result.fetch(:status).success? &&
+              result.fetch(:stderr).include?(expectation.fetch(:error)) &&
+              guard_log.to_s.empty?
+
+      "#{mode}: status=#{result.fetch(:status).exitstatus} stderr=#{result.fetch(:stderr).inspect} " \
+        "guard_log=#{guard_log.inspect}"
+    end
+
+    assert_empty failures
+  end
+
+  def test_configured_review_replay_receives_validated_current_integration_evidence
+    integration = {
+      "recorded_base_sha" => "9" * 40,
+      "reuse" => { "decision" => "reuse-exact-head" }
+    }
+    captured = nil
+    runner = PrMergeSubmit::Runner.allocate
+    runner.instance_variable_set(
+      :@merge_assurance_receipt,
+      { "bindings" => { "base" => { "sha" => BASE_SHA }, "current_integration" => integration } }
+    )
+    runner.instance_variable_set(:@repo_root, Dir.pwd)
+    runner.instance_variable_set(
+      :@configured_review_replayer,
+      lambda do |**arguments|
+        captured = arguments
+        { "verdict" => "READY", "mutation_eligible" => true }
+      end
+    )
+
+    runner.send(
+      :replay_configured_review_gate!,
+      { configured_review_receipt: "/tmp/configured-review.json" }
+    )
+
+    assert_same integration, captured.fetch(:current_integration)
+    assert_equal BASE_SHA, captured.fetch(:base_sha)
+  end
+
+  def test_configured_review_replay_blocker_prevents_mutation
+    result, log = run_cli(mode: "configured_review_blocked")
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr), "configured review gate is not READY"
+    assert_includes result.fetch(:stderr), "configured-review-thread-untriaged"
+    refute_includes log, "mergePullRequest"
+  end
+
+  def test_default_configured_review_replay_requires_live_quiet_period_settlement
+    source = File.read(SCRIPT)
+
+    assert_includes source, "ConfiguredReviewGate::LiveEvaluator.new("
+    assert_includes source, 'reviewed_base_sha = receipt.dig("bindings", "base_sha")'
+    assert_includes source, 'snapshot: settled_result.fetch("receipt").fetch("evidence")'
+    assert_includes source, "trusted_live: true, current_integration:"
+    refute_match(/ConfiguredReviewGate\.replay\([\s\S]*?snapshot: client\.collect/, source)
+  end
+
   def test_unavailable_merge_assurance_receipt_stops_before_any_gh_call
     result, log = run_cli(mode: "direct", receipt_mode: :missing)
 
@@ -1601,6 +1857,41 @@ class PrMergeSubmitTest < Minitest::Test
     end
   end
 
+  def test_configured_review_replay_wait_is_bounded_by_both_receipt_freshness_budgets
+    runner = PrMergeSubmit::Runner.new
+    now = Time.iso8601("2026-07-30T12:00:00Z")
+    runner.instance_variable_set(
+      :@merge_assurance_receipt,
+      { "issued_at" => (now - 10).iso8601 }
+    )
+
+    assert_equal 120, runner.send(
+      :configured_review_replay_wait_seconds,
+      { "issued_at" => (now - 10).iso8601 },
+      now
+    )
+    assert_equal 5, runner.send(
+      :configured_review_replay_wait_seconds,
+      { "issued_at" => (now - 295).iso8601 },
+      now
+    )
+
+    runner.instance_variable_set(
+      :@merge_assurance_receipt,
+      { "issued_at" => (now - 298).iso8601 }
+    )
+    assert_equal 2, runner.send(
+      :configured_review_replay_wait_seconds,
+      { "issued_at" => (now - 20).iso8601 },
+      now
+    )
+    assert_equal 0, runner.send(
+      :configured_review_replay_wait_seconds,
+      { "issued_at" => (now - 301).iso8601 },
+      now
+    )
+  end
+
   def test_live_base_sha_mismatch_stops_before_any_mutation
     result, log = run_cli(mode: "initial_open_base_advanced")
 
@@ -1661,6 +1952,36 @@ class PrMergeSubmitTest < Minitest::Test
           "rationale" => rationale
         }
       }
+    }
+  end
+
+  def structured_review_gate
+    {
+      "version" => 1,
+      "reviewers" => [{
+        "id" => "claude",
+        "check_name" => "claude-review",
+        "producer" => {
+          "app_slug" => "github-actions",
+          "workflow_path" => ".github/workflows/claude-code-review.yml",
+          "event" => "pull_request"
+        },
+        "artifact" => {
+          "actors" => %w[claude claude[bot]],
+          "kinds" => %w[pull_request_review review_thread],
+          "completion" => {
+            "mode" => "producer_check"
+          }
+        }
+      }],
+      "require_current_head" => true,
+      "artifact_settlement" => { "required" => true, "quiet_period_seconds" => 30 },
+      "thread_disposition" => {
+        "required" => true,
+        "marker" => "configured-review-disposition:"
+      },
+      "failure_policy" => "block",
+      "fallback" => { "mode" => "disabled" }
     }
   end
 
@@ -1745,6 +2066,7 @@ class PrMergeSubmitTest < Minitest::Test
     subject: "Fix the thing (#42)",
     body: nil,
     include_merge_assurance_receipt: true,
+    include_configured_review_receipt: true,
     receipt_mode: :valid,
     after_stub_warmup: nil,
     trusted_policy_observer: nil,
@@ -1757,7 +2079,8 @@ class PrMergeSubmitTest < Minitest::Test
     interpreter_attack: false,
     bash_env_attack: false,
     guard_timeout_seconds: nil,
-    interrupt_guard: false
+    interrupt_guard: false,
+    review_gate: SOURCE_REVIEW_GATE
   )
     Dir.mktmpdir("pr-merge-submit-test") do |dir|
       source_repo_policy = merge_submission.equal?(SOURCE_REPO_POLICY)
@@ -1766,11 +2089,17 @@ class PrMergeSubmitTest < Minitest::Test
           "mode" => queue_submission_mode?(mode) ? "merge_queue_only" : "direct"
         }
       end
+      if !source_repo_policy && review_gate.equal?(SOURCE_REVIEW_GATE)
+        review_gate = if merge_submission.is_a?(Hash) &&
+                         %w[merge_queue_only merge_queue_or_guarded_direct].include?(merge_submission["mode"])
+                        "n/a"
+                      end
+      end
       repo_root, base_sha, fixture_head = if source_repo_policy
                                             [File.expand_path("../../..", __dir__), BASE_SHA, HEAD_SHA]
                                           else
                                             prepare_consumer_repo(
-                                              dir, merge_submission:, policy_fixture:, guard_fixture:
+                                              dir, merge_submission:, review_gate:, policy_fixture:, guard_fixture:
                                             )
                                           end
       if !source_repo_policy &&
@@ -1816,6 +2145,8 @@ class PrMergeSubmitTest < Minitest::Test
                         host: HOST, pr_number: 42, gh_dir: dir
         )
       end
+      configured_review_receipt_path = File.join(dir, "configured-review-receipt.json")
+      File.write(configured_review_receipt_path, "{}\n")
       environment = cli_environment(
         dir, log_path, mode,
         guard_log_path:, guard_marker_path:, attacker_log_path:,
@@ -1825,7 +2156,8 @@ class PrMergeSubmitTest < Minitest::Test
       )
       arguments = cli_arguments(
         repo, expected_head, include_expected_head, include_expected_base,
-        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:
+        expected_base:, subject:, body:, include_merge_assurance_receipt:, receipt_path:, gh_path:,
+        include_configured_review_receipt:, configured_review_receipt_path:
       )
       result = if interrupt_guard
                  capture_with_interrupt(
@@ -1875,6 +2207,7 @@ class PrMergeSubmitTest < Minitest::Test
       repo_root, base_sha, = prepare_consumer_repo(
         dir,
         merge_submission: { "mode" => "merge_queue_only" },
+        review_gate: "n/a",
         policy_fixture: :present,
         guard_fixture: :executable
       )
@@ -1895,6 +2228,8 @@ class PrMergeSubmitTest < Minitest::Test
         receipt_path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
                       base_ref: "main", base_sha:, host: HOST, pr_number: 42, gh_dir: dir
       )
+      configured_review_receipt_path = File.join(dir, "configured-review-receipt.json")
+      File.write(configured_review_receipt_path, "{}\n")
       result = Open3.popen3(
         cli_environment(
           dir, log_path, mode,
@@ -1903,7 +2238,8 @@ class PrMergeSubmitTest < Minitest::Test
         ),
         *cli_arguments(
           "owner/repo", HEAD_SHA, true, true,
-          include_merge_assurance_receipt: true, receipt_path:, gh_path:
+          include_merge_assurance_receipt: true, receipt_path:, gh_path:,
+          configured_review_receipt_path:
         ),
         chdir: repo_root
       ) do |stdin, stdout, stderr, wait_thread|
@@ -2040,12 +2376,40 @@ class PrMergeSubmitTest < Minitest::Test
     gh_path:,
     expected_base: "main",
     subject: "Fix the thing (#42)", body: nil,
-    include_merge_assurance_receipt: true, receipt_path: nil
+    include_merge_assurance_receipt: true, receipt_path: nil,
+    include_configured_review_receipt: true, configured_review_receipt_path: nil
   )
     runner = <<~RUBY
       load #{SCRIPT.inspect}
       test_environment = %w[GH_LOG PR_TEST_GUARD_MARKER PR_TEST_DESCENDANT_PID_FILE].to_h { |name| [name, ENV.fetch(name)] }
-      runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => #{gh_path.inspect} })
+      configured_review_replayer = lambda do |**_arguments|
+        File.open(ENV.fetch("GH_LOG"), "a") { |file| file.puts("configured-review-replay") }
+        mode = ENV.fetch("PR_TEST_MODE")
+        if mode.start_with?("configured_review_")
+          File.write("\#{ENV.fetch('GH_LOG')}.configured-review-complete", "complete\n")
+        end
+        if %w[
+          configured_review_expires_merge_receipt
+          configured_review_queue_expires_merge_receipt
+          configured_review_guard_expires_merge_receipt
+        ].include?(mode)
+          advanced_now = Time.now + 301
+          Time.singleton_class.define_method(:now) { advanced_now }
+        end
+        if mode == "configured_review_blocked"
+          {
+            "verdict" => "NOT_READY",
+            "mutation_eligible" => false,
+            "blockers" => [{ "code" => "configured-review-thread-untriaged" }]
+          }
+        else
+          { "verdict" => "READY", "mutation_eligible" => true }
+        end
+      end
+      runner = PrMergeSubmit::Runner.new(
+        system_tools: { "gh" => #{gh_path.inspect} },
+        configured_review_replayer: configured_review_replayer
+      )
       runner.define_singleton_method(:system_tool_test_environment) { test_environment }
       exit runner.run(ARGV)
     RUBY
@@ -2057,6 +2421,9 @@ class PrMergeSubmitTest < Minitest::Test
     args.concat(["--expected-head", expected_head]) if include_expected_head
     args.concat(["--expected-base", expected_base]) if include_expected_base
     args.concat(["--merge-assurance-receipt", receipt_path]) if include_merge_assurance_receipt
+    if include_configured_review_receipt
+      args.concat(["--configured-review-receipt", configured_review_receipt_path])
+    end
     args
   end
 
@@ -2307,11 +2674,12 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def prepare_consumer_repo(dir, merge_submission:, policy_fixture:, guard_fixture:)
+  def prepare_consumer_repo(dir, merge_submission:, policy_fixture:, guard_fixture:, review_gate: nil)
     root = File.join(dir, "consumer")
     FileUtils.mkdir_p(File.join(root, ".agents/bin"))
     policy = { "base_branch" => "main" }
     policy["merge_submission"] = merge_submission unless merge_submission.nil?
+    policy["review_gate"] = review_gate unless review_gate.nil?
     policy_path = File.join(root, ".agents/agent-workflow.yml")
     case policy_fixture
     when :present
@@ -2523,7 +2891,16 @@ class PrMergeSubmitTest < Minitest::Test
         file.puts("GH_HOST=\#{ENV.fetch('GH_HOST', '')} \#{ARGV.join(' ')}")
       end
       if ARGV.include?("repos/owner/repo/issues/1")
-        puts #{JSON.generate(semantic_issue).inspect}
+        issue = JSON.parse(#{JSON.generate(semantic_issue).inspect})
+        if %w[
+          configured_review_changes_tracker configured_review_queue_changes_tracker
+          configured_review_guard_changes_tracker
+        ].include?(#{mode.inspect}) &&
+           File.exist?(ENV.fetch("GH_LOG") + ".configured-review-complete")
+          issue["body"] = "changed after configured-review settlement"
+          issue["updated_at"] = "2026-07-20T15:01:00Z"
+        end
+        puts JSON.generate(issue)
         exit 0
       end
 
@@ -2547,8 +2924,11 @@ class PrMergeSubmitTest < Minitest::Test
         File.write(query_count_path, (query_count + 1).to_s)
         current_mode = #{mode.inspect}
         guard_called = File.exist?(ENV.fetch("PR_TEST_GUARD_MARKER"))
+        gh_log = File.read(ENV.fetch("GH_LOG"))
+        enqueue_attempted = gh_log.include?("enqueuePullRequest")
         queue_enabled = case current_mode
-                        when "queue", "queue_fast_merged", "queue_fast_merged_base_advanced",
+                        when "queue", "queue_guarded", "queue_guarded_becomes_queued",
+                             "queue_fast_merged", "queue_fast_merged_base_advanced",
                              "queue_missing_entry", "already_queued", "already_queued_base_advanced",
                              "already_queued_with_commit",
                              "enqueue_transport_queued", "enqueue_transport_merged",
@@ -2562,8 +2942,12 @@ class PrMergeSubmitTest < Minitest::Test
                              "enqueue_transport_queued_base_advanced", "queue_post_queued_base_advanced",
                              "queue_post_queued_with_commit",
                              "enqueue_non_object_response_queued", "queue_base_race",
-                             "queue_entry_replaced", "queue_entry_replaced_same_target" then true
-                        when "direct_queue_race" then query_count.positive?
+                             "queue_entry_replaced", "queue_entry_replaced_same_target",
+                             "configured_review_queue_expires_merge_receipt",
+                             "configured_review_queue_moves_head",
+                             "configured_review_queue_changes_tracker" then true
+                        when "direct_queue_race", "guard_becomes_queued" then query_count.positive?
+                        when "queue_flip_disabled" then query_count.zero?
                         when "direct_graphql_error_queue_enabled" then query_count >= 2
                         else false
                         end
@@ -2577,9 +2961,13 @@ class PrMergeSubmitTest < Minitest::Test
                       "enqueue_graphql_error_merged_queued",
                       "queue_entry_replaced_same_target",
                       "queue_post_queued_base_advanced",
-                      "queue_post_queued_with_commit" then query_count.positive?
+                      "queue_post_queued_with_commit" then enqueue_attempted
+                 when "queue_guarded"
+                   enqueue_attempted
+                 when "guard_becomes_queued", "queue_guarded_becomes_queued"
+                   query_count.positive?
                  when "queue_base_race", "enqueue_transport_base_race",
-                      "enqueue_graphql_error_base_race", "queue_entry_replaced" then query_count == 1
+                      "enqueue_graphql_error_base_race", "queue_entry_replaced" then enqueue_attempted
                  when "direct_graphql_error_in_queue" then query_count >= 2
                  else false
                  end
@@ -2592,17 +2980,17 @@ class PrMergeSubmitTest < Minitest::Test
           guard_success guard_path_swap hichee_replay guard_failure_merged
         ].include?(current_mode) &&
                                 guard_called
-        direct_attempted = File.read(ENV.fetch("GH_LOG")).include?("mergePullRequest")
+        direct_attempted = gh_log.include?("mergePullRequest")
         directly_merged = %w[
           direct_transport_merged direct_graphql_error_merged direct_response_invalid_merged
         ].include?(current_mode) && direct_attempted
         merged = ["already_merged", "already_merged_base_advanced"].include?(current_mode) ||
-                 (merged_after_mutation && query_count.positive?) || guarded_direct_merged || directly_merged
+                 (merged_after_mutation && enqueue_attempted) || guarded_direct_merged || directly_merged
         base_race_modes = [
           "queue_base_race", "queue_entry_replaced", "enqueue_transport_base_race",
           "enqueue_graphql_error_base_race"
         ]
-        live_base = if base_race_modes.include?(current_mode) && query_count.positive?
+        live_base = if base_race_modes.include?(current_mode) && enqueue_attempted
                       "release"
                     else
                       #{base.inspect}
@@ -2619,7 +3007,7 @@ class PrMergeSubmitTest < Minitest::Test
         live_base_oid = if current_mode == "current_integration_live_base_mismatch"
                           #{ADVANCED_BASE_SHA.inspect}
                         elsif base_advanced_modes.include?(current_mode) &&
-                           (initially_advanced_modes.include?(current_mode) || query_count.positive?)
+                           (initially_advanced_modes.include?(current_mode) || enqueue_attempted)
                           #{ADVANCED_BASE_SHA.inspect}
                         else
                           #{base_sha.inspect}
@@ -2646,7 +3034,12 @@ class PrMergeSubmitTest < Minitest::Test
               "pullRequest" => {
                 "id" => "PR_42",
                 #{head_ref_entry}
-                "headRefOid" => if current_mode == "guard_head_moved" && guard_called
+                "headRefOid" => if (current_mode == "guard_head_moved" && guard_called) ||
+                                   (%w[
+                                     configured_review_moves_head configured_review_queue_moves_head
+                                     configured_review_guard_moves_head
+                                   ].include?(current_mode) &&
+                                    File.exist?(ENV.fetch("GH_LOG") + ".configured-review-complete"))
                                   #{MOVED_SHA.inspect}
                                 else
                                   #{head.inspect}

@@ -101,6 +101,42 @@ script means that capability is n/a in that repo.
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
 
+`review_gate` is not free-form policy text. It must be exactly `n/a` or a
+closed version 1 mapping with a nonempty `reviewers` list, exact check names,
+producer app/workflow/event identities, artifact actors and kinds,
+`require_current_head: true`, required artifact
+settlement, required thread dispositions, `failure_policy: block`, and an
+explicit fallback mode. Producer identity binds a qualifying check to its
+GitHub App and exact Actions workflow run; the workflow file at the PR head
+must match the exact trusted-base blob, and exactly one run association must
+bind the same PR, head, and reviewed base SHA. Actor values are exact GitHub logins.
+Optional artifact `completion.mode: producer_check` can use the independently
+verified producer check as the completion artifact without trusting generic
+workflow-bot reviews. Only
+`pull_request_review` and `review_thread` can be
+configured because issue comments have no exact-head attribution. For each
+actor, only its latest current-head pull-request review qualifies, and only in
+`APPROVED` or `COMMENTED` state. `CHANGES_REQUESTED`, `DISMISSED`, pending, and
+unknown states hard-block alternate artifact kinds. A current-head
+`CHANGES_REQUESTED` is cleared only by a later `APPROVED` review from the same
+actor or by dismissing it; a later `COMMENTED` review never clears it, so a
+producer's own completion marker cannot supersede its blocking review.
+`named_attested_check` fallbacks must name their
+allowed failure triggers and a complete fallback reviewer; disabled fallback
+is the portable default. While an authorized named fallback is missing or
+pending, bounded evaluation continues; a provider terminal result still ends
+waiting when no configured fallback can apply. The configured-review helper
+reads this mapping from the trusted base and binds its receipt to host,
+repository, PR, base, head, and the settled artifact snapshot.
+Capacity fallback triggers require the verified producer to set the entire
+check summary to `configured-review-provider-failure: rate_limited`,
+`configured-review-provider-failure: quota_exhausted`, or
+`configured-review-provider-failure: capacity_unavailable`. Free-form check
+output never authorizes a fallback.
+For unresolved threads, `fixed` and `not-actionable` dispositions qualify only
+when the trusted marker is the latest reply; later feedback invalidates them.
+An explicit trusted `waived` disposition remains durable.
+
 ### Writing Style
 
 `writing_style` is an optional scalar in the repository policy. It accepts
@@ -379,10 +415,16 @@ when the authorized head is an exact terminal merge on the expected base. This
 exception explicitly acknowledges that GitHub direct merge has no atomic
 expected-base OID; it does not make direct merge equivalent to the merge queue.
 Queue-enabled PRs use canonical enqueue only in a queue-capable mode and never
-invoke the guard; direct mode instead reports the required seam opt-in before
-mutation. On a queue-disabled base, only explicit `merge_queue_only` is a
-deterministic configuration error (exit 1), not an `UNKNOWN` mutation outcome.
-An absent seam uses the portable direct path.
+invoke the guard. A structured executable `review_gate` cannot guarantee replay
+adjacent to a mutation owned inside an unversioned consumer guard, so a
+queue-disabled `merge_queue_or_guarded_direct` route rejects before validating
+or launching the guard. Exact `review_gate: n/a` preserves the historical fixed
+guard argv; missing and legacy prose review policies never inherit that
+exception. Direct mode instead reports the required seam opt-in before mutation.
+On a queue-disabled base, explicit `merge_queue_only` and the unsupported
+structured-review guarded route are deterministic configuration errors (exit
+1), not `UNKNOWN` mutation outcomes. An absent merge-submission seam uses the
+portable direct path.
 
 ## AGENTS Pointer
 

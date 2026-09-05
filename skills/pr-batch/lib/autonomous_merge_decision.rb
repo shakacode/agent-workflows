@@ -104,6 +104,8 @@ module AutonomousMergeDecision
     return false unless payload["decision"] == "approve"
     return false unless nonempty_string?(payload["approved_by"])
     return false unless payload["approved_by"] == comment["author"]
+    # Human decision evidence must come from a human-authored comment, not a bot.
+    return false unless comment["author_type"] == "User"
     return false unless SOURCES.include?(payload["source"])
 
     nonempty_string?(payload["evidence"])

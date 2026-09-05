@@ -1,0 +1,1559 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Evaluate the trusted-base configured review cohort and emit an exact-head,
+# replayable receipt. Live collection is deliberately kept separate from the
+# pure evaluator so fixture replays cannot become merge evidence.
+
+require "digest"
+require "etc"
+require "json"
+require "open3"
+require "optparse"
+require "rbconfig"
+require "tempfile"
+require "time"
+require "uri"
+require "yaml"
+
+module ConfiguredReviewGate
+  RECEIPT_CONTRACT = "configured-review-gate-receipt"
+  RESULT_CONTRACT = "configured-review-gate-result"
+  REPLAY_CONTRACT = "configured-review-gate-replay"
+  SNAPSHOT_CONTRACT = "configured-review-snapshot"
+  VERSION = 1
+  MAX_RECEIPT_AGE_SECONDS = 300
+  MAX_SETTLEMENT_QUIET_PERIOD_SECONDS = 119
+  MAX_FUTURE_SKEW_SECONDS = 30
+  PENDING_CHECK_STATES = %w[queued in_progress pending waiting requested].freeze
+  ACCEPTABLE_PULL_REQUEST_REVIEW_STATES = %w[APPROVED COMMENTED].freeze
+  DECISIVE_PULL_REQUEST_REVIEW_STATES = %w[APPROVED CHANGES_REQUESTED].freeze
+  TERMINAL_FAILURE_CODES = {
+    "failure" => "configured-review-failed",
+    "cancelled" => "configured-review-cancelled",
+    "timed_out" => "configured-review-timed-out",
+    "action_required" => "configured-review-action-required"
+  }.freeze
+  DISPOSITION_VALUES = %w[fixed waived not-actionable].freeze
+  BLOCKER_TRIGGER = {
+    "configured-review-missing" => "missing",
+    "configured-review-stale" => "stale",
+    "configured-review-failed" => "failed",
+    "configured-review-cancelled" => "cancelled",
+    "configured-review-timed-out" => "timed_out",
+    "configured-review-action-required" => "action_required",
+    "configured-review-unknown" => "unknown",
+    "configured-review-rate-limited" => "rate_limited",
+    "configured-review-quota-exhausted" => "quota_exhausted",
+    "configured-review-capacity-unavailable" => "capacity_unavailable"
+  }.freeze
+  PROVIDER_FAILURE_MARKERS = {
+    "configured-review-provider-failure: rate_limited" => "configured-review-rate-limited",
+    "configured-review-provider-failure: quota_exhausted" => "configured-review-quota-exhausted",
+    "configured-review-provider-failure: capacity_unavailable" => "configured-review-capacity-unavailable"
+  }.freeze
+  POLICY_PATH = ".agents/agent-workflow.yml"
+  SYSTEM_TOOL_DIRS = [
+    "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"
+  ].freeze
+  GH_TIMEOUT_SECONDS = 30
+
+  class Error < StandardError; end
+
+  class Command
+    def self.capture(environment, executable, *arguments, timeout_seconds: GH_TIMEOUT_SECONDS, chdir: Dir.pwd)
+      stdout_file = Tempfile.new("configured-review-gate-stdout")
+      stderr_file = Tempfile.new("configured-review-gate-stderr")
+      pid = Process.spawn(
+        environment, executable, *arguments,
+        out: stdout_file.path, err: stderr_file.path, pgroup: true, chdir:, unsetenv_others: true
+      )
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout_seconds
+      status = nil
+      loop do
+        waited = Process.waitpid2(pid, Process::WNOHANG)
+        if waited
+          status = waited[1]
+          break
+        end
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+          Process.kill("TERM", -pid)
+          sleep 0.05
+          begin
+            Process.kill("KILL", -pid)
+          rescue Errno::ESRCH
+            nil
+          end
+          begin
+            Process.waitpid(pid)
+          rescue Errno::ECHILD
+            nil
+          end
+          raise Error, "external command timed out after #{timeout_seconds} seconds"
+        end
+        sleep 0.02
+      end
+      stdout_file.rewind
+      stderr_file.rewind
+      [stdout_file.read, stderr_file.read, status]
+    ensure
+      stdout_file&.close!
+      stderr_file&.close!
+    end
+  end
+
+  class TrustedPolicy
+    def self.load(repo_root:, base_sha:)
+      raise Error, "trusted base SHA must be a full commit SHA" unless base_sha.to_s.match?(/\A[0-9a-f]{40}\z/i)
+
+      root = File.realpath(repo_root)
+      git = ConfiguredReviewGate.resolve_system_tool!("git", outside_root: root)
+      account = Etc.getpwuid(Process.uid)
+      environment = {
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+        "GIT_CONFIG_NOSYSTEM" => "1",
+        "GIT_CONFIG_GLOBAL" => File::NULL,
+        "GIT_NO_REPLACE_OBJECTS" => "1",
+        "GIT_OPTIONAL_LOCKS" => "0"
+      }
+      stdout, _, status = Command.capture(
+        environment, git, "-C", root, "show", "--no-textconv", "--no-ext-diff",
+        "#{base_sha}:#{POLICY_PATH}", chdir: root
+      )
+      raise Error, "trusted-base review policy is unavailable" unless status.success?
+
+      duplicate_errors = ConfiguredReviewGate.review_gate_duplicate_key_errors(stdout)
+      unless duplicate_errors.empty?
+        raise Error, "trusted-base review policy is ambiguous: #{duplicate_errors.join('; ')}"
+      end
+
+      document = YAML.safe_load(
+        stdout, permitted_classes: [], permitted_symbols: [], aliases: false
+      ) || {}
+      raise Error, "trusted-base review policy document is not a mapping" unless document.is_a?(Hash)
+
+      [document["review_gate"], stdout]
+    rescue Errno::ENOENT, Errno::EACCES, Psych::Exception => e
+      raise Error, "trusted-base review policy is unavailable: #{e.message.lines.first.to_s.strip}"
+    end
+  end
+
+  class GitHubClient
+    MAX_THREAD_COMMENT_PAGES = 50
+
+    REVIEW_THREADS_QUERY = <<~GRAPHQL
+      query($owner:String!,$name:String!,$number:Int!,$endCursor:String) {
+        repository(owner:$owner,name:$name) {
+          pullRequest(number:$number) {
+            reviewThreads(first:100,after:$endCursor) {
+              nodes {
+                id isResolved isOutdated
+                comments(first:100) {
+                  nodes {
+                    id url body createdAt author { login } authorAssociation
+                    commit { oid } originalCommit { oid } replyTo { id }
+                  }
+                  pageInfo { hasNextPage endCursor }
+                }
+              }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }
+    GRAPHQL
+
+    THREAD_COMMENTS_QUERY = <<~GRAPHQL
+      query($threadId:ID!,$endCursor:String) {
+        node(id:$threadId) {
+          ... on PullRequestReviewThread {
+            comments(first:100,after:$endCursor) {
+              nodes {
+                id url body createdAt author { login } authorAssociation
+                commit { oid } originalCommit { oid } replyTo { id }
+              }
+              pageInfo { hasNextPage endCursor }
+            }
+          }
+        }
+      }
+    GRAPHQL
+
+    def initialize(host:, repo:, pull_request_number:, policy:, reviewed_base_sha: nil)
+      @host = host
+      @repo = repo
+      @pr = pull_request_number
+      @policy = policy
+      if reviewed_base_sha && !reviewed_base_sha.to_s.match?(/\A[0-9a-f]{40}\z/i)
+        raise Error, "reviewed base SHA must be a full commit SHA"
+      end
+
+      @reviewed_base_sha = reviewed_base_sha&.downcase
+      @gh = ConfiguredReviewGate.resolve_system_tool!("gh", outside_root: Dir.pwd)
+    end
+
+    def collect
+      pull = api_json("repos/#{@repo}/pulls/#{@pr}")
+      bindings = {
+        "host" => @host,
+        "repo" => @repo,
+        "pr" => @pr,
+        "base_ref" => pull.dig("base", "ref"),
+        "base_sha" => pull.dig("base", "sha"),
+        "head_sha" => pull.dig("head", "sha")
+      }
+      reviewed_base_sha = @reviewed_base_sha || bindings.fetch("base_sha")
+      unless reviewed_base_sha.to_s.casecmp?(bindings.fetch("base_sha").to_s)
+        bindings["reviewed_base_sha"] = reviewed_base_sha
+      end
+      if @policy == "n/a"
+        checks = []
+        artifacts = []
+        threads = []
+        threads_complete = true
+      else
+        checks = collect_checks(
+          bindings.fetch("head_sha"), bindings.fetch("base_sha"), reviewed_base_sha
+        )
+        artifacts = collect_artifacts
+        threads, threads_complete, thread_artifacts = collect_threads(bindings.fetch("head_sha"))
+        artifacts.concat(thread_artifacts)
+        artifacts.sort_by! { |artifact| [artifact["kind"], artifact["id"].to_s] }
+      end
+      {
+        "contract" => SNAPSHOT_CONTRACT,
+        "version" => VERSION,
+        "provenance" => "gh-api",
+        "collected_at" => Time.now.utc.iso8601,
+        "bindings" => bindings,
+        "checks" => checks,
+        "artifacts" => artifacts,
+        "threads" => threads,
+        "complete" => threads_complete
+      }
+    end
+
+    private
+
+    def collect_checks(head_sha, base_sha, reviewed_base_sha)
+      pages = api_json(
+        "--paginate", "--slurp",
+        "repos/#{@repo}/commits/#{head_sha}/check-runs?per_page=100",
+        "-H", "Accept: application/vnd.github+json"
+      )
+      checks = Array(pages).flat_map { |page| Array(page["check_runs"]) }.map do |check|
+        {
+          "name" => check["name"],
+          "status" => check["status"],
+          "conclusion" => check["conclusion"],
+          "head_sha" => check["head_sha"],
+          "started_at" => check["started_at"],
+          "completed_at" => check["completed_at"],
+          "details_url" => check["details_url"],
+          "output" => [check.dig("output", "title"), check.dig("output", "summary"), check.dig("output", "text")].compact.join("\n"),
+          "provider_failure" => ConfiguredReviewGate.provider_failure_marker(check.dig("output", "summary")),
+          "producer" => collect_check_producer(check, head_sha, base_sha, reviewed_base_sha)
+        }
+      end
+      checks.sort_by { |check| [check["name"].to_s, check["started_at"].to_s] }
+    end
+
+    def collect_check_producer(check, head_sha, base_sha, reviewed_base_sha)
+      expected = all_reviewers.find { |reviewer| reviewer["check_name"] == check["name"] }&.fetch("producer", nil)
+      producer = {
+        "app_slug" => check.dig("app", "slug"),
+        "check_suite_id" => check.dig("check_suite", "id")&.to_s,
+        "verified" => false
+      }
+      return producer unless expected.is_a?(Hash)
+      return producer.merge("reason" => "check-suite-missing") if producer["check_suite_id"].to_s.empty?
+
+      runs = api_json(
+        "--method", "GET", "repos/#{@repo}/actions/runs",
+        "-F", "check_suite_id=#{producer.fetch('check_suite_id')}", "-F", "per_page=100"
+      )
+      candidates = Array(runs["workflow_runs"]).select do |run|
+        run["check_suite_id"].to_s == producer["check_suite_id"]
+      end
+      return producer.merge("reason" => "workflow-run-ambiguous") unless candidates.one?
+
+      run = candidates.first
+      associations = Array(run["pull_requests"])
+      association = associations.one? ? associations.first : nil
+      workflow_path = expected.fetch("workflow_path")
+      head_blob = workflow_blob(workflow_path, head_sha)
+      base_blob = workflow_blob(workflow_path, base_sha)
+      producer.merge(
+        "workflow_run_id" => run["id"]&.to_s,
+        "workflow_path" => run["path"],
+        "event" => run["event"],
+        "head_sha" => run["head_sha"],
+        "reviewed_pr" => association.is_a?(Hash) ? association["number"] : nil,
+        "reviewed_base_sha" => association.is_a?(Hash) ? association.dig("base", "sha") : nil,
+        "workflow_blob_sha" => head_blob,
+        "trusted_base_workflow_blob_sha" => base_blob,
+        "verified" => producer["app_slug"] == expected["app_slug"] &&
+          run["path"] == workflow_path && run["event"] == expected["event"] &&
+          run["head_sha"].to_s.casecmp?(head_sha.to_s) &&
+          association.is_a?(Hash) && association["number"].is_a?(Integer) &&
+          association["number"].positive? && association["number"] == @pr &&
+          association.dig("head", "sha").to_s.casecmp?(head_sha.to_s) &&
+          association.dig("base", "sha").to_s.casecmp?(reviewed_base_sha.to_s) &&
+          head_blob == base_blob
+      )
+    end
+
+    def workflow_blob(path, commit_sha)
+      encoded_path = path.split("/").map { |segment| URI.encode_www_form_component(segment) }.join("/")
+      document = api_json(
+        "--method", "GET", "repos/#{@repo}/contents/#{encoded_path}", "-f", "ref=#{commit_sha}"
+      )
+      blob_sha = document["sha"]
+      raise Error, "GitHub workflow blob evidence is invalid" unless blob_sha.to_s.match?(/\A[0-9a-f]{40}\z/i)
+
+      blob_sha
+    end
+
+    def collect_artifacts
+      reviews = paginated_array("repos/#{@repo}/pulls/#{@pr}/reviews?per_page=100")
+      artifacts = reviews.filter_map do |review|
+        actor = review.dig("user", "login")
+        next unless artifact_configured?(actor, "pull_request_review")
+
+        artifact_record(
+          review["id"], "pull_request_review", actor, review["submitted_at"], review["html_url"], review["commit_id"],
+          state: review["state"]
+        )
+      end
+      artifacts.sort_by { |artifact| [artifact["kind"], artifact["id"].to_s] }
+    end
+
+    def collect_threads(head_sha)
+      owner, name = @repo.split("/", 2)
+      pages = api_json(
+        "graphql", "--paginate", "--slurp",
+        "-f", "query=#{REVIEW_THREADS_QUERY}",
+        "-f", "owner=#{owner}", "-f", "name=#{name}", "-F", "number=#{@pr}"
+      )
+      complete = true
+      artifacts = []
+      thread_nodes = Array(pages).flat_map do |page|
+        connection = page.dig("data", "repository", "pullRequest", "reviewThreads")
+        raise Error, "review-thread query returned no pull request" unless connection.is_a?(Hash)
+
+        Array(connection["nodes"])
+      end
+      threads = thread_nodes.map do |thread|
+        comment_nodes, comments_complete = thread_comment_nodes(thread)
+        complete = false unless comments_complete
+        comments = comment_nodes.map do |comment|
+          marker = @policy.is_a?(Hash) ? @policy.dig("thread_disposition", "marker") : nil
+          marker_value = marker.is_a?(String) ? ConfiguredReviewGate.disposition_value(comment["body"], marker) : nil
+          marker_present = !marker_value.nil?
+          authorization = marker_present ? collaborator_authorization(comment.dig("author", "login")) : nil
+          disposition = marker_present && authorization["trusted"] == true
+          {
+            "id" => comment["id"],
+            "actor" => comment.dig("author", "login"),
+            "association" => comment["authorAssociation"],
+            "body_digest" => "sha256:#{Digest::SHA256.hexdigest(comment['body'].to_s)}",
+            "disposition" => disposition,
+            "disposition_value" => disposition ? marker_value : nil,
+            "authorization" => authorization,
+            "created_at" => comment["createdAt"]
+          }
+        end
+        root = comment_nodes.first || {}
+        root_head_sha = root.dig("commit", "oid") || root.dig("originalCommit", "oid")
+        root_actor = root.dig("author", "login")
+        if artifact_configured?(root_actor, "review_thread") &&
+           root_head_sha.to_s.casecmp?(head_sha.to_s)
+          artifacts << artifact_record(
+            root["id"], "review_thread", root_actor, root["createdAt"], root["url"], root_head_sha
+          )
+        end
+        {
+          "id" => thread["id"],
+          "url" => root["url"],
+          "resolved" => thread["isResolved"],
+          "outdated" => thread["isOutdated"],
+          "root_head_sha" => root_head_sha,
+          "comments" => comments
+        }
+      end
+      normalized_threads = threads.uniq { |thread| thread["id"] }.sort_by { |thread| thread["id"].to_s }
+      normalized_artifacts = artifacts.uniq { |artifact| artifact["id"] }
+                                      .sort_by { |artifact| artifact["id"].to_s }
+      [normalized_threads, complete, normalized_artifacts]
+    end
+
+    # The outer reviewThreads connection is paginated by `gh api --paginate`, but
+    # each thread's nested comments connection carries its own cursor. Without
+    # following it, any thread past the first comment page would leave the whole
+    # snapshot permanently incomplete and the PR could never obtain a receipt.
+    def thread_comment_nodes(thread)
+      connection = thread["comments"]
+      nodes = Array(connection["nodes"])
+      page_info = connection["pageInfo"] || {}
+      pages = 0
+      while page_info["hasNextPage"] == true
+        cursor = page_info["endCursor"]
+        return [nodes, false] if cursor.to_s.empty?
+
+        pages += 1
+        return [nodes, false] if pages > MAX_THREAD_COMMENT_PAGES
+
+        payload = api_json(
+          "graphql",
+          "-f", "query=#{THREAD_COMMENTS_QUERY}",
+          "-f", "threadId=#{thread['id']}",
+          "-f", "endCursor=#{cursor}"
+        )
+        connection = payload.is_a?(Hash) ? payload.dig("data", "node", "comments") : nil
+        return [nodes, false] unless connection.is_a?(Hash)
+
+        nodes.concat(Array(connection["nodes"]))
+        page_info = connection["pageInfo"] || {}
+      end
+      [nodes, true]
+    end
+
+    def collaborator_authorization(actor)
+      return { "permission" => nil, "role_name" => nil, "trusted" => false } if actor.to_s.empty?
+
+      @permission_cache ||= {}
+      @permission_cache[actor] ||= begin
+        encoded_actor = URI.encode_www_form_component(actor)
+        permission = api_json("repos/#{@repo}/collaborators/#{encoded_actor}/permission")
+        value = permission["permission"]
+        {
+          "permission" => value,
+          "role_name" => permission["role_name"],
+          "trusted" => %w[admin write].include?(value)
+        }
+      end
+    end
+
+    def artifact_record(id, kind, actor, created_at, url, head_sha, state: nil)
+      record = {
+        "id" => id.to_s,
+        "kind" => kind,
+        "actor" => actor,
+        "created_at" => created_at,
+        "url" => url,
+        "head_sha" => head_sha
+      }
+      record["state"] = state unless state.nil?
+      record
+    end
+
+    def all_reviewers
+      return [] unless @policy.is_a?(Hash)
+
+      reviewers = Array(@policy["reviewers"])
+      fallback = @policy.dig("fallback", "reviewer")
+      fallback ? reviewers + [fallback] : reviewers
+    end
+
+    def artifact_configured?(actor, kind)
+      all_reviewers.any? do |reviewer|
+        artifact = reviewer["artifact"]
+        configured_actor = Array(artifact&.fetch("actors", nil)).include?(actor)
+        configured_actor && Array(artifact&.fetch("kinds", nil)).include?(kind)
+      end
+    end
+
+    def paginated_array(endpoint)
+      pages = api_json("--paginate", "--slurp", endpoint)
+      Array(pages).flat_map { |page| Array(page) }
+    end
+
+    def api_json(*arguments)
+      account = Etc.getpwuid(Process.uid)
+      environment = {
+        "GH_HOST" => @host,
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+        "GH_PROMPT_DISABLED" => "1",
+        "GIT_TERMINAL_PROMPT" => "0"
+      }
+      %w[GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN].each do |name|
+        environment[name] = ENV[name] if ENV[name] && !ENV[name].empty?
+      end
+      stdout, _stderr, status = Command.capture(environment, @gh, "api", *arguments)
+      raise Error, "GitHub review evidence query failed" unless status.success?
+
+      JSON.parse(stdout)
+    rescue JSON::ParserError
+      raise Error, "GitHub review evidence query returned invalid JSON"
+    end
+  end
+
+  class LiveEvaluator
+    def initialize(client:, policy:, policy_source:, expected_base_sha:, wait_seconds:, poll_seconds:, expected_head_sha: nil, clock: -> { Time.now.utc }, sleeper: ->(seconds) { sleep(seconds) })
+      @client = client
+      @policy = policy
+      @policy_source = policy_source
+      @expected_base_sha = expected_base_sha
+      @expected_head_sha = expected_head_sha
+      @wait_seconds = wait_seconds
+      @poll_seconds = poll_seconds
+      @clock = clock
+      @sleeper = sleeper
+    end
+
+    def run
+      unless @policy == "n/a"
+        begin
+          ConfiguredReviewGate.validate_policy!(@policy)
+        rescue ArgumentError => e
+          return ConfiguredReviewGate.replay_blocked(
+            "UNKNOWN", "configured-review-policy-invalid"
+          ).merge("diagnostic" => e.message)
+        end
+      end
+
+      started_at = @clock.call
+      baseline_digest = nil
+      baseline_at = nil
+      loop do
+        now = @clock.call
+        snapshot = @client.collect
+        unless snapshot.dig("bindings", "base_sha").to_s.casecmp?(@expected_base_sha.to_s)
+          return replay_blocked("NOT_READY", "configured-review-base-moved")
+        end
+        if @expected_head_sha &&
+           !snapshot.dig("bindings", "head_sha").to_s.casecmp?(@expected_head_sha.to_s)
+          return replay_blocked("NOT_READY", "configured-review-head-moved")
+        end
+
+        unsettled = ConfiguredReviewGate.evaluate(
+          policy: @policy, policy_source: @policy_source, snapshot:, settled: false, now:,
+          trusted_live: true
+        )
+        blocker_codes = unsettled.fetch("blockers").map { |item| item["code"] }
+        return unsettled if terminal_without_wait?(blocker_codes)
+
+        current_result = unsettled
+        digest = ConfiguredReviewGate.semantic_snapshot_digest(snapshot, policy: @policy)
+        if digest == baseline_digest
+          quiet_seconds = @policy == "n/a" ? 0 : @policy.dig("artifact_settlement", "quiet_period_seconds")
+          if now - baseline_at >= quiet_seconds
+            current_result = ConfiguredReviewGate.evaluate(
+              policy: @policy, policy_source: @policy_source, snapshot:, settled: true, now:,
+              trusted_live: true
+            )
+            return current_result if current_result["verdict"] == "READY"
+          end
+        else
+          baseline_digest = digest
+          baseline_at = now
+        end
+
+        return current_result if now - started_at >= @wait_seconds
+
+        @sleeper.call(@poll_seconds)
+      end
+    rescue Error => e
+      replay_blocked("UNKNOWN", "configured-review-evidence-unavailable").merge("diagnostic" => e.message)
+    end
+
+    private
+
+    def terminal_without_wait?(codes)
+      pending_fallback = %w[
+        configured-review-fallback-missing configured-review-fallback-pending
+      ]
+      return false if codes.any? { |code| pending_fallback.include?(code) }
+      return false if waitable_primary_blockers_can_unlock_fallback?(codes)
+
+      terminal = BLOCKER_TRIGGER.keys - ["configured-review-missing"]
+      codes.any? do |code|
+        normalized = code.sub("configured-review-fallback-", "configured-review-")
+        terminal.include?(normalized)
+      end
+    end
+
+    def waitable_primary_blockers_can_unlock_fallback?(codes)
+      fallback = @policy.is_a?(Hash) ? @policy["fallback"] : nil
+      return false unless fallback.is_a?(Hash) && fallback["mode"] == "named_attested_check"
+
+      primary_codes = codes.reject { |code| code.start_with?("configured-review-fallback-") }
+      waitable = %w[configured-review-missing configured-review-pending]
+      return false unless primary_codes.any? { |code| waitable.include?(code) }
+
+      terminal = BLOCKER_TRIGGER.keys - ["configured-review-missing"]
+      terminal_primary_codes = primary_codes.select { |code| terminal.include?(code) }
+      return false if terminal_primary_codes.empty?
+
+      allowed = Array(fallback["triggers"])
+      terminal_primary_codes.all? { |code| allowed.include?(BLOCKER_TRIGGER.fetch(code)) }
+    end
+  end
+
+  def resolve_system_tool!(name, outside_root:)
+    candidate = SYSTEM_TOOL_DIRS
+                .map { |directory| File.join(directory, name) }
+                .find { |path| File.file?(path) && File.executable?(path) }
+    raise Error, "#{name} is unavailable in an approved system directory" unless candidate
+
+    realpath = File.realpath(candidate)
+    root = File.realpath(outside_root)
+    prefix = "#{root}#{File::SEPARATOR}"
+    if realpath == root || realpath.start_with?(prefix)
+      raise Error, "#{name} must resolve outside the consumer repository"
+    end
+
+    realpath
+  rescue Errno::ENOENT, Errno::EACCES => e
+    raise Error, "#{name} is unavailable: #{e.message}"
+  end
+  module_function :resolve_system_tool!
+
+  module_function
+
+  def review_gate_duplicate_key_errors(yaml)
+    stream = Psych.parse_stream(yaml)
+    errors = []
+    walk_for_duplicate_keys(stream, "$", errors)
+    errors.select do |error|
+      error == '$ contains duplicate key "review_gate"' ||
+        error.start_with?("$.review_gate ") || error.start_with?("$.review_gate.")
+    end
+  end
+
+  def walk_for_duplicate_keys(node, path, errors)
+    return unless node.respond_to?(:children) && node.children.is_a?(Array)
+
+    if node.is_a?(Psych::Nodes::Mapping)
+      seen = {}
+      node.children.each_slice(2) do |key_node, value_node|
+        key = key_node.respond_to?(:value) ? key_node.value : nil
+        if key.nil?
+          errors << "#{path} contains a non-scalar mapping key"
+        elsif seen.key?(key)
+          errors << "#{path} contains duplicate key #{key.inspect}"
+        else
+          seen[key] = true
+        end
+        walk_for_duplicate_keys(value_node, "#{path}.#{key}", errors)
+      end
+    else
+      node.children.each { |child| walk_for_duplicate_keys(child, path, errors) }
+    end
+  end
+
+  # Only live collector call paths opt into trusted_live. Snapshot provenance is
+  # evidence to cross-check, never authority by itself.
+  def evaluate(policy:, policy_source:, snapshot:, settled:, now: Time.now.utc, trusted_live: false)
+    validate_snapshot!(snapshot)
+    policy_digest = "sha256:#{Digest::SHA256.hexdigest(policy_source)}"
+    snapshot_digest = semantic_snapshot_digest(snapshot, policy:)
+
+    if policy == "n/a"
+      receipt = build_receipt(
+        snapshot:,
+        policy: { "not_applicable" => true, "digest" => policy_digest },
+        snapshot_digest:,
+        mutation_eligible: trusted_live == true && snapshot["provenance"] == "gh-api",
+        now:
+      )
+      return {
+        "contract" => RESULT_CONTRACT,
+        "version" => VERSION,
+        "verdict" => "READY",
+        "blockers" => [],
+        "receipt" => receipt
+      }
+    end
+
+    validate_policy!(policy)
+    primary_blockers = check_blockers(policy, snapshot)
+    effective_reviewers = policy.fetch("reviewers")
+    displaced_reviewers = []
+    override = nil
+    blockers = primary_blockers
+    if !primary_blockers.empty? && fallback_applicable?(policy.fetch("fallback"), primary_blockers)
+      fallback_reviewer = policy.dig("fallback", "reviewer")
+      fallback_blockers = check_blockers_for_reviewers([fallback_reviewer], snapshot)
+      if fallback_blockers.empty?
+        blockers = []
+        failed_reviewer_ids = primary_blockers.filter_map { |item| item["reviewer"] }.uniq
+        # A fallback substitutes for the failed reviewer's check completion only.
+        # Its outstanding formal change request still blocks; dropping the reviewer
+        # outright would hide that from artifact_blockers.
+        displaced_reviewers = policy.fetch("reviewers").select do |reviewer|
+          failed_reviewer_ids.include?(reviewer.fetch("id"))
+        end
+        effective_reviewers = policy.fetch("reviewers").reject do |reviewer|
+          failed_reviewer_ids.include?(reviewer.fetch("id"))
+        end + [fallback_reviewer]
+        override = {
+          "mode" => "named_attested_check",
+          "reviewer_id" => fallback_reviewer.fetch("id"),
+          "check_name" => fallback_reviewer.fetch("check_name"),
+          "primary_blocker_codes" => primary_blockers.map { |item| item.fetch("code") }.uniq.sort
+        }
+      else
+        blockers = primary_blockers + fallback_blockers.map do |item|
+          item.merge("code" => item.fetch("code").sub("configured-review-", "configured-review-fallback-"))
+        end
+      end
+    end
+    unless blockers.empty?
+      verdict = blockers.any? { |blocker| blocker["code"] == "configured-review-unknown" } ? "UNKNOWN" : "NOT_READY"
+      return {
+        "contract" => RESULT_CONTRACT,
+        "version" => VERSION,
+        "verdict" => verdict,
+        "blockers" => blockers
+      }
+    end
+
+    blockers = artifact_blockers(effective_reviewers, snapshot)
+    blockers.concat(displaced_change_request_blockers(displaced_reviewers, snapshot))
+    blockers << blocker("configured-review-artifact-unsettled", nil, nil, "unsettled") unless settled
+    blockers.concat(thread_blockers(policy, snapshot))
+    unless blockers.empty?
+      verdict = blockers.any? { |item| item["code"] == "configured-review-unknown" } ? "UNKNOWN" : "NOT_READY"
+      return {
+        "contract" => RESULT_CONTRACT,
+        "version" => VERSION,
+        "verdict" => verdict,
+        "blockers" => blockers
+      }
+    end
+
+    receipt = build_receipt(
+      snapshot:,
+      policy: {
+        "not_applicable" => false,
+        "digest" => policy_digest,
+        "reviewers" => policy.fetch("reviewers"),
+        "fallback" => policy.fetch("fallback"),
+        "override" => override
+      },
+      snapshot_digest:,
+      mutation_eligible: trusted_live == true && snapshot["provenance"] == "gh-api",
+      quiet_period_seconds: policy.dig("artifact_settlement", "quiet_period_seconds"),
+      now:
+    )
+    {
+      "contract" => RESULT_CONTRACT,
+      "version" => VERSION,
+      "verdict" => "READY",
+      "blockers" => [],
+      "receipt" => receipt
+    }
+  end
+
+  def build_receipt(
+    snapshot:, policy:, snapshot_digest:, mutation_eligible:, now:,
+    quiet_period_seconds: 0
+  )
+    receipt = {
+      "contract" => RECEIPT_CONTRACT,
+      "version" => VERSION,
+      "verdict" => "READY",
+      "issued_at" => now.utc.iso8601,
+      "bindings" => snapshot.fetch("bindings"),
+      "policy" => policy,
+      "artifact_settlement" => {
+        "snapshot_digest" => snapshot_digest,
+        "collected_at" => snapshot.fetch("collected_at"),
+        "quiet_period_seconds" => quiet_period_seconds,
+        "settled" => true
+      },
+      "evidence" => snapshot,
+      "mutation_eligible" => mutation_eligible
+    }
+    receipt["evidence_digest"] = receipt_evidence_digest(receipt)
+    receipt
+  end
+
+  def replay(
+    receipt:, policy:, policy_source:, snapshot:, settled: false, now: Time.now.utc,
+    trusted_live: false, current_integration: nil
+  )
+    validate_snapshot!(snapshot)
+    receipt_error = receipt_validation_error(receipt, policy, policy_source, now, trusted_live:)
+    return replay_blocked("UNKNOWN", receipt_error) if receipt_error
+
+    comparable_snapshot = receipt_comparable_snapshot(receipt, snapshot, current_integration)
+    unless comparable_snapshot
+      return replay_blocked("NOT_READY", "configured-review-receipt-binding-mismatch")
+    end
+
+    current = evaluate(policy:, policy_source:, snapshot:, settled:, now:, trusted_live:)
+    return current unless current["verdict"] == "READY"
+    unless receipt.dig("policy", "override") == current.dig("receipt", "policy", "override")
+      return replay_blocked("UNKNOWN", "configured-review-receipt-projection-mismatch")
+    end
+    unless receipt.dig("artifact_settlement", "snapshot_digest") ==
+           semantic_snapshot_digest(comparable_snapshot, policy:)
+      return replay_blocked("NOT_READY", "configured-review-receipt-artifact-snapshot-moved")
+    end
+    unless receipt["mutation_eligible"] == true && current.dig("receipt", "mutation_eligible") == true
+      return replay_blocked("UNKNOWN", "configured-review-receipt-non-live")
+    end
+
+    {
+      "contract" => REPLAY_CONTRACT,
+      "version" => VERSION,
+      "verdict" => "READY",
+      "mutation_eligible" => true,
+      "bindings" => snapshot.fetch("bindings"),
+      "snapshot_digest" => semantic_snapshot_digest(snapshot, policy:),
+      "blockers" => []
+    }
+  end
+
+  def receipt_comparable_snapshot(receipt, snapshot, current_integration)
+    receipt_bindings = receipt.fetch("bindings")
+    snapshot_bindings = snapshot.fetch("bindings")
+    return snapshot if receipt_bindings == snapshot_bindings
+    return unless safe_base_advance_bindings?(receipt_bindings, snapshot_bindings, current_integration)
+
+    snapshot.merge("bindings" => receipt_bindings)
+  rescue KeyError, TypeError
+    nil
+  end
+
+  def safe_base_advance_bindings?(receipt_bindings, snapshot_bindings, integration)
+    # The mutation path supplies this only from a reassessed merge-assurance v2
+    # receipt. Recheck every identity used to normalize the live snapshot so
+    # this gate cannot turn unrelated current-integration data into a waiver.
+    return false unless receipt_bindings.is_a?(Hash) && snapshot_bindings.is_a?(Hash) &&
+                        integration.is_a?(Hash)
+
+    reviewed_base_sha = snapshot_bindings["reviewed_base_sha"]
+    normalized_bindings = snapshot_bindings.reject { |key, _value| key == "reviewed_base_sha" }
+    stable_binding_keys = receipt_bindings.keys - ["base_sha"]
+    candidate = integration["candidate"]
+    telemetry = integration["telemetry"]
+    current_base = integration["current_base"]
+    receipt_base_sha = receipt_bindings["base_sha"]
+    current_base_sha = snapshot_bindings["base_sha"]
+    object_id = /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i
+
+    normalized_bindings.keys.sort == receipt_bindings.keys.sort &&
+      stable_binding_keys.all? { |key| normalized_bindings[key] == receipt_bindings[key] } &&
+      receipt_base_sha.to_s.match?(object_id) && current_base_sha.to_s.match?(object_id) &&
+      !current_base_sha.to_s.casecmp?(receipt_base_sha.to_s) &&
+      reviewed_base_sha.to_s.casecmp?(receipt_base_sha.to_s) &&
+      integration["contract"] == "current-integration-evidence" && integration["version"] == 1 &&
+      integration.dig("reuse", "decision") == "reuse-exact-head" &&
+      integration["repository"] == snapshot_bindings["repo"] &&
+      integration["pr"] == snapshot_bindings["pr"] &&
+      integration["recorded_base_sha"].to_s.casecmp?(receipt_base_sha.to_s) &&
+      integration["head_sha"].to_s.casecmp?(snapshot_bindings["head_sha"].to_s) &&
+      current_base.is_a?(Hash) && current_base["ref"] == snapshot_bindings["base_ref"] &&
+      current_base["sha"].to_s.casecmp?(current_base_sha.to_s) &&
+      %w[github-potential-merge-commit git-merge-tree].include?(candidate&.[]("source")) &&
+      candidate.is_a?(Hash) && candidate["parents"] == [current_base_sha, snapshot_bindings["head_sha"]] &&
+      candidate["tree_oid"].to_s.match?(object_id) &&
+      telemetry.is_a?(Hash) && telemetry["validator_replays_avoided"] == 1 &&
+      telemetry["review_replays_avoided"] == 1
+  end
+
+  def receipt_validation_error(receipt, policy, policy_source, now, trusted_live:)
+    envelope_error = receipt_envelope_validation_error(receipt, trusted_live:)
+    return envelope_error if envelope_error
+
+    settlement = receipt.fetch("artifact_settlement")
+    return "configured-review-receipt-policy-mismatch" unless
+      receipt.dig("policy", "digest") == "sha256:#{Digest::SHA256.hexdigest(policy_source)}"
+
+    policy_not_applicable = policy == "n/a"
+    return "configured-review-receipt-policy-mismatch" unless
+      receipt.dig("policy", "not_applicable") == policy_not_applicable
+
+    unless policy_not_applicable
+      return "configured-review-receipt-policy-mismatch" unless policy.is_a?(Hash)
+      return "configured-review-receipt-policy-mismatch" unless
+        receipt.dig("policy", "reviewers") == policy["reviewers"] &&
+        receipt.dig("policy", "fallback") == policy["fallback"]
+    end
+    expected_quiet_period = if policy_not_applicable
+                              0
+                            else
+                              policy.dig("artifact_settlement", "quiet_period_seconds")
+                            end
+    return "configured-review-receipt-projection-mismatch" unless
+      settlement["quiet_period_seconds"] == expected_quiet_period
+
+    issued_at = Time.iso8601(receipt["issued_at"].to_s)
+    age = now - issued_at
+    return "configured-review-receipt-stale" if age > MAX_RECEIPT_AGE_SECONDS
+    return "configured-review-receipt-future-dated" if age < -MAX_FUTURE_SKEW_SECONDS
+
+    nil
+  rescue ArgumentError, KeyError, TypeError
+    "configured-review-receipt-malformed"
+  end
+
+  def receipt_envelope_validation_error(receipt, trusted_live:)
+    return "configured-review-receipt-malformed" unless receipt.is_a?(Hash) &&
+                                                        receipt["contract"] == RECEIPT_CONTRACT &&
+                                                        receipt["version"] == VERSION &&
+                                                        receipt["verdict"] == "READY" &&
+                                                        receipt["evidence"].is_a?(Hash) &&
+                                                        receipt["policy"].is_a?(Hash) &&
+                                                        receipt["artifact_settlement"].is_a?(Hash)
+
+    evidence = receipt.fetch("evidence")
+    settlement = receipt.fetch("artifact_settlement")
+    validate_snapshot!(evidence)
+    return "configured-review-receipt-projection-mismatch" unless
+      receipt["bindings"] == evidence["bindings"]
+    return "configured-review-receipt-evidence-digest-mismatch" unless
+      receipt["evidence_digest"] == receipt_evidence_digest(receipt)
+    return "configured-review-receipt-projection-mismatch" unless
+      settlement["snapshot_digest"] == semantic_snapshot_digest(evidence, policy: receipt["policy"]) &&
+      settlement["collected_at"] == evidence["collected_at"] &&
+      settlement["settled"] == true
+
+    expected_mutation_eligibility = trusted_live == true && evidence["provenance"] == "gh-api"
+    return "configured-review-receipt-non-live" unless
+      receipt["mutation_eligible"] == expected_mutation_eligibility
+
+    nil
+  rescue ArgumentError, KeyError, TypeError
+    "configured-review-receipt-malformed"
+  end
+
+  def replay_blocked(verdict, code)
+    {
+      "contract" => REPLAY_CONTRACT,
+      "version" => VERSION,
+      "verdict" => verdict,
+      "mutation_eligible" => false,
+      "blockers" => [{ "code" => code }]
+    }
+  end
+
+  def evidence_digest(snapshot)
+    "sha256:#{Digest::SHA256.hexdigest(canonical_json(snapshot))}"
+  end
+
+  def receipt_evidence_digest(receipt)
+    evidence_digest(
+      "evidence" => receipt["evidence"],
+      "issued_at" => receipt["issued_at"],
+      "mutation_eligible" => receipt["mutation_eligible"]
+    )
+  end
+
+  def semantic_snapshot_digest(snapshot, policy: nil)
+    semantic = snapshot.reject { |key, _value| key == "collected_at" }
+    if not_applicable_policy?(policy)
+      %w[checks artifacts threads complete].each { |key| semantic.delete(key) }
+    elsif !policy.nil?
+      relevant_check_names = policy_relevant_check_names(policy)
+      semantic["checks"] = Array(semantic["checks"]).select do |check|
+        check.is_a?(Hash) && relevant_check_names.include?(check["name"])
+      end
+    end
+    "sha256:#{Digest::SHA256.hexdigest(canonical_json(semantic))}"
+  end
+
+  def policy_relevant_check_names(policy)
+    return [] if not_applicable_policy?(policy)
+    return [] unless policy.is_a?(Hash)
+
+    reviewers = Array(policy["reviewers"])
+    fallback_reviewer = policy.dig("fallback", "reviewer")
+    reviewers += [fallback_reviewer] if fallback_reviewer.is_a?(Hash)
+    reviewers.filter_map { |reviewer| reviewer["check_name"] if reviewer.is_a?(Hash) }.uniq
+  end
+
+  def not_applicable_policy?(policy)
+    policy == "n/a" || (policy.is_a?(Hash) && policy["not_applicable"] == true)
+  end
+
+  def validated_receipt_base_sha!(receipt)
+    evidence_bindings = receipt.dig("evidence", "bindings") if receipt.is_a?(Hash)
+    unless evidence_bindings.is_a?(Hash) && receipt["bindings"] == evidence_bindings
+      raise ArgumentError, "configured review receipt bindings do not match embedded evidence"
+    end
+
+    envelope_error = receipt_envelope_validation_error(receipt, trusted_live: true)
+    if envelope_error
+      raise ArgumentError, "configured review receipt preflight failed: #{envelope_error}"
+    end
+    unless receipt["mutation_eligible"] == true && receipt.dig("evidence", "provenance") == "gh-api"
+      raise ArgumentError, "configured review receipt is not live"
+    end
+
+    base_sha = evidence_bindings["base_sha"]
+    unless base_sha.to_s.match?(/\A[0-9a-f]{40}\z/i)
+      raise ArgumentError, "configured review receipt embedded base SHA is invalid"
+    end
+
+    base_sha.downcase
+  end
+
+  def validate_snapshot!(snapshot)
+    unless snapshot.is_a?(Hash) &&
+           snapshot["contract"] == SNAPSHOT_CONTRACT &&
+           snapshot["version"] == VERSION &&
+           snapshot["bindings"].is_a?(Hash)
+      raise ArgumentError, "configured review snapshot is malformed"
+    end
+  end
+
+  def validate_policy!(policy)
+    valid = policy_mapping?(
+      policy,
+      %w[
+        version reviewers require_current_head artifact_settlement thread_disposition
+        failure_policy fallback
+      ]
+    )
+    valid &&= policy["version"] == VERSION
+    valid &&= policy["require_current_head"] == true
+    valid &&= policy["failure_policy"] == "block"
+    valid &&= policy["reviewers"].is_a?(Array)
+    valid &&= !policy["reviewers"].empty?
+    valid &&= policy["reviewers"].all? { |reviewer| valid_policy_reviewer?(reviewer) }
+    valid &&= policy["reviewers"].map { |reviewer| reviewer["id"] }.uniq.length == policy["reviewers"].length
+    valid &&= policy["reviewers"].map { |reviewer| reviewer["check_name"] }.uniq.length ==
+              policy["reviewers"].length
+    valid &&= valid_policy_settlement?(policy["artifact_settlement"])
+    valid &&= valid_policy_thread_disposition?(policy["thread_disposition"])
+    valid &&= valid_policy_fallback?(policy["fallback"])
+    valid &&= valid_policy_fallback_primary_separation?(policy["fallback"], policy["reviewers"])
+
+    raise ArgumentError, "review_gate policy is not executable" unless valid
+  end
+
+  def policy_mapping?(value, keys)
+    value.is_a?(Hash) && value.keys.all? { |key| key.is_a?(String) } && value.keys.sort == keys.sort
+  end
+
+  def valid_policy_single_line?(value)
+    value.is_a?(String) && !value.strip.empty? && !value.match?(/[\0\r\n]/)
+  end
+
+  def valid_policy_reviewer?(reviewer)
+    return false unless policy_mapping?(reviewer, %w[id check_name producer artifact])
+    return false unless reviewer["id"].is_a?(String) && reviewer["id"].match?(/\A[a-z][a-z0-9_-]{0,63}\z/)
+    return false unless valid_policy_single_line?(reviewer["check_name"])
+
+    producer = reviewer["producer"]
+    return false unless policy_mapping?(producer, %w[app_slug workflow_path event])
+    return false unless valid_policy_single_line?(producer["app_slug"]) &&
+                        valid_policy_single_line?(producer["event"])
+    return false unless producer["workflow_path"].is_a?(String) &&
+                        producer["workflow_path"].match?(%r{\A\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml\z})
+
+    artifact = reviewer["artifact"]
+    return false unless artifact.is_a?(Hash) && artifact.keys.all? { |key| key.is_a?(String) }
+    return false unless (artifact.keys - %w[actors kinds completion]).empty? &&
+                        (%w[actors kinds] - artifact.keys).empty?
+    return false unless artifact["actors"].is_a?(Array) && !artifact["actors"].empty? &&
+                        artifact["actors"].all? { |actor| valid_policy_actor?(actor) }
+    return false unless artifact["kinds"].is_a?(Array) && !artifact["kinds"].empty? &&
+                        artifact["kinds"].all? { |kind| %w[pull_request_review review_thread].include?(kind) }
+
+    completion = artifact["completion"]
+    !artifact.key?("completion") ||
+      (policy_mapping?(completion, ["mode"]) && completion["mode"] == "producer_check")
+  end
+
+  def valid_policy_actor?(actor)
+    actor.is_a?(String) && actor.match?(/\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?\z/)
+  end
+
+  def valid_policy_settlement?(settlement)
+    policy_mapping?(settlement, %w[required quiet_period_seconds]) && settlement["required"] == true &&
+      settlement["quiet_period_seconds"].is_a?(Integer) &&
+      settlement["quiet_period_seconds"].between?(1, MAX_SETTLEMENT_QUIET_PERIOD_SECONDS)
+  end
+
+  def valid_policy_thread_disposition?(disposition)
+    policy_mapping?(disposition, %w[required marker]) && disposition["required"] == true &&
+      valid_policy_single_line?(disposition["marker"])
+  end
+
+  def valid_policy_fallback?(fallback)
+    return false unless fallback.is_a?(Hash)
+    return policy_mapping?(fallback, ["mode"]) if fallback["mode"] == "disabled"
+    return false unless policy_mapping?(fallback, %w[mode triggers reviewer]) &&
+                        fallback["mode"] == "named_attested_check"
+
+    triggers = fallback["triggers"]
+    triggers.is_a?(Array) && !triggers.empty? &&
+      triggers.all? { |trigger| BLOCKER_TRIGGER.value?(trigger) } &&
+      valid_policy_reviewer?(fallback["reviewer"])
+  end
+
+  def valid_policy_fallback_primary_separation?(fallback, reviewers)
+    return true if fallback["mode"] == "disabled"
+
+    fallback_reviewer = fallback.fetch("reviewer")
+    reviewers.none? do |reviewer|
+      reviewer["id"] == fallback_reviewer["id"] ||
+        reviewer["check_name"] == fallback_reviewer["check_name"]
+    end
+  end
+
+  def check_blockers(policy, snapshot)
+    check_blockers_for_reviewers(policy.fetch("reviewers"), snapshot)
+  end
+
+  def check_blockers_for_reviewers(reviewers, snapshot)
+    return [blocker("configured-review-unknown", nil, nil, "snapshot-incomplete")] unless snapshot["complete"] == true
+
+    reviewers.filter_map do |reviewer|
+      check_name = reviewer.fetch("check_name")
+      candidates = snapshot.fetch("checks").select { |check| check["name"] == check_name }
+      if candidates.empty?
+        blocker("configured-review-missing", reviewer, nil, "missing")
+      else
+        check = governing_check(candidates, snapshot.dig("bindings", "head_sha"))
+        reviewed_base_sha = snapshot.dig("bindings", "reviewed_base_sha") ||
+                            snapshot.dig("bindings", "base_sha")
+        producer_blocker = classify_producer_blocker(
+          reviewer, check, snapshot.dig("bindings", "head_sha"),
+          reviewed_base_sha, snapshot.dig("bindings", "pr")
+        )
+        producer_blocker || classify_check_blocker(reviewer, check, snapshot.dig("bindings", "head_sha"))
+      end
+    end
+  end
+
+  def classify_producer_blocker(reviewer, check, expected_head, expected_base = nil, expected_pr = nil)
+    expected = reviewer.fetch("producer")
+    actual = check["producer"]
+    trusted = actual.is_a?(Hash) && actual["verified"] == true &&
+              actual["app_slug"] == expected["app_slug"] &&
+              actual["workflow_path"] == expected["workflow_path"] &&
+              actual["event"] == expected["event"] &&
+              actual["head_sha"].to_s.casecmp?(expected_head.to_s) &&
+              (expected_base.nil? || actual["reviewed_base_sha"].to_s.casecmp?(expected_base.to_s)) &&
+              (expected_pr.nil? ||
+                (actual["reviewed_pr"].is_a?(Integer) && actual["reviewed_pr"].positive? &&
+                 expected_pr.is_a?(Integer) && actual["reviewed_pr"] == expected_pr)) &&
+              actual["workflow_blob_sha"].to_s.match?(/\A[0-9a-f]{40}\z/i) &&
+              actual["workflow_blob_sha"] == actual["trusted_base_workflow_blob_sha"]
+    return if trusted
+
+    blocker("configured-review-producer-untrusted", reviewer, check, "producer-untrusted")
+  end
+
+  def fallback_applicable?(fallback, blockers)
+    return false unless fallback.is_a?(Hash) && fallback["mode"] == "named_attested_check"
+
+    allowed = Array(fallback["triggers"])
+    blockers.all? do |item|
+      trigger = BLOCKER_TRIGGER[item["code"]]
+      trigger && allowed.include?(trigger)
+    end
+  end
+
+  def artifact_blockers(reviewers, snapshot)
+    head_sha = snapshot.dig("bindings", "head_sha")
+    latest_reviews = latest_current_head_reviews_by_actor(snapshot.fetch("artifacts"), head_sha)
+    reviewers.filter_map do |reviewer|
+      check = governing_check(
+        snapshot.fetch("checks").select { |item| item["name"] == reviewer["check_name"] },
+        head_sha
+      )
+      artifact_policy = reviewer.fetch("artifact")
+      configured_reviews = snapshot.fetch("artifacts").select do |artifact|
+        artifact["kind"] == "pull_request_review" &&
+          artifact_policy.fetch("actors").include?(artifact["actor"]) &&
+          artifact["head_sha"].to_s.casecmp?(head_sha.to_s)
+      end
+      configured_actors = configured_reviews.group_by { |artifact| artifact["actor"] }.keys
+      formal_review_blocked = configured_actors.any? do |actor|
+        latest = latest_reviews[actor]
+        latest.nil? || !ACCEPTABLE_PULL_REQUEST_REVIEW_STATES.include?(latest["state"]) ||
+          outstanding_changes_requested?(configured_reviews, actor)
+      end
+      next blocker("configured-review-artifact-missing", reviewer, check, "missing") if formal_review_blocked
+
+      present = snapshot.fetch("artifacts").any? do |artifact|
+        artifact_policy.fetch("actors").include?(artifact["actor"]) &&
+          artifact_policy.fetch("kinds").include?(artifact["kind"]) &&
+          artifact["head_sha"].to_s.casecmp?(head_sha.to_s) &&
+          timestamp_at_or_after?(artifact["created_at"], check["started_at"]) &&
+          qualifying_review_artifact?(artifact, latest_reviews)
+      end
+      present ||= producer_check_completion?(artifact_policy, reviewer, check, head_sha)
+      blocker("configured-review-artifact-missing", reviewer, check, "missing") unless present
+    end
+  end
+
+  # Reviewers a fallback displaced still block while they hold an unresolved
+  # current-head change request, so an authorized fallback cannot merge past
+  # requested changes that were never approved or dismissed.
+  def displaced_change_request_blockers(reviewers, snapshot)
+    head_sha = snapshot.dig("bindings", "head_sha")
+    reviewers.filter_map do |reviewer|
+      artifact_policy = reviewer.fetch("artifact")
+      configured_reviews = snapshot.fetch("artifacts").select do |artifact|
+        artifact["kind"] == "pull_request_review" &&
+          artifact_policy.fetch("actors").include?(artifact["actor"]) &&
+          artifact["head_sha"].to_s.casecmp?(head_sha.to_s)
+      end
+      actors = configured_reviews.group_by { |artifact| artifact["actor"] }.keys
+      next unless actors.any? { |actor| outstanding_changes_requested?(configured_reviews, actor) }
+
+      check = governing_check(
+        snapshot.fetch("checks").select { |item| item["name"] == reviewer["check_name"] },
+        head_sha
+      )
+      blocker("configured-review-artifact-missing", reviewer, check, "missing")
+    end
+  end
+
+  # A current-head CHANGES_REQUESTED review keeps blocking until the same actor
+  # approves or the review is dismissed, matching GitHub's own review decision.
+  # A later COMMENTED review must not clear it -- including a producer workflow's
+  # completion marker posted with that reviewer's own token.
+  def outstanding_changes_requested?(reviews, actor)
+    decisive = reviews.select do |review|
+      review["actor"] == actor && DECISIVE_PULL_REQUEST_REVIEW_STATES.include?(review["state"])
+    end
+    ordered = decisive.map { |review| [review, pull_request_review_order_key(review)] }
+    return true if ordered.any? { |_review, key| key.nil? }
+
+    newest = ordered.max_by { |_review, key| key }&.first
+    !newest.nil? && newest["state"] == "CHANGES_REQUESTED"
+  end
+
+  def producer_check_completion?(artifact_policy, reviewer, check, head_sha)
+    completion = artifact_policy["completion"]
+    completion.is_a?(Hash) && completion["mode"] == "producer_check" &&
+      classify_producer_blocker(reviewer, check, head_sha, nil).nil?
+  end
+
+  def latest_current_head_reviews_by_actor(artifacts, head_sha)
+    current_head_reviews = artifacts.select do |artifact|
+      artifact["kind"] == "pull_request_review" &&
+        artifact["head_sha"].to_s.casecmp?(head_sha.to_s)
+    end
+    reviews_by_actor = current_head_reviews.group_by { |artifact| artifact["actor"] }
+    reviews_by_actor.to_h do |actor, reviews|
+      ordered = reviews.map do |review|
+        [review, pull_request_review_order_key(review)]
+      end
+      latest = if ordered.all? { |_review, key| key }
+                 ordered.max_by { |_review, key| key }&.first
+               end
+      [actor, latest]
+    end
+  end
+
+  def pull_request_review_order_key(review)
+    id = review["id"].to_s
+    return unless id.match?(/\A[1-9]\d*\z/)
+
+    [Time.iso8601(review["created_at"].to_s), Integer(id, 10)]
+  rescue ArgumentError
+    nil
+  end
+
+  def qualifying_review_artifact?(artifact, latest_reviews)
+    return true unless artifact["kind"] == "pull_request_review"
+
+    latest_reviews[artifact["actor"]].equal?(artifact) &&
+      ACCEPTABLE_PULL_REQUEST_REVIEW_STATES.include?(artifact["state"])
+  end
+
+  def thread_blockers(policy, snapshot)
+    marker = policy.dig("thread_disposition", "marker")
+    snapshot.fetch("threads").filter_map do |thread|
+      next if thread["resolved"] == true || thread["outdated"] == true
+
+      root_head = thread["root_head_sha"]
+      if root_head.to_s.empty?
+        next blocker("configured-review-unknown", nil, nil, "thread-head-unknown").merge(
+          "thread_id" => thread["id"], "url" => thread["url"]
+        )
+      end
+      next if explicitly_disposed_thread?(thread, marker)
+
+      blocker("configured-review-thread-untriaged", nil, nil, "unresolved").merge(
+        "thread_id" => thread["id"], "url" => thread["url"]
+      )
+    end
+  end
+
+  def explicitly_disposed_thread?(thread, marker)
+    replies = Array(thread["comments"])[1..].to_a
+    return true if replies.any? { |comment| trusted_disposition_value(comment, marker) == "waived" }
+
+    %w[fixed not-actionable].include?(trusted_disposition_value(replies.last, marker))
+  end
+
+  def trusted_disposition_value(comment, marker)
+    return unless comment.is_a?(Hash) && comment.dig("authorization", "trusted") == true
+
+    recorded = comment["disposition_value"]
+    return recorded if comment["disposition"] == true && DISPOSITION_VALUES.include?(recorded)
+
+    disposition_value(comment["body"], marker)
+  end
+
+  def disposition_body?(body, marker)
+    !disposition_value(body, marker).nil?
+  end
+
+  def disposition_value(body, marker)
+    pattern = /\A#{Regexp.escape(marker)}\s*(#{DISPOSITION_VALUES.map { |value| Regexp.escape(value) }.join('|')})\z/i
+    values = body.to_s.lines.filter_map do |line|
+      match = line.strip.match(pattern)
+      match[1].downcase if match
+    end
+    values.one? ? values.first : nil
+  end
+
+  def timestamp_at_or_after?(candidate, floor)
+    Time.iso8601(candidate.to_s) >= Time.iso8601(floor.to_s)
+  rescue ArgumentError
+    false
+  end
+
+  def latest_check(checks)
+    checks.max_by { |check| [check["started_at"].to_s, check["completed_at"].to_s] }
+  end
+
+  def governing_check(checks, expected_head)
+    current_head = checks.select do |check|
+      check["head_sha"].to_s.casecmp?(expected_head.to_s)
+    end
+    candidates = current_head.empty? ? checks : current_head
+    active = candidates.reject { |check| check["status"] == "completed" }
+    latest_check(active.empty? ? candidates : active)
+  end
+
+  def classify_check_blocker(reviewer, check, expected_head)
+    unless check["head_sha"].to_s.casecmp?(expected_head.to_s)
+      return blocker("configured-review-stale", reviewer, check, "stale")
+    end
+
+    status = check["status"]
+    return blocker("configured-review-pending", reviewer, check, status) if PENDING_CHECK_STATES.include?(status)
+    return blocker("configured-review-unknown", reviewer, check, status || "unknown") unless status == "completed"
+
+    conclusion = check["conclusion"]
+    return nil if conclusion == "success"
+
+    capacity_code = provider_failure_code(check["provider_failure"])
+    code = capacity_code || TERMINAL_FAILURE_CODES[conclusion] || "configured-review-unknown"
+    blocker(code, reviewer, check, conclusion || "unknown")
+  end
+
+  def provider_failure_marker(summary)
+    marker = summary.to_s.strip
+    PROVIDER_FAILURE_MARKERS.key?(marker) ? marker : nil
+  end
+
+  def provider_failure_code(marker)
+    PROVIDER_FAILURE_MARKERS[marker]
+  end
+
+  def blocker(code, reviewer, check, state)
+    {
+      "code" => code,
+      "reviewer" => reviewer&.[]("id"),
+      "check_name" => reviewer&.[]("check_name"),
+      "state" => state,
+      "details_url" => check&.[]("details_url")
+    }.reject { |_key, value| value.nil? }
+  end
+
+  def canonical_json(value)
+    case value
+    when Hash
+      "{#{value.keys.sort.map { |key| "#{JSON.generate(key)}:#{canonical_json(value[key])}" }.join(',')}}"
+    when Array
+      "[#{value.map { |item| canonical_json(item) }.join(',')}]"
+    else
+      JSON.generate(value)
+    end
+  end
+
+  class CLI
+    def run(argv)
+      command = argv.shift
+      return help if command.nil? || %w[-h --help help].include?(command)
+
+      case command
+      when "fixture"
+        run_fixture(argv)
+      when "evaluate"
+        run_live_evaluate(argv)
+      when "replay"
+        run_live_replay(argv)
+      else
+        raise ArgumentError, "unknown command #{command.inspect}"
+      end
+    rescue ArgumentError, Errno::ENOENT, Errno::EACCES, Psych::Exception, JSON::ParserError => e
+      warn "Error: #{e.message.lines.first.to_s.strip}"
+      2
+    end
+
+    private
+
+    def run_fixture(argv)
+      options = parse_file_options(argv, receipt_required: false)
+      policy_source = File.read(options.fetch(:policy), encoding: "UTF-8")
+      policy_document = YAML.safe_load(
+        policy_source, permitted_classes: [], permitted_symbols: [], aliases: false
+      ) || {}
+      raise ArgumentError, "policy document must be a mapping" unless policy_document.is_a?(Hash)
+
+      snapshot = JSON.parse(File.read(options.fetch(:snapshot), encoding: "UTF-8"))
+      raise ArgumentError, "snapshot document must be a mapping" unless snapshot.is_a?(Hash)
+
+      snapshot = snapshot.merge("provenance" => "fixture")
+      result = ConfiguredReviewGate.evaluate(
+        policy: policy_document["review_gate"],
+        policy_source:,
+        snapshot:,
+        settled: true
+      )
+      write_receipt(options[:receipt], result["receipt"]) if result["verdict"] == "READY" && options[:receipt]
+      puts JSON.pretty_generate(result)
+      if result["verdict"] == "READY"
+        0
+      else
+        result["verdict"] == "NOT_READY" ? 1 : 2
+      end
+    end
+
+    def run_live_evaluate(argv)
+      options = parse_live_options(argv, evaluate: true)
+      policy, policy_source = TrustedPolicy.load(
+        repo_root: options.fetch(:repo_root), base_sha: options.fetch(:expected_base_sha)
+      )
+      client = GitHubClient.new(
+        host: options.fetch(:host), repo: options.fetch(:repo),
+        pull_request_number: options.fetch(:pr), policy:
+      )
+      result = LiveEvaluator.new(
+        client:, policy:, policy_source:,
+        expected_base_sha: options.fetch(:expected_base_sha),
+        expected_head_sha: options.fetch(:expected_head_sha),
+        wait_seconds: options.fetch(:wait_seconds),
+        poll_seconds: options.fetch(:poll_seconds)
+      ).run
+      write_receipt(options.fetch(:receipt), result["receipt"]) if result["verdict"] == "READY"
+      emit_result(result)
+    end
+
+    def run_live_replay(argv)
+      options = parse_live_options(argv, evaluate: false)
+      receipt = JSON.parse(File.read(options.fetch(:receipt), encoding: "UTF-8"))
+      base_sha = ConfiguredReviewGate.validated_receipt_base_sha!(receipt)
+      policy, policy_source = TrustedPolicy.load(repo_root: options.fetch(:repo_root), base_sha:)
+      client = GitHubClient.new(
+        host: options.fetch(:host), repo: options.fetch(:repo),
+        pull_request_number: options.fetch(:pr), policy:
+      )
+      binding = receipt.fetch("bindings")
+      settled_result = LiveEvaluator.new(
+        client:, policy:, policy_source:,
+        expected_base_sha: binding.fetch("base_sha"),
+        expected_head_sha: binding.fetch("head_sha"),
+        wait_seconds: options.fetch(:wait_seconds),
+        poll_seconds: options.fetch(:poll_seconds)
+      ).run
+      return emit_result(settled_result) unless settled_result["verdict"] == "READY"
+
+      snapshot = settled_result.fetch("receipt").fetch("evidence")
+      result = ConfiguredReviewGate.replay(
+        receipt:, policy:, policy_source:, snapshot:, settled: true, trusted_live: true
+      )
+      emit_result(result)
+    end
+
+    def parse_live_options(argv, evaluate:)
+      options = { host: "github.com", wait_seconds: 900, poll_seconds: 10 }
+      parser = OptionParser.new do |opts|
+        opts.on("--repo OWNER/REPO") { |value| options[:repo] = value }
+        opts.on("--pr NUMBER", Integer) { |value| options[:pr] = value }
+        opts.on("--host HOST") { |value| options[:host] = value.downcase }
+        opts.on("--repo-root DIR") { |value| options[:repo_root] = value }
+        opts.on("--expected-base-sha SHA") { |value| options[:expected_base_sha] = value.downcase }
+        opts.on("--expected-head-sha SHA") { |value| options[:expected_head_sha] = value.downcase }
+        opts.on("--receipt FILE") { |value| options[:receipt] = value }
+        opts.on("--wait-seconds SECONDS", Integer) { |value| options[:wait_seconds] = value }
+        opts.on("--poll-seconds SECONDS", Integer) { |value| options[:poll_seconds] = value }
+      end
+      parser.parse!(argv)
+      raise ArgumentError, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+      raise ArgumentError, "--repo must use OWNER/REPO form" unless options[:repo].to_s.match?(%r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z})
+      raise ArgumentError, "--pr must be positive" unless options[:pr].is_a?(Integer) && options[:pr].positive?
+      raise ArgumentError, "--host is invalid" unless options[:host].to_s.match?(/\A[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d+)?\z/)
+      raise ArgumentError, "--repo-root is required" if options[:repo_root].to_s.empty?
+      raise ArgumentError, "--receipt is required" if options[:receipt].to_s.empty?
+      raise ArgumentError, "--wait-seconds must be between 0 and 3600" unless options[:wait_seconds].between?(0, 3600)
+      raise ArgumentError, "--poll-seconds must be between 1 and 300" unless options[:poll_seconds].between?(1, 300)
+
+      if evaluate
+        %i[expected_base_sha expected_head_sha].each do |key|
+          raise ArgumentError, "--#{key.to_s.tr('_', '-')} must be a full commit SHA" unless
+            options[key].to_s.match?(/\A[0-9a-f]{40}\z/)
+        end
+      end
+      options
+    end
+
+    def emit_result(result)
+      puts JSON.pretty_generate(result)
+      if result["verdict"] == "READY"
+        0
+      else
+        result["verdict"] == "NOT_READY" ? 1 : 2
+      end
+    end
+
+    def parse_file_options(argv, receipt_required:)
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.on("--policy FILE", "Trusted review_gate policy YAML") { |value| options[:policy] = value }
+        opts.on("--snapshot FILE", "Deterministic configured-review snapshot") { |value| options[:snapshot] = value }
+        opts.on("--receipt FILE", "Write a READY receipt") { |value| options[:receipt] = value }
+      end
+      parser.parse!(argv)
+      raise ArgumentError, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+      raise ArgumentError, "--policy is required" if options[:policy].to_s.empty?
+      raise ArgumentError, "--snapshot is required" if options[:snapshot].to_s.empty?
+      raise ArgumentError, "--receipt is required" if receipt_required && options[:receipt].to_s.empty?
+
+      options
+    end
+
+    def write_receipt(path, receipt)
+      File.write(path, "#{JSON.pretty_generate(receipt)}\n", mode: "w", perm: 0o600)
+    end
+
+    def help
+      puts <<~HELP
+        Usage:
+          configured-review-gate fixture --policy FILE --snapshot FILE [--receipt FILE]
+          configured-review-gate evaluate --repo OWNER/REPO --pr NUMBER --host HOST
+            --repo-root DIR --expected-base-sha SHA --expected-head-sha SHA
+            --receipt FILE [--wait-seconds N --poll-seconds N]
+          configured-review-gate replay --repo OWNER/REPO --pr NUMBER --host HOST
+            --repo-root DIR --receipt FILE
+
+        Fixture receipts are never mutation eligible. Live evaluate/replay commands
+        collect GitHub state and are required before merge submission.
+      HELP
+      0
+    end
+  end
+end
+
+exit ConfiguredReviewGate::CLI.new.run(ARGV) if $PROGRAM_NAME == __FILE__

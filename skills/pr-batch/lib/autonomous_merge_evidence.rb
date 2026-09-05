@@ -223,6 +223,7 @@ module AutonomousMergeEvidence
 
     author = comment["user"]
     login = author["login"] if author.is_a?(Hash)
+    author_type = author["type"] if author.is_a?(Hash)
     unless login.is_a?(String) && !login.strip.empty?
       raise CollectionError, "GitHub comment author must contain a nonempty login"
     end
@@ -232,7 +233,8 @@ module AutonomousMergeEvidence
       "url" => comment.fetch("html_url"),
       "created_at" => comment.fetch("created_at"),
       "body" => comment.fetch("body"),
-      "author" => login
+      "author" => login,
+      "author_type" => author_type
     }
   end
 

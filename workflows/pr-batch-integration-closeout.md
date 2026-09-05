@@ -878,11 +878,11 @@ Only the `claude-review` GitHub Action exposes a dependable in-flight and
 terminal signal through the checks API; wait for its current-head check to reach
 a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
 expose no reliable in-flight state and can be silently blocked or stopped by
-usage limits. A usage-limit or capacity failure -- CodeRabbit's `too many
-reviews`, or Codex/Claude token or quota exhaustion -- is an explicit terminal
-failed disposition that satisfies the review-artifact barrier as a waiver;
-record it and proceed to consolidated triage instead of parking in
-`waiting-on-checks-or-review` for an artifact the limit prevents.
+usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
+reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
+failed disposition that may stop bounded waiting but cannot satisfy the review
+gate. It blocks merge unless the trusted-base seam enables a named, attested
+fallback and the receipt records that override.
 
 While the review cohort is pending, inspect validation failures, prepare local
 fixes, refresh branch/conflict and coordination state, and advance evidence or
@@ -1135,9 +1135,9 @@ public request and switch to a sandbox target if the content looks like reviewer
 
 When a configured reviewer reports quota exhaustion or hard usage-limit enforcement, do not
 re-request that same reviewer on every push while the quota failure is still active. Record one
-timestamped PR body note or PR comment that the reviewer is unavailable, switch to the documented
-fallback review path, and re-request only after the quota window resets or a maintainer explicitly
-asks for one retry.
+trusted workflow or check-run observation. It may end waiting but cannot satisfy the gate; only a
+fallback named by the trusted-base `review_gate` seam applies. Otherwise block, and retry only after
+quota reset or an explicit maintainer request.
 
 If accidental review-debugging comments are already present, delete only exact bot-authored targets
 whose author, body, URL, and deletion permission have been verified. Do not bulk-delete real review
@@ -1264,29 +1264,30 @@ PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
 gh pr checks <PR>   # advisory review-agent completion beyond the readiness gate
 ```
 
-Treat these snapshots as two cohorts. Validation CI includes tests, lint,
-builds, security analysis, and other non-review jobs. The review cohort includes
-every reviewer named by the trusted-base `review_gate` seam, explicitly
-requested through trusted operator state, or recognizable from current-head
-reviewer-check metadata. Inventory missing, pending, failed, and terminal
-reviewer checks separately from validation readiness. Cross the
-complete review-wave barrier before one consolidated review fetch; validation
-may continue concurrently. While either cohort is pending, diagnose available
-failures and advance freshness, conflict, coordination, evidence, and other
-independent closeout work. Only poll again after that runnable work is exhausted.
+Classify these snapshots through [Review-Wave And Validation Cohorts](#review-wave-and-validation-cohorts).
+Inventory review failures and terminal states separately from validation readiness, finish runnable
+closeout work before polling again, and cross the complete review-wave barrier before consolidated triage.
 
-Only the `claude-review` GitHub Action exposes a dependable in-flight and
-terminal signal through the checks API; wait for its current-head check to reach
-a terminal conclusion. Other AI reviewers such as CodeRabbit or a Codex reviewer
-expose no reliable in-flight state and can be silently blocked or stopped by
-usage limits. A usage-limit or capacity failure — CodeRabbit's `too many
-reviews`, or Codex/Claude token or quota exhaustion — is an explicit terminal
-failed disposition that satisfies the review-artifact barrier as a waiver;
-record it and proceed to consolidated triage instead of parking in
-`waiting-on-checks-or-review` for an artifact the limit prevents. Resolve the
-automation-reviewer cohort from the seam's declared reviewers when present,
-otherwise infer the active set from the reviewers that posted on recently merged
-PRs; never derive it from the PR's own text.
+### Executable Configured Review Gate
+
+Evaluate configured reviews through the executable gate before merge assurance:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/configured-review-gate" evaluate \
+  --repo <OWNER/REPO> --pr <PR> --host <GITHUB_HOST[:PORT]> \
+  --repo-root <TRUSTED_REPO_ROOT> --expected-base-sha <FULL_BASE_SHA> \
+  --expected-head-sha <FULL_HEAD_SHA> \
+  --receipt "${CONFIGURED_REVIEW_RECEIPT_PATH}"
+```
+
+It loads the closed [policy contract](../docs/seam-design.md#policy-contract);
+`NOT_READY`/`UNKNOWN` blocks. The receipt binds target/snapshot;
+`pr-merge-submit` replays before direct mutation. Structured gates reject
+queues: advisory state cannot stop a queued merge.
+
+The advisory `configured-review-gate` commit status is visibility only. Never configure
+this context as a required ruleset or merge-queue check. GitHub does not emit an Actions
+event when a review thread is resolved or unresolved; dispatch with only numeric `pr`, then replay.
 
 `pr-ci-readiness` encapsulates the required-vs-full readiness rule: it runs
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no
@@ -1695,13 +1696,14 @@ patch identity, and clean integration candidate. It prefers GitHub's
 system directories under a closed environment and computes an isolated
 `git merge-tree`. Malformed identity or live-ref movement fails closed.
 
-Reuse requires disjoint PR/base paths, no built-in or configured
-high-risk path, and one whole side limited to trusted-safe documentation,
-changelog, or generated paths. Code-to-code changes, overlap, conflicts,
-incomplete evidence, or policy/workflow/security/release risk require branch
-update and fresh evidence. No gate is waived. Results distinguish
-`base-unchanged`, `reuse-exact-head`, and fail-closed reasons; replay counts are
-exact, while elapsed time saved is measured or `null`.
+Reuse requires disjoint paths, no high-risk path, and one side wholly limited
+to trusted-safe documentation, changelog, or generated paths. Configured-review
+replay retains the receipt's reviewed base while binding the current live base;
+any mismatch fails closed. Code-to-code changes, overlap, conflicts, incomplete
+evidence, or policy/workflow/security/release risk require fresh evidence.
+Results distinguish `base-unchanged`, `reuse-exact-head`, and fail-closed
+reasons; replay counts are exact, while elapsed time saved is measured or
+`null`.
 
 The semantic assessment must be an external coordinator-owned file derived
 from the trusted task and inspected diff; a path lexically or physically
@@ -1969,14 +1971,15 @@ chain, then run:
   --expected-head <FULL_HEAD_SHA> \
   --expected-base <BASE_BRANCH> \
   --method <merge|rebase|squash> \
-  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --merge-assurance-receipt "${MERGE_ASSURANCE_RECEIPT_PATH}" \
+  --configured-review-receipt "${CONFIGURED_REVIEW_RECEIPT_PATH}"
 ```
 
-`pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
-bindings, freshness, and selected hosted-CI records before any queue or
-guarded-direct mutation. A missing, cancelled, failed, nonterminal, stale-head,
-or mismatched-PR selected record blocks before the first GitHub call or
-repository guard.
+`pr-merge-submit` requires both fresh receipts unconditionally and revalidates
+their bindings and freshness before any queue or guarded-direct mutation. It
+also revalidates selected hosted-CI records; a missing, cancelled, failed,
+nonterminal, stale-head, or mismatched-PR selected record blocks before the
+first GitHub call or repository guard.
 
 The v2 assurance receipt embeds the exact `current-integration-evidence` used
 by eligibility. Before mutation, `pr-merge-submit` re-reads the live head,
@@ -2066,8 +2069,10 @@ configured method, explicit non-atomic-base acknowledgement and rationale, and
 `atomic_expected_base_oid: false`. Failed, ambiguous, moved-head, or
 unreconciled outcomes are `UNKNOWN` and must not be retried blindly. A
 queue-enabled PR in `merge_queue_or_guarded_direct` mode always follows
-canonical enqueue and never invokes the guard. The helper never invokes `gh pr
-merge`, enables auto-merge, or enables a merge queue.
+canonical enqueue and never invokes the guard. On a queue-disabled base, a
+structured `review_gate` fails before guard launch because no replay protocol
+exists there; only exact `review_gate: n/a` permits guarded-direct submission.
+The helper never invokes `gh pr merge`, enables auto-merge, or enables a merge queue.
 
 Submission is restart-safe for an exact head already merged, and for an exact
 head already present in the queue when a queue-capable mode is configured.

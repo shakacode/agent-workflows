@@ -945,6 +945,36 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     assert_includes unproven.fetch("evidence_failures"), "exact current-head human decision provenance is uncertain"
   end
 
+  def test_bot_authored_top_level_issue_comments_cannot_satisfy_exact_head_human_decision
+    url = "https://github.com/example/repo/pull/1#issuecomment-1"
+    bot_comment = decision_comment(
+      id: "1",
+      url:,
+      body: decision_body(
+        head_sha: HEAD_SHA,
+        gates: ["changed-files-limit"],
+        evidence: url,
+        approved_by: "github-actions[bot]",
+        source: "human-pr-comment"
+      ),
+      author: "github-actions[bot]",
+      author_type: "Bot"
+    )
+    result = evaluate do |base_sha|
+      evidence(
+        base_sha:,
+        files: files(30),
+        decision_comments: [bot_comment],
+        semantic: semantic_assessment.merge(
+          "decision_provenance" => [decision_provenance("1")]
+        )
+      )
+    end
+
+    assert_equal "human-approval-required", result.fetch("verdict")
+    assert_equal "none", result.dig("human_decision_evidence", "status")
+  end
+
   def test_uppercase_objective_head_is_canonicalized_before_decision_matching_and_closeout
     url = "https://github.com/example/repo/pull/1#issuecomment-1"
     valid_comment = decision_comment(
@@ -1699,7 +1729,10 @@ class AutonomousMergeEligibilityTest < Minitest::Test
                        "html_url" => comment.fetch("url"),
                        "created_at" => comment.fetch("created_at"),
                        "body" => comment.fetch("body"),
-                       "user" => author == "__deleted__" ? nil : { "login" => author }
+                       "user" => author == "__deleted__" ? nil : {
+                         "login" => author,
+                         "type" => comment.fetch("author_type", "User")
+                       }
                      }
                    end
                  else
@@ -1879,13 +1912,17 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     { "state" => state, "commit_id" => commit_id }
   end
 
-  def decision_comment(id:, url:, body:, created_at: "2026-07-20T00:00:00Z")
+  def decision_comment(
+    id:, url:, body:, created_at: "2026-07-20T00:00:00Z",
+    author: "maintainer", author_type: "User"
+  )
     {
       "id" => id,
       "url" => url,
       "created_at" => created_at,
       "body" => body,
-      "author" => "maintainer"
+      "author" => author,
+      "author_type" => author_type
     }
   end
 
@@ -1898,7 +1935,7 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     }
   end
 
-  def decision_body(head_sha:, gates:, evidence:)
+  def decision_body(head_sha:, gates:, evidence:, approved_by: "maintainer", source: "direct-user-task")
     <<~YAML.chomp
       <!-- autonomous-merge-risk-decision:v1 -->
       ---
@@ -1907,8 +1944,8 @@ class AutonomousMergeEligibilityTest < Minitest::Test
       #{gates.map { |gate| "  - #{gate}" }.join("\n")}
       rollback_disposition: Code rollback and forward recovery were reviewed.
       decision: approve
-      approved_by: maintainer
-      source: direct-user-task
+      approved_by: #{approved_by}
+      source: #{source}
       evidence: #{evidence}
       ...
     YAML
