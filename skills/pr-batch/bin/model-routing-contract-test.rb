@@ -328,7 +328,8 @@ def extract_markdown_section(text, heading)
   raise "missing #{heading}" unless heading_match
 
   body_start = heading_match.end(0)
-  next_heading = text.match(/^###\s+/, body_start)
+  heading_level = heading[/\A#+/].length
+  next_heading = text.match(/^#{Regexp.escape('#' * heading_level)}\s+/, body_start)
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
 end
@@ -1089,21 +1090,42 @@ class ModelRoutingContractTest < Minitest::Test
     end
   end
 
-  def test_goal_prompts_describe_preferences_observations_and_ordinary_activation
+  def test_goal_prompts_keep_directional_observations_in_the_launcher_record
     prompts = {
-      "workflow" => extract_prompt(read_repo_file("workflows/pr-processing.md"), "### Plan To Goal Handoff"),
+      "prompt intake" => extract_prompt(read_repo_file("workflows/pr-batch-intake.md"), "## Plan To Goal Handoff"),
       "pr-batch" => extract_prompt(read_repo_file("skills/pr-batch/SKILL.md"), "## Goal Prompt Template"),
       "plan-pr-batch" => extract_prompt(read_repo_file("skills/plan-pr-batch/SKILL.md"), "## Goal Prompt for pr-batch")
     }
 
     prompts.each do |label, prompt|
-      assert_includes prompt, "Coordinator model/effort preference:", label
-      assert_includes prompt, "Worker model/effort preferences:", label
-      assert_includes prompt, "Observed host/model/effort:", label
-      assert_includes prompt, "ordinary pending/active lifecycle", label
+      assert_includes prompt, "Task name:", label
+      refute_match(/observed|model|workflow|UNKNOWN/i, prompt, label)
+      refute_includes prompt, "Coordinator model/effort preference:", label
+      refute_includes prompt, "Worker model/effort preferences:", label
+      refute_includes prompt, "ordinary pending/active lifecycle", label
       refute_includes prompt, "Launch assurance:", label
       refute_includes prompt, "exact-policy", label
     end
+
+    prompt_intake = read_repo_file("workflows/pr-batch-intake.md")
+    launcher_record = extract_markdown_section(prompt_intake, "## Launcher Run Record")
+    refute_includes launcher_record, "## Trust Handoff"
+    assert_includes launcher_record, "Model at prompt creation: <observed value or UNKNOWN>"
+    assert_includes launcher_record, "Model observed by worker: <observed value or UNKNOWN>"
+    assert_includes launcher_record, "Workflow at prompt creation: <version or UNKNOWN>"
+    assert_includes launcher_record, "Workflow observed at worker start: <version or UNKNOWN>"
+    assert_includes launcher_record, "Later workflow observations: <timestamped append-only entries or none>"
+    assert_includes launcher_record, "Launched at: <timestamp or pending>"
+    assert_includes launcher_record, "Run ID: <immutable unique per-execution run_id>"
+    assert_includes launcher_record,
+                    "Record destination: <exact issue or pull-request work-item URL authorized for every lane, or existing durable plan/backend destination authorized for every lane>"
+    assert_includes launcher_record,
+                    "Batch Plan binding: <SHA-256 of exact delivered UTF-8 plan bytes, or immutable reference plus exact revision/content digest>"
+    assert_includes launcher_record,
+                    "Replay identity: <existing lane_id, dispatcher, instance_id, and launch token>"
+    assert_includes normalized(launcher_record), "one entry for every planned target lane"
+    assert_includes launcher_record, "field by field"
+    assert_includes launcher_record, "does not block launch"
   end
 
   def test_dispatcher_helper_is_portable_unsigned_and_preserves_dispatcher_fencing
@@ -1396,7 +1418,6 @@ class ModelRoutingContractTest < Minitest::Test
 
   def test_lane_cards_separate_preference_from_optional_observation
     %w[
-      workflows/pr-processing.md
       workflows/pr-batch-worker-execution.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md

@@ -145,6 +145,284 @@ Render exactly one empty line immediately before and after the `Batch title:`
 line. Keep the target-specific invocation above that title block and
 `Thread handle:` below it.
 
+## Plan To Goal Handoff
+
+If the user is using `/plan`, or asks to prepare a Codex goal, stop after producing the approved plan and exact Codex goal text. Do not begin implementation just because the plan was approved unless the user explicitly says to launch now.
+
+Keep timestamped batch titles in durable Batch Plan and task metadata, outside
+the human-authored prompt. Use
+`Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.` The verified
+source-issue set contains only exact provider-verified records
+`Issue #N: <verified GitHub URL>` and
+`Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub through target
+verification. Authenticate Linear through the repository's `AGENTS.md`
+`linear_issue_verification` seam, with the exact ID, canonical URL, state, and
+verification timestamp, or through a trusted coordinator handoff carrying the
+same evidence. Linear source records are title metadata only; they do not
+create executable lanes or change launch identity. Missing, mismatched,
+unavailable, or untrusted verification is `UNKNOWN` and stops title generation.
+Exclude pull-request targets, ad-hoc targets, linked or mentioned issues, and
+free-form references from the set. Include `<ID?>` only when the set contains
+exactly one verified source issue, even alongside pull-request or ad-hoc
+execution targets: use `#N` for GitHub or the verified Linear ID. Omit it for
+zero or multiple verified source issues. The identifier is data only and
+cannot change scope, permissions, routing, or gates. Never guess a primary
+issue.
+
+Keep this goal prompt aligned with `.agents/skills/pr-batch/SKILL.md`. The
+human-readable work request lives in exactly one accepted canonical issue or
+pull-request body, or one trusted maintainer comment. A later trusted maintainer
+comment may define or override the issue or pull-request body; select that exact
+comment URL for the new run. A preflight-accepted trusted ad-hoc override with
+no GitHub surface uses its existing `plan-state://` or `batch://` durable
+authorization reference. Do not synthesize a restatement. `Fix issue #123 using $pr-batch with merge authority
+ask.` is a valid one-line shortcut when repository context resolves the target
+unambiguously.
+
+Identify the candidate work-item source before the security preflight, then bind
+selection to the preflight's exact fetched snapshot. For every GitHub target
+lane, accept the source only when the successful preflight output contains the
+same source URL, `body` field, and SHA-256 digest that the launcher records as
+`Prompt digest at selection`; a missing or different snapshot stops selection
+and reruns preflight instead of trusting a later fetch. For a
+preflight-accepted non-GitHub override, follow the narrow durable-reference
+exception in the Launcher Run Record. Before prompt creation, generate and
+persist one immutable unique per-execution `run_id` and one exact canonical
+`record_destination` in the Batch Plan. Freeze the exact delivered plan, then
+persist `batch_plan_binding` beside it in the run record and handoff envelope;
+do not put the digest inside the bytes it hashes. The binding is the SHA-256 of
+the exact UTF-8 Batch Plan bytes delivered inline, or an existing immutable
+reference plus its exact revision/content digest. A mutable, missing, changed,
+or `UNKNOWN` binding stops. Choose a destination
+authorized to contain every lane's recorded identity and source. An all-public
+GitHub run may use one selected issue or pull-request work-item URL, with a
+trusted maintainer-comment source anchored to its parent work item. If any lane
+has no public GitHub surface, use an existing durable plan/backend destination
+authorized for every lane or split the trust boundaries into separate runs;
+never publish a private durable reference in a public run record. Render the
+minimal coordinator prompt and directly record `Prompt created at` once for the
+run. Immediately before each target dispatch, re-fetch that lane's source,
+compare its launch digest with its selection digest, and directly append the
+lane's `Launched at` timestamp and launch digest. A mismatch stops only that
+dispatch until the changed source is deliberately reselected as a new run and
+the security preflight is rerun. Use the existing handoff envelope outside the
+frozen Batch Plan to give each worker the exact `record_destination`, `run_id`,
+`batch_plan_binding`, lane launch digest, and existing immutable replay identity
+(`lane_id`, dispatcher, `instance_id`, and launch token). Bind that envelope to
+the same `run_id`, `batch_plan_binding`, and replay identity; do not add the
+launch digest to the frozen plan or change its binding. Before a worker
+interprets the source, it reverifies the plan binding, resolves the
+exactly matching `run_id` and replay identity, and re-fetches
+the exact bytes, and verifies its observed digest against that lane's launch
+digest; a replay-identity or digest mismatch stops work and records the changed
+evidence. The worker returns its bound start observation to the coordinator;
+the coordinator is the sole run-record writer and serializes or compare-and-
+swaps the append to the matching run after every check. Workers never perform
+concurrent GitHub read-modify-write updates. Do not wait for a telemetry
+aggregator; these are cheap launcher and worker measurements and do not depend
+on telemetry aggregation work.
+
+Host budget changes the number of items in a batch, not prompt language: use
+the same readable prompt vocabulary for every host and split oversized batches
+into smaller launches. Keep file-touch evidence, workflow-contract details,
+Lane Cards, dispatch data, coordination diagnostics, and other derived state in
+the Batch Plan, manifest, or coordination backend outside the human-authored
+prompt. The durable records continue to separate preferred model/effort from
+observed host/model/effort. Do not ask a maintainer to author those fields.
+The durable manifest uses this exact machine grammar:
+`Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses`
+The durable plan, not the prompt, still emits one exact `target` v1 object per
+lane.
+
+Keep the expanded Batch Plan file-touch key in durable plan state:
+
+> Target ids: repository-qualified PR/Issue #N or durably overridden ad-hoc `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>` plus its complete override record
+
+Use this durable Lane Card field grammar:
+`Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN`.
+
+The fenced prompt is not standalone coordinator state. For `copy-paste`, deliver
+the exact generated goal prompt with an exact immutable plan-state reference
+plus its exact `batch_plan_binding`; when `coordination_backend: n/a` leaves no
+durable reference, fall back to a byte-preserving inline handoff envelope
+carrying the exact plan bytes and the same `batch_plan_binding`; never rely on
+rendered clipboard text to preserve the frozen Batch Plan bytes. For
+`host-native-user-task`, deliver the exact plan bytes through a byte-preserving
+handoff envelope or use the same immutable-reference path. The new coordinator
+must reverify that binding before preflight, every dispatch, and worker start.
+Do not report a launch as successful until both pieces are delivered,
+immutable, and reverified. A multi-target group depends on the plan or
+reference to preserve every target, lane, dependency, and ownership assignment
+while the prompt remains readable.
+
+For a multi-target launch, keep `Work item` singular and set it to the durable
+coordination anchor and record destination for this batch. The accompanying
+Batch Plan, whether delivered inline or by exact durable reference, is
+authoritative for scope and enumerates every target with its exact source and
+provenance. Before prompt creation, retain the exact accepted plan and its
+`batch_plan_binding` in machine launch state. Replace the normal `Instruction`
+line with this exact line:
+
+> Instruction: Use PR-batch to execute every target in the accompanying Batch Plan against the repository's configured base branch; Work item identifies this batch's durable coordination anchor, not its sole target.
+
+Do not enumerate every target URL in the human prompt or add another prompt
+field. Keep each target URL and its provenance in the Batch Plan. Single-target
+launches use the normal prompt unchanged.
+
+Use this normal human prompt shape. `Human available after` is optional; omit
+that line when the maintainer did not supply a time. For Codex, prepend only
+`/goal`; other hosts use the same readable prompt vocabulary unchanged. <!-- host-allow: codex-only -->
+
+```text
+Repository: OWNER/REPO
+Work item: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
+Task name: <repository, work item, and purpose>
+Instruction: Use PR-batch to complete this work item against the repository's configured base branch.
+Merge authority: <auto|ask>
+Human available after: <optional time; omit this line when not supplied>
+```
+
+## Launcher Run Record
+
+The launcher, not the maintainer, writes launch provenance and execution state.
+Before prompt creation, generate and persist one immutable unique per-execution
+`run_id` and one exact canonical `record_destination` in the Batch Plan. Freeze
+the exact delivered plan, then persist `batch_plan_binding` beside it in the run
+record and handoff envelope; do not put the digest inside the bytes it hashes.
+Compute the binding as the SHA-256 of the exact UTF-8 Batch Plan bytes delivered
+inline, or use an existing immutable reference plus its exact revision/content
+digest. Reverify it before every
+dispatch and worker start. Choose a destination authorized to contain every
+lane's recorded identity and source. An all-public GitHub run may select one
+issue or pull-request work-item URL, with a maintainer-comment source anchored
+to its parent work item. When any lane has no public GitHub surface, use an
+existing durable plan/backend destination authorized for all lanes or split the
+trust boundaries into separate runs. Never put a private `plan-state://` or
+`batch://` identity in a public run record. Do not add these fields to the
+human-authored prompt.
+
+Each execution appends one compact visible state plus one collapsed `<details>`
+record at that exact destination. The narrow non-GitHub trusted-ad-hoc exception
+uses the same compact/history record in its existing durable state; do not
+create another storage or record schema. The launcher/coordinator is the sole
+writer for that record. Serialize or compare-and-swap every update; workers
+return bound observation payloads and never race GitHub read-modify-write
+updates. That record has one entry for every planned target lane. Bind
+each lane entry to the existing immutable replay identity: `lane_id`,
+dispatcher, `instance_id`, and launch token. Within a lane entry, write
+selection provenance first, then append launch provenance, then append worker
+observations without replacing earlier values.
+Reruns append a new collapsed record instead of replacing or folding earlier
+runs into the newest values. The per-execution `run_id`, not the deterministic
+launch token, distinguishes those records. Later workflow observations are
+timestamped append-only entries on the run that observed them.
+
+For every GitHub target lane, select exactly one accepted canonical issue or
+pull-request body, or one trusted maintainer comment. Bind that selection to the
+successful `pr-security-preflight` snapshot with the exact source URL, `body`
+field, and SHA-256 digest; do not accept a source digest produced only by a
+later fetch. A direct accepted PR
+target therefore uses its exact PR URL without requiring a synthetic comment.
+The same trusted comment may define multiple lanes, but its URL and digest
+sequence are still recorded separately in every affected lane entry. Fetch the
+canonical source bytes when selected and write `Selected at` plus `Prompt
+digest at selection`. Immediately before that target's dispatch, re-fetch those
+bytes and append `Launched at` plus `Prompt digest at launch`. If the selection
+and launch digests differ, stop that dispatch until the changed source is
+deliberately selected as a new run and security preflight is rerun. Use the
+existing handoff envelope outside the frozen Batch Plan to give the exact
+`record_destination`, `run_id`, `batch_plan_binding`, lane-keyed launch digest,
+and replay identity to its worker. Bind that envelope to the same `run_id`,
+`batch_plan_binding`, and replay identity; do not add the launch digest to the
+frozen plan or change its binding. The worker reverifies `batch_plan_binding`,
+resolves the exactly matching
+`run_id` and replay identity, re-fetches the exact source, and verifies both the
+replay identity and observed digest before it interprets the source or returns
+its `Worker started at` observation to the sole coordinator writer; a mismatch
+stops work and is recorded. A
+later trusted maintainer comment may become the source for a later run, but a
+lane entry never combines the selected target body and comment or synthesizes a
+new source.
+
+Canonical source bytes are the exact GitHub API `body` string for the selected
+issue, pull request, or comment after JSON decoding, encoded as UTF-8 without
+Unicode normalization, Markdown rendering, whitespace trimming, or newline
+insertion or removal. Selection, launch, and worker checks fetch the same object
+and field by stable URL or object identifier and hash only those bytes.
+When GitHub returns `body: null` for a title-only issue or pull request, treat
+its canonical source bytes as the empty UTF-8 string. Retain that SHA-256 digest
+in the selection, launch, and worker fields just like a nonempty body; do not
+drop the source because its body is null.
+
+A trusted ad-hoc override whose durable authorization reference is `issue://`
+or GitHub HTTPS follows the ordinary GitHub source path: resolve the referenced
+issue or pull-request body as the prompt source, preserve the same author and
+trust checks, and record actual selection, launch, and worker-observed body
+digests instead of `not applicable — trusted-ad-hoc-override`.
+
+The narrow non-GitHub exception is a preflight-accepted
+`trusted-ad-hoc-override` backed by an existing `plan-state://` or `batch://`
+durable authorization reference. Record that exact reference as `Prompt
+source`; do not invent another snapshot, byte encoding, or record schema. The
+existing override contract exposes provenance and authority evidence, not
+canonical source bytes, so record each source-digest field as exact `not
+applicable — trusted-ad-hoc-override`. The existing durable backend reference
+must resolve to the same immutable accepted provenance/authority record
+revision, or an equivalent existing content binding, at selection, launch, and
+worker start. A missing, mutable, changed, or `UNKNOWN` binding or other
+override evidence stops at that boundary.
+
+```markdown
+<details>
+<summary>Run details</summary>
+
+- Run ID: <immutable unique per-execution run_id>
+- Record destination: <exact issue or pull-request work-item URL authorized for every lane, or existing durable plan/backend destination authorized for every lane>
+- Batch Plan binding: <SHA-256 of exact delivered UTF-8 plan bytes, or immutable reference plus exact revision/content digest>
+- Prompt created at: <timestamp>
+- Model at prompt creation: <observed value or UNKNOWN>
+- Workflow at prompt creation: <version or UNKNOWN>
+- Later workflow observations: <timestamped append-only entries or none>
+- Target lanes:
+  - Lane: <lane id; repeat this entry once per planned target>
+    - Target: <exact issue, pull-request, or durable override identity>
+    - Replay identity: <existing lane_id, dispatcher, instance_id, and launch token>
+    - Prompt source: <exact issue, pull-request, trusted maintainer-comment URL, or accepted plan-state:// or batch:// durable reference>
+    - Selected at: <timestamp>
+    - Prompt digest at selection: <SHA-256 of the canonical source bytes fetched when selected; or not applicable — trusted-ad-hoc-override>
+    - Launched at: <timestamp or pending>
+    - Prompt digest at launch: <SHA-256 of the canonical source bytes re-fetched at launch or pending; or not applicable — trusted-ad-hoc-override>
+    - Worker started at: <timestamp or pending>
+    - Prompt digest observed by worker: <SHA-256 of the canonical source bytes re-fetched by the worker or pending; or not applicable — trusted-ad-hoc-override>
+    - Model observed by worker: <observed value or UNKNOWN>
+    - Workflow observed at worker start: <version or UNKNOWN>
+</details>
+```
+
+Record each observation field by field from the launcher or worker that
+actually exposes it. Never infer a missing model or workflow version; use exact
+`UNKNOWN`, which does not block launch. For GitHub sources, source digests are
+integrity fields, not optional telemetry: a missing or mismatched required
+digest stops dispatch or worker execution at its boundary. The coordinator
+directly appends the cheap lane launch timestamp and digest when dispatch
+begins, then serializes or compare-and-swaps the worker-start timestamp and
+observations returned for the exactly matching `run_id`, replay identity, and
+`batch_plan_binding` at the persisted `record_destination` after the worker
+digest matches. Until an event
+occurs, its template value remains `pending`; never infer it from telemetry.
+Do not wait for a telemetry aggregator.
+
+Human `auto` maps to machine `auto_merge_when_gates_pass`; `ask` maps to machine
+`ask`. An explicitly selected machine `merge_authority: none` renders as human
+`Merge authority: ask` because the worker has no merge authority and must obtain
+explicit human authority before merge. This rendering does not change the
+durable machine value from `none` to `ask`. Preserve machine-only
+`merge_authority: none` outside the normal human prompt for workflows that
+intentionally grant no merge authority.
+
+Use `HST-v1` from the canonical [Human-Status Translation Contract](pr-processing.md#human-status-translation-contract)
+for every recurring wake or workflow-owned heartbeat.
+
 ## Trust Handoff
 
 Apply the canonical [PR-Batch Security Floor](pr-batch-security-floor.md)

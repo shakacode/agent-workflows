@@ -235,9 +235,25 @@ class UserFacingCoordinationContractTest < Minitest::Test
   end
 
   def test_coordination_changes_preserve_exact_gmcc_v5_merge_authority_clauses
-    [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
+    integration_closeout = File.read(File.join(ROOT, INTEGRATION_CLOSEOUT), encoding: "UTF-8")
+    assert_includes integration_closeout, GMCC_V5, INTEGRATION_CLOSEOUT
+    assert_includes normalized(INTEGRATION_CLOSEOUT),
+                    "Keep this compact, self-contained `GMCC-v5` line verbatim in the Batch Plan or " \
+                    "delivered machine launch state, never in the human-authored prompt.",
+                    INTEGRATION_CLOSEOUT
+    refute_includes integration_closeout, "in PR-batch goal prompts", INTEGRATION_CLOSEOUT
+
+    pr_batch = File.read(File.join(ROOT, PR_BATCH), encoding: "UTF-8")
+    assert_includes pr_batch, GMCC_V5, PR_BATCH
+    assert_includes pr_batch, "ready-human-review-required", PR_BATCH
+    assert_includes pr_batch, "autonomous-merge-evidence-unknown", PR_BATCH
+    refute_includes pr_batch, "GMCC-v3:", PR_BATCH
+
+    [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
-      assert_includes text, GMCC_V5, path
+      refute_includes text, "GMCC-v5:", path
+      assert_includes text, "ready-human-review-required", path
+      assert_includes text, "autonomous-merge-evidence-unknown", path
       refute_includes text, "GMCC-v3:", path
     end
   end
@@ -354,9 +370,11 @@ class UserFacingCoordinationContractTest < Minitest::Test
 
     [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = normalized(path)
-      assert_includes text, "Action needed: Start a new task with the fenced goal prompt.", path
       assert_includes text,
-                      "Next: Paste the prompt into that task, then archive this planning task.",
+                      "Action needed: Start a new task with the fenced goal prompt, its exact immutable plan-state reference, and the exact batch_plan_binding.",
+                      path
+      assert_includes text,
+                      "Next: Paste all three into that task, then archive this planning task.",
                       path
     end
 

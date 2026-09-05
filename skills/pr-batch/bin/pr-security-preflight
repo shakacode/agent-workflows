@@ -710,6 +710,30 @@ def visible_rest_actor_logins(rest_context)
   users
 end
 
+def prompt_source_snapshots(rest_context)
+  sources = [
+    rest_context.fetch(:issue),
+    *rest_context.fetch(:issue_comments),
+    *rest_context.fetch(:review_comments),
+    *rest_context.fetch(:reviews)
+  ]
+
+  snapshots = sources.filter_map do |source|
+    body = source["body"]
+    url = source["html_url"]
+    body = "" if body.nil?
+    next unless body.is_a?(String) && url.is_a?(String) && !url.empty?
+
+    {
+      "url" => url,
+      "field" => "body",
+      "sha256" => Digest::SHA256.hexdigest(body.encode("UTF-8"))
+    }
+  end
+
+  snapshots.sort_by { |source| source.fetch("url") }
+end
+
 def paginated_reaction_users(repo, endpoint)
   reactions = run_gh_paginated_json_array(
     "api",
@@ -1598,6 +1622,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     risky_file_findings:,
     suspicious: suspicious_findings.fetch(:suspicious),
     suspicious_warnings: suspicious_findings.fetch(:suspicious_warnings),
+    prompt_source_snapshots: prompt_source_snapshots(rest),
     target:,
     target_is_pr:,
     metadata_only_interactions:,
@@ -1876,6 +1901,7 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
     puts "  Diff base/head identity: #{JSON.generate(result.fetch(:diff_identity))}"
     puts "  Authoritative changed-file count: #{result.fetch(:changed_file_count)}"
   end
+  puts "  Prompt source snapshots: #{JSON.generate(result.fetch(:prompt_source_snapshots))}"
   print_graph_coverage_findings(result.fetch(:graph_coverage_findings))
   print_participant_findings(result.fetch(:participant_findings))
   print_untrusted_interactions(result.fetch(:untrusted_interactions))

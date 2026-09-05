@@ -678,9 +678,7 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_goal_prompts_retain_every_completion_invariant_inline
     {
-      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt
     }.each do |label, text|
       assert_equal COMPACT_CONTRACT_LINE, compact_contract_line(text), "#{label} compact contract drifted"
       COMPACT_CONTRACT_INVARIANTS.each { |invariant| assert_text_includes text, invariant, label }
@@ -734,7 +732,7 @@ class GoalCompletionContractTest < Minitest::Test
                          "ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch",
                          "compact ready-prerequisite ask gate"
 
-    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
+    [@workflow_goal_prompt, @triage_skill].each do |text|
       line = compact_contract_line(text)
       assert_text_includes line, "auto-clear=>watch(same:0wake,delta:gates)",
                            "compact completion contract"
@@ -1028,7 +1026,7 @@ class GoalCompletionContractTest < Minitest::Test
                    "#{label} human-status contract reference drifted"
     end
 
-    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt, @triage_skill].each do |text|
+    [@workflow_goal_prompt, @triage_skill].each do |text|
       assert_equal 1, text.lines.count { |line| line.strip == HUMAN_STATUS_VERSION_KEY },
                    "generated prompt must reference #{HUMAN_STATUS_VERSION_KEY} exactly once"
     end
@@ -1128,7 +1126,7 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_triaged_but_unresolved_current_head_review_thread_is_not_complete
-    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
+    [@workflow_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line, "threads open", "compact completion contract"
       assert_operator line.index("threads open"), :<,
@@ -1141,7 +1139,7 @@ class GoalCompletionContractTest < Minitest::Test
                          "current-head CI or configured review agents, unresolved current-head review threads",
                          "canonical completion contract"
 
-    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
+    [@workflow_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
                            "CI@head/configured-reviewers pending|missing|untriaged|failed|" \
@@ -1153,7 +1151,7 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_compact_contract_rejects_configured_reviewer_omission
-    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
+    [@workflow_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_includes line, "CI@head/configured-reviewers",
                       "standalone completion must retain the configured-reviewer gate"
@@ -1167,7 +1165,7 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_auto_merge_closeout_handles_pr_only_and_ad_hoc_targets
-    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
+    [@workflow_goal_prompt].each do |prompt|
       line = compact_contract_line(prompt)
       assert_text_includes line,
                            "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
@@ -1189,14 +1187,10 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_goal_prompts_include_thread_handle_and_registration_contract
     prompts = {
-      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt
     }
     registration_patterns = {
-      "workflows/pr-processing.md goal prompt" => /register before launch when supported/i,
-      "skills/pr-batch goal prompt" => /register before launch when supported/i,
-      "skills/plan-pr-batch goal prompt" => /register before launch when supported/i
+      "workflows/pr-processing.md goal prompt" => /register before launch when supported/i
     }
 
     prompts.each do |label, text|
@@ -1261,9 +1255,7 @@ class GoalCompletionContractTest < Minitest::Test
     end
 
     {
-      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt
     }.each do |label, text|
       assert_text_includes text, "Lane Card:", label
       assert_text_includes text, "holder", label
@@ -1273,8 +1265,6 @@ class GoalCompletionContractTest < Minitest::Test
 
     {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt,
       "skills/triage/SKILL.md canonical Lane Card" => @triage_skill
     }.each do |label, text|
       assert_text_includes text, LANE_CARD_URLS_GRAMMAR, label
@@ -1373,8 +1363,7 @@ class GoalCompletionContractTest < Minitest::Test
     contracts = {
       "workflows/pr-processing.md canonical compact contract" => compact_contract_line(@workflow_contract_section),
       "workflows/pr-processing.md goal prompt" => compact_contract_line(@workflow_goal_prompt),
-      "skills/pr-batch goal prompt" => compact_contract_line(@pr_batch_goal_prompt),
-      "skills/plan-pr-batch goal prompt" => compact_contract_line(@plan_goal_prompt),
+      "skills/pr-batch/SKILL.md compact contract" => compact_contract_line(@pr_batch_skill_source),
       "skills/triage generated-prompt requirement" => compact_contract_line(@triage_skill)
     }
 
@@ -1508,9 +1497,7 @@ class GoalCompletionContractTest < Minitest::Test
     assert_text_includes @workflow_contract_section, PENDING_CHECKS_PRESSURE, "workflows/pr-processing.md"
 
     {
-      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt
     }.each do |label, text|
       assert_text_includes text, "CI@head/configured-reviewers pending|missing|untriaged", label
       assert_text_includes text, "UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE", label
@@ -1531,17 +1518,15 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_goal_prompts_put_batch_title_after_target_invocation
     {
-      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt
     }.each do |label, text|
       assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
              "#{label} must put the standard batch title line after the invocation"
     end
 
-    codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
+    codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@workflow_goal_prompt}"
     assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
-           "skills/plan-pr-batch Codex goal prompt must put the standard batch title line after the Codex prefix"
+           "workflow Codex goal prompt must put the standard batch title line after the Codex prefix"
   end
 
   def test_verified_batch_title_contract_has_one_canonical_prompt_intake_owner
@@ -1577,9 +1562,7 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_pasteable_goal_prompts_put_exactly_one_blank_line_around_batch_title
     {
-      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt
     }.each do |label, text|
       expected_prefix = "#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n\nThread handle:"
       assert text.start_with?(expected_prefix),
@@ -2160,9 +2143,7 @@ class GoalCompletionContractTest < Minitest::Test
                          "workflows/pr-processing.md"
 
     {
-      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt
     }.each do |label, text|
       assert_text_includes text, "noauth=>ready-no-merge-authority", label
     end
@@ -2179,9 +2160,7 @@ class GoalCompletionContractTest < Minitest::Test
                  "canonical expansion and pressure check must preserve PR, target, and issue closeout parity"
 
     {
-      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt
     }.each do |label, text|
       assert_text_includes text,
                            "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
@@ -2210,9 +2189,7 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_goal_prompts_route_final_handoff_to_canonical_closeout
     {
-      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
-      "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
-      "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
+      "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt
     }.each do |label, text|
       assert_text_includes text, OBJECTIVE_PROMPT_LINE, label
       assert_text_includes text, CANONICAL_CLOSEOUT_PROMPT_LINE, label

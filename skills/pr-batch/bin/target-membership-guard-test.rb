@@ -514,7 +514,6 @@ class TargetMembershipGuardTest < Minitest::Test
 
   def test_portable_workflow_surfaces_require_the_guard_before_control_or_mutation
     required_surfaces = %w[
-      skills/pr-batch/SKILL.md
       skills/plan-pr-batch/SKILL.md
       workflows/pr-processing.md
     ]
@@ -525,10 +524,7 @@ class TargetMembershipGuardTest < Minitest::Test
       assert_includes text, "target-membership-guard", relative_path
     end
 
-    canonical_surfaces = %w[
-      skills/pr-batch/SKILL.md
-      workflows/pr-processing.md
-    ]
+    canonical_surfaces = %w[workflows/pr-processing.md]
 
     canonical_surfaces.each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
@@ -543,6 +539,11 @@ class TargetMembershipGuardTest < Minitest::Test
     assert_includes planner, "Foreign targets remain evidence-only"
     assert_includes planner, "unresolved identities fail closed as `UNKNOWN`"
     assert_includes planner, "trusted out-of-band human authority"
+
+    execution_skill = File.read(File.join(ROOT, "skills/pr-batch/SKILL.md"), encoding: "UTF-8").gsub(/\s+/, " ")
+    assert_includes execution_skill,
+                    "[Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)"
+    assert_includes execution_skill, "trusted-base workflow owns the complete manifest"
   end
 
   def test_bin_validate_executes_the_target_membership_guard_suite_in_the_pr_batch_section
@@ -557,10 +558,7 @@ class TargetMembershipGuardTest < Minitest::Test
   end
 
   def test_portable_contract_documents_transfer_authority_and_duplicate_key_fail_closed_rules
-    required_surfaces = %w[
-      skills/pr-batch/SKILL.md
-      workflows/pr-processing.md
-    ]
+    required_surfaces = %w[workflows/pr-processing.md]
 
     required_surfaces.each do |relative_path|
       text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
@@ -580,6 +578,12 @@ class TargetMembershipGuardTest < Minitest::Test
                     "not a host-level sandbox or proof that an operation passed through the guard"
     assert_includes workflow,
                     "invoke it at that adapter's mutation boundary and fail closed on bypass or `UNKNOWN`"
+
+    execution_skill = File.read(File.join(ROOT, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
+    normalized_skill = execution_skill.gsub(/\s+/, " ")
+    assert_includes normalized_skill, "trusted-base workflow owns the complete manifest"
+    refute_includes normalized_skill, "trusted explicit out-of-band human authorization"
+    refute_includes normalized_skill, "Duplicate JSON object keys anywhere"
   end
 
   def test_canonical_workflow_guards_evidence_before_incorporation
@@ -624,7 +628,7 @@ class TargetMembershipGuardTest < Minitest::Test
     refute_includes section, '"${PR_BATCH_SKILL_DIR}/bin/target-membership-guard"'
   end
 
-  def test_canonical_skill_summary_distinguishes_foreign_evidence_from_unknown_identity
+  def test_canonical_skill_routes_target_membership_details_to_the_workflow
     relative_path = "skills/pr-batch/SKILL.md"
     text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
     section = text.match(/## Cross-Task Target Membership Gate(.*?)## Continuing From Saved Handoffs/m)&.[](1)
@@ -632,13 +636,13 @@ class TargetMembershipGuardTest < Minitest::Test
     refute_nil section, "#{relative_path} is missing its target-membership summary"
     normalized_section = section.gsub(/\s+/, " ")
     assert_includes normalized_section,
-                    "exact repository-qualified foreign target may use only a new exact `evidence_delivery` request",
+                    "[Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)",
                     relative_path
     assert_includes normalized_section,
-                    "Missing, ambiguous, synthetic, malformed, or literal `UNKNOWN` target identity returns structured `UNKNOWN` and blocks both control and evidence delivery until resolved",
+                    "trusted-base workflow owns the complete manifest, authorization, fail-closed, and duplicate-key contract",
                     relative_path
     CONTROL_OPERATIONS.each do |operation|
-      assert_includes section, operation, "#{relative_path} is missing control operation #{operation}"
+      refute_includes section, operation, "#{relative_path} duplicates control operation #{operation}"
     end
   end
 

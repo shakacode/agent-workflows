@@ -90,19 +90,30 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_match(/`merge_authority`\s+remains separate from\s+eligibility/, workflow)
   end
 
-  def test_goal_generation_surfaces_carry_both_autonomous_stop_states
+  def test_goal_generation_surfaces_resolve_autonomous_stop_states_without_restatement
+    workflow = File.read(File.join(ROOT, "workflows/pr-batch-integration-closeout.md"), encoding: "UTF-8")
+    assert_includes workflow, "GMCC-v5:"
+    assert_includes workflow, "ready-human-review-required"
+    assert_includes workflow, "autonomous-merge-evidence-unknown"
+    assert_includes workflow, GMCC_HUMAN_DECISION_BINDING
+
+    compact_fallback = workflow.lines.find { |line| line.start_with?("GMCC-v5:") }
+    pr_batch = File.read(File.join(ROOT, "skills/pr-batch/SKILL.md"), encoding: "UTF-8")
+    refute_nil compact_fallback
+    assert_includes pr_batch, compact_fallback
+    assert_includes pr_batch, "ready-human-review-required"
+    assert_includes pr_batch, "autonomous-merge-evidence-unknown"
+
     %w[
-      workflows/pr-processing.md
-      skills/pr-batch/SKILL.md
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
 
-      assert_includes text, "GMCC-v5:"
+      refute_includes text, "GMCC-v5:"
+      assert_includes text, "$pr-batch"
       assert_includes text, "ready-human-review-required"
       assert_includes text, "autonomous-merge-evidence-unknown"
-      assert_includes text, GMCC_HUMAN_DECISION_BINDING
     end
   end
 
@@ -256,7 +267,9 @@ class AutonomousMergeContractTest < Minitest::Test
 
     refute_empty AutonomousMergePolicy::SOURCE_POLICY_PATTERNS
     assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, "workflows/pr-batch-security-floor.md"
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, "workflows/pr-batch-intake.md"
     assert_includes builtin, ".agents/workflows/pr-batch-security-floor.md"
+    assert_includes builtin, ".agents/workflows/pr-batch-intake.md"
     AutonomousMergePolicy::SOURCE_POLICY_PATTERNS.each do |pattern|
       assert_includes builtin, pattern
       assert_includes builtin, ".agents/#{pattern}"

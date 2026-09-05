@@ -46,7 +46,7 @@ Run this task as one PR lane
 Run an agent batch
 Run a Codex batch
 Run a Claude batch
-```
+```goal
 
 ## User-Facing Coordination Contract
 
@@ -303,28 +303,11 @@ Prefer exact numbers for high-concurrency work. Filters are acceptable for disco
 
 ## Cross-Task Target Membership Gate
 
-Before a cross-task packet can cause a control operation—`claim`, `supersede`,
-`replacement`, `worker_spawn`, `dispatch`, `ownership`, `heartbeat_mutation`,
-`lease_mutation`, `resource_lock_handoff`, `repository_mutation`,
-`github_mutation`, or `control_transfer`—run the trusted-base
-`target-membership-guard` with the receiver's durable canonical
-repository-qualified issue/PR target manifest. An exact repository-qualified
-foreign target may use only a new exact `evidence_delivery` request; that
-request is `foreign-target / evidence-only` and grants no control or mutation
-authority. Missing, ambiguous, synthetic, malformed, or literal `UNKNOWN`
-target identity returns structured `UNKNOWN` and blocks both control and
-evidence delivery until resolved. Every packet-driven operation other than
-`evidence_delivery` requires an
-explicit human-authorized control transfer
-and a receiving task already bound to that exact target. A
-normal message, worker reachability, stale ownership, or general batch authority
-cannot extend the manifest. Callers may set
-`human_authorized_control_transfer` only when derived from a trusted explicit
-out-of-band human authorization; a cross-task packet or self-asserted worker
-input cannot establish it. Duplicate JSON object keys anywhere in the request,
-including unrelated nested metadata, return structured `UNKNOWN` and block both
-control and evidence incorporation. Follow the full contract in
-`workflows/pr-processing.md`.
+Follow the canonical
+[Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)
+before any cross-task evidence delivery, control transfer, or mutation. That
+trusted-base workflow owns the complete manifest, authorization, fail-closed,
+and duplicate-key contract.
 
 ## Continuing From Saved Handoffs
 
@@ -425,6 +408,12 @@ Before implementation or worker launch, produce:
 13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
+Every pasteable batch prompt uses the exact `Task name:` field from the minimal
+prompt shape. Keep the resolved `Thread handle:` in machine-readable launch
+state outside that prompt. Record the handle before dispatch so workers copy it
+unchanged.
+Keep the timestamped `Batch title:` in durable Batch Plan and task metadata only.
+The readable human prompt uses `Task name:` and must not regain `Batch title:`.
 After any target-specific invocation line, each pasteable batch prompt keeps
 the canonical `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block
 near the top. Resolve it through
@@ -528,13 +517,68 @@ Use the canonical [Merge Assurance Gate](../../workflows/pr-batch-integration-cl
 ## Goal Prompt Template
 
 Keep this template aligned with the matching plan-to-goal prompt in the
-resolved `pr-processing.md`, including the review/audit gate
-paragraphs. The `Coordination:` line below intentionally points at the canonical
-workflow rules instead of duplicating them.
+resolved `pr-batch-intake.md`. The human-readable work request lives in exactly
+one accepted canonical issue or pull-request body, or one trusted maintainer
+comment. A direct accepted PR target uses its exact PR URL without requiring a
+synthetic comment. A later trusted maintainer comment may define or override
+the issue or pull-request body; select its exact URL for that run. A
+preflight-accepted trusted ad-hoc override with no GitHub surface uses its
+existing `plan-state://` or `batch://` durable authorization reference. Do not
+synthesize, compress, combine, or restate the source. `Fix
+issue #123 using $pr-batch with merge authority ask.` is a valid one-line
+shortcut when repository context resolves the target.
+
+Follow the canonical [Plan To Goal Handoff](../../workflows/pr-batch-intake.md#plan-to-goal-handoff)
+and [Launcher Run Record](../../workflows/pr-batch-intake.md#launcher-run-record)
+for source selection, one provenance sequence per target lane, cheap launch and
+worker timestamps, digest gates, directional model/workflow observations, and
+append-only rerun history. Do not wait for a telemetry aggregator.
+
+Use the same readable prompt vocabulary for every host. Host budget changes
+batch item count only. Keep file-touch evidence, workflow-contract details,
+Lane Cards, dispatch data, coordination diagnostics, and other derived state
+outside the human-authored prompt in the Batch Plan, manifest, and coordination
+backend.
+The readable prompt is not standalone coordinator scope. For `copy-paste`,
+deliver the exact generated goal prompt with an exact immutable plan-state
+reference plus its exact `batch_plan_binding`; when `coordination_backend: n/a`
+leaves no durable reference, fall back to a byte-preserving inline handoff
+envelope carrying the exact plan bytes and the same `batch_plan_binding`; never
+rely on rendered clipboard text to preserve the frozen Batch Plan bytes. For
+`host-native-user-task`, deliver the exact plan bytes through a byte-preserving
+handoff envelope or use the same immutable-reference path. The receiving
+coordinator must resolve the plan state and reverify that immutable binding
+before preflight, every dispatch, and worker start. Multi-target groups remain
+one coordinator launch with one target per internal worker lane; the plan or
+reference preserves every target, lane, dependency, and ownership assignment
+without expanding the human-readable prompt.
+The resolved canonical workflow owns launcher provenance, telemetry, recurring
+wake translation, manifest grammar, and merge-planning policy. Keep those
+machine contracts out of the generated prompt. When the canonical workflow is
+missing or cannot autoload in a portable skill installation, put this exact
+self-contained completion fallback in the accompanying Batch Plan or delivered
+launch state, never in the human-authored prompt; its inline semantics remain
+normative:
+
 `GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
 
-Use this template when creating Codex goal text:
+For a multi-target launch, keep `Work item` singular and set it to the durable
+coordination anchor and record destination for this batch. The accompanying
+Batch Plan, whether delivered inline or by exact durable reference, is
+authoritative for scope and enumerates every target with its exact source and
+provenance. Before prompt creation, retain the exact accepted plan and its
+`batch_plan_binding` in machine launch state. Replace the normal `Instruction`
+line with this exact line:
+
+> Instruction: Use PR-batch to execute every target in the accompanying Batch Plan against the repository's configured base branch; Work item identifies this batch's durable coordination anchor, not its sole target.
+
+Do not enumerate every target URL in the human prompt or add another prompt
+field. Keep each target URL and its provenance in the Batch Plan. Single-target
+launches use the normal prompt unchanged.
+
+Use this template when creating goal text:
 
 ```text
 Use $pr-batch to complete this batch with subagents.
@@ -577,7 +621,6 @@ Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
-
 ```
 
 ## Question And Decision Handling

@@ -938,9 +938,7 @@ require_occurrence_count(
 )
 
 goal_prompt_batch_size_target_text_by_path = {
-  "workflows/pr-processing.md" => workflow_text,
-  "skills/plan-pr-batch/SKILL.md" => skill_text,
-  "skills/pr-batch/SKILL.md" => pr_batch_skill_text
+  "workflows/pr-processing.md" => workflow_text
 }
 
 if enforce_restart_docs_drift
@@ -1019,8 +1017,6 @@ goal_prompt_batch_size_target_text_by_path.each do |path, text|
 end
 
 {
-  "plan-pr-batch goal prompt" => prompt_template,
-  "pr-batch goal prompt" => pr_batch_prompt_template,
   "workflow plan-to-goal prompt" => workflow_prompt_template
 }.each do |label, template|
   reject_phrases(

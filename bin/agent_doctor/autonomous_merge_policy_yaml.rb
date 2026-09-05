@@ -13,6 +13,7 @@ module AutonomousMergePolicy
   # a built-in entry.
   SOURCE_POLICY_PATTERNS = %w[
     workflows/pr-processing.md
+    workflows/pr-batch-intake.md
     workflows/pr-batch-security-floor.md
     workflows/pr-batch-worker-execution.md
     workflows/pr-batch-integration-closeout.md
@@ -28,6 +29,7 @@ module AutonomousMergePolicy
     skills/pr-batch/lib/current_integration_*.rb
     skills/pr-batch/fixtures/autonomous-merge-reviewed-heads-calibration.json
     skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
+    skills/plan-pr-batch/scripts/check_goal_prompt_drift.rb
   ].freeze
   BUILTIN_POLICY_PATTERNS = (
     %w[AGENTS.md **/AGENTS.md .agents/agent-workflow.yml docs/adr/0003-smarter-autonomous-merge-gates.md] +
@@ -42,7 +44,7 @@ module AutonomousMergePolicy
   PORTABLE_POLICY_EXCLUDES = %w[
     AGENTS.md **/AGENTS.md CLAUDE.md **/CLAUDE.md **/SKILL.md
     **/autonomous_merge_*.rb **/current_integration_*.rb
-    **/autonomous-merge-* **/check_goal_prompt_size.rb
+    **/autonomous-merge-* **/check_goal_prompt_size.rb **/check_goal_prompt_drift.rb
     **/*contract-test.rb workflows/** .agents/** docs/adr/**
   ].freeze
 
