@@ -1,6 +1,6 @@
 ---
 name: untrusted-contributor-intake
-description: Safely assess an outside-contributor fork pull request through metadata and diff evidence, then report a maintainer decision without executing untrusted content.
+description: Safely assess an outside-contributor fork pull request through metadata and diff evidence, then report a maintainer decision without executing untrusted content. Use when screening an outside-contributor fork pull request.
 argument-hint: '[exact PR URL or PR number]'
 ---
 
