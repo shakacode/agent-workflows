@@ -517,35 +517,13 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      Persisted request history, choices, revisions, assignments, replacement proofs, and `decision_resolution` are deep-validated; malformed nested state returns structured `invalid-input`.
      A `selected` result may resume Goal mode; `blocked-user-input` carries one
      `dispatch-decision-request v1` and stops.
-   - Build the batch-registration provenance from the pack and actors that will
-     actually run the batch. Record `pack_sha` as the verified full git SHA of
-     the loaded Agent Workflows checkout, or its verified installed-release
-     identifier; a dirty checkout or unverified source is `UNKNOWN`, never the
-     consumer repo SHA or a remote guess. Record `coordinator_preference` as a
-     preference. For every lane, record the worker route preference and optional
-     observed host/model/effort from the host. Keep the worker's requested
-     preference distinct; if the runtime inherits or defaults to the coordinator
-     route, record that actual host observation honestly and never infer it from
-     the preference. When batch
-     registration is supported, persist this manifest after dispatcher
-     selection and before worker launch. Backend `n/a` keeps the same
-     provenance in the durable Batch Plan/handoff; a degraded registration is
-     `UNKNOWN` with exact retry evidence. When the host later exposes an
-     observation, update each observed host/model/effort field, preserve known
-     fields, and use `UNKNOWN` only per unavailable field. Observation absence or
-     registration-write failure never blocks assignment activation.
-     Before requiring a reconciliation write, detect advertised registration
-     update/upsert/reconciliation capability. An unadvertised or unsupported
-     create-only backend records each affected field `UNKNOWN`. An
-     advertised update uses the bounded safe executable-plus-opaque-argv
-     contract; failure records affected fields `UNKNOWN` without wedging.
-     Every advertised registration
-     invocation resolves a backend-advertised safe executable plus ordered
-     opaque argv without shell evaluation and runs with a finite hard deadline
-     in its own process group; timeout or whole-group `TERM` then `KILL` records
-     best-effort field-granular `UNKNOWN`, names reconciliation, and does not
-     block worker launch. Use the
-     [canonical Batch Provenance Manifest example](https://github.com/shakacode/agent-workflows/blob/main/docs/coordination-backend.md#batch-provenance-manifest).
+   - Build and reconcile batch-registration provenance through the loaded pack's
+     [canonical Batch Provenance Manifest](../../docs/coordination-backend.md#batch-provenance-manifest).
+     That contract owns pack identity, requested-versus-observed routes,
+     field-granular `UNKNOWN`, capability discovery, bounded safe invocation,
+     and non-wedging failure behavior. Persist the manifest after dispatcher
+     selection and before worker launch when registration is supported; backend
+     `n/a` keeps the same provenance in the durable Batch Plan and handoff.
      Its raw lane `targets` are not guard input. Use the canonical
      [Cross-Task Target Membership Gate](../../workflows/pr-processing.md#cross-task-target-membership-gate)
      to derive the exact receiver manifest from trusted provenance/coordinator

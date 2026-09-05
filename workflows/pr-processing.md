@@ -87,59 +87,16 @@ becomes durably terminal. The automation never owns the task or next action.
    - When the value, priority, or proposed fix scope is unclear, use `.agents/skills/evaluate-issue/SKILL.md` before implementation (or `.agents/workflows/evaluate-issue.md` for agents without skill support).
 3. Isolate the work:
    - Fetch/prune `main`, confirm the expected repository root, and verify nested repo paths before assigning work.
-   - When the repo's private coordination backend (see `coordination_backend`
-     in `.agents/agent-workflow.yml`) is available, acquire an `agent-coord`
-     claim for each issue/PR/ad-hoc lane before creating that lane's worktree or
-     branch. Resolve `PR_BATCH_SKILL_DIR` in this order: explicit environment
-     variable; the loaded skill's base directory when the host exposes it;
-     repo-local `.agents/skills/pr-batch`; then stop with a precise blocker if
-     the helper is still missing. Use that bounded helper for agent-run preflight
-     reads:
-
-     ```bash
-     # Fallback after explicit env var and loaded skill base are unavailable.
-     PR_BATCH_SKILL_DIR="${PR_BATCH_SKILL_DIR:-.agents/skills/pr-batch}"
-     "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 doctor --json
-     "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo OWNER/REPO --target TARGET --json
-     "${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --batch-id BATCH_ID --json
-     ```
-
-     A timeout, setup/auth failure, or non-zero targeted status other than
-     `CLAIM_REFUSED` / exit code 3 means private state is `UNKNOWN` / degraded
-     for that read. Machine agents must hard-stop when a claim is refused with
-     `CLAIM_REFUSED` / exit code 3 and report the holder plus heartbeat
-     liveness. Targeted `agent-coord status` is a preflight view; the claim
-     operation is the backend's compare-and-swap gate, so the claim result is
-     the source of truth for races.
-
-   - If bounded doctor/status is degraded but the lane is an exact independent
-     assignment with no `depends_on` refs, a coordinator may attempt the bounded
-     `agent-coord claim` directly before branching. If that claim succeeds,
-     proceed in `private_state: claim-only` mode, heartbeat at phase transitions,
-     and record the degraded status evidence in the handoff. If the claim is
-     refused, hard-stop. If the claim times out, stop with
-     `private_state: UNKNOWN (claim outcome)` and reconcile private state before
-     fallback or branching. Use structured public `codex-claim` comments only
-     when the private claim cannot be started or fails with a definitive
-     non-timeout setup/auth error, and only where dependency rules allow it. A
-     structured public `codex-claim` comment is a GitHub issue/PR comment
-     containing a `codex-claim` HTML comment (`<!-- codex-claim v1 ... -->`) with
-     key/value fields; see the "Public claim comment" format below.
-   - For lanes declared in `batches/<batch-id>.json` with `depends_on`, run
-     bounded `agent-coord status` at lane start and before rebase or push. If
-     the lane shows unmet `blocked_on` refs, treat them as verified source facts
-     for the typed dependency graph. Known backend `depends_on`/`blocked_on`
-     facts refresh the corresponding typed live edge state and evidence;
-     they do not decide lifecycle capabilities. Run `stage-dependency-gate` and
-     obey its returned permissions for the requested action. Set a blocked
-     heartbeat or move away only when that permission is false. Missing or
-     `UNKNOWN` backend dependency state remains a blanket hard stop. Report the
-     refs and gate decision in the handoff. If the lane declares `depends_on`
-     but status shows no matching private batch state for that lane, stop to
-     report the missing private batch file. If the bounded status command itself
-     fails or times out for a declared dependency lane, also stop instead of
-     using claim-only mode or advisory fallback. The current public summary lives in
-     [coordination-backend.md](../docs/coordination-backend.md).
+   - Load [PR-Batch Coordination And Observability](pr-batch-coordination-observability.md)
+     and produce its lane-scoped adapter result before creating a branch or
+     worktree. It owns backend/no-backend selection, bounded status and claim
+     behavior, liveness, label hints, capacity evidence, and recovery; do not
+     reconstruct that protocol in this operating-model summary.
+   - Apply the adapter result to the affected target. Reliable contradictory
+     ownership stops duplicate execution for that lane. Pass verified typed
+     `depends_on`/`blocked_on` facts to `stage-dependency-gate` and obey its
+     action permission; missing required dependency state stays fail-closed for
+     that action. Optional degraded telemetry does not block unrelated work.
    - Use the current checkout for one focused task.
    - For multiple independent PRs or lanes (independent work streams with separate branch/worktree ownership), use `git worktree add` for machine lanes or the host's `isolation: 'worktree'` mode for in-process workers so agents do not overlap edits.
 4. Make a local batch:
@@ -1535,251 +1492,40 @@ identity is known; it never creates or resumes a worker.
 
 ### Coordination State
 
-Use exact lane assignments as the primary coordination mechanism. Labels are useful for dashboards, but stale labels are expected after restarts.
+Load [PR-Batch Coordination And Observability](pr-batch-coordination-observability.md)
+after prompt intake and dependency planning, before branch or worktree creation.
+It owns backend/no-backend mode, target-scoped claims and heartbeats, label
+mirroring, liveness, capacity evidence, recovery, and the
+`coordination-observability v1` result.
 
-- Use a maintainer-applied eligibility label such as `codex-ready` only if the repo has adopted it.
-- Use a temporary `codex-wip` label only as a visible hint; do not treat it as the durable lock.
-- Mirror an active lane claim on the claimed issue/PR with the seam's claim
-  label (`agent_claimed_label`, default `agent-claimed`) when a coordination
-  backend is in use: apply it after a successful
-  `agent-coord claim`, and remove it when the claim is released — but only for the
-  lane's own claim: verify this lane is still the claim holder (the
-  holder/generation check) before removing, so a replacement or retried claim that
-  has already reapplied the label is not cleared. Let the coordination daemon
-  remove it for claims that expire without a clean release, and reconcile the
-  label to the live claim otherwise.
-  Like `codex-wip`, it is a visible hint for people browsing GitHub, not the
-  durable lock — the backend claim and its heartbeat TTL remain the source of
-  truth, and a stale `agent-claimed` label after a crash or restart is expected
-  until the daemon reconciles it. Enable mirroring only when the backend provides
-  that expiry reconciliation (see `docs/coordination-backend.md`); without a
-  reconciler, a crashed claim would leave a stale label that excludes a released
-  item indefinitely, so do not mirror. Skip label mirroring entirely when
-  `coordination_backend: n/a` (single-operator). Adopt the claim label per repo
-  the same way `codex-ready`/`codex-wip` are (a one-time `gh label create`),
-  before mirroring.
-- Owned means skip is symmetric for humans and agents: a human assignee (see the
-  assignee-aware batch selection and the stale-assignment sweep) or an
-  `agent-claimed` label both mean skip, and both decay — human assignments via
-  the stale-assignment sweep, agent claims via backend heartbeat TTL. The
-  stale-assignment sweep skips `agent-claimed` items, leaving agent-claim
-  staleness to the backend rather than the human-timescale sweep.
-- Treat QA as an explicit batch lane when the Batch QA Lane section requires it;
-  give it a stable owner, claim/heartbeat evidence, and the same dependency
-  checks as implementation or audit lanes.
-- For concurrent or multi-machine batches, use the repo's private coordination
-  backend when available. Each lane gets a stable agent id such as
-  `mobile-codex-batch2` or `desktop-claude-fable-lane1`.
-- When the backend supports batch registration, the coordinator records the
-  batch objective, launch prompt or instructions, lane owners, thread handles,
-  dependencies, loaded-pack `pack_sha`, coordinator/worker route preferences,
-  and each lane's optional observed host/model/effort before workers start. Persist dispatcher selection
-  first, then register the manifest before launch. If registration is
-  unavailable, carry those facts in the coordinator handoff and mark
-  backend-held batch metadata as `UNKNOWN` or `unavailable` instead of treating
-  it as absent work. When host-observed metadata becomes available, reconcile
-  each observed host/model/effort field changed by fallback, escalation, or
-  replacement, preserve known fields, and use `UNKNOWN` only per unavailable
-  field. Observation absence or update failure never blocks ordinary activation.
-  Before requiring reconciliation, detect advertised registration
-  update/upsert/reconciliation capability. An unadvertised or unsupported
-  create-only backend records each affected field `UNKNOWN`. An advertised update
-  uses the bounded safe executable-plus-opaque-argv contract; failure records
-  affected fields `UNKNOWN` without wedging. Every advertised registration invocation resolves a
-  backend-advertised safe executable plus ordered opaque argv without shell
-  evaluation and runs with a finite hard deadline in its own process group;
-  timeout or whole-group `TERM` then `KILL` records best-effort field-granular
-  `UNKNOWN`, names reconciliation, and does not block worker launch.
-- Treat the backend as available when bounded `agent-coord doctor --json` and
-  targeted lane-scoped status probes exit 0. Resolve `PR_BATCH_SKILL_DIR` with
-  the env-var / loaded-skill / repo-local chain, then use
-  `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded"` for agent-run preflights; do
-  not run unbounded full-backend `doctor` / `status` in a worker lane. A timeout,
-  missing command, auth failure, doctor failure, or targeted status non-zero
-  means private state is `UNKNOWN` / degraded for that read. A refused
-  `agent-coord claim` after a successful status check returns `CLAIM_REFUSED` /
-  exit code 3 and remains a hard stop.
-- Before the first claim on a backend whose lane-metadata support is not already
-  verified, inspect `agent-coord-bounded claim --help`. Pass extended metadata
-  flags only when advertised: `--thread-handle`, `--chat-handle`, `--host`,
-  `--operator`, `--phase`, `--instance-id`, and `--status`. Otherwise issue the
-  core claim with agent, repo, target, and branch only, then inspect
-  `agent-coord-bounded heartbeat --help`. When heartbeat advertises the extended
-  flags, record the lane metadata there immediately; otherwise send a core
-  heartbeat and preserve unsupported metadata, or explicit `UNKNOWN`, in the
-  Lane Card, PR evidence, and final handoff. Never pass an unadvertised flag and
-  do not infer support from a different backend implementation.
-- When the trusted repo seam sets `coordination_backend: n/a`, skip private
-  claims and public claim comments. Treat the run as intentionally
-  single-operator, and record that single-operator assumption in the Lane Card and final handoff
-  rather than reporting coordination as healthy or `UNKNOWN`.
-- For an ad-hoc lane when the configured private backend is unavailable, public claim fallback is unavailable because there is no issue or PR comment surface.
-  Stop before branching; require a coordination target or explicit no-backend single-operator approval.
-  Do not invent a public claim surface or silently
-  proceed without an ownership guard.
-- Acquire an `agent-coord claim` for each issue/PR/ad-hoc lane before creating that
-  lane's worktree or branch. A refused claim is a hard stop for machine agents:
-  report the holder, heartbeat liveness, and target instead of creating a
-  competing branch.
-  Targeted `agent-coord status` is advisory preflight, while
-  `agent-coord claim` is the backend's compare-and-swap gate for concurrent
-  claim races. After a successful claim on an issue or PR lane (not an ad-hoc
-  lane, which has no GitHub surface), apply the claim label per the label-mirror
-  rule above.
-- For exact independent lanes that have no `depends_on` refs, degraded bounded
-  doctor/status does not automatically block work. A coordinator may attempt the
-  bounded `agent-coord claim` directly. If the direct claim succeeds, proceed in
-  `private_state: claim-only` mode, heartbeat normally, and include the degraded
-  status evidence in the lane handoff. If the claim is refused, hard-stop. If
-  the claim times out, stop with `private_state: UNKNOWN (claim outcome)` and
-  reconcile private state before fallback or branch/worktree creation. Use an
-  advisory public claim comment only when the private claim cannot be started or
-  fails with a definitive non-timeout setup/auth error.
-- Refresh heartbeats with `agent-coord heartbeat` at phase transitions: item
-  start, branch or PR update, review pass, blocked state, resumed state, and
-  done state.
-  Heartbeat liveness is timestamp-derived: `live` before the TTL expires,
-  `stale` until the backend dead threshold, and `dead` after that. Check
-  `agent-coord config show --json`, the private backend README, and CLI help for
-  current TTL defaults, terminal heartbeat statuses, and threshold calculations;
-  do not model liveness with sticky labels.
-- Use bounded `agent-coord status` before starting dependency-sensitive lanes
-  and before rebase, push, readiness, or closeout decisions that depend on
-  another lane. If status cannot be checked for a declared dependency lane, stop
-  with dependency state `UNKNOWN` instead of using claim-only mode or advisory
-  fallback for that lane.
-- Before pushing a worker lane, verify the bounded target or batch status still
-  shows this lane's claim holder. When the backend reports a claim generation or
-  instance identifier, it must also match the worker's last known value. A
-  different holder or generation is a hard stop: do not push. Refresh the lane
-  heartbeat as blocked when possible and report the conflicting owner. If the
-  backend cannot report holder or generation, record that fact as `UNKNOWN` and
-  mutate only when the existing claim result and dependency rules still allow
-  the push.
-- Coordinators create or update private backend `batches/<batch-id>.json` files
-  before dispatching workers for dependency-sensitive lanes, following the
-  private backend README/schema rather than public examples; declared
-  `depends_on` refs are only enforceable after that state exists.
-- For lanes declared in `batches/<batch-id>.json` with `depends_on`, treat
-  non-empty `blocked_on` refs as known source facts for the typed live replay.
-  Refresh the corresponding edge state/evidence and run
-  `stage-dependency-gate` before the requested action. Obey the returned
-  permission; refresh the heartbeat with `--status blocked` or switch lanes only
-  when that permission is false. Re-check bounded `agent-coord status` before
-  resuming, rebasing, or pushing. Missing or `UNKNOWN` dependency state remains
-  a blanket hard stop.
-- Use a structured public claim comment only as an advisory fallback or human
-  hint when the private claim cannot be started, definitively fails with a
-  non-timeout setup/auth error before mutation, or is explicitly mirrored.
-  Before posting a fallback claim, inspect existing recent issue/PR comments for
-  unexpired `codex-claim` blocks on the same target. If another active fallback
-  claim exists for the same lane, stop and report the conflicting comment URL
-  instead of starting competing work:
+Apply that result at every coordination-sensitive action. Reliable
+contradictory ownership stops only the affected lane; optional or degraded
+telemetry never becomes a fleet-wide fence. Dependency state still flows
+through `stage-dependency-gate`, and the shared security floor still owns
+duplicate-writer and consequential-action safety.
 
-```markdown
-<!-- codex-claim v1
-batch: <BATCH_ID>
-machine: <MACHINE_ID>
-thread: <codex-thread-id>
-branch: <BRANCH_NAME>
-status: in_progress
-expires_at: <ISO8601_UTC>
--->
-```
+Only a public marker backed by authenticated and authorized ownership evidence
+is conflicting. A marker proven malformed or unauthorized remains advisory; an
+unavailable or incomplete verification remains `UNKNOWN` and blocks the
+affected action.
+Apply the concrete author-and-marker verification in the public
+[backend guide](../docs/coordination-backend.md#public-claim-comment-fallback);
+a marker body alone is never ownership proof.
 
-Use any stable session, thread, or machine identifier that lets a restarted
-coordinator recognize its own work; if none exists, use `thread: unavailable`
-and rely on the machine, branch, and batch fields. Set `expires_at` to a short
-bounded advisory lease, usually 2-4 hours for an active batch or no later than
-the known batch window. Refresh the comment when continuing beyond that window.
-Do not use the public comment to override or bypass a private claim refusal.
-
-On restart, prefer bounded `agent-coord status` and the private
-claim/heartbeat state. Use claim comments only to recover context when the
-private claim could not be started, definitively failed before mutation, or was
-explicitly mirrored.
+An ad-hoc lane's public claim fallback is unavailable because there is no issue
+or PR comment surface.
 
 ### Coordination Telemetry And Provenance
 
-Before batch registration, resolve provenance for the exact Agent Workflows
-pack and actors that will run the batch. `pack_sha` is the verified full git SHA
-of the loaded pack checkout or its verified installed-release identifier; a
-dirty checkout, different installed copy, consumer repository SHA, or remote
-guess is not exact evidence and stays `UNKNOWN`. `coordinator_preference`
-carries advisory model and effort. Every lane carries its `worker_preference`
-and optional field-granular `observed_host` metadata from the host; never infer
-observations from the coordinator or worker preferences. Use the
-backend-neutral manifest example in
-[coordination-backend.md](../docs/coordination-backend.md#batch-provenance-manifest).
-Backend `n/a` keeps the same provenance in durable coordinator state, while a
-degraded registration remains `UNKNOWN` with retry evidence.
-
-Typed operational-signal events supplement the existing prose packet, Lane
-Card, heartbeat, and final handoff; they never replace them. When the resolved
-private backend is active and supports typed events, emit the matching event at
-the existing checkpoint and attach the known batch, lane, agent, repository,
-target, branch, and status context. Required typed payload fields are:
-
-| Checkpoint | Typed event | Required fields |
-| ---------- | ----------- | --------------- |
-| help-needed pause | `help_requested` | `reason` |
-| model escalation request | `escalation_requested` | `from_route`, `to_route`, `evidence` |
-| human intervention | `human_intervention` | `kind` |
-| serious error | `error` | `severity`, `category`, `message` |
-
-Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input. A `MODEL_ESCALATION_REQUEST` emits `escalation_requested` with
-the current and requested model/effort routes plus the evidence summary from
-the prose packet. Map intervention checkpoints deliberately:
-`takeover` -> `kind: takeover`; a same-lane replacement or explicit supersede
--> `kind: supersede`; a human-authored repair -> `kind: manual-fix`; and a
-coordinator cancellation drain -> `kind: drain`. A confirmed P0/P1 finding,
-regression, or revert requirement emits `error`; `severity` is one of `P0`,
-`P1`, `P2`, or `P3`, while `category` and `message` carry the evidence-backed
-classification and summary. Do not invent a severity or route to make an event
-valid; preserve the missing fact as `UNKNOWN` in the handoff.
-
-Emission is best-effort for the in-flight operation: a failed event write does
-not turn a successful claim, handoff, pause, or drain into a failed operation.
-No coordination backend (`n/a`): skip the event silently. Typed-event transport
-is optional: when an active private backend does not advertise it or reports it
-unsupported, record `typed event transport: unavailable`, skip the emission,
-and continue without marking the event emission `UNKNOWN`. Only after the
-transport is advertised does an attempted write that fails, degrades, or is
-rejected become `UNKNOWN` handoff evidence. Every attempted advertised
-typed-event write must resolve the backend-advertised event executable and
-ordered opaque argv; a missing, malformed, or unsafe advertisement is an
-attempted-write failure. Run that exact executable and separate argv without
-shell evaluation, with a finite deadline in its own process group, preserving
-each opaque argument; on expiry terminate the whole group with `TERM`, then
-`KILL` after a finite grace period. A deadline expiry, forced termination, or
-any other advertised-support write failure records best-effort `UNKNOWN` event
-evidence; the primary operation continues immediately without waiting further
-on the event. Public claim comments are not a typed event transport.
-
-Backends may auto-emit the lifecycle events `claim.acquired`, `claim.released`,
-and `phase.changed` from claim, release, and phase-transition operations. Do
-not duplicate those lifecycle events with explicit typed-signal writes; the
-four operational signals above are additive. At batch closeout, use a read-only
-check after terminal releases only when the active backend advertises an
-`agent-coord`-compatible telemetry-completeness audit capability bound to the
-following process contract. Executable: `agent-coord`. Arguments, in order and
-as separate values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`.
-Pass the opaque batch ID as exactly one argument value through a
-process/argument-vector API. Shell interpolation, `eval`, `sh -c`, and
-equivalent shell-evaluation paths are forbidden. Run that exact child contract
-through the resolved pr-batch `bin/agent-coord-bounded` process-control seam
-with a positive hard deadline; the helper must preserve the exact child
-executable and separate argument vector, launch it in its own process group,
-and terminate the whole process group when the deadline expires. A timeout or
-forced termination is a command failure: record best-effort `UNKNOWN`
-telemetry-audit evidence and continue closeout through steps 12-13 with that
-blocker; the audit subprocess must never wedge merge closeout. When that compatible
-capability is advertised, incomplete lifecycle coverage, command failure, or
-`UNKNOWN` readback blocks telemetry closeout until the coordinator
-repairs or explicitly carries the gap. If the active backend does not advertise
-that compatible capability or its advertisement is `UNKNOWN`, record
-`telemetry audit: unavailable` in the durable handoff and continue. Backend
-`n/a` skips this check.
+Use canonical [Status, Monitoring, And Telemetry](pr-batch-coordination-observability.md#status-monitoring-and-telemetry)
+for human-status presentation, deterministic monitors, and privacy-bounded
+throughput telemetry. Use the backend guide's
+[Batch Provenance Manifest](../docs/coordination-backend.md#batch-provenance-manifest)
+for exact-pack registration and field-granular observations, and its
+[Operational Signal Events](../docs/coordination-backend.md#operational-signal-events)
+for typed signals and terminal coordination-audit disposition. Preserve every
+`UNKNOWN` fact, but do not let unavailable optional telemetry block unrelated
+correctness work.
 
 ### Worker Rules
 
@@ -1898,11 +1644,16 @@ minimal status checks and claim-preservation write needed for the handoff.
 If this lane already owns a private backend claim, send one heartbeat update,
 using a paused or operator-restart reason if the backend supports it; otherwise
 send a plain heartbeat preserving the current status. If it is using only the
-public `codex-claim` fallback, refresh the existing claim comment with
-`expires_at` extended by the same lease window already used for that fallback
-claim, capped at the repo's configured public fallback lease maximum or 4 hours
-from now when no repo-specific cap is configured, leaving `status: in_progress`
-so the fallback remains an active advisory lock.
+public `codex-claim` fallback, refresh the existing claim comment only when
+complete verification shows an authorized author, exactly one well-formed
+marker on the target's own issue or PR, matching batch, machine, stable
+non-`unavailable` thread, and branch, `status: in_progress`, a future
+`expires_at`, and neither conflicting nor `UNKNOWN` ownership evidence.
+Otherwise require explicit reassignment and do not refresh. For an eligible
+refresh, extend `expires_at` by the same lease window already used for that
+fallback claim, capped at the repo's configured public fallback lease maximum
+or 4 hours from now when no repo-specific cap is configured, leaving
+`status: in_progress` so the fallback remains an active advisory lock.
 If your repo configures a shorter public fallback lease maximum, use that cap
 instead of the 4-hour default.
 If the heartbeat or public fallback refresh fails with a transient error, treat
@@ -1978,12 +1729,17 @@ pending item. If bounded status shows a private backend claim is stale or dead b
 still held by this same stable agent/thread id with no cancellation or
 reassignment, refresh the heartbeat at the resumed state before editing, pushing,
 or starting the next target. For a public fallback lane, refresh this lane's
-existing claim comment before editing only when no conflicting unexpired
-`codex-claim` comment exists on the same target. A replacement worker with a new
+existing claim comment only when complete verification shows an authorized
+author, exactly one well-formed marker on the target's own issue or PR, matching
+batch, machine, stable non-`unavailable` thread, and branch,
+`status: in_progress`, a future `expires_at`, and neither conflicting nor
+`UNKNOWN` ownership evidence. Incomplete verification or an unavailable or
+mismatched identity requires explicit reassignment before refresh or mutation.
+A replacement worker with a new
 stable agent/thread id must stop after status recovery until the coordinator
 reconciles or reassigns the private claim or public fallback claim; it must not
-edit or push while the backend or active public fallback still names the old
-holder. If the holder changed, cancellation or reassignment is present, or
+edit or push while the backend or verified active public fallback still names
+the old holder. If the holder changed, cancellation or reassignment is present, or
 ownership is `UNKNOWN`, stop and report the conflict; do not refresh the
 heartbeat or public fallback claim, and do not continue work until the
 coordinator resolves it.

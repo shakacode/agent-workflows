@@ -278,6 +278,22 @@ class AutonomousMergeContractTest < Minitest::Test
     assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
   end
 
+  def test_coordination_observability_component_is_an_unconditional_policy_surface
+    source_path = "workflows/pr-batch-coordination-observability.md"
+
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
+  end
+
+  def test_coordination_backend_doc_is_an_unconditional_policy_surface
+    source_path = "docs/coordination-backend.md"
+
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
+  end
+
   def test_unblock_component_is_an_unconditional_policy_surface
     source_path = "workflows/pr-batch-unblock.md"
 

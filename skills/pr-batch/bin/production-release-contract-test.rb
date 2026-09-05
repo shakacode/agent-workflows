@@ -14,6 +14,7 @@ class ProductionReleaseContractTest < Minitest::Test
     @workflow = read("workflows/pr-processing.md")
     @skill = read("skills/pr-batch/SKILL.md")
     @handbook = read("docs/operator-handbook.md")
+    @coordination_backend = read("docs/coordination-backend.md")
   end
 
   def test_component_owns_the_release_lifecycle_boundary
@@ -134,8 +135,10 @@ class ProductionReleaseContractTest < Minitest::Test
     refute_includes @workflow, "steps 13-14"
     refute_includes @skill, "steps 13-14"
     refute_includes @integration_closeout, "steps 13-14"
-    assert_equal 1, @workflow.scan("steps 12-13").length
+    refute_includes @workflow, "steps 12-13"
     refute_includes @skill, "steps 12-13"
+    assert_includes @coordination_backend, "continue closeout through the remaining steps"
+    assert_includes @coordination_backend, "the audit subprocess must never wedge merge closeout"
 
     fallback = squish(@workflow.split("### Ordinary Review Fallback", 2).last
                                 .split("### Adversarial Review Gate", 2).first)

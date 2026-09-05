@@ -16,8 +16,10 @@ module AutonomousMergePolicy
     workflows/pr-batch-security-floor.md
     workflows/pr-batch-worker-execution.md
     workflows/pr-batch-integration-closeout.md
+    workflows/pr-batch-coordination-observability.md
     workflows/pr-batch-unblock.md
     workflows/pr-production-release.md
+    docs/coordination-backend.md
     skills/pr-batch/SKILL.md skills/pr-monitoring/SKILL.md
     skills/plan-pr-batch/SKILL.md skills/triage/SKILL.md
     bin/agent_doctor/autonomous_merge_policy.rb bin/agent_doctor/autonomous_merge_policy_globs.rb
@@ -43,7 +45,7 @@ module AutonomousMergePolicy
     AGENTS.md **/AGENTS.md CLAUDE.md **/CLAUDE.md **/SKILL.md
     **/autonomous_merge_*.rb **/current_integration_*.rb
     **/autonomous-merge-* **/check_goal_prompt_size.rb
-    **/*contract-test.rb workflows/** .agents/** docs/adr/**
+    **/*contract-test.rb workflows/** .agents/** docs/adr/** docs/coordination-backend.md
   ].freeze
 
   # Portable safe path groups. Absent, empty, or partial consumer configuration

@@ -6,6 +6,7 @@ require "json"
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
+COORDINATION_COMPONENT_PATH = File.join(ROOT, "workflows/pr-batch-coordination-observability.md")
 INTEGRATION_CLOSEOUT_PATH = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
 COORDINATION_DOC_PATH = File.join(ROOT, "docs/coordination-backend.md")
 PR_BATCH_SKILL_PATH = File.join(ROOT, "skills/pr-batch/SKILL.md")
@@ -27,6 +28,12 @@ HELP_REQUESTED_REASON_PRECEDENCE =
   "Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing " \
   "approval or capability; otherwise `question` for a required maintainer or product answer; " \
   "otherwise `blocked-user-input` for other required user input."
+NONEMPTY_EVENT_FIELD_REQUIREMENT =
+  "Every required event field must contain a nonempty usable value. When one is unavailable, do not emit an " \
+  "invalid event; record `UNKNOWN (missing required event field: <field>)` and preserve the prose handoff."
+TELEMETRY_AUDIT_DISPOSITION_REQUIREMENT =
+  "This blocks only a clean telemetry-audit disposition until the coordinator repairs or explicitly carries " \
+  "the gap; it does not stop the surrounding merge-closeout steps."
 AUDIT_COMPATIBLE_CAPABILITY = "`agent-coord`-compatible telemetry-completeness audit capability"
 AUDIT_ARGV_REQUIRED_CONCEPTS = {
   "executable" => "Executable: `agent-coord`.",
@@ -55,7 +62,7 @@ AUDIT_BOUNDED_EXECUTION_REQUIRED_CONCEPTS = {
     "vector, launch it in its own process group, and terminate the whole process group when the deadline expires.",
   "timeout failure evidence and closeout continuation" =>
     "A timeout or forced termination is a command failure: record best-effort `UNKNOWN` telemetry-audit evidence " \
-    "and continue closeout through steps 12-13 with that blocker; the audit subprocess must never wedge merge " \
+    "and continue closeout through the remaining steps with that blocker; the audit subprocess must never wedge merge " \
     "closeout."
 }.freeze
 REMEDIATION_AUTHORITY_REQUIRED_CONCEPTS = {
@@ -127,11 +134,11 @@ REGISTRATION_RECONCILIATION_PATTERNS = {
   "registration reconciliation" => /reconcil/
 }.freeze
 REGISTRATION_BOUNDED_FRAGMENTS = [
-  "backend-advertised safe executable plus ordered opaque argv",
+  "backend-advertised executable-plus-argv seam",
   "without shell evaluation",
   "finite hard deadline in its own process group",
-  "whole-group `TERM` then `KILL`",
-  "does not block worker launch"
+  "terminate the whole group with `TERM`, then `KILL`",
+  "worker launch continues"
 ].freeze
 REGISTRATION_NO_SHELL_MARKER = "without shell evaluation"
 REGISTRATION_UPDATE_PATTERNS = {
@@ -200,16 +207,6 @@ def extract_section(text, heading)
   end
   body_end = next_heading ? next_heading.begin(0) : text.length
   text[body_start...body_end]
-end
-
-def extract_between(text, start_marker, end_marker)
-  start_offset = text.index(start_marker)
-  raise "missing start marker #{start_marker.inspect}" unless start_offset
-
-  end_offset = text.index(end_marker, start_offset)
-  raise "missing end marker #{end_marker.inspect}" unless end_offset
-
-  text[start_offset...end_offset]
 end
 
 def parse_operational_signal_rows(section)
@@ -421,23 +418,7 @@ end
 def authoritative_registration_sections
   {
     COORDINATION_DOC_PATH =>
-      extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Batch Provenance Manifest"),
-    WORKFLOW_PATH =>
-      extract_between(read_repo_file(WORKFLOW_PATH),
-                      "- When the backend supports batch registration",
-                      "- Treat the backend as available"),
-    File.join(ROOT, "skills/plan-pr-batch/SKILL.md") =>
-      extract_between(read_repo_file(File.join(ROOT, "skills/plan-pr-batch/SKILL.md")),
-                      "   - Build the batch-registration provenance",
-                      "   - For PRs with review feedback"),
-    PR_BATCH_SKILL_PATH =>
-      extract_between(read_repo_file(PR_BATCH_SKILL_PATH),
-                      "12. Batch-registration provenance:",
-                      "<!-- host-branch: codex-only start -->"),
-    TRIAGE_SKILL_PATH =>
-      extract_between(read_repo_file(TRIAGE_SKILL_PATH),
-                      "When host observations become available",
-                      "For Codex prompts")
+      extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Batch Provenance Manifest")
   }
 end
 
@@ -505,8 +486,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
   end
 
   def test_operational_signal_dry_run_maps_each_checkpoint_to_the_typed_contract
-    workflow = read_repo_file(WORKFLOW_PATH)
-    telemetry = extract_section(workflow, "### Coordination Telemetry And Provenance")
+    telemetry = extract_section(read_repo_file(COORDINATION_DOC_PATH), "## Operational Signal Events")
     rows = parse_operational_signal_rows(telemetry)
 
     assert_equal EXPECTED_OPERATIONAL_SIGNALS, rows
@@ -517,13 +497,14 @@ class CoordinationTelemetryContractTest < Minitest::Test
     assert_includes telemetry, "`claim.released`"
     assert_includes telemetry, "`phase.changed`"
     assert_includes telemetry, "best-effort"
-    assert_includes telemetry, "No coordination backend (`n/a`): skip the event silently."
-    assert_includes telemetry, "preserve the missing fact as `UNKNOWN`"
+    assert_includes telemetry, "Backend `n/a` skips silently."
+    assert_includes telemetry, "`UNKNOWN`"
+    assert_includes telemetry.gsub(/\s+/, " "), NONEMPTY_EVENT_FIELD_REQUIREMENT
+    assert_includes telemetry.gsub(/\s+/, " "), TELEMETRY_AUDIT_DISPOSITION_REQUIREMENT
   end
 
   def test_typed_event_transport_fallback_is_section_local_and_nonblocking
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"],
       COORDINATION_DOC_PATH => ["## Operational Signal Events"],
       PR_BATCH_SKILL_PATH => ["## Question And Decision Handling"],
       PR_MONITORING_SKILL_PATH => ["## Monitoring Loop"],
@@ -626,8 +607,17 @@ class CoordinationTelemetryContractTest < Minitest::Test
   end
 
   def test_registration_runtime_contract_is_synchronized
-    [WORKFLOW_PATH, File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
-      assert_registration_runtime_contract(read_repo_file(path), path)
+    assert_registration_runtime_contract(read_repo_file(COORDINATION_DOC_PATH), COORDINATION_DOC_PATH)
+    assert_includes read_repo_file(COORDINATION_COMPONENT_PATH), "coordination-backend.md"
+  end
+
+  def test_registration_consumers_route_to_one_canonical_runtime_contract
+    [File.join(ROOT, "skills/plan-pr-batch/SKILL.md"), PR_BATCH_SKILL_PATH, TRIAGE_SKILL_PATH].each do |path|
+      text = read_repo_file(path)
+
+      assert_includes text, "docs/coordination-backend.md#batch-provenance-manifest"
+      refute_includes text, "Every advertised registration invocation"
+      refute_includes text, "whole-group `TERM` then `KILL`"
     end
   end
 
@@ -695,7 +685,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
   end
 
   def test_registration_runtime_contract_rejects_independent_mutants
-    text = read_repo_file(WORKFLOW_PATH).gsub(/\s+/, " ")
+    text = read_repo_file(COORDINATION_DOC_PATH).gsub(/\s+/, " ")
     REGISTRATION_RECONCILIATION_PATTERNS.each_value do |pattern|
       fragment = text[pattern]
       refute_nil fragment
@@ -784,7 +774,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
     {
       "skills/plan-pr-batch/SKILL.md" => %w[pack_sha coordinator_preference worker_preference observed_host],
-      "skills/pr-batch/SKILL.md" => %w[help_requested escalation_requested error human_intervention],
+      "skills/pr-batch/SKILL.md" => %w[help_requested error human_intervention],
       "skills/pr-monitoring/SKILL.md" => %w[help_requested error],
       "skills/pause/SKILL.md" => %w[help_requested blocked-user-input],
       "skills/continue/SKILL.md" => %w[human_intervention takeover supersede]
@@ -796,10 +786,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_help_requested_reason_precedence_is_mutually_exclusive_everywhere
     workflow = read_repo_file(WORKFLOW_PATH)
-    [
-      "### Question And Decision Handling",
-      "### Coordination Telemetry And Provenance"
-    ].each do |heading|
+    ["### Question And Decision Handling"].each do |heading|
       section = extract_section(workflow, heading).gsub(/\s+/, " ")
       assert_includes section, HELP_REQUESTED_REASON_PRECEDENCE, "#{heading} has a stale reason mapping"
     end
@@ -817,7 +804,6 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_fails_closed_only_for_an_advertised_capability
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"],
       COORDINATION_DOC_PATH => ["## Operational Signal Events"]
     }.each do |path, headings|
       text = read_repo_file(path)
@@ -851,7 +837,6 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_argv_contract_rejects_each_authoritative_section_mutation
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"],
       COORDINATION_DOC_PATH => ["## Operational Signal Events"]
     }.each do |path, headings|
       text = read_repo_file(path)
@@ -884,7 +869,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_execution_is_bounded_and_closeout_continues
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"]
+      COORDINATION_DOC_PATH => ["## Operational Signal Events"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|
@@ -896,7 +881,7 @@ class CoordinationTelemetryContractTest < Minitest::Test
 
   def test_batch_audit_bounded_execution_rejects_each_authoritative_section_mutation
     {
-      WORKFLOW_PATH => ["### Coordination Telemetry And Provenance"]
+      COORDINATION_DOC_PATH => ["## Operational Signal Events"]
     }.each do |path, headings|
       text = read_repo_file(path)
       headings.each do |heading|

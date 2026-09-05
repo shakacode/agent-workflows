@@ -886,10 +886,15 @@ against the fresh data before mutating GitHub or the branch.
   advisory and must not override a private claim refusal, timeout, or a repo
   seam that opts out of coordination.
 - Before posting a fallback claim, inspect recent PR comments for an unexpired
-  `codex-claim` block on the same PR. If another active fallback claim exists,
-  stop GitHub-mutating actions and report the conflicting comment URL;
-  local-only action `a` may still proceed, but it must report that
-  publishing/reply actions remain blocked by the active advisory claim.
+  `codex-claim` block on the same PR. Only a marker backed by authenticated and
+  authorized ownership evidence is conflicting. A marker proven malformed or
+  unauthorized remains advisory; an unavailable or incomplete verification
+  remains `UNKNOWN` and blocks the affected action. For a verified conflict, stop
+  GitHub-mutating actions and report the comment URL; local-only action `a` may
+  still proceed, but it must report that publishing/reply actions remain blocked
+  by the verified active claim. Apply the concrete author-and-marker verification
+  in the public [backend guide](../../docs/coordination-backend.md#public-claim-comment-fallback);
+  a marker body alone is never ownership proof.
   In replacement carryover, run that conflict inspection independently on both
   `PRIMARY_PR_NUMBER` and `SOURCE_PR_NUMBER`, then post or refresh one separate
   claim comment on each PR before any non-claim mutation; a conflict or failed claim
@@ -908,10 +913,10 @@ against the fresh data before mutating GitHub or the branch.
   -->
   ```
 
-  Use any stable session, thread, or machine identifier available; if none is
-  available, use `thread: unavailable`. Set a short bounded advisory lease,
-  usually 2-4 hours for an active review run, and refresh the same comment if
-  continuing beyond that window.
+  Use a stable session or thread identity; if none is available, use
+  `thread: unavailable`, which cannot self-renew. Refresh only a comment with
+  the matching stable identity; restart with an unavailable identity requires
+  explicit reassignment. Set a short bounded advisory lease, usually 2-4 hours.
 - At a stable stop, update every acquired private heartbeat or advisory claim
   state before reporting. For private coordination, send terminal heartbeats and
   release the claims on normal completion; preserve them for blocked or handoff
