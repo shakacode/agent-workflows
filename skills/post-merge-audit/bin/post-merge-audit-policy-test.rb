@@ -15,8 +15,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_PR_PROCESSING_EXCEPTION = "Post-merge batch audit follow-up issues are governed by the Post-Merge Batch Audit section, not this ordinary follow-up tracking default; after dedupe, the coordinator creates those follow-up issues by default unless the user explicitly asked for report-only or no issue creation."
   REQUIRED_ISSUE_CREATION_ACCOUNTING = "issue-creation accounting: parent issue URL if created, child issue URLs, skipped duplicates with existing issue URLs, changelog recommendation, and any planned issue that could not be created"
   REQUIRED_UNAVAILABLE_COORDINATION_ASK = "ask before deep audit whether to wait for backend recovery or proceed with an explicitly `UNKNOWN` worked-issue scope"
-  REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK = "Structural review: if the audited range also needs a codebase-health lens, run `$structural-review` explicitly on that same range; this audit does not auto-invoke sibling axes."
-  REQUIRED_STRUCTURAL_REVIEW_ENTRY_POINT = "- **Batch default: `post-merge-audit`.** Structural drift accumulated across a concurrent-agent batch is exactly what no other axis reviews. Use this entry point explicitly when you want that lens on the audited range; `post-merge-audit` does not auto-run `structural-review` for you."
+  REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK = "If the audited range also needs a codebase-health lens, run `$structural-review` explicitly on that same range, including release/range audits without worked issues or QA lanes. This audit does not auto-invoke sibling axes."
+  REQUIRED_STRUCTURAL_REVIEW_ENTRY_POINT = "- **After a batch audit:** invoke `$structural-review` explicitly on the same range audited by `$post-merge-audit` when you want the codebase-health lens. `post-merge-audit` does not auto-run `structural-review` for you."
   REQUIRED_COMPLETED_BATCH_MODE_SCOPE = "In completed-batch mode only:"
   REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
   OBSOLETE_COMPLETED_BATCH_AUDIT_TRIGGER = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
@@ -209,9 +209,10 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_post_merge_audit_mentions_structural_review_as_a_separate_axis
     text = File.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
-    normalized_text = text.gsub(/\s+/, " ")
+    range_section = text.match(/^### Range-Level Structural Review\n(?<body>.*?)(?=^##? |\z)/m)
 
-    assert_includes normalized_text, REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK
+    refute_nil range_section, "Structural review must be outside the per-PR and per-issue lists"
+    assert_includes range_section[:body].gsub(/\s+/, " "), REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK
   end
 
   def test_structural_review_entry_point_remains_explicit
