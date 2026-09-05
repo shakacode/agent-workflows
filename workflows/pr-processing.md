@@ -2531,4 +2531,4 @@ Canonical rules: [Multi-PR Landing Plan](pr-batch-integration-closeout.md#multi-
 
 ## Post-Merge Batch Audit
 
-Canonical rules: [Post-Merge Batch Audit](pr-batch-integration-closeout.md#post-merge-batch-audit). This heading remains as a compatibility route and must not mirror the component.
+Canonical rules: [Post-Merge Batch Audit](pr-batch-integration-closeout.md#post-merge-batch-audit) and [Post-Merge Audit Follow-Up Intake](../skills/pr-batch/SKILL.md#post-merge-audit-follow-up-intake). This heading remains as a compatibility route and must not mirror the canonical policy.

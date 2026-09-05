@@ -44,6 +44,12 @@ module CompletedBatchAuditReceipt
   CURRENT_STATUSES = %w[open unresolved pending UNKNOWN terminal].freeze
   TERMINAL_DISPOSITIONS = %w[resolved accepted-waiver accepted-deferral not-applicable].freeze
   NONTERMINAL_ACTIONS = %w[investigate fix await-input retry replay track].freeze
+  FOLLOW_UP_HANDOFF_CONTRACT = "post-merge-audit-follow-up-handoff"
+  FOLLOW_UP_OUTCOMES = %w[created existing report-only blocked].freeze
+  FOLLOW_UP_KINDS = %w[finding changelog].freeze
+  MERGE_AUTHORITIES = %w[none ask auto_merge_when_gates_pass].freeze
+  FOLLOW_UP_PROMPT_OBJECTIVE =
+    "Resolve the tracked post-merge audit follow-ups within each issue's accepted scope."
 
   State = Struct.new(:fields, :records, keyword_init: true)
   CanonicalRef = Struct.new(:canonical_display, :identity, keyword_init: true)
@@ -89,6 +95,209 @@ module CompletedBatchAuditReceipt
   class PostOutcomeUnknownError < Error; end
   class PublicationPreflightError < Error; end
   class AcceptedDeferralError < Error; end
+
+  def build_follow_up_handoff(input)
+    unless input.is_a?(Hash) && input.keys.sort == %w[audit_url contract findings merge_authority version]
+      raise Error, "follow-up handoff input fields are invalid"
+    end
+    unless input["contract"] == FOLLOW_UP_HANDOFF_CONTRACT && input["version"] == 1
+      raise Error, "follow-up handoff contract is invalid"
+    end
+
+    audit_url = exact_durable_url(input["audit_url"])
+    raise Error, "follow-up handoff audit URL is invalid" unless audit_url
+
+    merge_authority = input["merge_authority"]
+    merge_authority = "none" if merge_authority.nil?
+    raise Error, "follow-up handoff merge authority is invalid" unless MERGE_AUTHORITIES.include?(merge_authority)
+
+    raw_findings = input["findings"]
+    raise Error, "follow-up handoff findings are invalid" unless raw_findings.is_a?(Array) && !raw_findings.empty?
+
+    findings = deduped_follow_up_findings(raw_findings)
+    issue_records = {}
+    report_records = []
+    blocked_records = []
+    changelog_issue_urls = []
+
+    findings.each do |finding|
+      case finding.fetch("outcome")
+      when "created", "existing"
+        issue_url = finding.fetch("issue_url")
+        record = disposition_record_hash(
+          ref: issue_url,
+          owner: finding.fetch("owner"),
+          current_status: "open",
+          disposition: "track",
+          evidence: issue_url
+        )
+        known = issue_records[issue_url]
+        raise Error, "follow-up issue ownership is inconsistent" if known && known != record
+
+        issue_records[issue_url] = record
+        changelog_issue_urls << issue_url if finding.fetch("kind") == "changelog"
+      when "report-only"
+        report_records << disposition_record_hash(
+          ref: finding.fetch("fingerprint"),
+          owner: finding.fetch("owner"),
+          current_status: "terminal",
+          disposition: "not-applicable",
+          evidence: finding.fetch("instruction_url")
+        )
+      when "blocked"
+        blocked_records << disposition_record_hash(
+          ref: finding.fetch("fingerprint"),
+          owner: finding.fetch("owner"),
+          current_status: "unresolved",
+          disposition: "retry",
+          evidence: "operation=#{finding.fetch('operation')}, error=#{finding.fetch('error')}, " \
+                    "retry=#{finding.fetch('retry')}"
+        )
+      end
+    end
+
+    if changelog_issue_urls.uniq.length > 1
+      raise Error, "changelog findings must use one bundled issue"
+    end
+
+    issue_urls = issue_records.keys.sort
+    records = issue_urls.map { |url| issue_records.fetch(url) } + report_records + blocked_records
+    dispositions = serialize_disposition_records(records)
+    parsed_records = disposition_records(dispositions)
+    raise Error, "follow-up disposition records are invalid" unless parsed_records
+
+    outstanding_refs = issue_urls + blocked_records.map { |record| record.fetch("ref") }
+    audit_status = blocked_records.empty? ? "complete" : "blocked"
+    verdict = outstanding_refs.empty? ? "clean" : "follow-ups-remain"
+    findings_value = outstanding_refs.empty? ? "none" : "OUTSTANDING #{outstanding_refs.join(', ')}"
+    unless well_formed_findings?(findings_value, records: parsed_records) &&
+           (findings_value == "none" || replayable_findings?(findings_value, parsed_records))
+      raise Error, "follow-up findings are not replayable"
+    end
+
+    prompt = follow_up_prompt(audit_url:, issue_urls:, merge_authority:)
+
+    {
+      "audit_status" => audit_status,
+      "verdict" => verdict,
+      "findings" => findings_value,
+      "followups_dispositions" => dispositions,
+      "issue_urls" => issue_urls,
+      "merge_authority" => merge_authority,
+      "prompt" => prompt,
+      "accounting" => findings
+    }
+  end
+
+  def deduped_follow_up_findings(raw_findings)
+    deduped = raw_findings.each_with_object({}) do |raw, indexed|
+      finding = validated_follow_up_finding(raw)
+      key = [finding.fetch("affected_prs"), canonical_ref(finding.fetch("fingerprint")).identity]
+      known = indexed[key]
+      raise Error, "duplicate follow-up finding has conflicting accounting" if known && known != finding
+
+      indexed[key] = finding
+    end
+    deduped.values.sort_by { |finding| [finding.fetch("affected_prs"), finding.fetch("fingerprint")] }
+  end
+
+  def validated_follow_up_finding(raw)
+    raise Error, "follow-up finding is invalid" unless raw.is_a?(Hash)
+
+    required = %w[affected_prs fingerprint kind outcome owner]
+    outcome = raw["outcome"]
+    required += case outcome
+                when "created", "existing" then ["issue_url"]
+                when "report-only" then ["instruction_url"]
+                when "blocked" then %w[operation error retry]
+                else []
+                end
+    unless FOLLOW_UP_OUTCOMES.include?(outcome) && raw.keys.sort == required.sort
+      raise Error, "follow-up finding fields are invalid"
+    end
+
+    affected_prs = raw["affected_prs"]
+    unless affected_prs.is_a?(Array) && !affected_prs.empty? &&
+           affected_prs.all? { |number| number.is_a?(Integer) && number.positive? } &&
+           affected_prs.uniq.length == affected_prs.length
+      raise Error, "follow-up finding affected PRs are invalid"
+    end
+
+    %w[fingerprint owner].each do |field|
+      raise Error, "follow-up finding #{field} is invalid" unless record_scalar?(raw[field])
+    end
+    # A fingerprint is republished as an `OUTSTANDING` ref, and that list is comma separated.
+    raise Error, "follow-up finding fingerprint is invalid" if raw["fingerprint"].include?(",")
+    raise Error, "follow-up finding kind is invalid" unless FOLLOW_UP_KINDS.include?(raw["kind"])
+
+    fingerprint = canonical_ref(raw.fetch("fingerprint")).canonical_display
+    finding = raw.merge("affected_prs" => affected_prs.sort, "fingerprint" => fingerprint)
+    case outcome
+    when "created", "existing"
+      issue_url = exact_issue_url(raw["issue_url"])
+      raise Error, "follow-up finding issue URL is invalid" unless issue_url
+
+      finding["issue_url"] = issue_url
+    when "report-only"
+      instruction_url = exact_durable_url(raw["instruction_url"])
+      raise Error, "report-only instruction URL is invalid" unless instruction_url
+
+      finding["instruction_url"] = instruction_url
+    when "blocked"
+      %w[operation error retry].each do |field|
+        raise Error, "blocked issue creation #{field} is invalid" unless record_scalar?(raw[field])
+      end
+    end
+    finding
+  end
+
+  def disposition_record_hash(ref:, owner:, current_status:, disposition:, evidence:)
+    {
+      "ref" => ref,
+      "owner" => owner,
+      "current status" => current_status,
+      "disposition" => disposition,
+      "evidence" => evidence
+    }
+  end
+
+  def serialize_disposition_records(records)
+    return "none" if records.empty?
+
+    records.map do |record|
+      "ref: #{record.fetch('ref')}; owner: #{record.fetch('owner')}; " \
+        "current status: #{record.fetch('current status')}; disposition: #{record.fetch('disposition')}; " \
+        "evidence: #{record.fetch('evidence')}"
+    end.join(" | ")
+  end
+
+  def follow_up_repository(issue_urls)
+    repositories = issue_urls.map do |url|
+      parts = issue_url_parts(url)
+      raise Error, "follow-up issue URL is invalid" unless parts
+
+      parts.values_at(:authority, :repository)
+    end.uniq
+    raise Error, "follow-up issues must share one repository" unless repositories.length == 1
+
+    repositories.first.last
+  end
+
+  def follow_up_prompt(audit_url:, issue_urls:, merge_authority:)
+    return if issue_urls.empty?
+
+    targets = issue_urls.map { |url| "- #{url}" }.join("\n")
+    <<~PROMPT.chomp
+      $pr-batch
+
+      Continue the tracked follow-ups from #{audit_url}.
+      Repository: #{follow_up_repository(issue_urls)}
+      Targets:
+      #{targets}
+      Objective: #{FOLLOW_UP_PROMPT_OBJECTIVE}
+      merge_authority: #{merge_authority}
+    PROMPT
+  end
 
   class PostReadbackError < Error
     attr_reader :comment_id
@@ -1563,6 +1772,50 @@ module CompletedBatchAuditReceipt
     port && port != 443 ? "#{name}:#{port}" : name
   end
 
+  def issue_url_parts(value)
+    return unless value.is_a?(String)
+
+    uri = URI.parse(value.to_s)
+    return unless uri.scheme == "https" && uri.userinfo.nil? && uri.query.nil? && uri.fragment.nil?
+    return unless uri.host == uri.host.to_s.downcase
+
+    path = uri.path.match(%r{\A/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/issues/([1-9][0-9]*)\z})
+    return unless path
+
+    authority = canonical_host("#{uri.host}:#{uri.port}")
+    canonical = "https://#{authority}/#{path[1]}/#{path[2]}/issues/#{path[3]}"
+    return unless value == canonical
+
+    { canonical:, authority:, repository: "#{path[1]}/#{path[2]}" }
+  rescue URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def exact_issue_url(value)
+    issue_url_parts(value)&.fetch(:canonical)
+  end
+
+  def exact_durable_url(value)
+    return unless value.is_a?(String)
+    return if value.include?(";") || value.include?("|")
+
+    uri = URI.parse(value.to_s)
+    return unless uri.scheme == "https" && uri.userinfo.nil? && uri.query.nil?
+    return unless uri.host == uri.host.to_s.downcase
+    return if uri.path.empty? || uri.path.end_with?("/") || uri.fragment == ""
+
+    authority = canonical_host("#{uri.host}:#{uri.port}")
+    canonical = "https://#{authority}#{uri.path}"
+    canonical += "##{uri.fragment}" if uri.fragment
+    value == canonical ? canonical : nil
+  rescue URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def record_scalar?(value)
+    value.is_a?(String) && evidenced_scalar?(value) && !value.include?(";") && !value.include?("|")
+  end
+
   def marker_fields(marker)
     envelope = marker.match(/\A<!-- completed-batch-audit v1\n(?<body>.*)\n-->\n?\z/m)
     return unless envelope
@@ -1688,7 +1941,42 @@ module CompletedBatchAuditReceipt
     return false unless findings == "none" || outstanding
     return false if non_ready_records.empty? && !outstanding
 
+    return false if outstanding && !replayable_findings?(findings, records)
+    return false unless records.all? { |record| precise_retry_record?(record) }
+    return false unless non_ready_records.all? do |record|
+      durably_tracked_record?(record, fields.fetch("audit_status"))
+    end
+
     true
+  end
+
+  # A `complete` audit must bind every outstanding finding to the same exact durable
+  # issue URL in both `ref` and `evidence`. A `track` disposition makes that durable
+  # tracking claim in every audit status, so a `blocked` marker may keep a legacy
+  # fingerprint `ref` but still has to name an exact issue URL as its evidence.
+  def durably_tracked_record?(record, audit_status)
+    return tracked_issue_record?(record) if audit_status == "complete"
+    return true unless record.disposition == "track"
+
+    !exact_issue_url(record.evidence).nil?
+  end
+
+  def replayable_findings?(findings, records)
+    refs = finding_refs(findings, records:)
+    !refs.nil? && refs.all? do |ref|
+      records.any? { |record| record.ref_identity == ref.identity }
+    end
+  end
+
+  def tracked_issue_record?(record)
+    issue_url = exact_issue_url(record.ref)
+    issue_url && record.evidence == issue_url
+  end
+
+  def precise_retry_record?(record)
+    return true unless record.disposition == "retry"
+
+    record.evidence.match?(/\Aoperation=\S(?:.*\S)?, error=\S(?:.*\S)?, retry=\S(?:.*\S)?\z/)
   end
 
   def exact_target_scope_evidence?(value)
@@ -1885,7 +2173,7 @@ module CompletedBatchAuditReceipt
 
   def run(argv)
     command = argv.shift
-    unless %w[publish replay supersede].include?(command)
+    unless %w[handoff publish replay supersede].include?(command)
       warn usage
       return 64
     end
@@ -1900,6 +2188,7 @@ module CompletedBatchAuditReceipt
       opts.on("--publication-preflight PATH") { |value| options["publication_preflight"] = value }
       opts.on("--accepted-deferral PATH") { |value| options["accepted_deferral"] = value }
       opts.on("--workflow-config PATH") { |value| options["workflow_config"] = value }
+      opts.on("--handoff-json PATH") { |value| options["handoff_json"] = value }
       opts.on("--other-blocker TEXT") { |value| options.fetch("other_blockers") << value }
       opts.on("-h", "--help") do
         puts opts
@@ -1908,6 +2197,8 @@ module CompletedBatchAuditReceipt
     end
     parser.parse!(argv)
     raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+
+    return run_handoff(options) if command == "handoff"
 
     %w[expected_batch_id targets_json workflow_config].each do |field|
       raise OptionParser::MissingArgument, "--#{field.tr('_', '-')}" if options[field].to_s.empty?
@@ -2010,8 +2301,28 @@ module CompletedBatchAuditReceipt
     1
   end
 
+  # `handoff` builds follow-up accounting from JSON input; it never reads a marker, so it
+  # reports its own failures instead of borrowing the marker-replay blocker schema.
+  def run_handoff(options)
+    raise OptionParser::MissingArgument, "--handoff-json" if options["handoff_json"].to_s.empty?
+
+    result = build_follow_up_handoff(
+      JSON.parse(File.read(options.fetch("handoff_json"), encoding: "UTF-8"))
+    )
+    puts JSON.pretty_generate(result)
+    0
+  rescue Error, ArgumentError, KeyError, SystemCallError, JSON::ParserError => e
+    puts JSON.pretty_generate(
+      "contract" => FOLLOW_UP_HANDOFF_CONTRACT,
+      "handoff_status" => "invalid",
+      "errors" => [e.message]
+    )
+    1
+  end
+
   def usage
-    "Usage: completed-batch-audit-receipt <publish|replay|supersede> --expected-batch-id ID " \
+    "Usage: completed-batch-audit-receipt handoff --handoff-json PATH, or " \
+      "completed-batch-audit-receipt <publish|replay|supersede> --expected-batch-id ID " \
       "--targets-json PATH --workflow-config PATH (--receipt PATH | --reference-file PATH|-) " \
       "[--publication-preflight PATH] [--accepted-deferral PATH] [--other-blocker TEXT ...]"
   end

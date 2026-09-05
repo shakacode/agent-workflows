@@ -93,7 +93,7 @@ self-contained. Keep state-machine changes mirrored across this workflow,
   - The accepted-deferral input is exactly `completed-batch-accepted-deferral-input` v1 plus one `decision_url`. That URL must name a comment on the deterministic batch anchor whose body is exactly one `completed-batch-accepted-deferral-decision v1` marker binding `batch_id`, the predecessor's exact canonical `blocker_ref`, `blocker_category: workflow-process-mechanism-defect`, `mechanism: publication-preflight-target-resolution`, the exact full-URL `tracking_issue`, the predecessor's exact `owner`, original receipt SHA-256/URL/author/created/updated values (or the canonical pre-publication sentinels), `product_evidence_receipt`, and `decision: accepted-deferral`. The predecessor evidence must be that exact tracking URL; a shorthand `<repository>-<number>` blocker ref is valid only when it maps to the same evidence repository and issue number.
   - Before publication, bind `original_receipt_sha256` to the exact local blocked marker and use `not-published` for its URL plus `not-applicable` for author and both timestamps. After publication, copy those five bindings from the verified compact predecessor reference; the decision timestamp must be later than the original receipt.
   - A coordination-backed `batch_id` is an opaque nonempty single-line string and may contain `:` or `;`. Only exact lowercase `non-backend:` and `not-applicable:` prefixes trigger their typed rules; those forms require their rationale and `scope_evidence: targets=<exact refs>; source=<durable ref>`. Each record has `ref`, `owner`, `current status`, `disposition`, and `evidence`; current status is exactly `open`, `unresolved`, `pending`, `UNKNOWN`, or `terminal`; duplicate refs block case-insensitively. `ref` and `owner` are nonempty. Nonterminal evidence is nonempty. Terminal evidence may be exact `UNKNOWN` or empty only as an explicitly non-ready blocker; nested/case-varied `UNKNOWN` is invalid. `UNKNOWN` validation is fail-closed: only literal ASCII exact `UNKNOWN` may use an exact-sentinel path; NFKC-normalize a copy of every scalar and record value before case-insensitive nested-`UNKNOWN` rejection, so compatibility forms cannot count as evidence. Within every record field (`ref`, `owner`, `current status`, `disposition`, and `evidence`), unescaped `;` and `|` are reserved delimiters and are rejected; escaping is not supported. Terminal dispositions are exactly `resolved`, `accepted-waiver`, `accepted-deferral`, or `not-applicable`; nonterminal actions are exactly `investigate`, `fix`, `await-input`, `retry`, `replay`, or `track`. Terminal dispositions are invalid for nonterminal records and nonterminal actions are invalid for terminal records. Every top-level scalar and record value is one physical line; reject embedded CR, LF, CRLF, NUL, control line breaks, and HTML comment tokens. Each completed-batch follow-up ref uses one canonical normalization: Unicode NFKC, collapse Unicode whitespace with `[[:space:]]+`, trim, and reject empty results; preserve the canonical display and derive identity with Unicode full case folding. Use that identity for record duplicates, findings-to-record lookup, and blocker deduplication; `ß` and `SS` collide. External blockers may share the safe canonical display, while record identity stays consistent. Duplicate canonical refs are invalid; every accepted distinct ref remains in the blocker union. After normalization, record and finding refs reject any canonical display that is empty, contains control line breaks, contains `<!--` or `-->`, or is exact/nested `UNKNOWN`. External blockers separately reject empty/control/HTML canonical displays but preserve `UNKNOWN` facts; normalize, dedupe, and render them in the exact Follow-ups union.
-  - Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref is visible in the final blocker union even when no action record exists, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback.
+  - Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. A `findings: OUTSTANDING <refs>` value is valid only when every ref maps to a disposition record, then contributes every exact ref to the blocker union. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. In the marker, `findings` is `none`, `UNKNOWN`, or `OUTSTANDING <refs>`; every OUTSTANDING ref must map to a disposition record and remains visible in the final blocker union, while operational action refs need not be duplicated in findings. For `OUTSTANDING`, before comma/delimiter fallback, an entire canonical findings payload that exactly matches an accepted record ref is that one ref; otherwise retain comma- or whitespace-separated standalone refs, and consume a whitespace-bearing canonical record ref that matches the remaining findings text before standalone fallback.
   - A marker has separate well-formed, archive-ready, and blocker-union outputs. Clean/none accepts only no records or fully evidenced terminal records; blocked/follow-ups/OUTSTANDING accepts non-ready records. `UNKNOWN` current status is never ready and cannot appear in a clean/none marker.
   - Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union.
   - Use exactly `Conversation status: Ready for archiving.` only when archive-ready and the blocker union is empty. Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and emit the [Unblock Block](pr-processing.md#unblock-block) immediately before it, with one entry per blocker in that same union.
@@ -522,6 +522,75 @@ placeholders; replace them with the real batch id and issues):
 | qa | batch-abc:qa / codex-qa | QA Evidence block URL | blocked | blocked | fix or waiver needed before release |
 ```
 
+## Outstanding Follow-Up Handoff
+
+A coordinator-owned audit may return `follow-ups-remain` only after every
+outstanding finding is bound to an exact durable issue URL, covered by an
+explicit report-only/no-issue instruction, or named in a precise issue-creation
+blocker with its failed operation, error, and retry action.
+
+A changelog-only audit creates or reuses one bundled changelog issue;
+recommending `/update-changelog` is supplementary and never substitutes for
+durable tracking. Do not create issue noise for duplicate, resolved, `OK`,
+explicitly waived or deferred, or report-only findings.
+
+Deduplicate findings by affected PR and audit fingerprint, reuse each matching
+open issue, then create one issue per independently actionable remaining item.
+Collapse changelog-only findings into one bundled changelog issue. For every
+linked or created follow-up, use the exact issue URL as the receipt disposition
+`ref` and evidence so replay and final archive status share the same durable
+identity. After issue accounting, emit one ready copy-paste `$pr-batch` prompt
+whose target list contains every unique linked or created issue URL exactly once
+and no unresolved placeholder. Set the generated prompt's `merge_authority` to
+the active audit task's explicit value when present; otherwise use
+`none`.
+
+Use `completed-batch-audit-receipt handoff --handoff-json <path>` as the source
+of truth for issue accounting, receipt dispositions, the deduplicated issue
+set, and the ready prompt. The v1 JSON contains exactly `contract`, `version`,
+`audit_url`, `merge_authority` (null when absent), and `findings`. Each finding
+names `affected_prs`, `fingerprint`, `kind`, `outcome`, and `owner`, plus its
+outcome fields. The helper deduplicates by affected PRs plus audit fingerprint.
+Created and reused issues map to `ref` and `evidence` set to the
+same exact issue URL, the assigned owner, `current status: open`, and
+`disposition: track`. Report-only maps to the fingerprint, assigned owner,
+`current status: terminal`, `disposition: not-applicable`, and the exact durable
+instruction URL. Blocked creation maps to the fingerprint, assigned owner,
+`current status: unresolved`, `disposition: retry`, and evidence that names the
+operation, error, and retry action. A `complete` receipt with
+`follow-ups-remain` is well formed only when every `OUTSTANDING` ref has a
+nonterminal disposition whose `ref` and `evidence` are the same exact canonical
+issue URL.
+
+Independent checker and advisory-auditor runs still stop after drafting
+fingerprinted issue entries. Only the coordinator performs issue search,
+creation, receipt binding, and prompt generation.
+
+When issue creation is blocked, do not invent an issue URL or emit a target
+placeholder; preserve the finding fingerprint, exact failed operation and
+error, and one retry action in the issue accounting, receipt disposition,
+`Action needed:`, and `Next:` output. An explicit report-only/no-issue
+instruction suppresses issue creation and follow-up prompt generation for that
+finding, and the final accounting records the instruction as its disposition
+evidence.
+
+## Ready Follow-Up PR-Batch Prompt
+
+Replace every angle-bracket field before returning this prompt. Sort the unique
+issue URLs deterministically, list each once, and use the already resolved
+follow-up merge authority rather than leaving a choice or placeholder.
+
+```text
+$pr-batch
+
+Continue the tracked follow-ups from <exact audit receipt or report URL>.
+Repository: <OWNER/REPO>
+Targets:
+- <exact linked or created issue URL>
+Objective: Resolve the tracked post-merge audit follow-ups within each issue's accepted scope.
+merge_authority: <resolved explicit value>
+```
+
 ## Comparison Prompt
 
 Use this in a fresh coordinator chat after both independent reports are complete.
@@ -614,7 +683,9 @@ Rules:
 - For non-release audits with no release-gate ledger, include
   `Audit ledger: not applicable (non-release audit)` in every parent and child
   issue body.
-- For missing changelog findings, prefer one bundled changelog issue or recommend `/update-changelog`; do not create one issue per missing entry unless explicitly approved.
+- For missing changelog findings, create or reuse one bundled changelog issue
+  and optionally recommend `/update-changelog`; do not create one issue per
+  missing entry.
 - For process findings, preserve the deduped Process Gap Disposition fields:
   `Mechanism target`, `Motivating miss`, `Replay evidence or park reason`, and
   `Non-goal`.
@@ -628,6 +699,9 @@ After creation, return:
 - skipped duplicates with existing issue URLs
 - changelog recommendation
 - any issue from the deduped plan that could not be created
+- receipt follow-up dispositions keyed by exact linked or created issue URL
+- the ready follow-up `$pr-batch` prompt from the section above, unless the
+  exact finding is report-only/no-issue or issue creation is blocked
 ```
 
 ## Claude PR Review Handoff Prompt

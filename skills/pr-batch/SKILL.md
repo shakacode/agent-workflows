@@ -708,6 +708,20 @@ publication, current-head review/CI, readiness, and merge sequencing.
 
 Use the canonical [Integration And PR Publication](../../workflows/pr-batch-integration-closeout.md#integration-and-pr-publication) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
 
+## Post-Merge Audit Follow-Up Intake
+
+When a coordinator-owned post-merge audit returns a ready follow-up prompt,
+use this bounded intake path. Consume the post-merge audit's deduplicated exact
+issue URL set without discovering or creating another target, preserve its
+explicit follow-up `merge_authority`, and run the ordinary prompt intake,
+planning, security, dependency, coordination, and dispatch gates. The audit
+handoff supplies targets and authority input, not launch or readiness evidence.
+Accept only an explicit `merge_authority` value of `none`, `ask`, or
+`auto_merge_when_gates_pass`; reject a missing, placeholder, or `UNKNOWN` value
+instead of generating or defaulting it. A prompt with a placeholder, missing
+issue URL, or `UNKNOWN` target returns to the audit coordinator for corrected
+issue accounting instead of launching.
+
 ## Pausing Or Stopping A Batch
 
 ### Model-Only Worker Replacement
