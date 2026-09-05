@@ -1533,15 +1533,15 @@ Before saying a PR is ready to merge:
 
 ```bash
 gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels,latestReviews,reviews,comments,mergedAt
-# Resolve PR_BATCH_SKILL_DIR, then capture the machine-owned exact-head CI result.
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
-  --repo <OWNER/REPO> > "${CI_RESULT_PATH}"
+"${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref <BASE_BRANCH> --diff-base-sha <REVIEWED_DIFF_BASE_SHA> --head-sha <FULL_HEAD_SHA>
+"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO> --trusted-repo-root "${TRUSTED_CONSUMER_REPO_ROOT}" --diff-base-sha <REVIEWED_DIFF_BASE_SHA> > "${CI_RESULT_PATH}"
 ```
 
 The resulting `pr-ci-readiness` v2 contract owns complete, scoped exact-head
-evidence for required status checks, GitHub Actions, Dependabot, and other
-checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
-must migrate to the scoped v2 result.
+evidence. Receipts keep live base separate from reviewed diff-base SHA and bind
+canonical diff identity, raw rows, and trusted policy dispositions. Changed,
+required, selected, active, incomplete, stale, unknown, ambiguous, or
+caller-edited evidence blocks.
 
 Then run the repo's merge ledger (see `merge_ledger` in
 `.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
@@ -1859,6 +1859,8 @@ put exactly one record in merge-context `selected_hosted_runs`:
 {"provider":"external-ci","run_id":"<selected-workflow-or-run-id>"}
 ```
 
+A selected CircleCI workflow UUID cannot be policy-dispositioned.
+
 Do not add advisory or merely observed runs. A nonempty list requires this
 closed trusted-base seam:
 
@@ -1939,7 +1941,9 @@ not gate.
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --trusted-repo-root "${TRUSTED_CONSUMER_REPO_ROOT}" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`
@@ -1973,7 +1977,7 @@ chain, then run:
 ```
 
 `pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
-bindings, freshness, and selected hosted-CI records before any queue or
+bindings, freshness, selected hosted-CI records, and policy-aware live CI before any queue or
 guarded-direct mutation. A missing, cancelled, failed, nonterminal, stale-head,
 or mismatched-PR selected record blocks before the first GitHub call or
 repository guard.

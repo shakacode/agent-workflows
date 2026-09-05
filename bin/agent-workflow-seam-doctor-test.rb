@@ -725,6 +725,69 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
     end
   end
 
+  def test_ci_readiness_accepts_closed_optional_approval_hold_rules
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "ci_readiness" => {
+            "version" => 1,
+            "optional_approval_held_checks" => [{
+              "id" => "storybook-review-app", "app_slug" => "circleci-checks",
+              "name" => "storybook-review-app"
+            }]
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_ci_readiness_rejects_unknown_malformed_and_ambiguous_rules
+    valid_rule = {
+      "id" => "storybook-review-app", "app_slug" => "circleci-checks",
+      "name" => "storybook-review-app"
+    }
+    invalid = {
+      "literal UNKNOWN name" => { "version" => 1, "optional_approval_held_checks" => [valid_rule.merge("name" => "UNKNOWN")] },
+      "blank name" => { "version" => 1, "optional_approval_held_checks" => [valid_rule.merge("name" => " ")] },
+      "non-CircleCI provider" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule.merge("app_slug" => "other-ci")]
+      },
+      "unknown key" => { "version" => 1, "optional_approval_held_checks" => [valid_rule], "waive" => true },
+      "duplicate identity" => {
+        "version" => 1,
+        "optional_approval_held_checks" => [valid_rule, valid_rule.merge("id" => "duplicate")]
+      },
+      "empty rules" => { "version" => 1, "optional_approval_held_checks" => [] }
+    }
+
+    invalid.each do |label, policy|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("ci_readiness" => policy))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        expected = if label == "blank name"
+                     "unresolved policy value for key: ci_readiness"
+                   else
+                     "invalid ci_readiness policy"
+                   end
+        assert_includes out, expected, label
+      end
+    end
+  end
+
   def test_writing_style_accepts_a_repository_relative_markdown_file
     with_repo do |root|
       write_valid_binstub_contract(root)

@@ -12,6 +12,7 @@ require "rbconfig"
 require "shellwords"
 require "yaml"
 require_relative "agent_doctor/autonomous_merge_policy"
+require_relative "agent_doctor/ci_readiness_policy"
 require_relative "agent_doctor/hosted_qa_policy"
 writing_style_resolver = File.expand_path("agent-workflow-writing-style", __dir__)
 unless File.file?(writing_style_resolver)
@@ -156,6 +157,7 @@ module AgentWorkflowSeamDoctor
       _SECRET_ACCESS_KEY|_PRIVATE_KEY
     )\z
   /x
+  CI_READINESS_POLICY_KEY = CiReadinessPolicy::POLICY_KEY
   SYSTEM_TOOL_DIRS = [
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -1756,7 +1758,9 @@ module AgentWorkflowSeamDoctor
       next if key == "trusted_actions" && value == []
       next if key == "writing_style"
 
-      closed_policy = ["autonomous_merge", SELECTED_HOSTED_CI_POLICY_KEY].include?(key)
+      closed_policy = [
+        "autonomous_merge", SELECTED_HOSTED_CI_POLICY_KEY, CI_READINESS_POLICY_KEY
+      ].include?(key)
       next unless unresolved_policy_value?(
         value,
         empty_collections_unresolved: !closed_policy,
@@ -1780,6 +1784,7 @@ module AgentWorkflowSeamDoctor
     issues.concat(untrusted_contributor_intake_policy_issues(config))
     issues.concat(merge_submission_policy_issues(root, config))
     issues.concat(selected_hosted_ci_receipts_policy_issues(root, config))
+    issues.concat(ci_readiness_policy_issues(config, yaml))
     issues.concat(hosted_qa_policy_issues(root, yaml))
     if config.key?("autonomous_merge")
       autonomous_policy = AutonomousMergePolicy.parse(yaml)
@@ -1995,6 +2000,22 @@ module AgentWorkflowSeamDoctor
     end
 
     selected_hosted_ci_file_issues(root, executable)
+  end
+
+  def ci_readiness_policy_issues(config, yaml)
+    return [] unless config.key?(CI_READINESS_POLICY_KEY)
+
+    duplicate_errors = CiReadinessPolicy.duplicate_key_errors(yaml)
+    issues = duplicate_errors.map { |error| "invalid ci_readiness policy: #{error}" }
+    policy = config[CI_READINESS_POLICY_KEY]
+    return issues if policy == "n/a"
+
+    issues.concat(
+      CiReadinessPolicy.validation_errors(policy).map do |error|
+        "invalid ci_readiness policy: #{error}"
+      end
+    )
+    issues
   end
 
   def selected_hosted_ci_file_issues(root, relative_path)
