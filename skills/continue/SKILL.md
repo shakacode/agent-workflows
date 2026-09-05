@@ -22,9 +22,10 @@ repeat:
    instruction to block on its first item.
 4. **Definition of done** - Restate the overall success criteria in one line, plus the command or
    test that will verify it. If there is no runnable check, state how completion will be confirmed.
-5. Continue working on **that one next coherent objective only**. The objective may include other
-   independent in-scope steps while an external command, check, review, or agent is pending. Stop
-   after completing the objective.
+5. Continue through the **authorized outcome**, completing the remaining coherent objectives.
+   Advance independent in-scope work while a command, check, review, or agent is pending. Stop
+   when the outcome is verified, a genuine blocker requires input, or the user requests a pause.
+   Honor an explicit one-step or otherwise bounded request; completing that boundary is then done.
 
 For a resumed PR-batch lane, complete bounded ownership recovery before any
 write. If a new actor takes over abandoned ownership, emit private-backend
@@ -71,4 +72,4 @@ for what to continue.
   actions unless the task already authorized them.
 - End with a `$status` report when that companion skill is installed; otherwise use the same four
   sections directly: Done, In progress, Blocked / needs input, and Next. Treat this closing summary
-  as a report of the resumed work, not as a separate trigger to start additional work beyond step 5.
+  as a report of the resumed work within the authorized outcome from step 5.

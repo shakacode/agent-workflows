@@ -109,6 +109,12 @@ Tell the user which target you picked and why.
 
 ## Step 2 - Format and lint first
 
+Consume applicable local results using
+[Verification evidence reuse](../verify/references/verification-evidence.md).
+Do not repeat a passing check merely because workflow stages changed; rerun
+affected checks after changes and honor every repository-required repeat.
+This reuses local command results only, not independent review verdicts.
+
 Formatting that moves line locations will stale the review and the engine's line references.
 Use `AGENTS.md`, `.agents/bin/README.md`, and `/verify` for the actual check set. Before a closeout review:
 

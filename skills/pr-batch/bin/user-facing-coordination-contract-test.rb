@@ -349,8 +349,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
     end
 
     spec = normalized(SPEC)
-    assert_includes spec, "Action needed: Start a new planning task with $plan-pr-batch."
-    assert_includes spec, "Run $plan-pr-batch with the Spec Summary above"
+    assert_includes spec, "For an authorized implementation task, consume this summary"
+    assert_includes spec, "in the same task; do not require a new task or repeated approval"
+    assert_includes spec, "For a standalone spec, hand off the summary and recommended planning step without launching implementation."
 
     [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = normalized(path)

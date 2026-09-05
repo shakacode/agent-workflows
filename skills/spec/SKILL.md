@@ -7,7 +7,11 @@ argument-hint: '[feature, bug, or product intent]'
 # Spec
 
 Turn fuzzy intent into a spec that can drive `$plan-pr-batch` and `$pr-batch`.
-This is upstream planning: do not implement while using this skill.
+Choose the mode from the user's authorized outcome. A standalone specification or plan-only
+request ends with the spec and handoff; do not implement. In an authorized implementation
+task, finish the specification phase, resolve genuine blockers, then continue to planning
+and implementation in the same task through the applicable launch and review gates.
+A spec does not itself authorize implementation, publication, or merge.
 
 ## Ground Rules
 
@@ -103,15 +107,18 @@ Handoff format:
 ```
 
 Every final user-visible workflow handoff must include one unambiguous `Next:`
-instruction. Keep `Action needed:` separate: name the exact user action or
-`none`. When the spec is ready for downstream planning, use `Action needed:
-Start a new planning task with $plan-pr-batch.` and `Next: Run $plan-pr-batch
-with the Spec Summary above in that task, then archive this specification
-task.` When a blocking answer is required, name the exact
-question and say `Next: Reply here with that answer so specification can
-continue.` If no downstream work or open decision remains, use `Next: Archive
-this task.` A Spec Summary or task list is evidence for the handoff, not a next
-step by itself.
+instruction. Keep `Action needed:` separate: name the exact required user action
+or `none`. For an authorized implementation task, consume this summary and
+continue through `$plan-pr-batch` or the applicable implementation workflow in
+the same task; do not require a new task or repeated approval just to leave the
+specification phase. Preserve canonical target, coordination, security, and
+launch gates. A worker returns its spec or unresolved decision to its coordinator;
+that return is not automatically a request for human input.
+
+For a standalone spec, hand off the summary and recommended planning step without
+launching implementation. Ask a blocking question only when a required decision
+cannot be resolved from existing authority and available evidence. When no
+further work is requested, say `Action needed: none` and `Next: Archive this task.`
 
 ## Self-Check
 

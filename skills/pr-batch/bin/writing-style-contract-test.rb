@@ -8,8 +8,6 @@ ROOT = File.expand_path("../../..", __dir__)
 
 class WritingStyleContractTest < Minitest::Test
   RESOLUTION_RULE = "Resolve writing style before authoring human-facing prose"
-  RESOLVER_FAILURE_RULE = "When the resolver exits nonzero, stop and surface the resolver error to the user; " \
-                          "do not proceed without a style guide."
   COVERED_SURFACES = %w[
     workflows/pr-processing.md
     skills/pr-batch/SKILL.md
@@ -56,10 +54,15 @@ class WritingStyleContractTest < Minitest::Test
     assert_includes audit, "<!-- completed-batch-audit v1"
   end
 
-  def test_shared_authoring_contract_stops_on_resolver_failure
+  def test_shared_authoring_contract_distinguishes_tooling_from_invalid_configuration
     workflow = read("workflows/pr-processing.md")
 
-    assert_includes workflow, RESOLVER_FAILURE_RULE
+    normalized = workflow.gsub(/\s+/, " ")
+    assert_includes normalized, "If presentation tooling is unavailable, continue independent authorized work."
+    assert_includes normalized, "no explicit `writing_style` override"
+    assert_includes normalized, "no valid user-global override takes precedence"
+    assert_includes normalized, "A nonzero resolver exit is not proof of missing tooling"
+    assert_includes normalized, "An explicit malformed repository value blocks authoring; never bypass it"
   end
 
   def test_seam_design_inventories_covered_and_deferred_consumers
