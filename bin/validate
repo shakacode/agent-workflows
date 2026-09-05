@@ -4,6 +4,15 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 RUBOCOP_VERSION=$(tr -d '[:space:]' < .rubocop-version)
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "bin/validate requires Python 3.9 or newer" >&2
+  exit 64
+fi
+if ! python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)'; then
+  echo "bin/validate requires Python 3.9 or newer" >&2
+  exit 64
+fi
+
 tracked_dirty_skills="$(git status --porcelain --untracked-files=no -- skills)"
 untracked_dirty_skills="$(git status --porcelain --untracked-files=all -- skills \
   ':(exclude,glob)skills/**/.DS_Store' \
@@ -126,6 +135,7 @@ bash skills/post-merge-audit/bin/post-merge-audit-scope-test.bash
 ruby skills/post-merge-audit/bin/closeout-evidence-replay-test.rb
 ruby skills/post-merge-audit/bin/pr-check-completion-timing-test.rb
 ruby skills/batch-status/bin/batch-status-test.rb
+python3 skills/audit-chats/scripts/local_chat_inventory_test.py
 ruby skills/pr-batch/bin/target-membership-guard-test.rb
 ruby skills/pr-batch/bin/pr-body-human-first-contract-test.rb
 ruby skills/pr-batch/bin/security-floor-contract-test.rb
