@@ -143,7 +143,15 @@ class CloseBatchContractTest < Minitest::Test
     assert_includes @normalized, "per-target final states and Batch Handoff Format sections"
     assert_includes @normalized, "mechanically validate its `coordination:` declaration through the resolved `$pr-batch` helper before emitting the final message"
     assert_includes @normalized, "A nonzero result is `NOT COMPLETE`"
-    assert_includes @normalized, "Emit the compact `Completed-batch audit:` line before the closing stack — the Unblock Block when the status is not clean, then the final `Conversation status:` line — only from an existing verified receipt."
+    assert_ordered_phrases([
+                             "Emit the compact `Completed-batch audit:` line before the closing stack",
+                             "when the compact terminal structure seam applies to single-repo batches at or below `compact_terminal_structure_max_lanes`",
+                             "inside that compact terminal structure",
+                             "then keep the required receipt",
+                             "the Unblock Block when the status is not clean",
+                             "followed by the final `Conversation status:` line",
+                             "only from an existing verified receipt."
+                           ])
     assert_includes @normalized, "If explicit closeout authority permits publication, publish and verify the receipt first."
     assert_includes @normalized, "During a read-only assessment with no verified receipt, emit no receipt line; list the missing receipt as an exact blocker and matching Unblock entry, and do not publish or invent one."
   end
