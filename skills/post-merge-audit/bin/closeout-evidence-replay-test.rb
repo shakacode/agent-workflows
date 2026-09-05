@@ -11,7 +11,13 @@ SCRIPT = File.expand_path("closeout-evidence-replay", __dir__)
 load SCRIPT unless defined?(CloseoutEvidenceReplay)
 
 class CloseoutEvidenceReplayTest < Minitest::Test
-  def run_replay(body, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
+  def run_replay(
+    body,
+    expected_head_sha: nil,
+    require_priority_dispositions: false,
+    require_visual_evidence_v2: false,
+    github_host: nil
+  )
     Tempfile.create("closeout-evidence") do |file|
       file.write(body)
       file.flush
@@ -19,6 +25,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       command.concat(["--expected-head-sha", expected_head_sha]) if expected_head_sha
       command << "--require-priority-dispositions" if require_priority_dispositions
       command << "--require-visual-evidence-v2" if require_visual_evidence_v2
+      command.concat(["--github-host", github_host]) if github_host
       command << file.path
       out, status = Open3.capture2e(*command)
       assert status.success?, out
@@ -812,6 +819,30 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes qa.fetch("missing"), "visual_evidence.github_url"
   end
 
+  def test_v2_github_destination_accepts_configured_enterprise_server_host
+    evidence = "durable: before and after https://github.example.test/example/repo/pull/123#visual"
+    qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+
+    qa = run_replay(
+      v2_marker("visual_evidence" => evidence),
+      github_host: "github.example.test"
+    ).fetch("qa_evidence")
+    assert_equal "SATISFIED", qa.fetch("verdict")
+  end
+
+  def test_github_host_option_rejects_urls_and_paths
+    %w[
+      https://github.example.test
+      github.example.test/path
+      localhost
+      private-user-images.githubusercontent.com
+    ].each do |host|
+      _out, status = Open3.capture2e("ruby", SCRIPT, "--github-host", host, __FILE__)
+      refute status.success?, host
+    end
+  end
+
   def test_v2_github_destination_rejects_github_url_nested_in_tracker_query
     nested = "https://tracker.example.test/artifact?next=https://github.com/example/repo/pull/123#visual"
     evidence = "durable: before and after #{nested}"
@@ -865,17 +896,160 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes interaction.fetch("missing"), "interaction_evidence"
   end
 
-  def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
+  def test_v2_github_destination_requires_a_github_interaction_clip
+    qa = run_replay(
+      v2_marker(
+        "interaction_change" => "yes",
+        "interaction_evidence" => "clip: https://artifacts.example.test/ui-123"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "interaction_evidence"
+  end
+
+  def test_v2_github_destination_rejects_mixed_trusted_and_untrusted_urls
+    trusted_url = "https://example.ghe.com/example/repo/pull/123#trusted"
+    untrusted_url = "https://evil.ghe.com/example/repo/pull/456#untrusted"
+    visual = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before #{untrusted_url} after #{trusted_url}"
+      ),
+      github_host: "example.ghe.com"
+    ).fetch("qa_evidence")
+    interaction = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before and after #{trusted_url}",
+        "interaction_change" => "yes",
+        "interaction_evidence" => "clip: #{untrusted_url} #{trusted_url}"
+      ),
+      github_host: "example.ghe.com"
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", visual.fetch("verdict")
+    assert_includes visual.fetch("missing"), "visual_evidence.github_url"
+    assert_equal "UNKNOWN", interaction.fetch("verdict")
+    assert_includes interaction.fetch("missing"), "interaction_evidence"
+  end
+
+  def test_v2_github_destination_scopes_interaction_clip_to_configured_enterprise_host
+    visual = "durable: before and after https://github.example.test/example/repo/pull/123#visual"
+    overrides = {
+      "visual_evidence" => visual,
+      "interaction_change" => "yes"
+    }
+    untrusted = run_replay(
+      v2_marker(overrides.merge("interaction_evidence" => "clip: https://github.com/example/repo/pull/123#clip")),
+      github_host: "github.example.test"
+    ).fetch("qa_evidence")
+    trusted = run_replay(
+      v2_marker(overrides.merge("interaction_evidence" => "clip: https://github.example.test/example/repo/pull/123#clip")),
+      github_host: "github.example.test"
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", untrusted.fetch("verdict")
+    assert_includes untrusted.fetch("missing"), "interaction_evidence"
+    assert_equal "SATISFIED", trusted.fetch("verdict")
+  end
+
+  def test_v2_github_destination_accepts_current_and_legacy_public_attachment_hosts
+    github_hosts = [nil, "github.com", "www.github.com"]
     hosts = %w[
       github.com/example/repo/pull/123#visual
       user-images.githubusercontent.com/123/before.png
+    ]
+
+    github_hosts.product(hosts).each do |github_host, host_and_path|
+      evidence = "durable: before and after https://#{host_and_path}"
+      qa = run_replay(v2_marker("visual_evidence" => evidence), github_host: github_host).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), "#{github_host || 'unset'}: #{host_and_path}"
+    end
+  end
+
+  def test_v2_github_destination_accepts_public_interaction_clips_for_www_github_target
+    hosts = %w[
+      github.com/example/repo/pull/123#clip
+      user-images.githubusercontent.com/123/clip.mp4
+    ]
+
+    hosts.each do |host_and_path|
+      qa = run_replay(
+        v2_marker(
+          "interaction_change" => "yes",
+          "interaction_evidence" => "clip: https://#{host_and_path}"
+        ),
+        github_host: "www.github.com"
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), host_and_path
+    end
+  end
+
+  def test_v2_github_destination_rejects_non_default_ports_on_public_hosts
+    github_hosts = [nil, "github.com", "www.github.com"]
+
+    github_hosts.product(CloseoutEvidenceReplay::DURABLE_GITHUB_EVIDENCE_HOSTS).each do |github_host, host|
+      evidence = "durable: before and after https://#{host}:9999/example/repo/pull/123#visual"
+      qa = run_replay(v2_marker("visual_evidence" => evidence), github_host: github_host).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), "#{github_host || 'unset'}: #{host}"
+      assert_includes qa.fetch("missing"), "visual_evidence.github_url", "#{github_host || 'unset'}: #{host}"
+    end
+  end
+
+  def test_v2_github_destination_accepts_matching_ghe_cloud_tenant
+    evidence = "durable: before and after https://example.ghe.com/example/repo/pull/123#visual"
+    qa = run_replay(
+      v2_marker("visual_evidence" => evidence),
+      github_host: "example.ghe.com"
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+  end
+
+  def test_v2_github_destination_rejects_unrelated_ghe_cloud_tenant
+    evidence = "durable: before and after https://evil.ghe.com/example/repo/pull/123#visual"
+    qa = run_replay(
+      v2_marker("visual_evidence" => evidence),
+      github_host: "example.ghe.com"
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.github_url"
+  end
+
+  def test_v2_enterprise_destination_rejects_public_github_hosts
+    enterprise_hosts = %w[example.ghe.com github.example.test]
+    public_urls = %w[
+      https://github.com/example/repo/pull/123#visual
+      https://user-images.githubusercontent.com/123/before.png
+    ]
+
+    enterprise_hosts.product(public_urls).each do |github_host, url|
+      qa = run_replay(
+        v2_marker("visual_evidence" => "durable: before and after #{url}"),
+        github_host: github_host
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), "#{github_host}: #{url}"
+      assert_includes qa.fetch("missing"), "visual_evidence.github_url", "#{github_host}: #{url}"
+    end
+  end
+
+  def test_v2_github_destination_rejects_non_tenant_ghe_hosts
+    hosts = %w[
+      exampleghe.com/example/repo/pull/123#visual
+      api.example.ghe.com/graphql
+      uploads.example.ghe.com/user-attachments/assets/123
     ]
 
     hosts.each do |host_and_path|
       evidence = "durable: before and after https://#{host_and_path}"
       qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
 
-      assert_equal "SATISFIED", qa.fetch("verdict"), host_and_path
+      assert_equal "UNKNOWN", qa.fetch("verdict"), host_and_path
+      assert_includes qa.fetch("missing"), "visual_evidence.github_url", host_and_path
     end
   end
 

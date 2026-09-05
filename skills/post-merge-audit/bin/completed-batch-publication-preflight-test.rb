@@ -74,11 +74,11 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input
   end
 
-  def qa_v2_evidence(head_sha:, user_visible_ui_change:)
+  def qa_v2_evidence(head_sha:, user_visible_ui_change:, github_host: "github.com")
     ui_change = user_visible_ui_change == "yes"
     destination = ui_change ? "github_pr" : "not_applicable"
     visual_evidence = if ui_change
-                        "durable: before and after https://github.com/shakacode/hichee/pull/10049#visual"
+                        "durable: before and after https://#{github_host}/shakacode/hichee/pull/10049#visual"
                       else
                         "not applicable: no user-visible UI change"
                       end
@@ -1058,6 +1058,24 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal baseline.fetch("snapshot_digest"), replay.fetch("snapshot_digest")
   end
 
+  def test_validated_target_rejects_hosts_that_evidence_replay_cannot_normalize
+    target = {
+      "host" => "github.example.test",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_049
+    }
+
+    assert_nil CompletedBatchPublicationPreflight.validated_target(target.merge("host" => "-github.example.test"))
+    assert_nil CompletedBatchPublicationPreflight.validated_target(
+      target.merge("host" => "#{'a' * 64}.example.test")
+    )
+    assert_equal(
+      target.merge("host" => "github.example.test:8443"),
+      CompletedBatchPublicationPreflight.validated_target(target.merge("host" => "GITHUB.EXAMPLE.TEST:8443"))
+    )
+  end
+
   def test_receipt_binds_the_exact_raw_source_input
     input = fixture("completed-batch-publication-hichee-terminal.json")
     result = assess_input(input)
@@ -1178,6 +1196,33 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     refute result.fetch("eligible")
     assert_includes result.fetch("blockers"),
                     "shakacode/hichee#pull_request:10049 QA UI classification contradicts trusted input"
+  end
+
+  def test_enterprise_server_visual_evidence_uses_the_trusted_target_host
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    target_number = 10_049
+    github_host = "github.example.test"
+    input.fetch("expected_targets").find { |row| row.fetch("number") == target_number }["host"] = github_host
+    input.fetch("target_snapshots").find do |row|
+      row.dig("target", "number") == target_number
+    end.fetch("target")["host"] = github_host
+    qa = input.fetch("qa_evidence").find { |row| row.dig("target", "number") == target_number }
+    qa.fetch("target")["host"] = github_host
+    qa["user_visible_ui_change"] = "yes"
+    head_sha = input.fetch("target_snapshots").find do |row|
+      row.dig("target", "number") == target_number
+    end.fetch("head_sha")
+    qa["evidence"] = qa_v2_evidence(head_sha:, user_visible_ui_change: "yes", github_host:)
+    lane = input.dig("coordination_status", "batches", 0, "lanes").find do |row|
+      row.fetch("targets") == [target_number.to_s]
+    end
+    lane["pr_url"] = lane.fetch("pr_url").sub("github.com", github_host)
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    snapshot = result.dig("snapshot", "qa").find { |row| row.dig("target", "number") == target_number }
+    assert_equal "SATISFIED", snapshot.fetch("verdict")
   end
 
   def test_non_ui_v1_remains_eligible_and_v2_must_not_self_classify_as_ui

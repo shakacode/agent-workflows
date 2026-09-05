@@ -78,27 +78,37 @@ blocker. Do not fake a manual pass from static inspection.
      `../../workflows/pr-processing.md` relative to the loaded skill pack. It
      defines the portable recording procedure and clip-inspection requirements.
    - Put the artifacts where every intended reviewer can open them. For
-     GitHub-only or public work, prefer GitHub PR attachments. When an
-     authenticated browser/file-upload capability is available, use GitHub's UI
-     upload flow and retain its stable `github.com/user-attachments/assets/...`
-     URL; no comment submission is required merely to obtain the URL. A
+     GitHub-only or public work, prefer GitHub PR attachments. Use GitHub CLI
+     2.99.0+'s repeatable `--attach` flag with `gh pr create` or `gh pr comment`
+     when the actor has write access through OAuth, a classic PAT, or a
+     fine-grained PAT, and the user has already authorized that GitHub mutation;
+     otherwise confirm before posting. GitHub Actions and App tokens cannot use
+     this upload path. For an
+     existing PR, default to a dedicated comment; use `gh pr edit` only when the
+     body file preserves the complete current PR description. Put local media
+     references and useful image alt text in `--body-file`, attach those same
+     paths, and read the posted body/comment back to retain the rewritten stable
+     GitHub attachment URLs. Attach no more than 50 files per command. A nonzero
+     exit can still leave successful earlier attachments in a created or updated
+     resource, so read the printed/resulting URL and body before retrying; retain
+     successful URLs and retry only failed or unattempted files. Fall back to an
+     authenticated browser/file-upload flow when CLI upload is unsupported. A
      configured linked tracker or artifact store is also valid when every
      intended reviewer has access; link that evidence from the PR.
-   - GitHub documents no public REST or GraphQL attachment-upload route. Do not
-     depend on an undocumented direct-upload endpoint unless the repository has
-     explicitly configured and verified that integration. That limits GitHub's
-     API, not agents: a host whose browser tooling can set a file input on an
-     authenticated github.com session completes the UI upload flow normally.
+   - Do not use an undocumented direct-upload endpoint. GitHub CLI 2.99.0+
+     provides the supported command-line upload path on GitHub.com and GitHub
+     Enterprise Cloud; its `--attach` support does not cover GitHub Enterprise
+     Server in this release.
      Record the matching `visual_evidence_blocked_reason`: `uploader_absent`
-     (no upload tool exists), `uploader_denied` (the tool exists but the host
-     permission policy refused the call, which only a human can pre-provision
-     before the lane runs), `no_configured_store` (no tracker or artifact
+     (neither a suitable CLI nor browser upload tool exists), `uploader_denied`
+     (the credential type is unsupported, or authentication, repository write
+     access, or host permission policy refused the call), `no_configured_store` (no tracker or artifact
      destination is configured or reachable), or `upload_failed: reason` (an
      available uploader was exercised and failed; name the observed failure).
      State the remedy each one implies, and omit the field entirely when the
      upload succeeds. Do not report a denied permission as a missing
      capability. If no authenticated
-     UI uploader or configured integration is available, prepare clearly named
+     supported uploader or configured integration is available, prepare clearly named
      local files and report their absolute paths, but keep the QA evidence and
      readiness status `blocked` until a human attaches them and the PR contains
      the resulting durable GitHub URL. Local paths, `file:`
@@ -148,7 +158,9 @@ blocker. Do not fake a manual pass from static inspection.
      `"${POST_MERGE_AUDIT_SKILL_DIR}/bin/closeout-evidence-replay"
      --expected-head-sha <full-final-head-SHA>
      --require-visual-evidence-v2
-     <file-or->`. The strict v2 flag is invalid
+     [--github-host <trusted-repository-GitHub-host>]
+     <file-or->`. Include `--github-host` for GitHub Enterprise (Cloud or
+     Server) evidence. The strict v2 flag is invalid
      without the expected final-head SHA. If the helper cannot be resolved or
      run, report the evidence and readiness state as `blocked`; do not proceed
      with a pass claim.
