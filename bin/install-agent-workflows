@@ -30,6 +30,7 @@ Installed paths:
   <target>/bin/validate-execution-provenance
   <target>/bin/agent-workflows-doctor
   <target>/bin/agent_doctor/*
+  <target>/bin/agent-workflows-refresh
   <target>/bin/agent-workflows-status
   <target>/bin/upgrade-agent-workflows
   <target>/lib/agent-workflows/secure_github_actions_scanner.rb (plugin-companion mode only)
@@ -51,6 +52,7 @@ bin_helpers=(
   agent-workflow-writing-style
   agent-workflows-delivery-state
   agent-workflows-doctor
+  agent-workflows-refresh
   agent-workflows-status
   agent-workflows-trust-audit
   install-agent-workflows

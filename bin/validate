@@ -86,6 +86,7 @@ ruby bin/validate-openai-agent-metadata-test.rb
 ruby bin/host-adapter-syntax-test.rb
 
 echo "== status unit tests =="
+ruby bin/agent-workflows-refresh-test.rb
 ruby bin/agent-workflows-status-test.rb
 ruby bin/agent-workflows-trust-audit-test.rb
 

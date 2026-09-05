@@ -160,7 +160,7 @@ The selected delivery mode is durable install state. Repeated installs,
 explicit `--delivery-mode` changes it.
 
 Add `<target>/bin` to `PATH` if you want `agent-workflow-seam-doctor`,
-`agent-workflows-doctor`, `agent-workflows-status`,
+`agent-workflows-doctor`, `agent-workflows-refresh`, `agent-workflows-status`,
 `agent-workflows-trust-audit`, and `upgrade-agent-workflows` available as normal
 commands.
 
@@ -214,6 +214,22 @@ Use a native plugin path for a host-qualified skill surface. Pair it with
 binaries, workflows, docs, metadata, status, or upgrades. The installer fails
 closed instead of creating native-plus-flat duplicates. Native plugin updates
 remain owned by the host plugin flow, not `upgrade-agent-workflows`.
+
+Request an immediate native-plugin refresh when you need the latest shared
+workflows without waiting for the host's normal update cycle:
+
+```bash
+agent-workflows-refresh --host codex
+agent-workflows-refresh --host claude
+```
+
+This uses the host's native marketplace and plugin update commands, so the
+newest marketplace commit does not need a separate Agent Workflows release.
+Codex already refreshes configured Git marketplaces when it starts. Claude can
+check third-party marketplaces after startup when auto-update is enabled, but
+that setting is off by default and the check may be delayed. After a Claude
+refresh, run `/reload-plugins` to load the update in the current session. Restart
+Codex when an existing session must rediscover changed skills or instructions.
 
 ## Consumer Repo Adoption
 

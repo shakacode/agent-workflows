@@ -137,6 +137,16 @@ Install the Claude Code plugin from the repository marketplace:
 /plugin install scw@agent-workflows
 ```
 
+The Claude plugin deliberately omits an explicit `version`. Claude therefore
+uses the Git commit SHA as the plugin version, so every commit on the
+marketplace's tracked branch is updateable without maintaining duplicate
+release numbers. Enable auto-update for the `agent-workflows` marketplace in
+Claude's **Plugins → Marketplaces** UI when the installation should follow that
+branch automatically; third-party marketplace auto-update is disabled by
+default. Claude checks after startup and may delay the check by up to ten
+minutes. Run `/reload-plugins` to load an installed update in the current
+session, or start a new session.
+
 For Codex, point the current marketplace or plugin-source flow at this cloned or
 released source pack and select `scw`:
 
@@ -481,6 +491,7 @@ The installer writes:
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-doctor`
+- `<target>/bin/agent-workflows-refresh`
 - `<target>/bin/agent-workflows-status`
 - `<target>/bin/agent-workflows-trust-audit`
 - `<target>/bin/install-agent-workflows`
@@ -543,6 +554,33 @@ evidence, and flat-skill inventory. A collision, ambiguous native state, or an
 invalid companion layout returns `CHECK_FAILED` with cleanup guidance.
 
 ## Upgrade
+
+### Refresh a native plugin
+
+Use the installed refresh helper when you need the newest shared workflow
+behavior immediately rather than waiting for the host's normal update cycle:
+
+```bash
+agent-workflows-refresh --host codex
+agent-workflows-refresh --host claude
+```
+
+For Codex, the helper upgrades the configured `agent-workflows` marketplace.
+For Claude, it updates that marketplace and then updates
+`scw@agent-workflows`. The newest marketplace commit is therefore available
+without creating a separate Agent Workflows release. The helper does not add a
+missing marketplace or install a missing plugin; follow the selected host's
+setup guidance first.
+
+This command is an explicit on-demand refresh; it does not replace native
+automatic updates. Codex refreshes configured Git marketplaces when it starts.
+Claude can check third-party marketplaces after startup when marketplace
+auto-update is enabled, but that setting is off by default and the check may be
+delayed. After refreshing Claude, run `/reload-plugins` to load the update in the
+current session. Restart Codex when an existing session must rediscover changed
+skills or instructions.
+
+### Upgrade an installer-managed pack
 
 Upgrade the source clone, reinstall the pack, and validate a consumer repo seam:
 
