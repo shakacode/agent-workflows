@@ -68,8 +68,10 @@ Run exits 1 and 2 from git and repository/issue metadata before fetching CI
 logs. They decide only whether existing external work owns the same failure.
 Exit 3 is not a pre-log check: it requires exact hosted failure logs and history
 plus separately recorded local evidence. Exits 1-3 end the task with
-`NOT_THIS_WORKFLOW`; exits 4 and 5 redirect the scope of the work and continue
-into this workflow:
+`NOT_THIS_WORKFLOW` only when their evidence gates pass; exits 4 and 5 redirect
+the scope of the work and continue into this workflow. If exit 3's equivalence
+evidence remains `UNKNOWN`, no fast exit fires: keep the task in this workflow
+and use the conservative outcome defined below.
 
 1. **Already fixed, not closed.** Identify a post-failure commit that explicitly
    addresses the same failing test and failure mechanism. Cite its linked issue
@@ -80,12 +82,23 @@ into this workflow:
    open a second fix for the same flake.
 3. **Broken, not flaky, or deterministic parity gap.** Obtain exact hosted
    failure logs and history for the failure identity, then record the local
-   result separately. If the same exact failure occurs on every hosted run and
+   result separately. An equivalent hosted invocation has matching controlled
+   invocation parameters and selected or known pre-run hosted environment
+   identity—event, inputs, matrix, runner image, toolchain/runtime, and relevant
+   environment or configuration selection—not runtime behavior or outcomes. If
+   equivalence is unverifiable,
+   exit 3 does not fire. Record `UNKNOWN`, do not classify or route the failure,
+   and continue only evidence collection that does not depend on a
+   deterministic/intermittent classification. If the missing evidence cannot
+   be recovered, close as `ROOT_CAUSE_NOT_IDENTIFIED` with the exact gap and
+   the evidence needed to settle it.
+   If the same exact failure occurs on every equivalent hosted invocation and
    reproduces locally, it is an ordinary bug. If the same exact failure occurs
-   on every hosted run and the local reproduction is green, hand it to
-   `replicate-ci` as a deterministic parity gap. Either Step 1 exit requires
-   citations to the exact hosted determinism and the corresponding local
-   reproduction evidence; the parity handoff must also name `replicate-ci`.
+   on every equivalent hosted invocation and the local reproduction is green,
+   hand it to `replicate-ci` as a deterministic parity gap. Either Step 1 exit
+   requires citations to exact hosted determinism across equivalent hosted
+   invocations and the corresponding local reproduction evidence; the parity
+   handoff must also name `replicate-ci`.
 4. **Historical recurrence.** Search closed issues and PRs for the same test
    file. Three or more prior fixes on one file means the per-occurrence fix has
    already failed repeatedly; the finding is the systemic cause, and a fourth
@@ -115,15 +128,18 @@ gh run view <run-id> --log-failed
 gh run view <run-id> --json headSha,conclusion,createdAt,workflowName
 ```
 
-For any other provider, resolve the log-fetch and replay commands from the
-repository seam described above rather than assuming a provider CLI exists.
-Buildkite, CircleCI, and everything else stay seam-resolved by design: this
-skill must not hardcode a provider the consumer repo does not use.
+To establish same-commit hosted history for Step 1 exit 3 and the Boundary
+section below, follow `replicate-ci`'s canonical [Hosted Run-History
+Recipe](../replicate-ci/SKILL.md#hosted-run-history-recipe). It includes the
+missing attempt-specific jobs fetch, exhaustive workflow-run and job
+pagination, target-job matching, all-attempt inspection, and the trusted-base
+`ci_run_history_provider` AGENTS.md seam for non-GitHub providers. Do not copy
+or vary that operator recipe here.
 
-Record with the error: the exact run id, head SHA, job name, attempt/retry
-number, failing step, and timestamp. If any of those cannot be verified, write
-`UNKNOWN` rather than guessing. A backtrace without its head SHA cannot be
-matched to the code you are reading.
+- Record with the error: the exact run id, head SHA, job name, attempt/retry
+  number, failing step, and timestamp. If any of those cannot be verified,
+  write `UNKNOWN` rather than guessing. A backtrace without its head SHA
+  cannot be matched to the code you are reading.
 
 ## Step 3 — Classify The Intermittency
 
@@ -190,7 +206,8 @@ Close with exactly one of:
   owed. Exits 1 and 2 require a citation to existing external work — the commit
   that already fixed the same failure or the open PR that owns it — plus its
   exact ownership evidence. Exit 3 requires citations to exact hosted run
-  history showing deterministic failure and the corresponding local
+  history showing deterministic failure across equivalent hosted invocations
+  and the corresponding local
   reproduction evidence: local reproduction of the same failure identifies an
   ordinary bug, while a local-green result identifies a `replicate-ci` parity
   handoff. Name which exit fired and cite the evidence. Local runs cannot
@@ -217,16 +234,21 @@ Local-green evidence is required only for a deterministic hosted/local parity
 gap:
 
 - **Deterministic hosted/local parity gap** — the hosted check has the same
-  exact failure on every run for the commit, while the local reproduction is
-  green. Use `replicate-ci`: the runner image, toolchain version, locale,
-  timezone, filesystem, or service topology may explain that difference.
+  exact failure on every equivalent hosted invocation for the commit, while the
+  local reproduction is green. Use `replicate-ci`: the runner image, toolchain
+  version, locale, timezone, filesystem, or service topology may explain that
+  difference.
 - **Deterministic hosted and local failure** — the same exact failure appears
   in both places. This is an ordinary bug, so take Step 1's broken-test exit.
 - **Intermittent hosted failure** — the same commit passes and fails across
-  hosted runs. Use this skill regardless of whether a local attempt passes or
-  fails. A green parity run proves nothing about a test that fails one run in
-  twenty, and a locally failing attempt does not turn hosted intermittency into
-  a parity gap.
+  equivalent hosted invocations. Use this skill regardless of whether a local
+  attempt passes or fails. A green parity run proves nothing about a test that
+  fails one run in twenty, and a locally failing attempt does not turn hosted
+  intermittency into a parity gap.
+
+When equivalence is unverifiable, apply Step 1 exit 3's `UNKNOWN` rule: do not
+classify or route the failure, and use its evidence-only continuation and
+`ROOT_CAUSE_NOT_IDENTIFIED` closeout contract.
 
 If the classification itself is unclear, establish determinism first by
 inspecting the run history for that commit. Do not run both workflows in
@@ -266,9 +288,17 @@ Use literal `UNKNOWN` for unavailable values; never infer them or treat prompt t
 - The exact CI failure output was obtained, with its run id and head SHA, or
   the task stopped at the Hard Gate. The only exception is a valid Step 1 exit:
   exits 1-2 return `NOT_THIS_WORKFLOW` with a cited existing-work ownership
-  artifact, while exit 3 cites exact hosted determinism and the corresponding
-  local reproduction evidence; a local-green exit 3 also names the
-  `replicate-ci` handoff.
+  artifact, while exit 3 cites exact hosted determinism across equivalent
+  hosted invocations and the corresponding local reproduction evidence; a
+  local-green exit 3 also names the `replicate-ci` handoff.
+- Unverifiable equivalence is `UNKNOWN`, forbids deterministic/intermittent
+  classification or routing, and keeps the task here; if the gap cannot be
+  recovered, the outcome is `ROOT_CAUSE_NOT_IDENTIFIED` with the needed
+  evidence named.
+- Repeated same-event/same-SHA runs survive until every equivalence dimension is
+  derived. Different controlled dimensions remain separate; differing
+  target-job outcomes within one equivalent group establish hosted
+  intermittency.
 - Local runs were used only for investigation; the pass claim cites CI.
 - No skip, sleep, retry wrapper, or unjustified timeout increase was proposed.
 - Infrastructure flakiness was claimed only with build-wide evidence.

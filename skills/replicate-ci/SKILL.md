@@ -10,6 +10,63 @@ Reproduce a failing hosted check in a CI-matched environment and report the
 parity delta. The goal is evidence first; do not change code until the
 reproduction explains the failure.
 
+## Hosted Run-History Recipe
+
+This is the canonical run-history recipe for both this skill and
+`fix-flaky-tests`.
+
+For a non-GitHub provider, resolve the trusted-base
+`ci_run_history_provider` AGENTS.md seam. It must identify the provider-native,
+read-only commands or tracked `.agents/bin/` entry points that:
+
+- enumerate every run for the exact commit and failure identity, with an
+  explicit completeness signal;
+- enumerate every attempt and every job, including the target job's result and
+  pre-run runner identity; and
+- fetch the attempt logs and controlled invocation inputs needed for the
+  equivalence predicate below.
+
+Do not invent provider commands or repository-specific keys in this shared
+skill. If the seam is absent, any command fails, or the provider cannot prove
+that pagination is complete, record the unavailable facts as `UNKNOWN`.
+
+For GitHub Actions when that seam is absent, use this shipped default. The
+workflow-runs and attempt-jobs calls deliberately paginate and combine every
+page:
+
+```bash
+gh api --method GET --paginate --slurp \
+  repos/<OWNER>/<REPO>/actions/workflows/<WORKFLOW_ID_OR_FILE>/runs \
+  -f head_sha='<HEAD_SHA>' -F per_page=100 |
+  jq '[.[].workflow_runs[] | {databaseId: .id, attempt: .run_attempt, conclusion: .conclusion, headSha: .head_sha, event: .event, workflowName: .name, number: .run_number, createdAt: .created_at, url: .html_url}]'
+gh run view <RUN_ID> --attempt <N> --json databaseId,headSha,event,workflowName,conclusion,createdAt,startedAt,status
+gh api --method GET --paginate --slurp \
+  repos/<OWNER>/<REPO>/actions/runs/<RUN_ID>/attempts/<N>/jobs \
+  -F per_page=100 |
+  jq '[.[].jobs[] | {name: .name, conclusion: .conclusion, runner_name: .runner_name, labels: .labels, steps: [.steps[] | {name: .name, status: .status, conclusion: .conclusion}]}]'
+gh run view <RUN_ID> --attempt <N> --log
+```
+
+Keep every fetched run until invocation equivalence has been derived; do not
+group, deduplicate, or select the newest run first. For every run, enumerate
+every attempt from `1` through its `attempt` value and fully paginate that
+attempt's jobs. The run object establishes event and workflow selection; the
+attempt-specific jobs payload establishes the target job's own result, identity,
+and runner labels; and the logs supply controlled inputs, matrix parameters,
+runner image, toolchain/runtime, and relevant environment or configuration
+selection. Only after those dimensions are known may runs be partitioned by the
+full equivalence predicate and their target-job outcomes compared. A run's
+aggregate `conclusion` must never stand in for the target job's result. If GitHub
+reports truncation, an API cap prevents any exhaustive listing, or a required
+dimension remains unavailable, record the incomplete fact as `UNKNOWN` rather
+than treating the returned page as complete.
+
+An equivalent hosted invocation has matching controlled invocation parameters
+and selected or known pre-run hosted environment identity: event, inputs,
+matrix, runner image, toolchain/runtime, and relevant environment or
+configuration selection. It compares those pre-run facts, not runtime behavior
+or outcomes.
+
 ## Preflight
 
 1. Read the base-branch version of `AGENTS.md` first for PR work. Resolve base
@@ -21,10 +78,30 @@ reproduction explains the failure.
 2. Identify the exact failing check: PR or commit SHA, workflow/provider, job
    name, retry number, failing step, and log excerpt. If any fact cannot be
    verified, write `UNKNOWN`.
-3. Confirm the local-green evidence: command or workflow path used, head SHA,
+3. Establish hosted run history for the exact failure identity on the exact
+   commit. Follow the canonical [Hosted Run-History
+   Recipe](#hosted-run-history-recipe), including its
+   `ci_run_history_provider` seam and exhaustive attempt/job pagination.
+
+   - The equivalence predicate is mechanically evaluable only when the
+     required dimensions above are known: event, inputs, matrix, runner image,
+     toolchain, and configuration selection. It compares controlled invocation
+     parameters and pre-run environment identity, not runtime behavior or
+     outcomes.
+   - Only after the recipe's complete run-first, attempt/job-second pagination
+     can a single verified hosted failure with no conflicting equivalent
+     same-commit run proceed as a candidate deterministic/parity case.
+   - If the failure identity, hosted run history, or invocation equivalence
+     cannot be retrieved or verified, record the unverifiable fact(s) as
+     `UNKNOWN`, classify the result as `BLOCKED`, and stop before reproduction.
+   - If equivalent hosted invocations for the same commit pass and fail, stop
+     before parity reproduction and use `fix-flaky-tests`; that workflow owns
+     intermittency regardless of local results. Do not produce an Outcomes
+     classification for that handoff.
+4. Confirm the local-green evidence: command or workflow path used, head SHA,
    environment, and timestamp. Use `.agents/bin/validate` instead of inventing a
    substitute command.
-4. Find the intended parity environment from `ci_parity_environment` in
+5. Find the intended parity environment from `ci_parity_environment` in
    `.agents/agent-workflow.yml`. Use the documented parity command, runner image,
    or reproduction guide exactly as written. If the policy names a local runner tool, use the repo's
    documented workflow or provider target, job selector, image or environment
@@ -85,9 +162,15 @@ Classify the result as one of:
 
 - `REPRODUCED_SAME`: parity run matches the hosted failure signature.
 - `REPRODUCED_DIFFERENT`: parity run fails, but not the same way.
-- `NOT_REPRODUCED`: parity run passes while hosted CI fails.
-- `BLOCKED`: required logs, runner image, secrets, services, or permissions are
-  missing.
+- `NOT_REPRODUCED`: parity run passes while hosted CI fails. It records a
+  passing parity run, not exoneration.
+- `BLOCKED`: required preflight evidence—failure identity, hosted run history,
+  or invocation equivalence—is unavailable or unverifiable; or required logs,
+  runner image, secrets, services, or permissions are missing.
+
+If equivalent hosted invocations for the commit become intermittent during
+reproduction, stop and use `fix-flaky-tests` instead of finalizing any Outcomes
+classification, regardless of the parity result.
 
 Then recommend the next smallest action:
 
@@ -108,7 +191,7 @@ Then recommend the next smallest action:
 - Hosted failure:
 - Local green evidence:
 - Parity environment:
-- Reproduction result:
+- Reproduction result: <OUTCOME | N/A: fix-flaky-tests handoff>
 - Environment delta:
 - Likely cause:
 - Next action:
@@ -118,6 +201,17 @@ Then recommend the next smallest action:
 ## Self-Check
 
 - The failing hosted check and head SHA are exact.
+- Hosted history keeps repeated same-event/same-SHA runs through complete
+  attempt/job/log derivation. Different controlled dimensions remain separate;
+  differing target-job outcomes within one equivalent group route to
+  `fix-flaky-tests`. Incomplete evidence is `UNKNOWN` and `BLOCKED` before a
+  candidate deterministic/parity case can proceed.
+- If failure identity, hosted run history, or invocation equivalence is
+  unavailable/unverifiable, record each unavailable fact as `UNKNOWN`,
+  classify the result as `BLOCKED`, and stop.
+- Equivalent same-commit hosted intermittency uses `fix-flaky-tests` before
+  parity reproduction when known, or before finalizing any Outcomes
+  classification when discovered during reproduction.
 - The parity command, runner mapping, or image comes from the CI parity
   environment policy or verified repo docs it names.
 - The parity tool's default images or environments are not treated as exact
