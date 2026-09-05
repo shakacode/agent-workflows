@@ -114,6 +114,12 @@ signal independent of this coordinated address-review run.
 
 Use the skill invocation arguments as the review request. If the skill was invoked without arguments but the user's message contains a PR number or PR URL, use that message as the review request. If neither source contains a PR reference, ask the user for a PR number or URL before continuing.
 
+Before any GitHub post, the trusted caller must export
+`AGENT_COMMENT_RUNNER` as exactly `codex` or `claude`,
+`AGENT_COMMENT_HOST` as the actual runner host, and
+`AGENT_COMMENT_TASK_OR_RUN` as the stable task/run identifier. Missing or
+invalid attribution context blocks posting; never invent a generic runner.
+
 First, detect whether the request includes the standalone token `autopilot` (case-insensitive) before or after the PR reference.
 
 - If it does, set an `AUTOPILOT` flag and remove only that token before parsing the PR reference.
@@ -344,9 +350,12 @@ if [ "${SPECIFIC_TARGET}" = "1" ] && [ -n "${SOURCE_PR_NUMBER}" ]; then
   exit 1
 fi
 if [ "${SPECIFIC_TARGET}" != "1" ]; then
+  # The normalized helper unwraps authenticated agent envelopes into
+  # `payload_body`; raw issue-comment JSON cannot safely identify checkpoints.
+  ADDRESS_REVIEW_SKILL_DIR="${ADDRESS_REVIEW_SKILL_DIR:-.agents/skills/address-review}"
   SOURCE_HAS_CHECKPOINT=0
   if [ -n "${SOURCE_PR_NUMBER}" ]; then
-    if SOURCE_CHECKPOINT_JSON="$(gh api --paginate --slurp "repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments" 2>/dev/null)"; then
+    if SOURCE_CHECKPOINT_JSON="$("${ADDRESS_REVIEW_SKILL_DIR}/bin/fetch-pr-review-data" "${SOURCE_PR_NUMBER}" --repo "${REPO}" 2>/dev/null)"; then
       SOURCE_REVIEW_ACTOR="$(gh api user --jq .login 2>/dev/null || true)"
       SOURCE_CHECKPOINT_COUNT="$(printf '%s' "${SOURCE_CHECKPOINT_JSON}" | jq --arg actor "${SOURCE_REVIEW_ACTOR}" --arg source "${SOURCE_PR_NUMBER}" '
         def valid_kind: . == "issue-comment" or . == "inline-comment" or . == "review-summary";
@@ -374,9 +383,9 @@ if [ "${SPECIFIC_TARGET}" != "1" ]; then
               (($body | startswith("<!-- address-review-status -->")) or
                (($body | startswith("<!-- address-review-summary -->")) and all($rows[]; terminal_row))) and
               (($rows | map(split("\t") | .[1:4] | join("\t")) | unique | length) == ($rows | length))));
-        [.[][] |
-          select(((.user.login // "") | ascii_downcase) == ($actor | ascii_downcase)) |
-          select((.body // "") | valid_body)] | length
+        [.issue_comments[] |
+          select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
+          select((.payload_body // .body // "") | valid_body)] | length
       ' 2>/dev/null || echo 0)"
       case "${SOURCE_CHECKPOINT_COUNT}" in
         ''|*[!0-9]*) SOURCE_CHECKPOINT_COUNT=0 ;;
@@ -622,7 +631,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
         startswith("<!-- address-review-status -->") or
         startswith("<!-- codex-claim v1");
       def generated_source_reply($comment):
-        (($comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
+        (($comment.payload_body // $comment.body // "") | startswith("<!-- address-review-source-reply -->")) and
         ((($comment.user // "") | ascii_downcase) == ($actor | ascii_downcase));
       def item_key($kind; $id; $thread_id):
         [$source, $kind, ($id | tostring), (($thread_id // "-") | tostring)] | join("\t");
@@ -642,7 +651,7 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
           $inventory.issue_comments[]? |
           . as $comment |
           select((.created_at // "") <= $checkpoint_created_at) |
-          select((((.body // "") | marker_body) or generated_source_reply($comment)) | not) |
+          select((((.payload_body // .body // "") | marker_body) or generated_source_reply($comment)) | not) |
           candidate_state("issue-comment"; .id; "-"; (.created_at // ""))
         ] + [
           $inventory.review_summaries[]? |
@@ -676,11 +685,11 @@ if [ -n "${SOURCE_PR_NUMBER}" ]; then
       [.issue_comments[] |
         select(((.user // "") | ascii_downcase) == ($actor | ascii_downcase)) |
         . as $checkpoint |
-        select(($checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
+        select(($checkpoint.payload_body // $checkpoint.body // "") | valid_body($checkpoint.created_at // ""))] |
       sort_by(.created_at) | reverse
     ' source-review-data.json)"; then
-      SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].body // ""')"
-      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
+      SOURCE_STATE_CHECKPOINT_BODY="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '.[0].payload_body // .[0].body // ""')"
+      SOURCE_REVIEW_CUTOFF_AT="$(printf '%s' "${SOURCE_VALID_CHECKPOINTS}" | jq -r '[.[] | select((.payload_body // .body // "") | startswith("<!-- address-review-summary -->"))][0].created_at // ""')"
     else
       echo "Warning: source checkpoint validation failed for PR #${SOURCE_PR_NUMBER}; leaving source cutoff empty and readiness UNKNOWN." >&2
     fi

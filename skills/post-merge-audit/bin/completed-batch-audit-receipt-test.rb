@@ -16,6 +16,19 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   WORKFLOW_CONFIG = File.expand_path("../../../.agents/agent-workflow.yml", __dir__)
   REAL_BACKEND = "agent-coord private backend"
 
+  def setup
+    @attribution_environment = %w[AGENT_COMMENT_RUNNER AGENT_COMMENT_HOST AGENT_COMMENT_TASK_OR_RUN].to_h do |name|
+      [name, ENV[name]]
+    end
+    ENV["AGENT_COMMENT_RUNNER"] = "codex"
+    ENV["AGENT_COMMENT_HOST"] = "test-host"
+    ENV["AGENT_COMMENT_TASK_OR_RUN"] = "test-receipt"
+  end
+
+  def teardown
+    @attribution_environment.each { |name, value| value ? ENV[name] = value : ENV.delete(name) }
+  end
+
   def marker(body)
     "<!-- completed-batch-audit v1\n#{body.chomp}\n-->\n"
   end
@@ -2117,7 +2130,8 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       assert_match(/SHA-256 `[0-9a-f]{64}`/, reference)
       refute_includes reference, "<!-- completed-batch-audit"
       posted_comment = File.read(env.fetch("FAKE_GH_BODY"))
-      assert posted_comment.start_with?("Completed-batch audit: replay evidence follows.\n\n")
+      assert posted_comment.start_with?("🤖 Agent Workflows\n")
+      assert GitHubCommentEnvelope.payload(posted_comment).start_with?("Completed-batch audit: replay evidence follows.\n\n")
       summary = result.fetch("pr_description_summary")
       assert_equal "https://github.com/acme/widgets/pull/184", summary.fetch("url")
       assert_includes summary.fetch("section"), CompletedBatchAuditReceipt::PR_SUMMARY_START
@@ -2163,7 +2177,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
         result = JSON.parse(out)
         assert result.fetch("ready")
         posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-        assert posted_body.start_with?("#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n")
+        assert GitHubCommentEnvelope.payload(posted_body).start_with?(
+          "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n"
+        )
         bound_marker = CompletedBatchAuditReceipt.comment_marker(posted_body)
         assert_includes bound_marker, "publication_snapshot: sha256:"
         assert_equal "batch-184", CompletedBatchAuditReceipt.marker_fields(bound_marker).fetch("batch_id")
@@ -2213,7 +2229,9 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
 
       assert status.success?, err
       posted_body = File.read(env.fetch("FAKE_GH_BODY"))
-      assert posted_body.start_with?("#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n")
+      assert GitHubCommentEnvelope.payload(posted_body).start_with?(
+        "#{CompletedBatchAuditReceipt::COMMENT_HEADER}\n\n"
+      )
       refute_includes posted_body, CompletedBatchAuditReceipt::LEGACY_COMMENT_HEADER
     end
   end
@@ -3470,10 +3488,18 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
   def capture_receipt_cli(*arguments)
     command = arguments.dup
     script_index = command.index(SCRIPT)
+    environment = command.first.is_a?(Hash) ? command.first : {}
+    unless command.first.is_a?(Hash)
+      environment = {}
+      command.unshift(environment)
+      script_index += 1 if script_index
+    end
+    environment["AGENT_COMMENT_RUNNER"] ||= "codex"
+    environment["AGENT_COMMENT_HOST"] ||= "test-host"
+    environment["AGENT_COMMENT_TASK_OR_RUN"] ||= "test-receipt"
     if script_index &&
        %w[publish replay supersede].include?(command[script_index + 1]) &&
        !command.include?("--workflow-config")
-      environment = command.first.is_a?(Hash) ? command.first : {}
       workflow_config = environment.fetch("FAKE_WORKFLOW_CONFIG", WORKFLOW_CONFIG)
       command.concat(["--workflow-config", workflow_config])
     end

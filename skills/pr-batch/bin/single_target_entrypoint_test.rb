@@ -558,7 +558,7 @@ assert(address_review_templates.include?('SOURCE_CUTOFF_SAFE="${SOURCE_CUTOFF_SA
 assert(address_review_templates.include?("SOURCE_OUTCOMES"), "address-review templates must render explicit source outcomes")
 assert(address_review_templates.include?("REPLACEMENT_PR_URL"), "address-review templates must render the replacement link")
 assert(address_review_templates.include?('[ -n "${source_summary_body_file:-}" ] && rm -f "${source_summary_body_file}"'), "address-review templates must clean the source checkpoint file")
-source_template_post = 'gh api repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments -X POST -F body=@"${source_summary_body_file}"'
+source_template_post = '--repo "${REPO}" --number "${SOURCE_PR_NUMBER}"'
 assert(address_review_templates.include?(source_template_post), "address-review templates must post the source checkpoint before cleanup")
 assert(!address_review_actions.include?(source_template_post), "address-review actions must not duplicate the template source post")
 assert(!address_review_workflow.include?(source_template_post), "address-review workflow mirror must not duplicate the template source post")

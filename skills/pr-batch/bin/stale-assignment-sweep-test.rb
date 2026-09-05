@@ -718,7 +718,10 @@ class StaleAssignmentSweepTest < Minitest::Test
     env = {
       "PATH" => "#{dir}:#{ENV.fetch('PATH')}",
       "GH_LOG" => log_path,
-      "GH_FIXTURE_DIR" => dir
+      "GH_FIXTURE_DIR" => dir,
+      "AGENT_COMMENT_RUNNER" => "codex",
+      "AGENT_COMMENT_HOST" => "test-host",
+      "AGENT_COMMENT_TASK_OR_RUN" => "test-sweep"
     }
     env["GH_FAIL_USER"] = "1" if gh_fail_user
     env

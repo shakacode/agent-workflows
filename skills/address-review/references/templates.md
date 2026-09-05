@@ -376,9 +376,16 @@ if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
   } > "${source_summary_body_file}"
 fi
 
-gh api repos/${REPO}/issues/${PR_NUMBER}/comments -X POST -F body=@"${summary_body_file}"
+# Post each generated body through github-comment-envelope post-issue.
+"${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
+  --repo "${REPO}" --number "${PR_NUMBER}" \
+  --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+  --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" < "${summary_body_file}"
 if [ -n "${SOURCE_PR_NUMBER:-}" ]; then
-  gh api repos/${REPO}/issues/${SOURCE_PR_NUMBER}/comments -X POST -F body=@"${source_summary_body_file}"
+  "${PR_BATCH_SKILL_DIR}/bin/github-comment-envelope" post-issue \
+    --repo "${REPO}" --number "${SOURCE_PR_NUMBER}" \
+    --runner "${AGENT_COMMENT_RUNNER:?}" --host "${AGENT_COMMENT_HOST:?}" \
+    --task-or-run "${AGENT_COMMENT_TASK_OR_RUN:?}" < "${source_summary_body_file}"
 fi
 ```
 
