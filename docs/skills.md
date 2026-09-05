@@ -214,6 +214,13 @@ Use `$close-session` when a task may be finished and you want to know whether
 it is safe to archive. It verifies live state, records the outcome and
 follow-up owner, and gives an explicit archive-readiness verdict.
 
+### [`$audit-chats`](../skills/audit-chats/SKILL.md)
+
+Use `$audit-chats` for a read-only review of multiple local Codex tasks and the
+visible ChatGPT subset. It separates work state, next owner, and archive
+readiness, verifies stale blockers when they change the recommendation, and
+groups the report by the next useful action.
+
 ### [`$task-observer`](../skills/task-observer/SKILL.md)
 
 Use `$task-observer` only when you explicitly want to capture sanitized lessons
