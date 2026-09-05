@@ -15,6 +15,32 @@ base_branch: main
 # writing_style: docs/writing-style.md
 follow_up_prefix: "Follow-up:"
 review_gate: "n/a"
+# To enable configured-review enforcement, replace the n/a scalar with the
+# complete closed mapping below. Actor values are exact GitHub logins.
+# review_gate:
+#   version: 1
+#   reviewers:
+#     - id: "configured-reviewer"
+#       check_name: "configured-review-check"
+#       producer:
+#         app_slug: "github-actions"
+#         workflow_path: ".github/workflows/configured-review.yml"
+#         event: "pull_request"
+#       artifact:
+#         actors: ["configured-reviewer[bot]"]
+#         kinds: [pull_request_review, review_thread]
+#         completion:
+#           mode: producer_check
+#   require_current_head: true
+#   artifact_settlement:
+#     required: true
+#     quiet_period_seconds: 30
+#   thread_disposition:
+#     required: true
+#     marker: "configured-review-disposition:"
+#   failure_policy: block
+#   fallback:
+#     mode: disabled
 approval_exempt: "n/a"
 coordination_backend: "n/a"
 changelog: "n/a"

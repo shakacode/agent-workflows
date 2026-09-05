@@ -1,0 +1,137 @@
+name: Configured Review Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to recheck
+        required: true
+        type: string
+  pull_request_target:
+    types: [opened, synchronize, edited, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  workflow_run:
+    workflows: [Claude Code Review]
+    types: [completed]
+
+concurrency:
+  group: configured-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.pr || github.run_id }}-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: write
+
+jobs:
+  configured-review-gate:
+    name: configured-review-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Resolve exact pull request bindings
+        id: bindings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+            jq -e '.workflow_run.event == "pull_request" and
+              (.workflow_run.pull_requests | type == "array" and length == 1)' \
+              "$GITHUB_EVENT_PATH" >/dev/null
+            pull_request_number=$(jq -er '.workflow_run.pull_requests[0].number' "$GITHUB_EVENT_PATH")
+            triggering_head_sha=$(jq -er '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            pull_request_number=$(jq -er '.inputs.pr' "$GITHUB_EVENT_PATH")
+            triggering_head_sha=""
+          else
+            pull_request_number=$(jq -er '.pull_request.number' "$GITHUB_EVENT_PATH")
+            triggering_head_sha=""
+          fi
+          case "$pull_request_number" in
+            ''|*[!0-9]*) echo "Unable to resolve one pull request number" >&2; exit 1 ;;
+          esac
+
+          pull_request=$(gh api "repos/${REPOSITORY}/pulls/${pull_request_number}")
+          live_base_sha=$(jq -er '.base.sha' <<<"$pull_request")
+          live_head_sha=$(jq -er '.head.sha' <<<"$pull_request")
+          if [ -n "$triggering_head_sha" ] && [ "$live_head_sha" != "$triggering_head_sha" ]; then
+            echo "workflow_run head no longer matches the pull request head" >&2
+            exit 1
+          fi
+          printf 'pr=%s\nbase_sha=%s\nhead_sha=%s\n' \
+            "$pull_request_number" "$live_base_sha" "$live_head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout trusted base
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.bindings.outputs.base_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1
+        with:
+          ruby-version: "3.4"
+
+      - name: Require settled configured reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_GATE_REPO: ${{ github.repository }}
+          REVIEW_GATE_PR: ${{ steps.bindings.outputs.pr }}
+          REVIEW_GATE_BASE_SHA: ${{ steps.bindings.outputs.base_sha }}
+          REVIEW_GATE_HEAD_SHA: ${{ steps.bindings.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          gate_bin="skills/pr-batch/bin/configured-review-gate"
+          post_status() {
+            gh api --method POST \
+              "repos/${REVIEW_GATE_REPO}/statuses/${REVIEW_GATE_HEAD_SHA}" \
+              -f state="$1" \
+              -f context="configured-review-gate" \
+              -f description="$2" \
+              -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+              >/dev/null
+          }
+          gate_unavailable() {
+            # Annotate before posting, so the reason survives a failed status POST.
+            echo "::error::${gate_bin} is $1 in the trusted base checkout (${REVIEW_GATE_BASE_SHA}); the gate never evaluated pull request ${REVIEW_GATE_PR}."
+            post_status failure "Advisory: configured-review gate unavailable on the trusted base"
+            exit 1
+          }
+
+          # Preflight before any pending status: an absent or non-runnable helper
+          # exits 127 or 126, which the evaluation branch below would otherwise
+          # report as unsettled reviews. Both outcomes fail closed; only the
+          # reported reason differs.
+          if [ ! -e "$gate_bin" ]; then
+            gate_unavailable "missing"
+          elif [ ! -f "$gate_bin" ]; then
+            gate_unavailable "present but not a regular file"
+          elif [ ! -x "$gate_bin" ]; then
+            gate_unavailable "present but not executable"
+          fi
+
+          post_status pending "Advisory: waiting for exact-head configured reviews"
+          if "$gate_bin" evaluate \
+              --repo "$REVIEW_GATE_REPO" \
+              --pr "$REVIEW_GATE_PR" \
+              --host github.com \
+              --repo-root "$GITHUB_WORKSPACE" \
+              --expected-base-sha "$REVIEW_GATE_BASE_SHA" \
+              --expected-head-sha "$REVIEW_GATE_HEAD_SHA" \
+              --receipt "$RUNNER_TEMP/configured-review-receipt.json" \
+              --wait-seconds 900 \
+              --poll-seconds 10; then
+            post_status success "Advisory: configured reviews are settled for this head"
+          else
+            gate_status=$?
+            post_status failure "Advisory: configured reviews are not merge-ready"
+            exit "$gate_status"
+          fi

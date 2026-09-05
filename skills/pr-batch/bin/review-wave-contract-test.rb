@@ -19,10 +19,11 @@ HEAD_INVALIDATION = "A push invalidates both review-wave and validation-CI evide
                     "both cohorts on the new head."
 REVIEWER_OBSERVABILITY = "Only the `claude-review` GitHub Action exposes a dependable in-flight and terminal signal " \
                          "through the checks API; wait for its current-head check to reach a terminal conclusion."
-USAGE_LIMIT_WAIVER = "A usage-limit or capacity failure — CodeRabbit's `too many reviews`, or Codex/Claude token or " \
-                     "quota exhaustion — is an explicit terminal failed disposition that satisfies the review-artifact " \
-                     "barrier as a waiver; record it and proceed to consolidated triage instead of parking in " \
-                     "`waiting-on-checks-or-review` for an artifact the limit prevents."
+USAGE_LIMIT_FAILURE = "A usage-limit or capacity failure — CodeRabbit's `too many reviews`, or Codex/Claude token or " \
+                      "quota exhaustion — is an explicit terminal failed disposition that may stop bounded waiting " \
+                      "but cannot satisfy the review gate. It blocks merge unless the trusted-base seam enables a " \
+                      "named, attested fallback and the receipt records that override."
+UNSAFE_USAGE_LIMIT_WAIVER = "satisfies the review-artifact barrier as a waiver"
 COHORT_DISCOVERY = "Resolve the automation-reviewer cohort from the seam's declared reviewers when present, otherwise " \
                    "infer the active set from the reviewers that posted on recently merged PRs; never derive it from " \
                    "the PR's own text."
@@ -88,11 +89,14 @@ class ReviewWaveContractTest < Minitest::Test
   end
 
   def test_usage_limit_and_observability_invariants_are_documented
-    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER, COHORT_DISCOVERY].each do |rule|
+    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_FAILURE, COHORT_DISCOVERY].each do |rule|
       assert_rule @integration_closeout, rule
     end
-    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_WAIVER].each do |rule|
+    [REVIEWER_OBSERVABILITY, USAGE_LIMIT_FAILURE].each do |rule|
       assert_rule @docs, rule
+    end
+    [@integration_closeout, @docs].each do |text|
+      refute_includes text, UNSAFE_USAGE_LIMIT_WAIVER
     end
     assert_includes @pr_batch,
                     "[Review-Wave And Validation Cohorts](../../workflows/pr-batch-integration-closeout.md#review-wave-and-validation-cohorts)"

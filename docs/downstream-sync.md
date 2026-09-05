@@ -56,7 +56,7 @@ Non-command policy lives in `.agents/agent-workflow.yml`. Required keys are:
 ```yaml
 base_branch: main
 follow_up_prefix: "Follow-up:"
-review_gate: "..."
+review_gate: "n/a"
 approval_exempt: "..."
 coordination_backend: "..."
 changelog: "..."
@@ -69,6 +69,65 @@ ci_change_detector: "n/a"
 
 Use `n/a` for unavailable policy. Add repo-specific keys such as
 `secret_redaction_patterns` when they are part of that repo's policy.
+
+`review_gate` is either the exact string `n/a` or a closed executable version 1
+mapping. Legacy prose is not a gate and is not migrated from `AGENTS.md`.
+Configured reviewers name their exact current-head check and every GitHub login
+and artifact kind that can attest the review:
+
+```yaml
+review_gate:
+  version: 1
+  reviewers:
+    - id: claude
+      check_name: claude-review
+      producer:
+        app_slug: github-actions
+        workflow_path: .github/workflows/claude-code-review.yml
+        event: pull_request
+      artifact:
+        actors: [claude, "claude[bot]"]
+        kinds: [pull_request_review, review_thread]
+        completion:
+          mode: producer_check
+  require_current_head: true
+  artifact_settlement:
+    required: true
+    quiet_period_seconds: 30
+  thread_disposition:
+    required: true
+    marker: "configured-review-disposition:"
+  failure_policy: block
+  fallback:
+    mode: disabled
+```
+
+Only pull-request reviews and review-thread roots carry exact-head attribution;
+issue comments never qualify. For each configured actor, only its latest
+current-head pull-request review qualifies, and only in `APPROVED` or
+`COMMENTED` state. `CHANGES_REQUESTED`, `DISMISSED`, pending, or unknown states
+hard-block alternate artifact kinds until a later acceptable formal review
+supersedes them. The configured check must come from the named producer: the
+check-run app and exact workflow run must match, the run must bind to the
+expected PR, head, reviewed base, and event through exactly one workflow-run PR
+association, and the workflow file at that head must be
+byte-identical to its exact trusted-base version. Optional
+`completion.mode: producer_check` treats that verified producer check as the
+completion artifact; unrelated reviews from its workflow bot never qualify.
+The gate blocks missing,
+stale, pending,
+failed, unsettled, or unknown evidence and unresolved current-head review
+threads. A fallback must instead use
+`mode: named_attested_check` with explicit `triggers` and a complete `reviewer`
+mapping; provider failure alone never implies readiness.
+Capacity fallback triggers require the verified producer to set the entire
+check summary to `configured-review-provider-failure: rate_limited`,
+`configured-review-provider-failure: quota_exhausted`, or
+`configured-review-provider-failure: capacity_unavailable`. Free-form check
+output never authorizes a fallback.
+For unresolved threads, `fixed` and `not-actionable` dispositions qualify only
+when the trusted marker is the latest reply; later feedback invalidates them.
+An explicit trusted `waived` disposition remains durable.
 
 Repo-local trust lives in `.agents/trusted-github-actors.yml` and follows the
 same resolution order as `pr-security-preflight`: `--trust-config`, repo-local

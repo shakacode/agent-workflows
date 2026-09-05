@@ -1,7 +1,7 @@
 ---
 base_branch: main
 follow_up_prefix: "Follow-up:"
-review_gate: "codex review before non-trivial workflow changes"
+review_gate: "n/a"
 approval_exempt: "docs, workflow text, helper scripts, skill metadata, and validation fixtures"
 coordination_backend: "public claim-comment fallback"
 changelog: "CHANGELOG.md; user-visible changes only"
