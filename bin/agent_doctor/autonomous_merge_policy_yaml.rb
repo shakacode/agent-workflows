@@ -17,6 +17,7 @@ module AutonomousMergePolicy
     workflows/pr-batch-worker-execution.md
     workflows/pr-batch-integration-closeout.md
     workflows/pr-batch-coordination-observability.md
+    workflows/pr-batch-unblock.md
     workflows/pr-production-release.md
     docs/coordination-backend.md
     skills/pr-batch/SKILL.md skills/pr-monitoring/SKILL.md

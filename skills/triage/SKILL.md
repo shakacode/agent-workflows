@@ -290,6 +290,9 @@ precise blocker.
    Backend storage is optional and must not be assumed.
    Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
    with the selected target and current aggregate wave cap. Each generated prompt must include
+   `merge_authority:<none|ask|auto_merge_when_gates_pass>` with the value resolved from visible
+   authority or the operator's answer; never silently default an omitted value.
+   Each generated prompt must include
    `Coordinator model/effort preference: <model/class>/<effort>.` and
    `Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.` and
    `Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses` and
@@ -340,8 +343,8 @@ precise blocker.
    ``- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.``
    Each prompt must include this exact `ask` authority line:
    ``- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
-   GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
-   `GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+   GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+   `GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
    HST-v1
    Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
    Ordinary readiness is necessary but not sufficient for autonomous merge; evaluate exact-head autonomous-merge eligibility after every ordinary gate passes.
@@ -361,22 +364,12 @@ precise blocker.
    groups before overflow when the unsplit prompt breaches that floor. For
    Claude/generic prompts, measure the actual prompt,
    keep it under 8 000 characters, and split or compact it when too large rather
-   than applying the Codex split threshold. Put a short `Batch title:` after the
-   target-specific invocation line(s): `<PROJECT> <A?> <MM-DD HH:MM> - <short title>`.
-   Resolve `<PROJECT>` from the optional `repo_prefix` in
-   `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
-   ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
-   deterministically from the repository name: use the basename of the `origin`
-   remote after stripping `.git`, or the repository root basename when `origin`
-   is unavailable; for a multi-segment name take the first character of each of
-   the first six `-`, `_`, or space-separated segments, and for a single-segment
-   name take its first 4 characters or the whole name when shorter, then
-   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
-   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
-   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
-   Use A/B/C group letters
-   only when multiple prompts are created, and get `MM-DD HH:MM` from
-   `date +'%m-%d %H:%M'` in the local shell.
+   than applying the Codex split threshold. Put the exact
+   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block after the
+   target-specific invocation line(s), resolving it through canonical
+   [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection).
+   This entrypoint consumes the verified title facts unchanged and does not
+   mirror the selection or trust contract.
    Use `Thread handle:` as the first worker-specific line:
    `Thread handle: <batch-short>-<lane>-<word>`, deriving `<batch-short>` from
    the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C
@@ -454,7 +447,8 @@ Return:
   installed backend does not support queue state, omit this section and note that
   queue state is unavailable.
 - Residual risks and maintainer decisions needed.
-- Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
+- Whenever this chat ends on `Conversation status: Follow-ups remain`, emit the canonical [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before that line: one numbered entry per blocker in the same union, each tagged `[you]`, `[agent]`, or `[external]`, each naming the smallest next action or wait instruction with an exact command, paste-ready prompt, URL, question, trigger, or clearing condition, and each with a `Help:` line giving a different route to clearing it or exactly `none — <reason>`.
+- Response order: scope/repositories/sources; phase-1 counts/dependency graph; coordination; capacity; wave plan/prompts; lifecycle record; queue summary if applicable; residual risks; maintainer decisions; `Action needed: <exact user action or none>`; `Next: <one unambiguous instruction>`; the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean; selected exact `Conversation status: Ready for archiving.` or `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. The selected exact Conversation status line is the actual final user-visible line.
 - Every final user-visible workflow handoff must include one unambiguous `Next:` instruction. When the applicable archive gate passes and no unperformed downstream launch remains, use `Next: Archive this task.` For the default prompt-only `copy-paste` handoff, use `Action needed: Start a new task with the fenced goal prompt.` and `Next: Paste the prompt into that task, then archive this planning task.` A bare archive instruction may not strand an unlaunched goal prompt. When user input blocks progress, state the smallest action that clears the blocker and whether to reply here or start a new task. When the current task will continue without input, state its exact next action. A durable issue, receipt, or blocker list is evidence, not a next step. Keep `Action needed:` separate: name the exact user action or `none`. Put the `Action needed:` and `Next:` guidance before the selected final `Conversation status:` line.
 
 ## Common Mistakes
