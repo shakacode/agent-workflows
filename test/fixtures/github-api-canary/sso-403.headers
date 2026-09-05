@@ -1,0 +1,11 @@
+HTTP/2 403
+date: Tue, 01 Sep 2026 10:00:00 GMT
+x-github-request-id: C0DE:SSO
+x-github-sso: required; url=https://github.com/orgs/example/sso?authorization_request=redacted
+x-ratelimit-resource: core
+x-ratelimit-limit: 5000
+x-ratelimit-used: 10
+x-ratelimit-remaining: 4990
+x-ratelimit-reset: 1788260400
+
+{"message":"Resource protected by organization SAML enforcement."}

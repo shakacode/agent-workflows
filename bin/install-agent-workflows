@@ -27,6 +27,7 @@ Installed paths:
   <target>/docs/solutions/*
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflow-writing-style
+  <target>/bin/github-api-canary
   <target>/bin/validate-execution-provenance
   <target>/bin/agent-workflows-doctor
   <target>/bin/agent_doctor/*
@@ -49,6 +50,7 @@ delivery_state_script="$repo_root/bin/agent-workflows-delivery-state"
 bin_helpers=(
   agent-workflow-seam-doctor
   agent-workflow-writing-style
+  github-api-canary
   agent-workflows-delivery-state
   agent-workflows-doctor
   agent-workflows-status
