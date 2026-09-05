@@ -91,8 +91,8 @@ assurance gates; autonomous authority does not bypass them.
 
 When current exact-diff human approval is genuinely required, first publish the
 complete exact-diff PR walkthrough if human understanding is the blocker. Put
-the orientation and all conceptual sections on GitHub in one pass, prefer
-separately replyable review threads, and let the owning task consume replies
+the orientation and all conceptual sections on GitHub in one pass under
+`$pr-walkthrough`'s mandatory inline-thread and no-anchor-stop rules, and let the owning task consume replies
 asynchronously. Use live interaction only when the maintainer explicitly asks.
 Then refresh readiness and present the full exact head SHA, the sorted gate set,
 and rollback status before asking one final question that names the exact
