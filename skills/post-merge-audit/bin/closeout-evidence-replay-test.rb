@@ -910,6 +910,18 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_v2_github_destination_rejects_non_default_ports_on_public_hosts
+    github_hosts = [nil, "github.com"]
+
+    github_hosts.product(CloseoutEvidenceReplay::DURABLE_GITHUB_EVIDENCE_HOSTS).each do |github_host, host|
+      evidence = "durable: before and after https://#{host}:9999/example/repo/pull/123#visual"
+      qa = run_replay(v2_marker("visual_evidence" => evidence), github_host: github_host).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), "#{github_host || 'unset'}: #{host}"
+      assert_includes qa.fetch("missing"), "visual_evidence.github_url", "#{github_host || 'unset'}: #{host}"
+    end
+  end
+
   def test_v2_github_destination_accepts_matching_ghe_cloud_tenant
     evidence = "durable: before and after https://example.ghe.com/example/repo/pull/123#visual"
     qa = run_replay(

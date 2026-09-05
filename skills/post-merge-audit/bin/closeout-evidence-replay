@@ -600,7 +600,7 @@ module CloseoutEvidenceReplay
       authority = uri.port == 443 ? host : "#{host}:#{uri.port}"
       public_github_target = configured_host.nil? || configured_host == "github.com"
       accepted_host = authority == configured_host ||
-                      (public_github_target && DURABLE_GITHUB_EVIDENCE_HOSTS.include?(host))
+                      (public_github_target && authority == host && DURABLE_GITHUB_EVIDENCE_HOSTS.include?(host))
       accepted_host && uri.path && !uri.path.empty? && uri.path != "/"
     end
   end
