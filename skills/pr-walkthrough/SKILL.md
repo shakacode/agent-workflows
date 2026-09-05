@@ -1,6 +1,6 @@
 ---
 name: pr-walkthrough
-description: Walk a human through a pull request interactively, one conceptual change at a time, explaining the problem, rationale, design choices, behavior, risks, and validation before waiting for questions or permission to continue. Use when a user asks to understand, explain, present, tour, or walk through a PR or diff; when a large or complex PR needs a reviewer-friendly guided tour; or when an `ask` merge-authority workflow requires human understanding before the final merge decision.
+description: Explain a pull request as a conceptual walkthrough, either interactively one change at a time or as one complete COMMENT-only GitHub review when explicitly requested. Use when a user asks to understand, explain, present, tour, or walk through a PR or diff; when a large or complex PR needs a reviewer-friendly guided tour; or when an `ask` merge-authority workflow requires human understanding before the final merge decision.
 ---
 
 # PR Walkthrough
@@ -9,6 +9,12 @@ Build the reviewer's mental model of a PR without making them reconstruct it
 from file-order diffs. Inspect the entire exact-diff change first, then present
 coherent changes interactively. This is an explanation workflow, not a code
 review, approval, or grant of merge authority.
+
+The current task remains the sole user-facing coordinator. The walkthrough is
+an internal explanatory phase, not another task or owner. In published-review
+mode, an authorized workflow may assign publication to a
+named HIL companion task without transferring code ownership. A walkthrough is
+explanatory, not an approval or merge grant.
 
 ## Establish The Exact Change
 
@@ -39,6 +45,15 @@ review, approval, or grant of merge authority.
      responses.
    - Use **concise** mode for smaller, cohesive PRs. Keep the same interactive
      checkpoints while combining only closely related details.
+
+Choose the delivery mode separately from depth:
+
+- **Live mode** is the default for a walkthrough requested in the current chat.
+  Present one conceptual change, wait for questions or `next`, then continue.
+- **Published-review mode** applies only when the user or an authorized
+  repository workflow explicitly requests a complete walkthrough on GitHub.
+  It requires authority to post PR comments. Prepare the entire map first and
+  publish it as described below; do not wait for `next` between sections.
 
 If the diff identity changes during the walkthrough, say that the walkthrough is
 stale, invalidate the coverage ledger for affected concepts, rebuild the map
@@ -82,6 +97,10 @@ Do not explain every step in this opening. Tell the user that each step ends
 with a pause and that they can ask questions, request more or less depth,
 reorder remaining steps, revisit an earlier step, or skip the walkthrough.
 
+This section and the next two sections describe live mode. In published-review
+mode, use the same orientation and conceptual content in the review body and
+inline threads without interactive pauses.
+
 ## Present One Change
 
 Present exactly one conceptual change per response. Keep each response concise
@@ -123,6 +142,36 @@ Then stop. Do not include the next conceptual change in the same response.
 - Honor requests to skip, reorder, deepen, summarize, or end the walkthrough.
 - Keep the coverage ledger current when a question exposes a missing concept.
 
+## Publish One Complete Review
+
+In published-review mode:
+
+1. Build the complete coverage ledger and every conceptual section before any
+   GitHub mutation.
+2. Re-fetch the diff identity immediately before submission. If it changed,
+   rebuild the walkthrough instead of publishing stale explanations.
+3. Submit exactly one GitHub review with event `COMMENT`, never `APPROVE` or
+   `REQUEST_CHANGES`. Put orientation, exact diff identity, scope limits, and an
+   explicit “walkthrough is not approval” statement in the review body.
+4. Publish every conceptual section in that same review as one separately
+   replyable inline thread anchored to an honest changed line for the concept.
+   Never invent an anchor or split one concept merely to create more threads;
+   if a concept has no honest inline anchor, explain the limitation in the
+   review body and stop rather than claiming complete threaded coverage.
+5. Each thread explains the prior problem, change, rationale, observable effect
+   and risk, and proof to the degree relevant. Use explanatory language, not a
+   review-finding severity, approval, or requested-change verdict.
+6. Include an idempotency marker and full head SHA in the review body. Before
+   retrying an uncertain submission, query existing reviews for that marker;
+   never blindly publish a duplicate walkthrough.
+7. Re-fetch the created review and its comments, verify the expected section
+   count and head, and return the durable review URL to the coordinator. When a
+   later commit makes it stale, mark its informational threads resolved and
+   publish one complete replacement review for the new exact diff.
+
+Published-review mode never waits for `next`. Questions may continue in the
+threads or, only when the user explicitly asks, in a separate live walkthrough.
+
 ## Close The Walkthrough
 
 After the final step:
@@ -136,17 +185,30 @@ After the final step:
    does not mean every line was reviewed, the PR was approved, or merge was
    authorized.
 
-When invoked by an `ask` merge-authority workflow, return control to that
-workflow after the exact-diff walkthrough. The authority workflow must refresh
-the diff identity and readiness and ask its one final merge decision separately.
+When invoked by an `ask` merge-authority workflow, return control to the current
+task after the exact-diff walkthrough. The current task must refresh the diff
+identity and readiness and ask its one final merge decision separately.
 Walkthrough participation is not merge approval. A walkthrough response, `next`,
 or positive reaction is never merge approval.
 
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction and a separate `Action needed:` line. For a clean standalone
+walkthrough with no remaining question or decision, use `Action needed: none.`
+and `Next: Archive this task.` When invoked by an `ask` merge-authority workflow,
+use `Action needed: none.` and `Next: Return control to the current coordinator
+task for its refreshed merge decision.` If the walkthrough ends on a blocking
+question or stale/`UNKNOWN` evidence, name the exact required answer or repair
+and say whether to reply here or start a new task. The walkthrough summary and
+coverage ledger are evidence, not a next step.
+
 ## Boundaries
 
-- Remain read-only unless the user separately authorizes changes.
-- Do not turn discovered concerns into fixes, review comments, approvals, or
-  merge actions.
+- Remain read-only unless the user or an authorized repository workflow
+  separately authorizes published-review comments.
+- Do not turn discovered concerns into fixes, code-review findings, approvals,
+  requested-change reviews, or merge actions. Published-review mode may create
+  only its explanatory COMMENT review and may resolve its own stale or
+  verified-informational walkthrough threads.
 - Surface a likely defect or material risk plainly and recommend the appropriate
   review or verification workflow, but continue or pause according to the
   user's walkthrough direction.

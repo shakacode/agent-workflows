@@ -34,6 +34,31 @@ Claude:
 | `claude` | `${CLAUDE_HOME:-$HOME/.claude}` |
 | `auto` | An existing Codex or Claude home, only when exactly one is detectable |
 
+The installer also supplies `agent-workflow-writing-style`,
+[the packaged default guide](writing-style.md), and the opt-in
+[`asd-ste100` adapter](writing-style-asd-ste100.md). Shared authoring workflows
+run the resolver with the trusted repository root before composing human-facing
+prose. Resolution is repo → user-global → portable default, with provenance
+reported as `repo`, `user-global`, or `portable-default`.
+
+`writing_style` is either one nonblank relative Markdown path or the exact
+closed-registry preset `asd-ste100`. The repository value in
+`.agents/agent-workflow.yml` resolves beneath the repository root or selects
+the packaged preset, and wins. An optional personal fallback in
+`~/.agents/agent-workflow.yml` resolves beneath
+`~/.agents` and applies only when the repository does not set the key; that
+user-global file contributes no other workflow policy. If neither layer defines
+a valid guide, the resolver uses the packaged default.
+
+Malformed repository config, unknown presets, unsafe or missing paths, and
+invalid guide files block. The same user-global failures are nonblocking: the
+resolver prints an actionable warning and uses the packaged default. Install
+and upgrade deliver
+the default and preset adapter in copy, symlink, and plugin-companion layouts,
+but never write the user-global config or enable a repository override. See the
+[project writing-style setup](adoption.md#configure-project-writing-style) for
+the configuration instructions.
+
 Use `--target DIR` for custom homes such as `~/.agents`. The host name controls
 the default target and metadata; it does not change the shared workflow text.
 
@@ -48,9 +73,51 @@ host/profile:
 | `plugin-companion` | Native `scw` plugin only | License, workflows, docs, helpers, metadata, status, and upgrades |
 
 `--mode copy|symlink` controls how installer-managed assets are materialized.
-It is separate from `--delivery-mode flat|plugin-companion`. New installs
-default to `flat`; metadata written before delivery modes existed is also read
-as `flat`.
+It is separate from `--delivery-mode flat|plugin-companion`.
+
+### Fresh-Install Delivery Default
+
+**Decision (issue #248): the generic installer keeps `flat` as its fresh-install
+default. This is an explicit product decision, not an inherited side effect of
+the legacy-metadata compatibility rule.**
+
+Rationale:
+
+- Companion mode cannot bootstrap itself. It requires an already enabled native
+  `scw` plugin, and the installer deliberately leaves host plugin installation
+  and updates to the host plugin flow. Defaulting a clean home to
+  `plugin-companion` would make the historical no-flag command fail on every
+  clean host.
+- Detecting an active plugin and silently selecting companion would make the
+  no-flag result depend on ambient machine state and would change what the
+  documented unattended command does on hosts that already have the plugin.
+- `flat` is the only mode that works on a clean home with no host plugin
+  support, no marketplace access, and no network, such as Codex IDE and
+  offline or restricted hosts.
+- The case for native delivery is real but is a documentation and
+  opinionated-setup concern rather than an unattended-default concern. Plugin
+  namespaces avoid collisions with unrelated personal skills, and native
+  delivery gives the host ownership of provider identity and updates. Prefer
+  the native `scw` plugin plus `--delivery-mode plugin-companion` on
+  plugin-capable Codex CLI/Desktop and Claude Code, and choose it explicitly
+  rather than having the installer infer it.
+
+Unchanged by this decision:
+
+- Deliberate `--delivery-mode flat` installation stays supported.
+- Metadata predating `delivery_mode` continues to resolve as `flat`.
+- Exactly one auto-invocable Agent Workflows surface stays enforced: `flat`
+  requires native `scw` to be inactive, `plugin-companion` requires it to be
+  active, and unknown native state fails closed.
+- Unrelated personal skills under `<target>/skills` are preserved in both modes.
+
+Revisit this decision when the installer can bootstrap and prove native `scw`
+from its own host contract, when partial-failure ownership between host plugin
+installation and companion installation is defined, and when
+`agent-workflows-status`, `upgrade-agent-workflows`, and `agent-stack` can
+report and replay an adaptive default consistently. A native-plugin-first
+default belongs to the opinionated ShakaCode `agent-stack` profile and is
+tracked separately from this generic installer default.
 
 ## Native Plugin Paths
 
@@ -159,6 +226,13 @@ Install into an explicit shared agent home:
 bin/install-agent-workflows --host codex --target "$HOME/.agents"
 ```
 
+A clean Codex or Claude installation can plan and launch ordinary batches as
+installed. Do not generate project signing keys or provision fixed launch trust
+anchors: assignment activation and lane progression use ordinary durable
+lifecycle state. Model/effort values are advisory preferences, while any
+host/model/effort observations are optional, host-exposed metadata with
+field-granular `UNKNOWN` for unavailable values.
+
 Install companion assets for an already-enabled native plugin:
 
 ```bash
@@ -168,10 +242,12 @@ bin/install-agent-workflows \
 ```
 
 When migrating a previous flat install, the installer inventories every known
-pack skill before deleting anything. It removes only managed symlinks or copies
-that still match the metadata-recorded source revision. Modified, mismatched,
-ambiguous, and unowned paths are preserved; the migration stops with exact
-manual cleanup guidance. Unrelated skill names are never removed.
+pack skill before deleting anything. It removes only managed symlinks that still
+match the metadata-recorded source revision or copies that match their recorded
+fingerprints (with the recorded revision as the backward-compatible fallback).
+Modified, mismatched, ambiguous, and unowned paths are preserved; the migration
+stops with exact manual cleanup guidance. Unrelated skill names are never
+removed.
 
 Then initialize and validate the seam from a consumer repository:
 
@@ -399,12 +475,19 @@ The installer writes:
 
 - `<target>/skills/*` in `flat` delivery mode only
 - `<target>/LICENSE`
+- `<target>/THIRD_PARTY-NOTICES.md`
 - `<target>/workflows/*`
 - `<target>/docs/coordination-backend.md`
+- `<target>/docs/execution-provenance-schema.md`
 - `<target>/docs/review-finding-schema.md`
 - `<target>/docs/agent-workflows-model-routing.md`
+- `<target>/docs/user-facing-coordination.md`
+- `<target>/docs/writing-style.md`
+- `<target>/docs/writing-style-asd-ste100.md`
 - `<target>/docs/solutions/*`
 - `<target>/bin/agent-workflow-seam-doctor`
+- `<target>/bin/agent-workflow-writing-style`
+- `<target>/bin/validate-execution-provenance`
 - `<target>/bin/agent_doctor/*` (focused runtime modules shared by the workflow and master doctors)
 - `<target>/bin/agent-workflows-delivery-state`
 - `<target>/bin/agent-workflows-doctor`
@@ -415,15 +498,25 @@ The installer writes:
 - `<target>/bin/upgrade-agent-workflows`
 - `<target>/.agent-workflows-install.json`
 
-Copy mode replaces this pack's license file, skill and workflow names, plus the
-pack-owned docs listed above; it preserves unrelated files already present in
-the target agent home, including generic consumer-owned docs under
-`<target>/docs`.
+Copy mode replaces this pack's license and third-party notice files, skill and
+workflow names, plus the pack-owned docs listed above; it preserves unrelated
+files already present in the target agent home, including generic
+consumer-owned docs under `<target>/docs`.
 
 The metadata file records host, artifact mode, skill delivery mode, source
-clone, pack version, source revision, branch, remote, and install time. The
-status and upgrade helpers use that metadata so they can run from either the
-source clone or the installed host.
+clone, pack version, source revision, branch, remote, and install time. Copy
+installs also record `managed_skill_copy_fingerprints`,
+`managed_pack_doc_copy_fingerprints`, and `managed_pack_root_copy_fingerprints`,
+including every installed `<target>/docs/solutions/*` document and the
+third-party notice. On repeat installation, these fingerprints
+prove that an installed managed copy has not been edited even when the recorded
+Git object is unavailable; an exact recorded-revision or current-source match is
+the backward-compatible fallback for older metadata. The installer refuses to
+replace a modified, symlinked-to-an-unowned-target, or otherwise ambiguous
+managed copy, including unexpected files nested inside a managed skill. Restore
+the original installed content or move personal content to a distinct path
+before retrying. The status and upgrade helpers use the metadata so they can run
+from either the source clone or the installed host.
 
 ## Status Checks
 

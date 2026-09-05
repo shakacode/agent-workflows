@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "json"
 require "open3"
 require "optparse"
@@ -8,6 +9,7 @@ require "optparse"
 # rubocop:disable Lint/RedundantRequireStatement
 require "set"
 # rubocop:enable Lint/RedundantRequireStatement
+require "tempfile"
 require "timeout"
 require "uri"
 require "yaml"
@@ -19,12 +21,15 @@ options = {
   repo: nil,
   fail_on_high_risk_files: false,
   include_reactions: false,
+  interaction_artifact_dir: nil,
   strict_trust: false,
   trust_config: nil
 }
 
 GH_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GH_TIMEOUT_SECONDS", "60"))
 GIT_TIMEOUT_SECONDS = Integer(ENV.fetch("PR_SECURITY_PREFLIGHT_GIT_TIMEOUT_SECONDS", "10"))
+INTERACTION_QUEUE_DISPLAY_LIMIT = 10
+PULL_REQUEST_FILES_API_CAP = 3_000
 ACKNOWLEDGEABLE_RISKS = Set.new(
   %w[
     github-api-coverage
@@ -32,6 +37,25 @@ ACKNOWLEDGEABLE_RISKS = Set.new(
     suspicious-text
     untrusted-interactions
     untrusted-participants
+  ]
+).freeze
+HIGH_RISK_ROOT_PATTERN = %r{\A(\.github/|\.agents/|\.claude/|bin/|script/|scripts/)}
+HIGH_RISK_NESTED_SCRIPT_DIR_PATTERN = %r{/(bin|script|scripts)/}
+BROAD_PROTECTED_PARENT_MATCHES = Set.new(%w[root-prefix nested-script-dir]).freeze
+HIGH_RISK_EXACT_FILENAMES = Set.new(
+  %w[
+    .npmrc
+    .pnpmfile.cjs
+    .yarnrc.yml
+    .lefthook.yml
+    AGENTS.md
+    CLAUDE.md
+    Gemfile
+    Gemfile.lock
+    Rakefile
+    package.json
+    package-scripts.yml
+    pnpm-lock.yaml
   ]
 ).freeze
 
@@ -80,7 +104,8 @@ WARNING_SUSPICIOUS_PATTERN = /
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: pr-security-preflight [--repo OWNER/REPO] [--trust-config PATH] " \
                 "[--acknowledge-risk NUMBER:RISK[,RISK]] [--include-reactions] " \
-                "[--strict-trust] [--fail-on-high-risk-files] NUMBER [...]"
+                "[--interaction-artifact-dir DIR] [--strict-trust] " \
+                "[--fail-on-high-risk-files] NUMBER [...]"
   opts.on("--repo OWNER/REPO", "GitHub repository, defaulting to gh repo view") { |repo| options[:repo] = repo }
   opts.on("--trust-config PATH", "Trusted GitHub actor allowlist") { |path| options[:trust_config] = path }
   acknowledge_help = "Maintainer-acknowledged exact-target risk. " \
@@ -96,6 +121,11 @@ parser = OptionParser.new do |opts|
   opts.on("--include-reactions", include_reactions_help) do
     options[:include_reactions] = true
   end
+  artifact_dir_help = "Existing caller-owned directory for unique mode-0600 interaction queue artifacts. " \
+                      "The invoking workflow retains each exact file through batch terminal and any retry/recovery."
+  opts.on("--interaction-artifact-dir DIR", artifact_dir_help) do |directory|
+    options[:interaction_artifact_dir] = directory
+  end
   opts.on("--strict-trust", "Exit non-zero on non-allowlisted or hidden actor findings") do
     options[:strict_trust] = true
   end
@@ -105,6 +135,22 @@ parser = OptionParser.new do |opts|
 end
 
 parser.parse!(ARGV)
+
+if options[:interaction_artifact_dir]
+  if options.fetch(:interaction_artifact_dir).empty?
+    abort "Invalid interaction artifact directory: value must not be empty"
+  end
+
+  requested_directory = File.expand_path(options.fetch(:interaction_artifact_dir))
+  begin
+    resolved_directory = File.realpath(requested_directory)
+  rescue SystemCallError => e
+    abort "Invalid interaction artifact directory #{requested_directory.inspect}: #{e.message}"
+  end
+  abort "Invalid interaction artifact directory #{requested_directory.inspect}: not a directory" unless File.directory?(resolved_directory)
+
+  options[:interaction_artifact_dir] = resolved_directory
+end
 
 if !options[:fail_on_high_risk_files] &&
    options.fetch(:acknowledged_risks).values.any? { |risks| risks.include?("high-risk-files") }
@@ -116,7 +162,13 @@ if ARGV.empty?
   exit 64
 end
 
-target_numbers = ARGV.filter_map { |arg| Integer(arg, exception: false) }.to_set
+target_number_list = ARGV.map do |arg|
+  number = Integer(arg, exception: false)
+  abort "Invalid issue/PR number: #{arg.inspect}" unless number&.positive?
+
+  number
+end
+target_numbers = target_number_list.to_set
 unused_acknowledgement_targets = options.fetch(:acknowledged_risks).keys.reject do |number|
   target_numbers.include?(number)
 end
@@ -470,7 +522,11 @@ end
 
 def load_trust_config(path:, global:)
   path = File.expand_path(path)
-  data = File.exist?(path) ? YAML.safe_load_file(path, aliases: false) || {} : {}
+  contents = File.exist?(path) ? File.binread(path) : ""
+  parse_contents = contents.dup.force_encoding(Encoding::UTF_8)
+  abort "Invalid trust config #{path}: expected valid UTF-8" unless parse_contents.valid_encoding?
+
+  data = parse_contents.empty? ? {} : YAML.safe_load(parse_contents, aliases: false, filename: path) || {}
   abort "Invalid trust config #{path}: expected a YAML mapping at the top level" unless data.is_a?(Hash)
 
   trusted_bots = Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) }
@@ -483,12 +539,15 @@ def load_trust_config(path:, global:)
   end
 
   {
+    content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}",
     path:,
     trusted_bots:,
     trusted_metadata_bots:,
     trusted_teams: normalized_trusted_teams(data["trusted_teams"], require_owner: global),
     trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
   }
+rescue Psych::Exception
+  abort "Invalid trust config #{path}: malformed YAML"
 end
 
 def bot_login_in_set?(login, trusted_set)
@@ -1019,32 +1078,87 @@ def metadata_only_interaction_findings(rest_context, include_pull_comments:, tru
     metadata_only_review_findings(rest_context, trust_config:)
 end
 
-def changed_files(repo, pr_number)
-  run_gh("pr", "diff", pr_number.to_s, "--repo", repo, "--name-only").lines.map(&:strip).reject(&:empty?)
+def changed_file_records(repo, pr_number, expected_count:)
+  payload = run_gh_paginated_json_array(
+    "api", "repos/#{repo}/pulls/#{pr_number}/files?per_page=100"
+  )
+  unless payload.size == expected_count
+    raise "PR ##{pr_number} changed-file evidence is incomplete: " \
+          "expected #{expected_count}, fetched #{payload.size}"
+  end
+
+  payload.map do |file|
+    path = file["filename"] if file.is_a?(Hash)
+    previous_path = file["previous_filename"] if file.is_a?(Hash)
+    unless path.is_a?(String) && !path.empty? &&
+           (previous_path.nil? || (previous_path.is_a?(String) && !previous_path.empty?))
+      raise "PR ##{pr_number} changed-file evidence is missing or malformed: #{JSON.generate(file)}"
+    end
+
+    { path:, previous_path: }
+  end
 end
 
-def high_risk_files(files)
-  high_risk_roots = %r{\A(\.github/|\.agents/|\.claude/|bin/|script/|scripts/)}
-  nested_script_dirs = %r{/(bin|script|scripts)/}
-  high_risk_exact = %w[
-    .npmrc
-    .pnpmfile.cjs
-    .yarnrc.yml
-    .lefthook.yml
-    AGENTS.md
-    CLAUDE.md
-    Gemfile
-    Gemfile.lock
-    Rakefile
-    package.json
-    package-scripts.yml
-    pnpm-lock.yaml
-  ]
+def all_changed_paths(file_records)
+  file_records.flat_map { |file| [file.fetch(:path), file.fetch(:previous_path)] }.compact.uniq
+end
 
-  files.select do |path|
-    path.match?(high_risk_roots) ||
-      path.match?(nested_script_dirs) ||
-      high_risk_exact.include?(path)
+def pull_request_snapshot(repo, pr_number)
+  payload = run_gh_json(
+    "pr", "view", pr_number.to_s, "--repo", repo, "--json", "baseRefOid,headRefOid,changedFiles"
+  )
+  identity = {
+    base_ref_oid: payload["baseRefOid"],
+    head_ref_oid: payload["headRefOid"]
+  }
+  unless identity.values.all? { |oid| oid.is_a?(String) && oid.match?(/\A[0-9a-f]{40}\z/) }
+    raise "PR ##{pr_number} base/head identity is missing or malformed: #{JSON.generate(payload)}"
+  end
+
+  changed_file_count = payload["changedFiles"]
+  unless changed_file_count.is_a?(Integer) && changed_file_count >= 0
+    raise "PR ##{pr_number} changed-file count is missing or malformed: #{JSON.generate(payload)}"
+  end
+  if changed_file_count >= PULL_REQUEST_FILES_API_CAP
+    raise "PR ##{pr_number} changed-file count is at or above the GitHub Files API cap " \
+          "(#{PULL_REQUEST_FILES_API_CAP}): #{changed_file_count}"
+  end
+
+  { identity:, changed_file_count: }
+end
+
+def require_unchanged_pull_request_snapshot!(before, after, pr_number)
+  return if before == after
+
+  raise "PR ##{pr_number} base/head or changed-file count changed while preflight evidence was scanned: " \
+        "#{JSON.generate(before)} -> #{JSON.generate(after)}"
+end
+
+def preflight_helper_provenance
+  path = File.realpath(__FILE__)
+  contents = File.binread(path)
+
+  { path:, content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}" }
+rescue SystemCallError => e
+  abort "Cannot bind preflight helper provenance: #{e.message}"
+end
+
+def high_risk_file_findings(files)
+  files.filter_map do |path|
+    matches = []
+    matches << "root-prefix" if path.match?(HIGH_RISK_ROOT_PATTERN)
+    matches << "nested-script-dir" if path.match?(HIGH_RISK_NESTED_SCRIPT_DIR_PATTERN)
+    matches << "exact-filename" if HIGH_RISK_EXACT_FILENAMES.include?(path)
+    broad_parent_match = matches.any? { |match| BROAD_PROTECTED_PARENT_MATCHES.include?(match) }
+    # This verdict is bound evidence for the separate security-floor resolution
+    # contract. It never weakens record_blockers, which remains fail-closed on
+    # every high-risk path until that workflow independently binds safe-class,
+    # exact-head validation, review, and acknowledgement evidence.
+    # Exact filenames are root-only today. Keep the explicit exclusion so a
+    # future overlapping pattern cannot silently widen this exception.
+    broad_protected_parent_only = broad_parent_match && !matches.include?("exact-filename")
+
+    { path:, matches:, broad_protected_parent_only: } unless matches.empty?
   end
 end
 
@@ -1417,6 +1531,12 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
   # Must run before visible_actor_logins: target aliases graph, so pagination
   # mutations must be in place before the visibility pass reads from graph.
   append_target_graph_pages!(owner:, name:, number:, graph_field:, target:)
+  diff_snapshot = target_is_pr ? pull_request_snapshot(repo, number) : nil
+  diff_identity = diff_snapshot&.fetch(:identity)
+  if target_is_pr && target.fetch("headRefOid") != diff_identity.fetch(:head_ref_oid)
+    raise "PR ##{number} head changed before preflight evidence scan: " \
+          "#{target.fetch('headRefOid')} -> #{diff_identity.fetch(:head_ref_oid)}"
+  end
   rest = rest_context(repo, number, include_pull_comments: target_is_pr, issue:, trust_config:, team_cache:)
   visible = visible_actor_logins(graph, graph_field)
   visible.merge(visible_rest_actor_logins(rest))
@@ -1426,7 +1546,12 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     # GitHub API calls unless the operator explicitly needs reaction attribution.
     visible.merge(reaction_users(repo, number, rest_context: rest, include_pull_comments: target_is_pr))
   end
-  files = target_is_pr ? changed_files(repo, number) : []
+  file_records = if target_is_pr
+                   changed_file_records(repo, number, expected_count: diff_snapshot.fetch(:changed_file_count))
+                 else
+                   []
+                 end
+  files = file_records.map { |file| file.fetch(:path) }
   suspicious_findings = suspicious_findings_for_target(
     repo:,
     number:,
@@ -1448,8 +1573,15 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     include_pull_comments: target_is_pr,
     trust_config:
   )
+  risky_file_findings = high_risk_file_findings(all_changed_paths(file_records))
+  if target_is_pr
+    require_unchanged_pull_request_snapshot!(diff_snapshot, pull_request_snapshot(repo, number), number)
+  end
 
   {
+    changed_file_count: diff_snapshot&.fetch(:changed_file_count),
+    diff_identity:,
+    file_records:,
     files:,
     number:,
     graph_coverage_findings: graph_coverage_findings(target, include_target_author: target_is_pr),
@@ -1462,7 +1594,8 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
       team_cache:,
       canonical_bot_cache:
     ),
-    risky_files: high_risk_files(files),
+    risky_files: risky_file_findings.map { |finding| finding.fetch(:path) },
+    risky_file_findings:,
     suspicious: suspicious_findings.fetch(:suspicious),
     suspicious_warnings: suspicious_findings.fetch(:suspicious_warnings),
     target:,
@@ -1513,10 +1646,11 @@ def print_untrusted_interactions(findings)
   end
 
   puts "  Untrusted comment/review queue:"
-  findings.first(10).each do |finding|
+  findings.first(INTERACTION_QUEUE_DISPLAY_LIMIT).each do |finding|
     puts "    - #{finding.fetch(:author)} #{finding.fetch(:kind)} (#{finding.fetch(:url)})"
   end
-  puts "    - ... #{findings.size - 10} more" if findings.size > 10
+  overflow = findings.size - INTERACTION_QUEUE_DISPLAY_LIMIT
+  puts "    - ... #{overflow} more (see interaction queue artifact below)" if overflow.positive?
 end
 
 def print_metadata_only_interactions(findings)
@@ -1526,10 +1660,106 @@ def print_metadata_only_interactions(findings)
   end
 
   puts "  Metadata-only comment/review queue:"
-  findings.first(10).each do |finding|
+  findings.first(INTERACTION_QUEUE_DISPLAY_LIMIT).each do |finding|
     puts "    - #{finding.fetch(:author)} #{finding.fetch(:kind)} (#{finding.fetch(:url)})"
   end
-  puts "    - ... #{findings.size - 10} more" if findings.size > 10
+  overflow = findings.size - INTERACTION_QUEUE_DISPLAY_LIMIT
+  puts "    - ... #{overflow} more (see interaction queue artifact below)" if overflow.positive?
+end
+
+def interaction_queue_entry(finding)
+  {
+    "actor" => finding.fetch(:author),
+    "kind" => finding.fetch(:kind),
+    "url" => finding.fetch(:url)
+  }
+end
+
+def interaction_queue_artifact_target(result)
+  target = result.fetch(:target)
+  {
+    "number" => target.fetch("number"),
+    "url" => target.fetch("url"),
+    "untrusted" => result.fetch(:untrusted_interactions).map { |finding| interaction_queue_entry(finding) },
+    "metadata_only" => result.fetch(:metadata_only_interactions).map do |finding|
+      interaction_queue_entry(finding)
+    end
+  }
+end
+
+def interaction_queue_artifact_payload(repo, targets)
+  {
+    "contract" => "pr-security-preflight-interaction-queues",
+    "version" => 1,
+    "repository" => repo,
+    "retention" => {
+      "owner" => "invoking-workflow",
+      "delete_after" => "batch-terminal-and-no-retry-or-recovery"
+    },
+    "targets" => targets
+  }
+end
+
+def interaction_queue_overflow?(target)
+  target.fetch("untrusted").size > INTERACTION_QUEUE_DISPLAY_LIMIT ||
+    target.fetch("metadata_only").size > INTERACTION_QUEUE_DISPLAY_LIMIT
+end
+
+def write_interaction_queue_artifact(repo, targets, directory: nil)
+  contents = "#{JSON.generate(interaction_queue_artifact_payload(repo, targets))}\n"
+  file = nil
+  path = nil
+  file = if directory
+           Tempfile.create(["pr-security-preflight-interaction-queues-", ".json"], directory)
+         else
+           Tempfile.create(["pr-security-preflight-interaction-queues-", ".json"])
+         end
+  path = file.path
+  file.binmode
+  file.write(contents)
+  file.flush
+  file.fsync
+  file.close
+
+  {
+    path:,
+    content_digest: "sha256:#{Digest::SHA256.hexdigest(contents)}",
+    entry_count: targets.sum do |target|
+      target.fetch("untrusted").size + target.fetch("metadata_only").size
+    end
+  }
+rescue SystemCallError => e
+  close_error = nil
+  begin
+    file.close if file && !file.closed?
+  rescue SystemCallError => error
+    close_error = error
+  end
+  close_detail = close_error ? "; close also failed: #{close_error.message}" : ""
+  if path
+    begin
+      File.unlink(path)
+    rescue Errno::ENOENT
+      nil
+    rescue SystemCallError => unlink_error
+      abort "Could not write interaction queue artifact: #{e.message}; " \
+            "incomplete artifact cleanup failed at #{path.inspect}: #{unlink_error.message}#{close_detail}"
+    end
+  end
+
+  abort "Could not write interaction queue artifact: #{e.message}"
+end
+
+def print_interaction_queue_artifact(repo, targets, directory: nil)
+  return unless targets.any? { |target| interaction_queue_overflow?(target) }
+
+  artifact = write_interaction_queue_artifact(repo, targets, directory:)
+  puts "Interaction queue artifact: #{artifact.fetch(:path)}"
+  puts "Interaction queue artifact digest: #{artifact.fetch(:content_digest)}"
+  puts "Interaction queue artifact entries: #{artifact.fetch(:entry_count)}"
+  puts "Interaction queue artifact retention owner: invoking workflow"
+  puts "Interaction queue artifact delete after: batch terminal and no retry or recovery depends on it"
+  puts
 end
 
 def print_findings_list(findings, label)
@@ -1622,11 +1852,15 @@ end
 def print_file_findings(result)
   files = result.fetch(:files)
   puts "  Changed files: #{files.empty? ? 'none' : files.join(', ')}"
+  file_records = result.fetch(:file_records)
+  puts "  Changed file records: #{file_records.empty? ? 'none' : JSON.generate(file_records)}"
 
   if result.fetch(:risky_files).empty?
     puts "  High-risk changed files: none"
+    puts "  High-risk predicate matches: none"
   else
     puts "  High-risk changed files: #{result.fetch(:risky_files).join(', ')}"
+    puts "  High-risk predicate matches: #{JSON.generate(result.fetch(:risky_file_findings))}"
   end
 end
 
@@ -1637,7 +1871,11 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
 
   puts "#{target_label} ##{result.fetch(:number)}"
   puts "  URL: #{target.fetch('url')}"
-  puts "  Head: #{target.fetch('headRefOid')}" if result.fetch(:target_is_pr)
+  if result.fetch(:target_is_pr)
+    puts "  Head: #{target.fetch('headRefOid')}"
+    puts "  Diff base/head identity: #{JSON.generate(result.fetch(:diff_identity))}"
+    puts "  Authoritative changed-file count: #{result.fetch(:changed_file_count)}"
+  end
   print_graph_coverage_findings(result.fetch(:graph_coverage_findings))
   print_participant_findings(result.fetch(:participant_findings))
   print_untrusted_interactions(result.fetch(:untrusted_interactions))
@@ -1657,6 +1895,9 @@ def print_scan_result(result, overall_blockers, acknowledged_findings:, acknowle
   puts
 end
 
+helper_provenance = preflight_helper_provenance
+puts "Preflight helper: #{helper_provenance.fetch(:path)}"
+puts "Preflight helper content digest: #{helper_provenance.fetch(:content_digest)}"
 repo_info = options[:repo] ? repo_option_info(options[:repo]) : current_repo_info
 repo = repo_info.fetch(:repo)
 github_host = repo_info.fetch(:github_host)
@@ -1724,6 +1965,7 @@ acknowledged_findings = []
 permission_cache = {}
 team_cache = {}
 canonical_bot_cache = {}
+interaction_queue_targets = []
 trust_config_resolution = resolved_trust_config(options.fetch(:trust_config), repo:, github_host:)
 puts "Trust config: #{trust_config_resolution.fetch(:path)}"
 puts "Trust config source: #{trust_config_resolution.fetch(:source)}"
@@ -1731,24 +1973,32 @@ trust_config = load_trust_config(
   path: trust_config_resolution.fetch(:path),
   global: trust_config_resolution.fetch(:global)
 )
+puts "Trust config content digest: #{trust_config.fetch(:content_digest)}"
 
-ARGV.each do |arg|
-  number = Integer(arg, exception: false)
-  abort "Invalid issue/PR number: #{arg.inspect}" unless number
-
-  result = scan_target(
-    repo:,
-    owner:,
-    name:,
-    number:,
-    pr_query:,
-    issue_query:,
-    include_reactions: options[:include_reactions],
-    permission_cache:,
-    trust_config:,
-    team_cache:,
-    canonical_bot_cache:
-  )
+target_number_list.each do |number|
+  result = begin
+    scan_target(
+      repo:,
+      owner:,
+      name:,
+      number:,
+      pr_query:,
+      issue_query:,
+      include_reactions: options[:include_reactions],
+      permission_cache:,
+      trust_config:,
+      team_cache:,
+      canonical_bot_cache:
+    )
+  rescue StandardError
+    print_interaction_queue_artifact(
+      repo,
+      interaction_queue_targets,
+      directory: options[:interaction_artifact_dir]
+    )
+    raise
+  end
+  interaction_queue_targets << interaction_queue_artifact_target(result)
   print_scan_result(
     result,
     overall_blockers,
@@ -1758,6 +2008,12 @@ ARGV.each do |arg|
     strict_trust: options[:strict_trust]
   )
 end
+
+print_interaction_queue_artifact(
+  repo,
+  interaction_queue_targets,
+  directory: options[:interaction_artifact_dir]
+)
 
 if overall_blockers.any?
   if acknowledged_findings.any?

@@ -5,6 +5,7 @@ require "fileutils"
 require "tmpdir"
 require "rbconfig"
 require_relative "../../bin/agent_doctor/process_runner"
+require_relative "../../bin/agent_doctor/timeout_budget"
 
 class AgentDoctorProcessRunnerTest < Minitest::Test
   def test_captures_bounded_stdout_stderr_and_exit
@@ -31,6 +32,95 @@ class AgentDoctorProcessRunnerTest < Minitest::Test
 
     assert_equal "output exceeded diagnostic size limit", result[:failure]
     assert_operator result[:stdout].bytesize, :<=, 8
+  end
+
+  def test_retries_one_transient_spawn_capacity_failure
+    attempts = 0
+    spawn = lambda do |*arguments|
+      attempts += 1
+      raise Errno::EPERM if attempts == 1
+
+      Process.spawn(*arguments)
+    end
+
+    result = runner(spawn: spawn).capture([RbConfig.ruby, "-e", 'STDOUT.write("ok")'])
+
+    assert_equal 2, attempts
+    assert_equal "ok", result[:stdout]
+    assert_equal 0, result[:exit]
+    assert_nil result[:failure]
+  end
+
+  def test_persistent_spawn_capacity_failure_is_reported_after_one_retry
+    attempts = 0
+    spawn = lambda do |*_arguments|
+      attempts += 1
+      raise Errno::EPERM
+    end
+
+    result = runner(spawn: spawn).capture([RbConfig.ruby, "-e", "exit 0"])
+
+    assert_equal 2, attempts
+    assert_equal "unable to start diagnostic: Errno::EPERM", result[:failure]
+    assert_nil result[:exit]
+  end
+
+  def test_spawn_retry_consumes_the_original_capture_deadline
+    attempts = 0
+    spawn = lambda do |*arguments|
+      attempts += 1
+      raise Errno::EPERM if attempts == 1
+
+      Process.spawn(*arguments)
+    end
+    ticks = [0.0, 0.01, 0.05, 0.11]
+    process_runner = runner(timeout: 0.1, spawn: spawn)
+    process_runner.define_singleton_method(:monotonic) { ticks.shift || 0.11 }
+    process_runner.define_singleton_method(:sleep) { |_seconds| nil }
+
+    result = process_runner.capture([RbConfig.ruby, "-e", "exit 0"])
+
+    assert_equal 2, attempts
+    assert_equal "diagnostic timed out", result[:failure]
+    assert_nil result[:exit]
+  end
+
+  def test_helper_completing_after_meaningful_share_of_workflow_budget_is_successful
+    Dir.mktmpdir do |directory|
+      gate_path = File.join(directory, "completion-gate")
+      child_pid = nil
+      spawn = lambda do |*arguments|
+        child_pid = Process.spawn(*arguments)
+      end
+      ticks = [0.0, 1.0, 3.0, 5.0]
+      current_tick = nil
+      gate_released = false
+      process_runner = runner(timeout: AgentDoctor::TimeoutBudget::WORKFLOW_STATUS_DEFAULT, spawn: spawn)
+
+      begin
+        File.open(gate_path, File::RDWR | File::CREAT, 0o600) do |gate|
+          gate.flock(File::LOCK_EX)
+          process_runner.define_singleton_method(:monotonic) do
+            # After the gate opens at 5.0, keep advancing by 0.05s so the child still has ~2s of real-time slack.
+            current_tick = ticks.shift || current_tick + 0.05
+            if current_tick >= 5.0 && !gate_released
+              gate.flock(File::LOCK_UN)
+              gate_released = true
+            end
+            current_tick
+          end
+          script = 'File.open(ARGV.fetch(0)) { |gate| gate.flock(File::LOCK_SH) }; STDOUT.write("ok")'
+
+          result = process_runner.capture([RbConfig.ruby, "-e", script, gate_path])
+
+          assert_equal "ok", result[:stdout]
+          assert_equal 0, result[:exit]
+          assert_nil result[:failure]
+        end
+      ensure
+        kill_and_reap(child_pid)
+      end
+    end
   end
 
   def test_timeout_terminates_descendant_process_group
@@ -150,6 +240,25 @@ class AgentDoctorProcessRunnerTest < Minitest::Test
       sleep 0.02
     end
     false
+  end
+
+  def kill_and_reap(pid)
+    return unless pid
+
+    begin
+      return if Process.waitpid(pid, Process::WNOHANG)
+    rescue Errno::ECHILD
+      return
+    end
+
+    begin
+      Process.kill("KILL", pid)
+    rescue Errno::ESRCH
+      nil
+    end
+    Process.waitpid(pid)
+  rescue Errno::ECHILD
+    nil
   end
 
   def process_running?(pid, proc_root: "/proc")

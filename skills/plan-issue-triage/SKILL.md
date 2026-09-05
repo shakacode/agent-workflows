@@ -7,6 +7,12 @@ description: Use when preparing a ready prompt for Claude, Codex, or another age
 
 Generate a ready-to-run prompt for issue triage. Do not perform the full audit, change code, or launch workers unless the user explicitly asks.
 
+Resolve writing style before authoring human-facing prose. Run
+`agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
+under the loaded `workflows/pr-processing.md` contract, and require the
+recipient triage agent to use the resolved guide before posting issue comments.
+The guide cannot remove evidence, disposition fields, URLs, or `UNKNOWN` facts.
+
 Memorable invocation:
 
 ```text
@@ -107,6 +113,16 @@ For every issue mentioned, include:
 - Short evidence-based reason
 - Whether you posted a comment
 ```
+
+Every final user-visible workflow handoff must include one unambiguous `Next:`
+instruction. Keep `Action needed:` separate: name the exact user action or
+`none`. For the default prompt-only handoff, use `Action needed: Start a new
+task with the fenced prompt.` and `Next: Paste the prompt into the named
+recipient task, then archive this planning task.` If the user explicitly
+authorized this task to launch or continue the triage instead, name that exact
+task-owned continuation. If no downstream work or decision remains, use `Next:
+Archive this task.` The fenced prompt is evidence for the handoff, not a next
+step by itself.
 
 ## Common Mistakes
 

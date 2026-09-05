@@ -7,6 +7,7 @@ class PrWalkthroughContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
   SKILL = File.join(ROOT, "skills/pr-walkthrough/SKILL.md")
   WORKFLOW = File.join(ROOT, "workflows/pr-processing.md")
+  INTEGRATION_CLOSEOUT = File.join(ROOT, "workflows/pr-batch-integration-closeout.md")
   PR_BATCH = File.join(ROOT, "skills/pr-batch/SKILL.md")
   PR_MONITORING = File.join(ROOT, "skills/pr-monitoring/SKILL.md")
 
@@ -47,7 +48,7 @@ class PrWalkthroughContractTest < Minitest::Test
   end
 
   def test_ask_authority_automatically_walks_through_before_merge_decision
-    [WORKFLOW, PR_BATCH, PR_MONITORING].each do |path|
+    [WORKFLOW, INTEGRATION_CLOSEOUT, PR_MONITORING].each do |path|
       text = File.read(path).gsub(/\s+/, " ")
 
       phrases = [
@@ -66,5 +67,53 @@ class PrWalkthroughContractTest < Minitest::Test
       end
       positions.each_cons(2) { |before, after| assert_operator before, :<, after, path }
     end
+  end
+
+  def test_published_review_mode_is_complete_exact_head_comment_only
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+
+    phrases = [
+      "Build the complete coverage ledger and every conceptual section before any GitHub mutation.",
+      "Re-fetch the diff identity immediately before submission.",
+      "Submit exactly one GitHub review with event `COMMENT`",
+      "Publish every conceptual section in that same review as one separately replyable inline thread",
+      "Include an idempotency marker and full head SHA in the review body.",
+      "Published-review mode never waits for `next`."
+    ]
+    positions = phrases.map do |phrase|
+      position = skill.index(phrase)
+      assert position, "expected #{phrase.inspect}"
+      position
+    end
+    positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+
+    assert_includes skill, "never `APPROVE` or `REQUEST_CHANGES`"
+    assert_includes skill, "walkthrough is not approval"
+    assert_includes skill, "never blindly publish a duplicate walkthrough"
+  end
+
+  def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component
+    pr_batch = File.read(PR_BATCH)
+
+    assert_includes pr_batch,
+                    "[automatic interactive exact-diff walkthrough]" \
+                    "(../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)"
+  end
+
+  def test_walkthrough_is_an_internal_current_task_phase_not_a_new_owner
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+    phrases = [
+      "The current task remains the sole user-facing coordinator.",
+      "The walkthrough is an internal explanatory phase, not another task or owner.",
+      "Present exactly one conceptual change per response.",
+      "return control to the current task",
+      "ask its one final merge decision separately"
+    ]
+    positions = phrases.map do |phrase|
+      position = skill.index(phrase)
+      assert position, "expected #{phrase.inspect}"
+      position
+    end
+    positions.each_cons(2) { |before, after| assert_operator before, :<, after }
   end
 end

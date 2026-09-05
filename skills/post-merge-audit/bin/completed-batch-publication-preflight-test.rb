@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "digest"
+require "etc"
 require "fileutils"
 require "json"
 require "minitest/autorun"
@@ -194,46 +195,6 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     Dir.mktmpdir("completed-batch-publication-preflight") do |directory|
       bin = File.join(directory, "bin")
       FileUtils.mkdir_p(bin)
-      gh = File.join(bin, "gh")
-      File.write(gh, <<~'RUBY')
-        #!/usr/bin/env ruby
-        require "json"
-
-        File.open(ENV.fetch("FAKE_GH_LOG"), "a") { |file| file.puts(ARGV.join(" ")) }
-        args = ARGV.dup
-        abort "expected api" unless args.shift == "api"
-        abort "expected --hostname" unless args.shift == "--hostname"
-        host = args.shift
-        endpoint = args.shift
-        targets = JSON.parse(ENV.fetch("FAKE_GH_TARGETS"))
-        target = targets.find do |candidate|
-          candidate.fetch("host") == host && candidate.fetch("endpoint") == endpoint
-        end
-
-        if target
-          puts JSON.generate(target.fetch("payload"))
-        elsif endpoint == "repos/shakacode/hichee/collaborators/justin808/permission"
-          puts JSON.generate(
-            "permission" => ENV.fetch("FAKE_GH_AUTHOR_PERMISSION"),
-            "user" => { "login" => "justin808", "type" => "User" }
-          )
-        elsif endpoint.include?("/issues/comments/")
-          exit 1 if ENV.fetch("FAKE_GH_MODE") == "not_found"
-
-          puts ENV.fetch("FAKE_GH_COMMENT")
-        else
-          abort "unexpected endpoint: #{host} #{endpoint}"
-        end
-      RUBY
-      agent_coord = File.join(bin, "agent-coord")
-      File.write(agent_coord, <<~'RUBY')
-        #!/usr/bin/env ruby
-        abort "unexpected agent-coord arguments" unless ARGV == ["status", "--batch-id", ENV.fetch("FAKE_BATCH_ID"), "--json"]
-
-        puts ENV.fetch("FAKE_COORDINATION_STATUS")
-      RUBY
-      FileUtils.chmod("+x", gh)
-      FileUtils.chmod("+x", agent_coord)
       row = input.fetch("qa_evidence").find { |candidate| candidate.key?("maintainer_waiver") }
       targets = input.fetch("target_snapshots").map do |snapshot|
         target = snapshot.fetch("target")
@@ -255,13 +216,65 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
           "payload" => payload
         }
       end
+      gh_log = File.join(directory, "gh.log")
+      gh = File.join(bin, "gh")
+      File.write(gh, <<~RUBY)
+        #!#{RbConfig.ruby}
+        require "json"
+
+        File.open(#{gh_log.dump}, "a") { |file| file.puts(ARGV.join(" ")) }
+        args = ARGV.dup
+        abort "expected api" unless args.shift == "api"
+        abort "expected --hostname" unless args.shift == "--hostname"
+        host = args.shift
+        endpoint = args.shift
+        targets = JSON.parse(#{JSON.generate(targets).dump})
+        target = targets.find do |candidate|
+          candidate.fetch("host") == host && candidate.fetch("endpoint") == endpoint
+        end
+
+        if target
+          puts JSON.generate(target.fetch("payload"))
+        elsif endpoint == "repos/shakacode/hichee/collaborators/justin808/permission"
+          puts JSON.generate(
+            "permission" => #{author_permission.dump},
+            "user" => { "login" => "justin808", "type" => "User" }
+          )
+        elsif endpoint.include?("/issues/comments/")
+          exit 1 if #{mode.dump} == "not_found"
+
+          puts #{JSON.generate(valid_waiver_comment(row, input)).dump}
+        else
+          abort "unexpected endpoint: \#{host} \#{endpoint}"
+        end
+      RUBY
+      agent_coord = File.join(bin, "agent-coord")
+      File.write(agent_coord, <<~'RUBY')
+        #!/usr/bin/env ruby
+        abort "unexpected agent-coord arguments" unless ARGV == ["status", "--batch-id", ENV.fetch("FAKE_BATCH_ID"), "--json"]
+
+        puts ENV.fetch("FAKE_COORDINATION_STATUS")
+      RUBY
+      FileUtils.chmod("+x", gh)
+      FileUtils.chmod("+x", agent_coord)
+      runner = File.join(directory, "completed-batch-publication-preflight-runner.rb")
+      File.write(runner, <<~RUBY)
+        load #{SCRIPT.dump}
+        fake_gh = #{gh.dump}
+        original_trusted_system_tool = CompletedBatchPublicationPreflight.method(:trusted_system_tool)
+        CompletedBatchPublicationPreflight.define_singleton_method(:trusted_system_tool) do |name, outside_root:|
+          if name == "gh"
+            CompletedBatchPublicationPreflight.trusted_external_executable(fake_gh, outside_root:)
+          else
+            original_trusted_system_tool.call(name, outside_root:)
+          end
+        end
+        exit CompletedBatchPublicationPreflight.run(ARGV)
+      RUBY
       env = {
         "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
-        "FAKE_GH_LOG" => File.join(directory, "gh.log"),
-        "FAKE_GH_MODE" => mode,
-        "FAKE_GH_AUTHOR_PERMISSION" => author_permission,
-        "FAKE_GH_COMMENT" => JSON.generate(valid_waiver_comment(row, input)),
-        "FAKE_GH_TARGETS" => JSON.generate(targets),
+        "FAKE_GH_LOG" => gh_log,
+        "FAKE_PREFLIGHT_RUNNER" => runner,
         "FAKE_BATCH_ID" => input.fetch("batch_id"),
         "FAKE_COORDINATION_STATUS" => JSON.generate(input.fetch("coordination_status"))
       }
@@ -399,6 +412,176 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_capture_process_accepts_a_closed_environment_and_explicit_working_directory
+    Dir.mktmpdir("completed-batch-closed-environment") do |directory|
+      original_ambient = ENV["CAPTURE_PROCESS_AMBIENT"]
+      ENV["CAPTURE_PROCESS_AMBIENT"] = "must-not-leak"
+      program = <<~'RUBY'
+        require "json"
+        puts JSON.generate("cwd" => Dir.pwd, "environment" => ENV.to_h)
+      RUBY
+
+      stdout, stderr, status = CompletedBatchPublicationPreflight.capture_process(
+        [RbConfig.ruby, "-e", program],
+        input: "",
+        timeout: 2,
+        environment: { "ONLY_CONTROLLED" => "yes" },
+        chdir: directory,
+        unsetenv_others: true
+      )
+
+      payload = JSON.parse(stdout)
+      assert status.success?, stderr
+      assert_equal File.realpath(directory), payload.fetch("cwd")
+      assert_equal "yes", payload.dig("environment", "ONLY_CONTROLLED")
+      refute payload.fetch("environment").key?("CAPTURE_PROCESS_AMBIENT")
+    ensure
+      original_ambient.nil? ? ENV.delete("CAPTURE_PROCESS_AMBIENT") : ENV["CAPTURE_PROCESS_AMBIENT"] = original_ambient
+    end
+  end
+
+  def test_authenticated_gh_api_uses_an_external_absolute_tool_with_a_closed_environment_and_safe_cwd
+    Dir.mktmpdir("completed-batch-authenticated-gh") do |directory|
+      repository = File.join(directory, "candidate-repository")
+      candidate_bin = File.join(repository, "bin")
+      external_bin = File.join(directory, "trusted-bin")
+      FileUtils.mkdir_p([candidate_bin, external_bin])
+      candidate_gh = File.join(candidate_bin, "gh")
+      external_gh = File.join(external_bin, "gh")
+      [candidate_gh, external_gh].each do |path|
+        File.write(path, "#!/bin/sh\nexit 99\n")
+        FileUtils.chmod(0o755, path)
+      end
+
+      ambient = %w[PATH GIT_SSH_COMMAND GIT_ASKPASS RUBYOPT RUBYLIB GH_CONFIG_DIR].to_h do |name|
+        [name, ENV[name]]
+      end
+      credential_environment = CompletedBatchPublicationPreflight::GH_CREDENTIAL_ENV_KEYS.to_h do |name|
+        [name, ENV[name]]
+      end
+      ENV["GITHUB_TOKEN"] = "ambient-non-gh-token"
+      CompletedBatchPublicationPreflight::GH_CREDENTIAL_ENV_KEYS.each { |name| ENV.delete(name) }
+      ENV.update(
+        "PATH" => "#{candidate_bin}:#{ENV.fetch('PATH')}",
+        "GH_TOKEN" => "approved-token",
+        "GIT_SSH_COMMAND" => candidate_gh,
+        "GIT_ASKPASS" => candidate_gh,
+        "RUBYOPT" => "-rcandidate-loader",
+        "RUBYLIB" => repository,
+        "GH_CONFIG_DIR" => repository
+      )
+
+      observed = nil
+      test_case = self
+      capture = lambda do |command, input:, timeout:, environment: nil, chdir: nil, unsetenv_others: false|
+        observed = {
+          command:,
+          input:,
+          timeout:,
+          environment:,
+          chdir: File.realpath(chdir),
+          unsetenv_others:
+        }
+        test_case.assert File.directory?(chdir), "authenticated gh cwd must exist while gh runs"
+        [JSON.generate("authenticated" => true), "", Struct.new(:success?).new(true)]
+      end
+      resolver = lambda do |name, outside_root:|
+        test_case.assert_equal "gh", name
+        test_case.assert_equal File.realpath(repository), File.realpath(outside_root)
+        File.realpath(external_gh)
+      end
+      original_capture = CompletedBatchPublicationPreflight.method(:capture_process)
+      original_resolver = if CompletedBatchPublicationPreflight.respond_to?(:trusted_system_tool)
+                            CompletedBatchPublicationPreflight.method(:trusted_system_tool)
+                          end
+      CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &capture)
+      CompletedBatchPublicationPreflight.define_singleton_method(:trusted_system_tool, &resolver)
+
+      payload = CompletedBatchPublicationPreflight.authenticated_gh_api(
+        "github.com",
+        "repos/shakacode/agent-workflows/issues/comments/1",
+        repository_root: repository
+      )
+
+      account = Etc.getpwuid
+      expected_environment = {
+        "GH_HOST" => "github.com",
+        "HOME" => account.dir,
+        "USER" => account.name,
+        "LOGNAME" => account.name,
+        "PATH" => CompletedBatchPublicationPreflight::SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+        "GH_PROMPT_DISABLED" => "1",
+        "GIT_TERMINAL_PROMPT" => "0",
+        "GH_TOKEN" => "approved-token"
+      }
+      assert_equal({ "authenticated" => true }, payload)
+      assert_equal [
+        File.realpath(external_gh),
+        "api", "--hostname", "github.com",
+        "repos/shakacode/agent-workflows/issues/comments/1"
+      ], observed.fetch(:command)
+      assert_equal "", observed.fetch(:input)
+      assert_equal CompletedBatchPublicationPreflight.gh_timeout_seconds, observed.fetch(:timeout)
+      assert_equal expected_environment, observed.fetch(:environment)
+      assert observed.fetch(:unsetenv_others)
+      refute File.exist?(observed.fetch(:chdir)), "authenticated gh cwd must be removed after gh exits"
+      refute_equal File.realpath(repository), observed.fetch(:chdir)
+      refute observed.fetch(:chdir).start_with?("#{File.realpath(repository)}#{File::SEPARATOR}")
+    ensure
+      ambient&.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
+      credential_environment&.each { |name, value| value.nil? ? ENV.delete(name) : ENV[name] = value }
+      if original_capture
+        CompletedBatchPublicationPreflight.define_singleton_method(:capture_process, &original_capture)
+      end
+      if original_resolver
+        CompletedBatchPublicationPreflight.define_singleton_method(:trusted_system_tool, &original_resolver)
+      else
+        CompletedBatchPublicationPreflight.singleton_class.send(:remove_method, :trusted_system_tool)
+      end
+    end
+  end
+
+  def test_trusted_external_executable_rejects_candidate_controlled_and_malformed_tools
+    Dir.mktmpdir("completed-batch-trusted-tool") do |directory|
+      repository = File.join(directory, "candidate-repository")
+      repository_bin = File.join(repository, "bin")
+      external_bin = File.join(directory, "trusted-bin")
+      FileUtils.mkdir_p([repository_bin, external_bin])
+      repository_tool = File.join(repository_bin, "gh")
+      external_tool = File.join(external_bin, "gh")
+      non_executable = File.join(external_bin, "gh-non-executable")
+      repository_symlink = File.join(external_bin, "gh-repository-symlink")
+      File.write(repository_tool, "#!/bin/sh\nexit 0\n")
+      File.write(external_tool, "#!/bin/sh\nexit 0\n")
+      File.write(non_executable, "#!/bin/sh\nexit 0\n")
+      FileUtils.chmod(0o755, [repository_tool, external_tool])
+      FileUtils.chmod(0o644, non_executable)
+      File.symlink(repository_tool, repository_symlink)
+
+      assert_nil CompletedBatchPublicationPreflight.trusted_external_executable(
+        repository_tool,
+        outside_root: repository
+      )
+      assert_nil CompletedBatchPublicationPreflight.trusted_external_executable(
+        repository_symlink,
+        outside_root: repository
+      )
+      assert_nil CompletedBatchPublicationPreflight.trusted_external_executable(
+        non_executable,
+        outside_root: repository
+      )
+      assert_nil CompletedBatchPublicationPreflight.trusted_external_executable(
+        File.join(external_bin, "missing-gh"),
+        outside_root: repository
+      )
+      assert_equal File.realpath(external_tool),
+                   CompletedBatchPublicationPreflight.trusted_external_executable(
+                     external_tool,
+                     outside_root: repository
+                   )
+    end
+  end
+
   def test_public_claim_comment_fallback_never_invokes_private_coordination
     calls = []
     capture = lambda do |command, input:, timeout:|
@@ -468,6 +651,71 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                  Digest::SHA256.hexdigest(marker)
   end
 
+  def test_append_only_telemetry_and_liveness_decay_do_not_invalidate_coordination_status
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    # The live backend has since recorded unrelated lifecycle events, and the
+    # terminal lanes' heartbeat-derived liveness has decayed. Neither is a fact
+    # the audit asserts, so publication must stay eligible.
+    drifted = Marshal.load(Marshal.dump(input.fetch("coordination_status")))
+    drifted["events"] = [{ "type" => "claim.acquired", "agent_id" => "other-lane-worker" }]
+    drifted["heartbeats"] = [{ "agent_id" => "other-lane-worker", "status" => "in_progress" }]
+    drifted.fetch("batches").each do |batch|
+      batch.fetch("lanes").each { |lane| lane["liveness"] = "stale" }
+    end
+    verifier = lambda do |backend:, batch_id:|
+      next unless backend == BACKEND && batch_id == input.fetch("batch_id")
+
+      drifted
+    end
+
+    result = assess_input(input, coordination_verifier: verifier)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_empty result.fetch("blockers")
+  end
+
+  def test_explicit_null_versus_absent_key_is_reported_as_drift_not_authentic
+    # Hash#== distinguishes an explicit null from an absent key, but a key-wise
+    # comparison does not, so this is the case where no individual key differs
+    # yet the payloads are unequal.
+    assert_equal(
+      ["coordination status"],
+      CompletedBatchPublicationPreflight.coordination_status_drift({ "scope" => nil }, {})
+    )
+    refute CompletedBatchPublicationPreflight.coordination_status_authentic?({ "scope" => nil }, {})
+    assert CompletedBatchPublicationPreflight.coordination_status_authentic?({ "scope" => nil }, { "scope" => nil })
+  end
+
+  def test_terminal_fact_regression_still_blocks_and_names_the_drifted_component
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    regressed = Marshal.load(Marshal.dump(input.fetch("coordination_status")))
+    regressed.fetch("batches").each do |batch|
+      batch.fetch("lanes").each { |lane| lane["terminal"] = "abandoned" }
+    end
+    verifier = lambda do |backend:, batch_id:|
+      next unless backend == BACKEND && batch_id == input.fetch("batch_id")
+
+      regressed
+    end
+
+    result = assess_input(input, coordination_verifier: verifier)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "coordination status is not authenticated or fresh"
+    assert_includes result.fetch("blockers"), "coordination status drift: batches"
+  end
+
+  def test_unavailable_coordination_status_is_reported_as_drift
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    verifier = ->(backend:, batch_id:) { nil } # rubocop:disable Lint/UnusedBlockArgument
+
+    result = assess_input(input, coordination_verifier: verifier)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "coordination status is not authenticated or fresh"
+    assert_includes result.fetch("blockers"), "coordination status drift: coordination status is unavailable"
+  end
+
   def test_four_terminal_reconciled_lanes_pass_with_exact_head_dispositions
     result = assess_input(fixture("completed-batch-publication-hichee-terminal.json"))
 
@@ -497,31 +745,125 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                  result.fetch("snapshot_digest")
   end
 
-  def test_abandoned_or_superseded_lane_accepts_later_authenticated_target_completion_without_rewriting_closeout
-    %w[abandoned superseded].each do |terminal_state|
-      input = fixture("completed-batch-publication-hichee-terminal.json")
-      lane = input.dig("coordination_status", "batches", 0, "lanes")
-                  .find { |row| row.fetch("targets") == ["10048"] }
-      lane["status"] = terminal_state
-      lane["terminal"] = terminal_state
-      lane.delete("pr_state")
-      lane.delete("evidence_url")
+  def test_9972_terminal_supersession_reports_replacement_protocol_violation
+    result = assess_input(fixture("completed-batch-publication-hichee-9972-replacement.json"))
 
-      result = assess_input(input)
+    refute result.fetch("eligible")
+    assert_equal "BLOCKED", result.fetch("verdict")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:9972 premature terminal supersession / " \
+                    "replacement protocol violation"
+    lane = result.dig("snapshot", "coordination", "lanes").fetch(0)
+    assert_equal "superseded", lane.fetch("status")
+    assert_equal "superseded", lane.fetch("terminal")
+    assert_equal "2026-07-24T13:20:04Z", lane.fetch("closed_at")
+    assert_equal "open", lane.fetch("target_state")
+    refute lane.key?("completion_mode")
+  end
 
-      assert result.fetch("eligible"), result.fetch("blockers").join("\n")
-      reconciled_lane = result.dig("snapshot", "coordination", "lanes")
+  def test_superseded_code_completion_before_terminal_closeout_is_still_a_protocol_violation
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "superseded"
+    lane["terminal"] = "superseded"
+    input.fetch("target_snapshots")
+         .find { |row| row.dig("target", "number") == 10_048 }["completed_at"] = "2026-07-30T08:43:03Z"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#pull_request:10048 premature terminal supersession / " \
+                    "replacement protocol violation"
+  end
+
+  def test_abandoned_lane_accepts_later_authenticated_target_completion_without_rewriting_closeout
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10048"] }
+    lane["status"] = "abandoned"
+    lane["terminal"] = "abandoned"
+    lane.delete("pr_state")
+    lane.delete("evidence_url")
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    reconciled_lane = result.dig("snapshot", "coordination", "lanes")
+                            .find { |row| row.dig("target", "number") == 10_048 }
+    assert_equal "abandoned", reconciled_lane.fetch("status")
+    assert_equal "abandoned", reconciled_lane.fetch("terminal")
+    assert_equal "authenticated_target_after_coordination_closeout",
+                 reconciled_lane.fetch("completion_mode")
+    reconciled_target = result.dig("snapshot", "targets")
                               .find { |row| row.dig("target", "number") == 10_048 }
-      assert_equal terminal_state, reconciled_lane.fetch("status")
-      assert_equal terminal_state, reconciled_lane.fetch("terminal")
-      assert_equal "authenticated_target_after_coordination_closeout",
-                   reconciled_lane.fetch("completion_mode")
-      reconciled_target = result.dig("snapshot", "targets")
-                                .find { |row| row.dig("target", "number") == 10_048 }
-      assert_equal "2026-08-01T00:00:00Z", reconciled_target.fetch("completed_at")
-      assert_nil reconciled_lane.fetch("target_state")
-      assert_nil reconciled_lane.fetch("evidence")
-    end
+    assert_equal "2026-08-01T00:00:00Z", reconciled_target.fetch("completed_at")
+    assert_nil reconciled_lane.fetch("target_state")
+    assert_nil reconciled_lane.fetch("evidence")
+  end
+
+  def test_superseded_issue_lane_accepts_later_authenticated_typed_no_pr_close
+    input = no_pr_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10036"] }
+    lane["status"] = "superseded"
+    lane["terminal"] = "superseded"
+    lane.delete("pr_state")
+    lane.delete("evidence_url")
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    reconciled_lane = result.dig("snapshot", "coordination", "lanes")
+                            .find { |row| row.dig("target", "number") == 10_036 }
+    assert_equal "issue", reconciled_lane.dig("target", "type")
+    assert_equal "superseded", reconciled_lane.fetch("terminal")
+    assert_equal "authenticated_target_after_coordination_closeout",
+                 reconciled_lane.fetch("completion_mode")
+  end
+
+  def test_superseded_typed_no_pr_issue_completed_before_lane_closeout_is_a_protocol_violation
+    input = no_pr_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == ["10036"] }
+    lane["status"] = "superseded"
+    lane["terminal"] = "superseded"
+    snapshot = input.fetch("target_snapshots")
+                    .find { |row| row.dig("target", "number") == 10_036 }
+    snapshot["completed_at"] = "2026-07-30T08:43:03Z"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10036 premature terminal supersession / " \
+                    "replacement protocol violation"
+  end
+
+  def test_superseded_closed_issue_without_typed_no_pr_evidence_is_a_protocol_violation
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    number = 10_048
+    target = input.fetch("expected_targets").find { |row| row.fetch("number") == number }
+    target["type"] = "issue"
+    lane = input.dig("coordination_status", "batches", 0, "lanes")
+                .find { |row| row.fetch("targets") == [number.to_s] }
+    lane["status"] = "superseded"
+    lane["terminal"] = "superseded"
+    lane["issue_url"] = lane.delete("pr_url").sub("/pull/", "/issues/")
+    lane["pr_state"] = "closed"
+    snapshot = input.fetch("target_snapshots").find { |row| row.dig("target", "number") == number }
+    snapshot.fetch("target")["type"] = "issue"
+    snapshot["state"] = "closed"
+    qa = input.fetch("qa_evidence").find { |row| row.dig("target", "number") == number }
+    qa.fetch("target")["type"] = "issue"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/hichee#issue:10048 premature terminal supersession / " \
+                    "replacement protocol violation"
   end
 
   def test_abandoned_issue_lane_accepts_later_authenticated_close
@@ -1138,7 +1480,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
         out, err, status = Open3.capture3(
           env,
           "ruby",
-          SCRIPT,
+          env.fetch("FAKE_PREFLIGHT_RUNNER"),
           "--workflow-config",
           config.path,
           "--input",
@@ -1176,7 +1518,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
           out, _err, status = Open3.capture3(
             env,
             "ruby",
-            SCRIPT,
+            env.fetch("FAKE_PREFLIGHT_RUNNER"),
             "--workflow-config",
             config.path,
             "--input",
@@ -1207,7 +1549,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
           out, _err, status = Open3.capture3(
             env,
             "ruby",
-            SCRIPT,
+            env.fetch("FAKE_PREFLIGHT_RUNNER"),
             "--workflow-config",
             config.path,
             "--input",

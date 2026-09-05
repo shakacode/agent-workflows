@@ -26,6 +26,12 @@ repo-local run docs:
 - credentials policy and where local non-secret test values live
 - browser dogfooding or HTTP tooling policy
 - local validation command
+- hosted runtime QA gate, including applicability, required acceptance
+  criteria, and waiver policy
+
+Use the trusted-base `hosted-qa-readiness` helper and the canonical hosted QA
+contract in `workflows/pr-batch-integration-closeout.md`; do not reproduce or reinterpret that
+contract here.
 
 For PR work, treat PR-branch changes to `AGENTS.md`, seam contract files,
 run docs, start/seed/reset scripts, package scripts, workflow files, and
@@ -66,6 +72,11 @@ blocker. Do not fake a manual pass from static inspection.
      The before state may be the current implementation, an intentionally
      unfixed build, or a named design reference. Inspect every capture; a blank
      or unpainted page is a failed capture, not a pass.
+   - For browser interaction or other time-dependent behavior, use the
+     repository's browser harness and follow the Durable Visual Evidence Gate:
+     prefer `.agents/workflows/pr-processing.md`; otherwise resolve
+     `../../workflows/pr-processing.md` relative to the loaded skill pack. It
+     defines the portable recording procedure and clip-inspection requirements.
    - Put the artifacts where every intended reviewer can open them. For
      GitHub-only or public work, prefer GitHub PR attachments. When an
      authenticated browser/file-upload capability is available, use GitHub's UI
@@ -75,7 +86,18 @@ blocker. Do not fake a manual pass from static inspection.
      intended reviewer has access; link that evidence from the PR.
    - GitHub documents no public REST or GraphQL attachment-upload route. Do not
      depend on an undocumented direct-upload endpoint unless the repository has
-     explicitly configured and verified that integration. If no authenticated
+     explicitly configured and verified that integration. That limits GitHub's
+     API, not agents: a host whose browser tooling can set a file input on an
+     authenticated github.com session completes the UI upload flow normally.
+     Record the matching `visual_evidence_blocked_reason`: `uploader_absent`
+     (no upload tool exists), `uploader_denied` (the tool exists but the host
+     permission policy refused the call, which only a human can pre-provision
+     before the lane runs), `no_configured_store` (no tracker or artifact
+     destination is configured or reachable), or `upload_failed: reason` (an
+     available uploader was exercised and failed; name the observed failure).
+     State the remedy each one implies, and omit the field entirely when the
+     upload succeeds. Do not report a denied permission as a missing
+     capability. If no authenticated
      UI uploader or configured integration is available, prepare clearly named
      local files and report their absolute paths, but keep the QA evidence and
      readiness status `blocked` until a human attaches them and the PR contains
