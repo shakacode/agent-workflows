@@ -929,21 +929,41 @@ class CloseoutEvidenceReplayTest < Minitest::Test
   end
 
   def test_v2_github_destination_accepts_current_and_legacy_public_attachment_hosts
+    github_hosts = [nil, "github.com", "www.github.com"]
     hosts = %w[
       github.com/example/repo/pull/123#visual
       user-images.githubusercontent.com/123/before.png
     ]
 
-    hosts.each do |host_and_path|
+    github_hosts.product(hosts).each do |github_host, host_and_path|
       evidence = "durable: before and after https://#{host_and_path}"
-      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+      qa = run_replay(v2_marker("visual_evidence" => evidence), github_host: github_host).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), "#{github_host || 'unset'}: #{host_and_path}"
+    end
+  end
+
+  def test_v2_github_destination_accepts_public_interaction_clips_for_www_github_target
+    hosts = %w[
+      github.com/example/repo/pull/123#clip
+      user-images.githubusercontent.com/123/clip.mp4
+    ]
+
+    hosts.each do |host_and_path|
+      qa = run_replay(
+        v2_marker(
+          "interaction_change" => "yes",
+          "interaction_evidence" => "clip: https://#{host_and_path}"
+        ),
+        github_host: "www.github.com"
+      ).fetch("qa_evidence")
 
       assert_equal "SATISFIED", qa.fetch("verdict"), host_and_path
     end
   end
 
   def test_v2_github_destination_rejects_non_default_ports_on_public_hosts
-    github_hosts = [nil, "github.com"]
+    github_hosts = [nil, "github.com", "www.github.com"]
 
     github_hosts.product(CloseoutEvidenceReplay::DURABLE_GITHUB_EVIDENCE_HOSTS).each do |github_host, host|
       evidence = "durable: before and after https://#{host}:9999/example/repo/pull/123#visual"
