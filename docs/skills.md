@@ -221,6 +221,24 @@ visible ChatGPT subset. It separates work state, next owner, and archive
 readiness, verifies stale blockers when they change the recommendation, and
 groups the report by the next useful action.
 
+After quota exhaustion or an app restart, explicitly request its optional
+[interrupted-task recovery mode](../skills/audit-chats/references/interrupted-task-recovery.md):
+
+```text
+Use $audit-chats to recover interrupted Codex tasks for this repository on
+this host. Resume only existing, still-authorized work; prioritize PRs close to
+completion. Leave active, intentionally paused, and genuinely blocked tasks
+alone. Show me only exceptions needing my decision and save the full audit.
+```
+
+Add your required model and effort to that prompt when applicable. Recovery
+uses supported task controls, not the local inventory database. It verifies
+actual execution instead of assuming a sent message restarted a task. If the
+host lacks those controls, it reports the limitation without starting a
+replacement worker. Access to another machine's files is not task-control
+access; run the scoped recovery there when remote controls are unavailable.
+An ordinary audit remains read-only, and installing this skill starts nothing.
+
 ### [`$task-observer`](../skills/task-observer/SKILL.md)
 
 Use `$task-observer` only when you explicitly want to capture sanitized lessons
