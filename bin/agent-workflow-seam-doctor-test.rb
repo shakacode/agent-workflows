@@ -173,6 +173,117 @@ module AgentWorkflowSeamDoctorTestHelpers
   end
 end
 
+class AgentWorkflowSeamDoctorGeneratedArtifactsPolicyTest < Minitest::Test
+  include AgentWorkflowSeamDoctorTestHelpers
+
+  def test_generated_artifacts_accepts_a_missing_golden_test_for_the_runtime_gate
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "generated_artifacts" => [
+            {
+              "source" => "templates/widget.tt",
+              "mirrors" => ["spec/fixtures/widget.rb"]
+            }
+          ]
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      assert status.success?, out
+      assert_includes out, "PASS"
+    end
+  end
+
+  def test_generated_artifacts_rejects_unknown_entry_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "generated_artifacts" => [
+            {
+              "source" => "templates/widget.tt",
+              "mirrors" => ["spec/fixtures/widget.rb"],
+              "golden_test" => "spec/golden/widget_spec.rb",
+              "mirror" => "spec/typo.rb"
+            }
+          ]
+        )
+      )
+      write_skill(root, "No commands here.\n")
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, 'invalid generated_artifacts policy: generated_artifacts[0] contains unknown key(s): "mirror"'
+    end
+  end
+
+  def test_generated_artifacts_rejects_invalid_paths_and_relationships
+    policies = {
+      "non-list" => { "source" => "templates/widget.tt" },
+      "empty list" => [],
+      "non-mapping entry" => ["templates/widget.tt"],
+      "absolute source" => [valid_generated_artifact.merge("source" => "/templates/widget.tt")],
+      "traversing source" => [valid_generated_artifact.merge("source" => "../widget.tt")],
+      "empty mirrors" => [valid_generated_artifact.merge("mirrors" => [])],
+      "duplicate mirrors" => [valid_generated_artifact.merge("mirrors" => ["spec/fixture.rb", "spec/fixture.rb"])],
+      "source repeated as mirror" => [valid_generated_artifact.merge("mirrors" => ["templates/widget.tt"])],
+      "invalid golden test" => [valid_generated_artifact.merge("golden_test" => "")],
+      "duplicate sources" => [valid_generated_artifact, valid_generated_artifact]
+    }
+
+    policies.each do |label, generated_artifacts|
+      with_repo do |root|
+        write_valid_binstub_contract(root)
+        write_policy(root, POLICY.merge("generated_artifacts" => generated_artifacts))
+        write_skill(root, "No commands here.\n")
+
+        out, status = run_doctor(root)
+
+        refute status.success?, label
+        assert_includes out, "invalid generated_artifacts policy", label
+      end
+    end
+  end
+
+  def test_generated_artifacts_rejects_duplicate_entry_keys
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      policy_path = File.join(root, ".agents/agent-workflow.yml")
+      File.open(policy_path, "a") do |file|
+        file.write(<<~YAML)
+          generated_artifacts:
+            - source: templates/first.tt
+              source: templates/second.tt
+              mirrors:
+                - spec/fixture.rb
+        YAML
+      end
+
+      out, status = run_doctor(root)
+
+      refute status.success?
+      assert_includes out, 'invalid generated_artifacts policy: $.generated_artifacts contains duplicate key "source"'
+    end
+  end
+
+  private
+
+  def valid_generated_artifact
+    {
+      "source" => "templates/widget.tt",
+      "mirrors" => ["spec/fixture.rb"],
+      "golden_test" => "spec/golden/widget_spec.rb"
+    }
+  end
+end
+
 class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   include AgentWorkflowSeamDoctorTestHelpers
 

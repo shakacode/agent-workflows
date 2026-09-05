@@ -8,6 +8,7 @@ require "etc"
 require "fileutils"
 require "open3"
 require "optparse"
+require "pathname"
 require "rbconfig"
 require "shellwords"
 require "yaml"
@@ -166,6 +167,7 @@ module AgentWorkflowSeamDoctor
   ].freeze
   TRUSTED_INTERPRETER_DIRS = ([File.dirname(RbConfig.ruby)] + SYSTEM_TOOL_DIRS).uniq.freeze
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEY = "untrusted_contributor_intake"
+  GENERATED_ARTIFACTS_POLICY_KEY = "generated_artifacts"
   UNTRUSTED_CONTRIBUTOR_INTAKE_POLICY_KEYS = %w[
     trusted_github_host
     trusted_github_scheme
@@ -1778,6 +1780,7 @@ module AgentWorkflowSeamDoctor
     issues.concat(writing_style_policy_issues(root, config, yaml))
     issues.concat(coordination_backend_contract_policy_issues(config, yaml))
     issues.concat(untrusted_contributor_intake_policy_issues(config))
+    issues.concat(generated_artifacts_policy_issues(config, yaml))
     issues.concat(merge_submission_policy_issues(root, config))
     issues.concat(selected_hosted_ci_receipts_policy_issues(root, config))
     issues.concat(hosted_qa_policy_issues(root, yaml))
@@ -1905,6 +1908,76 @@ module AgentWorkflowSeamDoctor
     scheme = intake_policy["trusted_github_scheme"]
     issues << "invalid policy value for key: #{scheme_key}" if scheme && scheme != "https"
     issues.uniq
+  end
+
+  def generated_artifacts_policy_issues(config, yaml)
+    return [] unless config.key?(GENERATED_ARTIFACTS_POLICY_KEY)
+
+    declarations = config.fetch(GENERATED_ARTIFACTS_POLICY_KEY)
+    errors = AutonomousMergePolicy.duplicate_key_errors(yaml).select do |error|
+      error.start_with?("$.#{GENERATED_ARTIFACTS_POLICY_KEY} ") ||
+        error == %($ contains duplicate key "#{GENERATED_ARTIFACTS_POLICY_KEY}")
+    end
+    errors.concat(
+      if !declarations.is_a?(Array) || declarations.empty?
+        ["expected a nonempty list"]
+      else
+        declarations.each_with_index.flat_map do |declaration, index|
+          generated_artifact_declaration_errors(declaration, index)
+        end
+      end
+    )
+    if declarations.is_a?(Array)
+      sources = declarations.filter_map { |entry| entry["source"] if entry.is_a?(Hash) }
+      errors << "source paths must be unique" if sources.length != sources.uniq.length
+    end
+    errors.map { |error| "invalid #{GENERATED_ARTIFACTS_POLICY_KEY} policy: #{error}" }
+  end
+
+  def generated_artifact_declaration_errors(declaration, index)
+    prefix = "#{GENERATED_ARTIFACTS_POLICY_KEY}[#{index}]"
+    return ["#{prefix} must be a mapping"] unless declaration.is_a?(Hash)
+
+    errors = []
+    allowed_keys = %w[source mirrors golden_test]
+    unknown_keys = declaration.keys.reject { |key| allowed_keys.include?(key) }
+    errors << "#{prefix} contains unknown key(s): #{unknown_keys.map(&:inspect).join(', ')}" unless unknown_keys.empty?
+    errors.concat(generated_artifact_path_errors(declaration["source"], "#{prefix}.source"))
+
+    mirrors = declaration["mirrors"]
+    if !mirrors.is_a?(Array) || mirrors.empty?
+      errors << "#{prefix}.mirrors must be a nonempty list of repository-relative paths"
+    else
+      mirrors.each_with_index do |mirror, mirror_index|
+        errors.concat(generated_artifact_path_errors(mirror, "#{prefix}.mirrors[#{mirror_index}]"))
+      end
+      errors << "#{prefix}.mirrors must not contain duplicate paths" if mirrors.length != mirrors.uniq.length
+      errors << "#{prefix}.source must not also be a mirror" if mirrors.include?(declaration["source"])
+    end
+
+    if declaration.key?("golden_test")
+      errors.concat(generated_artifact_path_errors(declaration["golden_test"], "#{prefix}.golden_test"))
+    end
+    errors
+  end
+
+  def generated_artifact_path_errors(value, label)
+    unless value.is_a?(String) && !value.empty? && value.valid_encoding?
+      return ["#{label} must be a nonempty repository-relative path"]
+    end
+    if value.include?("\0") || value.include?("\n") || value.include?("\r")
+      return ["#{label} must not contain control characters"]
+    end
+
+    path = Pathname.new(value)
+    if value == "." || value.include?("\\") || path.absolute? || path.cleanpath.to_s != value
+      return ["#{label} must be a canonical repository-relative path"]
+    end
+    return ["#{label} must not contain '..' traversal"] if path.each_filename.include?("..")
+
+    []
+  rescue ArgumentError
+    ["#{label} must be a canonical repository-relative path"]
   end
 
   def merge_submission_policy_issues(root, config)
