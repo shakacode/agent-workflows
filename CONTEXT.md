@@ -257,7 +257,9 @@ _Avoid_: conflicting (the raw GitHub field), blocked
 The **Control tower**'s per-PR classification: exactly one of the throughput
 plan's R12 names `accelerate`, `continue`, `hold`, `replace`, `close`, or
 `integration-ready`, where the control-tower prompts add that `close` requires
-evidence of duplicate, superseded, or invalid work and keeps the branch.
+evidence of duplicate, superseded, or invalid work. The integration contract in
+[ADR 0005](docs/adr/0005-merge-authority-lives-in-the-control-tower.md) also keeps
+the branch when closing a PR.
 _Avoid_: triage state, verdict, status
 
 **Comment kind**:

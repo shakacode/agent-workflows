@@ -74,6 +74,8 @@ lane's integration closeout, so a PR whose lane ended had no merger. The
   queue is enabled.
 - Label automation and comment-envelope enforcement are follow-up work. These
   definitions specify intended behavior, not currently deployed Actions.
+- A `close` disposition closes the PR and retains its branch. Branch deletion
+  is a separate action requiring its own authority.
 - The human sees a `human-attention:*` label only when the gate hands a PR
   over, so the label stays rare and meaningful.
 - Terms for the merge backlog, control tower, integration pass, disposition,
