@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit is advisory in this repository. Repository policy
+# (workflows/pr-batch-integration-closeout.md, "Review Completion Gate") treats
+# AI review systems as input to triage, not as merge gates. Keep CodeRabbit
+# from submitting CHANGES_REQUESTED review objects, which the main branch
+# ruleset would otherwise honor as a merge block until a human dismisses them.
+reviews:
+  request_changes_workflow: false
