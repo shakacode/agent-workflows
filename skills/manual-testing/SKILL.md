@@ -159,8 +159,8 @@ blocker. Do not fake a manual pass from static inspection.
      --expected-head-sha <full-final-head-SHA>
      --require-visual-evidence-v2
      [--github-host <trusted-repository-GitHub-host>]
-     <file-or->`. Include `--github-host` for GitHub Enterprise Server
-     evidence. The strict v2 flag is invalid
+     <file-or->`. Include `--github-host` for GitHub Enterprise (Cloud or
+     Server) evidence. The strict v2 flag is invalid
      without the expected final-head SHA. If the helper cannot be resolved or
      run, report the evidence and readiness state as `blocked`; do not proceed
      with a pass claim.

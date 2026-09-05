@@ -540,9 +540,9 @@ valid v2 ignores legacy v1 history, while a stale or malformed v2 cannot be
 rescued by a current v1. When auditing a current user-visible UI change, run
 `closeout-evidence-replay --expected-head-sha <full-final-head-SHA>
 --require-visual-evidence-v2`; v1-only or stale evidence then fails closed
-rather than bypassing it. For GHES uploads, add
-`--github-host <repository GitHub host>` from trusted repository context;
-completed-batch preflight supplies each trusted target host automatically.
+rather than bypassing it. For GHEC or GHES evidence, add
+`--github-host <repository GitHub host>` from trusted context;
+completed-batch preflight supplies it.
 
 For priority review findings that feed a strict merge ledger or final handoff,
 append a hidden disposition marker without inventing a separate review-finding
@@ -982,9 +982,9 @@ The closeout lane is:
    `--expected-head-sha <full-final-head-SHA>`. Add
    `--require-visual-evidence-v2` in the same invocation for every current
    user-visible UI change; this flag is invalid without
-   `--expected-head-sha <full-final-head-SHA>`. For GHES browser uploads, also
-   pass `--github-host <repository GitHub host>` from trusted repository
-   context; completed-batch preflight supplies it automatically. Add
+   `--expected-head-sha <full-final-head-SHA>`. For GHEC or GHES evidence, also
+   pass `--github-host <repository GitHub host>` from trusted context;
+   completed-batch preflight supplies it. Add
    `--require-priority-dispositions` whenever the merge ledger or handoff relies
    on fixed, waived, or deferred priority findings. If the head changes again before
    readiness or merge, repeat this checklist and replay; missing or mismatched
