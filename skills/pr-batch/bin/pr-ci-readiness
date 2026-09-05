@@ -29,7 +29,7 @@ require "json"
 require "open3"
 require "time"
 require "yaml"
-require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
+require_relative "../../../bin/agent_doctor/ci_readiness_policy"
 load File.expand_path("diff-identity", __dir__) unless defined?(DiffIdentity)
 
 # Pure verdict logic (no I/O) plus the gh-backed runner. The pure methods take
@@ -174,10 +174,7 @@ module PrCiReadiness
   EVIDENCE_STATES = %w[READY NOT_READY NOT_APPLICABLE UNKNOWN].freeze
   SUCCESSFUL_CONCLUSIONS = %w[success neutral skipped].freeze
   POLICY_PATH = ".agents/agent-workflow.yml"
-  POLICY_KEYS = %w[optional_approval_held_checks version].freeze
-  OPTIONAL_CHECK_KEYS = %w[app_slug id name].freeze
-  POLICY_RULE_ID = /\A[a-z0-9]+(?:-[a-z0-9]+)*\z/
-  CIRCLECI_APP_SLUG = "circleci-checks"
+  CIRCLECI_APP_SLUG = CiReadinessPolicy::CIRCLECI_APP_SLUG
   CIRCLECI_WORKFLOW_URL = %r{\Ahttps://app\.circleci\.com/workflow/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:\?[^#\s]*)?\z}
   SYSTEM_GIT = %w[/opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git /bin/git].find do |path|
     File.file?(path) && File.executable?(path)
@@ -361,48 +358,7 @@ module PrCiReadiness
   end
 
   def validate_optional_approval_held_policy!(policy)
-    unless closed_string_key_schema?(policy, POLICY_KEYS) && policy["version"] == 1
-      raise Error, "ci_readiness must be a closed version 1 mapping"
-    end
-
-    rules = policy["optional_approval_held_checks"]
-    unless rules.is_a?(Array) && !rules.empty?
-      raise Error, "ci_readiness.optional_approval_held_checks must be a nonempty list"
-    end
-
-    seen_ids = {}
-    seen_identities = {}
-    rules.each do |rule|
-      unless closed_string_key_schema?(rule, OPTIONAL_CHECK_KEYS)
-        raise Error, "each optional approval-held check must contain exactly app_slug, id, and name"
-      end
-
-      rule_id = rule["id"]
-      app_slug = rule["app_slug"]
-      name = rule["name"]
-      raise Error, "optional approval-held check id is invalid" unless
-        rule_id.is_a?(String) && rule_id.match?(POLICY_RULE_ID)
-      raise Error, "optional approval-held check app_slug is invalid" unless
-        app_slug == CIRCLECI_APP_SLUG
-      raise Error, "optional approval-held check name must be resolved single-line text" unless
-        name.is_a?(String) && name == name.strip && !name.empty? &&
-        !name.match?(/[[:cntrl:]]/) && name != "UNKNOWN"
-      raise Error, "duplicate optional approval-held check id #{rule_id}" if seen_ids[rule_id]
-
-      identity = [app_slug, name]
-      if seen_identities[identity]
-        raise Error, "duplicate optional approval-held check identity #{app_slug}/#{name}"
-      end
-
-      seen_ids[rule_id] = true
-      seen_identities[identity] = true
-    end
-    policy
-  end
-
-  def closed_string_key_schema?(value, expected_keys)
-    value.is_a?(Hash) && value.keys.all?(String) &&
-      value.keys.length == expected_keys.length && (value.keys - expected_keys).empty?
+    CiReadinessPolicy.validate!(policy, error_class: Error)
   end
 
   def optional_approval_held_dispositions(rows, required_rows:, policy:, head_sha:)
@@ -511,11 +467,7 @@ module PrCiReadiness
     return nil if tree_entry.empty?
 
     raw = git_capture!(root, "cat-file", "blob", "#{base_sha}:#{POLICY_PATH}")
-    duplicate_errors = AutonomousMergePolicy.duplicate_key_errors(raw).select do |error|
-      error == '$ contains duplicate key "ci_readiness"' ||
-        error.start_with?("$.ci_readiness contains duplicate key") ||
-        error.start_with?("$.ci_readiness.optional_approval_held_checks contains duplicate key")
-    end
+    duplicate_errors = CiReadinessPolicy.duplicate_key_errors(raw)
     unless duplicate_errors.empty?
       raise Error, "trusted-base ci_readiness policy contains duplicate keys: #{duplicate_errors.join('; ')}"
     end

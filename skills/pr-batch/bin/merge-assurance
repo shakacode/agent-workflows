@@ -704,8 +704,7 @@ module MergeAssurance
         next
       end
       if selected_runs.any? do |selection|
-           selection.is_a?(Hash) && selection["provider"] == "circleci" &&
-           selection["run_id"] == disposition["provider_run_id"]
+           selection.is_a?(Hash) && selection["run_id"] == disposition["provider_run_id"]
          end
         failures << "ci_result scope other policy disposition targets an explicitly selected hosted run"
         next

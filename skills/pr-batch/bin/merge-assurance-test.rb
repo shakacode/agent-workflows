@@ -242,6 +242,37 @@ class MergeAssuranceTest < Minitest::Test
     refute_empty disposition
   end
 
+  def test_optional_approval_hold_cannot_waive_selected_external_ci_workflow
+    ci_result, trusted_policy = ready_ci_with_optional_hold
+    workflow_id = ci_result.dig("scopes", "other", "policy_dispositions", 0, "provider_run_id")
+    merge_context = context(
+      "auto_merge_when_gates_pass",
+      selected_hosted_runs: [{ "provider" => "external-ci", "run_id" => workflow_id }]
+    )
+    receipts = {
+      "contract" => "selected-hosted-ci-receipts",
+      "version" => 1,
+      "complete" => true,
+      "records" => [{
+        "provider" => "external-ci", "run_id" => workflow_id,
+        "repository" => "owner/repo", "pr" => 42, "head_sha" => HEAD_SHA,
+        "selected_at" => "2026-07-30T11:55:00Z", "terminal_result" => "success"
+      }]
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:, trusted_ci_policy: trusted_policy,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context, selected_hosted_ci_receipts: receipts, now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes(
+      result.fetch("failures"),
+      "ci_result scope other policy disposition targets an explicitly selected hosted run"
+    )
+  end
+
   def test_requested_github_run_and_informational_circleci_hold_compose_without_waiver
     ci_result, trusted_policy = ready_ci_with_optional_hold
     ci_result["requested_hosted"] = {
