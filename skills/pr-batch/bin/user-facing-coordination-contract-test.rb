@@ -153,6 +153,67 @@ class UserFacingCoordinationContractTest < Minitest::Test
     end
   end
 
+  def test_oc_v1_is_present_on_the_three_documented_surfaces
+    workflow = normalized_section(
+      WORKFLOW,
+      "### Coordinator Output Contract",
+      end_heading: /^###\s+/
+    )
+    doc = normalized_section(DOC, "## Output Contract", end_heading: /^##\s+/)
+    skill = normalized_section(PR_BATCH, "## Coordinator Output Contract", end_heading: /^##\s+/)
+
+    [workflow, doc, skill].each do |text|
+      assert_includes text, "OC-v1"
+    end
+  end
+
+  def test_oc_v1_workflow_section_pins_the_ordering_exemptions_and_closing_stack
+    text = normalized_section(
+      WORKFLOW,
+      "### Coordinator Output Contract",
+      end_heading: /^###\s+/
+    )
+
+    assert_ordered(text, "dispatch", "pr-open", "decision-required", "merge-decision", "final-handoff")
+
+    [
+      "direct answer to a user question",
+      "explicitly requested status report",
+      "another contract requires the coordinator to show",
+      "immediate stop required by a non-negotiable safety rule"
+    ].each do |phrase|
+      assert_includes text, phrase
+    end
+
+    [
+      "Next:",
+      "Action needed:",
+      "coordination:",
+      "Conversation status:",
+      "HST-v1",
+      "Lane Card"
+    ].each do |phrase|
+      assert_includes text, phrase
+    end
+
+    assert_includes text, "shadow-only"
+    assert_includes text, "never gates readiness"
+    assert_includes text, "never blocks a handoff"
+    assert_includes text, "The Lane Card, the `Next:` instruction, the `Action needed:` line"
+    assert_includes text, "Collapsing them into a single terminal structure is deliberately out of scope"
+  end
+
+  def test_coordinator_narration_volume_marker_is_shadow_only_in_the_two_fyi_surfaces
+    skill = normalized_section(PR_BATCH, "## Coordinator Output Contract", end_heading: /^##\s+/)
+    closeout = normalized_section(INTEGRATION_CLOSEOUT, "### Batch Handoff Format", end_heading: /^###\s+/)
+
+    assert_includes skill, "coordinator-narration-volume v1"
+    assert_includes skill, "FYI / decisions made at closeout"
+    assert_includes closeout, "coordinator-narration-volume v1"
+    assert_includes closeout, "FYI / decisions made"
+    assert_includes closeout, "informational and never substitutes for a readiness gate"
+  end
+
   def test_readiness_separates_four_authority_facts
     text = normalized(DOC)
     assert_ordered(

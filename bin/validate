@@ -35,39 +35,7 @@ test -f LICENSE
 grep -q "MIT License" LICENSE
 
 echo "== skill frontmatter =="
-ruby - <<'RUBY'
-require "yaml"
-
-failures = []
-Dir.glob("skills/*/SKILL.md").sort.each do |path|
-  text = File.read(path, encoding: "UTF-8")
-  unless text.start_with?("---\n")
-    failures << "#{path}: missing YAML frontmatter"
-    next
-  end
-
-  closing = text.index("\n---\n", 4)
-  if closing.nil?
-    failures << "#{path}: unterminated YAML frontmatter"
-    next
-  end
-
-  frontmatter = YAML.safe_load(text[4...closing], aliases: false) || {}
-  name = frontmatter["name"]
-  description = frontmatter["description"]
-  folder = File.basename(File.dirname(path))
-
-  failures << "#{path}: name must match folder #{folder.inspect}" unless name == folder
-  failures << "#{path}: description is required" if description.to_s.strip.empty?
-end
-
-if failures.empty?
-  puts "PASS #{Dir.glob("skills/*/SKILL.md").length} skills"
-else
-  warn failures.join("\n")
-  exit 1
-end
-RUBY
+ruby bin/validate-claude-skill-metadata
 
 echo "== native plugin manifests =="
 ruby bin/codex-plugin-manifest-check
@@ -82,6 +50,7 @@ echo "== validator unit tests =="
 ruby bin/agent-workflow-writing-style-test.rb
 ruby bin/agent-workflow-seam-doctor-test.rb
 ruby bin/codex-plugin-manifest-check-test.rb
+ruby bin/validate-claude-skill-metadata-test.rb
 ruby bin/validate-openai-agent-metadata-test.rb
 ruby bin/host-adapter-syntax-test.rb
 

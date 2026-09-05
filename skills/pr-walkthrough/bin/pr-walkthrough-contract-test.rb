@@ -69,6 +69,29 @@ class PrWalkthroughContractTest < Minitest::Test
     end
   end
 
+  def test_published_review_mode_is_complete_exact_head_comment_only
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+
+    phrases = [
+      "Build the complete coverage ledger and every conceptual section before any GitHub mutation.",
+      "Re-fetch the diff identity immediately before submission.",
+      "Submit exactly one GitHub review with event `COMMENT`",
+      "Publish every conceptual section in that same review as one separately replyable inline thread",
+      "Include an idempotency marker and full head SHA in the review body.",
+      "Published-review mode never waits for `next`."
+    ]
+    positions = phrases.map do |phrase|
+      position = skill.index(phrase)
+      assert position, "expected #{phrase.inspect}"
+      position
+    end
+    positions.each_cons(2) { |before, after| assert_operator before, :<, after }
+
+    assert_includes skill, "never `APPROVE` or `REQUEST_CHANGES`"
+    assert_includes skill, "walkthrough is not approval"
+    assert_includes skill, "never blindly publish a duplicate walkthrough"
+  end
+
   def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component
     pr_batch = File.read(PR_BATCH)
 
