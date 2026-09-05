@@ -211,6 +211,26 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "TBD",
       "proof unavailable",
       "http://evidence.example.test/run/sign-in-abc123",
+      "https:broken",
+      "https: broken",
+      "https: available.example.test",
+      "https: example artifact",
+      "https: example.test artifact",
+      "https: example.test:443;",
+      "https: example.test?run=1;",
+      "https: example.test#run;",
+      "https: //available",
+      "https: enabled; //host/path",
+      "HTTPS: ✅//available",
+      "https: enabled //host/path",
+      "https: enabled example.test:443",
+      "https: enabled [::1]",
+      "https: enabled [prod-1]",
+      "https: 10.0.1",
+      "https: 10.0.1?run=1",
+      "https: !!!",
+      "https: ---",
+      "https:",
       "https://bad host/run/sign-in-abc123"
     ]
 
@@ -220,6 +240,42 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
       assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+  end
+
+  def test_hosted_v1_accepts_https_as_a_prose_label
+    [
+      "HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced", "HTTPS: TLS 1.3",
+      "HTTPS: TLSv1.3", "HTTPS: (TLS 1.3)", "HTTPS: (HTTP/2)", "HTTPS: v1.2.3 released",
+      "HTTPS: v1.2.3?build=5",
+      "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active", "HTTPS: enabled e.g. proxy"
+    ].each do |label|
+      evidence = "#{label}; https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+  end
+
+  def test_hosted_v1_accepts_authenticated_scalar_criterion_evidence
+    [
+      "run-report-8f3a21",
+      "HTTPS: https://evidence.example.test/sign-in-abc123",
+      "HTTPS: see https://evidence.example.test/sign-in-abc123",
+      "HTTPS: enforced; screenshot stored in run 123",
+      "HTTPS: TLS 1.3",
+      "HTTPS: TLS 1.3, screenshot stored in run 123",
+      "HTTPS: TLS 1.3. Screenshot stored in run 123"
+    ].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), evidence
+      assert_empty hosted.fetch("missing"), evidence
     end
   end
 
@@ -739,6 +795,9 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "C:before.png",
       "C:before",
       "assets/before.png",
+      "run/42/report.json",
+      "artifacts/7/output",
+      "build/2/dist",
       "before.png",
       "local-screenshot.webp",
       "local-screenshot.heic",
@@ -787,6 +846,33 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       assert_equal "SATISFIED", qa.fetch("verdict"), label
       refute_includes qa.fetch("missing"), "visual_evidence.local_reference", label
     end
+  end
+
+  def test_v2_only_ignores_protocol_slash_tokens_inside_https_labels
+    ["http/2", "Http/2"].each do |protocol|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before before/after HTTPS: #{protocol}; after https://github.com/example/repo/pull/123#visual",
+          "interaction_change" => "yes",
+          "interaction_evidence" =>
+            "clip: HTTPS: #{protocol}; https://github.com/example/repo/pull/123#clip"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), protocol
+      refute_includes qa.fetch("missing"), "visual_evidence.local_reference", protocol
+    end
+
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" =>
+          "durable: before ARTIFACTS/2.3 and after https://github.com/example/repo/pull/123#visual"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.local_reference"
   end
 
   def test_v2_github_destination_requires_a_github_url
@@ -863,6 +949,876 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes visual.fetch("missing"), "visual_evidence.url"
     assert_equal "UNKNOWN", interaction.fetch("verdict")
     assert_includes interaction.fetch("missing"), "interaction_evidence"
+  end
+
+  def test_v2_rejects_malformed_https_reference_beside_a_valid_url
+    malformed_urls = [
+      "https:broken", "https: broken", "https: available.example.test", "https: example.test artifact",
+      "https: example.test:443;", "https: example.test?run=1;", "https: example.test#run;",
+      "https: //available", "HTTPS: ✅//available", "https: enabled //host/path",
+      "https: enabled example.test:443", "https: enabled [::1]", "https: !!!", "https: ---"
+    ]
+    malformed_urls.each do |malformed_url|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before #{malformed_url} after https://github.com/example/repo/pull/123#after"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), malformed_url
+      assert_includes qa.fetch("missing"), "visual_evidence.url", malformed_url
+    end
+  end
+
+  def test_v2_malformed_media_looking_https_reference_does_not_add_local_reference_diagnostic
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before https:broken.png after https://github.com/example/repo/pull/123#after"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", qa.fetch("verdict")
+    assert_includes qa.fetch("missing"), "visual_evidence.url"
+    refute_includes qa.fetch("missing"), "visual_evidence.local_reference"
+  end
+
+  def test_v2_interaction_evidence_rejects_malformed_https_and_accepts_uppercase_https
+    valid_url = "https://github.com/example/repo/pull/123#clip"
+    %w[https:broken https:].each do |malformed_url|
+      qa = run_replay(
+        v2_marker(
+          "interaction_change" => "yes",
+          "interaction_evidence" => "clip: #{malformed_url} #{valid_url}"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), malformed_url
+      assert_includes qa.fetch("missing"), "interaction_evidence", malformed_url
+    end
+
+    uppercase = run_replay(
+      v2_marker(
+        "interaction_change" => "yes",
+        "interaction_evidence" => "clip: HTTPS://github.com/example/repo/pull/123#clip"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", uppercase.fetch("verdict")
+    assert_empty uppercase.fetch("missing")
+  end
+
+  def test_v2_accepts_https_prose_labels_beside_durable_urls
+    [
+      "HTTPS: enforced", "HTTPS: 200 OK", "HTTPS: ✅ enforced", "HTTPS: TLS 1.3",
+      "HTTPS: TLSv1.3", "HTTPS: (TLS 1.3)", "HTTPS: (HTTP/2)", "HTTPS: v1.2.3 released",
+      "HTTPS: v1.2.3?build=5",
+      "HTTPS: HTTP/2", "HTTPS: secure", "HTTPS: active", "HTTPS: enabled e.g. proxy"
+    ].each do |label|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before #{label}; after https://github.com/example/repo/pull/123#visual",
+          "interaction_change" => "yes",
+          "interaction_evidence" =>
+            "clip: #{label}; https://github.com/example/repo/pull/123#clip"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), label
+      assert_empty qa.fetch("missing"), label
+    end
+
+    unpunctuated = run_replay(
+      v2_marker(
+        "visual_evidence" =>
+          "durable: before HTTPS: TLS 1.3 after https://github.com/example/repo/pull/123#visual"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", unpunctuated.fetch("verdict")
+    assert_empty unpunctuated.fetch("missing")
+
+    malformed_continuation = run_replay(
+      v2_marker(
+        "visual_evidence" =>
+          "durable: before HTTPS: enabled; //host/path after https://github.com/example/repo/pull/123#visual"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "UNKNOWN", malformed_continuation.fetch("verdict")
+    assert_includes malformed_continuation.fetch("missing"), "visual_evidence.url"
+
+    ["HTTPS: ", "HTTPS: see "].each do |prefix|
+      introduced_url = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before and after #{prefix}https://github.com/example/repo/pull/123#visual"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", introduced_url.fetch("verdict"), prefix
+      assert_empty introduced_url.fetch("missing"), prefix
+    end
+  end
+
+  def test_v2_rejects_relative_paths_inside_https_prose_labels
+    # A consumer path that merely looks like `word/number` must stay visible to local-path
+    # detection; only bounded protocol/version tokens are removed before the check.
+    [
+      "HTTPS: evidence ARTIFACTS/2.3;",
+      "HTTPS: stored screenshots/2.3;",
+      "HTTPS: see captures/1.0 now;"
+    ].each do |label|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before #{label} after https://github.com/example/repo/pull/123#visual"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), label
+      assert_includes qa.fetch("missing"), "visual_evidence.local_reference", label
+    end
+  end
+
+  def test_v2_accepts_bounded_protocol_versions_inside_https_prose_labels
+    [
+      "HTTPS: protocol HTTP/2;",
+      "HTTPS: HTTP/1.1;",
+      "HTTPS: negotiated h2/1.1;",
+      "HTTPS: TLS 1.2/1.3;"
+    ].each do |label|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence" =>
+            "durable: before #{label} after https://github.com/example/repo/pull/123#visual"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), label
+      assert_empty qa.fetch("missing"), label
+    end
+  end
+
+  def test_hosted_v1_accepts_slash_separated_and_quoted_https_version_labels
+    [
+      "HTTPS: TLS 1.2/1.3;",
+      "HTTPS: TLS 1.0/1.1/1.2/1.3;",
+      'HTTPS: "TLS 1.3";',
+      "HTTPS: 'TLS 1.3';",
+      "HTTPS: `TLS 1.3`;",
+      'HTTPS: version "1.2.3" shipped;',
+      "HTTPS: status: enabled;",
+      "HTTPS: note: artifact retained;"
+    ].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+  end
+
+  def test_hosted_v1_accepts_any_non_authority_connector_before_the_url
+    # The label boundary is structural, not a closed connector vocabulary.
+    %w[link artifact see evidence report screenshot run1].each do |connector|
+      evidence = "HTTPS: #{connector} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), connector
+      assert_empty hosted.fetch("missing"), connector
+    end
+  end
+
+  def test_hosted_v1_rejects_reference_shaped_prefixes_before_the_url
+    # A prefix that could itself name a target must still fail closed.
+    [
+      "HTTPS: available.example.test https://evidence.example.test/sign-in-abc123",
+      "HTTPS: example.test:443 https://evidence.example.test/sign-in-abc123",
+      "HTTPS: //available https://evidence.example.test/sign-in-abc123",
+      "HTTPS: [::1] https://evidence.example.test/sign-in-abc123"
+    ].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+  end
+
+  def test_hosted_v1_accepts_markdown_emphasis_around_https_version_labels
+    [
+      "HTTPS: **TLS 1.3**;",
+      "HTTPS: *TLS 1.3*;",
+      "HTTPS: _TLS 1.3_;",
+      "HTTPS: __TLS 1.3__;",
+      "HTTPS: **HTTP/2**;"
+    ].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+
+    emphasized_authority = hosted_v1_marker.sub(
+      "https://evidence.example.test/sign-in-abc123",
+      "HTTPS: **available.example.test**; https://evidence.example.test/sign-in-abc123"
+    )
+
+    assert_equal "UNKNOWN", run_replay(emphasized_authority).dig("hosted_qa_evidence", "verdict")
+  end
+
+  def test_hosted_v1_qualifies_numeric_versions_after_every_known_protocol_name
+    ["HTTPS: HTTP 2.0;", "HTTPS: QUIC 1.0;", "HTTPS: h3 1.0;", "HTTPS: grpc 1.2;",
+     "HTTPS: alpn 1.3;", "HTTPS: protocol 2.0;", "HTTPS: version 1.2.3;"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+
+    unqualified = hosted_v1_marker.sub(
+      "https://evidence.example.test/sign-in-abc123",
+      "HTTPS: shipped 10.0.1; https://evidence.example.test/sign-in-abc123"
+    )
+
+    assert_equal "UNKNOWN", run_replay(unqualified).dig("hosted_qa_evidence", "verdict")
+  end
+
+  def test_v2_performance_evidence_rejects_non_https_scheme_repo_seam_sources
+    # `source=https:broken` is already rejected; every other URI scheme is the same shape of
+    # unvalidatable reference and must fail closed too.
+    %w[
+      mailto:someone@example.com
+      file:/etc/passwd
+      blob:abc
+      ftp:host
+      about:blank
+    ].each do |source|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=#{source}; metric_name=lcp; baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), source
+      assert_includes qa.fetch("missing"), "performance_evidence", source
+    end
+  end
+
+  def test_v2_performance_evidence_keeps_accepting_colon_bearing_refs
+    # `<rev>:<path>` Git references are the documented "stable ref" form and are structurally
+    # indistinguishable from an opaque URI scheme, so only enumerated schemes may be rejected.
+    ["bin/perf-report:latest", "reports/perf-report.rb:42", "perf-report.rb:42",
+     "HEAD:reports/perf.json", "main:path/to/report", "abc123:report.json",
+     "v1.2.3:bench/out.json", "Makefile:12"].each do |source|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=#{source}; metric_name=lcp; baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), source
+      assert_empty qa.fetch("missing"), source
+    end
+  end
+
+  def test_hosted_v1_rejects_opaque_uri_scheme_criterion_evidence
+    # URI_SCHEME only matches `scheme://`, so an opaque scheme used as bare criterion evidence
+    # fell through as resolved for a release-gating check.
+    %w[
+      mailto:someone@example.com
+      file:/etc/passwd
+      blob:abc
+      tel:+15551234
+      javascript:alert(1)
+      data:text/plain,x
+    ].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+  end
+
+  def test_hosted_v1_keeps_accepting_authenticated_scalar_and_ref_criterion_evidence
+    ["run-report-8f3a21", "HEAD:reports/perf.json", "main:path/to/report"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), evidence
+      assert_empty hosted.fetch("missing"), evidence
+    end
+  end
+
+  def test_hosted_v1_accepts_trailing_colon_connector_before_the_url
+    ["HTTPS: link: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: artifact: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: see: https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), evidence
+      assert_empty hosted.fetch("missing"), evidence
+    end
+
+    # A trailing colon does not make a host- or port-shaped prefix into prose.
+    ["HTTPS: example.test: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: host:443 https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "UNKNOWN", run_replay(body).dig("hosted_qa_evidence", "verdict"), evidence
+    end
+  end
+
+  def test_v2_rejects_metric_names_ending_in_an_unresolved_sentinel
+    # A terminal sentinel self-declares the measurement unresolved at any name length; the
+    # two-token bound only ever governed sentinels in non-terminal position.
+    %w[
+      checkout_latency_unknown
+      page_load_time_missing
+      api_call_duration_tbd
+      render_time_placeholder
+      checkout_flow_step_unavailable
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_keeps_accepting_domain_names_with_a_non_terminal_sentinel
+    %w[missing_translation_count todo_sync_latency unknown_device_render_time].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_hosted_v1_accepts_decimal_measurements_in_https_prose_labels
+    ["HTTPS: uptime 99.9%;", "HTTPS: p95 2.4s;", "HTTPS: ratio 1.5x;", "HTTPS: score 99.9;"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+
+    # A measurement shape allows one decimal group and no alphabetic TLD, so hostnames and
+    # dotted-quad addresses stay authority-shaped.
+    ["HTTPS: host 10.0.co;", "HTTPS: at 192.168.1.1;", "HTTPS: x 1.2.3.4;", "HTTPS: y a.co;"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "UNKNOWN", run_replay(body).dig("hosted_qa_evidence", "verdict"), label
+    end
+  end
+
+  def test_https_label_classification_never_raises_on_arbitrary_prose
+    # The lone-delimiter NoMethodError reached the CLI as a stack trace rather than a verdict.
+    # This walks random punctuation/word combinations to catch that class of defect directly,
+    # rather than waiting for a reviewer to name the next shape. Seeded for reproducibility.
+    random = Random.new(20_260_901)
+    pieces = %w[
+      TLS 1.3 enabled ( ) [ ] { } " ' ` * _ : ; , . / \\ ? # @ % - + = ! ~ | < >
+      example.test 99.9% HTTP/2 [::1] a/b ../c 2.4s e.g.
+    ]
+
+    2_000.times do
+      label = Array.new(random.rand(1..6)) { pieces.sample(random: random) }.join(" ")
+      value = "durable: before HTTPS: #{label} after https://github.com/example/repo/pull/123#visual"
+
+      CloseoutEvidenceReplay.malformed_https_reference?(value)
+      CloseoutEvidenceReplay.disallowed_durable_reference?(value)
+      CloseoutEvidenceReplay.http_urls(value)
+      CloseoutEvidenceReplay.without_schema_slash_labels(value)
+    end
+  end
+
+  def test_v2_accepts_markdown_wrapped_urls_after_https_labels
+    [
+      "durable: before and after HTTPS: [artifact](https://github.com/example/repo/pull/123#visual)",
+      "durable: before and after HTTPS: [see the run](https://github.com/example/repo/pull/123#visual)",
+      "durable: before and after HTTPS: <https://github.com/example/repo/pull/123#visual>"
+    ].each do |evidence|
+      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), evidence
+      assert_empty qa.fetch("missing"), evidence
+    end
+  end
+
+  def test_v2_rejects_authority_shaped_markdown_link_text
+    # The link text is prose introducing the URL; a host- or port-shaped text is a reference of its
+    # own and must still fail closed.
+    [
+      "durable: before and after HTTPS: [example.test](https://github.com/example/repo/pull/123#visual)",
+      "durable: before and after HTTPS: [10.0.0.1:8080](https://github.com/example/repo/pull/123#visual)"
+    ].each do |evidence|
+      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
+      assert_includes qa.fetch("missing"), "visual_evidence.url", evidence
+    end
+  end
+
+  def test_v2_rejects_path_shaped_markdown_link_text
+    %w[ARTIFACTS/2.3 run/42 artifacts/7 build/2].each do |link_text|
+      evidence =
+        "durable: before HTTPS: [#{link_text}](https://evidence.example.test/x) " \
+        "after https://github.com/example/repo/pull/123#visual"
+      qa = run_replay(v2_marker("visual_evidence" => evidence)).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), link_text
+      assert_includes qa.fetch("missing"), "visual_evidence.local_reference", link_text
+    end
+  end
+
+  def test_v2_rejects_single_token_exact_unresolved_metric_names
+    # Guards the equivalence relied on when the length-1 clause was folded into the terminal check.
+    %w[nil none null pending undefined unset].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_rejects_metric_names_ending_in_nan_or_na
+    %w[checkout_latency_nan page_load_na render_time_nan].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_hosted_v1_accepts_bounded_version_constraints
+    ["HTTPS: TLS 1.3+;", "HTTPS: TLS >=1.3;", "HTTPS: TLS <=1.3;",
+     "HTTPS: TLS 1.2-1.3;", "HTTPS: TLS ^1.2;", "HTTPS: TLS ~1.2;"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+
+    # Constraint notation does not loosen the version shape: at most two dots per version, no
+    # letters, so hostnames and dotted-quad ranges stay authority-shaped.
+    ["HTTPS: TLS example.test;", "HTTPS: at 10.0.0.1-1.2;", "HTTPS: x a.co+;"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "UNKNOWN", run_replay(body).dig("hosted_qa_evidence", "verdict"), label
+    end
+  end
+
+  def test_https_prose_label_returns_an_offset_that_locates_the_label
+    # The cleanup caller slices by this offset. Asserting it against the source string keeps the
+    # contract checked rather than resting on "the stripped prefix has no alphanumerics".
+    [
+      "durable: enabled HTTPS: ** enabled HTTP/2; after https://github.com/e/r/pull/1#v",
+      "hosted: HTTPS: (TLS 1.3); https://evidence.example.test/x",
+      "hosted: HTTPS: ✅ enforced; https://evidence.example.test/x"
+    ].each do |value|
+      match = CloseoutEvidenceReplay.https_token_matches(value).first
+      label, offset = CloseoutEvidenceReplay.https_prose_label(value, match)
+
+      refute_nil label, value
+      assert_equal label, value[offset, label.length], value
+      assert_operator offset, :>=, match.end(0), value
+    end
+  end
+
+  def test_hosted_v1_accepts_wrapped_connectors_before_a_direct_url
+    ["HTTPS: **artifact** https://evidence.example.test/sign-in-abc123",
+     "HTTPS: `artifact` https://evidence.example.test/sign-in-abc123",
+     "HTTPS: _artifact_ https://evidence.example.test/sign-in-abc123",
+     "HTTPS: (artifact) https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), evidence
+      assert_empty hosted.fetch("missing"), evidence
+    end
+
+    # Unwrapping reveals the shape; it does not excuse it.
+    ["HTTPS: **example.test** https://evidence.example.test/sign-in-abc123",
+     "HTTPS: `10.0.0.1:8080` https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "UNKNOWN", run_replay(body).dig("hosted_qa_evidence", "verdict"), evidence
+    end
+  end
+
+  def test_v2_rejects_metric_names_without_an_alphabetic_token
+    %w[123 3.14 1_2 42].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_keeps_accepting_metric_names_mixing_digits_and_letters
+    %w[p95_latency lcp 2xx_rate h2_stream_time].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" =>
+            "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; " \
+            "baseline_value=2.4s; candidate_value=2.1s"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_hosted_v1_accepts_two_word_labels_ending_in_a_connector
+    # Trimming a trailing connector used to reduce these to one word, which then failed the
+    # multi-token requirement. Removing that trim eliminated the false negatives outright.
+    ["HTTPS: report via", "HTTPS: link after", "HTTPS: TLS see",
+     "HTTPS: artifact from", "HTTPS: secure at"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "SATISFIED", hosted.fetch("verdict"), label
+      assert_empty hosted.fetch("missing"), label
+    end
+
+    # A connector after an authority-shaped token still fails closed.
+    ["HTTPS: example.test via", "HTTPS: 10.0.0.1:8080 see"].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "UNKNOWN", run_replay(body).dig("hosted_qa_evidence", "verdict"), label
+    end
+  end
+
+  def test_hosted_v1_rejects_opaque_schemes_as_url_boundary_connectors
+    # A trailing colon makes `javascript:` indistinguishable from `link:` by shape, so the scheme
+    # vocabulary has to be consulted here too.
+    ["HTTPS: javascript: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: mailto: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: file: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: data: https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+
+    ["HTTPS: link: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: see: https://evidence.example.test/sign-in-abc123",
+     "HTTPS: artifact: https://evidence.example.test/sign-in-abc123"].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      assert_equal "SATISFIED", run_replay(body).dig("hosted_qa_evidence", "verdict"), evidence
+    end
+  end
+
+  def test_hosted_v1_rejects_opaque_schemes_in_https_label_continuations
+    %w[javascript: mailto: file: data:].each do |scheme|
+      evidence = "HTTPS: enabled; #{scheme} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+  end
+
+  def test_hosted_v1_rejects_additional_opaque_schemes_as_criterion_evidence
+    %w[sms:+15551234 geo:37.7,-122.4 intent:x matrix:r/x vbscript:msgbox market:details].each do |evidence|
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), evidence
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", evidence
+    end
+  end
+
+  def test_metric_classification_never_raises_on_arbitrary_names
+    # Same invariant as the label fuzz test, for the metric vocabulary: a degenerate name must
+    # produce a verdict rather than an exception that aborts the whole replay.
+    random = Random.new(20_260_902)
+    pieces = %w[
+      file files count counts total byte bytes size heap memory rss latency time lcp cls
+      unknown missing tbd nan na nil pending 123 3.14 p95 2xx UPPER lowerUpper _ - . / : %
+    ]
+
+    2_000.times do
+      name = Array.new(random.rand(1..5)) { pieces.sample(random: random) }.join(
+        ["_", "", "-", "."].sample(random: random)
+      )
+      value = "repo_seam: source=bin/perf-report; metric_name=#{name}; " \
+              "baseline_value=2.4s; candidate_value=2.1s"
+
+      CloseoutEvidenceReplay.valid_measured_metric?(value)
+      CloseoutEvidenceReplay.valid_bundle_hygiene?(value)
+      CloseoutEvidenceReplay.valid_repo_seam_source?(value)
+    end
+  end
+
+  def test_https_labels_fail_closed_on_smuggled_references
+    # Swept systematically rather than case-by-case: each hostile payload is placed in every
+    # position that carries a prose exemption. Found three fail-opens the example-based tests and
+    # review rounds had both missed.
+    hosts = ["example.test", "evil.example.test", "10.0.0.1", "10.0.0.1:8080", "[::1]",
+             "user:pw@internal", "admin@internal", "admin@example.test", "example%2Etest",
+             "example.test:443", "//host/path", "\\\\unc\\share"]
+    schemes = %w[javascript: mailto: file: data: vbscript: view-source: intent: sms:]
+    url = "https://github.com/example/repo/pull/123#visual"
+
+    hosts.each do |host|
+      ["HTTPS: #{host}; #{url}", "HTTPS: seen #{host}; #{url}", "HTTPS: \"#{host}\"; #{url}",
+       "HTTPS: **#{host}**; #{url}", "HTTPS: tls #{host}; #{url}", "HTTPS: #{host} #{url}",
+       "HTTPS: [#{host}](#{url})", "HTTPS: enabled; #{host} #{url}"].each do |value|
+        assert CloseoutEvidenceReplay.malformed_https_reference?(value) ||
+               CloseoutEvidenceReplay.disallowed_durable_reference?(value),
+               "smuggled host accepted: #{value}"
+      end
+    end
+
+    schemes.each do |scheme|
+      ["HTTPS: #{scheme} #{url}", "HTTPS: #{scheme}payload; #{url}",
+       "HTTPS: \"#{scheme}payload\"; #{url}", "HTTPS: [#{scheme}payload](#{url})"].each do |value|
+        assert CloseoutEvidenceReplay.malformed_https_reference?(value),
+               "smuggled scheme accepted: #{value}"
+      end
+    end
+
+    ["./local/a.png", "../up/a.png", "shots/a.png", "/abs/a.png", "run/1.2.3/out.png"].each do |path|
+      ["durable: before HTTPS: evidence #{path}; after #{url}",
+       "durable: before #{path} after #{url}",
+       "durable: before HTTPS: tls #{path}; after #{url}",
+       "durable: before HTTPS: [#{path}](#{url}) after"].each do |value|
+        assert CloseoutEvidenceReplay.disallowed_durable_reference?(value) ||
+               CloseoutEvidenceReplay.malformed_https_reference?(value),
+               "smuggled path accepted: #{value}"
+      end
+    end
+  end
+
+  def test_https_labels_keep_handle_mentions_as_prose
+    # `@octocat` is a mention, not userinfo: the userinfo rule requires a non-empty left side.
+    body = hosted_v1_marker.sub(
+      "https://evidence.example.test/sign-in-abc123",
+      "HTTPS: reviewed by @octocat; https://evidence.example.test/sign-in-abc123"
+    )
+
+    hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+    assert_equal "SATISFIED", hosted.fetch("verdict")
+    assert_empty hosted.fetch("missing")
+  end
+
+  def test_https_labels_fold_encoded_and_unicode_authority_markers
+    # One marker per payload, so nothing else can carry the signal. URL and IDNA parsers fold
+    # these to ASCII, so a homoglyph host resolves exactly like the ASCII one and must not read
+    # as prose. Found by sweeping the marker alphabet; the position sweep above missed all of it.
+    payloads = [
+      "example%2Etest", "internal%3A8080", "admin%40internal", "host%2Fpath", "host%5Cpath",
+      "example\u3002test", "example\uFF0Etest", "example\uFF61test",
+      "admin\uFF20internal", "internal\uFF1A8080", "host\uFF0Fpath"
+    ]
+    url = "https://github.com/example/repo/pull/123#visual"
+
+    payloads.each do |payload|
+      ["HTTPS: #{payload}; #{url}", "HTTPS: seen #{payload}; #{url}",
+       "HTTPS: #{payload} #{url}", "HTTPS: [#{payload}](#{url})",
+       "durable: before HTTPS: #{payload}; after #{url}"].each do |value|
+        assert CloseoutEvidenceReplay.malformed_https_reference?(value) ||
+               CloseoutEvidenceReplay.disallowed_durable_reference?(value),
+               "folded marker accepted: #{value}"
+      end
+    end
+  end
+
+  def test_replay_survives_invalid_utf8_in_the_body
+    # A PR body is untrusted input. Invalid bytes used to abort the whole replay with a stack
+    # trace from the first regex, rather than producing a verdict.
+    body = +"<!-- qa-evidence v2\nrequired: yes\nstatus: satisfied\nscope: caf\xFF broken\n-->\n"
+    body.force_encoding("UTF-8")
+
+    data = run_replay(body)
+
+    refute_nil data.dig("qa_evidence", "verdict")
+  end
+
+  def test_replay_rejects_invalid_utf8_in_otherwise_valid_hosted_evidence
+    body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", "run-report-\xFF")
+    body.force_encoding("UTF-8")
+
+    data = run_replay(body)
+
+    assert_equal "UNKNOWN", data.fetch("overall_verdict")
+    assert_equal "UNKNOWN", data.fetch("hosted_qa_evidence").fetch("verdict")
+    assert_includes data.fetch("hosted_qa_evidence").fetch("missing"), "input contains invalid UTF-8"
+  end
+
+  def test_durable_urls_reject_every_loopback_spelling
+    # Dotted-quad is one spelling; inet_aton also accepts short, decimal, hex, and octal forms
+    # that resolve to the same loopback address, and rejecting only the dotted-quad left the
+    # existing intent unmet.
+    %w[
+      https://127.0.0.1/x https://127.1/x https://127.000.000.1/x https://2130706433/x
+      https://0x7f000001/x https://0177.0.0.1/x https://0x7f.1/x https://0/x https://0.0.0.0/x
+      https://localhost/x https://a.localhost/x
+    ].each do |url|
+      refute CloseoutEvidenceReplay.valid_https_url?(url), "loopback accepted: #{url}"
+    end
+  end
+
+  def test_durable_urls_keep_accepting_public_addresses
+    # The numeric-host rule must not swallow ordinary public addresses adjacent to 127/8.
+    %w[
+      https://203.0.113.5/x https://8.8.8.8/x https://126.0.0.1/x https://128.0.0.1/x
+      https://1.2.3.4/x https://github.com/e/r/pull/1
+    ].each do |url|
+      assert CloseoutEvidenceReplay.valid_https_url?(url), "public address rejected: #{url}"
+    end
+  end
+
+  def test_durable_github_hosts_reject_lookalikes
+    %w[
+      https://github.com.evil.test/e/r https://github.com@evil.test/e/r
+      https://evil.test/github.com https://notgithub.com/e/r https://github.com.x/e/r
+      https://private-user-images.githubusercontent.com/1/a.png
+    ].each do |url|
+      refute CloseoutEvidenceReplay.github_url?(url), "lookalike accepted: #{url}"
+    end
+
+    assert CloseoutEvidenceReplay.github_url?("https://GitHub.CoM/e/r/pull/1")
+    assert CloseoutEvidenceReplay.github_url?("https://user-images.githubusercontent.com/1/a.png")
+  end
+
+  def test_hosted_v1_survives_lone_delimiter_tokens_in_https_prose_labels
+    # A bare delimiter token used to split to an empty list and raise NoMethodError, aborting the
+    # whole replay instead of returning a verdict.
+    {
+      'HTTPS: enabled " ok;' => "SATISFIED",
+      "HTTPS: enabled ` ok;" => "SATISFIED",
+      "HTTPS: enabled ( ok;" => "SATISFIED",
+      "HTTPS: enabled ? ok;" => "SATISFIED",
+      "HTTPS: enabled [ ok;" => "UNKNOWN"
+    }.each do |label, expected|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal expected, hosted.fetch("verdict"), label
+    end
+  end
+
+  def test_hosted_v1_still_rejects_scheme_and_bracketed_authority_https_labels
+    # The prose exemption for a trailing-colon label must not admit an opaque scheme, and the
+    # decorative leading-symbol strip must not erase a bracketed authority.
+    [
+      "HTTPS: mailto:someone;",
+      "HTTPS: blob:abc;",
+      "HTTPS: ftp:host;",
+      "HTTPS: data:image/png;base64,AAA;",
+      "HTTPS: [::1];",
+      "HTTPS: [2001:db8::1];"
+    ].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), label
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", label
+    end
+  end
+
+  def test_hosted_v1_still_rejects_authority_shaped_https_labels_with_delimiters
+    [
+      'HTTPS: "example.test:443";',
+      "HTTPS: `available.example.test`;",
+      "HTTPS: 'example.test';",
+      "HTTPS: admin:secret@internal;",
+      "HTTPS: host [::1]:443;"
+    ].each do |label|
+      evidence = "#{label} https://evidence.example.test/sign-in-abc123"
+      body = hosted_v1_marker.sub("https://evidence.example.test/sign-in-abc123", evidence)
+
+      hosted = run_replay(body).fetch("hosted_qa_evidence")
+
+      assert_equal "UNKNOWN", hosted.fetch("verdict"), label
+      assert_includes hosted.fetch("missing"), "criterion[0].evidence", label
+    end
   end
 
   def test_v2_github_destination_accepts_current_and_legacy_attachment_hosts
@@ -1114,7 +2070,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
-  def test_v2_measured_metric_requires_named_non_size_runtime_or_user_metric
+  def test_v2_measured_metric_requires_a_named_non_size_non_placeholder_metric
     invalid_evidence = [
       "repo_seam: source=bin/perf-report; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=bin/perf-report; metric_name=bundle_size; baseline_value=120kB; candidate_value=121kB",
@@ -1122,11 +2078,29 @@ class CloseoutEvidenceReplayTest < Minitest::Test
       "repo_seam: source=bin/perf-report; metric_name=score; baseline_value=120kB; candidate_value=121kB",
       "repo_seam: source=bin/perf-report; metric_name=performance_score; baseline_value=120kB; candidate_value=121kB",
       "repo_seam: source=bin/perf-report; metric_name=LCP; metric_name=INP; baseline_value=2.4s; candidate_value=2.1s",
-      "repo_seam: source=bin/perf-report; metric_name=test_count; baseline_value=100tests; candidate_value=110tests",
       "repo_seam: source=bin/perf-report; metric_name=placeholder; baseline_value=1ms; candidate_value=2ms",
-      "repo_seam: source=bin/perf-report; metric_name=widgets_clicked; baseline_value=5x; candidate_value=3x",
-      "repo_seam: source=bin/perf-report; metric_name=active_user_count; baseline_value=5users; candidate_value=3users",
-      "repo_seam: source=bin/perf-report; metric_name=power_user_score; baseline_value=5x; candidate_value=3x"
+      "repo_seam: source=bin/perf-report; metric_name=n/a; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=NA; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=N.A.; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=N-A; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=notapplicable; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=NotApplicable; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=NOTAPPLICABLE; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=metric; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=metrics; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=none; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=unset; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=pending; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=null; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=nil; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=NaN; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=nan; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=NAN; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=undefined; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=count; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=counts; baseline_value=1x; candidate_value=2x",
+      "repo_seam: source=bin/perf-report; metric_name=---; baseline_value=1ms; candidate_value=2ms",
+      "repo_seam: source=bin/perf-report; metric_name=測定; baseline_value=1ms; candidate_value=2ms"
     ]
 
     invalid_evidence.each do |evidence|
@@ -1139,6 +2113,240 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
       assert_includes qa.fetch("missing"), "performance_evidence", evidence
+    end
+  end
+
+  def test_v2_measured_metric_rejects_unresolved_tokens_in_delimited_and_camel_case_names
+    %w[
+      placeholder_metric tbd_checkout todo_latency unknown_duration missing_latency
+      unavailable_metric unmeasured_metric not_available_metric not_measured_metric not_applicable
+      todoLatency placeholderMetric tbdCheckout unknownDuration missingLatency
+      unavailableMetric unmeasuredMetric notAvailableMetric notMeasuredMetric notApplicable
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_measured_metric_classifies_bounded_placeholder_token_shapes
+    %w[unknown_duration missing_value my_placeholder todo_count].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+    end
+
+    %w[todo_sync_latency missing_translation_count].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+    end
+  end
+
+  def test_v2_measured_metric_accepts_consumer_defined_metric_names
+    %w[checkout_ready file_upload_latency availability_latency rateUnknownness n_a_latency notapplicable_latency score x result].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_v2_measured_metric_accepts_consumer_defined_count_metric_unit
+    qa = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=checkout_error_count; baseline_value=12errors; candidate_value=3errors"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+    assert_empty qa.fetch("missing")
+  end
+
+  def test_v2_measured_metric_rejects_structural_counts_without_rejecting_runtime_name_tokens
+    %w[
+      chunk_count chunks_count file_count files_count module_count modules_count test_count tests_count
+      chunk_counts chunksCounts file_counts filesCounts module_counts modulesCounts test_counts testsCounts
+      total_file_count totalFilesCount chunk chunks file files module modules test tests
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+
+    runtime = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=file_upload_latency; baseline_value=3ms; candidate_value=2ms"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", runtime.fetch("verdict")
+    assert_empty runtime.fetch("missing")
+
+    compound_runtime = run_replay(
+      v2_marker(
+        "performance_impact" => "measured_metric",
+        "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=module_load_count; baseline_value=3ms; candidate_value=2ms"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", compound_runtime.fetch("verdict")
+    assert_empty compound_runtime.fetch("missing")
+  end
+
+  def test_v2_measured_metric_rejects_singular_and_plural_size_tokens
+    metric_names = %w[asset assets bundle bundles byte bytes shape shapes size sizes].flat_map do |name|
+      [name, "#{name}_count"]
+    end
+    metric_names.each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_measured_metric_accepts_runtime_names_containing_plural_size_tokens
+    %w[assets_load_latency bundles_parse_time].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_v2_measured_metric_rejects_terminal_size_nouns_regardless_of_prefix
+    %w[
+      page_asset response_bundle dashboard_shape page_size response_size payload_size image_size
+      cache_size viewportSize recordSizes thumbnail_bytes
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_measured_metric_accepts_runtime_memory_names_with_terminal_size_nouns
+    %w[
+      heap_size rss_size memory_size resident_set_size ram_bytes heapUsedBytes
+      process_heap_bytes used_rss_kb node_heap_size
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=100MB; candidate_value=90MB"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+
+    %w[bundle_heap_size asset_ram_bytes].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=100MB; candidate_value=90MB"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+  end
+
+  def test_v2_measured_metric_looks_through_qualifiers_before_a_structural_or_size_count
+    %w[
+      file_total_count chunk_total_count module_total_count test_total_count
+      files_overall_count modulesAggregateCount tests_unique_counts assets_total_count
+      bundle_distinct_count bytesNumberCount file_total_overall_count assets_all_unique_count
+      total_count overall_counts totalOverallCount
+    ].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+
+    %w[module_load_count checkout_error_count file_upload_retry_count].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
+  def test_v2_measured_metric_classifies_size_and_count_shapes_by_terminal_position
+    {
+      "bundle_compressed_size" => %w[12items 3items UNKNOWN],
+      "total_uncompressed_bundle_size" => %w[12items 3items UNKNOWN],
+      "total_assets_count" => %w[12items 3items UNKNOWN],
+      "assets_count_query_time" => %w[3ms 2ms SATISFIED],
+      "total_uncompressed_bundle_latency" => %w[3ms 2ms SATISFIED]
+    }.each do |metric_name, (baseline, candidate, verdict)|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => "repo_seam: source=bin/perf-report; metric_name=#{metric_name}; baseline_value=#{baseline}; candidate_value=#{candidate}"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal verdict, qa.fetch("verdict"), metric_name
     end
   end
 
@@ -1212,12 +2420,41 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", valid.fetch("verdict")
   end
 
+  def test_v2_bundle_hygiene_requires_a_terminal_shape_in_non_byte_metric_names
+    %w[bundleParseTime fileUploadLatency test tests test_count tests_count].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "bundle_hygiene",
+          "performance_evidence" =>
+            "repo_seam: source=bin/bundle-report; metric_name=#{metric_name}; baseline_value=3ms; candidate_value=2ms"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), metric_name
+      assert_includes qa.fetch("missing"), "performance_evidence", metric_name
+    end
+
+    %w[chunks modules assets bundles shapes bundle_compressed_size file_total_count].each do |metric_name|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "bundle_hygiene",
+          "performance_evidence" =>
+            "repo_seam: source=bin/bundle-report; metric_name=#{metric_name}; baseline_value=12items; candidate_value=3items"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), metric_name
+      assert_empty qa.fetch("missing"), metric_name
+    end
+  end
+
   def test_v2_performance_evidence_requires_named_repo_seam_source
     invalid_sources = [
       "repo_seam: metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=report; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=UNKNOWN; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=https://; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
+      "repo_seam: source=https:broken; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: source=http://report.example.test/run; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s",
       "repo_seam: https://ci.example.test/run?a=1;source=fake/report; source missing; metric_name=LCP; baseline_value=2.4s; candidate_value=2.1s"
     ]
@@ -1232,6 +2469,49 @@ class CloseoutEvidenceReplayTest < Minitest::Test
 
       assert_equal "UNKNOWN", qa.fetch("verdict"), evidence
       assert_includes qa.fetch("missing"), "performance_evidence", evidence
+    end
+  end
+
+  def test_v2_measured_metric_accepts_https_repo_seam_source_with_labeled_delimiters
+    [
+      "repo_seam: source=https://ci.example.test/run;metric_name=LCP;baseline_value=3ms;candidate_value=2ms",
+      "repo_seam: source=https://ci.example.test/run?trace=a;mode=full;metric_name=INP;baseline_value=3ms;candidate_value=2ms"
+    ].each do |evidence|
+      qa = run_replay(
+        v2_marker(
+          "performance_impact" => "measured_metric",
+          "performance_evidence" => evidence
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), evidence
+      assert_empty qa.fetch("missing"), evidence
+    end
+  end
+
+  def test_v2_retains_semicolons_inside_https_url_content
+    qa = run_replay(
+      v2_marker(
+        "visual_evidence" => "durable: before and after https://github.com/example/repo;mode=full/tmp/local.png"
+      )
+    ).fetch("qa_evidence")
+
+    assert_equal "SATISFIED", qa.fetch("verdict")
+    refute_includes qa.fetch("missing"), "visual_evidence.local_reference"
+  end
+
+  def test_v2_retains_performance_field_names_inside_artifact_url_parameters
+    %w[source metric_name baseline_value candidate_value].each do |field_name|
+      qa = run_replay(
+        v2_marker(
+          "visual_evidence_destination" => "repo_artifact_store",
+          "visual_evidence" =>
+            "durable: before and after https://artifacts.example.test/build;#{field_name}=images/before-after.png"
+        )
+      ).fetch("qa_evidence")
+
+      assert_equal "SATISFIED", qa.fetch("verdict"), field_name
+      assert_empty qa.fetch("missing"), field_name
     end
   end
 
