@@ -2,15 +2,18 @@
 # frozen_string_literal: true
 
 require "digest"
+require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
 require "rbconfig"
 require "tempfile"
+require "tmpdir"
 
 HELPER = File.expand_path("batch-plan-preflight", __dir__)
 STAGE_DEPENDENCY_GATE = File.expand_path("../../pr-batch/bin/stage-dependency-gate", __dir__)
 REPLAY_FIXTURE = File.expand_path("../fixtures/ror-wave-a-plan-replay.json", __dir__)
+COMPANION_PATH_REPLAY_FIXTURE = File.expand_path("../fixtures/ror-companion-path-omission.json", __dir__)
 UNSIGNED_LIFECYCLE_FIXTURE = File.expand_path("../fixtures/unsigned-lifecycle-smoke.json", __dir__)
 
 class BatchPlanPreflightTest < Minitest::Test
@@ -29,6 +32,558 @@ class BatchPlanPreflightTest < Minitest::Test
     assert status.success?, stderr
     assert_equal "accepted", result.fetch("status")
     assert_equal ["install-smoke"], result.dig("launch", "eligible_lane_ids")
+  end
+
+  def test_replays_ror_companion_omission_as_advisory
+    with_companion_repo do |root, fixture|
+      source = fixture.fetch("source_path")
+      companion = fixture.fetch("companion_path")
+      input = companion_input(fixture, paths: [source])
+
+      result, stderr, status = evaluate(input, chdir: root)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      advisory = result.fetch("advisories").find do |item|
+        item["code"] == "companion-path-omitted"
+      end
+      refute_nil advisory
+      assert_equal [fixture.fetch("lane_id")], advisory.fetch("lane_ids")
+      assert_equal source, advisory.fetch("source_path")
+      assert_equal companion, advisory.fetch("companion_path")
+    end
+  end
+
+  def test_companion_policy_resolves_from_repository_subdirectory
+    with_companion_repo do |root, fixture|
+      assert system("git", "init", "--quiet", root), "git init failed"
+      nested = File.join(root, "nested")
+      FileUtils.mkdir_p(nested)
+      input = companion_input(fixture, paths: [fixture.fetch("source_path")])
+
+      result, stderr, status = evaluate(input, chdir: nested)
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
+  def test_listed_companion_does_not_produce_advisory
+    with_companion_repo do |root, fixture|
+      input = companion_input(
+        fixture,
+        paths: [fixture.fetch("source_path"), fixture.fetch("companion_path")]
+      )
+
+      result, stderr, status = evaluate(input, chdir: root)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      refute(result.fetch("advisories").any? { |item| item["code"] == "companion-path-omitted" })
+    end
+  end
+
+  def test_reserved_companion_does_not_produce_advisory
+    with_companion_repo do |root, fixture|
+      reservation = expansion_path_reservation(
+        lane_id: fixture.fetch("lane_id"),
+        path: fixture.fetch("companion_path")
+      )
+      input = companion_input(
+        fixture,
+        paths: [fixture.fetch("source_path")],
+        reservations: [reservation]
+      )
+
+      result, stderr, status = evaluate(input, chdir: root)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      refute(result.fetch("advisories").any? { |item| item["code"] == "companion-path-omitted" })
+    end
+  end
+
+  def test_reserved_source_path_produces_companion_advisory
+    with_companion_repo do |root, fixture|
+      reservation = expansion_path_reservation(
+        lane_id: fixture.fetch("lane_id"),
+        path: fixture.fetch("source_path")
+      )
+      input = companion_input(fixture, paths: ["README.md"], reservations: [reservation])
+
+      result, stderr, status = evaluate(input, chdir: root)
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
+  def test_repo_without_companion_conventions_preserves_existing_result
+    Dir.mktmpdir("batch-plan-no-companion-config") do |root|
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_equal ["lane-a"], result.dig("launch", "eligible_lane_ids")
+      assert_empty result.fetch("violations")
+      assert_empty result.fetch("advisories")
+    end
+  end
+
+  def test_comment_only_policy_preserves_existing_result
+    Dir.mktmpdir("batch-plan-empty-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), "# No repo policy configured.\n")
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+      assert_empty result.fetch("advisories")
+    end
+  end
+
+  def test_companion_advisory_does_not_change_launch_or_validation_outcomes
+    with_companion_repo do |root, fixture|
+      input = companion_input(fixture, paths: [fixture.fetch("source_path")])
+      advised, advised_stderr, advised_status = evaluate(input, chdir: root)
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), "base_branch: main\n")
+      baseline, baseline_stderr, baseline_status = evaluate(input, chdir: root)
+
+      assert advised_status.success?, advised_stderr
+      assert baseline_status.success?, baseline_stderr
+      assert_equal baseline.except("advisories"), advised.except("advisories")
+      assert_empty baseline.fetch("advisories")
+      advisory_codes = advised.fetch("advisories").map { |item| item.fetch("code") }
+      assert_equal ["companion-path-omitted"], advisory_codes
+    end
+  end
+
+  def test_invalid_companion_convention_fails_closed
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions:
+          - source_glob: #{fixture.fetch('source_glob')}
+            companion_glob: react_on_rails/sig/{name}.rbs
+      YAML
+
+      result, _stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      refute status.success?
+      assert_equal "rejected", result.fetch("status")
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_adjacent_named_placeholders_are_rejected_as_ambiguous
+    Dir.mktmpdir("batch-plan-ambiguous-companion") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions:
+          - source_glob: lib/{first}{second}.rb
+            companion_glob: sig/{first}/{second}.rbs
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_repeated_delimiter_named_placeholders_are_rejected_as_ambiguous
+    Dir.mktmpdir("batch-plan-delimited-companion") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions:
+          - source_glob: lib/{first}-{second}.rb
+            companion_glob: sig/{first}/{second}.rbs
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_multiple_globstar_captures_are_rejected_as_ambiguous
+    fixture = {
+      "repository" => "owner/repo",
+      "issue" => 461,
+      "lane_id" => "lane-ambiguous-multi-globstar",
+      "source_glob" => "src/**/mid/**/{name}.rb",
+      "companion_glob" => "sig/**/{name}.rbs",
+      "source_path" => "src/a/mid/b/mid/c/foo.rb",
+      "companion_path" => "sig/a/mid/b/foo.rbs"
+    }
+    with_companion_fixture(fixture) do |root|
+      result, _stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_globstar_matches_zero_directories
+    fixture = {
+      "repository" => "owner/repo",
+      "issue" => 461,
+      "lane_id" => "lane-direct-root",
+      "source_glob" => "lib/**/{name}.rb",
+      "companion_glob" => "sig/**/{name}.rbs",
+      "source_path" => "lib/task.rb",
+      "companion_path" => "sig/task.rbs"
+    }
+    with_companion_fixture(fixture) do |root|
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      advisory = result.fetch("advisories").find { |item| item["code"] == "companion-path-omitted" }
+      refute_nil advisory
+      assert_equal fixture.fetch("companion_path"), advisory.fetch("companion_path")
+    end
+  end
+
+  def test_shared_policy_dates_do_not_block_preflight
+    Dir.mktmpdir("batch-plan-date-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        policy_date: 2026-01-01
+        companion_path_conventions: []
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_unrelated_tagged_policy_value_does_not_block_companion_contract
+    Dir.mktmpdir("batch-plan-tagged-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        unrelated: !ruby/object:Object {}
+        companion_path_conventions: []
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_unrelated_malformed_policy_does_not_block_preflight
+    Dir.mktmpdir("batch-plan-unrelated-malformed-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), "base_branch: [\n")
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_unrelated_invalid_utf8_policy_does_not_block_preflight
+    Dir.mktmpdir("batch-plan-invalid-utf8-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.binwrite(File.join(root, ".agents", "agent-workflow.yml"), "base_branch: \xFF\n".b)
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_unrelated_malformed_policy_does_not_hide_valid_companion_contract
+    Dir.mktmpdir("batch-plan-valid-companion-malformed-sibling") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        base_branch: [
+        companion_path_conventions: []
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_unrelated_malformed_policy_preserves_unindented_companion_sequence
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        base_branch: [
+        companion_path_conventions:
+        - source_glob: #{fixture.fetch('source_glob')}
+          companion_glob: #{fixture.fetch('companion_glob')}
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
+  def test_indented_malformed_policy_preserves_companion_sequence
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)
+  base_branch: main
+  companion_path_conventions:
+    - source_glob: #{fixture.fetch('source_glob')}
+      companion_glob: #{fixture.fetch('companion_glob')}
+  malformed: [
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
+  def test_malformed_recovery_ignores_nested_companion_policy_content
+    with_companion_repo do |root, fixture|
+      cases = {
+        "nested mapping" => <<-YAML,
+  defaults:
+    companion_path_conventions:
+      - source_glob: #{fixture.fetch('source_glob')}
+        companion_glob: #{fixture.fetch('companion_glob')}
+  malformed: [
+        YAML
+        "block scalar" => <<-YAML
+  notes: |
+    companion_path_conventions:
+      - source_glob: #{fixture.fetch('source_glob')}
+        companion_glob: #{fixture.fetch('companion_glob')}
+  malformed: [
+        YAML
+      }
+
+      cases.each do |label, yaml|
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), yaml)
+
+        result, stderr, status = evaluate(
+          companion_input(fixture, paths: [fixture.fetch("source_path")]),
+          chdir: root
+        )
+
+        assert status.success?, "#{label}: #{stderr}"
+        assert_equal "accepted", result.fetch("status"), label
+        assert_empty result.fetch("violations"), label
+        assert_empty result.fetch("advisories"), label
+      end
+    end
+  end
+
+  def test_merged_companion_policy_keys_fail_closed
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)
+  defaults: &defaults
+    companion_path_conventions:
+      - source_glob: #{fixture.fetch('source_glob')}
+        companion_glob: #{fixture.fetch('companion_glob')}
+  <<: *defaults
+      YAML
+
+      result, _stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_unrelated_root_merge_keys_do_not_block_preflight
+    Dir.mktmpdir("batch-plan-unrelated-root-merge") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)
+  defaults: &defaults
+    base_branch: main
+  <<: *defaults
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+      assert_empty result.fetch("advisories")
+    end
+  end
+
+  def test_malformed_declared_companion_policy_fails_closed
+    Dir.mktmpdir("batch-plan-malformed-companion-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(
+        File.join(root, ".agents", "agent-workflow.yml"),
+        "companion_path_conventions: [\n"
+      )
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_duplicate_companion_policy_keys_fail_closed
+    policies = {
+      "top-level" => <<~YAML,
+        companion_path_conventions: []
+        companion_path_conventions: []
+      YAML
+      "entry" => <<~YAML
+        companion_path_conventions:
+          - source_glob: lib/**/{name}.rb
+            source_glob: other/**/{name}.rb
+            companion_glob: sig/**/{name}.rbs
+      YAML
+    }
+
+    policies.each do |label, yaml|
+      Dir.mktmpdir("batch-plan-duplicate-companion-policy") do |root|
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), yaml)
+
+        result, _stderr, status = evaluate(input_for, chdir: root)
+
+        refute status.success?, label
+        assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                        "companion-path-conventions-invalid", label
+      end
+    end
+  end
+
+  def test_companion_policy_in_multi_document_yaml_fails_closed
+    Dir.mktmpdir("batch-plan-multi-document-companion-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions: invalid
+        ---
+        metadata: true
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_malformed_policy_fallback_rejects_document_boundary
+    Dir.mktmpdir("batch-plan-fallback-multi-document-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        base_branch: [
+        ---
+        companion_path_conventions: []
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_unreadable_shared_policy_does_not_block_preflight
+    Dir.mktmpdir("batch-plan-unreadable-companion") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      policy = File.join(root, ".agents", "agent-workflow.yml")
+      File.write(policy, "base_branch: main\n")
+      File.chmod(0o000, policy)
+      skip "filesystem does not enforce unreadable mode" if File.readable?(policy)
+
+      stdout, stderr, status = Open3.capture3(
+        RbConfig.ruby,
+        HELPER,
+        stdin_data: JSON.generate(input_for),
+        chdir: root
+      )
+
+      assert status.success?
+      assert_empty stderr
+      result = JSON.parse(stdout)
+      assert_empty result.fetch("violations")
+    ensure
+      File.chmod(0o644, policy) if policy && File.exist?(policy)
+    end
+  end
+
+  def with_companion_repo
+    fixture = JSON.parse(File.read(COMPANION_PATH_REPLAY_FIXTURE))
+    with_companion_fixture(fixture) { |root| yield root, fixture }
+  end
+
+  def with_companion_fixture(fixture)
+    Dir.mktmpdir("batch-plan-companion") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions:
+          - source_glob: #{fixture.fetch('source_glob')}
+            companion_glob: #{fixture.fetch('companion_glob')}
+      YAML
+      [fixture.fetch("source_path"), fixture.fetch("companion_path")].each do |path|
+        FileUtils.mkdir_p(File.dirname(File.join(root, path)))
+        File.write(File.join(root, path), "fixture\n")
+      end
+      yield root
+    end
+  end
+
+  def companion_input(fixture, paths:, reservations: nil)
+    lane_record = lane(
+      fixture.fetch("lane_id"),
+      target: issue_target(fixture.fetch("issue"), repository: fixture.fetch("repository"))
+    )
+    input_for(
+      lanes: [lane_record],
+      maps: {
+        fixture.fetch("lane_id") => planned_path_evidence(
+          paths,
+          source_kind: "issue",
+          evidence_ref: "issue://#{fixture.fetch('repository')}/#{fixture.fetch('issue')}#planned-paths"
+        )
+      },
+      reservations: reservations
+    )
   end
 
   def issue_target(number = 397, repository: "owner/repo")
@@ -316,8 +871,10 @@ class BatchPlanPreflightTest < Minitest::Test
     }
   end
 
-  def evaluate(input, helper: HELPER, env: {})
-    stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, helper, stdin_data: JSON.generate(input))
+  def evaluate(input, helper: HELPER, env: {}, chdir: nil)
+    options = { stdin_data: JSON.generate(input) }
+    options[:chdir] = chdir if chdir
+    stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, helper, **options)
     [JSON.parse(stdout), stderr, status]
   end
 

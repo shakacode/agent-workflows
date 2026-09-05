@@ -4,7 +4,9 @@
 require "json"
 require "date"
 require "digest"
+require "open3"
 require "uri"
+require "yaml"
 
 module BatchPlanPreflight
   BACKENDS = %w[codex claude generic].freeze
@@ -135,7 +137,7 @@ module BatchPlanPreflight
     }
   end
 
-  def evaluate(input)
+  def evaluate(input, repo_root:)
     unless input.is_a?(Hash) && input["type"] == "batch-plan-preflight" && input["version"] == 1
       return result(
         "rejected", [], [],
@@ -149,6 +151,8 @@ module BatchPlanPreflight
     plan_violations = validate_plan(input["plan"])
     violations = plan_violations.dup
     advisories = []
+    companion_config_violations, companion_conventions = companion_path_conventions(repo_root)
+    violations.concat(companion_config_violations)
     violations.concat(validate_unknown_decisions(input["plan"]))
     plan_violation_codes = plan_violations.map { |item| item["code"] }
     lane_ids_valid = !plan_violation_codes.include?("lane-id-invalid-or-duplicate")
@@ -205,7 +209,11 @@ module BatchPlanPreflight
           expansion_path_reservations
         )
       violations.concat(collision_violations)
-      advisories = collision_advisories
+      advisories = collision_advisories + companion_path_advisories(
+        effective_maps,
+        companion_conventions,
+        repo_root:
+      )
       if changed_surfaces_valid
         violations.concat(validate_caps(
                             input["plan"]["backend"],
@@ -682,6 +690,328 @@ module BatchPlanPreflight
       end
     end
     effective
+  end
+
+  def companion_path_advisories(effective_maps, conventions, repo_root:)
+    return [] if conventions.empty?
+
+    effective_maps.flat_map do |lane_id, map|
+      effective_paths = map.fetch("paths")
+      effective_paths.flat_map do |source_path|
+        conventions.filter_map do |convention|
+          captures = match_companion_source(convention.fetch("source_glob"), source_path)
+          next unless captures
+
+          companion_path = render_companion_path(convention.fetch("companion_glob"), captures)
+          next unless companion_path && File.file?(File.join(repo_root, companion_path))
+          next if effective_paths.include?(companion_path)
+
+          violation(
+            "companion-path-omitted",
+            "$.file_touch_map.#{lane_id}",
+            "Declared path #{source_path} has existing configured companion #{companion_path}; " \
+            "list or reserve the companion before dispatch.",
+            lane_ids: [lane_id]
+          ).merge(
+            "source_path" => source_path,
+            "companion_path" => companion_path
+          )
+        end
+      end
+    end
+  end
+
+  def repository_root(cwd)
+    expanded_cwd = File.expand_path(cwd)
+    stdout, _stderr, status = Open3.capture3("git", "-C", expanded_cwd, "rev-parse", "--show-toplevel")
+    root = stdout.strip
+    status.success? && File.directory?(root) ? File.expand_path(root) : expanded_cwd
+  rescue SystemCallError
+    expanded_cwd
+  end
+
+  def companion_path_conventions(repo_root)
+    config_path = File.join(repo_root, ".agents", "agent-workflow.yml")
+    return [[], []] unless File.file?(config_path)
+
+    yaml = File.read(config_path, encoding: "UTF-8")
+    key_state, value_node = companion_policy_node(yaml)
+    return [[], []] if key_state == :absent
+    return invalid_companion_path_conventions if key_state == :invalid
+
+    conventions = companion_conventions_from_node(value_node)
+    return invalid_companion_path_conventions unless conventions&.all? do |convention|
+      valid_companion_path_convention?(convention)
+    end
+
+    [[], conventions]
+  rescue SystemCallError
+    [[], []]
+  end
+
+  def companion_policy_node(yaml)
+    companion_policy_node_from_stream(Psych.parse_stream(yaml))
+  rescue Psych::Exception
+    companion_policy_fragment_node(yaml)
+  end
+
+  def companion_policy_node_from_stream(stream)
+    documents = stream.children
+    matching_values = documents.flat_map do |document|
+      root = document.root
+      next [] unless root.is_a?(Psych::Nodes::Mapping)
+
+      root_pairs = root.children.each_slice(2).to_a
+      companion_values = root_pairs.filter_map do |key, value|
+        value if companion_policy_key_node?(key)
+      end
+
+      if companion_values.empty? && root_pairs.any? { |key, _value| merge_key_node?(key) }
+        anchors = companion_policy_anchor_map(root)
+        return [:invalid, nil] if companion_policy_mapping_has_companion_key?(root, anchors)
+      end
+
+      companion_values
+    end
+    return [:absent, nil] if matching_values.empty?
+    return [:invalid, nil] unless documents.one? && matching_values.one?
+
+    [:present, matching_values.first]
+  end
+
+  def companion_policy_key_node?(node)
+    node.is_a?(Psych::Nodes::Scalar) && node.value == "companion_path_conventions"
+  end
+
+  def merge_key_node?(node)
+    node.is_a?(Psych::Nodes::Scalar) && node.value == "<<"
+  end
+
+  def companion_policy_anchor_map(node, anchors = {})
+    case node
+    when Psych::Nodes::Mapping, Psych::Nodes::Sequence
+      anchors[node.anchor] = node if node.anchor
+      node.children.each { |child| companion_policy_anchor_map(child, anchors) }
+    end
+    anchors
+  end
+
+  def companion_policy_mapping_has_companion_key?(mapping, anchors, seen = {})
+    return false unless mapping.is_a?(Psych::Nodes::Mapping)
+
+    anchor = mapping.anchor
+    return false if anchor && seen[anchor]
+
+    seen = seen.merge(anchor => true) if anchor
+
+    pairs = mapping.children.each_slice(2).to_a
+    return true if pairs.any? { |key, _value| companion_policy_key_node?(key) }
+
+    pairs.any? do |key, value|
+      merge_key_node?(key) && companion_policy_merge_value_has_companion_key?(value, anchors, seen)
+    end
+  end
+
+  def companion_policy_merge_value_has_companion_key?(value, anchors, seen)
+    case value
+    when Psych::Nodes::Alias
+      merged = anchors[value.anchor]
+      merged && companion_policy_mapping_has_companion_key?(merged, anchors, seen)
+    when Psych::Nodes::Sequence
+      value.children.any? { |child| companion_policy_merge_value_has_companion_key?(child, anchors, seen) }
+    when Psych::Nodes::Mapping
+      companion_policy_mapping_has_companion_key?(value, anchors, seen)
+    else
+      false
+    end
+  end
+
+  def companion_policy_fragment_node(yaml)
+    lines = yaml.to_s.b.lines
+    root_indentation = companion_policy_root_indentation(lines)
+    return [:absent, nil] if root_indentation.nil?
+
+    starts = lines.each_index.select do |index|
+      companion_policy_key_line?(lines[index]) &&
+        companion_policy_line_indentation(lines[index]) == root_indentation
+    end
+    return [:absent, nil] if starts.empty?
+    return [:invalid, nil] unless starts.one?
+    return [:invalid, nil] if lines.any? { |line| yaml_document_boundary_line?(line) }
+
+    start_index = starts.first
+    key_indent = companion_policy_line_indentation(lines[start_index])
+    finish = ((start_index + 1)...lines.length).find do |index|
+      line = lines[index]
+      next false if line.strip.empty? || line.lstrip.start_with?("#")
+
+      line_indent = companion_policy_line_indentation(line)
+      line_indent < key_indent || (line_indent == key_indent && !line.lstrip.start_with?("-"))
+    end
+    fragment = lines[start_index...(finish || lines.length)].join
+    state, node = companion_policy_node_from_stream(Psych.parse_stream(fragment))
+    state == :present ? [state, node] : [:invalid, nil]
+  rescue Psych::Exception
+    [:invalid, nil]
+  end
+
+  def companion_policy_key_line?(line)
+    line.b.match?(/\A[ \t]*(?:companion_path_conventions|["']companion_path_conventions["'])\s*:/)
+  end
+
+  def companion_policy_root_indentation(lines)
+    lines.each do |line|
+      next if line.strip.empty? || line.lstrip.start_with?("#")
+
+      return companion_policy_line_indentation(line)
+    end
+    nil
+  end
+
+  def companion_policy_line_indentation(line)
+    line.b.match(/\A[ \t]*/).to_s.length
+  end
+
+  def yaml_document_boundary_line?(line)
+    line.b.match?(/\A(?:---|\.\.\.)(?:[ \t]*(?:#.*)?)?\r?\n?\z/)
+  end
+
+  def companion_conventions_from_node(node)
+    return unless node.is_a?(Psych::Nodes::Sequence)
+
+    conventions = node.children.map { |entry| companion_convention_from_node(entry) }
+    conventions unless conventions.any?(&:nil?)
+  end
+
+  def companion_convention_from_node(entry)
+    return unless entry.is_a?(Psych::Nodes::Mapping)
+
+    pairs = entry.children.each_slice(2).to_a
+    return unless pairs.length == 2 && pairs.flatten.all? { |node| yaml_string_scalar?(node) }
+
+    keys = pairs.map { |key, _value| key.value }
+    return unless keys.uniq.length == keys.length && keys.sort == %w[companion_glob source_glob]
+
+    pairs.to_h { |key, value| [key.value, value.value] }
+  end
+
+  def yaml_string_scalar?(node)
+    node.is_a?(Psych::Nodes::Scalar) && [nil, "tag:yaml.org,2002:str"].include?(node.tag)
+  end
+
+  def invalid_companion_path_conventions
+    [[violation(
+      "companion-path-conventions-invalid",
+      ".agents/agent-workflow.yml#companion_path_conventions",
+      "Companion path conventions must be a list of exact source_glob and companion_glob pairs " \
+      "with unique keys and matching, unambiguous **, *, and named placeholder tokens."
+    )], []]
+  end
+
+  def valid_companion_path_convention?(convention)
+    return false unless convention.is_a?(Hash) && convention.keys.sort == %w[companion_glob source_glob]
+
+    source = companion_template_tokens(
+      convention["source_glob"],
+      single_named_per_segment: true,
+      single_globstar: true
+    )
+    companion = companion_template_tokens(convention["companion_glob"])
+    source && companion && source == companion
+  end
+
+  def companion_template_tokens(template, single_named_per_segment: false, single_globstar: false)
+    return nil unless canonical_repository_relative_path?(template)
+
+    tokens = { "globstars" => 0, "stars" => 0, "named" => [] }
+    template.split("/").each do |segment|
+      case segment
+      when "**"
+        tokens["globstars"] += 1
+      when "*"
+        tokens["stars"] += 1
+      else
+        return nil if segment.include?("}{")
+
+        names = segment.scan(/\{([a-z][a-z0-9_]*)\}/).flatten
+        return nil if single_named_per_segment && names.length > 1
+
+        remainder = segment.gsub(/\{[a-z][a-z0-9_]*\}/, "")
+        return nil if remainder.include?("*") || remainder.match?(/[{}]/)
+
+        tokens["named"].concat(names)
+      end
+    end
+    tokens["named"].sort!
+    return nil if single_globstar && tokens["globstars"] > 1
+
+    tokens if tokens["named"].uniq.length == tokens["named"].length
+  end
+
+  def match_companion_source(source_glob, source_path)
+    companion_source_regexp(source_glob).match(source_path)&.named_captures
+  end
+
+  def companion_source_regexp(source_glob)
+    globstar_index = -1
+    star_index = -1
+    expression = String.new
+    suppress_separator = false
+    segments = source_glob.split("/")
+    segments.each_with_index do |segment, index|
+      expression << "/" unless index.zero? || suppress_separator
+      suppress_separator = false
+
+      if segment == "**" && index < segments.length - 1
+        globstar_index += 1
+        expression << "(?:(?<globstar_#{globstar_index}>.+?)/)?"
+        suppress_separator = true
+        next
+      end
+
+      case segment
+      when "**"
+        globstar_index += 1
+        expression << "(?<globstar_#{globstar_index}>.+?)"
+      when "*"
+        star_index += 1
+        expression << "(?<star_#{star_index}>[^/]+)"
+      else
+        expression << companion_source_segment_regexp(segment)
+      end
+    end
+    Regexp.new("\\A#{expression}\\z")
+  end
+
+  def companion_source_segment_regexp(segment)
+    cursor = 0
+    expression = segment.to_enum(:scan, /\{([a-z][a-z0-9_]*)\}/).each_with_object(String.new) do |_match, regex|
+      token = Regexp.last_match
+      regex << Regexp.escape(segment[cursor...token.begin(0)])
+      regex << "(?<named_#{token[1]}>[^/]+)"
+      cursor = token.end(0)
+    end
+    expression << Regexp.escape(segment[cursor..])
+  end
+
+  def render_companion_path(companion_glob, captures)
+    globstar_index = 0
+    star_index = 0
+    segments = companion_glob.split("/").flat_map do |segment|
+      if segment == "**"
+        captured = captures.fetch("globstar_#{globstar_index}").to_s.split("/")
+        globstar_index += 1
+        captured
+      elsif segment == "*"
+        captured = captures.fetch("star_#{star_index}")
+        star_index += 1
+        [captured]
+      else
+        [segment.gsub(/\{([a-z][a-z0-9_]*)\}/) { captures.fetch("named_#{Regexp.last_match(1)}") }]
+      end
+    end
+    path = segments.join("/")
+    path if canonical_repository_relative_path?(path)
   end
 
   def canonicalize(value)
@@ -1223,7 +1553,10 @@ rescue JSON::ParserError
   )
 end
 begin
-  output ||= BatchPlanPreflight.evaluate(parsed_input)
+  output ||= BatchPlanPreflight.evaluate(
+    parsed_input,
+    repo_root: BatchPlanPreflight.repository_root(Dir.pwd)
+  )
 rescue KeyError, NoMethodError, TypeError, ArgumentError
   output = BatchPlanPreflight.result(
     "rejected", [], [],

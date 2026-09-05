@@ -628,13 +628,17 @@ overfilling the active worker set.
 
 Before dispatcher selection or any worker launch, resolve
 `PLAN_PR_BATCH_SKILL_DIR` through the explicit environment / loaded-skill /
-repo-local pinned-copy chain and run the plan's v1 envelope through:
+repo-local pinned-copy chain. From inside the verified consumer worktree, run
+the plan's v1 envelope through:
 
 ```bash
 PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch}"
 "${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight" \
   < path/to/batch-plan-preflight-v1.json
 ```
+
+The helper resolves the consumer Git top level from the invocation directory
+and passes that root explicitly to repository-policy and companion-file checks.
 
 This machine gate owns schema and launch scheduling, including advisory overlap reporting,
 backend-cap, QA, external-premise, required `plan.active_wave`, and max-one
@@ -647,6 +651,14 @@ repository and number through `issue://OWNER/REPO/N` or an exact lowercase-host
 query, HTTPS requires port 443, `issue://` requires the exact canonical
 authority/path shape, and fragments remain permitted; other source kinds prove
 durability only and do not invent target identity.
+When repo policy defines `companion_path_conventions`, the preflight resolves
+each deterministic `source_glob -> companion_glob` pair against declared paths
+and active path or rename reservations.
+If the companion exists but the lane neither lists nor actively reserves it,
+record the nonfatal `companion-path-omitted` advisory in the Batch Plan
+file-touch evidence and compact goal `Scope`. Never add the path automatically.
+Invalid pairs or duplicate companion-contract keys reject preflight; an absent
+key and unrelated unreadable or malformed shared policy preserve existing behavior.
 After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
 Supply separate ordinary durable
 `lane_lifecycle_states`; inline completion, duplicates, unknown identities, and
@@ -1114,7 +1126,7 @@ Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;aut
 GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
 Batch QA Lane:<owner/scope+evidence|none+rationale>
-Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
+Scope:titles/deps/excl/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<ref|i>;ft=refs/paths/create/delete/rename/companions/collisions/owner/serial/UNKNOWN
 Items:
 - Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
   Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>

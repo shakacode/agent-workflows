@@ -466,7 +466,10 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      explicit env-var / loaded-skill / repo-local pinned-copy chain and pass a
      `batch-plan-preflight` v1 envelope on stdin to
      `"${PLAN_PR_BATCH_SKILL_DIR}/bin/batch-plan-preflight"`. This required gate
-     owns schema, advisory-overlap reporting, backend-cap, QA, external-premise, active-wave, and
+     resolves the consumer Git top level from the invocation directory and
+     passes that root explicitly to repository-policy and companion-file checks.
+     Invoke it from inside the verified consumer worktree. The gate owns schema,
+     advisory-overlap reporting, backend-cap, QA, external-premise, active-wave, and
      max-one serialization scheduling; do not duplicate its matrices here. V1
      requires `plan.id`, `plan.active_wave`, and a top-level
      `lane_lifecycle_states` array. Advance max-one groups only from a separate
@@ -497,6 +500,14 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      requires the exact canonical authority/path shape, and fragments remain
      permitted;
      other source kinds prove durability only and do not invent target identity.
+     When repo policy defines `companion_path_conventions`, resolve each
+     deterministic `source_glob -> companion_glob` pair against declared paths
+     and active path or rename reservations.
+     If the companion exists but the lane neither lists nor actively reserves
+     it, record the nonfatal `companion-path-omitted` advisory in the Batch Plan
+     and compact goal `Scope`. Never add the path automatically. Invalid pairs
+     or duplicate companion-contract keys reject preflight; an absent key and
+     unrelated unreadable or malformed shared policy preserve existing behavior.
      After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
      A rejected result launches no
      worker; an accepted result permits only its eligible lanes and keeps its
@@ -689,6 +700,7 @@ backend must say so in the declaration.
   - Stable identity `OWNER/REPO:adhoc:<yyyymmdd>-<short-slug>`: short scope/title; `override_name=<exact override_name>`; `trusted_authorizer=<exact trusted_authorizer>`; `durable_authorization_ref=<exact durable_authorization_ref>`; `original_task_identity=<exact original_task_identity>`; role in batch
 - Excluded or deferred:
 - File-touch map and path evidence:
+- Companion-path advisories: each `source -> companion` omission, or `none`.
 - Dependencies and sequencing:
 - Subagent split:
 - Planning-pass model/effort assessment: classification, recommended route,
@@ -833,7 +845,7 @@ Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;aut
 GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 HST-v1
 Batch QA Lane:<owner/scope+evidence|none+rationale>
-Scope:titles/deps/exclusions/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<replay/ref>;ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN
+Scope:titles/deps/excl/owners;STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>,live=<ref|i>;ft=refs/paths/create/delete/rename/companions/collisions/owner/serial/UNKNOWN
 Items:
 - Target:<repo:<issue|pull-request>:N URL|repo:adhoc:date-slug>
   Orig:<prompt|n/a>;ovr:<n/a|name/auth/ref/task>

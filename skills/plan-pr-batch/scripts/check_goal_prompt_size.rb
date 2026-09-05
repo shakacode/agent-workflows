@@ -127,14 +127,14 @@ COORDINATION_DEPENDENCY_PROMPT_LINE =
   "known deps=>gate permissions; missing/UNKNOWN deps=>stop."
 STAGE_DEPENDENCY_PROMPT_LINE = "- Stage deps: v1 edit|validation_open|merge_order; " \
                                "missing/UNKNOWN/stale=>closed; combined-tip@repo-seam"
-STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/exclusions/owners;" \
+STAGE_DEPENDENCY_SCOPE_LINE = "Scope:titles/deps/excl/owners;" \
                               "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
-                              "live=<replay/ref>;" \
-                              "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN"
-TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/exclusions/owners; " \
+                              "live=<ref|i>;" \
+                              "ft=refs/paths/create/delete/rename/companions/collisions/owner/serial/UNKNOWN"
+TRIAGE_STAGE_DEPENDENCY_SCOPE_LINE = "Scope: titles/deps/excl/owners; " \
                                      "STAGE_DEPENDENCY_PLAN_PATH=<p>,STAGE_DEPENDENCY_PLAN_ID=<id>," \
-                                     "live=<replay/ref>; " \
-                                     "ft=refs/paths/create/delete/rename/collisions/owner/serial/UNKNOWN."
+                                     "live=<ref|i>; " \
+                                     "ft=refs/paths/create/delete/rename/companions/collisions/owner/serial/UNKNOWN."
 GOAL_MODE_COMPACT_CONTRACT = "GMCC-v5:CI@head/configured-reviewers " \
                              "pending|missing|untriaged|failed|threads open|UNKNOWN=>" \
                              "waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
