@@ -76,6 +76,7 @@ module UntrustedContributorIntakePreflight
     ].freeze],
     [GH_NOT_FOUND, [
       "could not resolve to a pullrequest",
+      "could not resolve to a repository",
       "http 404",
       "repository not found"
     ].freeze]

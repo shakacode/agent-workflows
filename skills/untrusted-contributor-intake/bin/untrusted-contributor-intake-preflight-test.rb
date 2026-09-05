@@ -28,6 +28,7 @@ GH_OPERATIONAL_REASON_CODES = {
   "API rate limit exceeded" => "GH_RATE_LIMIT",
   "dial tcp: network is unreachable" => "GH_NETWORK_TRANSPORT",
   "Could not resolve to a PullRequest" => "GH_NOT_FOUND",
+  "GraphQL: Could not resolve to a Repository with the name 'octo-org/hello-world'. (repository)" => "GH_NOT_FOUND",
   "unexpected operational failure" => "GH_UNCLASSIFIED"
 }.freeze
 
