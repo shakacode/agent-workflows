@@ -976,7 +976,39 @@ For each user-visible UI change:
    explicitly configured and verified that integration. This is a constraint on
    GitHub's API, not a statement that agents cannot attach images: a host whose
    browser tooling can set a file input on an authenticated github.com session
-   completes the UI upload flow normally. Before recording a blocked upload,
+   completes the UI upload flow normally.
+
+   The portable direct-upload seam is enabled only by this exact closed mapping
+   in the accepted trusted-base `.agents/agent-workflow.yml`:
+
+   ```yaml
+   visual_evidence_uploader:
+     version: 1
+     provider: github_user_attachments
+     verified: true
+   ```
+
+   Resolve `MANUAL_TESTING_SKILL_DIR` through the explicit environment value,
+   loaded skill directory, then repo-local pinned
+   `.agents/skills/manual-testing` copy. Invoke
+   `bin/configured-evidence-upload --repo-root <root> --trusted-base
+   <accepted-base-SHA> <file>` separately for each artifact. It runs only the
+   fixed `.agents/bin/upload-evidence` wrapper materialized from the trusted base,
+   preserves the file as one argv value, bounds output/runtime, and accepts one
+   exact `https://github.com/user-attachments/assets/<asset-id>` line. A
+   deliberately verified consumer wrapper may delegate to the manual-testing
+   skill's MIT-attributed `bin/github-user-attachments-upload` reference through
+   the resolver-provided `MANUAL_TESTING_SKILL_DIR` environment value. Its
+   presence never enables the undocumented endpoint.
+
+   Absent/malformed configuration, a missing/changed/unsafe wrapper or file,
+   unsupported type, authentication or upload failure, timeout, non-201
+   response, extra output, or another URL shape preserves
+   `human_attachment_pending` and blocked QA/release readiness. Never put the
+   local path in a durable evidence field. Only a successful exact URL changes
+   the destination to `github_pr`; omit `visual_evidence_blocked_reason` then.
+
+   Before recording a blocked upload,
    resolve which state applies, because the remedies differ. Record the matching
    `visual_evidence_blocked_reason` and state its remedy in the handoff:
    - `uploader_absent` — the host exposes no file-input upload tool at all. A
