@@ -108,6 +108,17 @@ class PrWalkthroughContractTest < Minitest::Test
                     "(../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)"
   end
 
+  def test_async_reply_consumption_needs_no_undefined_cutoff
+    skill = File.read(SKILL).gsub(/\s+/, " ")
+    reply_section = skill.split("## Consume Replies Asynchronously", 2).last
+                         .split("## Close The Walkthrough", 2).first
+
+    assert_includes reply_section, "On each ordinary task resume or authorized PR-state refresh"
+    assert_includes reply_section, "read all replies across every walkthrough thread"
+    assert_includes reply_section, "answer outstanding focused questions in their original threads"
+    refute_includes reply_section, "cutoff"
+  end
+
   def test_walkthrough_is_an_internal_current_task_phase_not_a_new_owner
     skill = File.read(SKILL).gsub(/\s+/, " ")
     phrases = [
