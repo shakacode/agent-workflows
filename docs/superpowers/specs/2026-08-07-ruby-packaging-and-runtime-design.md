@@ -204,7 +204,9 @@ The boundaries mean:
   integer; never own domain policy;
 - `process`: bounded subprocess execution, process-group cleanup, and closed
   environment construction;
-- `git` and `GitHub`: transport adapters and typed transport errors;
+- `git` and `GitHub`: transport adapters and typed transport errors; `github/`
+  must be explicitly inflected to `GitHub` instead of relying on default
+  camelization;
 - configuration remains owned by the domain that validates it (`doctor`,
   `trust`, `policy`, and so on) until two real consumers justify a shared
   top-level abstraction;
