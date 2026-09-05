@@ -622,6 +622,18 @@ the agent disclosure only for a genuine blocker, question, or high-value risk
 that needs maintainer action; do not add a `None.` placeholder to otherwise
 clean PRs.
 
+#### Concise Git History
+
+Commit history owns the proportional durable explanation of what changed and why,
+issue linkage, and required provenance trailers. The
+PR's canonical `Agent details` disclosure owns replayable agent, QA, review, and
+decision evidence.
+
+Run `concise-history-check` on small diffs with diff, PR body, candidate message,
+head, linkage, and required trailers. It replays evidence
+and rejects copied artifacts. Confirm rationale is proportional to consequence.
+Do not impose a universal line-count limit. Re-run after changes.
+
 Use this structure; replace placeholders with concise, task-specific content:
 
 ```markdown
