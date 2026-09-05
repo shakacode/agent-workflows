@@ -19,10 +19,22 @@ Resolve writing style before authoring human-facing prose. Run
 `agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
 from the installed executable on `PATH`; if it is unavailable there, resolve
 the same executable from the loaded Agent Workflows pack's `bin/` directory or
-an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. Stop with upgrade or
-installation guidance if the shared resolver is unavailable; do not duplicate
-its packaged default in a skill.
-When the resolver exits nonzero, stop and surface the resolver error to the user; do not proceed without a style guide.
+an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. If neither location
+is usable, follow the fallback below and report upgrade or installation
+guidance; do not duplicate the packaged default in a skill.
+
+If presentation tooling is unavailable, continue independent authorized work.
+For prose, a previously verified guide may be reused only while its trusted
+configuration and source are unchanged. Otherwise use the loaded trusted pack's
+`docs/writing-style.md` only after verifying that repository configuration is
+absent or readable and valid, with no explicit `writing_style` override, and
+that no valid user-global override takes precedence. Record the fallback source and tooling
+limitation. If that verification is unavailable, hold prose authoring and return
+the precise resolution problem to the coordinator while independent work continues.
+A nonzero resolver exit is not proof of missing tooling: inspect its error.
+An explicit malformed repository value blocks authoring; never bypass it with
+the default. The coordinator asks the user only if the resolution needs a decision
+outside existing authority.
 
 The resolver returns one complete guide plus observable provenance: `repo`,
 `user-global`, or `portable-default`. Repository configuration wins. A missing
