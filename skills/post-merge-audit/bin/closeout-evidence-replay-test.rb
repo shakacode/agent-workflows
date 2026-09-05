@@ -931,6 +931,24 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_includes qa.fetch("missing"), "visual_evidence.github_url"
   end
 
+  def test_v2_enterprise_destination_rejects_public_github_hosts
+    enterprise_hosts = %w[example.ghe.com github.example.test]
+    public_urls = %w[
+      https://github.com/example/repo/pull/123#visual
+      https://user-images.githubusercontent.com/123/before.png
+    ]
+
+    enterprise_hosts.product(public_urls).each do |github_host, url|
+      qa = run_replay(
+        v2_marker("visual_evidence" => "durable: before and after #{url}"),
+        github_host: github_host
+      ).fetch("qa_evidence")
+
+      assert_equal "UNKNOWN", qa.fetch("verdict"), "#{github_host}: #{url}"
+      assert_includes qa.fetch("missing"), "visual_evidence.github_url", "#{github_host}: #{url}"
+    end
+  end
+
   def test_v2_github_destination_rejects_non_tenant_ghe_hosts
     hosts = %w[
       exampleghe.com/example/repo/pull/123#visual
