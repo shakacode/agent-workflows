@@ -2098,6 +2098,458 @@ class AgentWorkflowSeamDoctorBinstubContractTest < Minitest::Test
   end
 end
 
+class AgentWorkflowSeamDoctorLinterAdviceTest < Minitest::Test
+  include AgentWorkflowSeamDoctorTestHelpers
+
+  RUBOCOP_METRICS = %w[
+    Metrics/AbcSize
+    Metrics/BlockLength
+    Metrics/ClassLength
+    Metrics/CyclomaticComplexity
+    Metrics/MethodLength
+    Metrics/ModuleLength
+    Metrics/ParameterLists
+    Metrics/PerceivedComplexity
+  ].freeze
+  ESLINT_LIMITS = %w[
+    complexity
+    max-lines
+    max-lines-per-function
+    max-params
+    max-depth
+    max-statements
+  ].freeze
+
+  def test_no_recognized_linter_config_is_one_non_failing_advice_line
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+
+      json, json_status = run_doctor(root, "--json")
+      text, text_status = run_doctor(root)
+
+      assert json_status.success?, json
+      assert text_status.success?, text
+      assert_equal(
+        [{ "message" => "No recognized RuboCop or ESLint config found." }],
+        JSON.parse(json).fetch("advice")
+      )
+      assert_equal 1, text.lines.grep(/No recognized RuboCop or ESLint config found/).length
+    end
+  end
+
+  def test_rubocop_disabled_metrics_are_recommendations_with_snippets
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      File.write(
+        File.join(root, ".rubocop.yml"),
+        RUBOCOP_METRICS.to_h { |rule| [rule, { "Enabled" => false }] }.to_yaml
+      )
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      payload = JSON.parse(out)
+      assert_equal "PASS", payload.fetch("status")
+      assert_empty payload.fetch("issues")
+      rubocop = payload.fetch("advice").fetch(0)
+      assert_equal "RuboCop", rubocop.fetch("linter")
+      assert_equal ".rubocop.yml", rubocop.fetch("config")
+      assert_empty rubocop.fetch("enforced")
+      assert_equal(RUBOCOP_METRICS, rubocop.fetch("recommendations").map { |item| item.fetch("rule") })
+      assert(rubocop.fetch("recommendations").all? { |item| item.fetch("state") == "disabled" })
+      assert rubocop.fetch("recommendations").all? do |item|
+        item.fetch("suggestion").include?(item.fetch("rule")) && item.fetch("suggestion").include?("Max:")
+      end
+
+      text, text_status = run_doctor(root)
+      assert text_status.success?, text
+      assert_includes text, "ADVICE RuboCop (.rubocop.yml): 0 enforced, 8 recommendations"
+      assert_includes text, "disabled Metrics/AbcSize; suggested config:"
+      assert_includes text, "Metrics/AbcSize:\n  Enabled: true\n  Max: 17"
+    end
+  end
+
+  def test_rubocop_enabled_metrics_report_enforced_values_without_recommendations
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      config = RUBOCOP_METRICS.each_with_index.to_h do |rule, index|
+        [rule, { "Enabled" => true, "Max" => index + 10 }]
+      end
+      File.write(File.join(root, ".rubocop.yml"), config.to_yaml)
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      rubocop = JSON.parse(out).fetch("advice").fetch(0)
+      assert_equal RUBOCOP_METRICS.zip((10..17).to_a).map { |rule, value| { "rule" => rule, "value" => value } },
+                   rubocop.fetch("enforced")
+      assert_empty rubocop.fetch("recommendations")
+    end
+  end
+
+  def test_eslint_flat_config_reports_enforced_disabled_and_missing_limits
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        export default [{
+          rules: {
+            complexity: ["error", 8],
+            "max-lines": ["warn", { max: 240, skipBlankLines: true }],
+            "max-params": "off"
+          }
+        }];
+      JAVASCRIPT
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      eslint = JSON.parse(out).fetch("advice").fetch(0)
+      assert_equal "ESLint", eslint.fetch("linter")
+      assert_equal "eslint.config.js", eslint.fetch("config")
+      assert_equal(
+        [{ "rule" => "complexity", "value" => 8 }, { "rule" => "max-lines", "value" => 240 }],
+        eslint.fetch("enforced")
+      )
+      expected_recommendations = ESLINT_LIMITS - %w[complexity max-lines]
+      assert_equal(expected_recommendations, eslint.fetch("recommendations").map { |item| item.fetch("rule") })
+      max_params = eslint.fetch("recommendations").find { |item| item["rule"] == "max-params" }
+      assert_equal "disabled", max_params.fetch("state")
+      assert(eslint.fetch("recommendations").all? { |item| item.fetch("suggestion").include?(item.fetch("rule")) })
+    end
+  end
+
+  def test_eslint_ignores_comments_and_rule_like_properties_outside_rules
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        const unused = { rules: { complexity: ["error", 3] } };
+        export default [{
+          settings: { tool: { rules: { complexity: ["error", 2] } } },
+          rules: {
+            // "max-lines": ["error", 100],
+            "plugin/message": ["error", "\\\"complexity\\\": [\\\"error\\\", 2]"],
+            "plugin/url": ["error", { endpoint: "https://example.com" }], "max-params": ["error", 4]
+          }
+        }];
+      JAVASCRIPT
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      eslint = JSON.parse(out).fetch("advice").fetch(0)
+      assert_equal [{ "rule" => "max-params", "value" => 4 }], eslint.fetch("enforced")
+      recommendations = eslint.fetch("recommendations")
+      assert_equal "missing", recommendations.find { |item| item["rule"] == "complexity" }.fetch("state")
+      assert_equal "missing", recommendations.find { |item| item["rule"] == "max-lines" }.fetch("state")
+    end
+  end
+
+  def test_eslint_static_source_handles_exported_regex_literals_and_commonjs
+    with_repo do |root|
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        export default [{
+          settings: { pattern: /}/ },
+          rules: { complexity: ["error", 7] }
+        }];
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_includes eslint.fetch("enforced"), { "rule" => "complexity", "value" => 7 }
+    end
+
+    with_repo do |root|
+      File.write(File.join(root, ".eslintrc.cjs"), <<~JAVASCRIPT)
+        const unused = { rules: { complexity: ["error", 3] } };
+        module.exports = { rules: { "max-depth": ["error", 5] } };
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_equal [{ "rule" => "max-depth", "value" => 5 }], eslint.fetch("enforced")
+    end
+  end
+
+  def test_eslint_enabled_rules_without_options_report_runtime_defaults
+    with_repo do |root|
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        export default [{ rules: {
+          complexity: "error",
+          "max-params": ["warn"],
+          "max-depth": ["error", { maximum: 6 }],
+          "max-lines": ["error", { ignore: { generated: true }, max: 275 }]
+        } }];
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_equal(
+        [
+          { "rule" => "complexity", "value" => 20 },
+          { "rule" => "max-lines", "value" => 275 },
+          { "rule" => "max-params", "value" => 3 },
+          { "rule" => "max-depth", "value" => 6 }
+        ],
+        eslint.fetch("enforced")
+      )
+    end
+
+    with_repo do |root|
+      File.write(File.join(root, ".eslintrc.json"), JSON.generate(
+                                                      "rules" => {
+                                                        "max-lines" => "error",
+                                                        "max-statements" => [2],
+                                                        "complexity" => ["error", { "maximum" => 8 }],
+                                                        "max-lines-per-function" => ["error", { "skipBlankLines" => true }]
+                                                      }
+                                                    ))
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_equal(
+        [
+          { "rule" => "complexity", "value" => 8 },
+          { "rule" => "max-lines", "value" => 300 },
+          { "rule" => "max-lines-per-function", "value" => 50 },
+          { "rule" => "max-statements", "value" => 10 }
+        ],
+        eslint.fetch("enforced")
+      )
+    end
+  end
+
+  def test_eslint_yaml_off_values_are_disabled_not_missing
+    with_repo do |root|
+      File.write(File.join(root, ".eslintrc.yml"), <<~YAML)
+        rules:
+          complexity: off
+          max-lines: [off]
+      YAML
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+      states = eslint.fetch("recommendations").to_h { |item| [item.fetch("rule"), item.fetch("state")] }
+
+      assert_equal "disabled", states.fetch("complexity")
+      assert_equal "disabled", states.fetch("max-lines")
+    end
+  end
+
+  def test_invalid_and_non_finite_limits_cannot_break_json_or_suggestions
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "lint_advice" => {
+            "thresholds" => {
+              "rubocop" => { "Metrics/AbcSize" => Float::INFINITY },
+              "eslint" => { "max-lines" => 12.5 }
+            }
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+      File.write(File.join(root, ".rubocop.yml"), <<~YAML)
+        Metrics/AbcSize:
+          Enabled: true
+          Max: .inf
+      YAML
+      File.write(File.join(root, "eslint.config.js"), "export default [{ rules: {} }];\n")
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      advice = JSON.parse(out).fetch("advice")
+      rubocop = advice.find { |item| item["linter"] == "RuboCop" }
+      abc = rubocop.fetch("recommendations").find { |item| item["rule"] == "Metrics/AbcSize" }
+      assert_equal "invalid", abc.fetch("state")
+      assert_includes abc.fetch("suggestion"), "Max: 17"
+      eslint = advice.find { |item| item["linter"] == "ESLint" }
+      max_lines = eslint.fetch("recommendations").find { |item| item["rule"] == "max-lines" }
+      assert_equal '"max-lines": ["error", 300]', max_lines.fetch("suggestion")
+
+      text, text_status = run_doctor(root)
+      assert text_status.success?, text
+      assert_includes text, "ADVICE RuboCop (.rubocop.yml): 0 enforced, 8 recommendations"
+      assert_includes text, "invalid Metrics/AbcSize"
+    end
+  end
+
+  def test_unsupported_javascript_numeric_literals_are_invalid_not_truncated
+    with_repo do |root|
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        export default [{ rules: {
+          "max-statements": ["error", 1e2],
+          "max-lines-per-function": ["error", { max: 0x100 }]
+        } }];
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      refute(eslint.fetch("enforced").any? do |item|
+        %w[max-statements max-lines-per-function].include?(item["rule"])
+      end)
+      states = eslint.fetch("recommendations").to_h { |item| [item.fetch("rule"), item.fetch("state")] }
+      assert_equal "invalid", states.fetch("max-statements")
+      assert_equal "invalid", states.fetch("max-lines-per-function")
+    end
+  end
+
+  def test_eslint_preserves_global_and_scoped_override_results
+    with_repo do |root|
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        export default [
+          { rules: { complexity: ["error", 10] } },
+          { files: ["**/*.[jt]s"], rules: { complexity: "off" } }
+        ];
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_includes eslint.fetch("enforced"), { "rule" => "complexity", "value" => 10 }
+      disabled = eslint.fetch("recommendations").find { |item| item["rule"] == "complexity" }
+      assert_equal "disabled", disabled.fetch("state")
+      assert_equal '["**/*.[jt]s"]', disabled.fetch("scope")
+    end
+
+    with_repo do |root|
+      File.write(File.join(root, ".eslintrc.yml"), <<~YAML)
+        rules:
+          max-lines: [error, 250]
+        overrides:
+          - files: [spec/**]
+            rules:
+              max-lines: off
+      YAML
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_includes eslint.fetch("enforced"), { "rule" => "max-lines", "value" => 250 }
+      disabled = eslint.fetch("recommendations").find { |item| item["rule"] == "max-lines" }
+      assert_equal "disabled", disabled.fetch("state")
+      assert_equal '["spec/**"]', disabled.fetch("scope")
+    end
+
+    with_repo do |root|
+      File.write(File.join(root, ".eslintrc.cjs"), <<~JAVASCRIPT)
+        module.exports = {
+          rules: { complexity: ["error", 10] },
+          overrides: [{ files: ["test/**"], rules: { complexity: "off" } }]
+        };
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_includes eslint.fetch("enforced"), { "rule" => "complexity", "value" => 10 }
+      disabled = eslint.fetch("recommendations").find { |item| item["rule"] == "complexity" }
+      assert_equal "disabled", disabled.fetch("state")
+      assert_equal '["test/**"]', disabled.fetch("scope")
+    end
+  end
+
+  def test_eslint_uses_last_setting_for_the_same_scope
+    with_repo do |root|
+      File.write(File.join(root, "eslint.config.js"), <<~JAVASCRIPT)
+        export default [
+          { rules: { complexity: ["error", 7], "max-depth": "off" } },
+          { rules: { complexity: "off", "max-depth": ["error", 5] } }
+        ];
+      JAVASCRIPT
+
+      eslint = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      refute_includes eslint.fetch("enforced").map { |item| item.fetch("rule") }, "complexity"
+      complexity = eslint.fetch("recommendations").find { |item| item["rule"] == "complexity" }
+      assert_equal "disabled", complexity.fetch("state")
+      assert_includes eslint.fetch("enforced"), { "rule" => "max-depth", "value" => 5 }
+      refute(eslint.fetch("recommendations").any? { |item| item["rule"] == "max-depth" })
+    end
+  end
+
+  def test_policy_overrides_thresholds_and_suppresses_recommendations
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_policy(
+        root,
+        POLICY.merge(
+          "lint_advice" => {
+            "thresholds" => { "rubocop" => { "Metrics/AbcSize" => 22 } },
+            "suppress" => ["rubocop.Metrics/BlockLength"]
+          }
+        )
+      )
+      write_skill(root, "No commands here.\n")
+      File.write(
+        File.join(root, ".rubocop.yml"),
+        RUBOCOP_METRICS.to_h { |rule| [rule, { "Enabled" => false }] }.to_yaml
+      )
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      rubocop = JSON.parse(out).fetch("advice").fetch(0)
+      recommendations = rubocop.fetch("recommendations")
+      refute_includes recommendations.map { |item| item.fetch("rule") }, "Metrics/BlockLength"
+      abc = recommendations.find { |item| item.fetch("rule") == "Metrics/AbcSize" }
+      assert_includes abc.fetch("suggestion"), "Max: 22"
+    end
+  end
+
+  def test_source_repo_advice_names_disabled_metrics_and_links_existing_cleanup_issue
+    rubocop = AgentDoctor::LinterAdvice.call(SOURCE_REPO_ROOT).find { |item| item["linter"] == "RuboCop" }
+
+    assert_equal(RUBOCOP_METRICS, rubocop.fetch("recommendations").map { |item| item.fetch("rule") })
+    assert_includes rubocop.fetch("note"), "https://github.com/shakacode/agent-workflows/issues/309"
+  end
+
+  def test_rubocop_inheritance_boundary_is_visible
+    with_repo do |root|
+      File.write(File.join(root, ".rubocop.yml"), "inherit_from: .rubocop_todo.yml\n")
+
+      rubocop = AgentDoctor::LinterAdvice.call(root).fetch(0)
+
+      assert_includes rubocop.fetch("note"), "Inherited RuboCop settings are not resolved"
+    end
+  end
+
+  def test_invalid_eslint_encoding_cannot_change_seam_status
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      File.binwrite(File.join(root, "eslint.config.js"), "export default []; // \xFF\n")
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      payload = JSON.parse(out)
+      assert_equal "PASS", payload.fetch("status")
+      assert_empty payload.fetch("issues")
+      assert_includes payload.fetch("advice").fetch(0).fetch("note"), "Could not inspect linter settings"
+    end
+  end
+
+  def test_invalid_rubocop_structure_cannot_change_seam_status
+    with_repo do |root|
+      write_valid_binstub_contract(root)
+      write_skill(root, "No commands here.\n")
+      File.write(File.join(root, ".rubocop.yml"), "Metrics: disabled\n")
+
+      out, status = run_doctor(root, "--json")
+
+      assert status.success?, out
+      payload = JSON.parse(out)
+      assert_equal "PASS", payload.fetch("status")
+      assert_empty payload.fetch("issues")
+      assert_includes payload.fetch("advice").fetch(0).fetch("note"), "Could not inspect linter settings"
+    end
+  end
+end
+
 class AgentWorkflowSeamDoctorPlaceholderTest < Minitest::Test
   include AgentWorkflowSeamDoctorTestHelpers
 

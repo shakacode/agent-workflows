@@ -48,6 +48,9 @@ default.
   coordination backends from `.agents/bin/`, `.agents/agent-workflow.yml`, and
   the `AGENTS.md` pointer.
 - Installer, status, upgrade, trust-audit, and seam-doctor helpers under `bin/`.
+- A non-failing seam-doctor advisory that reports configured and missing or
+  disabled agent-relevant RuboCop and ESLint limits, with repo-owned suggested
+  thresholds and suppressions in `.agents/agent-workflow.yml`.
 - Security preflight for public issue and PR batches so untrusted GitHub text
   cannot quietly become agent instructions.
 - A `secure-github-actions` skill and executable seam-doctor gate that reject

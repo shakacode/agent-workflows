@@ -101,6 +101,37 @@ script means that capability is n/a in that repo.
 Repos may add policy keys such as `secret_redaction_patterns` when needed. Use
 `n/a` for unavailable policy. Keep values terse and behavior-complete.
 
+### Linter Advice
+
+`lint_advice` optionally owns the maximums suggested when the seam doctor finds
+a missing or disabled RuboCop or ESLint limit. Suppressions use the exact
+`<linter>.<rule>` recommendation ID and remove that recommendation from both
+human and JSON output:
+
+```yaml
+lint_advice:
+  thresholds:
+    rubocop:
+      Metrics/MethodLength: 20
+    eslint:
+      max-lines: 400
+  suppress:
+    - rubocop.Metrics/BlockLength
+    - eslint.max-statements
+```
+
+The seam doctor statically inspects root `.rubocop.yml`, `eslint.config.*`, and
+`.eslintrc*` files. It reports actual configured values separately from missing
+or disabled limits, keeps scoped ESLint overrides distinct, and never evaluates
+JavaScript configuration. RuboCop `inherit_from` and `inherit_gem` sources are
+not resolved; the advisory says when its recommendations reflect only the root
+file. Threshold overrides must be positive integers;
+invalid values fall back to the portable suggestion. Its top-level `advice`
+JSON array and matching human-readable section are recommendations, not
+contract issues: they do not change `status`, the process exit code, or the
+stack doctor's healthy `workflows.seam` check. A repository with none of these
+files gets one concise no-recognized-config advisory.
+
 ### Writing Style
 
 `writing_style` is an optional scalar in the repository policy. It accepts
@@ -451,6 +482,9 @@ remove the marker deliberately before taking direct ownership.
   values, while newly generated role values use lists
 - repo-local and supplied shared skill/workflow Markdown do not contain
   unresolved executable placeholders such as `<follow-up prefix>`
+- supported RuboCop and ESLint settings are reported through a separate,
+  non-failing advisory channel; linter recommendations are not seam contract
+  requirements
 
 The doctor intentionally does not execute the wrappers. Before consumer PRs,
 also verify that wrapped commands/tasks exist in the target repo. It does reject
