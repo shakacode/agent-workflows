@@ -339,6 +339,601 @@ test_copy_mode_removes_stale_files_from_a_signed_doctor_upgrade() {
     fail "upgraded doctor installation has an invalid ownership marker"
 }
 
+
+test_companion_upgrade_accepts_a_changed_doctor_module() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  write_native_scw_state codex "$target"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion >"$tmp/install.out"
+
+  # The companion path re-runs the delivery check after rsync but before the
+  # metadata commit, so the recorded map still describes the previous revision.
+  printf '\n# upstream change\n' >> "$source/bin/agent_doctor/renderer.rb"
+  git -C "$source" add bin/agent_doctor/renderer.rb
+  git -C "$source" commit --quiet -m "change a doctor module"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --delivery-mode plugin-companion 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -eq 0 ]] || fail "companion upgrade refused its own freshly copied module: $output"
+  cmp -s "$source/bin/agent_doctor/renderer.rb" "$target/bin/agent_doctor/renderer.rb" || \
+    fail "companion upgrade did not install the changed doctor module"
+  ruby "$source/bin/agent_doctor/install_ownership.rb" verify \
+    "$target/bin/agent_doctor" "$target/bin/agent_doctor/.agent-workflows-managed" || \
+    fail "companion upgrade left an invalid ownership marker"
+}
+
+test_status_and_installer_agree_on_doctor_marker_states() {
+  local tmp source state target marker module_path status_exit install_exit output
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  # The delivery-state helper mirrors prepare_workflow_doctor_copy_destination's
+  # marker precedence in another language. This asserts the invariant that
+  # actually matters rather than the implementations: for every marker state,
+  # status must predict whether the installer will accept the tree. If either
+  # side's precedence changes without the other, this fails loudly.
+  for state in valid corrupt symlink nonfile absent-advanced absent-matching; do
+    target="$tmp/codex-home-$state"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-$state.out"
+    marker="$target/bin/agent_doctor/.agent-workflows-managed"
+    module_path="$source/bin/agent_doctor/renderer.rb"
+
+    case "$state" in
+      valid) ;;
+      corrupt) printf 'agent-workflows-doctor-v1:%064d\n' 0 > "$marker" ;;
+      symlink) rm -f "$marker"; ln -s "$target/bin/agent-workflows-status" "$marker" ;;
+      nonfile) rm -f "$marker"; mkdir -p "$marker" ;;
+      absent-advanced)
+        rm -f "$marker"
+        cp "$module_path" "$tmp/renderer.original"
+        printf '# source advanced\n' >> "$module_path"
+        ;;
+      absent-matching) rm -f "$marker" ;;
+    esac
+
+    set +e
+    "$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" \
+      >"$tmp/status-$state.out" 2>&1
+    status_exit=$?
+    "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/reinstall-$state.out" 2>&1
+    install_exit=$?
+    set -e
+
+    [[ "$state" != "absent-advanced" ]] || cp "$tmp/renderer.original" "$module_path"
+
+    output="$(cat "$tmp/status-$state.out")"
+    if [[ "$status_exit" -eq 0 ]]; then
+      [[ "$install_exit" -eq 0 ]] || \
+        fail "$state: status accepted the tree but the installer refused it: $(cat "$tmp/reinstall-$state.out")"
+    else
+      [[ "$install_exit" -ne 0 ]] || fail "$state: status refused the tree but the installer accepted it: $output"
+    fi
+  done
+}
+
+test_installed_status_does_not_execute_a_modified_doctor_module() {
+  local tmp source module_name target sentinel output status module_path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  # The helper loads both of these while auditing the doctor tree, so a
+  # syntactically valid edit to either must be reported rather than run by the
+  # check that is meant to reject it.
+  for module_name in install_ownership.rb timeout_budget.rb; do
+    target="$tmp/codex-home-$module_name"
+    sentinel="$tmp/executed-$module_name"
+    module_path="$target/bin/agent_doctor/$module_name"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-$module_name.out"
+    printf '\nFile.write(%s, "executed\\n")\n' "\"$sentinel\"" >> "$module_path"
+
+    set +e
+    output="$("$target/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+    status=$?
+    set -e
+
+    [[ "$status" -eq 3 ]] || fail "installed status exited $status for a modified $module_name: $output"
+    assert_contains "$output" "$module_path"
+    [[ ! -e "$sentinel" ]] || fail "the integrity check executed $module_name while verifying it"
+  done
+}
+
+test_stack_owned_doctor_tree_restores_a_missing_module() {
+  local tmp source target output status module_path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  module_path="$target/bin/agent_doctor/renderer.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  rm -f "$target/bin/agent_doctor/.agent-workflows-managed"
+  printf 'agent-stack-module-v1:agent_doctor\n' > "$target/bin/agent_doctor/.agent-stack-managed"
+  rm -f "$module_path"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "status blocked a stack-owned tree the installer accepts: $output"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  assert_file "$module_path"
+}
+
+test_installed_status_reports_a_removed_doctor_module_it_depends_on() {
+  local tmp source target output status module_name module_path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  # The delivery-state helper depends on these very modules while verifying the
+  # doctor tree, so removing either must still produce a structured report
+  # rather than a LoadError from its own require.
+  for module_name in install_ownership.rb timeout_budget.rb; do
+    # A fresh target per module keeps each case independent.
+    target="$tmp/codex-home-$module_name"
+    module_path="$target/bin/agent_doctor/$module_name"
+    "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install-$module_name.out"
+    rm -f "$module_path"
+
+    set +e
+    output="$("$target/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+    status=$?
+    set -e
+    [[ "$status" -eq 3 ]] || fail "installed status exited $status without $module_name: $output"
+    assert_contains "$output" "$module_path"
+    assert_not_contains "$output" "LoadError"
+  done
+}
+
+test_fresh_copy_install_reports_up_to_date_from_recorded_fingerprints() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+
+  # A clean install must verify against its own recorded fingerprints, with
+  # every managed bin entry present and nothing blocking.
+  set +e
+  output="$("$target/bin/agent-workflows-status" --host codex --target "$target" --source "$source" --json 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 0 ]] || fail "fresh install did not report UP_TO_DATE: $output"
+  ruby -rjson -e '
+    payload = JSON.parse(ARGV.fetch(0))
+    abort payload.inspect unless payload.fetch("status") == "UP_TO_DATE" &&
+                                 payload.dig("bin", "state") == "present" &&
+                                 payload.dig("bin", "blocking").empty? &&
+                                 payload.dig("bin", "missing").empty?
+  ' "$output" || fail "fresh install did not verify its own recorded bin fingerprints"
+}
+
+test_copy_install_refuses_a_mode_only_managed_doctor_module_change() {
+  local tmp source target output status module_path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  module_path="$target/bin/agent_doctor/renderer.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  # 0644 -> 0600 crosses no execute-bit boundary and keeps the file readable.
+  chmod 0600 "$module_path"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for a mode-only doctor change: $output"
+  assert_contains "$output" "$module_path"
+
+  set +e
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/refused.out" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install accepted a mode-only doctor module change"
+
+  chmod 0644 "$module_path"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+}
+
+test_copy_install_refuses_a_managed_doctor_root_mode_change() {
+  local tmp source target output status doctor_root
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  doctor_root="$target/bin/agent_doctor"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  chmod 0700 "$doctor_root"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for a doctor root mode change: $output"
+  assert_contains "$output" "$doctor_root"
+
+  set +e
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/refused.out" 2>&1
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install accepted a doctor root mode change"
+
+  chmod 0755 "$doctor_root"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+}
+
+test_copy_install_reports_a_missing_managed_doctor_module() {
+  local tmp source target output status module_path
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  module_path="$target/bin/agent_doctor/renderer.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  rm -f "$module_path"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for a missing doctor module: $output"
+  assert_contains "$output" "cannot restore missing managed doctor modules"
+  assert_contains "$output" "$module_path"
+
+  # The installer cannot repair this in place, and the reported guidance names
+  # the only remedy that works.
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install silently accepted a missing doctor module"
+  [[ ! -e "$module_path" ]] || fail "refused install restored the doctor module"
+
+  mv "$target/bin/agent_doctor" "$tmp/agent_doctor.aside"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  assert_file "$module_path"
+}
+
+test_copy_install_restores_a_fully_removed_doctor_tree() {
+  local tmp source target
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  mv "$target/bin/agent_doctor" "$tmp/agent_doctor.removed"
+
+  # An absent tree short-circuits the ownership marker check, so this stays a
+  # clean reinstall and status must not have blocked it.
+  "$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" >"$tmp/status.out"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  assert_file "$target/bin/agent_doctor/renderer.rb"
+}
+
+test_copy_install_refuses_an_unowned_newly_introduced_helper() {
+  local tmp source target output status helper before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  helper="$target/bin/agent-workflows-trust-audit"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  # A helper a newer source introduces has no recorded fingerprint, so the
+  # delivery-state inventory cannot speak for its destination.
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.read(path))
+    metadata.fetch("managed_bin_copy_fingerprints").delete("agent-workflows-trust-audit")
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
+  printf 'my own script\n' > "$helper"
+  before="$(shasum "$helper")"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "copy install overwrote an unowned newly introduced helper"
+  assert_contains "$output" "Refusing to replace unowned pack bin helper"
+  [[ "$before" = "$(shasum "$helper")" ]] || fail "refused install still overwrote the user's file"
+
+  # Restoring the pack's own content makes the destination ours again.
+  install -m 0755 "$source/bin/agent-workflows-trust-audit" "$helper"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+}
+
+test_copy_install_refuses_a_chmod_only_managed_helper_change() {
+  local tmp source target output status helper
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  helper="$target/bin/agent-workflows-trust-audit"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  [[ -x "$helper" ]] || fail "installed helper was not executable"
+  chmod 0644 "$helper"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for a chmod-only helper change: $output"
+  assert_contains "$output" "$helper"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install accepted a chmod-only managed helper change"
+  [[ ! -x "$helper" ]] || fail "refused install changed the helper mode"
+
+  chmod 0755 "$helper"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  [[ -x "$helper" ]] || fail "restored helper did not reinstall cleanly"
+}
+
+test_copy_install_refuses_an_unexpected_managed_doctor_entry() {
+  local tmp source target output status intruder
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  intruder="$target/bin/agent_doctor/intruder.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  printf 'foreign module\n' > "$intruder"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" --json 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for an unexpected doctor entry: $output"
+  ruby -rjson -e '
+    payload = JSON.parse(ARGV.fetch(0))
+    abort payload.inspect unless payload.fetch("status") == "CHECK_FAILED" &&
+                                 payload.dig("bin", "blocking") == [ARGV.fetch(1)]
+  ' "$output" "$intruder" || fail "status did not report the unexpected doctor entry"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install accepted an unexpected doctor entry"
+  assert_contains "$output" "$intruder"
+  assert_file "$intruder"
+
+  rm -f "$intruder"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  assert_file "$target/bin/agent_doctor/autonomous_merge_policy.rb"
+}
+
+test_copy_install_refuses_a_symlinked_managed_bin_root() {
+  local tmp source target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  mv "$target/bin" "$target/relocated-bin"
+  ln -s "$target/relocated-bin" "$target/bin"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "copy install accepted a symlinked managed bin root"
+  assert_contains "$output" "$target/bin"
+  assert_symlink "$target/bin"
+  [[ "$(readlink "$target/bin")" = "$target/relocated-bin" ]] || \
+    fail "refused install changed the managed bin root symlink"
+  assert_file "$target/relocated-bin/agent_doctor/autonomous_merge_policy.rb"
+}
+
+test_fresh_copy_install_refuses_a_non_file_managed_helper_path() {
+  local tmp target output status
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+  mkdir -p "$target/bin/agent-workflows-status"
+  printf 'personal helper collision\n' > "$target/bin/agent-workflows-status/sentinel"
+
+  set +e
+  output="$("$ROOT/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "fresh copy install accepted a non-file managed helper path"
+  assert_contains "$output" "Refusing to replace non-file path"
+  assert_file "$target/bin/agent-workflows-status/sentinel"
+  [[ ! -e "$target/.agent-workflows-install.json" ]] || \
+    fail "refused fresh install committed metadata"
+}
+
+test_copy_metadata_records_managed_bin_copy_fingerprints() {
+  local tmp target
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+
+  ruby -rdigest -rjson -e '
+    metadata_path, target = ARGV
+    # The installer writes these values and the delivery-state module recomputes
+    # them, in different languages. Comparing against the module pins the two
+    # formulas together: drift on either side fails here.
+    load File.join(target, "bin", "agent-workflows-delivery-state")
+    metadata = JSON.parse(File.read(metadata_path))
+    fingerprints = metadata.fetch("managed_bin_copy_fingerprints")
+    %w[
+      agent-workflows-status
+      agent-workflows-delivery-state
+      install-agent-workflows
+      agent_doctor/autonomous_merge_policy.rb
+      agent_doctor/install_ownership.rb
+    ].each do |name|
+      digest = fingerprints[name]
+      abort "missing managed bin fingerprint for #{name}: #{fingerprints.keys.inspect}" unless digest
+      installed = File.join(target, "bin", name)
+      expected = AgentWorkflowsDeliveryState.managed_path_fingerprint(installed)
+      abort "recorded fingerprint does not match #{installed}" unless expected == digest
+      abort "content-only digest recorded for #{installed}" if
+        Digest::SHA256.file(installed).hexdigest == digest
+    end
+    doctor_root = File.join(target, "bin/agent_doctor")
+    expected_root = AgentWorkflowsDeliveryState.managed_path_fingerprint(doctor_root)
+    abort "doctor root fingerprint missing or wrong" unless fingerprints["agent_doctor"] == expected_root
+    abort "recorded a marker file" if fingerprints.key?("agent_doctor/.agent-workflows-managed")
+  ' "$target/.agent-workflows-install.json" "$target" || fail "copy install recorded no usable managed bin fingerprints"
+}
+
+test_symlink_metadata_records_no_managed_bin_copy_fingerprints() {
+  local tmp target
+  tmp="$(mktemp -d)"
+  target="$tmp/codex-home"
+
+  "$ROOT/bin/install-agent-workflows" --host codex --target "$target" --mode symlink >"$tmp/install.out"
+
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    fingerprints = metadata.fetch("managed_bin_copy_fingerprints")
+    abort metadata.inspect unless fingerprints == {}
+  ' "$target/.agent-workflows-install.json" || fail "symlink install recorded managed bin fingerprints"
+}
+
+test_copy_install_refuses_a_modified_managed_bin_helper() {
+  local tmp source target output status helper helper_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  helper="$target/bin/agent-workflows-trust-audit"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  printf '\n# local edit\n' >> "$helper"
+  helper_before="$(shasum "$helper")"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for a modified managed bin helper: $output"
+  assert_contains "$output" "CHECK_FAILED"
+  assert_contains "$output" "$helper"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install replaced a modified managed bin helper"
+  assert_contains "$output" "refusing to replace modified, ambiguous, or unowned managed bin paths"
+  [[ "$helper_before" = "$(shasum "$helper")" ]] || fail "refused install still overwrote the modified helper"
+
+  install -m 0755 "$source/bin/agent-workflows-trust-audit" "$helper"
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/retry.out"
+  cmp -s "$source/bin/agent-workflows-trust-audit" "$helper" || \
+    fail "restored helper did not reinstall cleanly"
+}
+
+test_copy_install_refuses_a_modified_managed_doctor_module() {
+  local tmp source target output status module_path module_before
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  module_path="$target/bin/agent_doctor/autonomous_merge_policy.rb"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  printf '\n# tampered\n' >> "$module_path"
+  module_before="$(shasum "$module_path")"
+
+  set +e
+  output="$("$source/bin/agent-workflows-status" --host codex --target "$target" --source "$source" --json 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -eq 3 ]] || fail "status exited $status for a modified doctor module: $output"
+  ruby -rjson -e '
+    payload = JSON.parse(ARGV.fetch(0))
+    abort payload.inspect unless payload.fetch("status") == "CHECK_FAILED" &&
+                                 payload.dig("bin", "state") == "ambiguous" &&
+                                 payload.dig("bin", "blocking") == [ARGV.fetch(1)]
+  ' "$output" "$module_path" || fail "status did not report the modified doctor module"
+
+  set +e
+  output="$("$source/bin/install-agent-workflows" --host codex --target "$target" 2>&1)"
+  status=$?
+  set -e
+  [[ "$status" -ne 0 ]] || fail "copy install replaced a modified managed doctor module"
+  assert_contains "$output" "$module_path"
+  [[ "$module_before" = "$(shasum "$module_path")" ]] || fail "refused install still overwrote the doctor module"
+}
+
+test_copy_install_ignores_managed_bin_fingerprints_from_legacy_metadata() {
+  local tmp source target helper
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  target="$tmp/codex-home"
+  helper="$target/bin/agent-workflows-trust-audit"
+  mkdir -p "$source"
+  new_source_repo "$source"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/install.out"
+  ruby -rjson -e '
+    path = ARGV.fetch(0)
+    metadata = JSON.parse(File.read(path))
+    metadata.delete("managed_bin_copy_fingerprints")
+    File.write(path, JSON.pretty_generate(metadata) + "\n")
+  ' "$target/.agent-workflows-install.json"
+  printf '\n# local edit\n' >> "$helper"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" >"$tmp/upgrade.out"
+
+  cmp -s "$source/bin/agent-workflows-trust-audit" "$helper" || \
+    fail "legacy metadata upgrade did not refresh the managed bin helper"
+  ruby -rjson -e '
+    metadata = JSON.parse(File.read(ARGV.fetch(0)))
+    abort metadata.inspect if metadata.fetch("managed_bin_copy_fingerprints").empty?
+  ' "$target/.agent-workflows-install.json" || fail "legacy metadata upgrade recorded no managed bin fingerprints"
+}
+
 test_native_plugin_plus_default_flat_install_fails_before_mutation() {
   local tmp target host output status
 
@@ -4853,7 +5448,10 @@ test_flat_upgrade_late_preflight_failure_does_not_strand_new_skill() {
   set -e
 
   [[ "$status" -ne 0 ]] || fail "flat upgrade accepted a late helper collision"
-  assert_contains "$output" "Refusing to replace non-file path"
+  # The recorded managed bin fingerprints refuse the collision at the delivery
+  # preflight, before the newly packaged skill is copied.
+  assert_contains "$output" "refusing to replace modified, ambiguous, or unowned managed bin paths"
+  assert_contains "$output" "$target/bin/agent-workflows-status"
   [[ ! -e "$target/skills/close-session" ]] || \
     fail "failed flat upgrade stranded a newly packaged skill"
   cmp -s "$metadata_before" "$target/.agent-workflows-install.json" || \
@@ -8726,6 +9324,26 @@ main() {
     test_installed_prompt_guard_ignores_unowned_docs
     test_installed_doctor_initializes_consumer_repo
     test_claude_host_install_uses_claude_home_when_target_is_omitted
+    test_companion_upgrade_accepts_a_changed_doctor_module
+    test_status_and_installer_agree_on_doctor_marker_states
+    test_installed_status_does_not_execute_a_modified_doctor_module
+    test_stack_owned_doctor_tree_restores_a_missing_module
+    test_installed_status_reports_a_removed_doctor_module_it_depends_on
+    test_fresh_copy_install_reports_up_to_date_from_recorded_fingerprints
+    test_copy_install_refuses_a_mode_only_managed_doctor_module_change
+    test_copy_install_refuses_a_managed_doctor_root_mode_change
+    test_copy_install_reports_a_missing_managed_doctor_module
+    test_copy_install_restores_a_fully_removed_doctor_tree
+    test_copy_install_refuses_an_unowned_newly_introduced_helper
+    test_copy_install_refuses_a_chmod_only_managed_helper_change
+    test_copy_install_refuses_an_unexpected_managed_doctor_entry
+    test_copy_install_refuses_a_symlinked_managed_bin_root
+    test_fresh_copy_install_refuses_a_non_file_managed_helper_path
+    test_copy_metadata_records_managed_bin_copy_fingerprints
+    test_symlink_metadata_records_no_managed_bin_copy_fingerprints
+    test_copy_install_refuses_a_modified_managed_bin_helper
+    test_copy_install_refuses_a_modified_managed_doctor_module
+    test_copy_install_ignores_managed_bin_fingerprints_from_legacy_metadata
     test_copy_mode_preserves_unrelated_agent_files
     test_copy_mode_does_not_replace_generic_consumer_docs
     test_symlink_mode_links_skills_workflows_and_helpers

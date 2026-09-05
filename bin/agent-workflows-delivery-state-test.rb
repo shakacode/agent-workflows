@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "fileutils"
 require "json"
 require "minitest/autorun"
@@ -10,6 +11,8 @@ require "tmpdir"
 
 SCRIPT = File.expand_path("agent-workflows-delivery-state", __dir__)
 load SCRIPT
+require_relative "agent_doctor/install_ownership"
+require_relative "agent_doctor/timeout_budget"
 
 class AgentWorkflowsDeliveryStateTest < Minitest::Test
   def setup
@@ -1608,6 +1611,1126 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
 
       assert status.success?, "#{out}#{err}"
       assert_equal "present", JSON.parse(out).dig("flat", "state")
+    end
+  end
+
+  def managed_path_fingerprint(path)
+    AgentWorkflowsDeliveryState.managed_path_fingerprint(path)
+  end
+
+  def write_managed_bin_copy(target, source, contents)
+    fingerprints = {}
+    contents.each do |relative, body|
+      # Match what a real install produces: helpers at 0755, tree files at 0644.
+      mode = relative.include?("/") ? 0o644 : 0o755
+      [File.join(target, "bin", relative), File.join(source, "bin", relative)].each do |path|
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, body)
+        FileUtils.chmod(mode, path)
+      end
+      fingerprints[relative] = managed_path_fingerprint(File.join(target, "bin", relative))
+    end
+    fingerprints
+  end
+
+  def record_managed_doctor_root(target, source, fingerprints)
+    [File.join(target, "bin/agent_doctor"), File.join(source, "bin/agent_doctor")].each do |path|
+      FileUtils.chmod(0o755, path) if File.directory?(path)
+    end
+    fingerprints.merge("agent_doctor" => managed_path_fingerprint(File.join(target, "bin/agent_doctor")))
+  end
+
+  def managed_bin_metadata(target, source, fingerprints, overrides = {})
+    write_metadata(
+      target,
+      {
+        "host" => "codex",
+        "mode" => "copy",
+        "delivery_mode" => "flat",
+        "source" => source,
+        "source_revision" => "unknown",
+        "managed_bin_copy_fingerprints" => fingerprints
+      }.merge(overrides)
+    )
+  end
+
+  def check_managed_bin(target, source)
+    out, err, status = run_state(
+      "check", "--host", "codex", "--target", target, "--source", source,
+      "--delivery-mode", "flat", "--json", codex_state: "disabled"
+    )
+    [JSON.parse(out), status, "#{out}#{err}"]
+  end
+
+  def managed_bin_fixture_fingerprints(target, source)
+    fingerprints = write_managed_bin_copy(
+      target,
+      source,
+      "agent-workflows-status" => "status helper\n",
+      "agent_doctor/autonomous_merge_policy.rb" => "policy library\n",
+      "agent_doctor/renderer.rb" => "renderer\n"
+    )
+    record_managed_doctor_root(target, source, fingerprints)
+  end
+
+  def managed_bin_fixture(tmp)
+    source = File.join(tmp, "source")
+    target = File.join(tmp, "codex")
+    FileUtils.mkdir_p(File.join(source, "skills"))
+    FileUtils.mkdir_p(target)
+    [source, target, managed_bin_fixture_fingerprints(target, source)]
+  end
+
+  def test_unmodified_managed_bin_copies_stay_compatible
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "present", payload.dig("bin", "state")
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_modified_managed_bin_copy_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      tampered = File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb")
+      File.write(tampered, "policy library\n# tampered\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      refute payload.fetch("compatible")
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [tampered], payload.dig("bin", "blocking")
+      assert_includes payload.fetch("reason"), tampered
+      assert_path_exists tampered
+    end
+  end
+
+  def test_modified_managed_bin_helper_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      tampered = File.join(target, "bin/agent-workflows-status")
+      File.write(tampered, "status helper\n# local edit\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [tampered], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_managed_bin_helper_matching_the_current_source_stays_compatible
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      moved = "status helper v2\n"
+      helper = File.join(target, "bin/agent-workflows-status")
+      File.write(File.join(source, "bin/agent-workflows-status"), moved)
+      File.write(helper, moved)
+      # What the installer would write: source content at 0755.
+      FileUtils.chmod(0o755, helper)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "present", payload.dig("bin", "state")
+    end
+  end
+
+  def test_helper_fallback_uses_the_installed_mode_not_the_source_mode
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      moved = "status helper v2\n"
+      source_helper = File.join(source, "bin/agent-workflows-status")
+      helper = File.join(target, "bin/agent-workflows-status")
+      File.write(source_helper, moved)
+      # A source revision that carries the helper at 0644 still installs it at
+      # 0755, so an installed helper already in that state is owned.
+      FileUtils.chmod(0o644, source_helper)
+      File.write(helper, moved)
+      FileUtils.chmod(0o755, helper)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "present", payload.dig("bin", "state")
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_doctor_module_matching_only_the_current_source_still_blocks
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      # Hand-copying newer source content over an installed module leaves the
+      # ownership marker attesting the recorded contents, so the installer
+      # refuses the upgrade however current the file looks.
+      moved = "policy library v2\n"
+      module_path = File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb")
+      File.write(File.join(source, "bin/agent_doctor/autonomous_merge_policy.rb"), moved)
+      File.write(module_path, moved)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [module_path], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_missing_managed_bin_helper_does_not_block_reinstallation
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      FileUtils.rm_f(File.join(target, "bin/agent-workflows-status"))
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal ["agent-workflows-status"], payload.dig("bin", "missing")
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_missing_doctor_module_blocks_because_the_installer_cannot_restore_it
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      deleted = File.join(target, "bin/agent_doctor/renderer.rb")
+      FileUtils.rm_f(deleted)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [deleted], payload.dig("bin", "blocking")
+      assert_includes payload.fetch("reason"), "cannot restore"
+      assert_includes payload.fetch("guidance"), File.join(target, "bin/agent_doctor")
+    end
+  end
+
+  def test_missing_doctor_module_the_source_dropped_stays_non_blocking
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      # rsync --delete would remove this module anyway, so there is nothing the
+      # installer needs to restore. This is also the shape the installer's own
+      # post-rsync verification sees during an upgrade that drops a module.
+      FileUtils.rm_f(File.join(source, "bin/agent_doctor/renderer.rb"))
+      FileUtils.rm_f(File.join(target, "bin/agent_doctor/renderer.rb"))
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+      assert_equal ["agent_doctor/renderer.rb"], payload.dig("bin", "missing")
+    end
+  end
+
+  def test_missing_doctor_modules_stay_non_blocking_when_the_tree_is_absent
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      # An absent tree short-circuits the installer's marker check, so rsync
+      # restores it and status must not block.
+      FileUtils.rm_rf(File.join(target, "bin/agent_doctor"))
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_missing_doctor_modules_stay_non_blocking_when_the_tree_is_empty
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor = File.join(target, "bin/agent_doctor")
+      FileUtils.rm_rf(doctor)
+      FileUtils.mkdir_p(doctor)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_unrecorded_bin_paths_do_not_block
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      File.write(File.join(target, "bin/personal-helper"), "unrelated\n")
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_chmod_only_change_to_a_managed_bin_copy_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      helper = File.join(target, "bin/agent-workflows-status")
+      before = File.binread(helper)
+      # Dropping the executable bit leaves an installed command that cannot run.
+      FileUtils.chmod(0o644, helper)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [helper], payload.dig("bin", "blocking")
+      assert_equal before, File.binread(helper)
+    end
+  end
+
+  def test_unexpected_entry_under_the_managed_doctor_tree_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      intruder = File.join(target, "bin/agent_doctor/intruder.rb")
+      File.write(intruder, "foreign\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [intruder], payload.dig("bin", "blocking")
+      assert_path_exists intruder
+    end
+  end
+
+  def test_unexpected_doctor_subdirectory_blocks_once_without_listing_its_children
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      nested = File.join(target, "bin/agent_doctor/personal")
+      FileUtils.mkdir_p(nested)
+      File.write(File.join(nested, "notes.md"), "personal\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [nested], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_doctor_ownership_markers_and_recorded_subdirectories_do_not_block
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, _fingerprints = managed_bin_fixture(tmp)
+      nested = write_managed_bin_copy(target, source, "agent_doctor/nested/module.rb" => "nested\n")
+      fingerprints = managed_bin_fixture_fingerprints(target, source).merge(nested)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # Both markers are excluded from the managed inventory. The workflows
+      # marker is additionally verified, so it carries its real attestation.
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "agent-stack-module-v1:agent_doctor\n")
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "present", payload.dig("bin", "state")
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_unrecorded_doctor_tree_does_not_inventory_unexpected_entries
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      # Only top-level helpers recorded, the root key included: this install
+      # never managed the doctor tree at all.
+      helpers_only = fingerprints.reject { |name, _| name.include?("/") || name == "agent_doctor" }
+      managed_bin_metadata(target, source, helpers_only)
+      File.write(File.join(target, "bin/agent_doctor/intruder.rb"), "foreign\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_mode_change_inside_the_executable_boundary_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      # 0644 -> 0600 keeps the file readable and crosses no execute-bit
+      # boundary, but the installer's marker hashes the exact mode.
+      module_path = File.join(target, "bin/agent_doctor/renderer.rb")
+      FileUtils.chmod(0o600, module_path)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [module_path], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_managed_doctor_root_mode_change_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor = File.join(target, "bin/agent_doctor")
+      FileUtils.chmod(0o700, doctor)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [doctor], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_bin_paths_and_missing_partition_recorded_entries_with_blocking_layered_over_both
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      tampered = File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb")
+      File.write(tampered, "policy library\n# tampered\n")
+      deleted = File.join(target, "bin/agent_doctor/renderer.rb")
+      FileUtils.rm_f(deleted)
+
+      payload, status, output = check_managed_bin(target, source)
+      bin = payload.fetch("bin")
+
+      refute status.success?, output
+      # paths and missing partition the recorded entries by existence...
+      assert_equal fingerprints.keys.sort,
+                   (bin.fetch("paths").map { |path| path.delete_prefix("#{File.join(target, 'bin')}/") } +
+                    bin.fetch("missing")).sort
+      assert_empty bin.fetch("paths").map { |path| path.delete_prefix("#{File.join(target, 'bin')}/") } &
+                   bin.fetch("missing")
+      # ...and blocking is layered over both, naming one of each here.
+      assert_equal [tampered, deleted].sort, bin.fetch("blocking")
+      assert_includes bin.fetch("paths"), tampered
+      assert_includes bin.fetch("missing"), "agent_doctor/renderer.rb"
+    end
+  end
+
+  def test_symlinked_doctor_ownership_marker_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      marker = File.join(target, "bin/agent_doctor/.agent-workflows-managed")
+      File.symlink(File.join(source, "bin/agent-workflows-status"), marker)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [marker], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_corrupt_doctor_ownership_marker_blocks_an_otherwise_clean_install
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      marker = File.join(target, "bin/agent_doctor/.agent-workflows-managed")
+      File.write(marker, "agent-workflows-doctor-v1:#{'0' * 64}\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [marker], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_symlinked_stack_ownership_marker_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+      stack_marker = File.join(doctor_root, ".agent-stack-managed")
+      File.symlink(File.join(source, "bin/agent-workflows-status"), stack_marker)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [stack_marker], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_non_file_stack_ownership_marker_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      stack_marker = File.join(target, "bin/agent_doctor/.agent-stack-managed")
+      FileUtils.mkdir_p(stack_marker)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [stack_marker], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_stack_ownership_marker_line_is_the_fallback_when_the_workflows_marker_is_absent
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      stack_marker = File.join(target, "bin/agent_doctor/.agent-stack-managed")
+      File.write(stack_marker, "not the stack module line\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [stack_marker], payload.dig("bin", "blocking")
+
+      File.write(stack_marker, "agent-stack-module-v1:agent_doctor\n")
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_doctor_module_matching_the_current_source_needs_an_attesting_marker
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      module_path = File.join(doctor_root, "autonomous_merge_policy.rb")
+      moved = "policy library v2\n"
+      File.write(File.join(source, "bin/agent_doctor/autonomous_merge_policy.rb"), moved)
+      File.write(module_path, moved)
+      # A marker attesting the older contents, as a hand-copied module leaves.
+      File.write(File.join(doctor_root, ".agent-workflows-managed"), "agent-workflows-doctor-v1:#{'0' * 64}\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_includes payload.dig("bin", "blocking"), module_path
+
+      # Re-attesting the tree, as the installer does after rsync, adopts it.
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_absent_doctor_markers_block_when_the_source_has_advanced
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # No attestation, and the installed tree is the recorded revision rather
+      # than the current source, so nothing left can adopt it.
+      File.write(File.join(source, "bin/agent_doctor/renderer.rb"), "renderer v2\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [doctor_root], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_absent_doctor_markers_stay_compatible_when_the_tree_matches_the_source
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_emptied_doctor_root_with_a_changed_mode_stays_restorable
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # The installer accepts an empty destination and restores contents and
+      # mode, so the recorded root mode must not block that path.
+      FileUtils.rm_rf(doctor_root)
+      FileUtils.mkdir_p(doctor_root)
+      FileUtils.chmod(0o700, doctor_root)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_unreadable_doctor_root_is_ignored_when_the_tree_is_unmanaged
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      # Metadata that records only top-level helpers: this install never managed
+      # the doctor tree, so nothing about it should be judged.
+      helpers_only = fingerprints.reject { |name, _| name.include?("/") || name == "agent_doctor" }
+      managed_bin_metadata(target, source, helpers_only)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      skip "unreadable-directory probe requires an unprivileged user" if Process.euid.zero?
+
+      FileUtils.chmod(0o000, doctor_root)
+
+      begin
+        payload, status, output = check_managed_bin(target, source)
+
+        assert status.success?, output
+        assert_empty payload.dig("bin", "blocking")
+      ensure
+        FileUtils.chmod(0o755, doctor_root)
+      end
+    end
+  end
+
+  def test_guidance_names_both_remedies_when_both_apply
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      helper = File.join(target, "bin/agent-workflows-status")
+      File.write(helper, "status helper\n# tampered\n")
+      FileUtils.rm_f(File.join(target, "bin/agent_doctor/renderer.rb"))
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      guidance = payload.fetch("guidance")
+      assert_includes guidance, "Restore them to their recorded pack revision"
+      assert_includes guidance, File.join(target, "bin/agent_doctor")
+    end
+  end
+
+  def test_stack_owned_tree_restores_a_missing_doctor_module
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # No workflows marker, a valid stack marker: the installer accepts this
+      # tree on the marker line alone and rsync restores the missing module.
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "agent-stack-module-v1:agent_doctor\n")
+      FileUtils.rm_f(File.join(doctor_root, "renderer.rb"))
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+      assert_includes payload.dig("bin", "missing"), "agent_doctor/renderer.rb"
+    end
+  end
+
+  def test_missing_module_still_blocks_a_workflows_attested_tree
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      deleted = File.join(doctor_root, "renderer.rb")
+      FileUtils.rm_f(deleted)
+      # A stack marker that does not carry the module line earns nothing.
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "not the stack module line\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_includes payload.dig("bin", "blocking"), deleted
+    end
+  end
+
+  def test_metadata_recorded_with_an_empty_tree_still_sees_new_doctor_files
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # An install whose source tree was empty records the root key alone, so
+      # anything found under it afterwards is unrecorded by definition.
+      FileUtils.rm_f(Dir.glob(File.join(doctor_root, "*.rb")))
+      managed_bin_metadata(target, source, fingerprints.reject { |name, _| name.include?("/") })
+      intruder = File.join(doctor_root, "intruder.rb")
+      File.write(intruder, "foreign\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_includes payload.dig("bin", "blocking"), intruder
+    end
+  end
+
+  def test_bare_doctor_root_key_still_manages_the_tree
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      # Metadata recording the doctor root but none of its files still means
+      # this install manages that tree, so its guards must stay active.
+      managed_bin_metadata(target, source, fingerprints.reject { |name, _| name.include?("/") })
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(File.join(source, "bin/agent_doctor/renderer.rb"), "renderer v2\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      # The guards are active: under metadata that recorded only the root, the
+      # tree's files are unrecorded, and naming them beats naming the tree.
+      assert_equal [File.join(doctor_root, "autonomous_merge_policy.rb"), File.join(doctor_root, "renderer.rb")],
+                   payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_stack_owned_tree_exempts_changed_and_unexpected_entries
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "agent-stack-module-v1:agent_doctor\n")
+      # rsync --delete replaces the whole tree, so none of this can refuse the
+      # install: changed bytes, a changed mode, and an unrecorded file.
+      File.write(File.join(doctor_root, "renderer.rb"), "locally changed\n")
+      FileUtils.chmod(0o600, File.join(doctor_root, "autonomous_merge_policy.rb"))
+      File.write(File.join(doctor_root, "intruder.rb"), "foreign\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_a_tampered_helper_still_blocks_under_a_stack_owned_tree
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "agent-stack-module-v1:agent_doctor\n")
+      # The exemption covers the doctor tree only; helpers are still ours.
+      helper = File.join(target, "bin/agent-workflows-status")
+      File.write(helper, "status helper\n# tampered\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [helper], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_attested_tree_accepts_entries_the_source_added
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # What an upgrade leaves behind: a module the new source adds, copied in,
+      # with the marker rewritten over the resulting tree, while the recorded
+      # map still describes the previous revision.
+      File.write(File.join(doctor_root, "added.rb"), "added upstream\n")
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_unattested_tree_still_reports_entries_the_source_added
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      added = File.join(target, "bin/agent_doctor/added.rb")
+      File.write(added, "added by hand\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_includes payload.dig("bin", "blocking"), added
+    end
+  end
+
+  def test_missing_recorded_doctor_subdirectory_blocks
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      nested = write_managed_bin_copy(target, source, "agent_doctor/nested/module.rb" => "nested\n")
+      recorded = fingerprints.merge(nested).merge(
+        "agent_doctor/nested" => managed_path_fingerprint(File.join(target, "bin/agent_doctor/nested"))
+      )
+      managed_bin_metadata(target, source, recorded)
+      removed = File.join(target, "bin/agent_doctor/nested")
+      FileUtils.rm_rf(removed)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      # The source still ships the directory, so the installer cannot restore
+      # it in place any more than it can a missing module.
+      assert_includes payload.dig("bin", "blocking"), removed
+    end
+  end
+
+  def test_stack_owned_tree_that_moved_forward_stays_compatible
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # Stack-owned: the installer accepts this tree on its module line and
+      # replaces it, so a module already matching the current source is owned.
+      File.write(File.join(doctor_root, ".agent-stack-managed"), "agent-stack-module-v1:agent_doctor\n")
+      moved = "renderer v2\n"
+      File.write(File.join(source, "bin/agent_doctor/renderer.rb"), moved)
+      File.write(File.join(doctor_root, "renderer.rb"), moved)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_valid_doctor_ownership_marker_stays_compatible
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      File.write(
+        File.join(doctor_root, ".agent-workflows-managed"),
+        "#{AgentDoctor::InstallOwnership.marker(doctor_root)}\n"
+      )
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_marker_conflict_never_masks_a_named_conflict
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      intruder = File.join(target, "bin/agent_doctor/intruder.rb")
+      File.write(intruder, "foreign\n")
+      File.write(File.join(target, "bin/agent_doctor/.agent-workflows-managed"), "stale\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      # The intruder is what a reader must act on; the stale marker follows from
+      # it and must not add a second path to chase.
+      assert_equal [intruder], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_unreadable_doctor_root_blocks_without_raising
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor_root = File.join(target, "bin/agent_doctor")
+      # A 0000 directory stays readable to UID 0, so the probe cannot make the
+      # tree unreadable there and the check reaches a different branch.
+      skip "unreadable-directory probe requires an unprivileged user" if Process.euid.zero?
+
+      FileUtils.chmod(0o000, doctor_root)
+
+      begin
+        payload, status, output = check_managed_bin(target, source)
+
+        refute status.success?, output
+        assert_equal [doctor_root], payload.dig("bin", "blocking")
+        assert_includes payload.fetch("reason"), "cannot be read"
+        refute_includes output, "Errno::EACCES"
+      ensure
+        FileUtils.chmod(0o755, doctor_root)
+      end
+    end
+  end
+
+  def test_symlinked_managed_bin_copy_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      replaced = File.join(target, "bin/agent-workflows-status")
+      FileUtils.rm_f(replaced)
+      File.symlink(File.join(source, "bin/agent-workflows-status"), replaced)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [replaced], payload.dig("bin", "blocking")
+      assert_equal File.join(source, "bin/agent-workflows-status"), File.readlink(replaced)
+    end
+  end
+
+  def test_unreadable_managed_bin_root_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      bin_root = File.join(target, "bin")
+      skip "unreadable-directory probe requires an unprivileged user" if Process.euid.zero?
+
+      # Without search permission every predicate below this directory answers
+      # false, which would otherwise read as an install with nothing present.
+      FileUtils.chmod(0o600, bin_root)
+
+      begin
+        payload, status, output = check_managed_bin(target, source)
+
+        refute status.success?, output
+        assert_equal "ambiguous", payload.dig("bin", "state")
+        assert_equal [bin_root], payload.dig("bin", "blocking")
+        assert_includes payload.fetch("reason"), "not readable"
+      ensure
+        FileUtils.chmod(0o755, bin_root)
+      end
+    end
+  end
+
+  def test_plain_file_managed_bin_root_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      bin_root = File.join(target, "bin")
+      FileUtils.rm_rf(bin_root)
+      File.write(bin_root, "foreign content\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [bin_root], payload.dig("bin", "blocking")
+      assert_equal "foreign content\n", File.read(bin_root)
+    end
+  end
+
+  def test_plain_file_managed_bin_subdirectory_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor = File.join(target, "bin/agent_doctor")
+      FileUtils.rm_rf(doctor)
+      File.write(doctor, "foreign content\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      # One cause, named once, while the entries it hides stay classified.
+      assert_equal [doctor], payload.dig("bin", "blocking")
+      assert_equal ["agent_doctor/autonomous_merge_policy.rb", "agent_doctor/renderer.rb"],
+                   payload.dig("bin", "missing")
+    end
+  end
+
+  def test_symlinked_managed_bin_root_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      bin_root = File.join(target, "bin")
+      relocated = File.join(target, "relocated-bin")
+      # Every recorded byte still matches through the link, so only the root
+      # classification can catch it.
+      File.rename(bin_root, relocated)
+      File.symlink(relocated, bin_root)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "ambiguous", payload.dig("bin", "state")
+      assert_equal [bin_root], payload.dig("bin", "blocking")
+      assert_includes payload.dig("bin", "reason"), "symlink"
+      assert_includes payload.fetch("reason"), bin_root
+      assert_equal relocated, File.readlink(bin_root)
+    end
+  end
+
+  def test_symlinked_managed_bin_directory_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor = File.join(target, "bin/agent_doctor")
+      FileUtils.rm_rf(doctor)
+      File.symlink(File.join(source, "bin/agent_doctor"), doctor)
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [doctor], payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_non_file_managed_bin_path_blocks_the_delivery_check
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      collision = File.join(target, "bin/agent-workflows-status")
+      FileUtils.rm_f(collision)
+      FileUtils.mkdir_p(collision)
+      File.write(File.join(collision, "sentinel"), "personal\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal [collision], payload.dig("bin", "blocking")
+      assert_path_exists File.join(collision, "sentinel")
+    end
+  end
+
+  def test_metadata_without_managed_bin_fingerprints_stays_compatible
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, _fingerprints = managed_bin_fixture(tmp)
+      write_metadata(
+        target,
+        "host" => "codex", "mode" => "copy", "delivery_mode" => "flat",
+        "source" => source, "source_revision" => "unknown"
+      )
+      File.write(File.join(target, "bin/agent_doctor/autonomous_merge_policy.rb"), "edited\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "unrecorded", payload.dig("bin", "state")
+      assert_empty payload.dig("bin", "blocking")
+    end
+  end
+
+  def test_timeout_fallback_matches_the_doctor_budget
+    # The fallback exists so verification can refuse without disabling the Codex
+    # query. Pinning it here removes the drift that duplication would invite.
+    assert_equal AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT,
+                 AgentWorkflowsDeliveryState::DELIVERY_STATE_HELPER_TIMEOUT_FALLBACK
+  end
+
+  def test_partition_holds_behind_an_ancestor_conflict
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints)
+      doctor = File.join(target, "bin/agent_doctor")
+      FileUtils.rm_rf(doctor)
+      File.symlink(File.join(source, "bin/agent_doctor"), doctor)
+      bin_root = File.join(target, "bin")
+
+      payload, status, output = check_managed_bin(target, source)
+      bin = payload.fetch("bin")
+
+      refute status.success?, output
+      # Entries hidden behind a conflicted ancestor stay in the partition the
+      # payload documents rather than disappearing from both halves of it.
+      assert_equal fingerprints.keys.sort,
+                   (bin.fetch("paths").map { |path| path.delete_prefix("#{bin_root}/") } +
+                    bin.fetch("missing")).sort
+      assert_equal [doctor], bin.fetch("blocking")
+    end
+  end
+
+  def test_report_paths_survive_a_non_utf8_filename
+    # A filename that is not valid UTF-8 is legal on Linux, and reporting one
+    # raw makes JSON.pretty_generate raise, losing the whole payload. This
+    # exercises the helper directly because macOS rejects such names at
+    # creation time (Errno::EILSEQ), so the filesystem cannot host the case.
+    raw = "/target/bin/agent_doctor/bad\xFFname.rb".dup.force_encoding(Encoding::ASCII_8BIT)
+
+    assert_raises(JSON::GeneratorError) { JSON.pretty_generate("blocking" => [raw]) }
+
+    reported = AgentWorkflowsDeliveryState.reportable_path(raw)
+    payload = JSON.pretty_generate("blocking" => [reported])
+
+    assert_includes payload, "bad"
+    assert_equal [reported], JSON.parse(payload).fetch("blocking")
+  end
+
+  def test_marker_only_conflict_path_is_scrubbed_before_serialization
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      raw = "/target/bin/agent_doctor/bad\xFFmarker".dup.force_encoding(Encoding::ASCII_8BIT)
+
+      original = AgentWorkflowsDeliveryState.method(:managed_doctor_marker_conflict)
+      AgentWorkflowsDeliveryState.define_singleton_method(:managed_doctor_marker_conflict) { |*, **| raw }
+      begin
+        payload = AgentWorkflowsDeliveryState.managed_bin_copy_state(
+          target:,
+          source:,
+          metadata: { "mode" => "copy", "managed_bin_copy_fingerprints" => fingerprints }
+        )
+      ensure
+        AgentWorkflowsDeliveryState.define_singleton_method(
+          :managed_doctor_marker_conflict,
+          original
+        )
+      end
+
+      reported = AgentWorkflowsDeliveryState.reportable_path(raw)
+      serialized = JSON.pretty_generate(payload)
+
+      assert_equal [reported], payload.fetch("blocking")
+      assert_equal payload, JSON.parse(serialized)
+    end
+  end
+
+  def test_empty_managed_bin_fingerprints_fail_closed_for_a_copy_install
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, _fingerprints = managed_bin_fixture(tmp)
+      # No copy install can record an empty map: it always holds the helpers
+      # and the doctor root, so an empty one cannot be trusted as legacy.
+      managed_bin_metadata(target, source, {})
+
+      payload, status, output = check_managed_bin(target, source)
+
+      refute status.success?, output
+      assert_equal "unknown", payload.dig("bin", "state")
+      assert_includes payload.fetch("reason"), "managed bin copy fingerprints"
+    end
+  end
+
+  def test_symlink_mode_metadata_ignores_managed_bin_fingerprints
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source, target, fingerprints = managed_bin_fixture(tmp)
+      managed_bin_metadata(target, source, fingerprints, "mode" => "symlink")
+      File.write(File.join(target, "bin/agent-workflows-status"), "edited\n")
+
+      payload, status, output = check_managed_bin(target, source)
+
+      assert status.success?, output
+      assert_equal "unrecorded", payload.dig("bin", "state")
+    end
+  end
+
+  def test_invalid_managed_bin_fingerprints_fail_closed
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      [
+        { "../escape" => "a" * 64 },
+        { "agent_doctor/" => "a" * 64 },
+        { "agent-workflows-status" => "not-a-digest" },
+        { "agent-workflows-status" => 7 },
+        { "/absolute" => "a" * 64 }
+      ].each do |fingerprints|
+        source, target, _recorded = managed_bin_fixture(tmp)
+        managed_bin_metadata(target, source, fingerprints)
+
+        payload, status, output = check_managed_bin(target, source)
+
+        refute status.success?, "#{fingerprints.inspect}: #{output}"
+        assert_equal "unknown", payload.dig("bin", "state"), output
+        assert_includes payload.fetch("reason"), "managed bin copy fingerprints"
+        FileUtils.rm_rf([source, target])
+      end
     end
   end
 

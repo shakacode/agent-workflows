@@ -8,12 +8,80 @@ require "find"
 require "open3"
 require "optparse"
 require "tmpdir"
-require_relative "agent_doctor/timeout_budget"
 
 module AgentWorkflowsDeliveryState
   SUPERPOWERS_MARKETPLACES = %w[openai-curated openai-curated-remote superpowers-dev].freeze
+  MANAGED_BIN_COPY_FINGERPRINTS = "managed_bin_copy_fingerprints"
+  # Built here, at load, because check fans out threads that all reach the memo:
+  # lazily initializing the lock would itself be the race it exists to prevent.
+  @doctor_timeout_budgets = {}
+  @doctor_timeout_budget_lock = Mutex.new
+  MANAGED_DOCTOR_SUBDIRECTORY = "agent_doctor"
+  MANAGED_DOCTOR_OWNERSHIP_MARKERS = %w[.agent-workflows-managed .agent-stack-managed].freeze
+  MANAGED_DOCTOR_MARKER = ".agent-workflows-managed"
+  MANAGED_DOCTOR_STACK_MARKER = ".agent-stack-managed"
+  MANAGED_DOCTOR_STACK_MARKER_LINE = "agent-stack-module-v1:agent_doctor"
+  MANAGED_DOCTOR_OWNERSHIP_MODULE = "agent_doctor/install_ownership.rb"
+  MANAGED_DOCTOR_TIMEOUT_MODULE = "agent_doctor/timeout_budget.rb"
+  # Mirrors AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT, and used
+  # only when the installed module cannot be verified and so must not be run.
+  # Carrying it here is what lets verification fail closed without taking the
+  # Codex query, and the reporting built on it, down too. A test pins the pair.
+  DELIVERY_STATE_HELPER_TIMEOUT_FALLBACK = 5.0
+  # Top-level helpers land through `install -m 0755` whatever the source mode.
+  MANAGED_HELPER_INSTALL_MODE = 0o755
 
   module_function
+
+  # timeout_budget.rb is a fingerprinted managed copy like install_ownership.rb.
+  # Requiring it at load time would raise before the inventory could report it,
+  # and requiring a modified copy would execute it, so it is verified here even
+  # though this path reaches the metadata on its own.
+  def doctor_timeout_budget(target)
+    key = File.expand_path(target)
+    @doctor_timeout_budget_lock.synchronize do
+      return @doctor_timeout_budgets[key] if @doctor_timeout_budgets.key?(key)
+
+      @doctor_timeout_budgets[key] = resolve_doctor_timeout_budget(target)
+    end
+  end
+
+  def resolve_doctor_timeout_budget(target)
+    # Unreadable metadata leaves nothing to verify against; it must not take
+    # this query, and the unrelated reporting that depends on it, down with it.
+    recorded = begin
+      recorded_bin_copy_fingerprints(read_metadata(target))
+    rescue JSON::ParserError, SystemCallError
+      # Metadata we cannot read is metadata we cannot verify against.
+      :invalid
+    end
+    # A map that exists but cannot be trusted is not permission to load: only
+    # an absent one leaves nothing to verify against.
+    return nil if recorded == :invalid
+
+    fingerprints = recorded.is_a?(Hash) ? recorded : {}
+    return nil unless safe_to_load_managed_module?(File.join(target, "bin"), fingerprints, MANAGED_DOCTOR_TIMEOUT_MODULE)
+
+    require_relative "agent_doctor/timeout_budget"
+    AgentDoctor::TimeoutBudget
+  rescue LoadError, SyntaxError, StandardError
+    nil
+  end
+
+  # Safe when the module `require_relative` would load is not the file the map
+  # records, or when it is that file and still matches its fingerprint. Compare
+  # identity rather than paths: a target reached through a symlinked ancestor,
+  # such as macOS /var, spells the same file two ways.
+  def safe_to_load_managed_module?(bin_root, fingerprints, name)
+    loaded = File.join(__dir__, name)
+    return true unless same_file?(loaded, File.join(bin_root, name))
+
+    # No recorded digest is no attestation, and with a fallback for the one
+    # value this buys us, refusing costs nothing. A map that records other
+    # entries but omits this module is exactly the case worth refusing.
+    digest = fingerprints[name]
+    digest.is_a?(String) && managed_path_fingerprint(loaded) == digest.downcase
+  end
 
   def normalized_plugin_source(value)
     return nil unless value.is_a?(String) && !value.strip.empty?
@@ -149,7 +217,8 @@ module AgentWorkflowsDeliveryState
 
   def codex_marketplace_output(target, marketplace)
     executable = ENV.fetch("AGENT_WORKFLOWS_CODEX_EXECUTABLE", "codex")
-    default_timeout = AgentDoctor::TimeoutBudget::DELIVERY_STATE_HELPER_DEFAULT.to_s
+    budget = doctor_timeout_budget(target)
+    default_timeout = (budget ? budget::DELIVERY_STATE_HELPER_DEFAULT : DELIVERY_STATE_HELPER_TIMEOUT_FALLBACK).to_s
     timeout_seconds = Float(ENV.fetch("AGENT_WORKFLOWS_CODEX_TIMEOUT_SECONDS", default_timeout))
     return [nil, "invalid Codex plugin state timeout"] unless timeout_seconds.positive?
 
@@ -583,18 +652,457 @@ module AgentWorkflowsDeliveryState
     matches_directory_snapshot?(path, { type: :directory, root: source }, skill_name)
   end
 
-  def recorded_skill_copy_fingerprints(metadata)
+  def recorded_copy_fingerprints(metadata, field)
     return unless metadata&.fetch("mode", nil) == "copy"
 
-    fingerprints = metadata.fetch("managed_skill_copy_fingerprints", nil)
+    fingerprints = metadata.fetch(field, nil)
     return unless fingerprints.is_a?(Hash) && !fingerprints.empty?
+
+    fingerprints
+  end
+
+  def valid_copy_fingerprint_digest?(digest)
+    digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/i)
+  end
+
+  def valid_skill_copy_name?(name)
+    name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
+  end
+
+  # Managed bin entries are recorded as target-relative paths below <target>/bin,
+  # so they allow separators that a skill directory name never carries.
+  #
+  # These rules are also enforced, inline and in another language, by
+  # read_installed_metadata_value in bin/install-agent-workflows, which rejects
+  # the same metadata before any managed mutation. Tighten both together: if
+  # they disagree, this helper and the installer disagree about which recorded
+  # metadata is safe to trust.
+  def valid_bin_copy_name?(name)
+    return false unless name.is_a?(String) && !name.empty? && !name.start_with?("/") && !name.include?("\0")
+
+    name.split("/", -1).none? { |segment| segment.empty? || segment == "." || segment == ".." }
+  end
+
+  def recorded_skill_copy_fingerprints(metadata)
+    fingerprints = recorded_copy_fingerprints(metadata, "managed_skill_copy_fingerprints")
+    return unless fingerprints
     return unless fingerprints.all? do |name, digest|
-      valid_name = name.is_a?(String) && !%w[. ..].include?(name) && name.match?(%r{\A[^\x00/]+\z})
-      valid_digest = digest.is_a?(String) && digest.match?(/\A[0-9a-f]{64}\z/i)
-      valid_name && valid_digest
+      valid_skill_copy_name?(name) && valid_copy_fingerprint_digest?(digest)
     end
 
     fingerprints
+  end
+
+  # Returns the recorded map, :unrecorded when this install predates the key or
+  # records no copies, or :invalid when the recorded map cannot be trusted.
+  def recorded_bin_copy_fingerprints(metadata)
+    return :unrecorded unless metadata&.fetch("mode", nil) == "copy"
+    return :unrecorded unless metadata.key?(MANAGED_BIN_COPY_FINGERPRINTS)
+
+    fingerprints = metadata.fetch(MANAGED_BIN_COPY_FINGERPRINTS)
+    return :invalid unless fingerprints.is_a?(Hash)
+    # Every copy install records the helpers and the doctor root, so an empty
+    # map is not a state the installer can produce.
+    return :invalid if fingerprints.empty?
+    return :invalid unless fingerprints.all? do |name, digest|
+      valid_bin_copy_name?(name) && valid_copy_fingerprint_digest?(digest)
+    end
+
+    fingerprints
+  end
+
+  # The bin root and every managed subdirectory below it must be a real
+  # directory. A symlink or a plain file there hides every entry beneath it, so
+  # it has to block rather than let those entries read as merely missing.
+  # Filesystem paths are bytes, and a filename that is not valid UTF-8 is legal
+  # on Linux. Reporting one raw makes JSON.pretty_generate raise, which would
+  # lose the very details the report exists to carry, so scrub for display.
+  # These strings are only ever printed, never used to address a file again.
+  def reportable_path(path)
+    path.dup.force_encoding(Encoding::UTF_8).scrub
+  end
+
+  def readable_directory?(path)
+    File.readable?(path) && File.executable?(path)
+  end
+
+  def managed_bin_directory_conflict(path)
+    return "a symlink" if File.symlink?(path)
+    return nil unless File.exist?(path)
+    return "not a directory" unless File.directory?(path)
+
+    # Ruby's file predicates swallow EACCES and answer false, so a directory
+    # without read and search permission would silently make everything beneath
+    # it look absent rather than unreadable.
+    readable_directory?(path) ? nil : "not readable"
+  end
+
+  def managed_bin_ancestor_conflict(bin_root, name)
+    current = bin_root
+    name.split("/")[0..-2].each do |segment|
+      current = File.join(current, segment)
+      return current if managed_bin_directory_conflict(current)
+    end
+    nil
+  end
+
+  # Cover the exact permission mode, not just the executable bit, because the
+  # doctor tree's ownership marker hashes the exact mode: anything coarser lets
+  # status call an install clean that the installer then refuses. Directories
+  # carry a mode too, so a recorded entry may be either kind and a type change
+  # mismatches for free.
+  def managed_file_fingerprint_value(mode, content_digest)
+    Digest::SHA256.hexdigest(JSON.generate(["file", mode, content_digest]))
+  end
+
+  def managed_path_fingerprint(path)
+    stat = File.lstat(path)
+    return nil if stat.symlink?
+
+    mode = stat.mode & 0o7777
+    if stat.directory?
+      Digest::SHA256.hexdigest(JSON.generate(["directory", mode]))
+    elsif stat.file?
+      managed_file_fingerprint_value(mode, Digest::SHA256.file(path).hexdigest)
+    end
+  rescue SystemCallError
+    # An unreadable managed copy cannot be proven owned, so it stays blocking.
+    nil
+  end
+
+  # True when the doctor tree's marker attests the tree as it now stands. That
+  # is what separates the installer's own post-rsync verification, which rewrites
+  # the marker over the new bytes, from a module hand-copied to newer source
+  # content whose marker still attests the recorded contents.
+  def managed_doctor_tree_attested?(bin_root, fingerprints)
+    doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
+    return false unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+    # A stack-owned tree is attested by its module line, which is the same
+    # evidence the installer accepts before rsync replaces the tree.
+    return true if stack_owned_managed_doctor_tree?(doctor_root)
+
+    marker = File.join(doctor_root, MANAGED_DOCTOR_MARKER)
+    return false if File.symlink?(marker) || !File.file?(marker)
+
+    ownership = doctor_install_ownership(bin_root, fingerprints)
+    return false unless ownership
+
+    ownership.verify(doctor_root, marker)
+  rescue SystemCallError
+    false
+  end
+
+  # The doctor tree is recorded as its root plus the paths beneath it; every
+  # other recorded name is a top-level helper the installer rewrites directly.
+  def doctor_tree_entry?(name)
+    name == MANAGED_DOCTOR_SUBDIRECTORY || name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/")
+  end
+
+  def top_level_helper_entry?(name)
+    !name.include?("/") && name != MANAGED_DOCTOR_SUBDIRECTORY
+  end
+
+  def managed_bin_copy_owned?(path:, source:, name:, digest:, doctor_attested: false)
+    actual = managed_path_fingerprint(path)
+    return false unless actual
+    return true if actual == digest.downcase
+
+    source_path = File.join(source, "bin", name)
+    unless top_level_helper_entry?(name)
+      # The doctor tree earns the current-source fallback only under a marker
+      # that attests it, so the recorded map going stale mid-install does not
+      # make the installer refuse the bytes it just wrote.
+      return false unless doctor_attested
+
+      return actual == managed_path_fingerprint(source_path)
+    end
+
+    # A helper that already matches what the installer would write stays owned
+    # across a source that moved forward. That is the source's content at the
+    # mode `install -m 0755` writes, not the source file's own mode, which the
+    # recorded fingerprint normalizes the same way.
+    return false unless File.file?(source_path) && !File.symlink?(source_path)
+
+    actual == managed_file_fingerprint_value(
+      MANAGED_HELPER_INSTALL_MODE, Digest::SHA256.file(source_path).hexdigest
+    )
+  rescue SystemCallError
+    false
+  end
+
+  # The installer refuses an install whose doctor ownership marker is the wrong
+  # shape or no longer attests the tree. Report the same conflict, but only when
+  # nothing else already names one, so the marker never adds noise to a conflict
+  # that is already reported against the file that caused it.
+  # install_ownership.rb is itself a fingerprinted managed copy, so it is both
+  # the tool this check verifies with and one of the artifacts it verifies.
+  # Requiring it eagerly would raise before the inventory could report it, and
+  # requiring a modified copy would execute it. Check its own recorded
+  # fingerprint first; when that fails the inventory names it as unowned.
+  #
+  # This narrows, and cannot close, executing unaudited managed code: this
+  # script is a fingerprinted copy too, and the host loads it before any
+  # verification runs. Auditing from outside the installed tree is the only
+  # thing that would close it.
+  def doctor_install_ownership(bin_root, fingerprints)
+    return nil unless safe_to_load_managed_module?(bin_root, fingerprints, MANAGED_DOCTOR_OWNERSHIP_MODULE)
+
+    require_relative "agent_doctor/install_ownership"
+    AgentDoctor::InstallOwnership
+  rescue LoadError, SyntaxError, StandardError
+    nil
+  end
+
+  def same_file?(left, right)
+    left_stat = File.stat(left)
+    right_stat = File.stat(right)
+    left_stat.dev == right_stat.dev && left_stat.ino == right_stat.ino
+  rescue SystemCallError
+    false
+  end
+
+  def managed_doctor_marker_conflict(bin_root, source, fingerprints, attested: false)
+    return nil unless fingerprints.keys.any? { |name| doctor_tree_entry?(name) }
+
+    doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
+    return nil unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+    # An empty tree short-circuits the installer's marker logic entirely.
+    return nil if Dir.empty?(doctor_root)
+
+    marker = File.join(doctor_root, MANAGED_DOCTOR_MARKER)
+    stack_marker = File.join(doctor_root, MANAGED_DOCTOR_STACK_MARKER)
+    # Mirror prepare_workflow_doctor_copy_destination's precedence: both marker
+    # shapes are refused before either one is read, the workflows marker's
+    # attestation decides when it is present, and the stack marker's line is the
+    # fallback for a tree agent-stack owns.
+    return marker if managed_marker_shape_conflict?(marker)
+    return stack_marker if managed_marker_shape_conflict?(stack_marker)
+    # Both shapes are sound and attestation already established the tree is
+    # covered, so skip re-verifying the whole tree a second time per call.
+    return nil if attested
+
+    ownership = doctor_install_ownership(bin_root, fingerprints)
+    return doctor_root unless ownership
+
+    return ownership.verify(doctor_root, marker) ? nil : marker if File.file?(marker)
+
+    if File.file?(stack_marker)
+      return File.readlines(stack_marker, chomp: true).include?(MANAGED_DOCTOR_STACK_MARKER_LINE) ? nil : stack_marker
+    end
+
+    # With no attestation at all the installer adopts the tree only when it
+    # already equals the current source, so a source that has moved on since
+    # this copy was installed leaves nothing that can adopt it.
+    source_doctor_root = File.join(source, "bin", MANAGED_DOCTOR_SUBDIRECTORY)
+    ownership.compare(source_doctor_root, doctor_root) ? nil : doctor_root
+  rescue SystemCallError
+    doctor_root
+  end
+
+  def empty_managed_directory?(path)
+    File.directory?(path) && !File.symlink?(path) && Dir.empty?(path)
+  rescue SystemCallError
+    false
+  end
+
+  def stack_owned_managed_doctor_tree?(doctor_root)
+    marker = File.join(doctor_root, MANAGED_DOCTOR_MARKER)
+    return false if File.symlink?(marker) || File.exist?(marker)
+
+    stack_marker = File.join(doctor_root, MANAGED_DOCTOR_STACK_MARKER)
+    return false if File.symlink?(stack_marker) || !File.file?(stack_marker)
+
+    File.readlines(stack_marker, chomp: true).include?(MANAGED_DOCTOR_STACK_MARKER_LINE)
+  rescue SystemCallError
+    false
+  end
+
+  def managed_marker_shape_conflict?(path)
+    File.symlink?(path) || (File.exist?(path) && !File.file?(path))
+  end
+
+  # The installer's ownership marker only tolerates a doctor tree it can verify
+  # whole. A completely empty or absent tree short-circuits that check and rsync
+  # restores it, but a partially populated one is refused, so a missing module
+  # there is not the restorable case that a missing top-level helper is.
+  def unrestorable_managed_doctor_paths(bin_root, missing, source)
+    # A recorded module the current source no longer ships is on its way out
+    # anyway: rsync --delete would remove it, so there is nothing to restore.
+    # This also keeps the installer's own post-rsync verification passing on an
+    # upgrade that drops a module, where the metadata is deliberately stale.
+    names = missing.select do |name|
+      # The source may still ship the entry as a directory, which File.file? misses.
+      name.start_with?("#{MANAGED_DOCTOR_SUBDIRECTORY}/") && File.exist?(File.join(source, "bin", name))
+    end
+    return [] if names.empty?
+
+    doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
+    return [] unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+    return [] if Dir.empty?(doctor_root)
+    # A stack-owned tree is accepted on its marker line alone and restored by
+    # rsync, so a missing module there is not the unrestorable case.
+    return [] if stack_owned_managed_doctor_tree?(doctor_root)
+
+    names.map { |name| File.join(bin_root, name) }
+  rescue SystemCallError
+    # An unreadable tree is reported through the root conflict instead.
+    []
+  end
+
+  # rsync --delete owns the whole managed doctor tree, and the installer's
+  # ownership marker already refuses to reinstall over an unrecorded entry
+  # there. Report that conflict here so status sees it before the install does.
+  def unexpected_managed_doctor_entries(bin_root, fingerprints)
+    # Ask whether this install manages the tree, the way every other doctor
+    # check does. Metadata recorded while the tree was empty holds only the
+    # root key, and everything found under it is then unrecorded by definition.
+    return [] unless fingerprints.keys.any? { |name| doctor_tree_entry?(name) }
+
+    prefix = "#{MANAGED_DOCTOR_SUBDIRECTORY}/"
+    recorded = fingerprints.keys.select { |name| name.start_with?(prefix) }.map { |name| name.delete_prefix(prefix) }
+
+    doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
+    return [] unless File.directory?(doctor_root) && !File.symlink?(doctor_root)
+
+    unexpected = []
+    begin
+      Find.find(doctor_root) do |entry|
+        next if entry == doctor_root
+
+        relative = entry.delete_prefix("#{doctor_root}/")
+        next if MANAGED_DOCTOR_OWNERSHIP_MARKERS.include?(relative)
+
+        if File.directory?(entry) && !File.symlink?(entry)
+          next if recorded.include?(relative) || recorded.any? { |name| name.start_with?("#{relative}/") }
+
+          unexpected << entry
+          Find.prune
+        elsif !recorded.include?(relative)
+          unexpected << entry
+        end
+      end
+    rescue SystemCallError
+      # An unreadable tree is reported through the root conflict instead.
+      return []
+    end
+    unexpected
+  end
+
+  # Copy installs own every file the pack writes below <target>/bin. Modified,
+  # relinked, and type-changed entries block so no owned byte is overwritten.
+  #
+  # "paths" and "missing" partition the recorded entries by whether they exist
+  # on disk, the way the flat skill inventory reports them, and "blocking" is an
+  # orthogonal judgment layered over both: an entry that exists but is unowned
+  # appears in "paths" and "blocking", and a missing doctor module the installer
+  # cannot restore in place appears in "missing" and "blocking". Read "blocking"
+  # alone for what refuses an install; it is not a subset of either list.
+  def managed_bin_copy_state(target:, source:, metadata:)
+    fingerprints = recorded_bin_copy_fingerprints(metadata)
+    if fingerprints == :invalid
+      return {
+        "state" => "unknown", "paths" => [], "missing" => [], "blocking" => [],
+        "reason" => "invalid managed bin copy fingerprints in install metadata"
+      }
+    end
+    return { "state" => "unrecorded", "paths" => [], "missing" => [], "blocking" => [] } if fingerprints == :unrecorded
+
+    bin_root = File.join(target, "bin")
+    if (conflict = managed_bin_directory_conflict(bin_root))
+      return {
+        "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [reportable_path(bin_root)],
+        "reason" => "managed bin root is #{conflict}: #{reportable_path(bin_root)}",
+        "guidance" => "The listed path was preserved. Restore the managed bin directory or move it aside, then rerun."
+      }
+    end
+
+    doctor_root = File.join(bin_root, MANAGED_DOCTOR_SUBDIRECTORY)
+    manages_doctor_tree = fingerprints.keys.any? { |name| doctor_tree_entry?(name) }
+    if manages_doctor_tree && File.directory?(doctor_root) && !File.symlink?(doctor_root) &&
+       !readable_directory?(doctor_root)
+      return {
+        "state" => "ambiguous", "paths" => [], "missing" => [], "blocking" => [reportable_path(doctor_root)],
+        "reason" => "managed doctor root cannot be read: #{reportable_path(doctor_root)}",
+        "guidance" => "Restore read and search permission on the listed directory, or move it aside so the " \
+                      "installer reinstalls the tree, then rerun."
+      }
+    end
+
+    doctor_attested = manages_doctor_tree && managed_doctor_tree_attested?(bin_root, fingerprints)
+    # A stack-owned tree belongs to agent-stack: the installer accepts it on the
+    # module line and rsync --delete replaces it whole, so nothing inside it is
+    # ours to preserve and none of its differences can refuse an install.
+    stack_owned = manages_doctor_tree && stack_owned_managed_doctor_tree?(doctor_root)
+    present = []
+    missing = []
+    unowned_paths = []
+    fingerprints.sort.each do |name, digest|
+      ancestor = managed_bin_ancestor_conflict(bin_root, name)
+      unowned_paths << ancestor if ancestor
+
+      path = File.join(bin_root, name)
+      unless File.symlink?(path) || File.exist?(path)
+        missing << name
+        next
+      end
+
+      present << path
+      # The ancestor already blocks; judging the entry through it would add a
+      # second path to chase for one cause.
+      next if ancestor
+      next if stack_owned && doctor_tree_entry?(name)
+      # The installer accepts an empty doctor root and restores its contents and
+      # mode wholesale, so its recorded mode is not judged in that state.
+      next if name == MANAGED_DOCTOR_SUBDIRECTORY && empty_managed_directory?(path)
+
+      unowned_paths << path unless managed_bin_copy_owned?(path:, source:, name:, digest:, doctor_attested:)
+    end
+    # An attested tree is the one the marker now covers, which after an upgrade is
+    # the tree the installer just wrote, additions included.
+    unexpected = stack_owned || doctor_attested ? [] : unexpected_managed_doctor_entries(bin_root, fingerprints)
+    unowned = (unowned_paths + unexpected).uniq.sort.map { |path| reportable_path(path) }
+    unrestorable = unrestorable_managed_doctor_paths(bin_root, missing, source).sort.map { |path| reportable_path(path) }
+    if unowned.empty? && unrestorable.empty? &&
+       (marker = managed_doctor_marker_conflict(bin_root, source, fingerprints, attested: doctor_attested))
+      unowned = [reportable_path(marker)]
+    end
+    blocking = (unowned + unrestorable).uniq.sort
+
+    state = if blocking.any?
+              "ambiguous"
+            elsif present.empty?
+              "absent"
+            else
+              "present"
+            end
+    payload = {
+      "state" => state,
+      "paths" => present.sort.map { |path| reportable_path(path) },
+      "missing" => missing.sort.map { |name| reportable_path(name) },
+      "blocking" => blocking
+    }
+    return payload if blocking.empty?
+
+    clauses = []
+    if unowned.any?
+      clauses << "refusing to replace modified, ambiguous, or unowned managed bin paths: #{unowned.join(', ')}"
+    end
+    if unrestorable.any?
+      clauses << "the installer cannot restore missing managed doctor modules in place: #{unrestorable.join(', ')}"
+    end
+    payload["reason"] = clauses.join("; ")
+    payload["guidance"] = if unowned.any? && unrestorable.any?
+                            "The listed paths were preserved. Restore them to their recorded pack revision " \
+                            "or move/remove them manually, and restore the missing doctor modules or move " \
+                            "#{reportable_path(doctor_root)} aside so the installer reinstalls the tree, then rerun."
+                          elsif unrestorable.any?
+                            "Restore the listed files from their recorded pack revision, or move " \
+                            "#{reportable_path(doctor_root)} aside so the installer reinstalls the tree, then rerun."
+                          else
+                            "The listed paths were preserved. Restore them to their recorded pack revision " \
+                            "or move/remove them manually, then rerun."
+                          end
+    payload
   end
 
   def recorded_skill_copy_fingerprint_matches?(path, metadata, skill_name)
@@ -746,7 +1254,19 @@ module AgentWorkflowsDeliveryState
     }
   end
 
+  def managed_bin_copy_inventory(target:, source:)
+    managed_bin_copy_state(target:, source:, metadata: read_metadata(target))
+  rescue JSON::ParserError => e
+    {
+      "state" => "unknown", "paths" => [], "missing" => [], "blocking" => [],
+      "reason" => "invalid install metadata: #{e.message}"
+    }
+  end
+
   def check(host:, target:, source:, delivery_mode:)
+    # The bin inventory walks the managed doctor tree and hashes every recorded
+    # copy, with no dependency on the host queries, so overlap that work.
+    bin_query = Thread.new { managed_bin_copy_inventory(target: target, source: source) }
     host_queries = [Thread.new { ["native", native_state(host, target)] }]
     host_queries << Thread.new { ["superpowers", superpowers_state(host, target)] } if host == "codex"
     host_state = host_queries.map(&:value).to_h
@@ -758,8 +1278,10 @@ module AgentWorkflowsDeliveryState
       delivery_mode: delivery_mode,
       collision_names: collision_names
     )
+    bin = bin_query.value
     native_compatible = native["state"] == (delivery_mode == "plugin-companion" ? "active" : "inactive")
-    compatible = native_compatible && flat["state"] != "unknown" && flat["blocking"].empty?
+    compatible = native_compatible && flat["state"] != "unknown" && flat["blocking"].empty? &&
+                 bin["state"] != "unknown" && bin["blocking"].empty?
     reason =
       if compatible
         nil
@@ -767,6 +1289,8 @@ module AgentWorkflowsDeliveryState
         flat["reason"]
       elsif flat["blocking"].any?
         "refusing to remove modified, ambiguous, or unowned skill paths: #{flat['blocking'].join(', ')}"
+      elsif bin["state"] == "unknown" || bin["blocking"].any?
+        bin["reason"]
       elsif native["state"] == "unknown"
         native["reason"]
       elsif delivery_mode == "flat"
@@ -777,6 +1301,10 @@ module AgentWorkflowsDeliveryState
     guidance =
       if flat["blocking"].any?
         "The listed paths were preserved. Restore them to their recorded pack revision or move/remove them manually, then rerun."
+      elsif bin["blocking"].any?
+        bin["guidance"]
+      elsif bin["state"] == "unknown"
+        "Repair the recorded managed bin fingerprints in the install metadata, or reinstall the pack, then rerun."
       elsif native["legacy"]
         "Remove agent-workflows@agent-workflows, install and enable scw@agent-workflows, then rerun."
       elsif native["state"] == "unknown"
@@ -791,6 +1319,7 @@ module AgentWorkflowsDeliveryState
       "delivery_mode" => delivery_mode,
       "native" => native,
       "flat" => flat,
+      "bin" => bin,
       "reason" => reason,
       "guidance" => compatible ? nil : guidance
     }
