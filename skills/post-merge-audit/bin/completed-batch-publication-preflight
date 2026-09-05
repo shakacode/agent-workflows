@@ -35,6 +35,9 @@ module CompletedBatchPublicationPreflight
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
   RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
+  COORDINATION_TRANSITION_CONTRACT = "completed-batch-coordination-transition"
+  COORDINATION_BACKEND_ACTIVATION_BLOCKER =
+    "coordination backend activation requires authenticated reconciliation of the existing non-backend terminal handoff"
   DEFAULT_GH_TIMEOUT_SECONDS = 60
   COORDINATION_TIMEOUT_SECONDS = 20
   COORDINATION_CAPTURE_TIMEOUT_SECONDS = 25
@@ -69,6 +72,8 @@ module CompletedBatchPublicationPreflight
     blockers << "publication batch id is invalid" unless batch_id
     expected_targets = validated_target_set(input["expected_targets"], blockers, "expected target")
     no_backend = backend&.downcase == "n/a"
+    transitioning_from_no_backend = no_backend_coordination_status?(input["coordination_status"])
+    transition = nil
     if no_backend
       no_backend_evidence = resolved_no_backend_evidence(
         input["coordination_status"],
@@ -79,6 +84,29 @@ module CompletedBatchPublicationPreflight
       batch = nil
       lane_entries = []
       resolved_targets = no_backend_evidence ? expected_targets : []
+      coordination_authentic = true
+    elsif transitioning_from_no_backend
+      no_backend_evidence = resolved_no_backend_evidence(
+        input["coordination_status"],
+        batch_id,
+        expected_targets,
+        blockers
+      )
+      unless no_backend_evidence
+        return blocked_result(
+          "typed no-backend coordination evidence is absent or invalid",
+          source_input: input
+        )
+      end
+
+      authenticated_status = coordination_verifier&.call(backend:, batch_id:)
+      unless authenticated_status.is_a?(Hash)
+        return blocked_result(COORDINATION_BACKEND_ACTIVATION_BLOCKER, source_input: input)
+      end
+
+      batch = resolved_batch(authenticated_status, batch_id, blockers)
+      lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
+      transition = completed_batch_coordination_transition(no_backend_evidence, batch_id:, backend:)
       coordination_authentic = true
     else
       no_backend_evidence = nil
@@ -123,7 +151,8 @@ module CompletedBatchPublicationPreflight
         batch,
         canonical_lanes,
         no_backend_evidence,
-        authenticated: coordination_authentic
+        authenticated: coordination_authentic,
+        transition:
       ),
       "targets" => canonical_targets,
       "qa" => canonical_qa
@@ -153,7 +182,8 @@ module CompletedBatchPublicationPreflight
     blocked_result("publication preflight input is invalid: #{e.class}")
   end
 
-  def blocked_result(blocker)
+  def blocked_result(blocker, source_input: {})
+    source_input = canonicalize(source_input)
     snapshot = canonicalize(
       "batch_id" => nil,
       "coordination_backend" => nil,
@@ -170,8 +200,8 @@ module CompletedBatchPublicationPreflight
       "verdict" => "BLOCKED",
       "targets" => [],
       "blockers" => [blocker],
-      "source_input" => {},
-      "source_input_digest" => digest({}),
+      "source_input" => source_input,
+      "source_input_digest" => digest(source_input),
       "snapshot" => snapshot,
       "snapshot_digest" => digest(snapshot)
     }
@@ -205,11 +235,40 @@ module CompletedBatchPublicationPreflight
     return false unless targets == receipt.dig("snapshot", "targets").map { |entry| entry.fetch("target") }
 
     coordination = receipt.dig("snapshot", "coordination")
+    transition = coordination["transition"]
     if receipt.dig("snapshot", "coordination_backend").to_s.downcase == "n/a"
       return false unless coordination.fetch("lanes") == []
       return false unless coordination.dig("not_applicable", "targets") == targets
+      return false if transition
     else
       return false unless targets == coordination.fetch("lanes").map { |entry| entry.fetch("target") }
+
+      if transition
+        return false unless transition.is_a?(Hash)
+        return false unless transition.fetch("contract") == COORDINATION_TRANSITION_CONTRACT
+        return false unless transition.fetch("version") == VERSION
+        return false unless transition.fetch("from_backend") == "n/a"
+        return false unless transition.fetch("to_backend") == backend
+
+        terminal_handoff = transition["terminal_handoff"]
+        return false unless terminal_handoff.is_a?(Hash)
+        return false unless terminal_handoff.fetch("contract") == "completed-batch-coordination-not-applicable"
+        return false unless terminal_handoff.fetch("version") == VERSION
+        return false unless terminal_handoff.fetch("batch_id") == receipt["batch_id"]
+        return false unless terminal_handoff.fetch("mode") == "single_operator"
+        return false unless normalized_known_string(terminal_handoff["rationale"])
+        return false unless durable_https_url(terminal_handoff["source"])
+        return false unless valid_timestamp?(terminal_handoff["completed_at"])
+
+        transition_target_blockers = []
+        transition_targets = validated_target_set(
+          terminal_handoff["targets"],
+          transition_target_blockers,
+          "transition handoff target"
+        )
+        return false unless transition_target_blockers.empty?
+        return false unless transition_targets == targets
+      end
     end
     return false unless targets == receipt.dig("snapshot", "qa").map { |entry| entry.fetch("target") }
 
@@ -360,8 +419,42 @@ module CompletedBatchPublicationPreflight
     }
   end
 
-  def canonical_coordination_snapshot(batch, lanes, no_backend_evidence, authenticated:)
-    if no_backend_evidence
+  def no_backend_coordination_status?(status)
+    status.is_a?(Hash) &&
+      status["contract"] == "completed-batch-coordination-not-applicable" &&
+      status["version"] == VERSION
+  end
+
+  def completed_batch_coordination_transition(no_backend_evidence, batch_id:, backend:)
+    {
+      "contract" => COORDINATION_TRANSITION_CONTRACT,
+      "version" => VERSION,
+      "from_backend" => "n/a",
+      "to_backend" => backend,
+      "terminal_handoff" => {
+        "contract" => "completed-batch-coordination-not-applicable",
+        "version" => VERSION,
+        "batch_id" => batch_id,
+        "mode" => no_backend_evidence.fetch("mode"),
+        "rationale" => no_backend_evidence.fetch("rationale"),
+        "source" => no_backend_evidence.fetch("source"),
+        "completed_at" => no_backend_evidence.fetch("completed_at"),
+        "targets" => no_backend_evidence.fetch("targets")
+      }
+    }
+  end
+
+  def canonical_coordination_snapshot(batch, lanes, no_backend_evidence, authenticated:, transition: nil)
+    if transition
+      {
+        "status" => scalar_or_nil(batch&.fetch("status", nil)),
+        "updated_at" => scalar_or_nil(batch&.fetch("updated_at", nil)),
+        "completed_at" => scalar_or_nil(batch&.fetch("completed_at", nil)),
+        "lanes" => lanes,
+        "verification_source" => "authenticated agent-coord-bounded transition from durable no-backend provenance",
+        "transition" => transition
+      }
+    elsif no_backend_evidence
       {
         "status" => "not_applicable",
         "updated_at" => no_backend_evidence.fetch("completed_at"),
