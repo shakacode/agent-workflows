@@ -15,6 +15,7 @@ require "uri"
 require "yaml"
 
 require_relative "../lib/git_probe_env"
+require_relative "../lib/trust_config_shape"
 
 options = {
   acknowledged_risks: Hash.new { |hash, key| hash[key] = Set.new },
@@ -529,8 +530,14 @@ def load_trust_config(path:, global:)
   data = parse_contents.empty? ? {} : YAML.safe_load(parse_contents, aliases: false, filename: path) || {}
   abort "Invalid trust config #{path}: expected a YAML mapping at the top level" unless data.is_a?(Hash)
 
-  trusted_bots = Array(data["trusted_bots"]).to_set { |login| normalized_bot_login(login) }
-  trusted_metadata_bots = Array(data["trusted_metadata_bots"]).to_set { |login| normalized_bot_login(login) }
+  trusted_bots = TrustConfigShape.strict_string_list(
+    data["trusted_bots"],
+    name: "trusted_bots"
+  ).to_set { |login| normalized_bot_login(login) }
+  trusted_metadata_bots = TrustConfigShape.strict_string_list(
+    data["trusted_metadata_bots"],
+    name: "trusted_metadata_bots"
+  ).to_set { |login| normalized_bot_login(login) }
   trusted_metadata_bots.merge(PACKAGED_METADATA_BOTS - trusted_bots)
   overlapping_bots = trusted_bots & trusted_metadata_bots
   if overlapping_bots.any?
@@ -546,6 +553,8 @@ def load_trust_config(path:, global:)
     trusted_teams: normalized_trusted_teams(data["trusted_teams"], require_owner: global),
     trusted_users: Array(data["trusted_users"]).to_set { |login| normalized_login(login) }
   }
+rescue ArgumentError => e
+  abort "Invalid trust config #{path}: #{e.message}"
 rescue Psych::Exception
   abort "Invalid trust config #{path}: malformed YAML"
 end
