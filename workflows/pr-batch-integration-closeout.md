@@ -90,27 +90,26 @@ CI. The integration owner, not the implementation worker, performs this phase:
 Convention: `UNKNOWN` in capitals means coordination/backend state could not be
 verified; lowercase `unknown` is the QA lane status value.
 
-Use a QA lane when a batch needs evidence beyond each individual worker's local
+Use QA when a batch needs evidence beyond each individual worker's local
 validation before coordinator closeout, release-readiness, release-promotion, or
-merge decisions rely on the batch. QA is a sibling lane to implementation and
-audit work: it verifies the user-visible, operator-visible, or developer-visible
-result of the batch, while audit verifies that the QA coverage and evidence were
-adequate.
+merge decisions rely on the batch. QA is a checker/evidence role on the lane, not a second coordination lane with the same target. It verifies the user-visible, operator-visible, or developer-visible result of the batch, while audit verifies that the QA coverage and evidence were adequate.
 
-Create an explicit QA lane for release-affecting batches, release-candidate or
-final-release preparation, CI/tooling changes, generated-output changes,
+Create explicit QA ownership for release-affecting batches, release-candidate
+or final-release preparation, CI/tooling changes, generated-output changes,
 developer-workflow changes, broad runtime behavior changes, and any batch where
 the coordinator cannot tell from worker validation alone whether the intended
-surfaces were exercised. These required categories take precedence over low-risk
-exceptions. For docs-only, no-code process, no-PR evidence, and other low-risk
-batches that are not release-affecting, developer-workflow-affecting, or
-otherwise covered by the required categories above, QA may be recorded as
-`not required` with a one-line rationale instead of spawning a separate worker.
+surfaces were exercised. Record the QA owner in the Batch QA Lane decision and
+QA Evidence, and keep the coordination manifest to one lane per target. These
+required categories take precedence over low-risk exceptions. For docs-only,
+no-code process, no-PR evidence, and other low-risk batches that are not
+release-affecting, developer-workflow-affecting, or otherwise covered by the
+required categories above, QA may be recorded as `not required` with a one-line
+rationale instead of spawning a separate worker.
 
 For mixed batches, apply QA to the subset that qualifies. Record that subset in
 the QA Evidence `Scope checked` field and, when the coordination backend has a
-supported lane note or metadata field, in final lane state. Do not invent new
-backend schema.
+supported lane note or metadata field for that same lane, in final lane state.
+Do not invent new backend schema.
 
 ### Hosted Runtime QA Gate
 

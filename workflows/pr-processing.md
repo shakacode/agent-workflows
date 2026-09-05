@@ -1564,9 +1564,7 @@ Use exact lane assignments as the primary coordination mechanism. Labels are use
   the stale-assignment sweep, agent claims via backend heartbeat TTL. The
   stale-assignment sweep skips `agent-claimed` items, leaving agent-claim
   staleness to the backend rather than the human-timescale sweep.
-- Treat QA as an explicit batch lane when the Batch QA Lane section requires it;
-  give it a stable owner, claim/heartbeat evidence, and the same dependency
-  checks as implementation or audit lanes.
+- QA is a checker/evidence role on the lane, not a second coordination lane with the same target. Give it a stable owner and QA Evidence, and keep the target unique per coordination lane.
 - For concurrent or multi-machine batches, use the repo's private coordination
   backend when available. Each lane gets a stable agent id such as
   `mobile-codex-batch2` or `desktop-claude-fable-lane1`.
