@@ -48,6 +48,8 @@ rewriting files to single quotes.
 
 Prefer small, local Ruby changes. When a helper change needs tests, add or
 update the focused helper test and run it directly in addition to `bin/validate`.
+The [RuboCop metrics baseline](docs/rubocop-metrics.md) prevents new complexity
+debt while maintainers remove the existing default-metrics backlog.
 
 ## Portability Rule
 

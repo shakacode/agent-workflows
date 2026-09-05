@@ -1,0 +1,7354 @@
+{
+  "schema_version": 1,
+  "rubocop_version": "1.87.0",
+  "cops": [
+    "Metrics/AbcSize",
+    "Metrics/BlockLength",
+    "Metrics/ClassLength",
+    "Metrics/CyclomaticComplexity",
+    "Metrics/MethodLength",
+    "Metrics/ModuleLength",
+    "Metrics/ParameterLists",
+    "Metrics/PerceivedComplexity"
+  ],
+  "files": {
+    "bin/agent-workflow-seam-doctor": {
+      "Metrics/AbcSize": [
+        69.04,
+        61.88,
+        55.24,
+        54.28,
+        46.18,
+        41.05,
+        37.22,
+        36.52,
+        34.83,
+        34.09,
+        33.48,
+        32.86,
+        32.17,
+        32.02,
+        31.67,
+        29.55,
+        28.81,
+        26.72,
+        23.37,
+        23.26,
+        23.02,
+        22.23,
+        21.79,
+        21.61,
+        21.47,
+        21.45,
+        20.07,
+        20.05,
+        19.7,
+        19.29,
+        19.21,
+        19.21,
+        19,
+        18.68,
+        18.49,
+        18.22,
+        18.03,
+        18.03,
+        18,
+        17.8,
+        17.49,
+        17.29,
+        17.23
+      ],
+      "Metrics/BlockLength": [
+        34,
+        28,
+        27,
+        26,
+        26
+      ],
+      "Metrics/CyclomaticComplexity": [
+        29,
+        27,
+        24,
+        21,
+        20,
+        20,
+        18,
+        17,
+        17,
+        15,
+        15,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        9,
+        9,
+        9,
+        8,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        52,
+        51,
+        50,
+        43,
+        43,
+        42,
+        41,
+        38,
+        38,
+        38,
+        36,
+        35,
+        34,
+        33,
+        32,
+        30,
+        28,
+        28,
+        26,
+        25,
+        23,
+        23,
+        22,
+        22,
+        21,
+        21,
+        21,
+        21,
+        20,
+        20,
+        19,
+        19,
+        18,
+        18,
+        17,
+        17,
+        17,
+        16,
+        15,
+        15,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12
+      ],
+      "Metrics/ModuleLength": [
+        1991
+      ],
+      "Metrics/PerceivedComplexity": [
+        31,
+        29,
+        25,
+        22,
+        22,
+        20,
+        19,
+        18,
+        18,
+        16,
+        16,
+        14,
+        14,
+        14,
+        14,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        9,
+        9,
+        9
+      ]
+    },
+    "bin/agent-workflow-seam-doctor-test.rb": {
+      "Metrics/AbcSize": [
+        46.11,
+        43.51,
+        41.48,
+        41.34,
+        34.37,
+        33,
+        31.32,
+        28.79,
+        27.22,
+        26.02,
+        24.78,
+        24.7,
+        24.7,
+        24.37,
+        24.35,
+        23.37,
+        23.09,
+        22.85,
+        22.52,
+        21.95,
+        21.86,
+        21.19,
+        20.62,
+        20.47,
+        20.35,
+        20.15,
+        19.92,
+        19.82,
+        19.67,
+        19.31,
+        19,
+        18.81,
+        18.06,
+        17.72,
+        17.72,
+        17.52,
+        17.46,
+        17.46,
+        17.46,
+        17.46,
+        17.32,
+        17.29,
+        17.26,
+        17.09
+      ],
+      "Metrics/BlockLength": [
+        50,
+        34,
+        32,
+        31,
+        30,
+        30,
+        30,
+        29,
+        28,
+        28,
+        28,
+        27,
+        26
+      ],
+      "Metrics/ClassLength": [
+        3090,
+        1629,
+        174,
+        120,
+        102
+      ],
+      "Metrics/MethodLength": [
+        73,
+        51,
+        48,
+        40,
+        36,
+        36,
+        33,
+        32,
+        31,
+        30,
+        30,
+        30,
+        30,
+        29,
+        29,
+        28,
+        28,
+        27,
+        26,
+        26,
+        26,
+        26,
+        25,
+        25,
+        25,
+        24,
+        23,
+        23,
+        23,
+        23,
+        23,
+        23,
+        23,
+        22,
+        22,
+        22,
+        21,
+        21,
+        21,
+        21,
+        21,
+        21,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        19,
+        19,
+        19,
+        19,
+        19,
+        19,
+        19,
+        19,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        17,
+        17,
+        17,
+        17,
+        17,
+        17,
+        17,
+        17,
+        17,
+        17,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        132
+      ]
+    },
+    "bin/agent-workflow-writing-style": {
+      "Metrics/AbcSize": [
+        53.16,
+        31.05,
+        20.59
+      ],
+      "Metrics/CyclomaticComplexity": [
+        19
+      ],
+      "Metrics/MethodLength": [
+        59,
+        28,
+        23,
+        21,
+        12,
+        12,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        216
+      ],
+      "Metrics/PerceivedComplexity": [
+        19
+      ]
+    },
+    "bin/agent-workflow-writing-style-test.rb": {
+      "Metrics/AbcSize": [
+        28.86,
+        27.75,
+        26.93,
+        26.93,
+        26.93,
+        25.96,
+        25.51,
+        25.3,
+        25.1,
+        25,
+        25,
+        25,
+        25,
+        24.04,
+        23.77,
+        23.09,
+        23.09,
+        23.09,
+        22.47,
+        22.14,
+        22.14,
+        22.14,
+        21.54,
+        21.54,
+        21.19,
+        20.88,
+        20.62,
+        20.25,
+        19.31,
+        18.97,
+        18.97,
+        18.97,
+        18.97,
+        18.97,
+        18.79,
+        18.38,
+        18.03,
+        17.09
+      ],
+      "Metrics/BlockLength": [
+        30,
+        28,
+        26
+      ],
+      "Metrics/ClassLength": [
+        954
+      ],
+      "Metrics/MethodLength": [
+        32,
+        30,
+        28,
+        23,
+        23,
+        23,
+        22,
+        22,
+        21,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        19,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        17,
+        17,
+        17,
+        17,
+        17,
+        17,
+        17,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        14,
+        14,
+        13,
+        12,
+        11
+      ]
+    },
+    "bin/agent-workflows-delivery-state": {
+      "Metrics/AbcSize": [
+        107.6,
+        84.72,
+        81.96,
+        58.88,
+        53.62,
+        42.94,
+        41.83,
+        41.63,
+        33,
+        24.68,
+        23.62,
+        22.87,
+        21.02,
+        21,
+        19.44,
+        17.03
+      ],
+      "Metrics/BlockLength": [
+        33
+      ],
+      "Metrics/CyclomaticComplexity": [
+        60,
+        30,
+        27,
+        27,
+        26,
+        18,
+        17,
+        16,
+        12,
+        11,
+        11,
+        10,
+        10,
+        10,
+        8
+      ],
+      "Metrics/MethodLength": [
+        102,
+        81,
+        65,
+        60,
+        49,
+        48,
+        48,
+        44,
+        25,
+        19,
+        16,
+        15,
+        14,
+        14,
+        14,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        745
+      ],
+      "Metrics/PerceivedComplexity": [
+        65,
+        33,
+        29,
+        28,
+        26,
+        19,
+        19,
+        16,
+        11,
+        11,
+        11,
+        10,
+        10,
+        10
+      ]
+    },
+    "bin/agent-workflows-delivery-state-test.rb": {
+      "Metrics/AbcSize": [
+        75.69,
+        46.87,
+        43.68,
+        37.95,
+        34.48,
+        31.32,
+        31.32,
+        30.82,
+        30.81,
+        30.36,
+        29.83,
+        29.41,
+        29.14,
+        28.81,
+        28.81,
+        28.64,
+        28.23,
+        28.16,
+        27.66,
+        25.71,
+        25.63,
+        25.3,
+        24.74,
+        24.04,
+        23.96,
+        23.73,
+        23.09,
+        22.45,
+        22.14,
+        22.14,
+        21.95,
+        21.59,
+        21.59,
+        21.19,
+        21.12,
+        20.25,
+        20.25,
+        20,
+        19.7,
+        19.65,
+        18.97,
+        18.97,
+        18.41,
+        18.38,
+        17.49
+      ],
+      "Metrics/BlockLength": [
+        54,
+        54,
+        49,
+        37,
+        36,
+        35,
+        31,
+        31,
+        28,
+        28,
+        26
+      ],
+      "Metrics/ClassLength": [
+        1431
+      ],
+      "Metrics/MethodLength": [
+        88,
+        56,
+        55,
+        38,
+        38,
+        36,
+        33,
+        32,
+        30,
+        30,
+        28,
+        28,
+        27,
+        26,
+        24,
+        24,
+        23,
+        23,
+        23,
+        22,
+        22,
+        22,
+        22,
+        22,
+        21,
+        21,
+        20,
+        20,
+        19,
+        19,
+        18,
+        18,
+        18,
+        18,
+        17,
+        17,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        15,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        11,
+        11
+      ]
+    },
+    "bin/agent-workflows-status": {
+      "Metrics/AbcSize": [
+        52.06,
+        35.69,
+        20.69
+      ],
+      "Metrics/CyclomaticComplexity": [
+        17,
+        12,
+        10
+      ],
+      "Metrics/MethodLength": [
+        78,
+        33,
+        20,
+        18,
+        16,
+        15,
+        13
+      ],
+      "Metrics/ModuleLength": [
+        261
+      ],
+      "Metrics/ParameterLists": [
+        9
+      ],
+      "Metrics/PerceivedComplexity": [
+        18,
+        11,
+        11
+      ]
+    },
+    "bin/agent-workflows-status-test.rb": {
+      "Metrics/AbcSize": [
+        33.96,
+        28.86,
+        24.7,
+        22.47,
+        20.62,
+        20.27,
+        20.25,
+        20.25,
+        19.42,
+        18.68,
+        18.03
+      ],
+      "Metrics/BlockLength": [
+        31,
+        31,
+        30,
+        29
+      ],
+      "Metrics/ClassLength": [
+        483
+      ],
+      "Metrics/MethodLength": [
+        41,
+        33,
+        33,
+        26,
+        26,
+        23,
+        22,
+        21,
+        21,
+        21,
+        19,
+        18,
+        18,
+        13,
+        13,
+        13,
+        13,
+        11,
+        11
+      ]
+    },
+    "bin/agent-workflows-trust-audit": {
+      "Metrics/AbcSize": [
+        25.26,
+        24.52,
+        24.29,
+        23.15,
+        22.45,
+        22.02
+      ],
+      "Metrics/CyclomaticComplexity": [
+        12
+      ],
+      "Metrics/MethodLength": [
+        35,
+        33,
+        30,
+        22,
+        18,
+        15,
+        14,
+        14,
+        13
+      ],
+      "Metrics/ModuleLength": [
+        341
+      ],
+      "Metrics/ParameterLists": [
+        6,
+        6
+      ]
+    },
+    "bin/agent-workflows-trust-audit-test.rb": {
+      "Metrics/AbcSize": [
+        23.49,
+        18.97,
+        17.72
+      ],
+      "Metrics/ClassLength": [
+        205
+      ],
+      "Metrics/CyclomaticComplexity": [
+        9
+      ],
+      "Metrics/MethodLength": [
+        77,
+        16,
+        14,
+        11,
+        11
+      ]
+    },
+    "bin/agent_doctor/autonomous_merge_policy.rb": {
+      "Metrics/AbcSize": [
+        38.29,
+        35.74,
+        17.38
+      ],
+      "Metrics/CyclomaticComplexity": [
+        15,
+        9
+      ],
+      "Metrics/MethodLength": [
+        32,
+        31,
+        14,
+        13
+      ],
+      "Metrics/ModuleLength": [
+        117
+      ],
+      "Metrics/PerceivedComplexity": [
+        17,
+        9
+      ]
+    },
+    "bin/agent_doctor/autonomous_merge_policy_globs.rb": {
+      "Metrics/AbcSize": [
+        35.06,
+        30.15,
+        29.15,
+        27
+      ],
+      "Metrics/CyclomaticComplexity": [
+        13,
+        12,
+        11,
+        8
+      ],
+      "Metrics/MethodLength": [
+        30,
+        28,
+        24,
+        17,
+        16
+      ],
+      "Metrics/ModuleLength": [
+        137
+      ],
+      "Metrics/PerceivedComplexity": [
+        14,
+        11,
+        10,
+        9
+      ]
+    },
+    "bin/agent_doctor/autonomous_merge_policy_yaml.rb": {
+      "Metrics/AbcSize": [
+        21.45
+      ],
+      "Metrics/CyclomaticComplexity": [
+        9
+      ],
+      "Metrics/MethodLength": [
+        17
+      ],
+      "Metrics/PerceivedComplexity": [
+        11
+      ]
+    },
+    "bin/agent_doctor/configuration.rb": {
+      "Metrics/AbcSize": [
+        26.89,
+        25.24,
+        20.98
+      ],
+      "Metrics/CyclomaticComplexity": [
+        12,
+        9,
+        8
+      ],
+      "Metrics/MethodLength": [
+        12,
+        12
+      ],
+      "Metrics/PerceivedComplexity": [
+        12,
+        9
+      ]
+    },
+    "bin/agent_doctor/contract.rb": {
+      "Metrics/AbcSize": [
+        21.95,
+        20.27
+      ],
+      "Metrics/CyclomaticComplexity": [
+        10
+      ],
+      "Metrics/MethodLength": [
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        10
+      ]
+    },
+    "bin/agent_doctor/hosted_qa_policy.rb": {
+      "Metrics/AbcSize": [
+        69,
+        22.41
+      ],
+      "Metrics/CyclomaticComplexity": [
+        25
+      ],
+      "Metrics/MethodLength": [
+        45,
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        25
+      ]
+    },
+    "bin/agent_doctor/install_ownership.rb": {
+      "Metrics/AbcSize": [
+        25.08
+      ],
+      "Metrics/CyclomaticComplexity": [
+        9
+      ],
+      "Metrics/MethodLength": [
+        22
+      ]
+    },
+    "bin/agent_doctor/orchestrator.rb": {
+      "Metrics/AbcSize": [
+        27.95,
+        26.98,
+        25.38,
+        17.23
+      ],
+      "Metrics/ClassLength": [
+        144
+      ],
+      "Metrics/CyclomaticComplexity": [
+        11
+      ],
+      "Metrics/MethodLength": [
+        21,
+        16,
+        16,
+        15,
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        11
+      ]
+    },
+    "bin/agent_doctor/process_runner.rb": {
+      "Metrics/AbcSize": [
+        50.49
+      ],
+      "Metrics/ClassLength": [
+        105
+      ],
+      "Metrics/CyclomaticComplexity": [
+        17
+      ],
+      "Metrics/MethodLength": [
+        47,
+        12
+      ],
+      "Metrics/PerceivedComplexity": [
+        17
+      ]
+    },
+    "bin/agent_doctor/renderer.rb": {
+      "Metrics/AbcSize": [
+        49.32
+      ],
+      "Metrics/CyclomaticComplexity": [
+        9
+      ],
+      "Metrics/MethodLength": [
+        12
+      ],
+      "Metrics/PerceivedComplexity": [
+        9
+      ]
+    },
+    "bin/agent_doctor/sanitizer.rb": {
+      "Metrics/AbcSize": [
+        29.07
+      ],
+      "Metrics/ClassLength": [
+        125
+      ],
+      "Metrics/CyclomaticComplexity": [
+        9
+      ],
+      "Metrics/MethodLength": [
+        16
+      ],
+      "Metrics/PerceivedComplexity": [
+        9
+      ]
+    },
+    "bin/agent_doctor/source_checks.rb": {
+      "Metrics/AbcSize": [
+        31.13,
+        19.05
+      ],
+      "Metrics/ClassLength": [
+        145
+      ],
+      "Metrics/CyclomaticComplexity": [
+        15,
+        8
+      ],
+      "Metrics/MethodLength": [
+        43,
+        19,
+        17
+      ],
+      "Metrics/PerceivedComplexity": [
+        15
+      ]
+    },
+    "bin/agent_doctor/stack_cli.rb": {
+      "Metrics/AbcSize": [
+        28.6,
+        22.67
+      ],
+      "Metrics/MethodLength": [
+        15,
+        14
+      ]
+    },
+    "bin/agent_doctor/workflows_cli.rb": {
+      "Metrics/AbcSize": [
+        25.38,
+        18.38
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8
+      ],
+      "Metrics/MethodLength": [
+        17
+      ]
+    },
+    "bin/agent_doctor/workflows_component.rb": {
+      "Metrics/AbcSize": [
+        26.48,
+        23.35,
+        19.95,
+        19.47
+      ],
+      "Metrics/ClassLength": [
+        125
+      ],
+      "Metrics/CyclomaticComplexity": [
+        12,
+        11,
+        9
+      ],
+      "Metrics/MethodLength": [
+        24,
+        13,
+        12
+      ],
+      "Metrics/PerceivedComplexity": [
+        12,
+        10,
+        9
+      ]
+    },
+    "bin/check-agent-workflow-drift": {
+      "Metrics/AbcSize": [
+        63.51,
+        35.45,
+        28.18,
+        25.87,
+        24.7,
+        24.23,
+        22.29,
+        19.72,
+        18.81,
+        18.6,
+        17.49
+      ],
+      "Metrics/CyclomaticComplexity": [
+        14,
+        12,
+        11,
+        9,
+        9,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        45,
+        25,
+        20,
+        18,
+        18,
+        18,
+        14,
+        14,
+        14,
+        13,
+        12,
+        12,
+        12
+      ],
+      "Metrics/ModuleLength": [
+        424
+      ],
+      "Metrics/ParameterLists": [
+        9,
+        7
+      ],
+      "Metrics/PerceivedComplexity": [
+        16,
+        12,
+        11,
+        9,
+        9
+      ]
+    },
+    "bin/check-agent-workflow-drift-test.rb": {
+      "Metrics/AbcSize": [
+        42.73,
+        42.2,
+        38.13,
+        33.38,
+        30.89,
+        30.43,
+        29.56,
+        29.07,
+        27.73,
+        27.46,
+        24.7,
+        24.35,
+        24.35,
+        23.35,
+        23.32,
+        23.22,
+        22.23,
+        21.63,
+        21.54,
+        20.62,
+        19.7,
+        19.26,
+        18.97,
+        18.79,
+        18.36,
+        18.03,
+        17.89
+      ],
+      "Metrics/BlockLength": [
+        33,
+        32,
+        31,
+        30,
+        30,
+        27
+      ],
+      "Metrics/ClassLength": [
+        1326
+      ],
+      "Metrics/MethodLength": [
+        34,
+        34,
+        34,
+        32,
+        32,
+        30,
+        29,
+        26,
+        26,
+        25,
+        25,
+        23,
+        23,
+        22,
+        22,
+        20,
+        20,
+        20,
+        19,
+        18,
+        18,
+        17,
+        17,
+        16,
+        16,
+        15,
+        15,
+        14,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ]
+    },
+    "bin/codex-plugin-manifest-check": {
+      "Metrics/AbcSize": [
+        24.49,
+        21.61,
+        21.47,
+        19.67,
+        18.79,
+        18.71,
+        18.17,
+        18.14
+      ],
+      "Metrics/CyclomaticComplexity": [
+        10,
+        9,
+        9,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        27,
+        20,
+        18,
+        17,
+        15,
+        14,
+        13,
+        12
+      ],
+      "Metrics/ModuleLength": [
+        271
+      ],
+      "Metrics/PerceivedComplexity": [
+        10,
+        9,
+        9
+      ]
+    },
+    "bin/codex-plugin-manifest-check-test.rb": {
+      "Metrics/AbcSize": [
+        32.56,
+        24.02
+      ],
+      "Metrics/ClassLength": [
+        368
+      ],
+      "Metrics/MethodLength": [
+        19,
+        17,
+        16,
+        15,
+        13,
+        11,
+        11
+      ]
+    },
+    "bin/host-adapter-syntax-test.rb": {
+      "Metrics/ClassLength": [
+        143
+      ],
+      "Metrics/MethodLength": [
+        16,
+        13,
+        12,
+        12,
+        12,
+        12
+      ]
+    },
+    "bin/lint": {
+      "Metrics/AbcSize": [
+        22.49
+      ],
+      "Metrics/CyclomaticComplexity": [
+        9
+      ],
+      "Metrics/MethodLength": [
+        12
+      ],
+      "Metrics/PerceivedComplexity": [
+        9
+      ]
+    },
+    "bin/lint-test.rb": {
+      "Metrics/AbcSize": [
+        47.09,
+        31.32,
+        27.48,
+        17.03
+      ],
+      "Metrics/ClassLength": [
+        213
+      ],
+      "Metrics/MethodLength": [
+        27,
+        24,
+        22,
+        16,
+        15,
+        12,
+        12,
+        11
+      ]
+    },
+    "bin/push-downstream": {
+      "Metrics/AbcSize": [
+        94.64,
+        86.72,
+        85.99,
+        73.41,
+        56.2,
+        53.75,
+        45.28,
+        44.59,
+        41.69,
+        41.11,
+        39.32,
+        37.5,
+        34.71,
+        34.48,
+        34.19,
+        31.7,
+        28.6,
+        27.33,
+        26.65,
+        26.31,
+        24.21,
+        23.96,
+        23.26,
+        23.22,
+        22.69,
+        21,
+        20.47,
+        20.32,
+        19.87,
+        19.87,
+        18.92,
+        18.6,
+        18.57,
+        17.8,
+        17.26
+      ],
+      "Metrics/BlockLength": [
+        109,
+        51,
+        40,
+        38,
+        36,
+        33,
+        26,
+        26
+      ],
+      "Metrics/CyclomaticComplexity": [
+        34,
+        32,
+        29,
+        22,
+        22,
+        21,
+        19,
+        17,
+        16,
+        15,
+        13,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        9,
+        9,
+        9,
+        9,
+        9,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        111,
+        83,
+        65,
+        58,
+        58,
+        50,
+        46,
+        46,
+        44,
+        43,
+        37,
+        35,
+        33,
+        32,
+        28,
+        28,
+        28,
+        26,
+        24,
+        23,
+        21,
+        20,
+        20,
+        20,
+        19,
+        18,
+        18,
+        18,
+        18,
+        17,
+        16,
+        16,
+        15,
+        15,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        2134
+      ],
+      "Metrics/ParameterLists": [
+        7,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        34,
+        33,
+        29,
+        22,
+        22,
+        21,
+        19,
+        19,
+        16,
+        16,
+        13,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        9,
+        9,
+        9,
+        9
+      ]
+    },
+    "bin/push-downstream-test.rb": {
+      "Metrics/AbcSize": [
+        86.89,
+        63.98,
+        51.2,
+        42.3,
+        39.23,
+        37.01,
+        35.21,
+        34.84,
+        34.54,
+        33.14,
+        32.25,
+        31.4,
+        31.38,
+        31.27,
+        30.82,
+        30.28,
+        30.15,
+        30.1,
+        29.83,
+        29.61,
+        29.43,
+        29.43,
+        29.41,
+        28.79,
+        28.46,
+        28.16,
+        27.89,
+        27,
+        26.93,
+        26.57,
+        26.42,
+        26.4,
+        26.38,
+        25.96,
+        25.81,
+        25.3,
+        25.24,
+        25.24,
+        24.74,
+        24.35,
+        24.04,
+        23.77,
+        23.77,
+        23.09,
+        22.8,
+        22.56,
+        22.56,
+        22.36,
+        21.93,
+        21.68,
+        21.56,
+        21.54,
+        21.38,
+        20.88,
+        20.88,
+        20.62,
+        20.62,
+        20.62,
+        20.4,
+        19.92,
+        19.92,
+        19.75,
+        19.72,
+        19.65,
+        19.65,
+        19.42,
+        19.31,
+        18.97,
+        18.68,
+        18.68,
+        18.68,
+        18.68,
+        18.68,
+        18.49,
+        18.41,
+        18.38,
+        18.28,
+        18.25,
+        17.89,
+        17.72,
+        17.72,
+        17.46,
+        17.12,
+        17.12
+      ],
+      "Metrics/BlockLength": [
+        67,
+        53,
+        47,
+        42,
+        40,
+        39,
+        38,
+        36,
+        31,
+        31,
+        31,
+        31,
+        29,
+        29,
+        28,
+        28,
+        27,
+        26,
+        26,
+        26
+      ],
+      "Metrics/ClassLength": [
+        1424,
+        465,
+        432,
+        402,
+        179,
+        147,
+        143,
+        106
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8
+      ],
+      "Metrics/MethodLength": [
+        68,
+        54,
+        48,
+        44,
+        43,
+        40,
+        37,
+        33,
+        32,
+        32,
+        32,
+        32,
+        32,
+        31,
+        31,
+        30,
+        29,
+        29,
+        29,
+        29,
+        28,
+        28,
+        28,
+        28,
+        28,
+        27,
+        27,
+        27,
+        27,
+        26,
+        26,
+        26,
+        26,
+        26,
+        26,
+        25,
+        25,
+        25,
+        25,
+        24,
+        24,
+        24,
+        24,
+        24,
+        24,
+        23,
+        23,
+        23,
+        23,
+        23,
+        23,
+        22,
+        22,
+        22,
+        22,
+        22,
+        22,
+        21,
+        21,
+        21,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        19,
+        19,
+        19,
+        18,
+        18,
+        17,
+        17,
+        17,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ]
+    },
+    "bin/repository-security-policy-test.rb": {
+      "Metrics/AbcSize": [
+        21.02,
+        21,
+        19.92,
+        19.44,
+        17.29
+      ],
+      "Metrics/ClassLength": [
+        269
+      ],
+      "Metrics/CyclomaticComplexity": [
+        11,
+        8
+      ],
+      "Metrics/MethodLength": [
+        23,
+        17,
+        15,
+        14,
+        13,
+        12,
+        12,
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        11
+      ]
+    },
+    "bin/validate-doc-links": {
+      "Metrics/AbcSize": [
+        19.34,
+        17.29
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        17,
+        17,
+        15,
+        14,
+        12,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        145
+      ]
+    },
+    "bin/validate-doc-links-test.rb": {
+      "Metrics/ClassLength": [
+        154
+      ],
+      "Metrics/MethodLength": [
+        12
+      ]
+    },
+    "bin/validate-execution-provenance": {
+      "Metrics/AbcSize": [
+        89.47,
+        41.34,
+        35.24,
+        31.69,
+        24.1
+      ],
+      "Metrics/CyclomaticComplexity": [
+        52,
+        15,
+        9,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        69,
+        32,
+        29,
+        16,
+        14,
+        14,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        312
+      ],
+      "Metrics/PerceivedComplexity": [
+        50,
+        16,
+        9,
+        9
+      ]
+    },
+    "bin/validate-execution-provenance-test.rb": {
+      "Metrics/AbcSize": [
+        28.65,
+        22.85,
+        19.9,
+        19.24,
+        19.08,
+        17.61
+      ],
+      "Metrics/ClassLength": [
+        362
+      ],
+      "Metrics/MethodLength": [
+        30,
+        26,
+        22,
+        21,
+        19,
+        15,
+        14,
+        14,
+        13,
+        13,
+        13,
+        12,
+        11
+      ]
+    },
+    "bin/validate-host-adapter-syntax": {
+      "Metrics/AbcSize": [
+        19.13
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8
+      ],
+      "Metrics/MethodLength": [
+        23,
+        13,
+        11
+      ]
+    },
+    "bin/validate-openai-agent-metadata": {
+      "Metrics/AbcSize": [
+        26.29
+      ],
+      "Metrics/CyclomaticComplexity": [
+        9
+      ],
+      "Metrics/MethodLength": [
+        24
+      ],
+      "Metrics/PerceivedComplexity": [
+        9
+      ]
+    },
+    "bin/validate-openai-agent-metadata-test.rb": {
+      "Metrics/ClassLength": [
+        146
+      ],
+      "Metrics/MethodLength": [
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11
+      ]
+    },
+    "bin/validate-review-findings": {
+      "Metrics/AbcSize": [
+        79.03,
+        35.17,
+        26.32,
+        25.38,
+        23.87,
+        21.42,
+        20.86
+      ],
+      "Metrics/CyclomaticComplexity": [
+        32,
+        15,
+        11,
+        11,
+        10,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        48,
+        35,
+        18,
+        17,
+        17,
+        15,
+        12,
+        12,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        370
+      ],
+      "Metrics/PerceivedComplexity": [
+        34,
+        15,
+        11,
+        11,
+        11
+      ]
+    },
+    "bin/validate-review-findings-test.rb": {
+      "Metrics/AbcSize": [
+        50.16,
+        23.11,
+        20.98,
+        20.25
+      ],
+      "Metrics/ClassLength": [
+        453
+      ],
+      "Metrics/MethodLength": [
+        32,
+        30,
+        18,
+        15,
+        14,
+        13,
+        13,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11
+      ]
+    },
+    "bin/validate-solutions": {
+      "Metrics/AbcSize": [
+        39.31
+      ],
+      "Metrics/CyclomaticComplexity": [
+        17
+      ],
+      "Metrics/MethodLength": [
+        22,
+        16,
+        13
+      ],
+      "Metrics/ModuleLength": [
+        132
+      ],
+      "Metrics/PerceivedComplexity": [
+        18
+      ]
+    },
+    "bin/validate-solutions-test.rb": {
+      "Metrics/ClassLength": [
+        147
+      ],
+      "Metrics/MethodLength": [
+        14,
+        13,
+        13
+      ]
+    },
+    "plugins/claude-hooks/hooks/close-lane-on-session-end": {
+      "Metrics/AbcSize": [
+        19.65,
+        19.31
+      ],
+      "Metrics/CyclomaticComplexity": [
+        10,
+        9,
+        8
+      ],
+      "Metrics/PerceivedComplexity": [
+        10,
+        9
+      ]
+    },
+    "plugins/claude-hooks/hooks/close-lane-on-session-end-test.rb": {
+      "Metrics/AbcSize": [
+        51.93,
+        46.87,
+        43.29,
+        31.4,
+        26.87,
+        22.56,
+        18.38,
+        17.46,
+        17.09
+      ],
+      "Metrics/BlockLength": [
+        60,
+        55,
+        53,
+        28,
+        26
+      ],
+      "Metrics/ClassLength": [
+        527
+      ],
+      "Metrics/CyclomaticComplexity": [
+        13,
+        11,
+        10,
+        8
+      ],
+      "Metrics/MethodLength": [
+        62,
+        56,
+        55,
+        30,
+        27,
+        26,
+        22,
+        17,
+        13,
+        13,
+        12,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        8
+      ],
+      "Metrics/PerceivedComplexity": [
+        13,
+        11,
+        10
+      ]
+    },
+    "plugins/claude-hooks/hooks/hooks-install-contract-test.rb": {
+      "Metrics/AbcSize": [
+        18.03
+      ],
+      "Metrics/MethodLength": [
+        18,
+        11
+      ]
+    },
+    "plugins/claude-hooks/hooks/lib/hook_support.rb": {
+      "Metrics/AbcSize": [
+        36.41,
+        20.4,
+        17.92,
+        17.58
+      ],
+      "Metrics/CyclomaticComplexity": [
+        15,
+        11
+      ],
+      "Metrics/MethodLength": [
+        36,
+        19,
+        17,
+        12
+      ],
+      "Metrics/ModuleLength": [
+        174
+      ],
+      "Metrics/PerceivedComplexity": [
+        15,
+        11
+      ]
+    },
+    "skills/address-review/bin/address-review-summary-template-test.rb": {
+      "Metrics/MethodLength": [
+        27,
+        24
+      ]
+    },
+    "skills/address-review/bin/fetch-pr-review-data": {
+      "Metrics/AbcSize": [
+        27.46,
+        20.83
+      ],
+      "Metrics/ClassLength": [
+        124
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        18,
+        15,
+        13,
+        13,
+        13,
+        12,
+        12,
+        11,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        153
+      ],
+      "Metrics/ParameterLists": [
+        6
+      ]
+    },
+    "skills/address-review/bin/fetch-pr-review-data-test.rb": {
+      "Metrics/AbcSize": [
+        22.11
+      ]
+    },
+    "skills/autoreview/bin/autoreview-target-state": {
+      "Metrics/AbcSize": [
+        30.3,
+        19.05
+      ],
+      "Metrics/CyclomaticComplexity": [
+        13
+      ],
+      "Metrics/MethodLength": [
+        21,
+        16,
+        13,
+        13,
+        13,
+        11,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        280
+      ],
+      "Metrics/PerceivedComplexity": [
+        14
+      ]
+    },
+    "skills/autoreview/bin/autoreview-target-state-test.rb": {
+      "Metrics/ClassLength": [
+        169
+      ]
+    },
+    "skills/batch-status/bin/batch-status": {
+      "Metrics/AbcSize": [
+        28.65,
+        18.47
+      ],
+      "Metrics/BlockLength": [
+        77,
+        59
+      ],
+      "Metrics/CyclomaticComplexity": [
+        13,
+        9
+      ],
+      "Metrics/MethodLength": [
+        25
+      ],
+      "Metrics/PerceivedComplexity": [
+        14,
+        10
+      ]
+    },
+    "skills/batch-status/bin/batch-status-test.rb": {
+      "Metrics/AbcSize": [
+        32.28,
+        32.28,
+        27.91,
+        24.74,
+        22.8,
+        22.47,
+        21.84,
+        18.97,
+        17.15,
+        17.09
+      ],
+      "Metrics/BlockLength": [
+        34,
+        33,
+        27
+      ],
+      "Metrics/ClassLength": [
+        524
+      ],
+      "Metrics/MethodLength": [
+        43,
+        35,
+        34,
+        34,
+        32,
+        29,
+        28,
+        28,
+        26,
+        26,
+        25,
+        24,
+        23,
+        17,
+        14,
+        14,
+        12,
+        11,
+        11
+      ]
+    },
+    "skills/close-batch/bin/close-batch-contract-test.rb": {
+      "Metrics/ClassLength": [
+        140
+      ],
+      "Metrics/MethodLength": [
+        16,
+        15,
+        13
+      ]
+    },
+    "skills/pause/bin/pause-prompt-test.rb": {
+      "Metrics/AbcSize": [
+        17.55
+      ],
+      "Metrics/MethodLength": [
+        12
+      ]
+    },
+    "skills/plan-pr-batch/bin/batch-plan-preflight": {
+      "Metrics/AbcSize": [
+        123.1,
+        88.65,
+        85.17,
+        51.87,
+        50.07,
+        49.13,
+        47.11,
+        46.74,
+        45.59,
+        41.11,
+        32.94,
+        32.59,
+        32.39,
+        30.55,
+        22.32,
+        22.16,
+        21.73,
+        21.24,
+        21,
+        20.62,
+        19.72,
+        18.63,
+        17.12
+      ],
+      "Metrics/BlockLength": [
+        81,
+        30,
+        28
+      ],
+      "Metrics/CyclomaticComplexity": [
+        35,
+        34,
+        22,
+        20,
+        20,
+        20,
+        19,
+        18,
+        17,
+        13,
+        13,
+        12,
+        11,
+        10,
+        10,
+        10,
+        9,
+        9,
+        9,
+        9,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        114,
+        105,
+        66,
+        50,
+        46,
+        42,
+        38,
+        32,
+        31,
+        31,
+        23,
+        21,
+        16,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        13,
+        12
+      ],
+      "Metrics/ModuleLength": [
+        1097
+      ],
+      "Metrics/ParameterLists": [
+        7,
+        7,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        37,
+        35,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        19,
+        13,
+        13,
+        12,
+        10,
+        10,
+        10,
+        10,
+        9,
+        9,
+        9,
+        9
+      ]
+    },
+    "skills/plan-pr-batch/bin/batch-plan-preflight-test.rb": {
+      "Metrics/AbcSize": [
+        81.84,
+        45.84,
+        44.4,
+        44.38,
+        40.91,
+        40.61,
+        40.27,
+        36.36,
+        32.79,
+        31.02,
+        28.07,
+        26.93,
+        25.96,
+        25.16,
+        24.78,
+        24.68,
+        24.54,
+        24.25,
+        24.17,
+        22.45,
+        22.32,
+        22.23,
+        21.95,
+        20.83,
+        20.62,
+        19.87,
+        19.82,
+        19.72,
+        19.34,
+        19.26,
+        19.03,
+        18.6,
+        18.49,
+        18.36,
+        18.19,
+        18.14,
+        18.06,
+        17.92,
+        17.72,
+        17.61,
+        17.32,
+        17.26,
+        17.2,
+        17.2,
+        17.2
+      ],
+      "Metrics/ClassLength": [
+        1926
+      ],
+      "Metrics/CyclomaticComplexity": [
+        13,
+        12,
+        12
+      ],
+      "Metrics/MethodLength": [
+        70,
+        70,
+        48,
+        46,
+        41,
+        37,
+        37,
+        26,
+        25,
+        24,
+        22,
+        21,
+        21,
+        21,
+        21,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        19,
+        19,
+        19,
+        19,
+        18,
+        18,
+        17,
+        17,
+        16,
+        16,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        11,
+        6,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        15,
+        15,
+        13
+      ]
+    },
+    "skills/plan-pr-batch/bin/pr-file-touch-map": {
+      "Metrics/AbcSize": [
+        20.62,
+        19.95
+      ],
+      "Metrics/ClassLength": [
+        120
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8
+      ],
+      "Metrics/MethodLength": [
+        17,
+        16,
+        15,
+        15,
+        13,
+        13,
+        12
+      ],
+      "Metrics/ModuleLength": [
+        176
+      ],
+      "Metrics/ParameterLists": [
+        6
+      ]
+    },
+    "skills/plan-pr-batch/bin/pr-file-touch-map-test.rb": {
+      "Metrics/ClassLength": [
+        177
+      ],
+      "Metrics/MethodLength": [
+        12
+      ]
+    },
+    "skills/plan-pr-batch/scripts/check_goal_prompt_size.rb": {
+      "Metrics/AbcSize": [
+        30.79
+      ],
+      "Metrics/BlockLength": [
+        122,
+        108,
+        37
+      ],
+      "Metrics/MethodLength": [
+        40,
+        36,
+        21,
+        16,
+        13
+      ]
+    },
+    "skills/post-merge-audit/bin/closeout-evidence-replay": {
+      "Metrics/AbcSize": [
+        84.49,
+        69.13,
+        65.95,
+        59.07,
+        40.16,
+        33.3,
+        27.73,
+        25.42,
+        24.88,
+        24.27,
+        22.65,
+        22.23,
+        18.49
+      ],
+      "Metrics/BlockLength": [
+        26
+      ],
+      "Metrics/CyclomaticComplexity": [
+        37,
+        33,
+        29,
+        23,
+        15,
+        13,
+        12,
+        12,
+        10,
+        10
+      ],
+      "Metrics/MethodLength": [
+        72,
+        58,
+        57,
+        53,
+        40,
+        31,
+        28,
+        27,
+        22,
+        19,
+        17,
+        14,
+        14,
+        13,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        870
+      ],
+      "Metrics/ParameterLists": [
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        38,
+        36,
+        30,
+        24,
+        15,
+        15,
+        12,
+        12,
+        11,
+        11
+      ]
+    },
+    "skills/post-merge-audit/bin/closeout-evidence-replay-test.rb": {
+      "Metrics/AbcSize": [
+        19.44,
+        17.58
+      ],
+      "Metrics/ClassLength": [
+        1986
+      ],
+      "Metrics/MethodLength": [
+        41,
+        34,
+        31,
+        31,
+        29,
+        29,
+        29,
+        28,
+        28,
+        27,
+        27,
+        27,
+        26,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        24,
+        24,
+        23,
+        23,
+        21,
+        21,
+        21,
+        20,
+        20,
+        20,
+        19,
+        19,
+        19,
+        19,
+        19,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        17,
+        17,
+        17,
+        17,
+        17,
+        17,
+        17,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        13,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11
+      ]
+    },
+    "skills/post-merge-audit/bin/completed-batch-audit-receipt": {
+      "Metrics/AbcSize": [
+        132.2,
+        88.66,
+        64.2,
+        60.67,
+        58.32,
+        57.07,
+        54.13,
+        48.38,
+        46.35,
+        45.37,
+        42.94,
+        42.05,
+        35.9,
+        34.71,
+        33.12,
+        28.35,
+        27.51,
+        26.31,
+        26.15,
+        25.61,
+        25.32,
+        25.2,
+        25.08,
+        24.54,
+        23.22,
+        22.93,
+        22.2,
+        21.98,
+        21.45,
+        20.32,
+        20.12,
+        20.02,
+        19.9,
+        19.8,
+        18.97,
+        18.49,
+        18.17,
+        18.06,
+        17.61,
+        17.32,
+        17.23
+      ],
+      "Metrics/BlockLength": [
+        31
+      ],
+      "Metrics/CyclomaticComplexity": [
+        34,
+        31,
+        27,
+        26,
+        25,
+        23,
+        20,
+        19,
+        17,
+        16,
+        16,
+        15,
+        15,
+        14,
+        13,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11,
+        10,
+        10,
+        10,
+        10,
+        10,
+        9,
+        9,
+        9,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        120,
+        93,
+        59,
+        57,
+        45,
+        41,
+        38,
+        33,
+        31,
+        29,
+        29,
+        29,
+        28,
+        27,
+        27,
+        26,
+        25,
+        24,
+        22,
+        22,
+        21,
+        21,
+        20,
+        19,
+        19,
+        17,
+        16,
+        16,
+        15,
+        15,
+        14,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        1705
+      ],
+      "Metrics/ParameterLists": [
+        8,
+        8,
+        7,
+        7,
+        6,
+        6,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        34,
+        31,
+        29,
+        27,
+        25,
+        23,
+        20,
+        19,
+        17,
+        16,
+        16,
+        15,
+        15,
+        14,
+        13,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11,
+        10,
+        10,
+        10,
+        10,
+        9,
+        9,
+        9,
+        9
+      ]
+    },
+    "skills/post-merge-audit/bin/completed-batch-audit-receipt-test.rb": {
+      "Metrics/AbcSize": [
+        53.85,
+        52.54,
+        44.01,
+        37.59,
+        37.59,
+        36,
+        35.79,
+        35.47,
+        33.38,
+        31.38,
+        30.46,
+        30.23,
+        29.55,
+        29.31,
+        29.17,
+        29.07,
+        28.86,
+        28.67,
+        28.65,
+        28.48,
+        28.23,
+        28.18,
+        27.96,
+        27.8,
+        26.93,
+        26.87,
+        25.96,
+        25.71,
+        25.16,
+        24.62,
+        24.37,
+        24.37,
+        24.35,
+        24.17,
+        23.79,
+        23.79,
+        23.79,
+        23.77,
+        23.32,
+        23.28,
+        23.26,
+        23.09,
+        22.02,
+        21.95,
+        21.95,
+        21.95,
+        21.95,
+        21.12,
+        20.88,
+        20.25,
+        20.25,
+        20.25,
+        19.95,
+        19.72,
+        19.31,
+        19.03,
+        18.47,
+        17.92,
+        17.23,
+        17.03
+      ],
+      "Metrics/BlockLength": [
+        153,
+        75,
+        70,
+        69,
+        57,
+        50,
+        49,
+        46,
+        46,
+        46,
+        46,
+        45,
+        44,
+        44,
+        44,
+        43,
+        42,
+        41,
+        41,
+        39,
+        38,
+        37,
+        35,
+        35,
+        34,
+        33,
+        33,
+        33,
+        32,
+        31,
+        31,
+        30,
+        30,
+        29,
+        29,
+        29,
+        28,
+        27,
+        27,
+        27,
+        27,
+        26,
+        26,
+        26,
+        26,
+        26,
+        26,
+        26
+      ],
+      "Metrics/ClassLength": [
+        3715
+      ],
+      "Metrics/CyclomaticComplexity": [
+        16,
+        8
+      ],
+      "Metrics/MethodLength": [
+        154,
+        88,
+        83,
+        77,
+        72,
+        71,
+        63,
+        59,
+        57,
+        52,
+        50,
+        48,
+        48,
+        48,
+        48,
+        47,
+        47,
+        46,
+        46,
+        45,
+        44,
+        44,
+        43,
+        43,
+        43,
+        42,
+        42,
+        41,
+        41,
+        41,
+        40,
+        40,
+        39,
+        37,
+        37,
+        36,
+        35,
+        35,
+        35,
+        34,
+        34,
+        33,
+        33,
+        32,
+        32,
+        32,
+        32,
+        31,
+        31,
+        31,
+        30,
+        30,
+        30,
+        29,
+        29,
+        29,
+        29,
+        29,
+        29,
+        28,
+        28,
+        28,
+        28,
+        28,
+        28,
+        28,
+        27,
+        27,
+        27,
+        25,
+        25,
+        24,
+        24,
+        23,
+        23,
+        22,
+        22,
+        20,
+        20,
+        20,
+        20,
+        19,
+        18,
+        17,
+        17,
+        16,
+        15,
+        12,
+        12,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        12,
+        9
+      ]
+    },
+    "skills/post-merge-audit/bin/completed-batch-publication-preflight": {
+      "Metrics/AbcSize": [
+        87.07,
+        77.88,
+        58.41,
+        55.74,
+        47.5,
+        45.19,
+        43.87,
+        42,
+        41.93,
+        41.79,
+        38.21,
+        37.5,
+        31.18,
+        27.68,
+        27.2,
+        25.98,
+        24.21,
+        23.79,
+        22.11,
+        21.28,
+        21.12,
+        19.65,
+        19,
+        18.06
+      ],
+      "Metrics/BlockLength": [
+        72,
+        66,
+        30
+      ],
+      "Metrics/CyclomaticComplexity": [
+        37,
+        33,
+        22,
+        19,
+        18,
+        18,
+        16,
+        15,
+        14,
+        14,
+        13,
+        12,
+        12,
+        12,
+        12,
+        10,
+        10,
+        10,
+        9,
+        9,
+        9,
+        9,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        90,
+        77,
+        68,
+        41,
+        39,
+        36,
+        35,
+        34,
+        34,
+        33,
+        33,
+        32,
+        26,
+        25,
+        23,
+        22,
+        19,
+        18,
+        18,
+        18,
+        18,
+        16,
+        15,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        1373
+      ],
+      "Metrics/ParameterLists": [
+        7,
+        6,
+        6,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        39,
+        34,
+        23,
+        20,
+        18,
+        18,
+        16,
+        16,
+        15,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        10,
+        10,
+        10,
+        9,
+        9,
+        9,
+        9
+      ]
+    },
+    "skills/post-merge-audit/bin/completed-batch-publication-preflight-test.rb": {
+      "Metrics/AbcSize": [
+        87.46,
+        50.29,
+        48.6,
+        46.69,
+        37.23,
+        36.4,
+        33.63,
+        33.12,
+        29.95,
+        28.16,
+        24.9,
+        24.88,
+        24.52,
+        24.37,
+        24.06,
+        23.96,
+        23.87,
+        23.79,
+        23.75,
+        23.6,
+        23.43,
+        22.29,
+        21.91,
+        21.54,
+        21.21,
+        21.05,
+        21,
+        21,
+        20.1,
+        20.02,
+        19.8,
+        18.81,
+        18.81,
+        18.14,
+        17.94,
+        17.58,
+        17.46,
+        17.46,
+        17.26,
+        17.2,
+        17.03
+      ],
+      "Metrics/BlockLength": [
+        92,
+        80,
+        49,
+        35,
+        27,
+        26
+      ],
+      "Metrics/ClassLength": [
+        1365
+      ],
+      "Metrics/CyclomaticComplexity": [
+        14
+      ],
+      "Metrics/MethodLength": [
+        94,
+        81,
+        50,
+        37,
+        35,
+        34,
+        34,
+        32,
+        29,
+        25,
+        25,
+        24,
+        23,
+        22,
+        21,
+        20,
+        20,
+        20,
+        19,
+        18,
+        17,
+        16,
+        16,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        15
+      ]
+    },
+    "skills/post-merge-audit/bin/post-merge-audit-policy-test.rb": {
+      "Metrics/AbcSize": [
+        22.23,
+        20.32
+      ],
+      "Metrics/BlockLength": [
+        38,
+        35
+      ],
+      "Metrics/ClassLength": [
+        420
+      ],
+      "Metrics/MethodLength": [
+        40,
+        40,
+        37,
+        23,
+        22,
+        18,
+        14
+      ]
+    },
+    "skills/post-merge-audit/bin/pr-check-completion-timing": {
+      "Metrics/AbcSize": [
+        39.62,
+        22.91,
+        19
+      ],
+      "Metrics/CyclomaticComplexity": [
+        13
+      ],
+      "Metrics/MethodLength": [
+        38,
+        15,
+        14,
+        14,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        169
+      ],
+      "Metrics/PerceivedComplexity": [
+        13
+      ]
+    },
+    "skills/post-merge-audit/bin/pr-check-completion-timing-test.rb": {
+      "Metrics/AbcSize": [
+        18.41,
+        18.41
+      ],
+      "Metrics/ClassLength": [
+        175
+      ],
+      "Metrics/MethodLength": [
+        26,
+        15,
+        14,
+        14,
+        13,
+        13,
+        12,
+        12,
+        12,
+        11
+      ]
+    },
+    "skills/pr-batch/bin/agent-coord-bounded": {
+      "Metrics/AbcSize": [
+        40.57
+      ],
+      "Metrics/ClassLength": [
+        154
+      ],
+      "Metrics/CyclomaticComplexity": [
+        14
+      ],
+      "Metrics/MethodLength": [
+        53,
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        14
+      ]
+    },
+    "skills/pr-batch/bin/agent-coord-bounded-test.rb": {
+      "Metrics/AbcSize": [
+        71.99,
+        36.35,
+        34.77,
+        30,
+        25.77,
+        21.63
+      ],
+      "Metrics/BlockLength": [
+        79,
+        65,
+        64,
+        33,
+        27,
+        27
+      ],
+      "Metrics/ClassLength": [
+        430
+      ],
+      "Metrics/CyclomaticComplexity": [
+        17
+      ],
+      "Metrics/MethodLength": [
+        80,
+        66,
+        34,
+        29,
+        28,
+        19,
+        17
+      ],
+      "Metrics/PerceivedComplexity": [
+        17
+      ]
+    },
+    "skills/pr-batch/bin/autonomous-merge-calibrate": {
+      "Metrics/AbcSize": [
+        25.51,
+        23.54
+      ],
+      "Metrics/CyclomaticComplexity": [
+        14,
+        12
+      ],
+      "Metrics/MethodLength": [
+        21,
+        18,
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        14,
+        12
+      ]
+    },
+    "skills/pr-batch/bin/autonomous-merge-calibrate-test.rb": {
+      "Metrics/AbcSize": [
+        54.93,
+        50.54,
+        48.47,
+        42.31,
+        39.06,
+        33.78,
+        33.62,
+        31.72,
+        31.11,
+        29.58,
+        28.9,
+        25.02,
+        24.52,
+        24.33,
+        23.9,
+        23.54,
+        23.02,
+        22.83,
+        22.38,
+        22.16,
+        21.84,
+        21.63,
+        20.4,
+        20.25,
+        19.24,
+        19
+      ],
+      "Metrics/BlockLength": [
+        55,
+        55,
+        54,
+        50,
+        47,
+        43,
+        37,
+        35,
+        34,
+        33,
+        32,
+        31,
+        30,
+        29,
+        27,
+        26
+      ],
+      "Metrics/ClassLength": [
+        1399
+      ],
+      "Metrics/CyclomaticComplexity": [
+        9
+      ],
+      "Metrics/MethodLength": [
+        61,
+        57,
+        57,
+        56,
+        54,
+        52,
+        50,
+        49,
+        48,
+        45,
+        44,
+        41,
+        39,
+        37,
+        36,
+        35,
+        34,
+        33,
+        33,
+        33,
+        32,
+        32,
+        31,
+        29,
+        29,
+        26,
+        25,
+        25,
+        23,
+        22,
+        21,
+        21,
+        17,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        7
+      ]
+    },
+    "skills/pr-batch/bin/autonomous-merge-closeout": {
+      "Metrics/AbcSize": [
+        129.6,
+        49.03,
+        27.31,
+        26.57,
+        17.58
+      ],
+      "Metrics/CyclomaticComplexity": [
+        62,
+        14,
+        9,
+        9,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        87,
+        28,
+        28,
+        26,
+        23,
+        16,
+        15,
+        13,
+        12
+      ],
+      "Metrics/ModuleLength": [
+        417
+      ],
+      "Metrics/ParameterLists": [
+        8
+      ],
+      "Metrics/PerceivedComplexity": [
+        63,
+        14,
+        9,
+        9,
+        9
+      ]
+    },
+    "skills/pr-batch/bin/autonomous-merge-closeout-test.rb": {
+      "Metrics/AbcSize": [
+        30.59,
+        27.29,
+        23.43,
+        21.02,
+        18.97,
+        18.38,
+        17.09,
+        17.09
+      ],
+      "Metrics/ClassLength": [
+        810
+      ],
+      "Metrics/MethodLength": [
+        52,
+        46,
+        42,
+        31,
+        29,
+        29,
+        28,
+        27,
+        26,
+        25,
+        22,
+        21,
+        21,
+        20,
+        19,
+        18,
+        17,
+        17,
+        17,
+        17,
+        15,
+        15,
+        15,
+        13,
+        13,
+        12,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        7
+      ]
+    },
+    "skills/pr-batch/bin/autonomous-merge-contract-test.rb": {
+      "Metrics/AbcSize": [
+        33.87,
+        24.23,
+        23.22,
+        19.67,
+        19.24,
+        19.21
+      ],
+      "Metrics/ClassLength": [
+        304
+      ],
+      "Metrics/CyclomaticComplexity": [
+        9
+      ],
+      "Metrics/MethodLength": [
+        22,
+        21,
+        21,
+        21,
+        17,
+        16,
+        15,
+        14,
+        13,
+        12,
+        11,
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        10
+      ]
+    },
+    "skills/pr-batch/bin/autonomous-merge-eligibility": {
+      "Metrics/MethodLength": [
+        26,
+        12
+      ]
+    },
+    "skills/pr-batch/bin/autonomous-merge-eligibility-test.rb": {
+      "Metrics/AbcSize": [
+        86.94,
+        46.1,
+        44.78,
+        41.24,
+        38.6,
+        36.14,
+        35.69,
+        35.47,
+        34.93,
+        34.93,
+        31.16,
+        30.68,
+        29.8,
+        27.6,
+        24.72,
+        24.04,
+        23.79,
+        23.19,
+        22.85,
+        22.56,
+        22.47,
+        22.36,
+        19.92,
+        19.31,
+        18.97,
+        18.97,
+        18.14,
+        18.03,
+        17.58,
+        17.09
+      ],
+      "Metrics/BlockLength": [
+        37,
+        31,
+        30,
+        28
+      ],
+      "Metrics/ClassLength": [
+        1713
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8
+      ],
+      "Metrics/MethodLength": [
+        89,
+        67,
+        54,
+        52,
+        46,
+        44,
+        40,
+        38,
+        34,
+        33,
+        31,
+        30,
+        30,
+        29,
+        29,
+        28,
+        27,
+        27,
+        26,
+        25,
+        23,
+        23,
+        22,
+        21,
+        21,
+        20,
+        20,
+        20,
+        19,
+        19,
+        19,
+        19,
+        18,
+        18,
+        18,
+        18,
+        17,
+        16,
+        16,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        10,
+        6,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        10
+      ]
+    },
+    "skills/pr-batch/bin/autonomous-merge-evidence-test.rb": {
+      "Metrics/AbcSize": [
+        50.72,
+        37.85,
+        37.34,
+        17.35
+      ],
+      "Metrics/ClassLength": [
+        478
+      ],
+      "Metrics/CyclomaticComplexity": [
+        12,
+        8
+      ],
+      "Metrics/MethodLength": [
+        50,
+        47,
+        38,
+        36,
+        27,
+        24,
+        22,
+        19,
+        18,
+        17,
+        16,
+        15,
+        15,
+        15,
+        14,
+        13
+      ],
+      "Metrics/PerceivedComplexity": [
+        9
+      ]
+    },
+    "skills/pr-batch/bin/batch-usage-receipt": {
+      "Metrics/AbcSize": [
+        133.5,
+        59.75,
+        51.71,
+        50.02,
+        47.01,
+        45.2,
+        40.46,
+        34.44,
+        32.16,
+        28.58,
+        22.02,
+        20.74,
+        19.65,
+        18.71,
+        17.72,
+        17.2
+      ],
+      "Metrics/BlockLength": [
+        145
+      ],
+      "Metrics/ClassLength": [
+        487,
+        263
+      ],
+      "Metrics/CyclomaticComplexity": [
+        60,
+        17,
+        17,
+        17,
+        14,
+        13,
+        10,
+        9,
+        8,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        170,
+        54,
+        52,
+        43,
+        38,
+        34,
+        32,
+        31,
+        26,
+        25,
+        25,
+        21,
+        15,
+        15,
+        13,
+        13,
+        12,
+        11,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        168
+      ],
+      "Metrics/PerceivedComplexity": [
+        63,
+        18,
+        17,
+        17,
+        14,
+        13,
+        10,
+        9,
+        9,
+        9
+      ]
+    },
+    "skills/pr-batch/bin/batch-usage-receipt-test.rb": {
+      "Metrics/AbcSize": [
+        83.49,
+        60.3,
+        52.77,
+        40.87,
+        40.84,
+        33.62,
+        29.41,
+        29.22,
+        28.23,
+        28,
+        25.1,
+        24.21,
+        23.87,
+        23.49,
+        23.02,
+        23.02,
+        22.83,
+        21.93,
+        20.47,
+        20.05,
+        19.92,
+        19.39,
+        19.31,
+        19.03,
+        18.87,
+        18.81,
+        17.92,
+        17.58,
+        17.35,
+        17.12,
+        17.03
+      ],
+      "Metrics/BlockLength": [
+        58
+      ],
+      "Metrics/ClassLength": [
+        997
+      ],
+      "Metrics/CyclomaticComplexity": [
+        13,
+        10
+      ],
+      "Metrics/MethodLength": [
+        61,
+        53,
+        31,
+        28,
+        24,
+        24,
+        23,
+        22,
+        19,
+        18,
+        17,
+        17,
+        17,
+        16,
+        16,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        13,
+        10
+      ]
+    },
+    "skills/pr-batch/bin/coordination-declaration": {
+      "Metrics/AbcSize": [
+        93.84,
+        27.09
+      ],
+      "Metrics/BlockLength": [
+        73
+      ],
+      "Metrics/CyclomaticComplexity": [
+        30
+      ],
+      "Metrics/MethodLength": [
+        77,
+        26,
+        15,
+        14,
+        12,
+        11,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        248
+      ],
+      "Metrics/PerceivedComplexity": [
+        34
+      ]
+    },
+    "skills/pr-batch/bin/coordination-declaration-contract-test.rb": {
+      "Metrics/ClassLength": [
+        593
+      ],
+      "Metrics/MethodLength": [
+        18,
+        17,
+        16,
+        16,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        12
+      ]
+    },
+    "skills/pr-batch/bin/coordination-telemetry-contract-test.rb": {
+      "Metrics/AbcSize": [
+        24.52,
+        24.04,
+        22.85,
+        21.38,
+        20.74,
+        19.29,
+        17.38
+      ],
+      "Metrics/ClassLength": [
+        444
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8
+      ],
+      "Metrics/MethodLength": [
+        27,
+        27,
+        26,
+        23,
+        20,
+        20,
+        19,
+        18,
+        18,
+        17,
+        17,
+        17,
+        17,
+        16,
+        16,
+        15,
+        15,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        11,
+        11,
+        11
+      ]
+    },
+    "skills/pr-batch/bin/current-integration-evidence-test.rb": {
+      "Metrics/AbcSize": [
+        38.38,
+        37.34,
+        29.07,
+        19.42
+      ],
+      "Metrics/BlockLength": [
+        33
+      ],
+      "Metrics/ClassLength": [
+        409
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8
+      ],
+      "Metrics/MethodLength": [
+        35,
+        27,
+        23,
+        21,
+        21,
+        20,
+        15,
+        13,
+        12,
+        12,
+        12,
+        11
+      ]
+    },
+    "skills/pr-batch/bin/dependency-conflict-policy-contract-test.rb": {
+      "Metrics/AbcSize": [
+        24.74
+      ],
+      "Metrics/MethodLength": [
+        22
+      ]
+    },
+    "skills/pr-batch/bin/dispatcher-capability-preflight": {
+      "Metrics/AbcSize": [
+        44.49,
+        43.75,
+        41.01,
+        29.07,
+        22.72,
+        20.27,
+        19.34,
+        19.1,
+        18.03
+      ],
+      "Metrics/CyclomaticComplexity": [
+        23,
+        21,
+        20,
+        13,
+        11,
+        10,
+        10,
+        9,
+        9,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        28,
+        27,
+        23,
+        21,
+        20,
+        20,
+        19,
+        18,
+        18,
+        18,
+        13,
+        13,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        6,
+        6,
+        6,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        23,
+        21,
+        21,
+        13,
+        11,
+        11,
+        10,
+        9,
+        9
+      ]
+    },
+    "skills/pr-batch/bin/dispatcher-capability-preflight-test.rb": {
+      "Metrics/AbcSize": [
+        37.42,
+        36.19,
+        32.09,
+        30.36,
+        30.08,
+        27,
+        25.3,
+        24.04,
+        23.79,
+        21.56,
+        21.38,
+        21.21,
+        20.62,
+        20.25,
+        20.22,
+        19.65,
+        18.97,
+        18.44,
+        18.25,
+        17.46,
+        17.09
+      ],
+      "Metrics/ClassLength": [
+        695
+      ],
+      "Metrics/MethodLength": [
+        43,
+        42,
+        28,
+        26,
+        24,
+        23,
+        23,
+        20,
+        20,
+        19,
+        18,
+        17,
+        17,
+        16,
+        15,
+        15,
+        14,
+        12,
+        12,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        6
+      ]
+    },
+    "skills/pr-batch/bin/file-expansion-contract-test.rb": {
+      "Metrics/AbcSize": [
+        18.11
+      ]
+    },
+    "skills/pr-batch/bin/goal-completion-contract-test.rb": {
+      "Metrics/AbcSize": [
+        154,
+        67.39,
+        54.67,
+        41.73,
+        39.32,
+        32.53,
+        29.48,
+        28.86,
+        27.17,
+        26.31,
+        24.56,
+        24.35,
+        24.12,
+        23.85,
+        22.65,
+        21.56,
+        20.71,
+        20.4,
+        18.49,
+        18.36,
+        17.72,
+        17.2
+      ],
+      "Metrics/ClassLength": [
+        2493
+      ],
+      "Metrics/CyclomaticComplexity": [
+        23,
+        10
+      ],
+      "Metrics/MethodLength": [
+        206,
+        117,
+        107,
+        84,
+        70,
+        56,
+        55,
+        53,
+        49,
+        42,
+        38,
+        32,
+        29,
+        28,
+        27,
+        25,
+        24,
+        22,
+        21,
+        21,
+        21,
+        20,
+        20,
+        20,
+        19,
+        19,
+        19,
+        19,
+        18,
+        18,
+        18,
+        17,
+        17,
+        17,
+        16,
+        16,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        24,
+        10
+      ]
+    },
+    "skills/pr-batch/bin/goal-state-change-monitor": {
+      "Metrics/AbcSize": [
+        79.18,
+        33.84,
+        18.89,
+        17.8
+      ],
+      "Metrics/BlockLength": [
+        355
+      ],
+      "Metrics/CyclomaticComplexity": [
+        39,
+        16,
+        8
+      ],
+      "Metrics/MethodLength": [
+        45,
+        14,
+        12
+      ],
+      "Metrics/PerceivedComplexity": [
+        39,
+        16
+      ]
+    },
+    "skills/pr-batch/bin/goal-state-change-monitor-test.rb": {
+      "Metrics/AbcSize": [
+        61.1,
+        59.46,
+        51.23,
+        50.29,
+        49.2,
+        49.19,
+        48.84,
+        47.81,
+        44.27,
+        43.46,
+        42.91,
+        42.15,
+        41.19,
+        39.86,
+        39.22,
+        38.2,
+        37.76,
+        37.7,
+        36.06,
+        36.06,
+        34.54,
+        34.5,
+        33.54,
+        32.98,
+        32.71,
+        32.7,
+        32.31,
+        32.3,
+        31.32,
+        30.1,
+        29.8,
+        29.09,
+        28.64,
+        27.73,
+        27.73,
+        26.93,
+        25.94,
+        25.94,
+        25.1,
+        25.08,
+        25.08,
+        23.41,
+        22.85,
+        22.47,
+        20.81,
+        20.62,
+        20.62,
+        20.62,
+        20.35,
+        20.27,
+        19.95,
+        17.46
+      ],
+      "Metrics/BlockLength": [
+        52,
+        48,
+        46,
+        44,
+        43,
+        41,
+        41,
+        41,
+        39,
+        38,
+        38,
+        37,
+        37,
+        37,
+        36,
+        36,
+        35,
+        35,
+        34,
+        33,
+        33,
+        33,
+        32,
+        31,
+        30,
+        29,
+        29,
+        29,
+        28,
+        28,
+        27,
+        26,
+        26,
+        26,
+        26
+      ],
+      "Metrics/ClassLength": [
+        2083
+      ],
+      "Metrics/MethodLength": [
+        68,
+        62,
+        54,
+        51,
+        50,
+        49,
+        48,
+        47,
+        46,
+        46,
+        43,
+        43,
+        43,
+        43,
+        41,
+        40,
+        40,
+        39,
+        38,
+        38,
+        36,
+        35,
+        35,
+        35,
+        34,
+        34,
+        32,
+        31,
+        29,
+        29,
+        28,
+        28,
+        28,
+        27,
+        27,
+        27,
+        27,
+        26,
+        26,
+        26,
+        25,
+        25,
+        25,
+        25,
+        24,
+        24,
+        23,
+        23,
+        21,
+        21,
+        21,
+        20,
+        20,
+        20,
+        15,
+        15,
+        14,
+        13,
+        13
+      ]
+    },
+    "skills/pr-batch/bin/hosted-qa-gate-contract-test.rb": {
+      "Metrics/AbcSize": [
+        51.63,
+        19.26,
+        19.13,
+        18.55
+      ],
+      "Metrics/BlockLength": [
+        49
+      ],
+      "Metrics/ClassLength": [
+        171
+      ],
+      "Metrics/MethodLength": [
+        51,
+        19,
+        17,
+        16,
+        14,
+        11
+      ]
+    },
+    "skills/pr-batch/bin/hosted-qa-readiness": {
+      "Metrics/AbcSize": [
+        172.9,
+        88.18,
+        61.14,
+        30.15,
+        19.03,
+        17.49
+      ],
+      "Metrics/CyclomaticComplexity": [
+        55,
+        18,
+        14,
+        13,
+        12
+      ],
+      "Metrics/MethodLength": [
+        257,
+        70,
+        67,
+        32,
+        14,
+        12,
+        11,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        656
+      ],
+      "Metrics/ParameterLists": [
+        6,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        55,
+        18,
+        14,
+        12,
+        12
+      ]
+    },
+    "skills/pr-batch/bin/hosted-qa-readiness-test.rb": {
+      "Metrics/AbcSize": [
+        61.86,
+        56.79,
+        50.55,
+        49.41,
+        34.54,
+        29.55,
+        28.46,
+        28.25,
+        27.2,
+        25.5,
+        23.09,
+        22.45,
+        21.86,
+        20.9,
+        20.62,
+        19.92,
+        19.92,
+        19,
+        18.97,
+        18.89,
+        18.68,
+        18.41,
+        18.41,
+        18.03,
+        17.72,
+        17.72,
+        17.12,
+        17.09,
+        17.09,
+        17.09,
+        17.09,
+        17.09
+      ],
+      "Metrics/BlockLength": [
+        83,
+        82,
+        60,
+        43,
+        42,
+        41,
+        39,
+        37,
+        36,
+        35,
+        28,
+        28
+      ],
+      "Metrics/ClassLength": [
+        1529
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8
+      ],
+      "Metrics/MethodLength": [
+        84,
+        83,
+        61,
+        60,
+        53,
+        44,
+        44,
+        42,
+        40,
+        38,
+        37,
+        36,
+        30,
+        29,
+        25,
+        24,
+        23,
+        23,
+        23,
+        22,
+        20,
+        19,
+        19,
+        19,
+        19,
+        19,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        17,
+        17,
+        17,
+        17,
+        17,
+        16,
+        16,
+        15,
+        15,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        6,
+        6
+      ]
+    },
+    "skills/pr-batch/bin/integration-closeout-contract-test.rb": {
+      "Metrics/AbcSize": [
+        24.02,
+        19.92,
+        18.06
+      ],
+      "Metrics/ClassLength": [
+        229
+      ],
+      "Metrics/MethodLength": [
+        30,
+        23,
+        22,
+        19,
+        16,
+        13,
+        13,
+        12
+      ]
+    },
+    "skills/pr-batch/bin/merge-assurance": {
+      "Metrics/AbcSize": [
+        113,
+        87.7,
+        79.04,
+        69.89,
+        66.8,
+        61.99,
+        61.46,
+        60.7,
+        58.67,
+        49.98,
+        43.29,
+        43.28,
+        39.92,
+        36.69,
+        35.57,
+        34.89,
+        31.87,
+        31.26,
+        29.97,
+        29.07,
+        28.23,
+        28.16,
+        27.68,
+        25.2,
+        23.87,
+        23.54,
+        23.37,
+        20.81,
+        20.1,
+        19.26,
+        18.38,
+        18.38,
+        18.14,
+        17.55,
+        17.52
+      ],
+      "Metrics/BlockLength": [
+        32
+      ],
+      "Metrics/ClassLength": [
+        840
+      ],
+      "Metrics/CyclomaticComplexity": [
+        46,
+        32,
+        30,
+        28,
+        27,
+        26,
+        24,
+        23,
+        22,
+        17,
+        17,
+        16,
+        15,
+        15,
+        15,
+        15,
+        14,
+        13,
+        12,
+        12,
+        11,
+        11,
+        10,
+        10,
+        9,
+        9,
+        9,
+        9,
+        9,
+        9,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        95,
+        78,
+        67,
+        59,
+        57,
+        53,
+        50,
+        48,
+        45,
+        45,
+        40,
+        38,
+        31,
+        31,
+        30,
+        29,
+        28,
+        27,
+        26,
+        26,
+        24,
+        23,
+        20,
+        20,
+        19,
+        19,
+        18,
+        18,
+        17,
+        17,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        1263
+      ],
+      "Metrics/ParameterLists": [
+        7,
+        7,
+        6,
+        6,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        48,
+        33,
+        30,
+        27,
+        27,
+        26,
+        24,
+        23,
+        22,
+        17,
+        17,
+        17,
+        16,
+        16,
+        15,
+        15,
+        14,
+        13,
+        12,
+        12,
+        12,
+        11,
+        10,
+        10,
+        10,
+        10,
+        10,
+        9,
+        9
+      ]
+    },
+    "skills/pr-batch/bin/merge-assurance-test.rb": {
+      "Metrics/AbcSize": [
+        81.33,
+        77.52,
+        74.44,
+        59.14,
+        51.63,
+        48.09,
+        47.48,
+        44.01,
+        37.42,
+        37.12,
+        34.6,
+        34.54,
+        33.11,
+        31.03,
+        30.15,
+        29.58,
+        29.56,
+        29.56,
+        29.15,
+        28.88,
+        28.5,
+        27.89,
+        27.89,
+        27.87,
+        27.31,
+        26.98,
+        26.02,
+        25.57,
+        25.08,
+        24.78,
+        24.54,
+        24.52,
+        23.69,
+        23.54,
+        23,
+        22.65,
+        22.56,
+        22,
+        21.59,
+        21.31,
+        20.62,
+        20.47,
+        20.05,
+        19.95,
+        19.95,
+        19.7,
+        19.42,
+        19.34,
+        19.1,
+        19.03,
+        18.84,
+        18.79,
+        18.68,
+        18.38,
+        18.36,
+        18.28,
+        18.11,
+        18.06,
+        18.03,
+        18.03,
+        17.94,
+        17.26,
+        17.12,
+        17.09,
+        17.09
+      ],
+      "Metrics/BlockLength": [
+        96,
+        91,
+        72,
+        59,
+        58,
+        57,
+        52,
+        52,
+        46,
+        46,
+        45,
+        45,
+        43,
+        42,
+        40,
+        37,
+        28,
+        26
+      ],
+      "Metrics/ClassLength": [
+        4378
+      ],
+      "Metrics/CyclomaticComplexity": [
+        11,
+        10,
+        10,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        99,
+        92,
+        73,
+        64,
+        61,
+        60,
+        58,
+        58,
+        55,
+        53,
+        52,
+        49,
+        49,
+        48,
+        48,
+        48,
+        46,
+        45,
+        45,
+        45,
+        44,
+        43,
+        43,
+        42,
+        40,
+        40,
+        40,
+        40,
+        40,
+        39,
+        38,
+        38,
+        38,
+        38,
+        37,
+        35,
+        35,
+        35,
+        35,
+        34,
+        34,
+        34,
+        33,
+        33,
+        32,
+        31,
+        30,
+        30,
+        29,
+        29,
+        28,
+        28,
+        28,
+        27,
+        27,
+        27,
+        26,
+        26,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        24,
+        24,
+        24,
+        23,
+        23,
+        23,
+        23,
+        23,
+        23,
+        23,
+        22,
+        22,
+        22,
+        21,
+        21,
+        21,
+        21,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        19,
+        18,
+        18,
+        18,
+        18,
+        18,
+        17,
+        17,
+        16,
+        16,
+        16,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        9,
+        6,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        11,
+        10,
+        10
+      ]
+    },
+    "skills/pr-batch/bin/model-routing-contract-test.rb": {
+      "Metrics/AbcSize": [
+        67.79,
+        30.36,
+        25.63,
+        24.1,
+        23.85,
+        22.14,
+        21.24,
+        18.41,
+        18.14,
+        17.92
+      ],
+      "Metrics/BlockLength": [
+        61
+      ],
+      "Metrics/ClassLength": [
+        994
+      ],
+      "Metrics/CyclomaticComplexity": [
+        25,
+        11,
+        10,
+        9,
+        8,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        363,
+        128,
+        77,
+        44,
+        43,
+        26,
+        24,
+        22,
+        22,
+        22,
+        22,
+        20,
+        19,
+        17,
+        16,
+        16,
+        15,
+        15,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        11,
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        27,
+        11,
+        11,
+        11
+      ]
+    },
+    "skills/pr-batch/bin/pr-body-human-first-contract-test.rb": {
+      "Metrics/AbcSize": [
+        46.88
+      ],
+      "Metrics/MethodLength": [
+        45
+      ]
+    },
+    "skills/pr-batch/bin/pr-ci-readiness": {
+      "Metrics/AbcSize": [
+        103,
+        53.16,
+        51.2,
+        42.78,
+        36.73,
+        36.15,
+        35.24,
+        32.82,
+        32.33,
+        31.14,
+        27.77,
+        25.81,
+        24.45,
+        23.6,
+        23.17,
+        22.83,
+        22.23,
+        22.23,
+        21.4,
+        19.92,
+        19.67,
+        19.26,
+        18.17
+      ],
+      "Metrics/ClassLength": [
+        915
+      ],
+      "Metrics/CyclomaticComplexity": [
+        26,
+        23,
+        20,
+        14,
+        14,
+        14,
+        14,
+        13,
+        12,
+        11,
+        11,
+        11,
+        10,
+        10,
+        10,
+        9,
+        9,
+        8
+      ],
+      "Metrics/MethodLength": [
+        115,
+        67,
+        50,
+        31,
+        29,
+        28,
+        28,
+        28,
+        25,
+        25,
+        25,
+        24,
+        24,
+        23,
+        23,
+        21,
+        21,
+        20,
+        19,
+        17,
+        17,
+        17,
+        15,
+        14,
+        13,
+        13,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        313
+      ],
+      "Metrics/ParameterLists": [
+        12,
+        8,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        30,
+        23,
+        21,
+        15,
+        14,
+        14,
+        14,
+        14,
+        12,
+        11,
+        11,
+        11,
+        10,
+        10,
+        9,
+        9
+      ]
+    },
+    "skills/pr-batch/bin/pr-ci-readiness-test.rb": {
+      "Metrics/AbcSize": [
+        78.24,
+        53.54,
+        50.97,
+        45.88,
+        45.32,
+        42,
+        33.2,
+        32.3,
+        31.06,
+        29.22,
+        25.81,
+        25.55,
+        25.5,
+        25.2,
+        25.18,
+        25.1,
+        24.04,
+        23.79,
+        23.26,
+        22.56,
+        22.14,
+        22.14,
+        21.21,
+        20.62,
+        20.62,
+        19.95,
+        19.72,
+        19.26,
+        18.79,
+        18.79,
+        18.38,
+        17.89,
+        17.75
+      ],
+      "Metrics/BlockLength": [
+        29
+      ],
+      "Metrics/ClassLength": [
+        3036,
+        422
+      ],
+      "Metrics/CyclomaticComplexity": [
+        24,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        210,
+        84,
+        82,
+        69,
+        68,
+        64,
+        64,
+        60,
+        58,
+        54,
+        51,
+        51,
+        49,
+        49,
+        46,
+        46,
+        46,
+        45,
+        42,
+        42,
+        41,
+        41,
+        40,
+        37,
+        37,
+        35,
+        35,
+        34,
+        33,
+        33,
+        32,
+        32,
+        31,
+        31,
+        30,
+        29,
+        28,
+        27,
+        26,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        24,
+        24,
+        23,
+        23,
+        23,
+        23,
+        22,
+        22,
+        21,
+        21,
+        21,
+        20,
+        20,
+        20,
+        20,
+        19,
+        19,
+        19,
+        19,
+        19,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        17,
+        17,
+        16,
+        16,
+        15,
+        14,
+        14,
+        14,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        24,
+        22
+      ],
+      "Metrics/PerceivedComplexity": [
+        35,
+        9
+      ]
+    },
+    "skills/pr-batch/bin/pr-merge-submit": {
+      "Metrics/AbcSize": [
+        56.34,
+        51.82,
+        51.67,
+        47.6,
+        40.36,
+        38.38,
+        36.93,
+        34.84,
+        34.7,
+        33.12,
+        32.88,
+        31.8,
+        31.03,
+        30.02,
+        27.22,
+        26.93,
+        25.94,
+        25.4,
+        23.37,
+        21.77,
+        21.75,
+        21.05,
+        20.64,
+        20.27,
+        19.95,
+        18.28,
+        18.03
+      ],
+      "Metrics/ClassLength": [
+        1440
+      ],
+      "Metrics/CyclomaticComplexity": [
+        24,
+        21,
+        15,
+        14,
+        14,
+        13,
+        12,
+        11,
+        11,
+        11,
+        11,
+        10,
+        10,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        68,
+        56,
+        56,
+        49,
+        46,
+        39,
+        33,
+        33,
+        30,
+        30,
+        30,
+        28,
+        27,
+        27,
+        26,
+        25,
+        25,
+        25,
+        21,
+        20,
+        18,
+        17,
+        17,
+        17,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        13,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        10
+      ],
+      "Metrics/PerceivedComplexity": [
+        25,
+        22,
+        15,
+        15,
+        14,
+        13,
+        12,
+        12,
+        11,
+        11,
+        11,
+        10,
+        10
+      ]
+    },
+    "skills/pr-batch/bin/pr-merge-submit-test.rb": {
+      "Metrics/AbcSize": [
+        93.34,
+        76.22,
+        69.75,
+        56.12,
+        48.47,
+        39.47,
+        39.46,
+        37.11,
+        34.41,
+        28.28,
+        27.96,
+        27.53,
+        25.71,
+        24.72,
+        22.14,
+        21.61,
+        21.59,
+        21.59,
+        19.92,
+        19.67,
+        19.44,
+        19.34,
+        19.24,
+        18.63,
+        18.44,
+        17.46,
+        17.09
+      ],
+      "Metrics/BlockLength": [
+        93,
+        80,
+        52,
+        43
+      ],
+      "Metrics/ClassLength": [
+        2365
+      ],
+      "Metrics/CyclomaticComplexity": [
+        20,
+        19,
+        19
+      ],
+      "Metrics/MethodLength": [
+        255,
+        195,
+        95,
+        82,
+        74,
+        54,
+        45,
+        38,
+        29,
+        26,
+        25,
+        24,
+        24,
+        22,
+        21,
+        21,
+        20,
+        19,
+        19,
+        18,
+        17,
+        17,
+        17,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        25,
+        11,
+        10,
+        9,
+        8
+      ],
+      "Metrics/PerceivedComplexity": [
+        21,
+        16,
+        10
+      ]
+    },
+    "skills/pr-batch/bin/pr-security-preflight": {
+      "Metrics/AbcSize": [
+        44.15,
+        44.01,
+        37.07,
+        36.46,
+        32.06,
+        31.92,
+        29.14,
+        24.23,
+        24.1,
+        22.14,
+        20.98,
+        19.34,
+        19.1,
+        18.87,
+        18.81,
+        18.68,
+        18.55,
+        17.46,
+        17.29
+      ],
+      "Metrics/BlockLength": [
+        47,
+        31,
+        30
+      ],
+      "Metrics/CyclomaticComplexity": [
+        18,
+        12,
+        12,
+        11,
+        10,
+        10,
+        10,
+        10,
+        9,
+        9,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        75,
+        54,
+        50,
+        49,
+        40,
+        29,
+        25,
+        24,
+        21,
+        21,
+        20,
+        19,
+        18,
+        18,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        11,
+        7,
+        7,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        17,
+        13,
+        12,
+        11,
+        10,
+        10,
+        10,
+        10,
+        9,
+        9
+      ]
+    },
+    "skills/pr-batch/bin/pr-security-preflight-test.rb": {
+      "Metrics/AbcSize": [
+        55.15,
+        51.9,
+        30.46,
+        27.07,
+        25.96,
+        24.1,
+        22.09,
+        21.02,
+        19.7,
+        19.26,
+        18.79,
+        17.89,
+        17.89,
+        17.89,
+        17.46,
+        17.09
+      ],
+      "Metrics/BlockLength": [
+        41,
+        37,
+        30,
+        28,
+        28,
+        28,
+        27,
+        27,
+        26,
+        26
+      ],
+      "Metrics/ClassLength": [
+        3278
+      ],
+      "Metrics/CyclomaticComplexity": [
+        15
+      ],
+      "Metrics/MethodLength": [
+        640,
+        45,
+        42,
+        39,
+        32,
+        30,
+        30,
+        30,
+        29,
+        29,
+        28,
+        28,
+        26,
+        26,
+        26,
+        25,
+        25,
+        25,
+        25,
+        24,
+        24,
+        23,
+        23,
+        23,
+        23,
+        23,
+        22,
+        22,
+        22,
+        22,
+        22,
+        22,
+        21,
+        21,
+        21,
+        21,
+        21,
+        21,
+        21,
+        21,
+        21,
+        21,
+        21,
+        21,
+        21,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        20,
+        19,
+        19,
+        19,
+        19,
+        19,
+        19,
+        19,
+        19,
+        19,
+        19,
+        19,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        18,
+        17,
+        17,
+        17,
+        17,
+        17,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11,
+        11
+      ],
+      "Metrics/PerceivedComplexity": [
+        15
+      ]
+    },
+    "skills/pr-batch/bin/production-release-contract-test.rb": {
+      "Metrics/AbcSize": [
+        81.23,
+        42.43
+      ],
+      "Metrics/ClassLength": [
+        157
+      ],
+      "Metrics/MethodLength": [
+        73,
+        42,
+        12
+      ]
+    },
+    "skills/pr-batch/bin/review-wave-contract-test.rb": {
+      "Metrics/MethodLength": [
+        13,
+        13
+      ]
+    },
+    "skills/pr-batch/bin/security-floor-contract-test.rb": {
+      "Metrics/AbcSize": [
+        25.02,
+        20.1
+      ],
+      "Metrics/ClassLength": [
+        133
+      ],
+      "Metrics/MethodLength": [
+        49,
+        21,
+        19
+      ]
+    },
+    "skills/pr-batch/bin/single_target_entrypoint_test.rb": {
+      "Metrics/BlockLength": [
+        107
+      ]
+    },
+    "skills/pr-batch/bin/stage-dependency-gate": {
+      "Metrics/AbcSize": [
+        68.69,
+        46.59
+      ],
+      "Metrics/BlockLength": [
+        123,
+        98
+      ],
+      "Metrics/CyclomaticComplexity": [
+        25,
+        19,
+        8
+      ],
+      "Metrics/MethodLength": [
+        37,
+        20
+      ],
+      "Metrics/PerceivedComplexity": [
+        25,
+        19
+      ]
+    },
+    "skills/pr-batch/bin/stage-dependency-gate-test.rb": {
+      "Metrics/AbcSize": [
+        89.49,
+        83.1,
+        49.89,
+        24.68,
+        22.67,
+        22.29,
+        21.59,
+        21.47,
+        19.92,
+        18.36,
+        18.03,
+        17.72,
+        17.58,
+        17.35,
+        17.35
+      ],
+      "Metrics/BlockLength": [
+        42,
+        41
+      ],
+      "Metrics/ClassLength": [
+        1177
+      ],
+      "Metrics/CyclomaticComplexity": [
+        18,
+        15
+      ],
+      "Metrics/MethodLength": [
+        55,
+        50,
+        47,
+        44,
+        41,
+        39,
+        39,
+        35,
+        34,
+        31,
+        31,
+        30,
+        28,
+        27,
+        27,
+        27,
+        21,
+        21,
+        21,
+        21,
+        20,
+        20,
+        20,
+        19,
+        18,
+        18,
+        18,
+        18,
+        17,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        13,
+        12
+      ],
+      "Metrics/PerceivedComplexity": [
+        19,
+        16
+      ]
+    },
+    "skills/pr-batch/bin/stale-assignment-sweep": {
+      "Metrics/AbcSize": [
+        47.8,
+        45.96,
+        24.29,
+        22.98,
+        21.21,
+        20.02,
+        18.14,
+        17.38,
+        17.23
+      ],
+      "Metrics/BlockLength": [
+        37
+      ],
+      "Metrics/ClassLength": [
+        630
+      ],
+      "Metrics/CyclomaticComplexity": [
+        15,
+        10,
+        8
+      ],
+      "Metrics/MethodLength": [
+        46,
+        41,
+        30,
+        21,
+        18,
+        17,
+        16,
+        16,
+        16,
+        14,
+        14,
+        13,
+        12,
+        12
+      ],
+      "Metrics/ParameterLists": [
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        15,
+        10,
+        9
+      ]
+    },
+    "skills/pr-batch/bin/stale-assignment-sweep-test.rb": {
+      "Metrics/AbcSize": [
+        36,
+        33.12,
+        27,
+        26.55,
+        24.6
+      ],
+      "Metrics/ClassLength": [
+        660
+      ],
+      "Metrics/CyclomaticComplexity": [
+        11
+      ],
+      "Metrics/MethodLength": [
+        58,
+        29,
+        23,
+        22,
+        20,
+        17,
+        15,
+        13,
+        12,
+        12
+      ],
+      "Metrics/ParameterLists": [
+        12
+      ],
+      "Metrics/PerceivedComplexity": [
+        11
+      ]
+    },
+    "skills/pr-batch/bin/target-membership-guard": {
+      "Metrics/MethodLength": [
+        23,
+        16,
+        15,
+        13,
+        12
+      ]
+    },
+    "skills/pr-batch/bin/target-membership-guard-test.rb": {
+      "Metrics/AbcSize": [
+        41.53,
+        30.69,
+        20.42,
+        20.42,
+        19.82,
+        17.58,
+        17.26
+      ],
+      "Metrics/BlockLength": [
+        35
+      ],
+      "Metrics/ClassLength": [
+        558
+      ],
+      "Metrics/MethodLength": [
+        37,
+        24,
+        23,
+        20,
+        20,
+        19,
+        18,
+        17,
+        16,
+        16,
+        14,
+        14,
+        13,
+        13,
+        13,
+        12,
+        12,
+        11,
+        11,
+        11
+      ]
+    },
+    "skills/pr-batch/bin/user-facing-coordination-contract-test.rb": {
+      "Metrics/AbcSize": [
+        53.38
+      ],
+      "Metrics/ClassLength": [
+        308
+      ],
+      "Metrics/MethodLength": [
+        64,
+        17,
+        14,
+        13,
+        12
+      ]
+    },
+    "skills/pr-batch/bin/worker-execution-contract-test.rb": {
+      "Metrics/ClassLength": [
+        118
+      ],
+      "Metrics/MethodLength": [
+        16,
+        16,
+        16,
+        14,
+        11
+      ]
+    },
+    "skills/pr-batch/bin/workflow-telemetry-report": {
+      "Metrics/AbcSize": [
+        37.91,
+        33.79,
+        32.71,
+        20.52,
+        20.52,
+        17.61
+      ],
+      "Metrics/CyclomaticComplexity": [
+        14
+      ],
+      "Metrics/MethodLength": [
+        40,
+        20,
+        19,
+        16,
+        16,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        268
+      ],
+      "Metrics/PerceivedComplexity": [
+        14
+      ]
+    },
+    "skills/pr-batch/bin/workflow-telemetry-report-test.rb": {
+      "Metrics/AbcSize": [
+        32.25,
+        29.88,
+        24.35,
+        21.19,
+        17.26
+      ],
+      "Metrics/ClassLength": [
+        337
+      ],
+      "Metrics/MethodLength": [
+        28,
+        27,
+        22,
+        20,
+        17,
+        14,
+        12,
+        11,
+        11,
+        11
+      ]
+    },
+    "skills/pr-batch/bin/writing-style-contract-test.rb": {
+      "Metrics/AbcSize": [
+        21.84
+      ],
+      "Metrics/ClassLength": [
+        108
+      ],
+      "Metrics/MethodLength": [
+        19,
+        15,
+        14,
+        13
+      ]
+    },
+    "skills/pr-batch/lib/autonomous_merge_calibration.rb": {
+      "Metrics/AbcSize": [
+        134.6,
+        75.56,
+        43.87,
+        41.12,
+        39.33,
+        38.72,
+        33.54,
+        31.5,
+        29.02,
+        24.78,
+        23.02,
+        20.86,
+        19.34,
+        17.49
+      ],
+      "Metrics/BlockLength": [
+        39
+      ],
+      "Metrics/CyclomaticComplexity": [
+        52,
+        19,
+        16,
+        14,
+        14,
+        11,
+        9,
+        9,
+        8,
+        8,
+        8
+      ],
+      "Metrics/MethodLength": [
+        74,
+        65,
+        45,
+        44,
+        38,
+        38,
+        29,
+        28,
+        24,
+        23,
+        23,
+        20,
+        16,
+        14,
+        12,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        639
+      ],
+      "Metrics/ParameterLists": [
+        8,
+        8,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        52,
+        19,
+        16,
+        15,
+        14,
+        11,
+        9,
+        9
+      ]
+    },
+    "skills/pr-batch/lib/autonomous_merge_decision.rb": {
+      "Metrics/AbcSize": [
+        32.53,
+        26.8,
+        24.17
+      ],
+      "Metrics/CyclomaticComplexity": [
+        14,
+        12,
+        12,
+        8
+      ],
+      "Metrics/MethodLength": [
+        26,
+        16
+      ],
+      "Metrics/ModuleLength": [
+        103
+      ],
+      "Metrics/PerceivedComplexity": [
+        14,
+        12,
+        12
+      ]
+    },
+    "skills/pr-batch/lib/autonomous_merge_evidence.rb": {
+      "Metrics/AbcSize": [
+        81.66,
+        33.39,
+        18.89,
+        17.94
+      ],
+      "Metrics/CyclomaticComplexity": [
+        28,
+        14,
+        9,
+        8
+      ],
+      "Metrics/MethodLength": [
+        79,
+        30,
+        15,
+        15,
+        13
+      ],
+      "Metrics/ModuleLength": [
+        231
+      ],
+      "Metrics/PerceivedComplexity": [
+        28,
+        15,
+        9
+      ]
+    },
+    "skills/pr-batch/lib/autonomous_merge_runtime_trust.rb": {
+      "Metrics/AbcSize": [
+        22.93,
+        18.97
+      ],
+      "Metrics/CyclomaticComplexity": [
+        10
+      ],
+      "Metrics/MethodLength": [
+        20,
+        19
+      ],
+      "Metrics/ModuleLength": [
+        142
+      ],
+      "Metrics/PerceivedComplexity": [
+        9
+      ]
+    },
+    "skills/pr-batch/lib/current_integration_evidence.rb": {
+      "Metrics/AbcSize": [
+        39.56,
+        35.57,
+        32.82,
+        29.93,
+        29.73,
+        29.43,
+        20.81,
+        19.34
+      ],
+      "Metrics/CyclomaticComplexity": [
+        18,
+        16,
+        16,
+        11,
+        10,
+        10,
+        10,
+        9
+      ],
+      "Metrics/MethodLength": [
+        50,
+        36,
+        30,
+        26,
+        22,
+        21,
+        20,
+        17,
+        17
+      ],
+      "Metrics/ModuleLength": [
+        370
+      ],
+      "Metrics/ParameterLists": [
+        11,
+        10,
+        9,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        18,
+        16,
+        16,
+        11,
+        11,
+        10,
+        10,
+        9
+      ]
+    },
+    "skills/pr-batch/lib/git_probe_env.rb": {
+      "Metrics/AbcSize": [
+        17.8
+      ],
+      "Metrics/MethodLength": [
+        21
+      ],
+      "Metrics/ModuleLength": [
+        128
+      ]
+    },
+    "skills/pr-batch/lib/hosted_qa_runtime_trust.rb": {
+      "Metrics/AbcSize": [
+        19.72,
+        18.49
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8
+      ],
+      "Metrics/MethodLength": [
+        17,
+        16
+      ],
+      "Metrics/ModuleLength": [
+        131
+      ]
+    },
+    "skills/pr-walkthrough/bin/pr-walkthrough-contract-test.rb": {
+      "Metrics/AbcSize": [
+        23.66
+      ],
+      "Metrics/MethodLength": [
+        30,
+        18,
+        14
+      ]
+    },
+    "skills/secure-github-actions/bin/secure-github-actions-contract-test.rb": {
+      "Metrics/AbcSize": [
+        50.14,
+        24.6,
+        22.14
+      ],
+      "Metrics/BlockLength": [
+        27
+      ],
+      "Metrics/ClassLength": [
+        220
+      ],
+      "Metrics/MethodLength": [
+        50,
+        29,
+        26,
+        15,
+        14
+      ]
+    },
+    "skills/secure-github-actions/bin/secure-github-actions-scan-test.rb": {
+      "Metrics/AbcSize": [
+        54.65,
+        44.42,
+        39.81,
+        39.31,
+        38.01,
+        35.79,
+        32.86,
+        32.02,
+        31.27,
+        30.82,
+        29.8,
+        29.48,
+        28.18,
+        28.02,
+        27.39,
+        26.57,
+        26.57,
+        26.55,
+        25.98,
+        25.65,
+        24.72,
+        23.41,
+        23.11,
+        22.85,
+        21.54,
+        21.54,
+        21.19,
+        21.19,
+        19.92,
+        19.67,
+        19.31,
+        19.31,
+        19.1,
+        18.81,
+        18.47,
+        18.38,
+        18.03,
+        18.03,
+        17.72,
+        17.72,
+        17.72,
+        17.09
+      ],
+      "Metrics/BlockLength": [
+        57,
+        47,
+        46,
+        37,
+        37,
+        35,
+        35,
+        32,
+        31,
+        29,
+        29,
+        27,
+        27,
+        27,
+        26,
+        26
+      ],
+      "Metrics/ClassLength": [
+        1929
+      ],
+      "Metrics/CyclomaticComplexity": [
+        10,
+        9
+      ],
+      "Metrics/MethodLength": [
+        58,
+        53,
+        46,
+        45,
+        42,
+        40,
+        35,
+        35,
+        34,
+        34,
+        33,
+        33,
+        30,
+        29,
+        29,
+        29,
+        29,
+        28,
+        27,
+        27,
+        26,
+        26,
+        26,
+        25,
+        25,
+        25,
+        25,
+        25,
+        25,
+        24,
+        24,
+        24,
+        23,
+        23,
+        22,
+        21,
+        21,
+        20,
+        20,
+        19,
+        19,
+        19,
+        18,
+        18,
+        18,
+        18,
+        18,
+        17,
+        17,
+        16,
+        16,
+        16,
+        15,
+        15,
+        15,
+        15,
+        15,
+        14,
+        14,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        11,
+        11
+      ]
+    },
+    "skills/secure-github-actions/lib/secure_github_actions_scanner.rb": {
+      "Metrics/AbcSize": [
+        68.19,
+        58.55,
+        57.14,
+        53.67,
+        52.81,
+        41.64,
+        34.03,
+        33,
+        31.08,
+        27.89,
+        18.49,
+        18.47
+      ],
+      "Metrics/BlockLength": [
+        33,
+        28
+      ],
+      "Metrics/ClassLength": [
+        662
+      ],
+      "Metrics/CyclomaticComplexity": [
+        29,
+        27,
+        24,
+        21,
+        18,
+        14,
+        13,
+        13,
+        12,
+        10,
+        10,
+        9,
+        8
+      ],
+      "Metrics/MethodLength": [
+        73,
+        61,
+        57,
+        35,
+        31,
+        27,
+        25,
+        23,
+        22,
+        21,
+        17,
+        15,
+        15,
+        14,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        7,
+        6,
+        6
+      ],
+      "Metrics/PerceivedComplexity": [
+        33,
+        27,
+        24,
+        21,
+        20,
+        14,
+        13,
+        13,
+        13,
+        10,
+        10,
+        10
+      ]
+    },
+    "skills/task-observer/bin/task-observer": {
+      "Metrics/AbcSize": [
+        45.35,
+        44.49,
+        39.67,
+        20.71
+      ],
+      "Metrics/CyclomaticComplexity": [
+        18,
+        12,
+        10
+      ],
+      "Metrics/MethodLength": [
+        34,
+        28,
+        25,
+        13
+      ],
+      "Metrics/ModuleLength": [
+        283
+      ],
+      "Metrics/PerceivedComplexity": [
+        18,
+        11,
+        10
+      ]
+    },
+    "skills/task-observer/bin/task-observer-test.rb": {
+      "Metrics/AbcSize": [
+        19.42,
+        18.06,
+        17.46
+      ],
+      "Metrics/ClassLength": [
+        545
+      ],
+      "Metrics/CyclomaticComplexity": [
+        8
+      ],
+      "Metrics/MethodLength": [
+        23,
+        20,
+        19,
+        19,
+        19,
+        18,
+        18,
+        14,
+        14,
+        14,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        13,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        12,
+        11,
+        11
+      ]
+    },
+    "skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-contract-test.rb": {
+      "Metrics/AbcSize": [
+        62.56,
+        58.31,
+        42.26,
+        37.76,
+        37.12,
+        31.42,
+        26.57,
+        25.08,
+        24.33,
+        22.8,
+        21.93,
+        19.7,
+        19.29,
+        19.1,
+        18.79,
+        17.46,
+        17.26,
+        17.26,
+        17.12
+      ],
+      "Metrics/BlockLength": [
+        41,
+        30
+      ],
+      "Metrics/ClassLength": [
+        872
+      ],
+      "Metrics/CyclomaticComplexity": [
+        17
+      ],
+      "Metrics/MethodLength": [
+        93,
+        56,
+        42,
+        41,
+        34,
+        33,
+        31,
+        31,
+        29,
+        29,
+        26,
+        24,
+        24,
+        22,
+        21,
+        20,
+        20,
+        19,
+        19,
+        19,
+        17,
+        17,
+        16,
+        15,
+        13,
+        12,
+        12,
+        11,
+        11
+      ],
+      "Metrics/ParameterLists": [
+        7
+      ],
+      "Metrics/PerceivedComplexity": [
+        17
+      ]
+    },
+    "skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-preflight": {
+      "Metrics/AbcSize": [
+        19.44,
+        19.1,
+        18.97,
+        18.06
+      ],
+      "Metrics/CyclomaticComplexity": [
+        11
+      ],
+      "Metrics/MethodLength": [
+        17,
+        15,
+        14,
+        11
+      ],
+      "Metrics/ModuleLength": [
+        212
+      ],
+      "Metrics/PerceivedComplexity": [
+        11
+      ]
+    },
+    "skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-preflight-test.rb": {
+      "Metrics/AbcSize": [
+        37.39,
+        26.15,
+        24.72,
+        20.62,
+        17.46,
+        17.38
+      ],
+      "Metrics/ClassLength": [
+        517
+      ],
+      "Metrics/CyclomaticComplexity": [
+        10
+      ],
+      "Metrics/MethodLength": [
+        51,
+        36,
+        32,
+        31,
+        31,
+        26,
+        25,
+        24,
+        22,
+        22,
+        21,
+        20,
+        17,
+        17,
+        16,
+        15,
+        15,
+        15,
+        14,
+        13
+      ],
+      "Metrics/ParameterLists": [
+        9
+      ],
+      "Metrics/PerceivedComplexity": [
+        10
+      ]
+    },
+    "skills/update-changelog/bin/changelog-merged-prs": {
+      "Metrics/AbcSize": [
+        19.95
+      ],
+      "Metrics/ClassLength": [
+        144
+      ],
+      "Metrics/CyclomaticComplexity": [
+        9,
+        8
+      ],
+      "Metrics/MethodLength": [
+        20,
+        16
+      ],
+      "Metrics/ModuleLength": [
+        110
+      ]
+    },
+    "skills/update-changelog/bin/changelog-merged-prs-test.rb": {
+      "Metrics/AbcSize": [
+        24.68,
+        17.03
+      ],
+      "Metrics/ClassLength": [
+        192
+      ],
+      "Metrics/MethodLength": [
+        12,
+        11,
+        11,
+        11
+      ]
+    },
+    "test/agent_doctor/install_ownership_test.rb": {
+      "Metrics/AbcSize": [
+        27.89
+      ],
+      "Metrics/MethodLength": [
+        17
+      ]
+    },
+    "test/agent_doctor/launcher_test.rb": {
+      "Metrics/AbcSize": [
+        24.17,
+        24.06,
+        19.92,
+        17.49
+      ],
+      "Metrics/ClassLength": [
+        109
+      ],
+      "Metrics/MethodLength": [
+        20,
+        17,
+        14,
+        13,
+        13
+      ]
+    },
+    "test/agent_doctor/orchestrator_trust_test.rb": {
+      "Metrics/AbcSize": [
+        31.87,
+        21.28,
+        20.71,
+        19.8,
+        19.65,
+        19.42,
+        18.11
+      ],
+      "Metrics/ClassLength": [
+        292
+      ],
+      "Metrics/MethodLength": [
+        27,
+        16,
+        16,
+        14,
+        13,
+        12,
+        11,
+        11,
+        11,
+        11,
+        11
+      ]
+    },
+    "test/agent_doctor/process_runner_test.rb": {
+      "Metrics/AbcSize": [
+        17.12
+      ],
+      "Metrics/ClassLength": [
+        177
+      ],
+      "Metrics/MethodLength": [
+        25,
+        23,
+        14,
+        12,
+        11
+      ]
+    },
+    "test/agent_doctor/sanitizer_test.rb": {
+      "Metrics/ClassLength": [
+        115
+      ],
+      "Metrics/MethodLength": [
+        15,
+        12,
+        12
+      ]
+    },
+    "test/agent_doctor/source_checks_test.rb": {
+      "Metrics/AbcSize": [
+        25.96,
+        25.2,
+        19.92,
+        19.31,
+        18.97,
+        18.68
+      ],
+      "Metrics/ClassLength": [
+        246
+      ],
+      "Metrics/MethodLength": [
+        24,
+        17,
+        15,
+        14,
+        14,
+        14,
+        13,
+        13,
+        12,
+        12
+      ]
+    },
+    "test/agent_doctor/stack_cli_integration_test.rb": {
+      "Metrics/AbcSize": [
+        18.14,
+        17.72,
+        17.38
+      ],
+      "Metrics/ClassLength": [
+        167
+      ],
+      "Metrics/MethodLength": [
+        16,
+        14,
+        14
+      ]
+    },
+    "test/agent_doctor/stack_cli_test.rb": {
+      "Metrics/MethodLength": [
+        11
+      ]
+    },
+    "test/agent_doctor/workflows_cli_integration_test.rb": {
+      "Metrics/AbcSize": [
+        17.58
+      ],
+      "Metrics/ClassLength": [
+        106
+      ],
+      "Metrics/MethodLength": [
+        22,
+        15,
+        14
+      ]
+    },
+    "test/agent_doctor/workflows_component_test.rb": {
+      "Metrics/ClassLength": [
+        102
+      ],
+      "Metrics/MethodLength": [
+        16,
+        15,
+        14,
+        12
+      ]
+    }
+  }
+}

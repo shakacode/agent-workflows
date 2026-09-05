@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "open3"
+require_relative "ruby_file_surface"
 
 ROOT = File.expand_path("..", __dir__)
 VERSIONS = {
@@ -24,16 +25,36 @@ class LintRunner
   def run
     Dir.chdir(ROOT)
     files = tracked_files
-    commands(files).each do |tool, arguments|
-      check_version!(tool)
-      puts "== #{tool} #{VERSIONS.fetch(tool)} =="
-      return 1 unless system(tool, *arguments)
-    end
+    metrics_baseline_passed = check_metrics_baseline
+    return 1 unless run_commands(files)
+    return 1 unless metrics_baseline_passed
+
     puts "PASS agent-workflows lint"
     0
   end
 
   private
+
+  def run_commands(files)
+    commands(files).each do |tool, arguments|
+      check_version!(tool)
+      puts "== #{tool} #{VERSIONS.fetch(tool)} =="
+      return false unless system(tool, *arguments)
+    end
+    true
+  end
+
+  def check_metrics_baseline
+    check_version!("rubocop")
+    puts "== rubocop metrics baseline =="
+    result = system(File.join(ROOT, "bin/rubocop-metrics-baseline"), "check")
+    result.nil? ? report_missing_metrics_helper : result
+  end
+
+  def report_missing_metrics_helper
+    warn "bin/rubocop-metrics-baseline is missing or not executable"
+    false
+  end
 
   def tracked_files
     stdout, stderr, status = Open3.capture3("git", "ls-files", "-z", "--")
@@ -64,10 +85,7 @@ class LintRunner
   end
 
   def ruby_file?(path)
-    return true if path.end_with?(".rb", ".rake", ".gemspec", ".ru")
-    return true if File.basename(path).match?(/\A(?:Gemfile|Rakefile)\z/)
-
-    first_line(path)&.match?(%r{\A#!\s*(?:/usr/bin/env\s+|/(?:usr/)?bin/)ruby(?:\s|\z)})
+    RubyFileSurface.ruby_file?(path)
   end
 
   def first_line(path)
