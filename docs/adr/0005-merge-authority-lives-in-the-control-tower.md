@@ -10,10 +10,11 @@ pack, what a CI-triggered agent may do, and what role platform rulesets play.
 
 On 2026-09-04 `shakacode/agent-workflows` had 82 open pull requests and
 `shakacode/agent-coordination` had 26. Over the previous seven days 125 PRs
-opened against 71 merged. Of the 48 ready PRs, 18 were clean with green
-checks and nothing blocking, 10 were blocked only by a stale CodeRabbit
-changes-requested object, and 11 conflicted with `main`. All 34 drafts were
-unclaimed and under two days old.
+opened against 71 merged. Of the 48 non-draft PRs, the recorded findings
+included 18 clean with green checks and nothing blocking, 10 blocked only by
+a stale CodeRabbit changes-requested object, and 11 conflicting with `main`.
+These findings are not a complete disposition of all 48 PRs. All 34 drafts
+were unclaimed and under two days old.
 
 The cause was structural, not review latency. Merge happened only inside a
 lane's integration closeout, so a PR whose lane ended had no merger. The
@@ -42,8 +43,10 @@ lane's integration closeout, so a PR whose lane ended had no merger. The
    repositories have no rulesets; there the gate scripts are the only merge
    guard, and a `human-attention:merge` card must state that checks are green
    at the exact head SHA. The human answers with an exact-head approval on the
-   PR and the tower submits the merge; the human never presses the merge
-   button.
+   PR and the tower submits the merge when eligibility and all other gates
+   permit it. If eligibility is `UNKNOWN`, automation stops for evidence repair;
+   ADR 0003's human manual-review and merge fallback remains available under
+   normal repository policy.
 
 ## Considered Options
 
@@ -63,10 +66,14 @@ lane's integration closeout, so a PR whose lane ended had no merger. The
 
 - The tower prompt must carry the authority grant explicitly; it cannot be
   inferred from repository policy.
-- `pr-merge-submit` with a fresh merge-assurance receipt stays the only merge
-  path, for agent and human decisions alike. A human approval is a PR comment
-  bound to the exact head, not a merge click. No GitHub auto-merge toggle and
-  no merge queue is enabled.
+- `pr-merge-submit` with a fresh merge-assurance receipt stays the only
+  agent-executed merge path, including after human approval. A human approval
+  for agent execution is a PR comment bound to the exact head. It cannot clear
+  `UNKNOWN`; ADR 0003 separately permits a human to review and merge manually
+  under normal repository policy. No GitHub auto-merge toggle and no merge
+  queue is enabled.
+- Label automation and comment-envelope enforcement are follow-up work. These
+  definitions specify intended behavior, not currently deployed Actions.
 - The human sees a `human-attention:*` label only when the gate hands a PR
   over, so the label stays rare and meaningful.
 - Terms for the merge backlog, control tower, integration pass, disposition,

@@ -1,6 +1,10 @@
 # ShakaCode Agent Workflows
 
-Portable Codex and Claude workflow pack for ShakaCode repositories.
+Portable Codex and Claude workflow pack.
+
+[![ShakaCode Agent Workflows — Run AI coding agents in fleets, safely](https://agents.shakacode.com/og.png)](https://agents.shakacode.com)
+
+**[Documentation →](https://agents.shakacode.com)**
 
 This repository packages reusable agent skills, workflow prompts, and helper
 scripts for PR batches, review triage, merge readiness, CI routing, changelog

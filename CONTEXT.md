@@ -222,6 +222,9 @@ _Avoid_: force kill (without the cleanup steps it names)
 
 ### Integration
 
+These terms define the intended integration contract. Label automation and
+comment-envelope enforcement are follow-up work, not implemented by this ADR.
+
 **Merge backlog**:
 The open PRs, drafts included, whose remaining step is a merge decision or a
 mechanical unblock such as a rebase or a stale bot-review dismissal, not
@@ -245,8 +248,8 @@ submits the merge through the guarded path).
 _Avoid_: ready to merge, needs review, approved, merge click
 
 **Needs-rebase**:
-The `needs-rebase` label a GitHub Action applies while a PR conflicts with its
-base and removes when it no longer does; it queues mechanical work for the
+The `needs-rebase` label a planned GitHub Action will apply while a PR conflicts
+with its base and remove when it no longer does; it queues mechanical work for the
 **Control tower** and is never a human signal.
 _Avoid_: conflicting (the raw GitHub field), blocked
 
@@ -308,7 +311,9 @@ _Avoid_: drain (reserved for cancellation), cleanup, sweep
   the **Lane** that opened it ends; a lane never keeps a PR alive to merge it.
 - A **Human-attention label** is applied by the **Control tower** after the
   autonomous-merge eligibility gate hands a PR to the human, and stripped by
-  CI when the head changes. A CI-triggered agent may read, review, label, and
+  the planned CI automation when the head changes. Until that automation exists,
+  the tower must recheck the head and remove stale labels before human handoff.
+  A CI-triggered agent may read, review, label, and
   draft an assessment; it never pushes or merges.
 - Every agent-posted GitHub comment carries exactly one **Comment kind**; a
   `decision` comment is the same card the Human Attention Desk mirrors, and
