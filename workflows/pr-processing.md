@@ -1133,7 +1133,6 @@ Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
-
 ```
 
 ### Question And Decision Handling
@@ -1228,6 +1227,16 @@ notification wording.
 - An explicit technical or diagnostic status request may return exact telemetry.
   Expand identifiers on first use, retain exact values, and mark unavailable
   meanings `UNKNOWN` rather than translating them speculatively.
+- Canonical owner-route rules: [Cross-Task Blocker Owner Route](../docs/user-facing-coordination.md#cross-task-blocker-owner-route).
+  When an HST-v1 actionable user-facing blocker depends on another task or
+  runner, include `Owner route:` inside `What changed:`. Missing evidence uses
+  exactly `Owner route: unavailable`; contradictory evidence uses
+  `Owner route: inconsistent`.
+- A route or material-fingerprint change does not make a routine wait
+  actionable. Emit only when the HST-v1 actionability gate passes and the
+  fingerprint of blocker state plus every normalized rendered route field
+  differs from the prior emitted message. Keep raw process and queue telemetry
+  in durable diagnostics.
 - At closeout/archive completion, place the three labeled parts before, not
   instead of, the existing mandatory closeout handoff. Preserve every item of
   required handoff evidence and exact `Conversation status:` line, which remains
@@ -1252,7 +1261,8 @@ notification wording.
   preserve one exact question and manual resume instructions.
 - This boundary changes presentation only. It does not alter machine evidence or
   any security, ownership, retry, scope, continuous integration (CI), review, or
-  merge gates.
+  merge gates. It also does not weaken validator isolation, exact-head evidence,
+  or quality assurance (QA).
 
 ### Coordinator Output Contract
 

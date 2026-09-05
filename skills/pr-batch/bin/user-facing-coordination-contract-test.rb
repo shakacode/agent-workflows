@@ -3,6 +3,7 @@
 
 require "minitest/autorun"
 require "json"
+require "digest"
 
 class UserFacingCoordinationContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
@@ -16,6 +17,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   PAUSE = "skills/pause/SKILL.md"
   POST_MERGE_AUDIT = "skills/post-merge-audit/SKILL.md"
   PR_MONITORING = "skills/pr-monitoring/SKILL.md"
+  BATCH_STATUS = "skills/batch-status/SKILL.md"
   PR_WALKTHROUGH = "skills/pr-walkthrough/SKILL.md"
   SPEC = "skills/spec/SKILL.md"
   PLAN_ISSUE_TRIAGE = "skills/plan-issue-triage/SKILL.md"
@@ -23,6 +25,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   README = "README.md"
   SKILL_GUIDE = "docs/skills.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
+  OWNER_ROUTE_REPLAY = "skills/pr-batch/fixtures/owner-route-pr383-replay.json"
   GMCC_V5 = "GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|" \
             "threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
             "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
@@ -272,6 +275,179 @@ class UserFacingCoordinationContractTest < Minitest::Test
       assert_includes text, "one exact question", path
       assert_includes text, "manual resume instructions", path
     end
+  end
+
+  def test_cross_task_blockers_have_a_validated_owner_route
+    doc = normalized(DOC)
+    assert_includes doc, "Owner route:"
+    assert_includes doc, "work item"
+    assert_includes doc, "runner"
+    assert_includes doc, "stable workspace or log location"
+    assert_includes doc, "thread handle"
+    assert_includes doc, "task, thread, or session identifier"
+    assert_includes doc, "branch and exact head"
+    assert_includes doc, "Owner route: unavailable"
+    assert_includes doc, "Owner route: inconsistent"
+    assert_includes doc, "no Codex sidebar task"
+    assert_includes doc, "coordinator owns bounded follow-up"
+
+    workflow = normalized(WORKFLOW)
+    assert_includes workflow, "Canonical owner-route rules:"
+    assert_includes workflow, "Cross-Task Blocker Owner Route"
+    assert_includes workflow, "HST-v1 actionable"
+    assert_includes workflow, "Owner route: unavailable"
+    assert_includes workflow, "Owner route: inconsistent"
+
+    batch_status = normalized(BATCH_STATUS)
+    assert_includes batch_status, "Owner route", BATCH_STATUS
+    assert_includes batch_status, "collector's `owner_route` object", BATCH_STATUS
+    assert_includes batch_status, "host-provided task or workspace lookup", BATCH_STATUS
+    assert_includes batch_status, "For a lane with no active cross-task or cross-runner blocker, render `n/a`", BATCH_STATUS
+    assert_includes batch_status, "never present it as a cross-machine link", BATCH_STATUS
+    assert_includes batch_status, "For Conductor/Claude, report no Codex task link", BATCH_STATUS
+    assert_includes batch_status, "do not print raw PID, process-group ID (PGID), lease, or queue-position", BATCH_STATUS
+  end
+
+  def test_owner_route_consistency_fails_closed_without_weakening_gates
+    doc = normalized(DOC)
+    assert_includes doc, "claim and heartbeat"
+    assert_includes doc, "repository, work item, workspace, branch, and session"
+    assert_includes doc, "fail closed"
+    assert_includes doc, "validator isolation"
+    assert_includes doc, "exact-head"
+    assert_includes doc, "merge gates"
+
+    workflow = normalized(WORKFLOW)
+    assert_includes workflow, "This boundary changes presentation only."
+    assert_includes workflow, "validator isolation"
+    assert_includes workflow, "exact-head evidence"
+    assert_includes workflow, "merge gates"
+  end
+
+  def test_pr383_owner_route_replay_is_actionable_and_coalesced
+    replay = JSON.parse(File.read(File.join(ROOT, OWNER_ROUTE_REPLAY), encoding: "UTF-8"))
+    assert_equal "owner-route-replay-v1", replay.fetch("schema_version")
+    assert_equal 383, replay.dig("source", "pull_request")
+
+    observations = replay.fetch("observations")
+    assert_operator observations.length, :>, 1
+    previous_fingerprint = nil
+    replayed_emissions = observations.map do |observation|
+      changed = observation.fetch("material_fingerprint") != previous_fingerprint
+      previous_fingerprint = observation.fetch("material_fingerprint")
+      changed && !observation["actionable_checkpoint"].nil?
+    end
+    assert_equal observations.map { |observation| observation.fetch("emit_user_message") }, replayed_emissions
+    assert_equal 2, replayed_emissions.count(true)
+    assert_equal 2, replay.fetch("expected_user_messages").length
+    assert_equal 2, observations.map { |observation| observation.fetch("material_fingerprint") }.uniq.length
+    assert_operator observations.map { |observation| observation.dig("durable_diagnostics", "pid") }.uniq.length, :>, 1
+    assert_equal observations[0].fetch("material_fingerprint"), observations[1].fetch("material_fingerprint")
+    refute_equal observations[1].fetch("material_fingerprint"), observations[2].fetch("material_fingerprint")
+    assert_equal observations[0].dig("durable_diagnostics", "log"),
+                 observations[1].dig("durable_diagnostics", "log")
+    refute_equal observations[1].dig("durable_diagnostics", "log"),
+                 observations[2].dig("durable_diagnostics", "log")
+    assert_equal "bounded_retries_exhausted", observations[0].fetch("actionable_checkpoint")
+    assert_nil observations[1].fetch("actionable_checkpoint")
+    assert_equal "bounded_retry_exhausted_after_log_rotation", observations[2].fetch("actionable_checkpoint")
+
+    messages = replay.fetch("expected_user_messages")
+    message = messages.first
+    [
+      "What changed:",
+      "Action needed: none.",
+      "Next:",
+      "Owner route:",
+      "https://github.com/shakacode/agent-workflows/pull/383",
+      "Conductor/Claude",
+      "workspace `la-paz`",
+      "`/tmp/pr383-validate6.log`",
+      "aw-pr383-harbor",
+      "session `claude-session-pr383`",
+      "no Codex sidebar task",
+      "cross-app deep link is unavailable",
+      "codex/ruby-packaging-design",
+      "e2ab23a74875d18d9d6589131244009a6ed4a005"
+    ].each { |value| assert_includes message, value }
+    refute_match(/\bPID\b|\bPGID\b|\blease\b|queue position/i, message)
+    assert_includes messages.last, "`/tmp/pr383-validate7.log`"
+    refute_equal messages.first, messages.last
+
+    observations.each do |observation|
+      claim = observation.fetch("claim")
+      heartbeat = observation.fetch("heartbeat")
+      host_task = observation.fetch("host_task")
+      navigation = observation.fetch("navigation")
+      fingerprint_source = [
+        "#{claim.fetch('repo')}##{claim.fetch('target')}",
+        observation.fetch("blocker_state"),
+        claim.fetch("agent_id"),
+        heartbeat.fetch("host"),
+        heartbeat.fetch("workspace"),
+        heartbeat.fetch("thread_handle"),
+        heartbeat.fetch("session_id"),
+        host_task.fetch("url"),
+        heartbeat.fetch("branch"),
+        host_task.fetch("head"),
+        observation.dig("durable_diagnostics", "log"),
+        "codex_sidebar_task=#{navigation.fetch('codex_sidebar_task')}",
+        "cross_app_deep_link=#{navigation.fetch('cross_app_deep_link')}",
+        "current_task_can_navigate=#{navigation.fetch('current_task_can_navigate')}",
+        "current_task_can_message=#{navigation.fetch('current_task_can_message')}"
+      ].join("|")
+      assert_equal "sha256:#{Digest::SHA256.hexdigest(fingerprint_source)}",
+                   observation.fetch("material_fingerprint")
+      assert_equal claim.fetch("agent_id"), heartbeat.fetch("agent_id")
+      assert_equal "#{claim.fetch('repo')}##{claim.fetch('target')}", heartbeat.fetch("target")
+      %w[branch host thread_handle session_id].each do |field|
+        assert_equal claim.fetch(field), heartbeat.fetch(field), "PR #383 #{field} binding drifted"
+      end
+      assert_equal claim.fetch("repo"), host_task.fetch("repository")
+      assert_equal claim.fetch("target"), host_task.fetch("work_item")
+      assert_equal heartbeat.fetch("workspace"), host_task.fetch("workspace")
+      assert_equal claim.fetch("branch"), host_task.fetch("branch")
+      assert_equal claim.fetch("session_id"), host_task.fetch("session_id")
+      messages.each do |expected_message|
+        assert_includes expected_message, host_task.fetch("url")
+        assert_includes expected_message, host_task.fetch("head")
+      end
+    end
+
+    variants = replay.fetch("variants").to_h { |variant| [variant.fetch("id"), variant] }
+    untitled = variants.fetch("untitled-codex-child-task")
+    untitled_input = untitled.fetch("input")
+    fallback_title = [
+      untitled_input.fetch("work_item"),
+      untitled_input.fetch("role"),
+      "—",
+      untitled_input.fetch("thread_handle")
+    ].join(" ")
+    assert_nil untitled_input.fetch("task_title")
+    assert_equal untitled.fetch("expected_fallback_title"), fallback_title
+    assert_includes untitled.fetch("expected_owner_route"), fallback_title
+    assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("task_id")
+    assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("deep_link")
+    assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("work_item_url")
+    assert untitled_input.fetch("current_task_can_navigate")
+    assert untitled_input.fetch("current_task_can_message")
+    assert_includes untitled.fetch("expected_owner_route"), "can navigate to and message the owner"
+
+    inconsistent = variants.fetch("stale-claim-session-cross-repository")
+    inconsistent_input = inconsistent.fetch("input")
+    refute_equal inconsistent_input.dig("claim", "session_id"),
+                 inconsistent_input.dig("heartbeat", "session_id")
+    refute_equal inconsistent_input.dig("claim", "repo"),
+                 inconsistent_input.dig("claim_session_task", "repository")
+    assert_equal inconsistent_input.dig("claim", "repo"),
+                 inconsistent_input.dig("heartbeat_session_task", "repository")
+    assert_includes inconsistent.fetch("expected_owner_route"), "Owner route: inconsistent"
+    refute_includes inconsistent.fetch("expected_owner_route"), inconsistent.fetch("forbidden_owner_link")
+
+    unavailable = variants.fetch("owner-unreachable")
+    assert(unavailable.fetch("input").values.all?(&:nil?))
+    assert_includes unavailable.fetch("expected_owner_route"), "Owner route: unavailable"
+    assert_includes unavailable.fetch("expected_owner_route"), "coordinator owns bounded follow-up"
   end
 
   def test_ambiguity_guard_synthesizes_ownership_without_raw_events

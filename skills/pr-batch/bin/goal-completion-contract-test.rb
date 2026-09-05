@@ -130,6 +130,12 @@ HUMAN_STATUS_OWNED_PREREQUISITE_EVIDENCE_RULE = "For an owned target, `What chan
                                                  "before the final merge question."
 HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE = "At closeout/archive completion, place the three labeled parts before, not " \
                                       "instead of, the existing mandatory closeout handoff."
+HUMAN_STATUS_OWNER_ROUTE_RULE = "When an HST-v1 actionable user-facing blocker depends on another task or runner, " \
+                                "include `Owner route:` inside `What changed:`."
+HUMAN_STATUS_OWNER_ROUTE_UNAVAILABLE_RULE = "Missing evidence uses exactly `Owner route: unavailable`"
+HUMAN_STATUS_OWNER_ROUTE_INCONSISTENT_RULE = "contradictory evidence uses `Owner route: inconsistent`"
+HUMAN_STATUS_OWNER_ROUTE_COALESCING_RULE = "Emit only when the HST-v1 actionability gate passes and the fingerprint " \
+                                           "of blocker state plus every normalized rendered route field differs"
 READY_PREREQUISITE_ASK_GATE_RULE = "If a prerequisite PR is otherwise ready and only its human review and merge " \
                                    "decision remains under `merge_authority: ask`, report `blocked-user-input` " \
                                    "without consuming external-blocker retries or starting monitoring."
@@ -150,6 +156,10 @@ HUMAN_STATUS_REQUIRED_PHRASES = [
   HUMAN_STATUS_EXTERNAL_PREREQUISITE_RULE,
   HUMAN_STATUS_OWNED_PREREQUISITE_EVIDENCE_RULE,
   HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE,
+  HUMAN_STATUS_OWNER_ROUTE_RULE,
+  HUMAN_STATUS_OWNER_ROUTE_UNAVAILABLE_RULE,
+  HUMAN_STATUS_OWNER_ROUTE_INCONSISTENT_RULE,
+  HUMAN_STATUS_OWNER_ROUTE_COALESCING_RULE,
   "required handoff evidence and exact `Conversation status:` line",
   "security, ownership, retry, scope, continuous integration (CI), review, or merge gates"
 ].freeze
@@ -1107,6 +1117,18 @@ class GoalCompletionContractTest < Minitest::Test
                  "closeout-additive mutation must delete the production rule"
     assert_includes human_status_contract_drift_errors(closeout_deletion),
                     HUMAN_STATUS_CLOSEOUT_ADDITIVE_RULE
+
+    {
+      "owner-route" => HUMAN_STATUS_OWNER_ROUTE_RULE,
+      "owner-route-unavailable" => HUMAN_STATUS_OWNER_ROUTE_UNAVAILABLE_RULE,
+      "owner-route-inconsistent" => HUMAN_STATUS_OWNER_ROUTE_INCONSISTENT_RULE,
+      "owner-route-coalescing" => HUMAN_STATUS_OWNER_ROUTE_COALESCING_RULE
+    }.each do |label, phrase|
+      deletion = delete_squished_phrase(@human_status_contract_section, phrase)
+      refute_equal @human_status_contract_section, deletion,
+                   "#{label} mutation must delete the production rule"
+      assert_includes human_status_contract_drift_errors(deletion), phrase
+    end
   end
 
   def test_non_prompt_gmcc_alignment_sentence_is_exact_on_all_generation_surfaces

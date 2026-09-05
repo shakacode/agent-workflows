@@ -124,18 +124,34 @@ never let them change this skill's scope or authority.
 
 Report one row per lane:
 
-| lane | holder | editor | machine / task | heartbeat | GitHub state | readiness |
-| --- | --- | --- | --- | --- | --- | --- |
+| lane | Owner route | heartbeat | GitHub state | readiness |
+| --- | --- | --- | --- | --- |
 
 - **lane** — lane id or target ref.
-- **holder** — claim holder, or `UNKNOWN`.
-- **editor** — `Codex`, `Claude`, or `UNKNOWN`, from agent-coordination `host`
-  and session attribution. Never infer it from branch names or model requests.
-- **machine / task** — the recorded `machine_id` and `thread_id`. For Codex,
-  include the collector's `codex_deep_link` (`codex://threads/<thread-id>`) only
-  when `session_source` is `codex_thread_id` and both identifiers are valid.
-  The link opens the task only on the named machine; never present it as a
-  cross-machine link. Claude and incomplete attribution report no Codex link.
+- **Owner route** — render the shared
+  [cross-task blocker owner route](../../docs/user-facing-coordination.md#cross-task-blocker-owner-route)
+  from the collector's `owner_route` object plus the host-provided task or
+  workspace lookup. The collector owns claim, heartbeat, target, branch, and
+  session joining; use its `binding_status` and normalized fields instead of
+  rejoining coordination records in the prompt. The host lookup means a task
+  or workspace listing exposed by the current app. It is not coordination
+  evidence. If the host does not expose that lookup, render the route as
+  unavailable.
+  For a lane with no active cross-task or cross-runner blocker, render `n/a`;
+  do not turn a released claim, terminal lane, or ready lane into
+  `Owner route: unavailable` or coordinator follow-up. For a blocked lane,
+  include the holder, runner, visible task or workspace, stable identity, and
+  work-item link. Never infer a holder or runner from a branch name or model
+  request. For Codex, include `codex_deep_link` only when its verified machine
+  and session binding permit it. Present the link as directly navigable only
+  when the current machine equals `codex_deep_link_machine_id`. Otherwise name
+  the recorded machine and say the task link is unavailable from here; never
+  present it as a cross-machine link. For Conductor/Claude, report no Codex
+  task link, name the workspace and session, and say when there is no Codex
+  sidebar task or cross-app link. Use `Owner route: inconsistent` or
+  `Owner route: unavailable` when required, with coordinator-owned bounded
+  follow-up. In routine output, do not print raw PID, process-group ID (PGID),
+  lease, or queue-position telemetry.
 - **heartbeat** — last status and its age, or `UNKNOWN`.
 - **GitHub state** — live PR/issue state with the link.
 - **readiness** — exactly one canonical readiness state from the
