@@ -1,10 +1,18 @@
 ---
 name: triage
-description: Generate a whole-surface issue/PR inventory, dependency graph, and capacity-aware pr-batch split from live GitHub plus coordination-backend state.
+description: Generate a whole-surface issue/PR inventory, dependency graph, and capacity-aware pr-batch split from live GitHub plus coordination-backend state. Use when a coordinator needs current issue/PR inventory and batch planning.
 argument-hint: '[repo, scope, or batch objective]'
 ---
 
 # Triage
+
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
 
 Use this skill when a coordinator wants a generated replacement for a manual
 issue/PR batch snapshot: complete inventory, dependency graph, live coordination
@@ -342,7 +350,7 @@ precise blocker.
    Each prompt must include this exact base-resolution line:
    ``- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.``
    Each prompt must include this exact `ask` authority line:
-   ``- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
+   ``- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean``
    GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
    `GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
    HST-v1
