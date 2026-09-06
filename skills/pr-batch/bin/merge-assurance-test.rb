@@ -17,7 +17,9 @@ load SCRIPT
 class MergeAssuranceTest < Minitest::Test
   HEAD_SHA = "a" * 40
   BASE_SHA = "b" * 40
-  DIFF_IDENTITY = "c" * 64
+  DIFF_IDENTITY = DiffIdentity.derive(
+    base_ref: "main", diff_base_sha: BASE_SHA, head_sha: HEAD_SHA
+  )
   NOW = Time.iso8601("2026-07-30T12:00:00Z")
   BATCH_OBJECT_ID = "d" * 40
   SYSTEM_GIT = ENV.fetch("PATH").split(File::PATH_SEPARATOR).filter_map do |directory|
@@ -88,6 +90,7 @@ class MergeAssuranceTest < Minitest::Test
         "repo" => "owner/repo",
         "pr" => 42,
         "base" => { "ref" => "main", "sha" => BASE_SHA },
+        "diff_base_sha" => BASE_SHA,
         "head_sha" => HEAD_SHA,
         "authority" => "auto_merge_when_gates_pass",
         "diff_identity" => DIFF_IDENTITY,
@@ -97,6 +100,263 @@ class MergeAssuranceTest < Minitest::Test
     )
     assert_match(/\Asha256:[0-9a-f]{64}\z/, result.fetch("evidence_digest"))
     assert MergeAssurance.valid_evidence_digest?(result)
+  end
+
+  def test_rejects_opaque_diff_identity_that_is_not_derived_from_bound_members
+    merge_context = context("auto_merge_when_gates_pass")
+    merge_context["diff_identity"] = "f" * 64
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci(diff_base_sha: merge_context.fetch("diff_base_sha")),
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context,
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes(
+      result.fetch("failures"),
+      "context diff_identity does not match canonical reviewed diff-base/head derivation"
+    )
+  end
+
+  def test_context_rejects_noncanonical_members_instead_of_skipping_derivation
+    [
+      ["uppercase head", ->(value) { value["head_sha"] = HEAD_SHA.upcase }],
+      ["leading-dash ref", ->(value) { value["base"]["ref"] = "-main" }],
+      ["lock ref", ->(value) { value["base"]["ref"] = "main.lock" }]
+    ].each do |label, mutate|
+      value = context("auto_merge_when_gates_pass")
+      mutate.call(value)
+      failures = []
+      MergeAssurance.validate_context(value, failures)
+      refute_empty failures, label
+    end
+  end
+
+  def test_context_accepts_exact_non_ascii_ref_bytes
+    ["feature/café", "feature/cafe\u0301"].each do |ref|
+      value = context("auto_merge_when_gates_pass")
+      value["base"]["ref"] = ref
+      value["diff_identity"] = DiffIdentity.derive(
+        base_ref: ref, diff_base_sha: BASE_SHA, head_sha: HEAD_SHA
+      )
+      failures = []
+      MergeAssurance.validate_context(value, failures)
+      assert_empty failures, ref
+    end
+  end
+
+  def test_accepts_a_reviewed_diff_base_distinct_from_the_live_base
+    merge_context = context("auto_merge_when_gates_pass")
+    merge_context["diff_base_sha"] = "d" * 40
+    merge_context["diff_identity"] = DiffIdentity.derive(
+      base_ref: "main", diff_base_sha: merge_context.fetch("diff_base_sha"), head_sha: HEAD_SHA
+    )
+
+    result = MergeAssurance.assess(
+      ci_result: ready_ci(diff_base_sha: merge_context.fetch("diff_base_sha")),
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context,
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible"), Array(result["failures"]).join("; ")
+  end
+
+  def test_rejects_ci_evidence_for_another_diff_identity
+    ci_result = ready_ci
+    ci_result["diff_identity"] = "f" * 64
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci_result diff-identity binding mismatch"
+  end
+
+  def test_optional_approval_hold_requires_authenticated_policy_and_is_bound_to_unselected_row
+    ci_result, trusted_policy = ready_ci_with_optional_hold
+    merge_context = context("auto_merge_when_gates_pass")
+
+    accepted = MergeAssurance.assess(
+      ci_result:, trusted_ci_policy: trusted_policy,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context, now: NOW
+    )
+    unauthenticated = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context, now: NOW
+    )
+    selected_context = context(
+      "auto_merge_when_gates_pass",
+      selected_hosted_runs: [{
+        "provider" => "circleci",
+        "run_id" => ci_result.dig("scopes", "other", "policy_dispositions", 0, "provider_run_id")
+      }]
+    )
+    selected = MergeAssurance.assess(
+      ci_result:, trusted_ci_policy: trusted_policy,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: selected_context, now: NOW
+    )
+
+    assert accepted.fetch("eligible"), accepted.fetch("failures", []).join("; ")
+    refute unauthenticated.fetch("eligible")
+    assert_includes unauthenticated.fetch("failures"), "ci policy disposition is not authenticated from trusted base"
+    refute selected.fetch("eligible")
+    assert_includes(
+      selected.fetch("failures"),
+      "ci_result scope other policy disposition targets an explicitly selected hosted run"
+    )
+  end
+
+  def test_optional_approval_hold_receipt_rejects_stale_or_edited_disposition_members
+    ci_result, trusted_policy = ready_ci_with_optional_hold
+    disposition = ci_result.dig("scopes", "other", "policy_dispositions", 0)
+    mutations = {
+      "row id" => ["id", 999],
+      "provider" => %w[app_slug other-ci],
+      "head" => ["head_sha", "b" * 40],
+      "workflow" => %w[provider_run_id 11111111-1111-4111-8111-111111111111],
+      "rule" => %w[rule_id other-rule]
+    }
+
+    eligible_mutations = mutations.filter_map do |label, (field, value)|
+      changed = JSON.parse(JSON.generate(ci_result))
+      changed.dig("scopes", "other", "policy_dispositions", 0)[field] = value
+      result = MergeAssurance.assess(
+        ci_result: changed, trusted_ci_policy: trusted_policy,
+        autonomous_result: autonomous_result("autonomous-merge-eligible"),
+        context: context("auto_merge_when_gates_pass"), now: NOW
+      )
+      label if result.fetch("eligible")
+    end
+
+    assert_empty eligible_mutations
+    refute_empty disposition
+  end
+
+  def test_optional_approval_hold_cannot_waive_selected_external_ci_workflow
+    ci_result, trusted_policy = ready_ci_with_optional_hold
+    workflow_id = ci_result.dig("scopes", "other", "policy_dispositions", 0, "provider_run_id")
+    merge_context = context(
+      "auto_merge_when_gates_pass",
+      selected_hosted_runs: [{ "provider" => "external-ci", "run_id" => workflow_id }]
+    )
+    receipts = {
+      "contract" => "selected-hosted-ci-receipts",
+      "version" => 1,
+      "complete" => true,
+      "records" => [{
+        "provider" => "external-ci", "run_id" => workflow_id,
+        "repository" => "owner/repo", "pr" => 42, "head_sha" => HEAD_SHA,
+        "selected_at" => "2026-07-30T11:55:00Z", "terminal_result" => "success"
+      }]
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:, trusted_ci_policy: trusted_policy,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context, selected_hosted_ci_receipts: receipts, now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes(
+      result.fetch("failures"),
+      "ci_result scope other policy disposition targets an explicitly selected hosted run"
+    )
+  end
+
+  def test_requested_github_run_and_informational_circleci_hold_compose_without_waiver
+    ci_result, trusted_policy = ready_ci_with_optional_hold
+    ci_result["requested_hosted"] = {
+      "run_ids" => ["42"], "completed" => [{
+        "run_id" => "42", "name" => "hosted", "status" => "completed",
+        "conclusion" => "success", "head_sha" => HEAD_SHA,
+        "url" => "https://github.com/owner/repo/actions/runs/42"
+      }], "pending" => [], "failing" => [], "stale" => [], "unknown" => []
+    }
+    ci_result["scopes"] = PrCiReadiness.inventory_scopes(
+      head_sha: HEAD_SHA, checked_at: ci_result.fetch("checked_at"),
+      required_rows: ci_result.dig("scopes", "required_status_check_rollup", "rows"),
+      required_complete: true, actions_rows: [], actions_complete: true,
+      check_runs: ci_result.dig("scopes", "other", "rows"), check_runs_complete: true,
+      statuses: [], statuses_complete: true, gate_advisory_rows: false,
+      optional_approval_held_policy: trusted_policy.slice("version", "optional_approval_held_checks")
+    )
+    merge_context = context("auto_merge_when_gates_pass")
+    result = MergeAssurance.assess(
+      ci_result:, trusted_ci_policy: trusted_policy,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context, now: NOW
+    )
+    assert result.fetch("eligible"), result.fetch("failures", []).join("; ")
+
+    merge_context["selected_hosted_runs"] = [{
+      "provider" => "circleci", "run_id" => "00000000-0000-4000-8000-000000000031"
+    }]
+    selected = MergeAssurance.assess(
+      ci_result:, trusted_ci_policy: trusted_policy,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: merge_context, now: NOW
+    )
+    refute selected.fetch("eligible"), "selected CircleCI workflow still needs a success receipt"
+  end
+
+  def test_optional_approval_hold_receipt_rejects_duplicate_exact_row_identity
+    ci_result, trusted_policy = ready_ci_with_optional_hold
+    ci_result.dig("scopes", "other", "rows") << JSON.parse(
+      JSON.generate(ci_result.dig("scopes", "other", "rows", 0))
+    )
+
+    result = MergeAssurance.assess(
+      ci_result:, trusted_ci_policy: trusted_policy,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"), now: NOW
+    )
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result scope other policy disposition row identity is ambiguous"
+  end
+
+  def test_explicit_trusted_root_authenticates_configured_ci_policy_even_when_receipt_omits_it
+    Dir.mktmpdir("merge-assurance-ci-policy") do |repo_root|
+      run_git!(repo_root, "init", "-q")
+      run_git!(repo_root, "config", "user.name", "Test")
+      run_git!(repo_root, "config", "user.email", "test@example.com")
+      FileUtils.mkdir_p(File.join(repo_root, ".agents"))
+      File.write(
+        File.join(repo_root, PrCiReadiness::POLICY_PATH),
+        {
+          "ci_readiness" => {
+            "version" => 1,
+            "optional_approval_held_checks" => [{
+              "id" => "storybook-review-app", "app_slug" => "circleci-checks",
+              "name" => "storybook-review-app"
+            }]
+          }
+        }.to_yaml
+      )
+      run_git!(repo_root, "add", PrCiReadiness::POLICY_PATH)
+      run_git!(repo_root, "commit", "-qm", "trusted CI policy")
+      base_sha = run_git!(repo_root, "rev-parse", "HEAD").strip
+      merge_context = context("auto_merge_when_gates_pass")
+      rebind_context_base!(merge_context, base_sha:)
+
+      policy = MergeAssurance::Runner.new.send(
+        :load_trusted_ci_policy!, ready_ci(base_sha:), merge_context, repo_root
+      )
+
+      assert_equal base_sha, policy.dig("base", "sha")
+      assert_equal "storybook-review-app", policy.dig("optional_approval_held_checks", 0, "id")
+    end
   end
 
   def test_v2_receipt_binds_reused_current_integration_candidate
@@ -123,6 +383,90 @@ class MergeAssuranceTest < Minitest::Test
     )
     assert_equal false, blocked.fetch("eligible")
     assert_includes blocked.fetch("failures"), "autonomous_result reused current integration evidence is invalid"
+  end
+
+  def test_ci_recorded_base_can_differ_from_validated_current_integration_base
+    recorded_base = "ed425c722e53eb1efec1d81d97027d5644aeef0a"
+    current_base = "7a5018e6433c656e7946af7ab9ac4236b88be190"
+    head = "91eb89e9666f82d7602a86b5f58d1e5aab46bbaf"
+    merge_context = context("auto_merge_when_gates_pass", head_sha: head, diff_base_sha: recorded_base)
+    rebind_context_base!(merge_context, base_sha: current_base, diff_base_sha: recorded_base)
+    autonomous = autonomous_result("autonomous-merge-eligible", head_sha: head, base_sha: current_base)
+    integration = reused_current_integration
+    integration.merge!(
+      "recorded_base_sha" => recorded_base, "head_sha" => head,
+      "current_base" => merge_context.fetch("base")
+    )
+    integration["candidate"] = {
+      "source" => "git-merge-tree", "oid" => nil,
+      "tree_oid" => "ef7184531a2363ba44482dfc62b5443a5417e1ba",
+      "parents" => [current_base, head]
+    }
+    autonomous["current_integration"] = integration
+    ci = ready_ci(base_sha: recorded_base, diff_base_sha: recorded_base, head_sha: head)
+
+    result = MergeAssurance.assess(ci_result: ci, autonomous_result: autonomous, context: merge_context, now: NOW)
+
+    assert_equal true, result.fetch("eligible"), Array(result["failures"]).join("; ")
+    assert_equal recorded_base, result.dig("evidence", "ci_result", "base", "sha")
+    assert_equal current_base, result.dig("bindings", "base", "sha")
+    assert_equal integration, result.dig("bindings", "current_integration")
+  end
+
+  def test_ci_recorded_base_reuse_preserves_negative_evidence_gates
+    cases = {
+      "changed CI head" => ->(ci, _autonomous) { ci["head_sha"] = "c" * 40 },
+      "unrelated CI base" => ->(ci, _autonomous) { ci.fetch("base")["sha"] = "c" * 40 },
+      "different CI base ref" => ->(ci, _autonomous) { ci.fetch("base")["ref"] = "release" },
+      "stale CI" => ->(ci, _autonomous) { ci["checked_at"] = (NOW - 301).iso8601 },
+      "missing integration" => ->(_ci, autonomous) { autonomous["current_integration"] = nil },
+      "unsafe drift" => lambda do |_ci, autonomous|
+        autonomous.fetch("current_integration")["reuse"] = {
+          "decision" => "refresh-required", "reasons" => ["base-delta-not-reuse-safe"]
+        }
+      end,
+      "changed integration head" => lambda do |_ci, autonomous|
+        autonomous.fetch("current_integration")["head_sha"] = "c" * 40
+      end,
+      "malformed candidate" => lambda do |_ci, autonomous|
+        autonomous.dig("current_integration", "candidate")["parents"] = [BASE_SHA, "c" * 40]
+      end,
+      "untrusted helper" => ->(_ci, autonomous) { autonomous.fetch("helper_trust")["status"] = "unverified" },
+      "failed integration evidence" => ->(_ci, autonomous) { autonomous["evidence_failures"] = ["unsafe drift"] }
+    }
+    cases.each do |label, mutate|
+      ci = ready_ci(base_sha: "e" * 40, diff_base_sha: BASE_SHA)
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["current_integration"] = reused_current_integration
+      mutate.call(ci, autonomous)
+
+      result = MergeAssurance.assess(
+        ci_result: ci, autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"), now: NOW
+      )
+
+      assert_equal false, result.fetch("eligible"), label
+      refute_empty result.fetch("failures"), label
+    end
+  end
+
+  def test_ci_recorded_base_reuse_does_not_rebind_old_policy_provenance
+    ci, trusted_policy = ready_ci_with_optional_hold
+    ci["base"] = { "ref" => "main", "sha" => "e" * 40 }
+    ci["ci_policy"] = Marshal.load(Marshal.dump(trusted_policy))
+    ci.fetch("ci_policy")["base"] = ci.fetch("base")
+    ci.fetch("ci_policy")["provenance"] = "git:#{'e' * 40}:#{PrCiReadiness::POLICY_PATH}@#{'9' * 40}"
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    autonomous["current_integration"] = reused_current_integration
+
+    result = MergeAssurance.assess(
+      ci_result: ci, autonomous_result: autonomous, trusted_ci_policy: trusted_policy,
+      context: context("auto_merge_when_gates_pass"), now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci policy evidence does not match authenticated trusted-base policy"
+    refute_includes result.fetch("failures"), "ci_result base binding mismatch"
   end
 
   def test_reused_current_integration_accepts_empty_base_delta_when_the_pr_side_is_safe
@@ -251,8 +595,8 @@ class MergeAssuranceTest < Minitest::Test
         "auto_merge_when_gates_pass", selected_hosted_runs: [selected]
       )
       merge_context["host"] = "github.example"
-      merge_context["base"]["sha"] = base_sha
-      ci_result = ready_ci
+      rebind_context_base!(merge_context, base_sha:)
+      ci_result = ready_ci(base_sha:)
       ci_result["context"]["host"] = merge_context.fetch("host")
       ci_result["checked_at"] = (now - 1).iso8601
       ci_result.fetch("scopes").each_value do |scope|
@@ -1316,9 +1660,9 @@ class MergeAssuranceTest < Minitest::Test
         "auto_merge_when_gates_pass",
         selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
       )
-      merge_context["base"]["sha"] = base_sha
+      rebind_context_base!(merge_context, base_sha:)
       now = Time.now.utc
-      ci_result = ready_ci
+      ci_result = ready_ci(base_sha:)
       ci_result["checked_at"] = (now - 1).iso8601
       ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
       autonomous = autonomous_result("autonomous-merge-eligible")
@@ -1405,8 +1749,8 @@ class MergeAssuranceTest < Minitest::Test
         "auto_merge_when_gates_pass",
         selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
       )
-      merge_context["base"]["sha"] = base_sha
-      ci_result = ready_ci
+      rebind_context_base!(merge_context, base_sha:)
+      ci_result = ready_ci(base_sha:)
       ci_result["checked_at"] = (now - 1).iso8601
       ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
       autonomous = autonomous_result("autonomous-merge-eligible")
@@ -1489,8 +1833,8 @@ class MergeAssuranceTest < Minitest::Test
         "auto_merge_when_gates_pass",
         selected_hosted_runs: [{ "provider" => "circleci", "run_id" => "selected-workflow" }]
       )
-      merge_context["base"]["sha"] = base_sha
-      ci_result = ready_ci
+      rebind_context_base!(merge_context, base_sha:)
+      ci_result = ready_ci(base_sha:)
       ci_result["checked_at"] = (now - 1).iso8601
       ci_result.fetch("scopes").each_value { |scope| scope["checked_at"] = (now - 1).iso8601 }
       autonomous = autonomous_result("autonomous-merge-eligible")
@@ -2238,6 +2582,248 @@ class MergeAssuranceTest < Minitest::Test
     end
   end
 
+  def test_ci_accepts_incomplete_non_gating_other_scope
+    ci_result = ready_ci
+    ci_result["requested_hosted"] = {
+      "run_ids" => ["42"],
+      "completed" => [{
+        "run_id" => "42",
+        "name" => "hosted",
+        "status" => "completed",
+        "conclusion" => "success",
+        "head_sha" => HEAD_SHA,
+        "url" => "https://example.test/runs/42"
+      }],
+      "pending" => [],
+      "failing" => [],
+      "stale" => [],
+      "unknown" => []
+    }
+    ci_result.fetch("scopes")["other"] = {
+      "state" => "NOT_APPLICABLE",
+      "source" => "github.checks_and_statuses.exact_head.non_required",
+      "complete" => false,
+      "gates_verdict" => false,
+      "head_sha" => HEAD_SHA,
+      "rows" => [],
+      "informational_rows" => [{ "name" => "UNKNOWN advisory status" }],
+      "error" => "UNKNOWN advisory status inventory unavailable",
+      "checked_at" => "2026-07-30T11:59:00Z"
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible")
+  end
+
+  def test_ci_accepts_unknown_in_requested_hosted_completed_run_display_metadata
+    ci_result = ready_ci
+    ci_result["requested_hosted"] = {
+      "run_ids" => ["42"],
+      "completed" => [{
+        "run_id" => "42",
+        "name" => "UNKNOWN lint",
+        "status" => "completed",
+        "conclusion" => "success",
+        "head_sha" => HEAD_SHA,
+        "url" => "https://example.test/UNKNOWN/runs/42"
+      }],
+      "pending" => [],
+      "failing" => [],
+      "stale" => [],
+      "unknown" => []
+    }
+    ci_result.fetch("scopes")["other"] = {
+      "state" => "NOT_APPLICABLE",
+      "source" => "github.checks_and_statuses.exact_head.non_required",
+      "complete" => true,
+      "gates_verdict" => false,
+      "head_sha" => HEAD_SHA,
+      "rows" => [],
+      "informational_rows" => [],
+      "checked_at" => "2026-07-30T11:59:00Z"
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal true, result.fetch("eligible")
+  end
+
+  def test_ci_rejects_invalid_informational_rows
+    ci_result = ready_ci
+    ci_result["requested_hosted"] = {
+      "run_ids" => ["42"],
+      "completed" => [{
+        "run_id" => "42",
+        "name" => "hosted",
+        "status" => "completed",
+        "conclusion" => "success",
+        "head_sha" => HEAD_SHA,
+        "url" => "https://example.test/runs/42"
+      }],
+      "pending" => [],
+      "failing" => [],
+      "stale" => [],
+      "unknown" => []
+    }
+    ci_result.fetch("scopes")["other"] = {
+      "state" => "NOT_APPLICABLE",
+      "source" => "github.checks_and_statuses.exact_head.non_required",
+      "complete" => true,
+      "gates_verdict" => false,
+      "head_sha" => HEAD_SHA,
+      "rows" => [],
+      "informational_rows" => "not-an-array",
+      "checked_at" => "2026-07-30T11:59:00Z"
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result scope other informational_rows are invalid"
+  end
+
+  def test_ci_rejects_non_gating_scope_with_rows
+    ci_result = ready_ci
+    ci_result["requested_hosted"] = {
+      "run_ids" => ["42"],
+      "completed" => [{
+        "run_id" => "42",
+        "name" => "hosted",
+        "status" => "completed",
+        "conclusion" => "success",
+        "head_sha" => HEAD_SHA,
+        "url" => "https://example.test/runs/42"
+      }],
+      "pending" => [],
+      "failing" => [],
+      "stale" => [],
+      "unknown" => []
+    }
+    ci_result.fetch("scopes")["other"] = {
+      "state" => "NOT_APPLICABLE",
+      "source" => "github.checks_and_statuses.exact_head.non_required",
+      "complete" => true,
+      "gates_verdict" => false,
+      "head_sha" => HEAD_SHA,
+      "rows" => [{ "name" => "advisory", "status" => "completed", "conclusion" => "failure" }],
+      "informational_rows" => [],
+      "checked_at" => "2026-07-30T11:59:00Z"
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result scope other non-gating rows must be empty"
+  end
+
+  def test_ci_rejects_non_gating_scope_without_completed_exact_head_requested_run
+    ci_result = ready_ci
+    ci_result.fetch("scopes")["other"] = {
+      "state" => "NOT_APPLICABLE",
+      "source" => "github.checks_and_statuses.exact_head.non_required",
+      "complete" => true,
+      "gates_verdict" => false,
+      "head_sha" => HEAD_SHA,
+      "rows" => [],
+      "informational_rows" => [],
+      "checked_at" => "2026-07-30T11:59:00Z"
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result non-gating scopes require completed exact-head requested hosted runs"
+  end
+
+  def test_ci_rejects_non_gating_scope_with_stale_completed_requested_run
+    ci_result = ready_ci
+    ci_result["requested_hosted"] = {
+      "run_ids" => ["42"],
+      "completed" => [{
+        "run_id" => "42",
+        "name" => "hosted",
+        "status" => "completed",
+        "conclusion" => "success",
+        "head_sha" => "d" * 40,
+        "url" => "https://example.test/runs/42"
+      }],
+      "pending" => [],
+      "failing" => [],
+      "stale" => [],
+      "unknown" => []
+    }
+    ci_result.fetch("scopes")["github_actions"] = {
+      "state" => "NOT_APPLICABLE",
+      "source" => "github.actions.exact_head",
+      "complete" => true,
+      "gates_verdict" => false,
+      "head_sha" => HEAD_SHA,
+      "rows" => [],
+      "informational_rows" => [],
+      "checked_at" => "2026-07-30T11:59:00Z"
+    }
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result non-gating scopes require completed exact-head requested hosted runs"
+  end
+
+  def test_ci_rejects_non_gating_marker_outside_other_scope
+    ci_result = ready_ci
+    scope = ci_result.fetch("scopes").fetch("required_status_check_rollup")
+    scope["gates_verdict"] = false
+    scope["state"] = "NOT_APPLICABLE"
+    scope["complete"] = false
+    scope["rows"] = []
+
+    result = MergeAssurance.assess(
+      ci_result:,
+      autonomous_result: autonomous_result("autonomous-merge-eligible"),
+      context: context("auto_merge_when_gates_pass"),
+      now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"),
+                    "ci_result scope required_status_check_rollup cannot be non-gating"
+  end
+
   def test_ci_row_representations_must_be_recognized_and_agree
     invalid_rows = {
       "bucket-state-contradiction" => {
@@ -2446,10 +3032,10 @@ class MergeAssuranceTest < Minitest::Test
   def test_accepts_the_exact_runtime_manifest_emitted_by_autonomous_merge_eligibility
     autonomous, base_sha = eligibility_artifact
     merge_context = context("auto_merge_when_gates_pass")
-    merge_context.fetch("base")["sha"] = base_sha
+    rebind_context_base!(merge_context, base_sha:)
 
     result = MergeAssurance.assess(
-      ci_result: ready_ci,
+      ci_result: ready_ci(base_sha:),
       autonomous_result: autonomous,
       context: merge_context,
       now: NOW
@@ -2979,7 +3565,7 @@ class MergeAssuranceTest < Minitest::Test
   end
 
   def test_human_decision_and_walkthrough_require_exact_target_bindings
-    binding_keys = %w[host repo pr base_ref]
+    binding_keys = %w[host repo pr base_ref diff_base_sha]
     unbound_decision = human_merge_decision.reject { |key, _value| binding_keys.include?(key) }
     unbound_walkthrough = walkthrough("completed", "pr-walkthrough").reject do |key, _value|
       binding_keys.include?(key)
@@ -3016,7 +3602,8 @@ class MergeAssuranceTest < Minitest::Test
       "conflicting-host" => ->(receipt) { receipt["host"] = "github.example" },
       "conflicting-repo" => ->(receipt) { receipt["repo"] = "other/repo" },
       "conflicting-pr" => ->(receipt) { receipt["pr"] = 43 },
-      "conflicting-base-ref" => ->(receipt) { receipt["base_ref"] = "release" }
+      "conflicting-base-ref" => ->(receipt) { receipt["base_ref"] = "release" },
+      "conflicting-diff-base" => ->(receipt) { receipt["diff_base_sha"] = "d" * 40 }
     }
     eligible_mutations = mutations.keys.flat_map do |name|
       decision = human_merge_decision
@@ -3880,8 +4467,8 @@ class MergeAssuranceTest < Minitest::Test
         "auto_merge_when_gates_pass", selected_hosted_runs: [selected]
       )
       merge_context["host"] = host
-      merge_context["base"]["sha"] = base_sha
-      ci_result = ready_ci
+      rebind_context_base!(merge_context, base_sha:)
+      ci_result = ready_ci(base_sha:)
       ci_result["context"]["host"] = host
       now = Time.now.utc
       ci_result["checked_at"] = (now - 1).iso8601
@@ -3922,7 +4509,8 @@ class MergeAssuranceTest < Minitest::Test
     run_git!(fixture.fetch(:repo_root), "add", ".agents/bin/selected-hosted-ci-receipts")
     run_git!(fixture.fetch(:repo_root), "commit", "-qm", "replace trusted selected hosted CI seam")
     base_sha = run_git!(fixture.fetch(:repo_root), "rev-parse", "HEAD").strip
-    fixture.fetch(:context).fetch("base")["sha"] = base_sha
+    rebind_context_base!(fixture.fetch(:context), base_sha:)
+    rebind_ci_base!(fixture.fetch(:ci_result), base_sha:)
     fixture.fetch(:autonomous_result)["policy_provenance"] = "git:#{base_sha}"
     fixture.fetch(:autonomous_result)["helper_provenance"] = "trusted-base:#{base_sha}"
     bind_current_integration!(fixture.fetch(:autonomous_result), fixture.fetch(:context))
@@ -3967,6 +4555,15 @@ class MergeAssuranceTest < Minitest::Test
     ci_result.fetch("scopes").each_value do |scope|
       scope["checked_at"] = checked_at.iso8601
     end
+  end
+
+  def rebind_ci_base!(ci_result, base_sha:, diff_base_sha: base_sha)
+    base_ref = ci_result.dig("base", "ref")
+    ci_result.fetch("base")["sha"] = base_sha
+    ci_result["diff_base_sha"] = diff_base_sha
+    ci_result["diff_identity"] = DiffIdentity.derive(
+      base_ref:, diff_base_sha:, head_sha: ci_result.fetch("head_sha")
+    )
   end
 
   def write_selected_hosted_ci_cli_fixture(fixture)
@@ -4272,7 +4869,11 @@ class MergeAssuranceTest < Minitest::Test
     }
   end
 
-  def ready_ci(repo: "owner/repo", pull_request: 42, head_sha: HEAD_SHA)
+  def ready_ci(
+    repo: "owner/repo", pull_request: 42, head_sha: HEAD_SHA,
+    base_ref: "main", base_sha: BASE_SHA, diff_base_sha: nil
+  )
+    diff_base_sha ||= base_sha
     rows = {
       "required_status_check_rollup" => [
         { "name" => "required", "bucket" => "pass" }
@@ -4302,12 +4903,54 @@ class MergeAssuranceTest < Minitest::Test
       "context" => { "host" => "github.com" },
       "repo" => repo,
       "pr" => pull_request,
+      "base" => { "ref" => base_ref, "sha" => base_sha },
+      "diff_base_sha" => diff_base_sha,
+      "diff_identity" => DiffIdentity.derive(base_ref:, diff_base_sha:, head_sha:),
       "head_sha" => head_sha,
       "checked_at" => "2026-07-30T11:59:00Z",
       "verdict" => "READY",
       "ordinary_verdict" => "READY",
       "scopes" => scopes
     }
+  end
+
+  def ready_ci_with_optional_hold
+    ci_result = ready_ci
+    workflow_id = "00000000-0000-4000-8000-000000000031"
+    workflow_url = "https://app.circleci.com/workflow/#{workflow_id}"
+    row = {
+      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil,
+      "started_at" => "2026-07-30T11:58:00Z", "completed_at" => nil,
+      "head_sha" => HEAD_SHA, "app_slug" => "circleci-checks",
+      "dependabot" => false, "actions" => nil, "details_url" => workflow_url,
+      "output" => {
+        "title" => "Workflow: storybook-review-app",
+        "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - Blocked\n"
+      }
+    }
+    disposition = {
+      "disposition" => "optional_approval_held", "rule_id" => "storybook-review-app",
+      "kind" => "check_run", "id" => 31, "app_slug" => "circleci-checks",
+      "name" => "storybook-review-app", "head_sha" => HEAD_SHA,
+      "provider_run_id" => workflow_id
+    }
+    ci_result.fetch("scopes").fetch("other").merge!(
+      "state" => "READY", "rows" => [row], "policy_dispositions" => [disposition]
+    )
+    trusted_policy = {
+      "version" => 1,
+      "provenance" => "git:#{BASE_SHA}:#{PrCiReadiness::POLICY_PATH}@#{'9' * 40}",
+      "base" => { "ref" => "main", "sha" => BASE_SHA },
+      "optional_approval_held_checks" => [
+        {
+          "id" => "storybook-review-app", "app_slug" => "circleci-checks",
+          "name" => "storybook-review-app"
+        }
+      ]
+    }
+    ci_result["ci_policy"] = trusted_policy
+    [ci_result, trusted_policy]
   end
 
   def autonomous_result(
@@ -4406,6 +5049,16 @@ class MergeAssuranceTest < Minitest::Test
     integration["current_base"] = base.dup
   end
 
+  def rebind_context_base!(merge_context, base_sha:, diff_base_sha: base_sha)
+    merge_context.fetch("base")["sha"] = base_sha
+    merge_context["diff_base_sha"] = diff_base_sha
+    merge_context["diff_identity"] = DiffIdentity.derive(
+      base_ref: merge_context.dig("base", "ref"),
+      diff_base_sha:,
+      head_sha: merge_context.fetch("head_sha")
+    )
+  end
+
   def reused_current_integration
     {
       "contract" => "current-integration-evidence",
@@ -4435,7 +5088,7 @@ class MergeAssuranceTest < Minitest::Test
   def context(
     authority, operations: [], human_merge_decision: nil, walkthrough: nil,
     semantic_github_actions_change: false, repo: "owner/repo", pull_request: 42,
-    head_sha: HEAD_SHA, selected_hosted_runs: []
+    head_sha: HEAD_SHA, diff_base_sha: BASE_SHA, selected_hosted_runs: []
   )
     {
       "contract" => "merge-assurance-context",
@@ -4444,9 +5097,12 @@ class MergeAssuranceTest < Minitest::Test
       "repo" => repo,
       "pr" => pull_request,
       "base" => { "ref" => "main", "sha" => BASE_SHA },
+      "diff_base_sha" => diff_base_sha,
       "head_sha" => head_sha,
       "authority" => authority,
-      "diff_identity" => DIFF_IDENTITY,
+      "diff_identity" => DiffIdentity.derive(
+        base_ref: "main", diff_base_sha:, head_sha:
+      ),
       "human_merge_decision" => human_merge_decision,
       "walkthrough" => walkthrough,
       "semantic_github_actions_change" => semantic_github_actions_change,
@@ -4479,6 +5135,7 @@ class MergeAssuranceTest < Minitest::Test
       "repo" => "owner/repo",
       "pr" => 42,
       "base_ref" => "main",
+      "diff_base_sha" => BASE_SHA,
       "head_sha" => HEAD_SHA,
       "diff_identity" => DIFF_IDENTITY,
       "provenance" => "direct-user",
@@ -4496,6 +5153,7 @@ class MergeAssuranceTest < Minitest::Test
       "repo" => "owner/repo",
       "pr" => 42,
       "base_ref" => "main",
+      "diff_base_sha" => BASE_SHA,
       "head_sha" => HEAD_SHA,
       "diff_identity" => DIFF_IDENTITY,
       "provenance" => provenance

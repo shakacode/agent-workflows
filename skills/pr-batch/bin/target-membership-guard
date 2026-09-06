@@ -1,0 +1,347 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+
+class DuplicateJsonKeyScanner
+  def initialize(source)
+    @source = source
+    @index = 0
+  end
+
+  def find
+    skip_whitespace
+    scan_value
+  end
+
+  private
+
+  def scan_value
+    skip_whitespace
+    case current_byte
+    when 0x7B then scan_object
+    when 0x5B then scan_array
+    when 0x22
+      scan_string
+      nil
+    else scan_primitive
+    end
+  end
+
+  def scan_object
+    @index += 1
+    skip_whitespace
+    if current_byte == 0x7D
+      @index += 1
+      return nil
+    end
+
+    keys = {}
+    loop do
+      key = scan_string
+      return key if keys.key?(key)
+
+      keys[key] = true
+      skip_whitespace
+      @index += 1
+      duplicate = scan_value
+      return duplicate if duplicate
+
+      skip_whitespace
+      if current_byte == 0x7D
+        @index += 1
+        return nil
+      end
+
+      @index += 1
+      skip_whitespace
+    end
+  end
+
+  def scan_array
+    @index += 1
+    skip_whitespace
+    if current_byte == 0x5D
+      @index += 1
+      return nil
+    end
+
+    loop do
+      duplicate = scan_value
+      return duplicate if duplicate
+
+      skip_whitespace
+      if current_byte == 0x5D
+        @index += 1
+        return nil
+      end
+
+      @index += 1
+    end
+  end
+
+  def scan_string
+    start = @index
+    @index += 1
+    loop do
+      case current_byte
+      when 0x22
+        @index += 1
+        return JSON.parse(@source.byteslice(start...@index))
+      when 0x5C
+        @index += 2
+      else
+        @index += 1
+      end
+    end
+  end
+
+  def scan_primitive
+    @index += 1 until current_byte.nil? || [0x2C, 0x5D, 0x7D, 0x20, 0x09, 0x0A, 0x0D].include?(current_byte)
+    nil
+  end
+
+  def skip_whitespace
+    @index += 1 while [0x20, 0x09, 0x0A, 0x0D].include?(current_byte)
+  end
+
+  def current_byte
+    @source.getbyte(@index)
+  end
+end
+
+TARGET_PATTERN = %r{\A[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*\z}
+OPERATIONS = %w[
+  evidence_delivery
+  claim
+  supersede
+  replacement
+  worker_spawn
+  dispatch
+  ownership
+  heartbeat_mutation
+  lease_mutation
+  resource_lock_handoff
+  repository_mutation
+  github_mutation
+  control_transfer
+].freeze
+
+def emit(result, exit_status)
+  puts JSON.generate(
+    {
+      "contract" => "target-membership-decision",
+      "version" => 1
+    }.merge(result)
+  )
+  exit exit_status
+end
+
+def emit_unknown(reason, next_action:, target: "UNKNOWN", operation: "UNKNOWN",
+                 human_authorized_control_transfer: false)
+  emit(
+    {
+      "status" => "UNKNOWN",
+      "disposition" => "UNKNOWN",
+      "target" => target,
+      "operation" => operation,
+      "target_membership" => "UNKNOWN",
+      "human_authorized_control_transfer" => human_authorized_control_transfer,
+      "control_allowed" => false,
+      "evidence_delivery_allowed" => false,
+      "reason" => reason,
+      "next_action" => next_action
+    },
+    2
+  )
+end
+
+def canonical_target(target)
+  repository, number = target.split("#", 2)
+  "#{repository.downcase}##{number}"
+end
+
+def repository_qualified_target?(target)
+  return false unless target.is_a?(String) && target.match?(TARGET_PATTERN)
+
+  repository = target.split("#", 2).first
+  repository.split("/", 2).all? { |component| component.match?(/[A-Za-z0-9]/) }
+end
+
+def decoded_json_strings_valid?(value)
+  case value
+  when String
+    value.valid_encoding?
+  when Array
+    value.all? { |item| decoded_json_strings_valid?(item) }
+  when Hash
+    value.all? do |key, item|
+      decoded_json_strings_valid?(key) && decoded_json_strings_valid?(item)
+    end
+  else
+    true
+  end
+end
+
+raw_input = $stdin.read.force_encoding(Encoding::UTF_8)
+unless raw_input.valid_encoding?
+  emit_unknown(
+    "input is not valid UTF-8",
+    next_action: "provide UTF-8 encoded JSON and replay the guard"
+  )
+end
+
+begin
+  input = JSON.parse(raw_input)
+rescue JSON::ParserError
+  emit_unknown(
+    "input is not valid JSON",
+    next_action: "provide one target-membership-request v1 object and replay the guard"
+  )
+end
+
+unless decoded_json_strings_valid?(input)
+  emit_unknown(
+    "input contains invalid Unicode scalar data",
+    next_action: "replace invalid Unicode scalar data and replay the guard"
+  )
+end
+
+duplicate_key = DuplicateJsonKeyScanner.new(raw_input).find
+if duplicate_key
+  emit_unknown(
+    "input contains duplicate JSON object key: #{duplicate_key}",
+    next_action: "remove every duplicate object key and replay the guard"
+  )
+end
+
+unless input.is_a?(Hash) && input["contract"] == "target-membership-request" && input["version"] == 1
+  emit_unknown(
+    "invalid target-membership-request contract or version",
+    next_action: "provide one target-membership-request v1 object and replay the guard"
+  )
+end
+
+manifest = input["canonical_target_manifest"]
+target = input["target"]
+operation = input["operation"]
+human_authorized_control_transfer = input["human_authorized_control_transfer"]
+
+unless [true, false].include?(human_authorized_control_transfer)
+  emit_unknown(
+    "human_authorized_control_transfer must be true or false",
+    target: target.is_a?(String) ? target : "UNKNOWN",
+    operation: operation.is_a?(String) ? operation : "UNKNOWN",
+    next_action: "record explicit human transfer authority as true or false and replay the guard"
+  )
+end
+
+unless operation.is_a?(String) && OPERATIONS.include?(operation)
+  emit_unknown(
+    "operation is missing or unsupported",
+    target: target.is_a?(String) ? target : "UNKNOWN",
+    operation: operation.is_a?(String) ? operation : "UNKNOWN",
+    human_authorized_control_transfer: human_authorized_control_transfer,
+    next_action: "select one supported operation and replay the guard"
+  )
+end
+
+unless repository_qualified_target?(target)
+  reason = if target == "UNKNOWN"
+             "literal UNKNOWN is not a target identity"
+           elsif target.is_a?(Array) || target.is_a?(Hash)
+             "ambiguous target identity; expected one scalar repository-qualified issue/PR"
+           elsif target.is_a?(String) && target.start_with?("adhoc:")
+             "synthetic targets cannot establish cross-task membership"
+           else
+             "target identity is missing or is not one exact repository-qualified issue/PR identity"
+           end
+  emit_unknown(
+    reason,
+    operation: operation,
+    human_authorized_control_transfer: human_authorized_control_transfer,
+    next_action: "resolve one exact repository-qualified issue/PR target and replay the guard"
+  )
+end
+
+unless manifest.is_a?(Array) && !manifest.empty? &&
+       manifest.all? { |entry| repository_qualified_target?(entry) }
+  emit_unknown(
+    "canonical target manifest is missing, empty, or invalid",
+    target: target,
+    operation: operation,
+    human_authorized_control_transfer: human_authorized_control_transfer,
+    next_action: "restore the durable canonical repository-qualified target manifest and replay the guard"
+  )
+end
+
+canonical_manifest = manifest.map { |entry| canonical_target(entry) }
+if canonical_manifest.uniq.length != canonical_manifest.length
+  emit_unknown(
+    "canonical target manifest is ambiguous after repository identity normalization",
+    target: target,
+    operation: operation,
+    human_authorized_control_transfer: human_authorized_control_transfer,
+    next_action: "remove duplicate or ambiguous target identities from the durable manifest and replay the guard"
+  )
+end
+
+member = canonical_manifest.include?(canonical_target(target))
+evidence_only = operation == "evidence_delivery"
+control_transfer = operation == "control_transfer"
+control_allowed = member && !evidence_only && human_authorized_control_transfer
+allowed = evidence_only || control_allowed
+
+disposition = if member
+                if evidence_only
+                  "manifest-member / evidence-only"
+                elsif !human_authorized_control_transfer && control_transfer
+                  "control-transfer-authority-required"
+                elsif !human_authorized_control_transfer
+                  "human-authority-required"
+                elsif control_transfer
+                  "control-transfer-authorized"
+                else
+                  "manifest-member"
+                end
+              else
+                "foreign-target / evidence-only"
+              end
+
+reason = if member && evidence_only
+           "evidence delivery does not grant control or mutation authority"
+         elsif member && !human_authorized_control_transfer
+           "packet-driven control or mutation requires explicit human authority"
+         elsif member && control_transfer
+           "explicit human authority and receiving-task target membership are both verified"
+         elsif member
+           "explicit human authority and receiving-task target membership are both verified"
+         elsif evidence_only
+           "foreign-target evidence delivery is allowed without control or mutation authority"
+         else
+           "target is not a member of the receiving task manifest"
+         end
+
+next_action = if member && !evidence_only && !human_authorized_control_transfer
+                "obtain explicit human authority before packet-driven control or mutation"
+              elsif member
+                "continue only within the verified target-bound task"
+              else
+                "submit a new exact evidence_delivery request or obtain an explicit human-authorized control transfer to a task already bound to that target"
+              end
+
+emit(
+  {
+    "status" => allowed ? "allowed" : "blocked",
+    "disposition" => disposition,
+    "target" => target,
+    "operation" => operation,
+    "target_membership" => member,
+    "human_authorized_control_transfer" => human_authorized_control_transfer,
+    "control_allowed" => control_allowed,
+    "evidence_delivery_allowed" => evidence_only,
+    "reason" => reason,
+    "next_action" => next_action
+  },
+  allowed ? 0 : 3
+)

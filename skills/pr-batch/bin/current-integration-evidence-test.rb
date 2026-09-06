@@ -11,6 +11,55 @@ require_relative "../lib/current_integration_evidence"
 class CurrentIntegrationEvidenceTest < Minitest::Test
   HEAD_FILE = "lib/feature.rb"
 
+  def test_github_snapshot_decodes_non_ascii_json_as_utf8_under_an_ascii_default
+    with_github_payload(github_payload(metadata: "café")) do
+      original_encoding = Encoding.default_external
+      Encoding.default_external = Encoding::US_ASCII
+
+      snapshot = CurrentIntegrationEvidence.github_snapshot(
+        repo: "example/repo", pr_number: 7, base_ref: "main"
+      )
+
+      assert_equal "a" * 40, snapshot.fetch("head_sha")
+      assert_equal "b" * 40, snapshot.fetch("base_sha")
+    ensure
+      Encoding.default_external = original_encoding
+    end
+  end
+
+  def test_github_snapshot_rejects_invalid_utf8_as_an_evidence_error
+    payload = github_payload(metadata: "placeholder").b
+    payload.sub!("placeholder".b, "\xFF".b)
+
+    with_github_payload(payload) do
+      error = assert_raises(CurrentIntegrationEvidence::Error) do
+        CurrentIntegrationEvidence.github_snapshot(
+          repo: "example/repo", pr_number: 7, base_ref: "main"
+        )
+      end
+
+      assert_equal "GitHub current-integration response is not valid UTF-8", error.message
+    end
+  end
+
+  def test_github_snapshot_rejects_lone_surrogate_decoded_from_candidate_oid
+    payload = github_payload(metadata: "metadata", candidate_oid: "candidate-placeholder")
+    payload.sub!("candidate-placeholder", '\udcff')
+
+    with_github_payload(payload) do
+      error = assert_raises(CurrentIntegrationEvidence::Error) do
+        CurrentIntegrationEvidence.github_snapshot(
+          repo: "example/repo", pr_number: 7, base_ref: "main"
+        )
+      end
+
+      assert_equal(
+        "GitHub current-integration response contains invalid Unicode scalar data",
+        error.message
+      )
+    end
+  end
+
   def test_disjoint_safe_base_delta_reuses_exact_head_evidence
     with_repository(base_delta_path: "docs/guide.md") do |fixture|
       result = collect(fixture)
@@ -67,6 +116,42 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
 
       assert_equal "fresh-integration-required", result.dig("reuse", "decision")
       assert_equal ["pr-delta-high-risk"], result.dig("reuse", "reasons")
+    end
+  end
+
+  def test_nested_workflow_pr_delta_blocks_reuse_even_when_base_delta_is_safe
+    with_repository(base_delta_path: "docs/guide.md", head_path: "template/.github/workflows/ci.yml") do |fixture|
+      result = collect(fixture)
+
+      assert_equal "fresh-integration-required", result.dig("reuse", "decision")
+      assert_equal ["pr-delta-high-risk"], result.dig("reuse", "reasons")
+    end
+  end
+
+  def test_root_and_nested_github_actions_paths_are_high_risk_in_both_deltas
+    paths = [
+      ".github/workflows/ci.yml",
+      ".github/actions/setup/action.yml",
+      "template/.github/workflows/ci.yml",
+      "template/.github/actions/setup/action.yml",
+      "template:v1/.github/workflows/ci.yml",
+      "template:v1/.github/actions/setup/action.yml"
+    ]
+
+    paths.each do |path|
+      with_repository(base_delta_path: "docs/guide.md", head_path: path) do |fixture|
+        result = collect(fixture)
+
+        assert_equal "fresh-integration-required", result.dig("reuse", "decision"), "PR delta: #{path}"
+        assert_equal ["pr-delta-high-risk"], result.dig("reuse", "reasons"), "PR delta: #{path}"
+      end
+
+      with_repository(base_delta_path: path, head_path: "docs/feature.md") do |fixture|
+        result = collect(fixture)
+
+        assert_equal "fresh-integration-required", result.dig("reuse", "decision"), "base delta: #{path}"
+        assert_equal ["base-delta-high-risk"], result.dig("reuse", "reasons"), "base delta: #{path}"
+      end
     end
   end
 
@@ -343,6 +428,55 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
   end
 
   private
+
+  def github_payload(metadata:, candidate_oid: nil)
+    candidate = if candidate_oid
+                  {
+                    "oid" => candidate_oid,
+                    "tree" => { "oid" => "c" * 40 },
+                    "parents" => {
+                      "totalCount" => 2,
+                      "nodes" => [{ "oid" => "b" * 40 }, { "oid" => "a" * 40 }]
+                    }
+                  }
+                end
+
+    JSON.generate(
+      "metadata" => metadata,
+      "data" => {
+        "repository" => {
+          "pullRequest" => {
+            "headRefOid" => "a" * 40,
+            "baseRefName" => "main",
+            "potentialMergeCommit" => candidate
+          },
+          "ref" => { "target" => { "oid" => "b" * 40 } }
+        }
+      }
+    )
+  end
+
+  def with_github_payload(payload)
+    Dir.mktmpdir("current-integration-github-test") do |root|
+      payload_path = File.join(root, "payload.json")
+      fake_gh = File.join(root, "gh")
+      File.binwrite(payload_path, payload)
+      File.write(fake_gh, <<~'RUBY')
+        #!/usr/bin/env ruby
+        $stdout.binmode
+        $stdout.write(File.binread(ENV.fetch("CURRENT_INTEGRATION_TEST_PAYLOAD")))
+      RUBY
+      File.chmod(0o755, fake_gh)
+      original_command = ENV["CURRENT_INTEGRATION_GH"]
+      original_payload = ENV["CURRENT_INTEGRATION_TEST_PAYLOAD"]
+      ENV["CURRENT_INTEGRATION_GH"] = fake_gh
+      ENV["CURRENT_INTEGRATION_TEST_PAYLOAD"] = payload_path
+      yield
+    ensure
+      ENV["CURRENT_INTEGRATION_GH"] = original_command
+      ENV["CURRENT_INTEGRATION_TEST_PAYLOAD"] = original_payload
+    end
+  end
 
   def collect(
     fixture, policy: AutonomousMergePolicy.parse("{}"),

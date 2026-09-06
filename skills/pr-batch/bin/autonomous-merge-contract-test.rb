@@ -23,9 +23,9 @@ HUMAN_STATE = "`ready-human-review-required` carries the exact current head SHA,
               "rollback status, and the exact durable human decision needed."
 UNKNOWN_STATE = "`autonomous-merge-evidence-unknown` carries the exact current head SHA, evidence failure, " \
                 "trusted-base policy provenance, and repair action."
-GMCC_HUMAN_DECISION_BINDING = "auto=>exact verdict/head/sorted-gates/rollback; merge iff " \
-                              "autonomous-merge-eligible OR human-approved-for-current-head+" \
-                              "durable-decision(proven-human+merge-authority)"
+GMCC_HUMAN_DECISION_BINDING = "auto=>exact verdict/head/sorted-gates/rollback;merge iff " \
+                              "autonomous-merge-eligible|human-approved-for-current-head+" \
+                              "durable-decision(proven+merge-authority)"
 THRESHOLD_DOCUMENTATION_PARITY = "ADR 0003 is the source of truth for these copied portable defaults. " \
                                  "File, line, and commit maxima are enforced; max_reviewed_heads is " \
                                  "shadow-only until a checked calibration artifact explicitly graduates " \
@@ -99,7 +99,7 @@ class AutonomousMergeContractTest < Minitest::Test
     ].each do |path|
       text = File.read(File.join(ROOT, path), encoding: "UTF-8")
 
-      assert_includes text, "GMCC-v4:"
+      assert_includes text, "GMCC-v5:"
       assert_includes text, "ready-human-review-required"
       assert_includes text, "autonomous-merge-evidence-unknown"
       assert_includes text, GMCC_HUMAN_DECISION_BINDING
@@ -272,6 +272,14 @@ class AutonomousMergeContractTest < Minitest::Test
 
   def test_release_policy_component_is_an_unconditional_policy_surface
     source_path = "workflows/pr-production-release.md"
+
+    assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_path
+    assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, ".agents/#{source_path}"
+  end
+
+  def test_unblock_component_is_an_unconditional_policy_surface
+    source_path = "workflows/pr-batch-unblock.md"
 
     assert_includes AutonomousMergePolicy::SOURCE_POLICY_PATTERNS, source_path
     assert_includes AutonomousMergePolicy::BUILTIN_POLICY_PATTERNS, source_path

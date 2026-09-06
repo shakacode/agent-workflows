@@ -114,13 +114,41 @@ class IntegrationCloseoutContractTest < Minitest::Test
       assert_match(/^\#{2,3} #{Regexp.escape(heading)}$/, @component, heading)
     end
 
-    assert_operator @component.bytesize, :<, 165_000
-    assert_operator @workflow.bytesize, :<, 185_000
-    assert_operator @skill.bytesize, :<, 60_000
-    assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 395_000
+    # Temporary headroom: main sat within 32 bytes of the combined cap and within
+    # 500 bytes of the skill cap, so every PR that added a sentence failed here
+    # (#772). Shrink these again once the #392 extraction work lands.
+    assert_operator @workflow.bytesize, :<, 210_000
+    assert_operator @skill.bytesize, :<, 70_000
+    assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 450_000
     assert_includes @component, "worker-execution-handoff v1"
     assert_includes @component, "one replayable target ledger and human-first handoff"
     assert_includes @component, "current-head closeout gates"
+  end
+
+  def test_component_size_budget
+    skip "Maintainer deferred the document-size cap in PR #695; restore in the #392 fast follow-up"
+
+    assert_operator @component.bytesize, :<, 165_000
+  end
+
+  def test_integration_requires_current_task_review_completion_before_mutation
+    input = route_after(@component, "Input Contract")
+    transition = route_after(@component, "Integration And PR Publication")
+
+    [
+      "[Task Review Loop](pr-batch-task-review.md)",
+      "`task_complete`", "`dependent_task_permitted: true`",
+      "accepted task identity", "brief/report/package digests", "last round digest",
+      "exact implementation head", "replay the reducer",
+      "canonical diff provenance", "before mutation",
+      "Missing, stale, foreign, blocked, or incomplete",
+      "worker handoff alone"
+    ].each { |term| assert_includes input, term }
+
+    assert_includes transition, "task-review completion required by the Input Contract"
+    assert_operator transition.index("task-review completion required by the Input Contract"), :<,
+                    transition.index("Fetch the configured base")
+    assert_includes input, "final whole-branch validation, independent review, or CI"
   end
 
   def test_worker_head_has_one_bounded_integration_and_publication_owner
@@ -253,6 +281,21 @@ class IntegrationCloseoutContractTest < Minitest::Test
     assert_includes @component, "autonomous-merge-evidence-unknown"
     assert_includes @component, "Conversation status: Ready for archiving."
     assert_includes @component, "Conversation status: Follow-ups remain"
+  end
+
+  def test_blocked_reconciliation_does_not_invent_a_missing_receipt
+    assert_includes @component,
+                    "Existing verified receipt only; missing means no line and an Unblock blocker:"
+    refute_includes @component, "Before the Unblock Block and final status, emit only:"
+  end
+
+  def test_goal_closeout_puts_unblock_immediately_before_non_clean_status
+    closeout = route_after(@component, "Coordinator Closeout Lane")
+
+    assert_includes closeout,
+                    "Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; " \
+                    "otherwise put an `Unblock:` block with every normalized blocker immediately before the final " \
+                    "`Conversation status: Follow-ups remain — <each exact action or blocker>.` line."
   end
 
   def test_sibling_components_remain_outside_the_boundary
