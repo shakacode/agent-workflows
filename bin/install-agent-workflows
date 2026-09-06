@@ -20,6 +20,7 @@ Installed paths:
   <target>/docs/coordination-backend.md
   <target>/docs/execution-provenance-schema.md
   <target>/docs/review-finding-schema.md
+  <target>/docs/schemas/task-review-loop-v1.schema.json
   <target>/docs/agent-workflows-model-routing.md
   <target>/docs/user-facing-coordination.md
   <target>/docs/writing-style.md
@@ -28,6 +29,7 @@ Installed paths:
   <target>/bin/agent-workflow-seam-doctor
   <target>/bin/agent-workflow-writing-style
   <target>/bin/validate-execution-provenance
+  <target>/bin/validate-review-findings
   <target>/bin/agent-workflows-doctor
   <target>/bin/agent_doctor/*
   <target>/bin/agent-workflows-status
@@ -56,11 +58,13 @@ bin_helpers=(
   install-agent-workflows
   upgrade-agent-workflows
   validate-execution-provenance
+  validate-review-findings
 )
 pack_docs=(
   coordination-backend.md
   execution-provenance-schema.md
   review-finding-schema.md
+  schemas/task-review-loop-v1.schema.json
   agent-workflows-model-routing.md
   user-facing-coordination.md
   writing-style.md
@@ -259,6 +263,7 @@ read_installed_metadata_value() {
       invalid_fingerprints = %w[
         managed_skill_copy_fingerprints
         managed_pack_doc_copy_fingerprints
+        managed_pack_helper_copy_fingerprints
         managed_pack_root_copy_fingerprints
       ].any? do |field|
         next false unless metadata.key?(field)
@@ -1873,7 +1878,9 @@ prepare_metadata() {
         end
       end
     end
-    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, *pack_docs = ARGV
+    path, host, mode, delivery_mode, source, version, revision, branch, remote, installed_at, doc_count, *assets = ARGV
+    pack_docs = assets.shift(Integer(doc_count))
+    bin_helpers = assets
     directory_fingerprint = lambda do |root|
       entries = []
       Find.find(root) do |entry|
@@ -1923,6 +1930,18 @@ prepare_metadata() {
                         else
                           {}
                         end
+    helper_fingerprints = if mode == "copy"
+                            bin_helpers.to_h do |name|
+                              helper = File.join(source, "bin", name)
+                              unless File.file?(helper) && !File.symlink?(helper)
+                                abort "missing pack helper while preparing install metadata: #{helper}"
+                              end
+
+                              [name, Digest::SHA256.file(helper).hexdigest]
+                            end
+                          else
+                            {}
+                          end
     metadata = {
       "host" => host,
       "mode" => mode,
@@ -1935,6 +1954,7 @@ prepare_metadata() {
       "installed_at" => installed_at,
       "managed_skill_copy_fingerprints" => skill_fingerprints,
       "managed_pack_doc_copy_fingerprints" => doc_fingerprints,
+      "managed_pack_helper_copy_fingerprints" => helper_fingerprints,
       "managed_pack_root_copy_fingerprints" => root_fingerprints
     }
     serialized_metadata = JSON.pretty_generate(metadata) + "\n"
@@ -1983,7 +2003,7 @@ prepare_metadata() {
         end
       end
     end
-  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${pack_docs[@]}" 2>/dev/null)" || prepare_status=$?
+  ' "$metadata_tmp" "$host" "$mode" "$delivery_mode" "$repo_root" "$version" "$source_revision" "$source_branch" "$source_remote" "$installed_at" "${#pack_docs[@]}" "${pack_docs[@]}" "${bin_helpers[@]}" 2>/dev/null)" || prepare_status=$?
   if [[ "$prepare_status" -ne 0 ]]; then
     echo "METADATA_PREPARE_BLOCKED: could not safely create $metadata_tmp; preserved any path that exists there." >&2
     echo "Verify and move that exact path aside while retaining evidence, then retry; the installer will not delete or overwrite an unverified path." >&2
@@ -3438,6 +3458,21 @@ pack_doc_destination_owned() {
   fi
 }
 
+pack_helper_destination_owned() {
+  local helper_name="$1"
+  local destination="$2"
+  local source_path="$repo_root/bin/$helper_name"
+
+  if [[ "$mode" = "copy" ]]; then
+    recorded_pack_helper_copy_fingerprint_matches "$helper_name" "$destination" ||
+      recorded_revision_managed_file_matches "bin/$helper_name" "$destination" ||
+      { [[ -f "$destination" && ! -L "$destination" ]] && cmp -s "$destination" "$source_path"; } ||
+      managed_file_symlink_matches_recorded_source "bin/$helper_name" "$destination"
+  else
+    managed_file_symlink_matches_recorded_source "bin/$helper_name" "$destination"
+  fi
+}
+
 recorded_copy_fingerprint_matches() {
   local field="$1"
   local entry_name="$2"
@@ -3475,6 +3510,10 @@ recorded_pack_doc_copy_fingerprint_matches() {
   recorded_copy_fingerprint_matches "managed_pack_doc_copy_fingerprints" "$1" "$2"
 }
 
+recorded_pack_helper_copy_fingerprint_matches() {
+  recorded_copy_fingerprint_matches "managed_pack_helper_copy_fingerprints" "$1" "$2"
+}
+
 recorded_pack_root_copy_fingerprint_matches() {
   recorded_copy_fingerprint_matches "managed_pack_root_copy_fingerprints" "$1" "$2"
 }
@@ -3484,7 +3523,7 @@ verify_pack_doc_destinations() {
   [[ ! -L "$target/docs" ]] || return 0
 
   for doc_name in "${pack_docs[@]}"; do
-    # Both delivery modes replace a solutions-directory symlink without following it.
+    # Both delivery modes replace the managed solutions symlink without following it.
     [[ "$doc_name" == solutions/* && -L "$target/docs/solutions" ]] && continue
     destination="$target/docs/$doc_name"
     source_path="$repo_root/docs/$doc_name"
@@ -3523,8 +3562,14 @@ verify_third_party_notices_destination() {
 verify_install_destinations() {
   local destination helper skill source_path
 
+  if [[ -L "$target/docs/schemas" ]]; then
+    echo "Refusing to replace unowned schema directory symlink: $target/docs/schemas" >&2
+    exit 1
+  fi
+
   if [[ "$mode" = "copy" ]]; then
-    for destination in "$target/bin" "$target/workflows" "$target/docs" "$target/docs/solutions"; do
+    for destination in "$target/bin" "$target/workflows" "$target/docs" "$target/docs/solutions" \
+      "$target/docs/schemas"; do
       if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
         echo "Refusing to replace non-directory path: $destination" >&2
         exit 1
@@ -3549,6 +3594,11 @@ verify_install_destinations() {
         echo "Refusing to replace non-file path: $destination" >&2
         exit 1
       fi
+      if [[ "$helper" = "validate-review-findings" && ( -e "$destination" || -L "$destination" ) ]] &&
+         ! pack_helper_destination_owned "$helper" "$destination"; then
+        echo "Refusing to replace unowned pack helper: $destination" >&2
+        exit 1
+      fi
     done
   else
     for destination in "$target/bin" "$target/skills"; do
@@ -3557,7 +3607,7 @@ verify_install_destinations() {
         exit 1
       fi
     done
-    for destination in "$target/docs" "$target/docs/solutions"; do
+    for destination in "$target/docs" "$target/docs/solutions" "$target/docs/schemas"; do
       if [[ -e "$destination" && ! -d "$destination" && ! -L "$destination" ]]; then
         echo "Refusing to replace non-directory path: $destination" >&2
         exit 1
@@ -3595,6 +3645,11 @@ verify_install_destinations() {
         echo "Refusing to replace non-symlink path: $destination" >&2
         exit 1
       fi
+      if [[ "$helper" = "validate-review-findings" && -L "$destination" ]] &&
+         ! pack_helper_destination_owned "$helper" "$destination"; then
+        echo "Refusing to replace unowned pack helper: $destination" >&2
+        exit 1
+      fi
     done
   fi
 }
@@ -3604,6 +3659,7 @@ copy_pack_docs() {
   local doc_name destination
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
+  ensure_real_directory "$docs_target/schemas"
   remove_legacy_managed_model_routing_path "$docs_target"
 
   for doc_name in "${pack_docs[@]}"; do
@@ -3624,6 +3680,7 @@ link_pack_docs() {
   local destination doc_name
   ensure_real_directory "$docs_target"
   ensure_real_directory "$docs_target/solutions"
+  ensure_real_directory "$docs_target/schemas"
   remove_legacy_managed_model_routing_path "$docs_target"
 
   for doc_name in "${pack_docs[@]}"; do
