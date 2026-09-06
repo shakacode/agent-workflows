@@ -407,6 +407,41 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_unrelated_malformed_policy_preserves_single_quoted_flow_sequence
+    Dir.mktmpdir("batch-plan-single-quoted-flow-sequence") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      FileUtils.mkdir_p(File.join(root, "lib"))
+      FileUtils.mkdir_p(File.join(root, "sig"))
+      File.write(File.join(root, "lib", "task.rb"), "fixture\n")
+      File.write(File.join(root, "sig", "task.rbs"), "fixture\n")
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions: [
+          { source_glob: 'lib/{name}.rb', companion_glob: 'sig/{name}.rbs' }
+        ]
+        malformed: [
+      YAML
+
+      lane_record = lane("lane-a", target: issue_target(461))
+      input = input_for(
+        lanes: [lane_record],
+        maps: {
+          "lane-a" => planned_path_evidence(
+            ["lib/task.rb"],
+            source_kind: "issue",
+            evidence_ref: "issue://owner/repo/461#planned-paths"
+          )
+        }
+      )
+
+      result, stderr, status = evaluate_bounded(input, chdir: root, timeout: 1)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
   def test_indented_malformed_policy_preserves_companion_sequence
     with_companion_repo do |root, fixture|
       File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)
@@ -933,6 +968,50 @@ class BatchPlanPreflightTest < Minitest::Test
     options[:chdir] = chdir if chdir
     stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, helper, **options)
     [JSON.parse(stdout), stderr, status]
+  end
+
+  def evaluate_bounded(input, helper: HELPER, env: {}, chdir: nil, timeout: 1)
+    stdin_r, stdin_w = IO.pipe
+    stdout_r, stdout_w = IO.pipe
+    stderr_r, stderr_w = IO.pipe
+    options = { in: stdin_r, out: stdout_w, err: stderr_w }
+    options[:chdir] = chdir if chdir
+    pid = Process.spawn(env, RbConfig.ruby, helper, options)
+    stdin_r.close
+    stdout_w.close
+    stderr_w.close
+    stdin_w.write(JSON.generate(input))
+    stdin_w.close
+
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    status = nil
+    loop do
+      if (waited = Process.waitpid2(pid, Process::WNOHANG))
+        waited_pid, wait_status = waited
+        raise "unexpected waitpid mismatch" unless waited_pid == pid
+
+        status = wait_status
+        break
+      end
+
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        Process.kill("TERM", pid)
+        sleep 0.05
+        Process.kill("KILL", pid) if Process.waitpid(pid, Process::WNOHANG).nil?
+        Process.wait(pid)
+        raise "batch-plan-preflight timed out after #{timeout}s"
+      end
+
+      sleep 0.01
+    end
+
+    stdout = stdout_r.read
+    stderr = stderr_r.read
+    [JSON.parse(stdout), stderr, status]
+  ensure
+    [stdin_r, stdin_w, stdout_r, stdout_w, stderr_r, stderr_w].each do |io|
+      io.close unless io.nil? || io.closed?
+    end
   end
 
   def evaluate_raw(input)

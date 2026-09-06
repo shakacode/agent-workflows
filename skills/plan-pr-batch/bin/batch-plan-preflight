@@ -916,11 +916,11 @@ module BatchPlanPreflight
           open_count -= 1 if open_count.positive?
         end
       when :single_quote
-        next unless char == "'"
-
-        escaped_quote = fragment[index + 1] == "'"
-        index += 1 if escaped_quote
-        state = :normal unless escaped_quote
+        if char == "'"
+          escaped_quote = fragment[index + 1] == "'"
+          index += 1 if escaped_quote
+          state = :normal unless escaped_quote
+        end
       when :double_quote
         if char == "\\"
           index += 1
