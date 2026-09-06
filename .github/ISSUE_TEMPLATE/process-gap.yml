@@ -1,5 +1,6 @@
 name: Process gap
 description: Report a recurring process miss with its required disposition fields.
+labels: ["process-gap"]
 body:
   - type: markdown
     attributes:
