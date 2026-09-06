@@ -102,8 +102,8 @@ requested and observed route honestly without blocking on the binding alone.
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
 | `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A Batch Plan with separate coordinator and staged worker model/effort routes plus a target-specific ready `$pr-batch` prompt. |
 | `$pr-batch`          | One or more exact targets are trusted and ready to run or convert into a `/goal` prompt.                    | A single-target lane, launch plan, worker split, or final `/goal` prompt.              |
-| `$close-batch`       | A stale batch task needs live recovery, any required walkthrough or decision, and archive-safe closeout.   | Resumed closeout, one interactive attention route when needed, or a canonical archive verdict. |
-| `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | An exact-diff, one-change-at-a-time explanation with questions between each change.   |
+| `$close-batch`       | A stale batch task needs live recovery, any required walkthrough or decision, and archive-safe closeout.   | Resumed closeout, one asynchronous attention route when needed, or a canonical archive verdict. |
+| `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | A live, read-only chat walkthrough, or a complete GitHub review when publication is explicitly or workflow-selected. |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
 The `agents/openai.yaml` file under a skill is optional Codex UI metadata for skill picker display text and the default prompt. Add it only for skills that need Codex picker metadata; it is not required for every skill. Deliberate exclusion: `qa-stress` ships without picker metadata because destructive stress campaigns must be invoked by explicit request, not surfaced through default picker prompting.
@@ -359,11 +359,14 @@ multi-lane packing and collision mechanics; QA, validation, review, CI,
 readiness, handoff, and closeout remain unchanged.
 
 Choose `ask` when a human should understand the exact-diff PR before deciding:
-after ordinary gates are clean, the coordinator automatically starts
-`$pr-walkthrough`, explains one conceptual change at a time in full mode for
-large or complex PRs (concise mode for smaller cohesive PRs), then refreshes the
-diff identity and readiness. A changed identity invalidates the walkthrough and
-restarts or stops it; a newly failing gate stops it. The coordinator asks the
+after ordinary gates are clean, the coordinator automatically publishes
+`$pr-walkthrough`. It prepares the complete exact-diff map up front, then posts
+the orientation and every conceptual section to GitHub in one pass under the
+skill's mandatory inline-thread and no-anchor-stop rules. The owning task consumes replies
+asynchronously; live interaction is used only when the maintainer explicitly
+asks. Large or complex PRs use full mode and smaller cohesive PRs use concise
+mode. A changed identity invalidates the walkthrough and causes a rebuild and
+republish or stop; a newly failing gate stops it. The coordinator asks the
 one final merge question only when the refreshed identity matches the recorded
 identity and readiness remains clean; a completed walkthrough must have
 explained that same diff. The walkthrough itself is not approval.

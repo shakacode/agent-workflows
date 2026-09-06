@@ -173,8 +173,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      `merge_authority`, ask for `none`, `ask`, or
      `auto_merge_when_gates_pass`; do not leave this field as an unresolved
      placeholder in the generated prompt. Explain that `ask` automatically
-     walks through the exact-diff PR one conceptual change at a time before its
-     one final merge decision.
+     publishes the complete exact-diff walkthrough as separately replyable
+     GitHub concepts before its one final merge decision.
    - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list. Treat an unbound direct prompt as planning/reconciliation input only; do not turn it into an implementation lane unless the complete durable ad-hoc override record is already present in trusted input.
 
 2. Verify
@@ -850,7 +850,7 @@ Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 ```
 
