@@ -3,7 +3,8 @@
 This component owns integration and PR closeout from an accepted worker
 implementation head through one precise readiness, merged, or no-PR handoff.
 Load it after [worker execution](pr-batch-worker-execution.md) produces
-`worker-execution-handoff v1`.
+`worker-execution-handoff v1` and the [Task Review Loop](pr-batch-task-review.md)
+completes for that implementation head.
 
 ## Boundary
 
@@ -23,13 +24,16 @@ modes consume this component's exact-head evidence.
 
 ## Input Contract
 
-Start only with a complete `worker-execution-handoff v1`: stable target and
-lane identity, accepted base, exact implementation head, branch/worktree,
-changed paths and scope decisions, focused verification evidence, dependency
-state, QA needs, review hints, and any meaningful-stop or `UNKNOWN` facts.
-Refresh the live target, base, head, permissions, repository seams, and optional
-coordination holder/generation before mutation. Missing required facts remain
-`UNKNOWN`; never reconstruct them from task titles or worker prose.
+Require a complete `worker-execution-handoff v1`, not reconstructed worker prose.
+Before mutation, refresh live target/base/head, permissions, repository seams,
+and optional coordination holder/generation. Also replay the reducer under the
+[Task Review Loop](pr-batch-task-review.md), including canonical diff provenance.
+Require `task_complete` and `dependent_task_permitted: true`, binding accepted task identity,
+brief/report/package digests, last round digest, accepted base and exact implementation head
+to that handoff. Retain replay evidence; a worker handoff alone is insufficient.
+Missing, stale, foreign, blocked, or incomplete evidence returns to the task loop
+before mutation, push or publication. This never replaces final whole-branch validation, independent review, or CI
+on the resulting integration head.
 
 ## Output Contract
 
@@ -48,7 +52,8 @@ CI. The integration owner, not the implementation worker, performs this phase:
 
 1. Verify that the `worker-execution-handoff v1` matches the accepted target,
    lane, branch/worktree, changed-path envelope, and exact reachable commit.
-   Require a clean committed implementation head. Propagate a meaningful-stop
+   Verify the task-review completion required by the Input Contract before
+   proceeding. Require a clean committed implementation head. Propagate a meaningful-stop
    packet or `UNKNOWN` fact without pushing or opening a PR.
 2. Fetch the configured base and refresh its full SHA. Re-run the trusted
    dependency permission needed for `validation_open`, and consume the optional
@@ -1153,6 +1158,13 @@ Avoid horizontal TDD batches: write one failing behavior test through the public
 
 ## Local Validation Gate
 
+Reuse applicable local results through the canonical
+[Verification evidence reuse](../skills/verify/references/verification-evidence.md)
+contract before scheduling another identical check. Repository-required repeats,
+clean committed full validation, combined-tip validation, and current-head CI
+remain mandatory. A previous passing local check does not satisfy a new review
+cohort or a hosted check.
+
 Run `.agents/bin/ci-detect` first when it exists and routing details matter.
 
 Then run `.agents/bin/validate`, or a tighter set that covers the same changed
@@ -1533,15 +1545,15 @@ Before saying a PR is ready to merge:
 
 ```bash
 gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels,latestReviews,reviews,comments,mergedAt
-# Resolve PR_BATCH_SKILL_DIR, then capture the machine-owned exact-head CI result.
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
-  --repo <OWNER/REPO> > "${CI_RESULT_PATH}"
+"${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref <BASE_BRANCH> --diff-base-sha <REVIEWED_DIFF_BASE_SHA> --head-sha <FULL_HEAD_SHA>
+"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO> --trusted-repo-root "${TRUSTED_CONSUMER_REPO_ROOT}" --diff-base-sha <REVIEWED_DIFF_BASE_SHA> > "${CI_RESULT_PATH}"
 ```
 
 The resulting `pr-ci-readiness` v2 contract owns complete, scoped exact-head
-evidence for required status checks, GitHub Actions, Dependabot, and other
-checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
-must migrate to the scoped v2 result.
+evidence. Receipts keep live base separate from reviewed diff-base SHA and bind
+canonical diff identity, raw rows, and trusted policy dispositions. Changed,
+required, selected, active, incomplete, stale, unknown, ambiguous, or
+caller-edited evidence blocks.
 
 Then run the repo's merge ledger (see `merge_ledger` in
 `.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
@@ -1859,6 +1871,8 @@ put exactly one record in merge-context `selected_hosted_runs`:
 {"provider":"external-ci","run_id":"<selected-workflow-or-run-id>"}
 ```
 
+A selected CircleCI workflow UUID cannot be policy-dispositioned.
+
 Do not add advisory or merely observed runs. A nonempty list requires this
 closed trusted-base seam:
 
@@ -1944,7 +1958,9 @@ TRUSTED_REPLAY_ARGS=(
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
   --context "${MERGE_CONTEXT_PATH}" \
-  "${TRUSTED_REPLAY_ARGS[@]}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  "${TRUSTED_REPLAY_ARGS[@]}" \
+  --trusted-repo-root "${TRUSTED_CONSUMER_REPO_ROOT}" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 `merge-assurance` authenticates the trusted runtime and reruns its fixed
@@ -1975,7 +1991,8 @@ chain, then run:
 Before any GitHub read or repository guard, `pr-merge-submit` binds the receipt
 to the requested host, repository, PR, head, base, and trusted runtime; checks
 freshness and hosted-CI records; then repeats the exact autonomous replay.
-Missing, stale, failed, nonterminal, or mismatched evidence blocks submission.
+Policy-aware live CI is revalidated before any queue or guarded-direct
+mutation. Missing, stale, failed, nonterminal, or mismatched evidence blocks.
 
 Before mutation, `pr-merge-submit` re-reads the live head and base and replays
 the receipt-bound integration tree with ordered base/head parents. Candidate

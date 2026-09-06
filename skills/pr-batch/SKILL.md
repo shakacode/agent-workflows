@@ -1,6 +1,6 @@
 ---
 name: pr-batch
-description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch.
+description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch. Use when coordinating one or more implementation lanes.
 argument-hint: '[task, exact issue/PR numbers, or filters]'
 ---
 
@@ -161,9 +161,9 @@ facts remain fail-closed and stop before mutation.
   the resolved plan skill's `bin/batch-plan-preflight` with a v1 envelope. It
   owns schema and launch scheduling, including the required active wave and
   max-one serialization. Supply the exact top-level `stage_dependency_replay`
-  live input alongside the claimed `stage_dependency_gate`; the preflight runs
-  its fixed sibling gate in a bounded, sanitized process and requires an exact
-  completed-result match before exposing any launch permission. Preserve real PR verified `pr-file-touch-map` results
+  live input with the claimed `stage_dependency_gate`; the preflight
+  requires an exact completed-result match before any launch permission.
+  Preserve real PR verified `pr-file-touch-map` results
   unchanged; encode explicit pre-PR paths as typed `planned-path-evidence` v1
   records with durable evidence references. An `issue` source must bind to the
   target's exact repository and number through `issue://OWNER/REPO/N` or an
@@ -527,6 +527,9 @@ Use the canonical [Autonomous Merge Eligibility](../../workflows/pr-batch-integr
 ## Merge Assurance Gate
 
 Use the canonical [Merge Assurance Gate](../../workflows/pr-batch-integration-closeout.md#merge-assurance-gate) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+That component owns the canonical `diff-identity` invocation, trusted-base
+optional approval-hold policy, selected-workflow continuity, and receipt
+propagation; do not substitute caller-authored digests or waivers.
 
 ## Goal Prompt Template
 

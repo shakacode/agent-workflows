@@ -19,10 +19,24 @@ Resolve writing style before authoring human-facing prose. Run
 `agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
 from the installed executable on `PATH`; if it is unavailable there, resolve
 the same executable from the loaded Agent Workflows pack's `bin/` directory or
-an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. Stop with upgrade or
-installation guidance if the shared resolver is unavailable; do not duplicate
-its packaged default in a skill.
-When the resolver exits nonzero, stop and surface the resolver error to the user; do not proceed without a style guide.
+an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. If neither location
+is usable, follow the fallback below and report upgrade or installation
+guidance; do not duplicate the packaged default in a skill.
+
+If presentation tooling is unavailable, continue independent authorized work.
+For prose, a previously verified guide may be reused only while its trusted
+configuration and source are unchanged. Otherwise use the loaded trusted pack's
+`docs/writing-style.md` only after verifying that repository configuration is
+absent or readable and valid, with no explicit `writing_style` override, and
+that no valid user-global override takes precedence. Record the fallback source and tooling
+limitation. If that verification is unavailable, hold prose authoring and return
+the precise resolution problem to the coordinator while independent work continues.
+A nonzero resolver exit is not proof of missing tooling: inspect its error.
+Until the error is classified and the existing fallback preconditions are
+verified, hold prose authoring while independent authorized work continues.
+An explicit malformed repository value blocks authoring; never bypass it with
+the default. The coordinator asks the user only if the resolution needs a decision
+outside existing authority.
 
 The resolver returns one complete guide plus observable provenance: `repo`,
 `user-global`, or `portable-default`. Repository configuration wins. A missing
@@ -54,7 +68,10 @@ For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversari
 For an interactive human-oriented explanation of a PR, use
 `.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It presents
 one conceptual change at a time, explains why it exists, and pauses for
-questions before continuing.
+questions before continuing. Its walkthrough identity must come from the
+installed `pr-batch/bin/diff-identity` helper using the base ref, reviewed
+diff-base SHA, and full head SHA; an opaque caller-supplied digest is not an
+identity receipt.
 
 ## User-Facing Coordination Contract
 
@@ -638,12 +655,12 @@ PLAN_PR_BATCH_SKILL_DIR="${PLAN_PR_BATCH_SKILL_DIR:-.agents/skills/plan-pr-batch
 
 This machine gate owns schema and launch scheduling, including advisory overlap reporting,
 backend-cap, QA, external-premise, required `plan.active_wave`, and max-one
-serialization enforcement. The v1 envelope also carries the exact
-`stage_dependency_replay` live input and the claimed completed
-`stage_dependency_gate`; the preflight reruns its fixed sibling gate in a
-bounded, sanitized process and requires an exact result match before launch.
-Missing, malformed, timed-out, failed, `UNKNOWN`, or mismatched replay fails
-closed. Do not reproduce those matrices in dispatcher or
+serialization enforcement. The v1 envelope carries the exact
+`stage_dependency_replay` live input and claimed completed
+`stage_dependency_gate`; preflight reruns its fixed sibling gate in a bounded,
+sanitized process and requires an exact match before launch. Missing,
+malformed, timed-out, failed, `UNKNOWN`, or mismatched replay fails closed.
+Do not reproduce those matrices in dispatcher or
 merge checks. Preserve real PR verified `pr-file-touch-map` results unchanged;
 encode explicit pre-PR paths as typed `planned-path-evidence` v1 records with
 durable evidence references. An `issue` source must bind to the target's exact
