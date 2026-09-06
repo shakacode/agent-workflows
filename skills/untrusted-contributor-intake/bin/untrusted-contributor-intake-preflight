@@ -41,6 +41,48 @@ module UntrustedContributorIntakePreflight
   CANONICAL_BLOCKED = "BLOCKED: canonical authority absent or invalid"
   CANONICAL_UNTRUSTED = "BLOCKED: canonical authority is not trusted"
 
+  GH_AUTHENTICATION = "GH_AUTHENTICATION"
+  GH_RATE_LIMIT = "GH_RATE_LIMIT"
+  GH_NETWORK_TRANSPORT = "GH_NETWORK_TRANSPORT"
+  GH_NOT_FOUND = "GH_NOT_FOUND"
+  GH_COMMAND_UNAVAILABLE = "GH_COMMAND_UNAVAILABLE"
+  GH_UNCLASSIFIED = "GH_UNCLASSIFIED"
+  # Signature order defines precedence: the first matching category wins.
+  GH_FAILURE_SIGNATURES = [
+    [GH_AUTHENTICATION, [
+      "authentication failed",
+      "bad credentials",
+      "gh auth login",
+      "http 401",
+      "requires authentication",
+      "not logged into"
+    ].freeze],
+    [GH_RATE_LIMIT, [
+      "rate limit",
+      "http 429",
+      "abuse detection mechanism"
+    ].freeze],
+    [GH_NETWORK_TRANSPORT, [
+      "dial tcp",
+      "network is unreachable",
+      "connection refused",
+      "connection reset",
+      "could not resolve host",
+      "temporary failure in name resolution",
+      "tls handshake timeout",
+      "i/o timeout",
+      "context deadline exceeded",
+      "error connecting to"
+    ].freeze],
+    [GH_NOT_FOUND, [
+      "could not resolve to a pullrequest",
+      "could not resolve to a repository",
+      "http 404",
+      "repository not found"
+    ].freeze]
+  ].freeze
+  MAX_GH_STDERR_BYTES = 16_384
+
   TRUSTED_HOST_KEY = "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_HOST"
   TRUSTED_SCHEME_KEY = "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_SCHEME"
   TRUSTED_REPO_KEY = "UNTRUSTED_CONTRIBUTOR_INTAKE_TRUSTED_GITHUB_REPO"
@@ -78,6 +120,19 @@ module UntrustedContributorIntakePreflight
 
   def blocked(message)
     raise Blocked, message
+  end
+
+  def blocked_gh_operational(reason_code)
+    blocked("#{METADATA_BLOCKED}; reason_code=#{reason_code}")
+  end
+
+  def classify_gh_operational_failure(stderr)
+    text = stderr.to_s.b.byteslice(0, MAX_GH_STDERR_BYTES).downcase
+    match = GH_FAILURE_SIGNATURES.find do |_reason_code, signatures|
+      signatures.any? { |signature| text.include?(signature) }
+    end
+
+    match ? match.first : GH_UNCLASSIFIED
   end
 
   # Every externally supplied value passes this gate before any further parsing,
@@ -214,7 +269,7 @@ module UntrustedContributorIntakePreflight
   # the trusted host and the trusted repository. No body, comment, review, or
   # diff text is requested.
   def gh_pr_view_number_and_url(policy, number)
-    stdout, _stderr, status = Open3.capture3(
+    stdout, stderr, status = Open3.capture3(
       { "GH_REPO" => nil, "GH_HOST" => policy.fetch(:host) },
       "gh",
       "pr",
@@ -227,11 +282,13 @@ module UntrustedContributorIntakePreflight
       "--jq",
       '"\(.number)|\(.url)"'
     )
-    blocked(METADATA_BLOCKED) unless status.success?
+    blocked_gh_operational(classify_gh_operational_failure(stderr)) unless status.success?
 
     stdout
+  rescue Errno::ENOENT, Errno::EACCES
+    blocked_gh_operational(GH_COMMAND_UNAVAILABLE)
   rescue SystemCallError
-    blocked(METADATA_BLOCKED)
+    blocked_gh_operational(GH_UNCLASSIFIED)
   end
 
   def resolve_metadata(policy, classified)

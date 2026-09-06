@@ -15,6 +15,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_PR_PROCESSING_EXCEPTION = "Post-merge batch audit follow-up issues are governed by the Post-Merge Batch Audit section, not this ordinary follow-up tracking default; after dedupe, the coordinator creates those follow-up issues by default unless the user explicitly asked for report-only or no issue creation."
   REQUIRED_ISSUE_CREATION_ACCOUNTING = "issue-creation accounting: parent issue URL if created, child issue URLs, skipped duplicates with existing issue URLs, changelog recommendation, and any planned issue that could not be created"
   REQUIRED_UNAVAILABLE_COORDINATION_ASK = "ask before deep audit whether to wait for backend recovery or proceed with an explicitly `UNKNOWN` worked-issue scope"
+  REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK = "If the audited range also needs a codebase-health lens, run `$structural-review` explicitly on that same range, including release/range audits without worked issues or QA lanes. This audit does not auto-invoke sibling axes."
+  REQUIRED_STRUCTURAL_REVIEW_ENTRY_POINT = "- **After a batch audit:** invoke `$structural-review` explicitly on the same range audited by `$post-merge-audit` when you want the codebase-health lens. `post-merge-audit` does not auto-run `structural-review` for you."
   REQUIRED_COMPLETED_BATCH_MODE_SCOPE = "In completed-batch mode only:"
   REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
   OBSOLETE_COMPLETED_BATCH_AUDIT_TRIGGER = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
@@ -73,6 +75,14 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_WAIVER_PUBLICATION_REPLAY_RULE = "Receipt publication and replay independently re-fetch and compare the bound waiver; a self-consistent preflight digest is not authentication."
   REQUIRED_RAW_PREFLIGHT_INPUT_BINDING = "The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate terminal facts."
   REQUIRED_LIVE_PREFLIGHT_REASSESSMENT = "Before publish or replay accepts a complete receipt, it re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status when a backend applies, and re-authenticates any waiver; missing, altered, stale, or mismatched terminal facts block before POST or ready replay."
+  REQUIRED_ISSUE_RESULT_PR_PROJECTION = "The issue-to-result-PR projection requires an authenticated same-repository symmetric closing relationship, a closed source issue, a merged result PR, the exact result head, and ordered terminal timestamps; do not union the source issue and result PR as two publication targets, and re-authenticate the projection before ordinary receipt publish or replay."
+  REQUIRED_TYPED_LANE_TARGETS = "When typed for publication-preflight parsing, accepted lane-target forms are exactly `issue:N`, `pr:N`, or `pull_request:N`; malformed, unknown, or type-ambiguous spellings fail closed. These parsing forms are not distinct agent-coordination claim identities. Legacy bare `N`, `#N`, and positive integer lane targets remain compatible."
+  REQUIRED_NARROW_PROJECTION_SCOPE = "This projection is only for issue-to-result-PR publication; it does not authorize auxiliary ad-hoc target mappings or multiple coordination lanes for one publication target."
+  REQUIRED_MIXED_TARGET_RECONCILIATION = "An explicitly URL-less terminal `done` lane that already names mixed issue and pull-request targets reconciles the shared scalar `pr_state` per target only when durable terminal evidence exists, the scalar matches one resolved terminal state, every target state is freshly authenticated, the issue head remains absent, and exact-head QA stays bound to the pull request; this does not derive or union targets from a URL or admit auxiliary lanes."
+  ISSUE_RESULT_PR_PROJECTION_FILES = [
+    "skills/post-merge-audit/SKILL.md",
+    "workflows/post-merge-audit.md"
+  ].freeze
   REQUIRED_TRUSTED_RECEIPT_WORKFLOW_CONFIG = "Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay."
   REQUIRED_TRUSTED_UI_CLASSIFICATION = "Each `qa_evidence` row must carry a coordinator-owned `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's canonical target and publication snapshot; `yes` requires strict visual-evidence v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or v2-contradictory classification blocks."
   REQUIRED_PUBLIC_FALLBACK_PUBLICATION_BLOCK = "Configured `public claim-comment fallback` is advisory ownership state only; it must not invoke private `agent-coord`, and without a separate authenticated terminal coordination contract it leaves completed-batch publication blocked as `UNKNOWN`."
@@ -203,6 +213,21 @@ class PostMergeAuditPolicyTest < Minitest::Test
     normalized_text = text.gsub(/\s+/, " ")
 
     assert_includes normalized_text, REQUIRED_PR_PROCESSING_EXCEPTION
+  end
+
+  def test_post_merge_audit_mentions_structural_review_as_a_separate_axis
+    text = File.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
+    range_section = text.match(/^### Range-Level Structural Review\n(?<body>.*?)(?=^##? |\z)/m)
+
+    refute_nil range_section, "Structural review must be outside the per-PR and per-issue lists"
+    assert_includes range_section[:body].gsub(/\s+/, " "), REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK
+  end
+
+  def test_structural_review_entry_point_remains_explicit
+    text = File.read(File.join(ROOT, "skills/structural-review/SKILL.md"), encoding: "UTF-8")
+    normalized_text = text.gsub(/\s+/, " ")
+
+    assert_includes normalized_text, REQUIRED_STRUCTURAL_REVIEW_ENTRY_POINT
   end
 
   def test_outputs_include_issue_creation_accounting
@@ -461,6 +486,17 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should block an unmerged coordinated target"
       assert_includes normalized_text, "in_progress",
                       "#{relative_path} should block in-progress QA"
+    end
+  end
+
+  def test_issue_targeted_lanes_project_only_to_one_authenticated_result_pr
+    ISSUE_RESULT_PR_PROJECTION_FILES.each do |relative_path|
+      normalized_text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes normalized_text, REQUIRED_ISSUE_RESULT_PR_PROJECTION, relative_path
+      assert_includes normalized_text, REQUIRED_TYPED_LANE_TARGETS, relative_path
+      assert_includes normalized_text, REQUIRED_NARROW_PROJECTION_SCOPE, relative_path
+      assert_includes normalized_text, REQUIRED_MIXED_TARGET_RECONCILIATION, relative_path
     end
   end
 

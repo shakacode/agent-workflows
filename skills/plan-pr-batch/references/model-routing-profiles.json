@@ -1,0 +1,111 @@
+{
+  "schema": "model-routing-profiles-v1",
+  "default_codex_profile": "astra-pilot-v1",
+  "profiles": {
+    "astra-pilot-v1": {
+      "status": "unmeasured-pilot",
+      "advisory": true,
+      "routes": {
+        "diagnosis": {
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "class": "strongest",
+          "reason": "Ambiguity or difficult judgment justifies a strongest-route pilot."
+        },
+        "architecture": {
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "class": "strongest",
+          "reason": "Ambiguity or difficult judgment justifies a strongest-route pilot."
+        },
+        "integration": {
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "class": "strongest",
+          "reason": "Ambiguity or difficult judgment justifies a strongest-route pilot."
+        },
+        "difficult-review": {
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "class": "strongest",
+          "reason": "Ambiguity or difficult judgment justifies a strongest-route pilot."
+        },
+        "uncertain-worker": {
+          "model": "gpt-6-astra",
+          "effort": "high",
+          "class": "strongest",
+          "reason": "Ambiguity or difficult judgment justifies a strongest-route pilot."
+        },
+        "difficult-recovery": {
+          "model": "gpt-6-astra",
+          "effort": "xhigh",
+          "class": "strongest",
+          "reason": "Use only for justified difficult recovery or independent adversarial work; escalation requires evidence."
+        },
+        "adversarial-review": {
+          "model": "gpt-6-astra",
+          "effort": "xhigh",
+          "class": "strongest",
+          "reason": "Use only for justified difficult recovery or independent adversarial work; escalation requires evidence."
+        },
+        "bounded-implementation": {
+          "model": "gpt-5.6-terra",
+          "effort": "high",
+          "class": "balanced",
+          "reason": "Retain an established balanced route for bounded work with strong verification."
+        },
+        "routine-coordination": {
+          "model": "gpt-5.6-terra",
+          "effort": "high",
+          "class": "balanced",
+          "reason": "Retain an established balanced route for bounded work with strong verification."
+        },
+        "deterministic-work": {
+          "model": null,
+          "effort": null,
+          "class": "helper",
+          "reason": "Use an existing deterministic helper when available; otherwise retain an established suitable route."
+        }
+      }
+    }
+  },
+  "api_efforts": {
+    "gpt-6-astra": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ]
+  },
+  "legacy_planning_cases": [
+    {
+      "id": "simple",
+      "classification": "affirmatively-simple",
+      "neutral": "balanced/medium",
+      "codex": "Terra/medium",
+      "claude": "Sonnet 5/medium"
+    },
+    {
+      "id": "routine multi-lane",
+      "classification": "routine-multi-lane",
+      "neutral": "balanced/high",
+      "codex": "Terra/high",
+      "claude": "Sonnet 5/high"
+    },
+    {
+      "id": "uncertain single target",
+      "classification": "default-or-uncertain-single-target",
+      "neutral": "strongest/high",
+      "codex": "Sol/high",
+      "claude": "Opus 5/high"
+    },
+    {
+      "id": "pinned high risk",
+      "classification": "pinned-high-risk-or-escalation",
+      "neutral": "strongest/xhigh",
+      "codex": "Sol/xhigh",
+      "claude": "Opus 5/xhigh"
+    }
+  ]
+}

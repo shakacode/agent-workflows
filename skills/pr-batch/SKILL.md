@@ -1,10 +1,20 @@
 ---
 name: pr-batch
-description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch.
+description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch. Use when coordinating one or more implementation lanes.
 argument-hint: '[task, exact issue/PR numbers, or filters]'
 ---
 
 # PR Batch
+
+For new Codex planning, resolve the advisory `astra-pilot-v1` profile from
+[central routing data](../plan-pr-batch/references/model-routing-profiles.json) with the plan skill's
+`bin/model-routing-profile --role <role>`. Its named preferences supersede the
+GPT-5.6 recommendations below for the listed roles; those recommendations and
+planning tables remain the established comparison baseline. Keep explicit user
+routes, verified host support, portable fallback, and independent evidence rules.
+This is an unmeasured pilot, not a measured promotion.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
 
 Run one or more PR work lanes through one canonical process. A single target is
 a batch of one, not a separate workflow.
@@ -198,7 +208,7 @@ facts remain fail-closed and stop before mutation.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
   visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
   for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
-  [automatic interactive exact-diff walkthrough](../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)
+  [automatic GitHub-native exact-diff walkthrough](../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)
   before the one final merge decision. Do not silently default it.
 
 The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
@@ -524,6 +534,9 @@ Use the canonical [Autonomous Merge Eligibility](../../workflows/pr-batch-integr
 ## Merge Assurance Gate
 
 Use the canonical [Merge Assurance Gate](../../workflows/pr-batch-integration-closeout.md#merge-assurance-gate) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+That component owns the canonical `diff-identity` invocation, trusted-base
+optional approval-hold policy, selected-workflow continuity, and receipt
+propagation; do not substitute caller-authored digests or waivers.
 
 ## Goal Prompt Template
 
@@ -575,7 +588,7 @@ Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 ```
 

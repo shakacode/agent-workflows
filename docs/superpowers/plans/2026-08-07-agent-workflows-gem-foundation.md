@@ -76,7 +76,8 @@
 - `bin/agent_doctor/*.rb`: during the pilot, moved doctor files become thin
   compatibility bodies until Task 5 makes the canonical library installable;
   Task 6 removes those bodies, while the three autonomous-merge policy files
-  remain until Task 2 of the later domain-extraction plan.
+  and `hosted_qa_policy.rb` remain until Task 2 of the later domain-extraction
+  plan moves all four atomically with their callers and runtime-trust manifests.
 - `bin/install-agent-workflows`: selects `lib/agent_workflows` atomically with wrappers.
 - `bin/install-agent-workflows-test.bash`: tests all delivery layouts and failure cases.
 - `bin/agent_stack/installers.bash`: installs the shared library for colocated stack commands.
@@ -571,11 +572,11 @@ test path and add an explicit `.start(argv)` adapter so later callers do not
 depend on a required file's `$PROGRAM_NAME == __FILE__` guard.
 
 Convert sibling `require_relative` calls to the new sibling paths and inject the
-shared process runner. Leave
-`autonomous_merge_policy.rb`, `autonomous_merge_policy_globs.rb`, and
-`autonomous_merge_policy_yaml.rb` in `bin/agent_doctor` until Task 2 of the
+shared process runner. Leave `autonomous_merge_policy.rb`,
+`autonomous_merge_policy_globs.rb`, `autonomous_merge_policy_yaml.rb`, and
+`hosted_qa_policy.rb` in `bin/agent_doctor` until Task 2 of the
 domain-extraction plan moves them atomically with the seam doctor plus their
-existing merge/runtime-trust callers and manifests. Preserve every old implementation body, including `workflows_cli.rb`,
+existing merge, hosted-QA, and runtime-trust callers and manifests. Preserve every old implementation body, including `workflows_cli.rb`,
 `stack_cli.rb`, and the executable behavior in `install_ownership.rb`, through
 Task 4. Replacing them with shims here would break existing copy,
 plugin-companion, and stack installations because their installer does not ship
@@ -1240,8 +1241,9 @@ git commit -m "feat: install agent workflows Ruby library atomically"
 **Files:**
 
 - Delete: migrated doctor and CLI files under `bin/agent_doctor/`.
-- Retain: `bin/agent_doctor/autonomous_merge_policy*.rb` for Task 2 of the
-  later domain-extraction plan.
+- Retain: `bin/agent_doctor/autonomous_merge_policy*.rb` and
+  `bin/agent_doctor/hosted_qa_policy.rb` for the atomic policy and hosted-QA
+  runtime cutover in Task 2 of the later domain-extraction plan.
 - Modify: every remaining `require_relative` reference returned by the discovery command below.
 - Modify: installer ownership and migration tests that refer to the old directory.
 - Modify: `README.md`, `docs/installation-and-upgrades.md`.
@@ -1249,9 +1251,9 @@ git commit -m "feat: install agent workflows Ruby library atomically"
 **Interfaces:**
 
 - Consumes: canonical doctor library and installed layouts from Tasks 3-5.
-- Produces: one doctor implementation tree with no runtime fallback; the three
-  autonomous-merge policy files remain temporarily for domain-extraction Task 2,
-  where the seam and existing merge callers move atomically.
+- Produces: one doctor implementation tree with no runtime fallback; the four
+  policy files remain temporarily for domain-extraction Task 2, where the seam,
+  merge callers, hosted-QA helper, and runtime-trust manifests move atomically.
 
 - [ ] **Step 1: Prove all remaining callers before deletion**
 
@@ -1266,13 +1268,13 @@ Classify every hit as canonical library use, compatibility test fixture, documen
 - [ ] **Step 2: Delete the old implementation and run focused suites**
 
 Remove the migrated doctor and CLI files from `bin/agent_doctor`, but retain the
-three `autonomous_merge_policy*.rb` files until the domain-extraction plan's
-Task 2 seam/policy cutover. Run doctor, installer, stack, autonomous-merge policy, and
-seam-doctor tests. Expected: migrated doctor implementation and stack CLI callers
-have no `require_relative` references into the retained policy location;
-`bin/agent-workflow-seam-doctor`, its tests, merge callers, and runtime-trust
-fixtures still use the reviewed legacy policy paths until the later atomic
-domain-extraction Task 2 cutover.
+three `autonomous_merge_policy*.rb` files and `hosted_qa_policy.rb` until the
+domain-extraction plan's Task 2 policy cutover. Run doctor, installer, stack,
+autonomous-merge policy, hosted-QA, and seam-doctor tests. Expected: migrated
+doctor implementation and stack CLI callers have no `require_relative`
+references into the retained policy location; `bin/agent-workflow-seam-doctor`,
+its tests, merge callers, the hosted-QA helper, and runtime-trust fixtures still
+use the reviewed legacy policy paths until the later atomic cutover.
 
 - [ ] **Step 3: Verify packaged and installed independence**
 
@@ -1415,9 +1417,9 @@ The foundation is complete only when:
 - the built gem and source-pack install both run the doctor from canonical library code;
 - copy, symlink, flat, plugin-companion, and stack-sync layouts pass;
 - the exact-head macOS packaging-smoke job passes and records its receipt;
-- only the three explicitly deferred autonomous-merge policy files remain under
-  `bin/agent_doctor`, with their atomic caller/provenance cutover and removal
-  owned by Task 2 of the domain-extraction plan;
+- only the four explicitly deferred policy files remain under `bin/agent_doctor`,
+  with their atomic caller, hosted-QA runtime, provenance, and manifest cutover
+  and removal owned by Task 2 of the domain-extraction plan;
 - Ruby 3.3 and 3.4.6 validation pass;
 - the committed pre-work baseline and separate evidence-only closeout under
   `release/evidence/foundation/` schema-validate, the closeout binds its parent

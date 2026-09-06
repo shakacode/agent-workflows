@@ -1,0 +1,77 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+
+# A conservative comparison of coordinator-verified local command evidence.
+# This does not execute commands, authenticate evidence, or grant readiness.
+module VerificationEvidenceReuse
+  CONTEXT_FIELDS = %w[head_sha base_sha environment configuration command covered_paths].freeze
+
+  class UniqueObject < Hash
+    def []=(key, value)
+      raise ArgumentError, "duplicate key: #{key}" if key?(key)
+
+      super
+    end
+  end
+
+  def self.known_string?(value)
+    value.is_a?(String) && !value.strip.empty? && value.strip.casecmp("UNKNOWN") != 0
+  end
+
+  def self.valid_context?(context)
+    return false unless context.is_a?(Hash)
+
+    object_ids = context.values_at("head_sha", "base_sha")
+    return false unless object_ids.all? { |value| value.is_a?(String) && value.match?(/\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/) }
+    return false unless object_ids.map(&:length).uniq.one?
+    return false unless %w[environment configuration].all? { |key| known_string?(context[key]) }
+
+    %w[command covered_paths].all? do |key|
+      value = context[key]
+      value.is_a?(Array) && !value.empty? && value.all? { |item| known_string?(item) }
+    end
+  end
+
+  def self.call(request)
+    return result("rerun", "invalid request") unless request.is_a?(Hash) && request["version"] == 1
+
+    evidence = request["evidence"]
+    current = request["current"]
+    unless valid_context?(evidence) && valid_context?(current)
+      return result("rerun", "missing, malformed, or UNKNOWN context")
+    end
+    unless [true, false].include?(request["repeat_required"])
+      return result("rerun", "repeat requirement is unknown")
+    end
+    return result("rerun", "repository requires this repeat") if request["repeat_required"]
+    unless evidence["working_tree"] == "clean" && current["working_tree"] == "clean"
+      return result("rerun", "mutable working tree")
+    end
+    unless evidence["kind"] == "local-command" && evidence["outcome"] == "pass" && known_string?(evidence["evidence_ref"])
+      return result("rerun", "no passing local command evidence")
+    end
+
+    changed = CONTEXT_FIELDS.reject { |key| evidence[key] == current[key] }
+    return result("rerun", "changed context: #{changed.join(', ')}") unless changed.empty?
+
+    result("reusable", "matching local command context").merge("evidence_ref" => evidence["evidence_ref"])
+  end
+
+  def self.result(status, reason)
+    { "version" => 1, "status" => status, "reason" => reason, "scope" => "local-command-only" }
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  begin
+    request = JSON.parse($stdin.read, object_class: VerificationEvidenceReuse::UniqueObject)
+    result = VerificationEvidenceReuse.call(request)
+    puts JSON.generate(result)
+    exit(result["status"] == "reusable" ? 0 : 1)
+  rescue JSON::ParserError, ArgumentError => e
+    puts JSON.generate(VerificationEvidenceReuse.result("rerun", "invalid input: #{e.message}"))
+    exit 1
+  end
+end
