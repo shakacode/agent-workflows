@@ -92,7 +92,9 @@ which snapshots should exist.
 The prompts grant ordinary repository integration authority: automatic merge
 under the autonomous-merge eligibility gate, rebases, dismissal of stale
 advisory-bot review objects, adoption of orphaned drafts under the R12
-dispositions, and the `human-attention:*` labels. They do not grant
+dispositions of the
+[throughput plan](plans/2026-08-29-throughput-first-human-agent-workflow.md#r12--in-flight-portfolio-control-p1),
+and the `human-attention:*` labels. They do not grant
 deployment, production, package publication, release, destructive-action, or
 security-sensitive authority. Each prompt block stays under 3,000 characters,
 a conciseness budget below the 3,700 usable characters of a Codex goal field
@@ -122,7 +124,7 @@ AGENTS.md, repository policy, and my authenticated instructions. You hold
 merge_authority: auto_merge_when_gates_pass for ordinary changes under the
 eligibility gate and seam thresholds. You may rebase conflicting PRs; dismiss
 a stale changes-requested review from an advisory AI bot with one comment
-citing #733; and give each unclaimed draft an R12 disposition:
+citing #733; and give each unclaimed draft a throughput-plan R12 disposition:
 integration-ready marks it ready and runs the gates, continue starts one
 remediation lane, close fits only evidence-backed duplicate, superseded, or
 invalid work and keeps the branch with a comment linking its issue. Never
@@ -166,7 +168,7 @@ AGENTS.md, repository policy, and my authenticated instructions. You hold
 merge_authority: auto_merge_when_gates_pass for ordinary changes under the
 eligibility gate and seam thresholds. You may rebase conflicting PRs; dismiss
 a stale changes-requested review from an advisory AI bot with one comment
-citing repository policy; and give each unclaimed draft an R12 disposition:
+citing repository policy; and give each unclaimed draft a throughput-plan R12 disposition:
 integration-ready marks it ready and runs the gates, continue starts one
 remediation lane, close fits only evidence-backed duplicate, superseded, or
 invalid work and keeps the branch with a comment linking its issue. Never
@@ -286,7 +288,7 @@ instructions. You hold merge_authority: auto_merge_when_gates_pass for
 ordinary changes under the eligibility gate and seam thresholds. You may
 rebase conflicting PRs; dismiss a stale changes-requested review from an AI
 bot that repository policy makes advisory, with one comment citing that
-policy; and give each unclaimed draft an R12 disposition: integration-ready
+policy; and give each unclaimed draft a throughput-plan R12 disposition: integration-ready
 marks it ready and runs the gates, continue starts one remediation lane,
 close fits only evidence-backed duplicate, superseded, or invalid work and
 keeps the branch with a comment linking its issue. Never infer deployment,
