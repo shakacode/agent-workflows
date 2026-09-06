@@ -1,6 +1,6 @@
 ---
 name: pr-batch
-description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch.
+description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch. Use when coordinating one or more implementation lanes.
 argument-hint: '[task, exact issue/PR numbers, or filters]'
 ---
 
@@ -527,6 +527,9 @@ Use the canonical [Autonomous Merge Eligibility](../../workflows/pr-batch-integr
 ## Merge Assurance Gate
 
 Use the canonical [Merge Assurance Gate](../../workflows/pr-batch-integration-closeout.md#merge-assurance-gate) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+That component owns the canonical `diff-identity` invocation, trusted-base
+optional approval-hold policy, selected-workflow continuity, and receipt
+propagation; do not substitute caller-authored digests or waivers.
 
 ## Goal Prompt Template
 

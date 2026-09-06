@@ -136,6 +136,9 @@ handoff may not make the user infer an action from technical status, durable
 references, or a `Conversation status:` blocker union. Preserve any required
 receipt before the closing stack: the Unblock Block when the status is not
 clean, then the final `Conversation status:` line.
+The [Output Contract](#output-contract) permits a compact final layout for
+eligible small single-repo batches; it preserves these required strings and
+their order.
 
 ## Output Contract
 
@@ -178,6 +181,10 @@ user-visible message counts in exactly one bucket of the closeout marker.
   one human-readable terminal structure; larger or multi-repo batches keep the
   existing split closing stack. That consolidation is tracked in
   [issue 484](https://github.com/shakacode/agent-workflows/issues/484).
+  The optional threshold is a positive integer; omission keeps the split form.
+  Count distinct durable lanes in the batch, including completed lanes, not
+  worker instances, PRs/targets, or emitted Lane Cards. This affects only the
+  final-handoff layout; the separate `pr-open` checkpoint remains unchanged.
 
 At closeout, report a shadow-only `coordinator-narration-volume v1` marker of
 self-counted message and character volume. It gates nothing, blocks no handoff,

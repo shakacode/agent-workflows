@@ -3,7 +3,8 @@
 This component owns integration and PR closeout from an accepted worker
 implementation head through one precise readiness, merged, or no-PR handoff.
 Load it after [worker execution](pr-batch-worker-execution.md) produces
-`worker-execution-handoff v1`.
+`worker-execution-handoff v1` and the [Task Review Loop](pr-batch-task-review.md)
+completes for that implementation head.
 
 ## Boundary
 
@@ -23,13 +24,16 @@ modes consume this component's exact-head evidence.
 
 ## Input Contract
 
-Start only with a complete `worker-execution-handoff v1`: stable target and
-lane identity, accepted base, exact implementation head, branch/worktree,
-changed paths and scope decisions, focused verification evidence, dependency
-state, QA needs, review hints, and any meaningful-stop or `UNKNOWN` facts.
-Refresh the live target, base, head, permissions, repository seams, and optional
-coordination holder/generation before mutation. Missing required facts remain
-`UNKNOWN`; never reconstruct them from task titles or worker prose.
+Require a complete `worker-execution-handoff v1`, not reconstructed worker prose.
+Before mutation, refresh live target/base/head, permissions, repository seams,
+and optional coordination holder/generation. Also replay the reducer under the
+[Task Review Loop](pr-batch-task-review.md), including canonical diff provenance.
+Require `task_complete` and `dependent_task_permitted: true`, binding accepted task identity,
+brief/report/package digests, last round digest, accepted base and exact implementation head
+to that handoff. Retain replay evidence; a worker handoff alone is insufficient.
+Missing, stale, foreign, blocked, or incomplete evidence returns to the task loop
+before mutation, push or publication. This never replaces final whole-branch validation, independent review, or CI
+on the resulting integration head.
 
 ## Output Contract
 
@@ -48,7 +52,8 @@ CI. The integration owner, not the implementation worker, performs this phase:
 
 1. Verify that the `worker-execution-handoff v1` matches the accepted target,
    lane, branch/worktree, changed-path envelope, and exact reachable commit.
-   Require a clean committed implementation head. Propagate a meaningful-stop
+   Verify the task-review completion required by the Input Contract before
+   proceeding. Require a clean committed implementation head. Propagate a meaningful-stop
    packet or `UNKNOWN` fact without pushing or opening a PR.
 2. Fetch the configured base and refresh its full SHA. Re-run the trusted
    dependency permission needed for `validation_open`, and consume the optional
@@ -706,6 +711,10 @@ closing facts may appear once as one compact terminal structure instead of the
 split handoff below. The compact structure still carries Lane Card facts, one
 `Next:`, explicit `Action needed:`, required receipts, and final `Conversation
 status:`. Larger or multi-repo batches keep the split form.
+Resolve the threshold and durable-lane count using the
+[Coordinator Output Contract](pr-processing.md#coordinator-output-contract);
+omitting the threshold keeps the split form. This changes only terminal
+presentation, not the separate `pr-open` checkpoint.
 
 Split batch handoffs into two sections:
 
@@ -1058,7 +1067,7 @@ The closeout lane is:
     or environment content into the handoff. Usage evidence remains
     informational and does not block or satisfy CI, review, QA, merge, audit, or
     archive-readiness gates.
-14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. When the compact terminal structure seam applies to single-repo batches, use the compact form above and keep the required receipt and final `Conversation status:` line in order. Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; otherwise put an `Unblock:` block with every normalized blocker immediately before the final `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. Before emitting that final message, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff.
+14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. When the compact terminal structure seam applies to single-repo batches at or below `compact_terminal_structure_max_lanes`, use the compact form above and keep the required receipt and final `Conversation status:` line in order. Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; otherwise put an `Unblock:` block with every normalized blocker immediately before the final `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. Before emitting that final message, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff.
 
 ## Self-Review Gate
 
@@ -1158,6 +1167,13 @@ Before fixing a bug, changing existing behavior, or implementing new behavior, f
 Avoid horizontal TDD batches: write one failing behavior test through the public interface, implement only enough code for that behavior, then repeat.
 
 ## Local Validation Gate
+
+Reuse applicable local results through the canonical
+[Verification evidence reuse](../skills/verify/references/verification-evidence.md)
+contract before scheduling another identical check. Repository-required repeats,
+clean committed full validation, combined-tip validation, and current-head CI
+remain mandatory. A previous passing local check does not satisfy a new review
+cohort or a hosted check.
 
 Run `.agents/bin/ci-detect` first when it exists and routing details matter.
 
@@ -1539,15 +1555,15 @@ Before saying a PR is ready to merge:
 
 ```bash
 gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels,latestReviews,reviews,comments,mergedAt
-# Resolve PR_BATCH_SKILL_DIR, then capture the machine-owned exact-head CI result.
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
-  --repo <OWNER/REPO> > "${CI_RESULT_PATH}"
+"${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref <BASE_BRANCH> --diff-base-sha <REVIEWED_DIFF_BASE_SHA> --head-sha <FULL_HEAD_SHA>
+"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO> --trusted-repo-root "${TRUSTED_CONSUMER_REPO_ROOT}" --diff-base-sha <REVIEWED_DIFF_BASE_SHA> > "${CI_RESULT_PATH}"
 ```
 
 The resulting `pr-ci-readiness` v2 contract owns complete, scoped exact-head
-evidence for required status checks, GitHub Actions, Dependabot, and other
-checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
-must migrate to the scoped v2 result.
+evidence. Receipts keep live base separate from reviewed diff-base SHA and bind
+canonical diff identity, raw rows, and trusted policy dispositions. Changed,
+required, selected, active, incomplete, stale, unknown, ambiguous, or
+caller-edited evidence blocks.
 
 Then run the repo's merge ledger (see `merge_ledger` in
 `.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
@@ -1865,6 +1881,8 @@ put exactly one record in merge-context `selected_hosted_runs`:
 {"provider":"external-ci","run_id":"<selected-workflow-or-run-id>"}
 ```
 
+A selected CircleCI workflow UUID cannot be policy-dispositioned.
+
 Do not add advisory or merely observed runs. A nonempty list requires this
 closed trusted-base seam:
 
@@ -1945,7 +1963,9 @@ not gate.
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --trusted-repo-root "${TRUSTED_CONSUMER_REPO_ROOT}" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`
@@ -1979,7 +1999,7 @@ chain, then run:
 ```
 
 `pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
-bindings, freshness, and selected hosted-CI records before any queue or
+bindings, freshness, selected hosted-CI records, and policy-aware live CI before any queue or
 guarded-direct mutation. A missing, cancelled, failed, nonterminal, stale-head,
 or mismatched-PR selected record blocks before the first GitHub call or
 repository guard.

@@ -155,6 +155,69 @@ class UserFacingCoordinationContractTest < Minitest::Test
     end
   end
 
+  def test_oc_v1_is_present_on_the_three_documented_surfaces
+    workflow = normalized_section(
+      WORKFLOW,
+      "### Coordinator Output Contract",
+      end_heading: /^###\s+/
+    )
+    doc = normalized_section(DOC, "## Output Contract", end_heading: /^##\s+/)
+    skill = normalized_section(PR_BATCH, "## Coordinator Output Contract", end_heading: /^##\s+/)
+
+    [workflow, doc, skill].each do |text|
+      assert_includes text, "OC-v1"
+    end
+  end
+
+  def test_oc_v1_workflow_section_pins_the_ordering_exemptions_and_closing_stack
+    text = normalized_section(
+      WORKFLOW,
+      "### Coordinator Output Contract",
+      end_heading: /^###\s+/
+    )
+
+    assert_ordered(text, "dispatch", "pr-open", "decision-required", "merge-decision", "final-handoff")
+
+    [
+      "direct answer to a user question",
+      "explicitly requested status report",
+      "another contract requires the coordinator to show",
+      "immediate stop required by a non-negotiable safety rule"
+    ].each do |phrase|
+      assert_includes text, phrase
+    end
+
+    [
+      "Next:",
+      "Action needed:",
+      "coordination:",
+      "Conversation status:",
+      "HST-v1",
+      "Lane Card"
+    ].each do |phrase|
+      assert_includes text, phrase
+    end
+
+    assert_includes text, "shadow-only"
+    assert_includes text, "never gates readiness"
+    assert_includes text, "never blocks a handoff"
+    assert_includes text, "The Lane Card, the `Next:` instruction, the `Action needed:` line"
+    assert_includes text, "at or below `compact_terminal_structure_max_lanes`"
+    assert_includes text, "Larger or multi-repo batches keep the existing split closing stack"
+    refute_includes text, "Collapsing them into a single terminal structure is deliberately out of scope"
+  end
+
+  def test_coordinator_narration_volume_marker_is_shadow_only_in_the_two_fyi_surfaces
+    skill = normalized_section(PR_BATCH, "## Coordinator Output Contract", end_heading: /^##\s+/)
+    closeout = normalized_section(INTEGRATION_CLOSEOUT, "### Batch Handoff Format", end_heading: /^###\s+/)
+
+    assert_includes skill, "coordinator-narration-volume v1"
+    assert_includes skill, "FYI / decisions made at closeout"
+    assert_includes closeout, "coordinator-narration-volume v1"
+    assert_includes closeout, "FYI / decisions made"
+    assert_includes closeout, "informational and never substitutes for a readiness gate"
+  end
+
   def test_readiness_separates_four_authority_facts
     text = normalized(DOC)
     assert_ordered(
@@ -290,8 +353,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
     end
 
     spec = normalized(SPEC)
-    assert_includes spec, "Action needed: Start a new planning task with $plan-pr-batch."
-    assert_includes spec, "Run $plan-pr-batch with the Spec Summary above"
+    assert_includes spec, "For an authorized implementation task, consume this summary"
+    assert_includes spec, "in the same task; do not require a new task or repeated approval"
+    assert_includes spec, "For a standalone spec, hand off the summary and recommended planning step without launching implementation."
 
     [PLAN_PR_BATCH, TRIAGE].each do |path|
       text = normalized(path)
@@ -321,6 +385,29 @@ class UserFacingCoordinationContractTest < Minitest::Test
       assert_includes text, "single-repo batches", path
       assert_includes text, "required receipt", path
     end
+  end
+
+  def test_compact_terminal_structure_preserves_checkpoint_scope_and_lane_identity
+    text = normalized_section(WORKFLOW, "### Coordinator Output Contract", end_heading: /^###\s+/)
+    assert_includes text, "optional positive integer; when omitted, keep the split closing stack"
+    assert_includes text, "distinct durable lanes, including completed lanes"
+    assert_includes text, "not running worker instances, PRs/targets, or emitted Lane Cards"
+    assert_includes text, "A lane with multiple targets counts once"
+    assert_includes text, "only the final-handoff layout"
+    assert_includes text, "separate `pr-open` checkpoint still occurs once per PR when it opens"
+
+    example = normalized("examples/agent-workflow.yml")
+    assert_includes example, "# compact_terminal_structure_max_lanes: 2"
+    assert_includes example, "Omit to keep the split closing stack"
+
+    terminal = normalized_section(DOC, "## Terminal Next-Step Contract", end_heading: /^##\s+/)
+    assert_includes terminal, "[Output Contract](#output-contract)"
+    assert_includes terminal, "preserves these required strings and their order"
+
+    closeout = normalized_section(INTEGRATION_CLOSEOUT, "### Coordinator Closeout Lane", end_heading: /^##\s+/)
+    assert_includes closeout,
+                    "When the compact terminal structure seam applies to single-repo batches " \
+                    "at or below `compact_terminal_structure_max_lanes`"
   end
 
   def test_close_session_consumes_the_shared_model
