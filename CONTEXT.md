@@ -266,7 +266,8 @@ _Avoid_: triage state, verdict, status
 The required audience class in every agent-posted GitHub comment envelope:
 `bookkeeping` (agent-to-agent, fully collapsed under one summary line),
 `info` (human-readable, `Action needed: none`, detail collapsed), or
-`decision` (the four desk-card fields visible, detail collapsed).
+`decision` (a two-line pointer to the desk card; the card itself lives only in
+the Human Attention Desk document, never in the PR comment).
 _Avoid_: comment type, severity, priority (a decision's priority is a card field)
 
 **Integration pass**:
@@ -321,9 +322,11 @@ _Avoid_: drain (reserved for cancellation), cleanup, sweep
   the tower must recheck the head and remove stale labels before human handoff.
   A CI-triggered agent may read, review, label, and
   draft an assessment; it never pushes or merges.
-- Every agent-posted GitHub comment carries exactly one **Comment kind**; a
-  `decision` comment is the same card the Human Attention Desk mirrors, and
-  only a `decision` may accompany a **Human-attention label**.
+- Every agent-posted GitHub comment carries exactly one **Comment kind**. A
+  human decision is presented as a card in the Human Attention Desk document
+  and signalled on the PR by a **Human-attention label**; the PR gets at most
+  one short `decision` pointer, never the card (maintainer decision,
+  2026-09-05).
 - A `bookkeeping` comment is one per agent task per PR and is edited in place;
   a `decision` comment is never edited after a human could have replied; an
   `info` comment appends so each walkthrough section stays separately
