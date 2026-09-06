@@ -21,8 +21,8 @@ or missing evidence is Unknown, not permission to restart.
 Confirm the relevant provider/account's usage when available. One provider's
 available quota says nothing about another's. If its limit is still reached,
 report the reset time and leave affected tasks waiting. If quota cannot be read,
-an otherwise eligible task may receive one resume attempt; stop that provider's
-remaining attempts if it returns a quota error. Do not buy credits, redeem a
+an otherwise eligible task may receive one resume attempt; stop attempts for
+other tasks on that provider/account if it returns a quota error. Do not buy credits, redeem a
 reset, or switch providers to get around a limit without separate authority.
 
 Before each resume, verify:
@@ -59,15 +59,34 @@ Before each resume, verify:
 
 ## Resume once and verify
 
-Save a compact recovery entry in the existing audit artifact before sending:
-host, task id/link, observed stopped turn, interruption evidence, authority
-reference, next step, and `resume requested`. Recheck live inactivity immediately
+Use one recovery operator per owning host; reconcile any other recovery run or
+monitor before sending. This procedure is not a concurrent dispatch service.
+Keep attempt records on the task's owning host at
+`<resolved Codex home>/audit-chats/recovery/<task-id>.md`, outside repository
+worktrees. Use the host-provided task id as one filename component, not a path.
+Read that same record on every run; create its parent directory and record when
+absent. Do not overwrite prior attempts. If records cannot be read or saved, or
+a known earlier attempt's record is missing, report Unknown and do not resume.
+Other hosts must consult this owning-host record, not create their own copy.
+
+Before sending, save host, task id/link, original stopped-turn id, interruption
+evidence, authority reference, next step, and `resume requested`; confirm the
+write succeeded. Keep the original stopped-turn id for the whole recovery
+attempt: a queued, failed, or ambiguous resulting turn is not a new attempt.
+Record its returned turn id and outcome in the same entry. A later independent
+interruption qualifies only after verified completion of this recovery attempt;
+another failure still requires diagnosis. Include record paths in the recovery
+report so the next operator can find them.
+
+Recheck live inactivity immediately
 before submitting; use conditional/idempotent resume when the host offers it.
 Do not send a recovery message to an active task where it might queue a second
 turn. If live state cannot be established, leave it Unknown.
 
-Send a short continuation to the existing task, preserving any requested
-model/effort selection through the host control:
+For a restart handoff, use the applicable same-task resume guidance in
+[pause](../../pause/SKILL.md), preserving any requested model/effort selection
+through the host control. For an unplanned quota interruption without a handoff,
+send a short continuation to the existing task:
 
 > Resume only your existing authorized work. Read your restart handoff and
 > reconcile live task ownership, preserved local work, and current PR/issue
