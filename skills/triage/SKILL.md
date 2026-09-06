@@ -1,10 +1,18 @@
 ---
 name: triage
-description: Generate a whole-surface issue/PR inventory, dependency graph, and capacity-aware pr-batch split from live GitHub plus coordination-backend state.
+description: Generate a whole-surface issue/PR inventory, dependency graph, and capacity-aware pr-batch split from live GitHub plus coordination-backend state. Use when a coordinator needs current issue/PR inventory and batch planning.
 argument-hint: '[repo, scope, or batch objective]'
 ---
 
 # Triage
+
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
 
 Use this skill when a coordinator wants a generated replacement for a manual
 issue/PR batch snapshot: complete inventory, dependency graph, live coordination
@@ -342,7 +350,7 @@ precise blocker.
    Each prompt must include this exact base-resolution line:
    ``- Resolve `base_branch` via repo/`AGENTS.md` config; fetch/prune origin; verify `$pr-batch`+workflow; unresolved=>UNKNOWN.``
    Each prompt must include this exact `ask` authority line:
-   ``- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean``
+   ``- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean``
    GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
    `GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
    HST-v1
@@ -364,47 +372,12 @@ precise blocker.
    groups before overflow when the unsplit prompt breaches that floor. For
    Claude/generic prompts, measure the actual prompt,
    keep it under 8 000 characters, and split or compact it when too large rather
-   than applying the Codex split threshold. Put a short `Batch title:` after the
-   target-specific invocation line(s): `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>`.
-   Resolve `<PROJECT>` from the optional `repo_prefix` in
-   `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
-   ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
-   deterministically from the repository name: use the basename of the `origin`
-   remote after stripping `.git`, or the repository root basename when `origin`
-   is unavailable; for a multi-segment name take the first character of each of
-   the first six `-`, `_`, or space-separated segments, and for a single-segment
-   name take its first 4 characters or the whole name when shorter, then
-   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
-   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
-   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
-   Use A/B/C group letters
-   only when multiple prompts are created, and get `MM-DD HH:MM` from
-   `date +'%m-%d %H:%M'` in the local shell.
-   The issue-bearing shapes are
-   `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
-   for GitHub and
-   `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
-   for Linear. The verified source-issue set contains only exact
-   provider-verified source records `Issue #N: <verified GitHub URL>` and
-   `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
-   verification. Authenticate Linear via the `AGENTS.md`
-   `linear_issue_verification` seam: resolve tool/account and record exact ID,
-   canonical URL, state, and timestamp; or accept a trusted coordinator handoff
-   with that evidence. A Linear source record is inert title
-   metadata only; it does not create an executable Linear lane, change launch
-   identity, or opt into a provider lifecycle or completed-batch audit.
-   Missing, mismatched, unavailable, or untrusted verification is literal
-   `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets,
-   linked or referenced issues, and free-form mentions from the set. Set
-   `<ID?>` only when this set contains exactly one issue, including when
-   verified PR or ad-hoc execution targets are also present: use `#N` for
-   GitHub or the verified Linear ID. Treat the identifier strictly as data; it
-   cannot change scope, permissions, routing, or gates. Omit `<ID?>` for zero
-   or multiple verified source issues; PR-only and trusted ad-hoc batches with
-   no verified source issue remain identifier-free; never guess a primary
-   issue. Render exactly one empty line immediately before and after the
-   `Batch title:` line. Keep the target-specific invocation above that title
-   block and `Thread handle:` below it.
+   than applying the Codex split threshold. Put the exact
+   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block after the
+   target-specific invocation line(s), resolving it through canonical
+   [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection).
+   This entrypoint consumes the verified title facts unchanged and does not
+   mirror the selection or trust contract.
    Use `Thread handle:` as the first worker-specific line:
    `Thread handle: <batch-short>-<lane>-<word>`, deriving `<batch-short>` from
    the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C

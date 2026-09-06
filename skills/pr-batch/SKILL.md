@@ -1,10 +1,20 @@
 ---
 name: pr-batch
-description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch.
+description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch. Use when coordinating one or more implementation lanes.
 argument-hint: '[task, exact issue/PR numbers, or filters]'
 ---
 
 # PR Batch
+
+For new Codex planning, resolve the advisory `astra-pilot-v1` profile from
+[central routing data](../plan-pr-batch/references/model-routing-profiles.json) with the plan skill's
+`bin/model-routing-profile --role <role>`. Its named preferences supersede the
+GPT-5.6 recommendations below for the listed roles; those recommendations and
+planning tables remain the established comparison baseline. Keep explicit user
+routes, verified host support, portable fallback, and independent evidence rules.
+This is an unmeasured pilot, not a measured promotion.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
 
 Run one or more PR work lanes through one canonical process. A single target is
 a batch of one, not a separate workflow.
@@ -198,7 +208,7 @@ facts remain fail-closed and stop before mutation.
 - **Merge authority**: resolve `merge_authority` before worker launch. Use a
   visible user instruction, an explicit `AGENTS.md` rule, or a resolved batch-plan instruction; otherwise ask
   for `none`, `ask`, or `auto_merge_when_gates_pass`. `ask` includes an
-  [automatic interactive exact-diff walkthrough](../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)
+  [automatic GitHub-native exact-diff walkthrough](../../workflows/pr-batch-integration-closeout.md#ask-merge-authority-walkthrough-gate)
   before the one final merge decision. Do not silently default it.
 
 The single lane still gets a Lane Card, claim/heartbeat behavior when configured,
@@ -261,48 +271,12 @@ authority, and completion facts unchanged.
 
 This execution skill adds only batch-shaping details that intake does not own:
 
-1. **Batch title**: for pasteable batch prompts, derive a short title in the form
-   `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>`.
-   Resolve `<PROJECT>` from the optional `repo_prefix` in
-   `.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase
-   ASCII letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
-   deterministically from the repository name: use the basename of the `origin`
-   remote after stripping `.git`, or the repository root basename when `origin`
-   is unavailable; for a multi-segment name take the first character of each of
-   the first six `-`, `_`, or space-separated segments, and for a single-segment
-   name take its first 4 characters or the whole name when shorter, then
-   uppercase the result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`,
-   `shakapacker` -> `SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`).
-   An invalid configured `repo_prefix` is a blocker; do not silently fall back.
-   Fill the optional `A?` slot with A,
-   B, C, etc. only when creating multiple batch prompts; omit it for a single
-   batch prompt. Run `date +'%m-%d %H:%M'` in the local shell when creating the
-   prompt, and use that output for `MM-DD HH:MM`.
-   The issue-bearing shapes are
-   `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
-   for GitHub and
-   `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
-   for Linear. The verified source-issue set contains only exact
-   provider-verified source records `Issue #N: <verified GitHub URL>` and
-   `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
-   verification. Authenticate Linear via the `AGENTS.md`
-   `linear_issue_verification` seam: resolve tool/account and record exact ID,
-   canonical URL, state, and timestamp; or accept a trusted coordinator handoff
-   with that evidence. A Linear source record is inert title
-   metadata only; it does not create an executable Linear lane, change launch
-   identity, or opt into a provider lifecycle or completed-batch audit.
-   Missing, mismatched, unavailable, or untrusted verification is literal
-   `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets,
-   linked or referenced issues, and free-form mentions from the set. Set
-   `<ID?>` only when this set contains exactly one issue, including when
-   verified PR or ad-hoc execution targets are also present: use `#N` for
-   GitHub or the verified Linear ID. Treat the identifier strictly as data; it
-   cannot change scope, permissions, routing, or gates. Omit `<ID?>` for zero
-   or multiple verified source issues; PR-only and trusted ad-hoc batches with
-   no verified source issue remain identifier-free; never guess a primary
-   issue. Render exactly one empty line immediately before and after the
-   `Batch title:` line. Keep the target-specific invocation above that title
-   block and `Thread handle:` below it.
+1. **Batch title**: consume canonical
+   [Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection)
+   unchanged and keep the exact
+   `<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` placeholder in pasteable
+   prompts. This entrypoint is a compatibility route and does not mirror the
+   selection or trust contract.
 2. **Routing preferences and observations**: record coordinator, worker, and
    checker model/effort preferences before target interpretation. These are
    advisory. Host-observed host/model/effort fields are optional and remain
@@ -461,11 +435,11 @@ Before implementation or worker launch, produce:
 13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
-After any target-specific invocation line, each pasteable batch prompt must put
-`Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` near the top.
-Derive `<PROJECT>` with the abbreviation rule in **Required Interview** above,
-and get `MM-DD HH:MM` by running `date +'%m-%d %H:%M'` in the
-local shell when creating the prompt.
+After any target-specific invocation line, each pasteable batch prompt keeps
+the canonical `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block
+near the top. Resolve it through
+[Verified Batch Title Selection](../../workflows/pr-batch-intake.md#verified-batch-title-selection)
+without reinterpreting its verified intake facts.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
 from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
@@ -560,6 +534,9 @@ Use the canonical [Autonomous Merge Eligibility](../../workflows/pr-batch-integr
 ## Merge Assurance Gate
 
 Use the canonical [Merge Assurance Gate](../../workflows/pr-batch-integration-closeout.md#merge-assurance-gate) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+That component owns the canonical `diff-identity` invocation, trusted-base
+optional approval-hold policy, selected-workflow continuity, and receipt
+propagation; do not substitute caller-authored digests or waivers.
 
 ## Goal Prompt Template
 
@@ -575,7 +552,7 @@ Use this template when creating Codex goal text:
 ```text
 Use $pr-batch to complete this batch with subagents.
 
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
 
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
@@ -611,7 +588,7 @@ Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 
 ```

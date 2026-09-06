@@ -3,7 +3,8 @@
 This component owns integration and PR closeout from an accepted worker
 implementation head through one precise readiness, merged, or no-PR handoff.
 Load it after [worker execution](pr-batch-worker-execution.md) produces
-`worker-execution-handoff v1`.
+`worker-execution-handoff v1` and the [Task Review Loop](pr-batch-task-review.md)
+completes for that implementation head.
 
 ## Boundary
 
@@ -23,13 +24,16 @@ modes consume this component's exact-head evidence.
 
 ## Input Contract
 
-Start only with a complete `worker-execution-handoff v1`: stable target and
-lane identity, accepted base, exact implementation head, branch/worktree,
-changed paths and scope decisions, focused verification evidence, dependency
-state, QA needs, review hints, and any meaningful-stop or `UNKNOWN` facts.
-Refresh the live target, base, head, permissions, repository seams, and optional
-coordination holder/generation before mutation. Missing required facts remain
-`UNKNOWN`; never reconstruct them from task titles or worker prose.
+Require a complete `worker-execution-handoff v1`, not reconstructed worker prose.
+Before mutation, refresh live target/base/head, permissions, repository seams,
+and optional coordination holder/generation. Also replay the reducer under the
+[Task Review Loop](pr-batch-task-review.md), including canonical diff provenance.
+Require `task_complete` and `dependent_task_permitted: true`, binding accepted task identity,
+brief/report/package digests, last round digest, accepted base and exact implementation head
+to that handoff. Retain replay evidence; a worker handoff alone is insufficient.
+Missing, stale, foreign, blocked, or incomplete evidence returns to the task loop
+before mutation, push or publication. This never replaces final whole-branch validation, independent review, or CI
+on the resulting integration head.
 
 ## Output Contract
 
@@ -48,7 +52,8 @@ CI. The integration owner, not the implementation worker, performs this phase:
 
 1. Verify that the `worker-execution-handoff v1` matches the accepted target,
    lane, branch/worktree, changed-path envelope, and exact reachable commit.
-   Require a clean committed implementation head. Propagate a meaningful-stop
+   Verify the task-review completion required by the Input Contract before
+   proceeding. Require a clean committed implementation head. Propagate a meaningful-stop
    packet or `UNKNOWN` fact without pushing or opening a PR.
 2. Fetch the configured base and refresh its full SHA. Re-run the trusted
    dependency permission needed for `validation_open`, and consume the optional
@@ -1153,6 +1158,13 @@ Avoid horizontal TDD batches: write one failing behavior test through the public
 
 ## Local Validation Gate
 
+Reuse applicable local results through the canonical
+[Verification evidence reuse](../skills/verify/references/verification-evidence.md)
+contract before scheduling another identical check. Repository-required repeats,
+clean committed full validation, combined-tip validation, and current-head CI
+remain mandatory. A previous passing local check does not satisfy a new review
+cohort or a hosted check.
+
 Run `.agents/bin/ci-detect` first when it exists and routing details matter.
 
 Then run `.agents/bin/validate`, or a tighter set that covers the same changed
@@ -1533,15 +1545,15 @@ Before saying a PR is ready to merge:
 
 ```bash
 gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels,latestReviews,reviews,comments,mergedAt
-# Resolve PR_BATCH_SKILL_DIR, then capture the machine-owned exact-head CI result.
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
-  --repo <OWNER/REPO> > "${CI_RESULT_PATH}"
+"${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref <BASE_BRANCH> --diff-base-sha <REVIEWED_DIFF_BASE_SHA> --head-sha <FULL_HEAD_SHA>
+"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO> --trusted-repo-root "${TRUSTED_CONSUMER_REPO_ROOT}" --diff-base-sha <REVIEWED_DIFF_BASE_SHA> > "${CI_RESULT_PATH}"
 ```
 
 The resulting `pr-ci-readiness` v2 contract owns complete, scoped exact-head
-evidence for required status checks, GitHub Actions, Dependabot, and other
-checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
-must migrate to the scoped v2 result.
+evidence. Receipts keep live base separate from reviewed diff-base SHA and bind
+canonical diff identity, raw rows, and trusted policy dispositions. Changed,
+required, selected, active, incomplete, stale, unknown, ambiguous, or
+caller-edited evidence blocks.
 
 Then run the repo's merge ledger (see `merge_ledger` in
 `.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
@@ -1576,23 +1588,29 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 ### Ask Merge Authority Walkthrough Gate
 
 When `merge_authority` is `ask` and every ordinary gate is clean,
-automatically start the exact-diff PR walkthrough before asking for merge
-approval. Use `$pr-walkthrough` when available; otherwise apply its read-only
-contract inline: inspect the complete diff first, group it into conceptual
-changes, explain the reason, behavior, tradeoffs, risks, and proof for exactly
-one change at a time, then wait for explicit readiness before continuing.
+automatically publish the complete exact-diff PR walkthrough before asking for
+merge approval. Use `$pr-walkthrough` when available; otherwise apply its
+contract inline: inspect the complete diff and build the full coverage map.
+Prepare every conceptual section up front. Publish one PR-level orientation and
+all sections to GitHub in one pass under `$pr-walkthrough`'s mandatory
+inline-thread and no-anchor-stop rules: use one `COMMENT` review, with a separately
+replyable inline thread per concept on an honest changed line. If any concept
+has no honest anchor, explain the limitation and stop; do not claim complete
+threaded coverage. Publish without waiting for repeated chat turns. The owning task consumes
+PR replies asynchronously. Use a live
+interactive walkthrough only when the maintainer explicitly requests one.
 
-Use full interactive mode for large or complex PRs and concise interactive mode
-for smaller cohesive PRs. Treat a PR as large when it exceeds any trusted-base
+Use full mode for large or complex PRs and concise mode for smaller cohesive
+PRs. Treat a PR as large when it exceeds any trusted-base
 `autonomous_merge.thresholds` maximum for changed files, changed lines, or
 commits. Complexity, cross-cutting behavior, security, migrations,
 architecture, or difficult rollback may require full mode below those limits.
 Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
 
-After it completes or is skipped, refresh the diff identity and ordinary
+After publication or an explicit skip, refresh the diff identity and ordinary
 readiness. If the diff identity changed, invalidate the walkthrough and
-readiness evidence, then restart the walkthrough or stop. If an ordinary gate
+readiness evidence, then rebuild and republish the walkthrough or stop. If an ordinary gate
 newly fails, stop. Ask one final merge decision only when the refreshed diff
 identity matches the recorded identity, ordinary readiness remains clean, and
 merge is allowed; a completed walkthrough must have explained that same diff
@@ -1859,6 +1877,8 @@ put exactly one record in merge-context `selected_hosted_runs`:
 {"provider":"external-ci","run_id":"<selected-workflow-or-run-id>"}
 ```
 
+A selected CircleCI workflow UUID cannot be policy-dispositioned.
+
 Do not add advisory or merely observed runs. A nonempty list requires this
 closed trusted-base seam:
 
@@ -1939,7 +1959,9 @@ not gate.
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --trusted-repo-root "${TRUSTED_CONSUMER_REPO_ROOT}" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`
@@ -1973,7 +1995,7 @@ chain, then run:
 ```
 
 `pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
-bindings, freshness, and selected hosted-CI records before any queue or
+bindings, freshness, selected hosted-CI records, and policy-aware live CI before any queue or
 guarded-direct mutation. A missing, cancelled, failed, nonterminal, stale-head,
 or mismatched-PR selected record blocks before the first GitHub call or
 repository guard.

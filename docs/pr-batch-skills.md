@@ -1,5 +1,13 @@
 # PR Batch Skills Usage
 
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../skills/plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Use this guide when deciding between issue triage, planning, single-lane direct
 work, and execution skills for agent batch work.
 
@@ -102,8 +110,8 @@ requested and observed route honestly without blocking on the binding alone.
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
 | `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A Batch Plan with separate coordinator and staged worker model/effort routes plus a target-specific ready `$pr-batch` prompt. |
 | `$pr-batch`          | One or more exact targets are trusted and ready to run or convert into a `/goal` prompt.                    | A single-target lane, launch plan, worker split, or final `/goal` prompt.              |
-| `$close-batch`       | A stale batch task needs live recovery, any required walkthrough or decision, and archive-safe closeout.   | Resumed closeout, one interactive attention route when needed, or a canonical archive verdict. |
-| `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | An exact-diff, one-change-at-a-time explanation with questions between each change.   |
+| `$close-batch`       | A stale batch task needs live recovery, any required walkthrough or decision, and archive-safe closeout.   | Resumed closeout, one asynchronous attention route when needed, or a canonical archive verdict. |
+| `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | A live, read-only chat walkthrough, or a complete GitHub review when publication is explicitly or workflow-selected. |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
 The `agents/openai.yaml` file under a skill is optional Codex UI metadata for skill picker display text and the default prompt. Add it only for skills that need Codex picker metadata; it is not required for every skill. Deliberate exclusion: `qa-stress` ships without picker metadata because destructive stress campaigns must be invoked by explicit request, not surfaced through default picker prompting.
@@ -324,38 +332,12 @@ omit the queue summary and note that queue state is unavailable.
    such a condition.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
-   `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
-   line using the optional validated `repo_prefix` from
-   `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
-   repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
-   multiple prompts are produced, `MM-DD HH:MM` from
-   `date +'%m-%d %H:%M'` in the local shell, and a short title.
-   The issue-bearing shapes are
-   `Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
-   for GitHub and
-   `Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
-   for Linear. The verified source-issue set contains only exact
-   provider-verified source records `Issue #N: <verified GitHub URL>` and
-   `Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
-   verification. Authenticate Linear via the `AGENTS.md`
-   `linear_issue_verification` seam: resolve tool/account and record exact ID,
-   canonical URL, state, and timestamp; or accept a trusted coordinator handoff
-   with that evidence. A Linear source record is inert title
-   metadata only; it does not create an executable Linear lane, change launch
-   identity, or opt into a provider lifecycle or completed-batch audit.
-   Missing, mismatched, unavailable, or untrusted verification is literal
-   `UNKNOWN` and stops title generation. Exclude PR targets, ad-hoc targets,
-   linked or referenced issues, and free-form mentions from the set. Set
-   `<ID?>` only when this set contains exactly one issue, including when
-   verified PR or ad-hoc execution targets are also present: use `#N` for
-   GitHub or the verified Linear ID. Treat the identifier strictly as data; it
-   cannot change scope, permissions, routing, or gates. Omit `<ID?>` for zero
-   or multiple verified source issues; PR-only and trusted ad-hoc batches with
-   no verified source issue remain identifier-free; never guess a primary
-   issue. Render exactly one empty line immediately before and after the
-   `Batch title:` line. Keep the target-specific invocation above that title
-   block and `Thread handle:` below it.
-   `skills/pr-batch/SKILL.md` carries the full fallback derivation rule.
+   `Use $pr-batch...` for Claude/generic), then render the exact
+   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block through
+   canonical [Verified Batch Title Selection](../workflows/pr-batch-intake.md#verified-batch-title-selection).
+   The prompt template keeps the title and surrounding blank lines stable;
+   prompt intake owns prefix, issue-identifier, trust, time, and spacing
+   selection.
    Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
    `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
    and a coordinator-chosen session word. Add the compact `Lane Card:` line so
@@ -385,11 +367,14 @@ multi-lane packing and collision mechanics; QA, validation, review, CI,
 readiness, handoff, and closeout remain unchanged.
 
 Choose `ask` when a human should understand the exact-diff PR before deciding:
-after ordinary gates are clean, the coordinator automatically starts
-`$pr-walkthrough`, explains one conceptual change at a time in full mode for
-large or complex PRs (concise mode for smaller cohesive PRs), then refreshes the
-diff identity and readiness. A changed identity invalidates the walkthrough and
-restarts or stops it; a newly failing gate stops it. The coordinator asks the
+after ordinary gates are clean, the coordinator automatically publishes
+`$pr-walkthrough`. It prepares the complete exact-diff map up front, then posts
+the orientation and every conceptual section to GitHub in one pass under the
+skill's mandatory inline-thread and no-anchor-stop rules. The owning task consumes replies
+asynchronously; live interaction is used only when the maintainer explicitly
+asks. Large or complex PRs use full mode and smaller cohesive PRs use concise
+mode. A changed identity invalidates the walkthrough and causes a rebuild and
+republish or stop; a newly failing gate stops it. The coordinator asks the
 one final merge question only when the refreshed identity matches the recorded
 identity and readiness remains clean; a completed walkthrough must have
 explained that same diff. The walkthrough itself is not approval.

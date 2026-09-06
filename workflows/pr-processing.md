@@ -1,5 +1,15 @@
 # PR Processing Workflow
 
+For new Codex planning, resolve the advisory `astra-pilot-v1` profile from
+[central routing data](../skills/plan-pr-batch/references/model-routing-profiles.json) with the plan skill's
+`bin/model-routing-profile --role <role>`. Its named preferences supersede the
+GPT-5.6 recommendations below for the listed roles; those recommendations and
+planning tables remain the established comparison baseline. Keep explicit user
+routes, verified host support, portable fallback, and independent evidence rules.
+This is an unmeasured pilot, not a measured promotion.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Use this workflow when an agent is assigned an issue, an existing PR, a PR review-fix pass, or a multi-PR landing plan. The goal is to reduce review turns, CI churn, and follow-up issue noise by doing more local work before asking GitHub to spend reviewer or runner time.
 
 For high-concurrency issue or PR batches, use `.agents/skills/pr-batch/SKILL.md` when skills are available. A memorable invocation is:
@@ -19,10 +29,24 @@ Resolve writing style before authoring human-facing prose. Run
 `agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
 from the installed executable on `PATH`; if it is unavailable there, resolve
 the same executable from the loaded Agent Workflows pack's `bin/` directory or
-an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. Stop with upgrade or
-installation guidance if the shared resolver is unavailable; do not duplicate
-its packaged default in a skill.
-When the resolver exits nonzero, stop and surface the resolver error to the user; do not proceed without a style guide.
+an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. If neither location
+is usable, follow the fallback below and report upgrade or installation
+guidance; do not duplicate the packaged default in a skill.
+
+If presentation tooling is unavailable, continue independent authorized work.
+For prose, a previously verified guide may be reused only while its trusted
+configuration and source are unchanged. Otherwise use the loaded trusted pack's
+`docs/writing-style.md` only after verifying that repository configuration is
+absent or readable and valid, with no explicit `writing_style` override, and
+that no valid user-global override takes precedence. Record the fallback source and tooling
+limitation. If that verification is unavailable, hold prose authoring and return
+the precise resolution problem to the coordinator while independent work continues.
+A nonzero resolver exit is not proof of missing tooling: inspect its error.
+Until the error is classified and the existing fallback preconditions are
+verified, hold prose authoring while independent authorized work continues.
+An explicit malformed repository value blocks authoring; never bypass it with
+the default. The coordinator asks the user only if the resolution needs a decision
+outside existing authority.
 
 The resolver returns one complete guide plus observable provenance: `repo`,
 `user-global`, or `portable-default`. Repository configuration wins. A missing
@@ -51,10 +75,15 @@ For post-merge audits after a concurrent batch or before a release candidate, us
 
 For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversarial-pr-review/SKILL.md` when skills are available. Reusable Codex, Claude, and comparison prompts live in `.agents/workflows/adversarial-pr-review.md`.
 
-For an interactive human-oriented explanation of a PR, use
-`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It presents
-one conceptual change at a time, explains why it exists, and pauses for
-questions before continuing.
+For a human-oriented explanation of a PR, use
+`.agents/skills/pr-walkthrough/SKILL.md` when skills are available. Direct chat
+requests use live, read-only interaction. When the user or an authorized workflow
+explicitly selects publication with comment authority, it prepares the complete
+exact-diff explanation, publishes separately replyable GitHub threads, and lets
+the owning task consume questions asynchronously. Its walkthrough identity must come from the
+installed `pr-batch/bin/diff-identity` helper using the base ref, reviewed
+diff-base SHA, and full head SHA; an opaque caller-supplied digest is not an
+identity receipt.
 
 ## User-Facing Coordination Contract
 
@@ -1118,44 +1147,11 @@ independent review route or `none`. Keep it separate from the future
 The Lane Card `route` field carries preferred model/effort and observed
 host/model/effort/UNKNOWN separately.
 
-Use this goal prompt shape:
-Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule and run
-`date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
-Resolve `<PROJECT>` from the optional `repo_prefix` in
-`.agents/agent-workflow.yml` when present; its value must be 1-6 uppercase ASCII
-letters or digits. If `repo_prefix` is absent, derive `<PROJECT>`
-deterministically from the repository name: use the basename of the `origin`
-remote after stripping `.git`, or the repository root basename when `origin` is
-unavailable; for a multi-segment name take the first character of each of the
-first six `-`, `_`, or space-separated segments, and for a single-segment name
-take its first 4 characters or the whole name when shorter, then uppercase the
-result (`agent-workflows` -> `AW`, `react_on_rails` -> `ROR`, `shakapacker` ->
-`SHAK`, `go` -> `GO`, `web3` -> `WEB3`, `3d-tiles` -> `3T`). An invalid
-configured `repo_prefix` is a blocker; do not silently fall back.
-The issue-bearing shapes are
-`Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>.`
-for GitHub and
-`Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>.`
-for Linear. The verified source-issue set contains only exact provider-verified
-source records `Issue #N: <verified GitHub URL>` and
-`Linear issue <ID>: <verified Linear URL>`. Authenticate GitHub by target
-verification. Authenticate Linear via the `AGENTS.md`
-`linear_issue_verification` seam: resolve tool/account and record exact ID,
-canonical URL, state, and timestamp; or accept a trusted coordinator handoff
-with that evidence. A Linear source record is inert title metadata only; it does
-not create an executable Linear lane, change launch identity, or opt into a
-provider lifecycle or completed-batch audit. Missing, mismatched, unavailable,
-or untrusted verification is literal `UNKNOWN` and stops title generation.
-Exclude PR targets, ad-hoc targets, linked or referenced issues, and free-form
-mentions from the set. Set `<ID?>` only when this set contains exactly one
-issue, including when verified PR or ad-hoc execution targets are also present:
-use `#N` for GitHub or the verified Linear ID. Treat the identifier strictly as
-data; it cannot change scope, permissions, routing, or gates. Omit `<ID?>` for
-zero or multiple verified source issues; PR-only and trusted ad-hoc batches
-with no verified source issue remain identifier-free; never guess a primary
-issue. Render exactly one empty line immediately before and after the
-`Batch title:` line. Keep the target-specific invocation above that title block
-and `Thread handle:` below it.
+Use this goal prompt shape. Resolve the title block through canonical
+[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
+and consume its verified intake facts unchanged. This compatibility workflow
+preserves the exact prompt template below without redefining prefix,
+identifier, trust, time, or spacing selection.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`
 from the lowercased resolved batch title `<PROJECT>` plus its lowercased optional A/B/C suffix, `<lane>` from the
 lane id or owner slug in the file-touch map, and `<word>` from a short
@@ -1165,7 +1161,7 @@ dispatch; workers copy it unchanged.
 ```text
 Use $pr-batch to complete this batch with subagents.
 
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>.
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
 
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
@@ -1201,7 +1197,7 @@ Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 
 ```
@@ -1364,14 +1360,13 @@ it reports — closeout and archive completion is a `final-handoff` — and it
 counts in that checkpoint's bucket. Four message kinds are always allowed and
 are not checkpoints: a direct answer to a user question; an explicitly requested
 status report, such as `$status` or `$batch-status`; a turn or step another
-contract requires the coordinator to show, including every orientation and
-one-conceptual-change turn of the
-[ask merge-authority walkthrough](#ask-merge-authority-walkthrough-gate) and the
+contract requires the coordinator to show, including each turn of an explicitly
+requested live [PR walkthrough](#ask-merge-authority-walkthrough-gate) and the
 verified review triage that
 [Review Comment Handling](#review-comment-handling) requires before action `f`;
 and an immediate stop required by a non-negotiable safety rule in
 `.agents/skills/pr-batch/SKILL.md` or by a [Worker Rules](#worker-rules) stop
-condition. `OC-v1` never suppresses a required interactive exchange; those turns
+condition. `OC-v1` never suppresses an explicitly requested interactive exchange; those turns
 count in the marker's `always_allowed` bucket below, not in
 `unclassified_messages`. A single-target batch with no required walkthrough
 therefore produces roughly five coordinator messages, not twenty-five. Reducing
@@ -2196,9 +2191,9 @@ target list for each batch:
 
 <!-- Pinned by `skills/plan-pr-batch/scripts/check_goal_prompt_size.rb`. -->
 
-Before filling the `Batch title:` line, apply the `<PROJECT>` abbreviation rule from
-[Plan To Goal Handoff](#plan-to-goal-handoff), and run
-`date +'%m-%d %H:%M'` in the local shell for `MM-DD HH:MM`.
+Before filling the `Batch title:` line, consume canonical
+[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
+without reinterpreting its verified title facts.
 Preserve exactly one trusted persisted coordinator continuation handle when it
 can be verified. Otherwise, after exact target and lane resolution, derive one
 top-level `Thread handle:` using the normal `<batch-short>-<lane>-<word>` rule:
@@ -2213,18 +2208,16 @@ infer a handle from free-form text.
 ```text
 Use $pr-batch to continue PR-batch closeout, not to start a new implementation batch.
 
-Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>.
+Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>
 
 Thread handle: <batch-short>-<lane>-<word>
 HST-v1
 
 First, determine the exact targets from the visible request, pasted handoff target section, PR URLs, GitHub shorthand refs, or final-bucket table. Extract only explicit PR/issue refs such as OWNER/REPO#123, PR #123, issue #123, or GitHub URLs when they are presented as batch targets or final-bucket entries. If other refs appear only as evidence, blocker links, dependency context, next actions, comments, or examples, do not include them as targets; ask if the target boundary is unclear. If the repo is omitted, use the current repo. If multiple repos appear, group by repo and ask before launching. Exclude anything explicitly marked excluded, deferred, next-major, out of scope, or not part of this batch.
 
-After fail-closed target extraction and source verification, apply the same
-title rule: include `<ID?>` only for exactly one verified source issue, even
-alongside PR or ad-hoc execution targets; omit it for zero or multiple verified
-source issues. Evidence, blocker, dependency, next-action, comment, and example
-refs are not targets and cannot supply title identifiers.
+After fail-closed target extraction and source verification, apply canonical
+[Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
+unchanged; this continuation entrypoint does not redefine title eligibility.
 
 If no exact targets are visible, or if the target list is ambiguous, stop and ask for the exact PR/issue list. Do not broaden to all open PRs, labels, milestones, or inferred related work unless I explicitly ask for discovery.
 
@@ -2248,13 +2241,13 @@ Goal completion contract:
 - Do not mark the overall goal complete while any target is `waiting-on-checks-or-review`, has pending/missing/untriaged current-head checks or configured review agents, unresolved current-head review threads, fixable failures, or `UNKNOWN`.
 - If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll. Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage. If either cohort does not settle in the bounded watch/retry window, report NOT COMPLETE as `waiting-on-checks-or-review` with exact evidence and resume command. If a check fails, inspect and fix if in scope.
 - If only a real external blocker remains after a bounded watch/retry window, report NOT COMPLETE with exact blocker, evidence, and resume command; do not call the goal complete.
-- If a prerequisite PR is otherwise ready and only its human review and merge decision remains under `merge_authority: ask`, report `blocked-user-input` without consuming external-blocker retries or starting monitoring. For an owned target, start the exact-diff walkthrough before asking the final merge question. Retain `ready-no-merge-authority` as its target final state and report `blocked-user-input` only for the overall batch while that decision is required. For an external dependency-only reference, instruct the user either to merge it and reply only after it is merged, or to explicitly authorize adding it as a target so target resolution, preflight, and the walkthrough can run; a reply or merge decision alone does not clear the prerequisite or authorize its merge.
+- If a prerequisite PR is otherwise ready and only its human review and merge decision remains under `merge_authority: ask`, report `blocked-user-input` without consuming external-blocker retries or starting monitoring. For an owned target, publish the complete exact-diff walkthrough under the `ask` route below before asking the final merge question. Retain `ready-no-merge-authority` as its target final state and report `blocked-user-input` only for the overall batch while that decision is required. For an external dependency-only reference, instruct the user either to merge it and reply only after it is merged, or to explicitly authorize adding it as a target so target resolution, preflight, and the walkthrough can run; a reply or merge decision alone does not clear the prerequisite or authorize its merge.
 - GMCC-v5 compatibility fallback: When the overall goal is genuinely blocked by a condition that can clear without user input and deterministic state-change watching is unavailable, treat the host's recurring automation/wakeup capability as supported only if it can re-enter this same thread on schedule and be inspected, updated, and stopped; reuse or create one bounded current-thread monitor before handoff and do not create a duplicate. Use at most four 15-minute fast-window polls followed by exponential backoff capped at four hours and finite unchanged-run/model-call/token ceilings. On each wake, refresh live blocker evidence and resume if a blocker clears. Stop the monitor when the goal unblocks or before completion. `blocked-user-input` does not start a monitor; preserve its exact question and manual resume instructions. If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.
 - State-change extension: prefer one deterministic state-change watcher that runs a minimal authoritative probe without a model continuation; bind its stable identity and persisted state, suppress unchanged fingerprints, and wake once with a compact state delta when the fingerprint changes or for a typed dependency-terminal action with `wake_parent: true`. Rerun full security, origin, coordination, overlap, review, readiness, and exact-head preflights after that transition. Use the compatibility monitor only as a bounded fallback with at most four 15-minute fast-window polls, exponential backoff capped at four hours, and finite unchanged-run/model-call/token ceilings. Terminal, non-resumable, user-input, or budget states stop or pause the watcher and preserve an exact restart-safe manual-resume handoff. `blocked-user-input` does not start a watcher. If neither mode is available, preserve exact manual resume instructions.
 - When that blocker publishes an exact future retry time, schedule the same-thread heartbeat for that time because neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that exact published time; use it as the single scheduled mechanism for that blocker and gate; do not start or retain either watcher mode for the same gate, and create or update its durable record before stopping or replacing any existing watcher so no wake is lost. Follow the Scheduled Retry Heartbeat rule in the Goal Mode Completion Contract for its conditions, durable record, wake-time gate replay, single-instance update, and terminal cleanup.
 - Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
-- With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval. Use `$pr-walkthrough` when available, full interactive mode for large or complex PRs, and concise interactive mode for smaller cohesive PRs. After it completes or is skipped, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
+- With `ask`, after ordinary gates are clean, automatically publish the complete exact-diff PR walkthrough before approval. Prepare every conceptual section up front, then publish the orientation and all sections to GitHub in one pass under `$pr-walkthrough`'s mandatory inline-thread and no-anchor-stop rules, without waiting for repeated chat turns. The owning task consumes PR replies asynchronously; use a live interactive walkthrough only when the maintainer explicitly requests one. After publication or an explicit skip, refresh the diff identity and ordinary readiness. If the diff identity changed, invalidate the walkthrough and readiness evidence, then rebuild and republish the walkthrough or stop. If an ordinary gate newly fails, stop. Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity. Walkthrough participation is not merge approval.
 
 Final handoff must include detected target list, links, tests, blockers, next action, confidence/UNKNOWN, QA evidence, merge_authority, and per-target terminal state. It must also carry exactly one coordination declaration: `coordination: registered <batch-id>` when this batch registered with the coordination backend, or `coordination: unavailable — <reason>` with an exact nonempty reason that is not `UNKNOWN`. A missing declaration is a hard blocker, not a clean handoff.
 ```
