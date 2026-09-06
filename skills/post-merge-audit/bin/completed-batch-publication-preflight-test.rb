@@ -1203,6 +1203,45 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                  result.fetch("source_input_digest")
   end
 
+  def test_ordinary_receipt_and_reassessment_preserve_case_insensitive_repository_identity
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    authenticated_input = JSON.parse(JSON.generate(input))
+    input.dig("target_snapshots", 0, "target")["repo"] = "ShakaCode/HiChee"
+    target_verifier = valid_target_verifier(authenticated_input)
+    result = assess_input(input, target_verifier:)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+    assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier:,
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
+  end
+
+  def test_artifact_receipt_and_reassessment_preserve_case_insensitive_repository_identity
+    input = verification_artifact_input
+    authenticated_input = JSON.parse(JSON.generate(input))
+    input.dig("target_snapshots", 0)["target"] =
+      input.dig("target_snapshots", 0, "target").merge("repo" => "ShakaCode/Agent-Coordination")
+    target_verifier = valid_target_verifier(authenticated_input)
+    artifact_verifier = valid_artifact_verifier(authenticated_input)
+    result = assess_input(input, target_verifier:, artifact_verifier:)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+    assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier:,
+      artifact_verifier:,
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
+  end
+
   def test_reassessment_rejects_altered_raw_input_even_with_recomputed_digests
     input = fixture("completed-batch-publication-hichee-terminal.json")
     result = assess_input(input)

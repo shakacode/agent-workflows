@@ -239,8 +239,8 @@ module CompletedBatchPublicationPreflight
     return false unless source_rows.is_a?(Array) && snapshot_rows.is_a?(Array)
 
     targets.all? do |target|
-      sources = source_rows.select { |row| row.is_a?(Hash) && validated_target(row["target"]) == target }
-      snapshots = snapshot_rows.select { |row| row.is_a?(Hash) && validated_target(row["target"]) == target }
+      sources = source_rows.select { |row| row.is_a?(Hash) && same_target_identity?(row["target"], target) }
+      snapshots = snapshot_rows.select { |row| row.is_a?(Hash) && same_target_identity?(row["target"], target) }
       next false unless sources.one? && snapshots.one?
 
       source_present = sources.first.key?("supporting_artifact")
@@ -254,6 +254,14 @@ module CompletedBatchPublicationPreflight
         sources.first.fetch("supporting_artifact")
       )
     end
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def same_target_identity?(value, target)
+    candidate = validated_target(value)
+    expected = validated_target(target)
+    candidate && expected && target_key(candidate) == target_key(expected)
   rescue KeyError, NoMethodError, TypeError
     false
   end
