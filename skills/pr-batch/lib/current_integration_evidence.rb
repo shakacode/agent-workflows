@@ -7,6 +7,7 @@ require "json"
 require "open3"
 require "tmpdir"
 require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
+require_relative "github_json_string_validation"
 
 module CurrentIntegrationEvidence
   class Error < StandardError; end
@@ -151,7 +152,7 @@ module CurrentIntegrationEvidence
     raise Error, "GitHub current-integration response is not valid UTF-8" unless response.valid_encoding?
 
     payload = JSON.parse(response)
-    unless decoded_json_strings_valid?(payload)
+    unless GitHubJsonStringValidation.decoded_json_strings_valid?(payload)
       raise Error, "GitHub current-integration response contains invalid Unicode scalar data"
     end
     unless Array(payload["errors"]).empty?
@@ -184,21 +185,6 @@ module CurrentIntegrationEvidence
     raise Error, "GitHub current-integration evidence is malformed: #{e.message}"
   rescue Errno::ENOENT
     raise Error, "GitHub CLI is unavailable"
-  end
-
-  def decoded_json_strings_valid?(value)
-    case value
-    when String
-      value.valid_encoding?
-    when Array
-      value.all? { |item| decoded_json_strings_valid?(item) }
-    when Hash
-      value.all? do |key, item|
-        decoded_json_strings_valid?(key) && decoded_json_strings_valid?(item)
-      end
-    else
-      true
-    end
   end
 
   def validate_inputs!(repo_root:, repo:, pr_number:, base_ref:, recorded_base_sha:, head_sha:,

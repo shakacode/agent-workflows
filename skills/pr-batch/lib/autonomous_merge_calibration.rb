@@ -4,6 +4,7 @@ require "date"
 require "json"
 require "open3"
 require "tempfile"
+require_relative "github_json_string_validation"
 
 module AutonomousMergeCalibration
   SUBMITTED_REVIEW_STATES = %w[APPROVED CHANGES_REQUESTED COMMENTED DISMISSED].freeze
@@ -48,9 +49,14 @@ module AutonomousMergeCalibration
         raise CollectionError.new("GitHub API failed for #{path}: #{detail}", kind: "api")
       end
 
-      header_text, body = stdout.split(/\r?\n\r?\n/, 2)
+      header_text, body = stdout.b.split(/\r?\n\r?\n/, 2)
       unless body
         raise CollectionError.new("GitHub API response omitted headers for #{path}", kind: "api")
+      end
+
+      body = body.dup.force_encoding(Encoding::UTF_8)
+      unless body.valid_encoding?
+        raise CollectionError.new("GitHub API response is not valid UTF-8 for #{path}", kind: "api")
       end
 
       headers = header_text.lines.filter_map do |line|
@@ -58,7 +64,15 @@ module AutonomousMergeCalibration
         [key.strip.downcase, value.strip] if value
       end.to_h
       @exhausted = headers["x-ratelimit-remaining"] == "0"
-      JSON.parse(body)
+      parsed = JSON.parse(body)
+      unless GitHubJsonStringValidation.decoded_json_strings_valid?(parsed)
+        raise CollectionError.new(
+          "GitHub API response contains invalid Unicode scalar data for #{path}",
+          kind: "api"
+        )
+      end
+
+      parsed
     rescue Errno::ENOENT
       raise CollectionError.new("GitHub CLI is unavailable", kind: "api")
     rescue JSON::ParserError => e

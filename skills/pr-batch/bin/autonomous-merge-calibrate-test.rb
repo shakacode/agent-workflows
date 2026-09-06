@@ -738,6 +738,45 @@ class AutonomousMergeCalibrateTest < Minitest::Test
     assert_includes error.message, "GitHub review state is unrecognized"
   end
 
+  def test_github_client_rejects_invalid_utf8_body_with_headers_as_collection_error
+    response = +"HTTP/2 200\nx-ratelimit-remaining: 99\n\n{\"body\":\""
+    response << "\xFF"
+    response << "\"}"
+
+    with_github_api_response(response) do
+      error = assert_raises(AutonomousMergeCalibration::CollectionError) do
+        AutonomousMergeCalibration::GitHubClient.new.call("repos/example/repo/pulls/7")
+      end
+
+      assert_equal "api", error.kind
+      assert_equal(
+        "GitHub API response is not valid UTF-8 for repos/example/repo/pulls/7",
+        error.message
+      )
+    end
+  end
+
+  def test_github_client_rejects_lone_surrogates_in_json_keys_and_values_as_collection_error
+    payloads = [
+      %q({"metadata":{"key":"\udcff"}}),
+      %q({"metadata":{"\udcff":"value"}})
+    ]
+
+    payloads.each do |body|
+      with_github_api_response("HTTP/2 200\nx-ratelimit-remaining: 99\n\n#{body}") do
+        error = assert_raises(AutonomousMergeCalibration::CollectionError) do
+          AutonomousMergeCalibration::GitHubClient.new.call("repos/example/repo/pulls/7")
+        end
+
+        assert_equal "api", error.kind
+        assert_equal(
+          "GitHub API response contains invalid Unicode scalar data for repos/example/repo/pulls/7",
+          error.message
+        )
+      end
+    end
+  end
+
   def test_historical_file_normalization_preserves_and_validates_rename_copy_sources
     renamed = AutonomousMergeCalibration.normalize_file(
       github_file(
@@ -1467,6 +1506,29 @@ class AutonomousMergeCalibrateTest < Minitest::Test
   end
 
   private
+
+  def with_github_api_response(response)
+    Dir.mktmpdir("autonomous-merge-calibration-gh-api") do |root|
+      payload = File.join(root, "payload")
+      fake_gh = File.join(root, "gh")
+      File.binwrite(payload, response)
+      File.write(fake_gh, <<~'RUBY')
+        #!/usr/bin/env ruby
+        $stdout.binmode
+        $stdout.write(File.binread(ENV.fetch("AUTONOMOUS_MERGE_TEST_RESPONSE")))
+      RUBY
+      File.chmod(0o755, fake_gh)
+
+      original_command = ENV["AUTONOMOUS_MERGE_GH"]
+      original_response = ENV["AUTONOMOUS_MERGE_TEST_RESPONSE"]
+      ENV["AUTONOMOUS_MERGE_GH"] = fake_gh
+      ENV["AUTONOMOUS_MERGE_TEST_RESPONSE"] = payload
+      yield
+    ensure
+      ENV["AUTONOMOUS_MERGE_GH"] = original_command
+      ENV["AUTONOMOUS_MERGE_TEST_RESPONSE"] = original_response
+    end
+  end
 
   def calibration_dataset(prs, repositories:)
     {
