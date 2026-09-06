@@ -6,6 +6,14 @@ argument-hint: '[base tag/commit or range]'
 
 # Post-Merge Audit
 
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Audit merged PRs as a batch after batch work or before the next release step.
 Use visible chat only to choose the obvious just-run batch default; use git,
 GitHub, and coordination ground truth for every audit fact.
@@ -453,6 +461,10 @@ disposition is not `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`
 with an authenticated replayable maintainer-waiver comment; or when
 the configured coordination seam is unavailable. `unknown`, `in_progress`,
 missing, stale-head, and malformed QA evidence block completion.
+
+The issue-to-result-PR projection requires an authenticated same-repository symmetric closing relationship, a closed source issue, a merged result PR, the exact result head, and ordered terminal timestamps; do not union the source issue and result PR as two publication targets, and re-authenticate the projection before ordinary receipt publish or replay. When typed for publication-preflight parsing, accepted lane-target forms are exactly `issue:N`, `pr:N`, or `pull_request:N`; malformed, unknown, or type-ambiguous spellings fail closed. These parsing forms are not distinct agent-coordination claim identities. Legacy bare `N`, `#N`, and positive integer lane targets remain compatible. This projection is only for issue-to-result-PR publication; it does not authorize auxiliary ad-hoc target mappings or multiple coordination lanes for one publication target.
+
+An explicitly URL-less terminal `done` lane that already names mixed issue and pull-request targets reconciles the shared scalar `pr_state` per target only when durable terminal evidence exists, the scalar matches one resolved terminal state, every target state is freshly authenticated, the issue head remains absent, and exact-head QA stays bound to the pull request; this does not derive or union targets from a URL or admit auxiliary lanes.
 
 A normal terminal `done` lane still requires its coordination target state and
 terminal evidence. Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation.
