@@ -1298,8 +1298,8 @@ a repair merges does not use successor state.
 Run this block immediately before releasing the selected lane. It fetches the
 comment, verifies its author and canonical target, binds its marker to the
 selected batch, derives the state and named successor from the fetched body,
-and verifies a named successor against GitHub. Missing, duplicated, mismatched,
-or mistyped evidence fails closed:
+and verifies a named successor against GitHub as a distinct, live issue or PR.
+Missing, duplicated, mismatched, or mistyped evidence fails closed:
 
 ```bash
 SUCCESSOR_STATE=UNKNOWN
@@ -1435,15 +1435,35 @@ case "${SUCCESSOR_STATE:-UNKNOWN}" in
         exit 1
         ;;
     esac
-    VERIFIED_SUCCESSOR=$(gh issue view "${NAMED_SUCCESSOR}" \
-      --repo "${REPO}" --json url --jq '.url' 2>/dev/null) \
-      || VERIFIED_SUCCESSOR=$(gh pr view "${NAMED_SUCCESSOR}" \
-        --repo "${REPO}" --json url --jq '.url') \
+    SUCCESSOR_JSON=$(gh issue view "${NAMED_SUCCESSOR}" \
+      --repo "${REPO}" --json url,state 2>/dev/null) \
+      || SUCCESSOR_JSON=$(gh pr view "${NAMED_SUCCESSOR}" \
+        --repo "${REPO}" --json url,state,mergedAt) \
       || exit 1
+    VERIFIED_SUCCESSOR=$(printf '%s' "${SUCCESSOR_JSON}" \
+      | jq -er '.url') || exit 1
+    NAMED_SUCCESSOR_STATE=$(printf '%s' "${SUCCESSOR_JSON}" \
+      | jq -er '.state') || exit 1
     if [ "${VERIFIED_SUCCESSOR}" != "${NAMED_SUCCESSOR}" ]; then
       echo "named successor URL did not verify exactly: stop" >&2
       exit 1
     fi
+    if [ "${VERIFIED_SUCCESSOR}" = "${TARGET_URL}" ]; then
+      echo "named successor is this lane's own target: stop" >&2
+      exit 1
+    fi
+    # A live successor is an OPEN issue or PR, or a MERGED PR; CLOSED is not.
+    case "${NAMED_SUCCESSOR_STATE}" in
+      OPEN) ;;
+      MERGED)
+        printf '%s' "${SUCCESSOR_JSON}" | jq -e '.mergedAt' >/dev/null \
+          || { echo "merged successor has no mergedAt: stop" >&2; exit 1; }
+        ;;
+      *)
+        echo "named successor is ${NAMED_SUCCESSOR_STATE}, not live: stop" >&2
+        exit 1
+        ;;
+    esac
     TERMINAL=superseded
     ;;
   absent)
