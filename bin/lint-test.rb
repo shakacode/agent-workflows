@@ -165,7 +165,7 @@ class LintCommandTest < Minitest::Test
     assert_includes workflow, "bin/lint --version yamllint"
     assert_includes workflow, "sha256sum --check"
     assert_includes workflow, "ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b"
-    assert_includes workflow, "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"
+    assert_includes workflow, "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020"
     assert_includes workflow, "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97"
   end
 
