@@ -2832,7 +2832,7 @@ class GoalCompletionContractTest < Minitest::Test
         false
       ],
       "follow-ups-remain with pending follow-up" => [
-        completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #117; owner: maintainer; current status: pending; disposition: await-input; evidence: issue #117"),
+        completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING https://github.com/acme/widgets/issues/117\nfollowups_dispositions: ref: https://github.com/acme/widgets/issues/117; owner: maintainer; current status: pending; disposition: await-input; evidence: https://github.com/acme/widgets/issues/117"),
         true,
         false
       ],
@@ -2925,15 +2925,15 @@ class GoalCompletionContractTest < Minitest::Test
       ],
       "outstanding finding without an action" => [
         completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: none"),
-        true
+        false
       ],
       "operational actions need not duplicate outstanding findings" => [
         completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #117; owner: maintainer; current status: open; disposition: fix; evidence: issue #117 | ref: #118; owner: maintainer; current status: pending; disposition: await-input; evidence: issue #118"),
-        true
+        false
       ],
       "outstanding and operational action refs may differ" => [
         completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #11; owner: maintainer; current status: unresolved; disposition: investigate; evidence: issue #11"),
-        true
+        false
       ],
       "clean with an open action" => [
         completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: clean\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: ref: #117; owner: maintainer; current status: open; disposition: fix; evidence: issue #117"),
@@ -2944,7 +2944,7 @@ class GoalCompletionContractTest < Minitest::Test
         true
       ],
       "complete pending action" => [
-        completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #117; owner: maintainer; current status: pending; disposition: await-input; evidence: issue #117"),
+        completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING https://github.com/acme/widgets/issues/117\nfollowups_dispositions: ref: https://github.com/acme/widgets/issues/117; owner: maintainer; current status: pending; disposition: await-input; evidence: https://github.com/acme/widgets/issues/117"),
         true
       ],
       "blocked unresolved action" => [
@@ -2972,7 +2972,7 @@ class GoalCompletionContractTest < Minitest::Test
   def test_completed_batch_audit_replay_couples_marker_readiness_to_final_status_line
     ready_marker = completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: clean\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: none")
     open_marker = completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #117; owner: maintainer; current status: open; disposition: fix; evidence: issue #117")
-    pending_marker = completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #118\nfollowups_dispositions: ref: #118; owner: maintainer; current status: pending; disposition: await-input; evidence: issue #118")
+    pending_marker = completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING https://github.com/acme/widgets/issues/118\nfollowups_dispositions: ref: https://github.com/acme/widgets/issues/118; owner: maintainer; current status: pending; disposition: await-input; evidence: https://github.com/acme/widgets/issues/118")
     unknown_marker = completed_batch_audit_marker("batch_id: UNKNOWN\naudit_status: UNKNOWN\nverdict: UNKNOWN\nscope_evidence: UNKNOWN\nchecker_evidence: UNKNOWN\nfindings: UNKNOWN\nfollowups_dispositions: none")
 
     refute completed_batch_audit_final_status_replays?(ready_marker, "Conversation status: Ready for archiving.")
@@ -3000,7 +3000,7 @@ class GoalCompletionContractTest < Minitest::Test
     )
     assert completed_batch_audit_final_status_replays?(
       pending_marker,
-      "Conversation status: Follow-ups remain — #118 (pending): await-input; " \
+      "Conversation status: Follow-ups remain — https://github.com/acme/widgets/issues/118 (pending): await-input; " \
       "completed-batch-audit publication snapshot refresh required."
     )
     assert completed_batch_audit_final_status_replays?(
@@ -3015,11 +3015,11 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_completed_batch_audit_adversarial_three_output_matrix
     fixtures = {
-      "OUTSTANDING refs remain blockers without action records" => [
+      "OUTSTANDING refs without disposition records fail closed" => [
         completed_batch_audit_marker("batch_id: batch:117; lane:closeout\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117 #118\nfollowups_dispositions: none"),
-        true,
         false,
-        ["#117", "#118"]
+        false,
+        nil
       ],
       "imperfect terminal evidence is well-formed but blocked" => [
         completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117 #118\nfollowups_dispositions: ref: #117; owner: maintainer; current status: terminal; disposition: resolved; evidence: UNKNOWN | ref: #118; owner: maintainer; current status: terminal; disposition: accepted-waiver; evidence: "),
@@ -3028,7 +3028,7 @@ class GoalCompletionContractTest < Minitest::Test
         ["#117 (terminal): evidence UNKNOWN", "#118 (terminal): evidence missing"]
       ],
       "UNKNOWN current status is valid only in a non-clean marker" => [
-        completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #117; owner: maintainer; current status: UNKNOWN; disposition: track; evidence: issue #117"),
+        completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #117; owner: maintainer; current status: UNKNOWN; disposition: track; evidence: https://github.com/acme/widgets/issues/117"),
         true,
         false,
         ["#117 (UNKNOWN): track"]
@@ -3071,10 +3071,10 @@ class GoalCompletionContractTest < Minitest::Test
       assert_equal blockers, completed_batch_audit_marker_blockers(marker), "#{label} blockers" if blockers
     end
 
-    marker = fixtures.fetch("OUTSTANDING refs remain blockers without action records").first
+    marker = fixtures.fetch("OUTSTANDING refs without disposition records fail closed").first
     assert completed_batch_audit_final_status_replays?(
       marker,
-      "Conversation status: Follow-ups remain — #117; #118; release owner confirmation.",
+      "Conversation status: Follow-ups remain — completed-batch-audit marker invalid; release owner confirmation.",
       other_blockers: [" release owner confirmation ", "release owner confirmation"]
     )
     refute completed_batch_audit_final_status_replays?(
@@ -3201,10 +3201,10 @@ class GoalCompletionContractTest < Minitest::Test
 
   def test_completed_batch_audit_followup_only_and_mixed_findings_replay_matrix
     followup_only = %w[open pending unresolved UNKNOWN].map do |status|
-      action = { "open" => "fix", "pending" => "await-input", "unresolved" => "investigate", "UNKNOWN" => "track" }.fetch(status)
+      action = { "open" => "fix", "pending" => "await-input", "unresolved" => "investigate", "UNKNOWN" => "replay" }.fetch(status)
       [status, completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: ref: ##{status.length}; owner: maintainer; current status: #{status}; disposition: #{action}; evidence: issue ##{status.length}"), "##{status.length} (#{status}): #{action}"]
     end
-    mixed = completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: ref: #118; owner: maintainer; current status: pending; disposition: await-input; evidence: issue #118")
+    mixed = completed_batch_audit_marker("batch_id: batch-117\naudit_status: complete\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING https://github.com/acme/widgets/issues/117\nfollowups_dispositions: ref: https://github.com/acme/widgets/issues/117; owner: maintainer; current status: open; disposition: track; evidence: https://github.com/acme/widgets/issues/117 | ref: https://github.com/acme/widgets/issues/118; owner: maintainer; current status: pending; disposition: await-input; evidence: https://github.com/acme/widgets/issues/118")
     outstanding_without_record = completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: OUTSTANDING #117\nfollowups_dispositions: none")
     malformed_record = completed_batch_audit_marker("batch_id: batch-117\naudit_status: blocked\nverdict: follow-ups-remain\nscope_evidence: targets #117; audit report\nchecker_evidence: checker route; report\nfindings: none\nfollowups_dispositions: ref: #117; owner: maintainer; current status: open; disposition: resolved; evidence: issue #117")
 
@@ -3217,14 +3217,15 @@ class GoalCompletionContractTest < Minitest::Test
     refute completed_batch_audit_release_or_archive_ready?(mixed)
     assert_equal(
       [
-        "#117",
-        "#118 (pending): await-input",
+        "https://github.com/acme/widgets/issues/117 (open): track",
+        "https://github.com/acme/widgets/issues/118 (pending): await-input",
         "completed-batch-audit publication snapshot refresh required"
       ],
       completed_batch_audit_marker_blockers(mixed)
     )
-    assert completed_batch_audit_marker_well_formed?(outstanding_without_record)
-    assert_equal ["#117"], completed_batch_audit_marker_blockers(outstanding_without_record)
+    refute completed_batch_audit_marker_well_formed?(outstanding_without_record)
+    assert_equal [COMPLETED_BATCH_AUDIT_INVALID_MARKER_BLOCKER],
+                 completed_batch_audit_marker_blockers(outstanding_without_record)
     refute completed_batch_audit_marker_well_formed?(malformed_record)
   end
 
