@@ -87,5 +87,6 @@ useful technical references, but are secondary to the user journeys above.
 | Compound Engineering architecture decision | [ADR 0002: Compose Compound Engineering Inside Agent Workflows](adr/0002-compose-compound-engineering-inside-agent-workflows.md) |
 | Autonomous merge eligibility decision | [ADR 0003: Smarter Autonomous Merge Gates](adr/0003-smarter-autonomous-merge-gates.md) |
 | Superpowers architecture decision | [ADR 0004: Compose Superpowers Inside Agent Workflows](adr/0004-compose-superpowers-inside-agent-workflows.md) |
+| Control-tower merge authority decision | [ADR 0005: Merge Authority Lives In The Control Tower](adr/0005-merge-authority-lives-in-the-control-tower.md) |
 | Public technical implementation-plan archive | [Project Plans](../project/plans/README.md) |
 | Multi-repository control towers and shared Human Attention Desk design | [Multi-Repository Control Towers And Human Attention Desk](../project/plans/2026-09-02-multi-repository-control-tower-and-human-attention-desk.md) |
