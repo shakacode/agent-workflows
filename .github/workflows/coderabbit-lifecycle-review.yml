@@ -8,7 +8,7 @@ on:
 # pull-request code, and it intentionally skips forks because their token is
 # read-only.
 permissions:
-  issues: write
+  pull-requests: write
 
 jobs:
   request-review:
