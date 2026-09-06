@@ -593,7 +593,7 @@ module CompletedBatchPublicationPreflight
     return unless typed || untyped
 
     spelling = typed&.[](1)
-    number = Integer(typed ? typed[2] : untyped[1], exception: false)
+    number = Integer(typed ? typed[2] : untyped[1], 10, exception: false)
     return unless number&.positive?
 
     type = case spelling
@@ -797,7 +797,7 @@ module CompletedBatchPublicationPreflight
       blockers << "#{target_label(target)} target is not #{expected_state}" unless state == expected_state
       raw_head_sha = row["head_sha"].to_s.downcase
       no_pr_evidence = canonical_no_pr_evidence(row["no_pr_evidence"], target)
-      issue_head_bound_to_separate_lane_pr = target["type"] == "issue" && row.key?("head_sha") &&
+      issue_head_bound_to_separate_lane_pr = target["type"] == "issue" &&
                                              row["head_sha"].nil? &&
                                              lane_entry&.fetch("per_target_terminal_candidate", false) &&
                                              !row.key?("no_pr_evidence")

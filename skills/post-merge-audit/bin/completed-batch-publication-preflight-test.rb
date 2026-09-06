@@ -1191,6 +1191,26 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def test_zero_padded_lane_targets_resolve_as_decimal_without_redirecting_scope
+    %w[010299 #010299 pr:010299 pull_request:010299].each do |raw_target|
+      input = issue_to_result_pr_input(raw_target:)
+
+      result = assess_input(input)
+
+      assert result.fetch("eligible"), "#{raw_target}: #{result.fetch('blockers').join(', ')}"
+      assert_equal 10_299, result.dig("snapshot", "coordination", "lanes", 0, "target", "number")
+    end
+
+    input = mixed_issue_and_pr_lane_input
+    input.dig("coordination_status", "batches", 0, "lanes", 0)["targets"] = ["issue:0130", "pr:0156"]
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join(", ")
+    assert_equal [130, 156], result.dig("snapshot", "coordination", "lanes")
+                                   .map { |lane| lane.dig("target", "number") }.sort
+  end
+
   def test_untyped_same_number_issue_and_pr_target_is_ambiguous_but_typed_target_is_not
     input = issue_to_result_pr_input(raw_target: "10299")
     lane = input.dig("coordination_status", "batches", 0, "lanes", 0)
@@ -1260,6 +1280,27 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       target_verifier: valid_target_verifier(input),
       coordination_verifier: valid_coordination_verifier(input, BACKEND)
     )
+  end
+
+  def test_mixed_issue_snapshot_accepts_omitted_head_but_rejects_non_null_values
+    input = mixed_issue_and_pr_lane_input
+    issue = input.fetch("target_snapshots").find { |row| row.dig("target", "type") == "issue" }
+    verifier = valid_target_verifier(input)
+    issue.delete("head_sha")
+
+    result = assess_input(input, target_verifier: verifier)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join(", ")
+    assert_nil result.dig("snapshot", "targets")
+                     .find { |row| row.dig("target", "type") == "issue" }.fetch("head_sha")
+
+    ["", "unknown", "not_applicable", "a" * 40, false, 0].each do |head|
+      issue["head_sha"] = head
+
+      rejected = assess_input(input, target_verifier: verifier)
+
+      refute rejected.fetch("eligible"), head.inspect
+    end
   end
 
   def test_target_snapshot_reconciliation_returns_completion_modes_without_mutating_lane_entries
