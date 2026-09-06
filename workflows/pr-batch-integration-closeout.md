@@ -2139,6 +2139,8 @@ terminal coordination contract it leaves completed-batch publication blocked as
 
 When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks.
 
+A closed verification-only issue may retain a same-repository temporary `pr_url` only when its target snapshot adds `supporting_artifact: {"url":"<exact same-issue comment URL>"}`. That authenticated current-write-authorized human comment contains exactly one `completed-batch-supporting-artifact v1` marker binding the exact `primary_target`, `artifact_pr`, full `head_sha`, and `role: verification_only`; preflight and receipt replay refetch it and require that exact PR to remain closed, unmerged, and at the bound head. Never infer this role from prose, caller state, or the presence of `pr_url` alone.
+
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
 Existing verified receipt only; missing means no line and an Unblock blocker:

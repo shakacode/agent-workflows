@@ -17,6 +17,7 @@ load SCRIPT
 
 class CompletedBatchPublicationPreflightTest < Minitest::Test
   BACKEND = "agent-coord private backend"
+  VERIFICATION_ARTIFACT_HEAD = "fe40abb9ec6d45aa25fccad2982bbec57ab5fb22"
 
   def fixture(name)
     JSON.parse(File.read(File.join(FIXTURES, name), encoding: "UTF-8"))
@@ -74,6 +75,113 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     input
   end
 
+  # Mirrors the issue #296 / temporary PR #303 verification-only lane shape:
+  # the issue remains the primary target while the terminal lane retains a
+  # closed-unmerged PR URL as supporting evidence.
+  def verification_artifact_input
+    primary_target = {
+      "host" => "github.com",
+      "repo" => "shakacode/agent-coordination",
+      "type" => "issue",
+      "number" => 296
+    }
+    issue_url = "https://github.com/shakacode/agent-coordination/issues/296"
+    artifact_url = "https://github.com/shakacode/agent-coordination/pull/303"
+    evidence_url = "#{issue_url}#issuecomment-5548937494"
+    batch_id = "ac-296-verification-20260905"
+    {
+      "contract" => "completed-batch-publication-preflight-input",
+      "version" => 1,
+      "batch_id" => batch_id,
+      "expected_targets" => [primary_target],
+      "coordination_status" => {
+        "scope" => { "kind" => "batch", "batch_id" => batch_id },
+        "batches" => [
+          {
+            "batch_id" => batch_id,
+            "repo" => "shakacode/agent-coordination",
+            "status" => "completed",
+            "updated_at" => "2026-09-05T03:07:47Z",
+            "completed_at" => "2026-09-05T03:07:47Z",
+            "lanes" => [
+              {
+                "name" => "verify296",
+                "targets" => ["296"],
+                "status" => "done",
+                "terminal" => "done",
+                "closed_at" => "2026-09-05T03:07:47Z",
+                "pr_state" => "closed",
+                "pr_url" => artifact_url,
+                "evidence_url" => "#{issue_url}#issuecomment-5548937493"
+              }
+            ]
+          }
+        ]
+      },
+      "target_snapshots" => [
+        {
+          "target" => primary_target,
+          "state" => "closed",
+          "head_sha" => "not_applicable",
+          "source" => issue_url,
+          "no_pr_evidence" => {
+            "url" => issue_url,
+            "rationale" => "verification-only issue; no product implementation PR was merged",
+            "target" => primary_target
+          },
+          "supporting_artifact" => { "url" => evidence_url }
+        }
+      ],
+      "qa_evidence" => [
+        {
+          "target" => primary_target,
+          "user_visible_ui_change" => "no",
+          "evidence" => <<~MARKER
+            <!-- qa-evidence v1
+            required: no
+            status: not_applicable
+            head_sha: not_applicable
+            tested_at: verification-only issue #296 completed without product-code delivery
+            scope: temporary PR #303 closed unmerged after exact-head verification
+            automated_checks: hosted checks passed at #{VERIFICATION_ARTIFACT_HEAD}
+            manual_checks: verification evidence recorded on the primary issue
+            findings: none
+            release_blocking: not_applicable
+            process_gap_disposition: checklist+replay
+            -->
+          MARKER
+        }
+      ]
+    }
+  end
+
+  def valid_supporting_artifact_comment(input)
+    snapshot = input.fetch("target_snapshots").first
+    primary_target = snapshot.fetch("target")
+    url = snapshot.dig("supporting_artifact", "url")
+    return unless url
+
+    comment_id = Integer(url[/#issuecomment-(\d+)\z/, 1], 10)
+    {
+      "id" => comment_id,
+      "html_url" => url,
+      "issue_url" => "https://api.github.com/repos/shakacode/agent-coordination/issues/296",
+      "body" => <<~BODY,
+        <!-- completed-batch-supporting-artifact v1
+        primary_target: https://github.com/shakacode/agent-coordination/issues/296
+        artifact_pr: https://github.com/shakacode/agent-coordination/pull/303
+        head_sha: #{VERIFICATION_ARTIFACT_HEAD}
+        role: verification_only
+        -->
+      BODY
+      "user" => { "login" => "justin808", "type" => "User" },
+      "author_association" => "MEMBER",
+      "created_at" => "2026-09-05T04:00:00Z",
+      "updated_at" => "2026-09-05T04:00:00Z",
+      "primary_target" => primary_target
+    }
+  end
+
   def qa_v2_evidence(head_sha:, user_visible_ui_change:)
     ui_change = user_visible_ui_change == "yes"
     destination = ui_change ? "github_pr" : "not_applicable"
@@ -114,6 +222,7 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     backend: BACKEND,
     waiver_verifier: valid_waiver_verifier(input),
     target_verifier: valid_target_verifier(input),
+    artifact_verifier: valid_artifact_verifier(input),
     coordination_verifier: valid_coordination_verifier(input, backend)
   )
     CompletedBatchPublicationPreflight.assess(
@@ -121,8 +230,31 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       coordination_backend: backend,
       waiver_verifier:,
       target_verifier:,
+      artifact_verifier:,
       coordination_verifier:
     )
+  end
+
+  def valid_artifact_verifier(input)
+    artifact = input.dig("target_snapshots", 0, "supporting_artifact")
+    return ->(target:) {} unless artifact
+
+    lambda do |target:|
+      next unless target == {
+        "host" => "github.com",
+        "repo" => "shakacode/agent-coordination",
+        "type" => "pull_request",
+        "number" => 303
+      }
+
+      {
+        "target" => target,
+        "state" => "closed_unmerged",
+        "head_sha" => VERIFICATION_ARTIFACT_HEAD,
+        "closed_at" => "2026-09-05T03:07:21Z",
+        "verification_source" => "authenticated gh api"
+      }
+    end
   end
 
   def valid_target_verifier(input)
@@ -154,12 +286,14 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
   def valid_waiver_verifier(input)
     row = input.fetch("qa_evidence").find { |candidate| candidate.key?("maintainer_waiver") }
     comment = row && valid_waiver_comment(row, input)
+    artifact_comment = valid_supporting_artifact_comment(input)
     lambda do |host:, repo:, comment_id:|
-      next unless comment
-      next unless host == "github.com" && repo == "shakacode/hichee"
-      next unless comment_id == comment.fetch("id")
+      candidate = [comment, artifact_comment].compact.find { |entry| entry.fetch("id") == comment_id }
+      next unless candidate
+      next unless host == "github.com" && repo.casecmp?(candidate.fetch("primary_target", {})["repo"] ||
+                                                        "shakacode/hichee")
 
-      comment
+      candidate
     end
   end
 
@@ -1233,6 +1367,207 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert_equal snapshot.fetch("no_pr_evidence"), issue_snapshot.fetch("no_pr_evidence")
     issue_qa = result.dig("snapshot", "qa").find { |row| row.dig("target", "number") == number }
     assert_equal "NOT_APPLICABLE", issue_qa.fetch("verdict")
+  end
+
+  def test_closed_issue_accepts_authenticated_closed_unmerged_verification_artifact
+    input = verification_artifact_input
+    lane = input.dig("coordination_status", "batches", 0, "lanes", 0)
+    lane["issue_url"] = "https://github.com/shakacode/agent-coordination/issues/296"
+    lane["target_url"] = "https://github.com/shakacode/agent-coordination/issues/296"
+
+    result = assess_input(input)
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+    assert_equal [input.fetch("expected_targets").first], result.fetch("targets")
+    artifact = result.dig("snapshot", "targets", 0, "supporting_artifact")
+    assert_equal "verification_only", artifact.fetch("role")
+    assert_equal input.fetch("expected_targets").first, artifact.fetch("primary_target")
+    assert_equal 303, artifact.dig("artifact_target", "number")
+    assert_equal VERIFICATION_ARTIFACT_HEAD, artifact.fetch("head_sha")
+    assert_equal "closed_unmerged", artifact.fetch("state")
+    assert_equal "justin808", artifact.fetch("evidence_author")
+    assert_equal "authenticated gh api", artifact.fetch("verification_source")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+  end
+
+  def test_verification_artifact_rejects_conflicting_primary_lane_url
+    input = verification_artifact_input
+    input.dig("coordination_status", "batches", 0, "lanes", 0)["issue_url"] =
+      "https://github.com/shakacode/agent-coordination/issues/297"
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "coordination lane verify296 target is absent or ambiguous"
+  end
+
+  def test_closed_issue_does_not_silently_ignore_auxiliary_pr_url_without_typed_evidence
+    input = verification_artifact_input
+    input.fetch("target_snapshots").first.delete("supporting_artifact")
+
+    result = assess_input(input)
+
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"), "coordination lane verify296 target is absent or ambiguous"
+    assert_includes result.fetch("blockers"),
+                    "shakacode/agent-coordination#issue:296 is absent from resolved coordination scope"
+  end
+
+  def test_verification_artifact_rejects_malformed_mismatched_foreign_or_untrusted_evidence
+    mutations = {
+      "malformed reference" => lambda do |input, _comment, _artifact|
+        input.dig("target_snapshots", 0, "supporting_artifact")["url"] = "not-a-url"
+      end,
+      "mismatched primary" => lambda do |_input, comment, _artifact|
+        comment["body"] = comment.fetch("body").sub("issues/296", "issues/297")
+      end,
+      "foreign artifact" => lambda do |_input, comment, _artifact|
+        comment["body"] = comment.fetch("body").sub(
+          "github.com/shakacode/agent-coordination/pull/303",
+          "github.com/foreign/project/pull/303"
+        )
+      end,
+      "mismatched lane artifact" => lambda do |input, _comment, _artifact|
+        input.dig("coordination_status", "batches", 0, "lanes", 0)["pr_url"] =
+          "https://github.com/shakacode/agent-coordination/pull/304"
+      end,
+      "untrusted author" => lambda do |_input, comment, _artifact|
+        comment["user"] = { "login" => "artifact-bot[bot]", "type" => "Bot" }
+      end,
+      "unknown role" => lambda do |_input, comment, _artifact|
+        comment["body"] = comment.fetch("body").sub("role: verification_only", "role: UNKNOWN")
+      end,
+      "missing field" => lambda do |_input, comment, _artifact|
+        comment["body"] = comment.fetch("body").sub("role: verification_only\n", "")
+      end,
+      "extra field" => lambda do |_input, comment, _artifact|
+        comment["body"] = comment.fetch("body").sub("role: verification_only\n", "role: verification_only\nextra: no\n")
+      end,
+      "duplicate field" => lambda do |_input, comment, _artifact|
+        comment["body"] = comment.fetch("body").sub(
+          "role: verification_only\n",
+          "role: verification_only\nrole: verification_only\n"
+        )
+      end,
+      "duplicate marker" => lambda do |_input, comment, _artifact|
+        comment["body"] = "#{comment.fetch('body')}#{comment.fetch('body')}"
+      end,
+      "wrong comment id" => lambda do |_input, comment, _artifact|
+        comment["id"] += 1
+      end,
+      "wrong comment URL" => lambda do |_input, comment, _artifact|
+        comment["html_url"] = comment.fetch("html_url").sub("5548937494", "5548937495")
+      end,
+      "wrong comment issue" => lambda do |_input, comment, _artifact|
+        comment["issue_url"] = comment.fetch("issue_url").sub("issues/296", "issues/297")
+      end
+    }
+
+    mutations.each do |label, mutate|
+      input = verification_artifact_input
+      comment = valid_supporting_artifact_comment(input)
+      artifact = valid_artifact_verifier(input)
+      mutate.call(input, comment, artifact)
+      verifier = lambda do |host:, repo:, comment_id:| # rubocop:disable Lint/UnusedBlockArgument
+        comment
+      end
+
+      result = assess_input(input, waiver_verifier: verifier, artifact_verifier: artifact)
+
+      refute result.fetch("eligible"), label
+      assert(result.fetch("blockers").any? do |blocker|
+               blocker.include?("supporting artifact") || blocker.include?("absent or ambiguous")
+             end,
+             "#{label}: #{result.fetch('blockers').join('; ')}")
+    end
+  end
+
+  def test_verification_artifact_rejects_open_merged_missing_or_stale_pr_authentication
+    cases = {
+      "open" => { "state" => "open" },
+      "merged" => { "state" => "merged" },
+      "missing" => nil,
+      "stale" => { "head_sha" => "b" * 40 }
+    }
+
+    cases.each do |label, overrides|
+      input = verification_artifact_input
+      authenticated = valid_artifact_verifier(input).call(
+        target: {
+          "host" => "github.com",
+          "repo" => "shakacode/agent-coordination",
+          "type" => "pull_request",
+          "number" => 303
+        }
+      )
+      authenticated = nil unless overrides
+      authenticated&.merge!(overrides) if overrides
+      verifier = ->(target:) { authenticated&.merge("target" => target) }
+
+      result = assess_input(input, artifact_verifier: verifier)
+
+      refute result.fetch("eligible"), label
+      assert_includes result.fetch("blockers"),
+                      "shakacode/agent-coordination#issue:296 supporting artifact is not authenticated or fresh",
+                      label
+    end
+  end
+
+  def test_supporting_artifact_api_snapshot_requires_closed_unmerged_exact_pr
+    target = {
+      "host" => "github.com",
+      "repo" => "shakacode/agent-coordination",
+      "type" => "pull_request",
+      "number" => 303
+    }
+    payload = {
+      "number" => 303,
+      "html_url" => "https://github.com/shakacode/agent-coordination/pull/303",
+      "state" => "closed",
+      "merged" => false,
+      "merged_at" => nil,
+      "closed_at" => "2026-09-05T03:07:21Z",
+      "head" => { "sha" => VERIFICATION_ARTIFACT_HEAD }
+    }
+
+    snapshot = CompletedBatchPublicationPreflight.verified_supporting_artifact_api_snapshot(payload, target)
+
+    assert_equal "closed_unmerged", snapshot.fetch("state")
+    assert_equal VERIFICATION_ARTIFACT_HEAD, snapshot.fetch("head_sha")
+
+    [
+      ->(row) { row["state"] = "open" },
+      ->(row) { row["merged"] = true },
+      ->(row) { row["merged_at"] = "2026-09-05T03:07:20Z" },
+      ->(row) { row["number"] = 304 },
+      ->(row) { row["html_url"] = row.fetch("html_url").sub("/303", "/304") },
+      ->(row) { row.fetch("head")["sha"] = "not-a-sha" },
+      ->(row) { row["closed_at"] = "UNKNOWN" }
+    ].each do |mutate|
+      changed = JSON.parse(JSON.generate(payload))
+      mutate.call(changed)
+      assert_nil CompletedBatchPublicationPreflight.verified_supporting_artifact_api_snapshot(changed, target)
+    end
+  end
+
+  def test_reassessment_rejects_tampered_or_stale_verification_artifact
+    input = verification_artifact_input
+    result = assess_input(input)
+    artifact = result.dig("snapshot", "targets", 0, "supporting_artifact")
+    artifact["head_sha"] = "b" * 40
+    result["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(result.fetch("snapshot"))
+    result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      result.reject { |key, _value| key == "receipt_digest" }
+    )
+
+    refute CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      waiver_verifier: valid_waiver_verifier(input),
+      target_verifier: valid_target_verifier(input),
+      artifact_verifier: valid_artifact_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    )
   end
 
   def test_no_pr_issue_rejects_head_bound_satisfied_qa
