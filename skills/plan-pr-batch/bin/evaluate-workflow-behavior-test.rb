@@ -120,6 +120,15 @@ class WorkflowBehaviorTest < Minitest::Test
     end
   end
 
+  def test_usage_receipt_requires_an_input_relative_path
+    data = executed
+    Dir.mktmpdir do |dir|
+      data["trials"].first["usage_receipt"] = File.join(dir, "usage.json")
+      error = assert_raises(WorkflowBehavior::Error) { WorkflowBehavior.report(data, dir) }
+      assert_equal "usage receipt path must be relative to the input file", error.message
+    end
+  end
+
   def test_malformed_usage_receipt_nesting_raises_domain_error
     Dir.mktmpdir do |dir|
       data = executed

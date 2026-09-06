@@ -74,7 +74,8 @@ labels are in the [scenario set](../skills/plan-pr-batch/fixtures/astra-behavior
 cannot establish that a reviewer classified the actual run correctly. A wrong
 action produces `false`, while unadjudicated behavior produces `UNKNOWN`.
 
-Keep `requested` and `observed` routes separate. Known observations require a
+Keep `requested` and `observed` routes separate. When using the profile resolver,
+copy only its `model` and `effort` preference fields into `requested`. Known observations require a
 `provenance_ref` pointing to host evidence under the existing
 [execution-provenance contract](../workflows/pr-processing.md). Route mismatches
 and missing observations remain unmeasured; they do not become failed workflows.

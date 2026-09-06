@@ -4,6 +4,7 @@
 require "digest"
 require "json"
 require "optparse"
+require "pathname"
 
 # Offline adjudication/reporting only: never launches a model or stores transcripts.
 module WorkflowBehavior
@@ -89,6 +90,10 @@ module WorkflowBehavior
     %w[provenance_ref evidence_ref usage_receipt].each do |field|
       raise Error, "invalid evidence reference" unless row[field].is_a?(String) && !row[field].empty? && row[field] == row[field].strip
     end
+    if Pathname.new(row["usage_receipt"]).absolute?
+      raise Error, "usage receipt path must be relative to the input file"
+    end
+
     observed_known = row["observed"].values.any? { |value| value != UNKNOWN }
     raise Error, "observed metadata requires host provenance" if observed_known && !known_string?(row["provenance_ref"])
     if row["variant"].start_with?("astra-") && ![UNKNOWN, "gpt-6-astra"].include?(row["requested"]["model"])

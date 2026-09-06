@@ -946,6 +946,17 @@ def assert_recommended_profiles(test, text, label)
   test.assert_includes guide, "advisory", label
 end
 
+def assert_single_target_coordinator_baseline(test, text, label)
+  guide = normalized(strip_html_comments(text))
+  [
+    "Default single-target future coordinator: Sol/high",
+    "Affirmatively simple single-target future coordinator: Terra/high",
+    "Default single-target future coordinator: Opus 5/high",
+    "Affirmatively simple single-target future coordinator: Sonnet 5/high",
+    "claude-profile v1"
+  ].each { |rule| test.assert_includes guide, rule, "#{label}: missing baseline #{rule}" }
+end
+
 def assert_constrained_routine_routing(test, text, label)
   guide = normalized(strip_html_comments(text))
   [
@@ -1266,10 +1277,18 @@ class ModelRoutingContractTest < Minitest::Test
     SINGLE_TARGET_PLANNER_SURFACES.each do |path|
       text = read_repo_file(path)
       assert_planning_pass_contract(self, text, path)
-      assert_includes text, "claude-profile v1", path
+      assert_single_target_coordinator_baseline(self, text, path)
     end
 
     assert_includes read_repo_file(MODEL_ROUTING_GUIDE_PATH), "claude-opus-5"
+  end
+
+  def test_single_target_coordinator_baseline_rejects_missing_or_changed_routes
+    text = read_repo_file("docs/pr-batch-skills.md")
+    ["Sol/high", "Terra/high", "Opus 5/high", "Sonnet 5/high", "claude-profile v1"].each do |route|
+      mutant = text.gsub(route, "unverified-route")
+      assert_raises(Minitest::Assertion) { assert_single_target_coordinator_baseline(self, mutant, "baseline mutant") }
+    end
   end
 
   def test_intake_keeps_future_coordinator_policy_separate_from_current_planning_pass
