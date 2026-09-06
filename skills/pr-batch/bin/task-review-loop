@@ -748,10 +748,10 @@ module TaskReviewLoop
           errors << "review-findings-incomplete-coverage"
         end
         if findings.any? do |finding|
+          validator = finding.dig("independent_validation", "validator")
           (finding["consequential"] == true || %w[P0 P1].include?(finding["severity"])) &&
-          (Array(known_implementers) + [review_round["reviewer_id"]]).any? do |actor|
-            same_actor?(finding.dig("independent_validation", "validator"), actor)
-          end
+          (!non_empty_string?(validator) ||
+           (Array(known_implementers) + [review_round["reviewer_id"]]).any? { |actor| same_actor?(validator, actor) })
         end
           errors << "finding-validator-not-independent"
         end

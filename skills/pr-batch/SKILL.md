@@ -1,6 +1,6 @@
 ---
 name: pr-batch
-description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch.
+description: Plan and safely run one or more canonical issue, existing PR, or durably overridden ad-hoc work lanes with coordinated subagents, validation, review, and merge-readiness. Unbound direct prompts route through planning/reconciliation before implementation launch. Use when coordinating one or more implementation lanes.
 argument-hint: '[task, exact issue/PR numbers, or filters]'
 ---
 

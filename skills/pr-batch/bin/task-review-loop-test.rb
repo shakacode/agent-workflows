@@ -1605,18 +1605,24 @@ class TaskReviewLoopTest < Minitest::Test
   end
 
   def test_consequential_validator_must_be_independent_of_task_actors
-    validators = ["reviewer-b", "implementer-a", "\u00a0ＲＥＶＩＥＷＥＲ-Ｂ\u2003", " IMPLEMENTER-A ", "validator-c"]
-    validators.product([["P0", false], ["P1", false], ["P2", true]]).each do |validator, (severity, consequential)|
+    validators = [
+      "reviewer-b", "implementer-a", "\u00a0ＲＥＶＩＥＷＥＲ-Ｂ\u2003", " IMPLEMENTER-A ",
+      "UNKNOWN", " unknown ", "\u00a0", "\u2003", "\u00a0ＵＮＫＮＯＷＮ\u2003", "validator-c"
+    ]
+    severities = [["P0", false], ["P1", false], ["P2", true]]
+    dispositions = %w[accepted_fixed rejected_false_positive]
+    validators.product(severities, dispositions).each do |validator, (severity, consequential), disposition|
       Dir.mktmpdir("task-review-loop") do |directory|
         input = clean_review_input(directory)
-        rejected = finding(
+        record = finding(
           "finding-1", severity: severity, consequential: consequential,
-                       disposition: "rejected_false_positive", head_sha: HEAD_SHA,
+                       disposition: disposition, head_sha: HEAD_SHA,
                        independent_validation: {
-                         "status" => "rejected", "validator" => validator, "evidence" => ["probe://finding-1"]
+                         "status" => disposition == "accepted_fixed" ? "confirmed" : "rejected",
+                         "validator" => validator, "evidence" => ["probe://finding-1"]
                        }
         )
-        path = write_findings(directory, "rejected-findings.json", [rejected])
+        path = write_findings(directory, "validator-findings.json", [record])
         input["rounds"][0] = with_digest(
           input.fetch("rounds").first.merge(
             "review_findings" => artifact(path), "addressed_finding_ids" => ["finding-1"]
