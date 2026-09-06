@@ -325,8 +325,9 @@ continues immediately without waiting further on the event. Public claim
 comments are not a typed event transport.
 
 Backends that auto-emit `claim.acquired`, `claim.released`, and `phase.changed`
-own those lifecycle events; workers do not duplicate them. After terminal
-releases, run a read-only check only when the active backend advertises an
+own those lifecycle events; workers do not duplicate them. For
+`coordination_required`, after terminal releases, run a read-only check only
+when the active backend advertises an
 `agent-coord`-compatible telemetry-completeness audit capability bound to the
 following process contract. Executable: `agent-coord`. Arguments, in order and
 as separate values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`.
@@ -336,8 +337,10 @@ equivalent shell-evaluation paths are forbidden. When that compatible
 capability is advertised, an incomplete result, command failure, or `UNKNOWN`
 readback blocks telemetry closeout. If the active backend does not
 advertise that compatible capability or its advertisement is `UNKNOWN`, record
-`telemetry audit: unavailable` in the durable handoff and continue; backend
-`n/a` skips the check.
+`telemetry audit: unavailable` in the durable handoff and continue. For
+`coordination_not_applicable`, skip all telemetry-audit backend calls even with
+a configured backend. A trusted `coordination_backend: n/a` under
+`coordination_required` is a pre-launch stop, not a skipped telemetry audit.
 
 ## Directional Workflow Telemetry Report
 

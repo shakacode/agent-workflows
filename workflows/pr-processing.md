@@ -1849,8 +1849,8 @@ on the event. Public claim comments are not a typed event transport.
 Backends may auto-emit the lifecycle events `claim.acquired`, `claim.released`,
 and `phase.changed` from claim, release, and phase-transition operations. Do
 not duplicate those lifecycle events with explicit typed-signal writes; the
-four operational signals above are additive. At batch closeout, use a read-only
-check after terminal releases only when the active backend advertises an
+four operational signals above are additive. For `coordination_required`, after
+terminal releases, run a read-only check only when the active backend advertises an
 `agent-coord`-compatible telemetry-completeness audit capability bound to the
 following process contract. Executable: `agent-coord`. Arguments, in order and
 as separate values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`.
@@ -1868,8 +1868,10 @@ capability is advertised, incomplete lifecycle coverage, command failure, or
 `UNKNOWN` readback blocks telemetry closeout until the coordinator
 repairs or explicitly carries the gap. If the active backend does not advertise
 that compatible capability or its advertisement is `UNKNOWN`, record
-`telemetry audit: unavailable` in the durable handoff and continue. Backend
-`n/a` skips this check.
+`telemetry audit: unavailable` in the durable handoff and continue. For
+`coordination_not_applicable`, skip all telemetry-audit backend calls even with
+a configured backend. A trusted `coordination_backend: n/a` under
+`coordination_required` is a pre-launch stop, not a skipped telemetry audit.
 
 ### Worker Rules
 
