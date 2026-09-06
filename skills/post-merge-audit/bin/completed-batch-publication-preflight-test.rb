@@ -2450,6 +2450,88 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     end
   end
 
+  def artifact_url_boundary_assessment(boundary, url)
+    input = verification_artifact_input
+    comment = valid_supporting_artifact_comment(input)
+    payload = {
+      "number" => 303,
+      "html_url" => "https://github.com/shakacode/agent-coordination/pull/303",
+      "state" => "closed", "merged" => false, "merged_at" => nil,
+      "closed_at" => "2026-09-05T03:07:21Z",
+      "head" => { "sha" => VERIFICATION_ARTIFACT_HEAD }
+    }
+    case boundary
+    when :lane_pr_url
+      input.dig("coordination_status", "batches", 0, "lanes", 0)["pr_url"] = url
+    when :marker_primary
+      comment["body"] = comment.fetch("body").sub(/^primary_target: .+$/, "primary_target: #{url}")
+    when :marker_artifact
+      comment["body"] = comment.fetch("body").sub(/^artifact_pr: .+$/, "artifact_pr: #{url}")
+    when :api_html_url
+      payload["html_url"] = url
+    when :comment_html_url
+      comment["html_url"] = url
+    else
+      raise "unknown artifact URL boundary: #{boundary}"
+    end
+    verifiers = {
+      waiver_verifier: ->(**) { comment },
+      artifact_verifier: lambda do |target:|
+        CompletedBatchPublicationPreflight.verified_supporting_artifact_api_snapshot(payload, target)
+      end,
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    }
+    [assess_input(input, **verifiers), verifiers]
+  end
+
+  def test_artifact_target_url_boundaries_accept_host_and_repository_case_aliases
+    %i[lane_pr_url marker_primary marker_artifact api_html_url].each do |boundary|
+      path = boundary == :marker_primary ? "issues/296" : "pull/303"
+      %w[github.com/ShakaCode/Agent-Coordination GITHUB.COM/shakacode/agent-coordination].each do |authority|
+        result, verifiers = artifact_url_boundary_assessment(boundary, "https://#{authority}/#{path}")
+
+        assert result.fetch("eligible"), "#{boundary}: #{result.fetch('blockers').join('; ')}"
+        assert CompletedBatchPublicationPreflight.valid_receipt?(result), boundary.inspect
+        assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+          result, coordination_backend: BACKEND, **verifiers
+        ), boundary.inspect
+      end
+    end
+  end
+
+  def test_artifact_target_url_boundaries_reject_wrong_identity_and_url_grammar
+    %i[lane_pr_url marker_primary marker_artifact api_html_url].each do |boundary|
+      path = boundary == :marker_primary ? "issues/296" : "pull/303"
+      url = "https://github.com/shakacode/agent-coordination/#{path}"
+      wrong_type = boundary == :marker_primary ? "pull/296" : "issues/303"
+      hostile_urls = [
+        url.sub(path, wrong_type), url.sub(/\d+\z/, "999"),
+        url.sub("shakacode/agent-coordination", "foreign/other"),
+        url.sub("github.com", "other.example"), url.sub("https:", "http:"),
+        "#{url}?view=1", "#{url}#fragment", url.sub("github.com", "user@github.com"),
+        "#{url}/", url.sub("/#{path}", "/extra/#{path}")
+      ]
+      hostile_urls.each do |hostile|
+        result, = artifact_url_boundary_assessment(boundary, hostile)
+
+        refute result.fetch("eligible"), "#{boundary}: #{hostile}"
+      end
+    end
+  end
+
+  def test_artifact_comment_url_retains_exact_authenticated_reference_binding
+    canonical = "https://github.com/shakacode/agent-coordination/issues/296#issuecomment-5548937494"
+    result, = artifact_url_boundary_assessment(:comment_html_url, canonical)
+    assert result.fetch("eligible")
+
+    aliased = canonical.sub("shakacode/agent-coordination", "ShakaCode/Agent-Coordination")
+    result, = artifact_url_boundary_assessment(:comment_html_url, aliased)
+    refute result.fetch("eligible")
+    assert_includes result.fetch("blockers"),
+                    "shakacode/agent-coordination#issue:296 supporting artifact is not authenticated or fresh"
+  end
+
   def test_reassessment_rejects_tampered_or_stale_verification_artifact
     input = verification_artifact_input
     result = assess_input(input)

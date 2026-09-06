@@ -742,7 +742,7 @@ module CompletedBatchPublicationPreflight
 
     row = snapshots[target_key(primary_target)]
     supporting_artifact_reference(row&.fetch("supporting_artifact", nil), primary_target) &&
-      lane["pr_url"] == target_base_url(artifact_target)
+      same_target_url?(lane["pr_url"], artifact_target)
   end
 
   def compare_resolved_scope(expected, resolved, blockers)
@@ -1021,7 +1021,7 @@ module CompletedBatchPublicationPreflight
     return unless marker
 
     artifact_target = marker.fetch("artifact_target")
-    return unless lane_pr_url == target_base_url(artifact_target)
+    return unless same_target_url?(lane_pr_url, artifact_target)
 
     authenticated = artifact_verifier.call(target: artifact_target)
     valid_shape = authenticated.is_a?(Hash) &&
@@ -1073,7 +1073,7 @@ module CompletedBatchPublicationPreflight
       expected_fields: %w[primary_target artifact_pr head_sha role]
     )
     return unless fields
-    return unless fields.fetch("primary_target") == target_base_url(primary_target)
+    return unless same_target_url?(fields.fetch("primary_target"), primary_target)
     return unless fields.fetch("role") == "verification_only"
 
     artifact_target = target_from_url(fields.fetch("artifact_pr"))
@@ -1616,7 +1616,7 @@ module CompletedBatchPublicationPreflight
   def verified_supporting_artifact_api_snapshot(payload, target)
     return unless payload.is_a?(Hash) && target.fetch("type") == "pull_request"
     return unless Integer(payload["number"], exception: false) == target.fetch("number")
-    return unless payload["html_url"] == target_base_url(target)
+    return unless same_target_url?(payload["html_url"], target)
     return unless payload["state"] == "closed"
     return unless payload.key?("merged") && payload["merged"] == false
     return unless payload.key?("merged_at") && payload["merged_at"].nil?
