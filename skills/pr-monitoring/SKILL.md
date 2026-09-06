@@ -146,7 +146,8 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
    - Fetch unresolved review threads and recent bot/human comments.
    - Classify actionable current-head findings before readiness.
    - When triage verifies a P0/P1 finding, confirmed regression, or required
-     revert and a private backend is active, emit `error` with the exact
+     revert in a `coordination_required` run and a private backend is active,
+     emit `error` with the exact
      `severity`, `category`, and `message`; the event supplements the review
      evidence and never replaces the fix, waiver, or handoff.
    - Fix confirmed blockers in batches, then push once.
@@ -185,8 +186,8 @@ make a pending check, missing reviewer artifact, or unresolved thread ready.
      record `ready-no-merge-authority` and do not ask again for the same decision.
    - `none`: hand off as `ready-no-merge-authority` when checks, review
      threads, and policy gates are clean.
-   - Before a private-backend `blocked-user-input` or help-needed pause, emit
-     `help_requested`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
+   - For `coordination_required`, before a private-backend `blocked-user-input`
+     or help-needed pause, emit `help_requested`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
 
 Only `coordination_required` runs attempt typed event emission. Emission is
 best-effort and follows the canonical `pr-batch` backend-neutral rule. A trusted
@@ -272,8 +273,9 @@ Report:
 - unresolved or resolved review-thread summary
 - merge-state and authority result
 - coordination applicability; for `coordination_required`, typed
-  operational-event emissions, skipped backend-`n/a`, or exact
-  degraded-`UNKNOWN` evidence
+  operational-event emissions, `typed event transport: unavailable`, or exact
+  degraded-`UNKNOWN` evidence; a trusted `coordination_backend: n/a` is a
+  pre-launch stop, not a skipped emission
 - final state
 
 Every final user-visible workflow handoff must include one unambiguous `Next:`

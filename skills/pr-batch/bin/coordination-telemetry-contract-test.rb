@@ -509,6 +509,36 @@ class CoordinationTelemetryContractTest < Minitest::Test
                     "the planner must classify trusted topology before its first backend command"
   end
 
+  def test_monitoring_error_action_requires_coordination
+    review_step = extract_between(read_repo_file(PR_MONITORING_SKILL_PATH),
+                                  "3. **Cross the review-wave barrier, then triage once.**",
+                                  "4. **Check validation, conflicts, and stale branch state.**").gsub(/\s+/, " ")
+
+    assert_includes review_step,
+                    "When triage verifies a P0/P1 finding, confirmed regression, or required revert in a " \
+                    "`coordination_required` run and a private backend is active, emit `error`"
+  end
+
+  def test_monitoring_help_requested_action_requires_coordination
+    authority_step = extract_between(read_repo_file(PR_MONITORING_SKILL_PATH),
+                                     "5. **Apply authority.**",
+                                     "Only `coordination_required` runs attempt typed event emission.").gsub(/\s+/, " ")
+
+    assert_includes authority_step,
+                    "For `coordination_required`, before a private-backend `blocked-user-input` or " \
+                    "help-needed pause, emit `help_requested`."
+  end
+
+  def test_monitoring_evidence_preserves_backend_stop_and_optional_transport
+    evidence = extract_section(read_repo_file(PR_MONITORING_SKILL_PATH), "## Evidence").gsub(/\s+/, " ")
+
+    assert_includes evidence,
+                    "for `coordination_required`, typed operational-event emissions, " \
+                    "`typed event transport: unavailable`, or exact degraded-`UNKNOWN` evidence"
+    assert_includes evidence, "a trusted `coordination_backend: n/a` is a pre-launch stop, not a skipped emission"
+    refute_includes evidence, "skipped backend-`n/a`"
+  end
+
   def test_typed_operational_events_are_scoped_to_required_coordination
     gate = extract_section(read_repo_file(WORKFLOW_PATH), "## Coordination Applicability Gate").gsub(/\s+/, " ")
 
