@@ -120,6 +120,7 @@ bin/push-downstream --config downstream.yml >/dev/null
 
 echo "== helper tests =="
 ruby bin/lint-test.rb
+ruby bin/process-gap-mechanism-target-test.rb
 ruby skills/autoreview/bin/autoreview-target-state-test.rb
 ruby skills/continue/bin/authorized-completion-test.rb
 ruby skills/verify/bin/verification-evidence-reuse-test.rb
