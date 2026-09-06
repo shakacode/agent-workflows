@@ -4,7 +4,13 @@ Date: 2026-09-05. Scope: shakacode/agent-workflows. This record preserves the ba
 
 Companion: [case-study evidence notebook](../postmortems/2026-09-05-verification-backlog-case-study.md). Related investigation: [ROR #4980 review churn](../postmortems/2026-09-05-ror-4980-review-churn.md).
 
-## Governing decision and immediate handoff
+## Status update: September 6, 2026, 05:34 UTC
+
+[PR #695 merged](https://github.com/shakacode/agent-workflows/pull/695) at 04:48 UTC. Its [archive closeout on #392](https://github.com/shakacode/agent-workflows/issues/392#issuecomment-5557218968) supersedes the pending-owner handoff below: the existing work and unpublished changes were preserved, the PR's claim was released, and no active implementation owner or automatic continuation is assigned to its follow-ups. The document-size assertion, valid-`UNKNOWN` filename limitation, and malformed-encoding reporting are parked observations, to revisit only on concrete impact or explicit reprioritization.
+
+The two-round continuation brake and five-PR adoption pilot were not shipped by #695. They remain separately prioritized on #392. The next portfolio decision belongs to the maintainer and **AW Portfolio Control Tower**; do not wait for or automatically restart the former #695 owner. The earlier integration/refactoring options and other parked or queued work below are not new admissions. This document preserves the original investigation as history; the linked later disposition controls current ownership and continuation.
+
+## September 5 decision and original handoff (historical)
 
 The [maintainer-approved #392 decision, recorded September 5 at 22:34 UTC](https://github.com/shakacode/agent-workflows/issues/392#issuecomment-5555246299), governs scheduling. It supersedes this investigation's earlier sequence of integration and refactoring experiments. Those ideas remain discussion options below; they are not newly admitted work.
 
@@ -15,13 +21,13 @@ The [maintainer-approved #392 decision, recorded September 5 at 22:34 UTC](https
 - Keep [#760](https://github.com/shakacode/agent-workflows/issues/760) queued at P2 until that pilot, limited to reply readback/422 recovery and stale formal review state. Park [#399](https://github.com/shakacode/agent-workflows/issues/399) replacement implementation through the pilot. Preserve its requirements and [#426](https://github.com/shakacode/agent-workflows/pull/426) evidence; retire #426 as superseded only after the tower reconciles any successor/live work. Keep [#367](https://github.com/shakacode/agent-workflows/issues/367) closed.
 - No new workers, duplicate issues, full packet machinery, receipt schema, dashboard, or #399 prerequisite. Existing unrelated agents checkpoint within their scope. New infrastructure waits for existing work to finish or receive an explicit park/close disposition, except a demonstrated security, production, release, or active-work blocker with one owner, bounded scope, and named displaced work.
 
-**Next step:** obtain the existing #695 owner's checkpoint and smallest stopping-rule plan, then let the tower reconcile scheduling before implementation resumes. The checkpoint should identify the preserved head/unpublished work, the repair-loop boundary and existing state to reuse, the minimum intended change, and the replay that proves interruption. This document does not reassign the lane or grant merge, deletion, security-bypass, or foreign-claim takeover authority.
+**Original next step, superseded by the status update above:** obtain the existing #695 owner's checkpoint and smallest stopping-rule plan, then let the tower reconcile scheduling before implementation resumes. The checkpoint was to identify the preserved head/unpublished work, the repair-loop boundary and existing state to reuse, the minimum intended change, and the replay that proves interruption. This document does not reassign the lane or grant merge, deletion, security-bypass, or foreign-claim takeover authority.
 
 ## Recovery principle
 
 Stop converting every review observation into implementation demand. Separate discovery, admission, implementation, and acceptance. Preserve a small safety floor and make the remaining process earn its cost in measured results. Use the existing finishing owner. Consider selective context/branch resets, small coherent integration groups, and component extraction only when the tower admits them under the governing decision.
 
-The immediate action is the existing-owner checkpoint above. It does not require a new scheduler, dashboard, review engine, evidence schema, or repository-wide rewrite before work can resume.
+Recovery does not require a new scheduler, dashboard, review engine, evidence schema, or repository-wide rewrite before work can resume. Current admission follows the status update above.
 
 ## First-principles model
 
@@ -154,7 +160,9 @@ Keep pure extraction separate from behavior/policy changes. Verify source and in
 
 [#632](https://github.com/shakacode/agent-workflows/issues/632) records repeated false negatives caused by enumerating acceptable natural-language `HTTPS:` labels in an evidence parser. #631 records regressions while changing the same parser. This is evidence to challenge the abstraction: human explanation and machine-authoritative evidence should have a clear boundary. Investigate whether a smaller explicit reference representation can remove the need to recognize arbitrary prose. Do not start another broad schema rewrite during backlog recovery, and do not weaken existing evidence validation while investigating.
 
-## 5. Current sequence and success criteria
+## 5. Sequence proposed at the initial investigation (historical)
+
+This table records the original proposal. The September 6 status update supersedes its pending #695 checkpoint and implementation-owner assignments; later steps are not automatically admitted.
 
 | Step | Existing owner | Done when |
 | --- | --- | --- |
@@ -177,4 +185,4 @@ This publication preserves analysis and the already-approved #392 direction. It 
 
 The earlier plan review retained these constraints: reset context before replacing sound work; preserve findings and authority across replacement; distinguish an integration rehearsal from its publication route; separate follow-up origin from priority; reconcile live ownership before takeovers or consolidation; and avoid making another process platform a recovery prerequisite.
 
-Current acknowledgements and active processes remain unverified here. Any later integration or extraction experiment also needs fresh source-head, ownership, compatibility, and value checks. These unknowns do not prevent sharing the investigation or asking the existing owner for its checkpoint.
+Acknowledgements and active processes were unverified in the original investigation. The September 6 closeout resolves the former #695 owner's disposition without assigning a successor. Any later integration or extraction experiment still needs fresh source-head, ownership, compatibility, and value checks.

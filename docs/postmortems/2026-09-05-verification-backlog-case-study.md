@@ -2,7 +2,11 @@
 
 Working title: “When every review suggestion became a requirement.” This is an evidence notebook, not a published article or a settled causal claim.
 
-Companion: [recovery plan and current handoff](../plans/2026-09-05-backlog-recovery-plan.md). Related incident: [ROR #4980 review churn](2026-09-05-ror-4980-review-churn.md). The [approved #392 decision](https://github.com/shakacode/agent-workflows/issues/392#issuecomment-5555246299) controls scheduling; this notebook records evidence and hypotheses.
+Companion: [recovery plan and current status](../plans/2026-09-05-backlog-recovery-plan.md). Related incident: [ROR #4980 review churn](2026-09-05-ror-4980-review-churn.md). This notebook records evidence and hypotheses; the latest maintainer dispositions on #392 control scheduling.
+
+## Status update: September 6, 2026, 05:34 UTC
+
+[PR #695 merged](https://github.com/shakacode/agent-workflows/pull/695) at 04:48 UTC. The [subsequent archive closeout](https://github.com/shakacode/agent-workflows/issues/392#issuecomment-5557218968) records preserved unpublished work and parked follow-ups, with no active implementation owner or automatic continuation assigned. It supersedes the pending-owner handoff recorded below. The two-round continuation brake and five-PR observation pilot were not shipped by this merge; they remain separately prioritized by the maintainer and AW Portfolio Control Tower. A merged review contract is not evidence that the proposed brake or its adoption experiment succeeded.
 
 ## Product question
 
@@ -34,13 +38,13 @@ How can an agent workflow direct verification and human attention toward valuabl
 
 The label pass verified 48 follow-up-origin issues by final API readback: 47 newly labeled and #760 already labeled. Eight were also parked as optional; the others were not automatically demoted. Exact before/after API responses remain in the originating task’s local audit. The companion plan preserves the eight public source links and rationales. No PR was closed, replaced, merged, rebased, or refactored by this task. Existing claims and branches were preserved. No workflow policy was weakened.
 
-## Approved follow-through, September 5 at 22:34 UTC
+## Approved follow-through, September 5 at 22:34 UTC (historical)
 
 The [decision on #392](https://github.com/shakacode/agent-workflows/issues/392#issuecomment-5555246299) narrows the first intervention to the existing #695 owner's smallest stopping-rule slice. The pilot stops after two repair rounds, or earlier when a new grammar/protocol/schema category is proposed, and retains counts across pushes and resumes. The next automatic repair/re-review requires explicit impact/design adjudication; substantive defects and required gates remain intact.
 
 The required replay is the first 13 commits of ROR #4980, demonstrating that the next synonym repair is interrupted without token telemetry and across resume. Adoption is then observed on five consecutive eligible PRs against five preceding comparable PRs. This is the current experiment. The earlier direct-landing versus integration comparison is deferred, not another concurrent workstream.
 
-The tower owns admission and sequencing; the existing #695 owner retains implementation responsibility pending reconciliation. Handoffs were reported queued, but acknowledgement was not verified in this documentation pass. #760 remains queued at P2 through the pilot, #399 replacement implementation is parked, and #426 retirement awaits reconciliation of successor/live work. Existing work and evidence are preserved.
+At this point, the tower owned admission and sequencing and the existing #695 owner retained implementation responsibility pending reconciliation. Handoffs were reported queued, but acknowledgement was not verified in the original documentation pass. #760 was queued at P2 through the pilot, #399 replacement implementation was parked, and #426 retirement awaited reconciliation of successor/live work. The September 6 status update supersedes the pending-owner direction; these records do not launch further work.
 
 ## Hypotheses to test
 
@@ -65,6 +69,7 @@ Public storytelling should use repository-linked facts and aggregate metrics. Pr
 
 ## Primary source links
 
+- https://github.com/shakacode/agent-workflows/issues/392#issuecomment-5557218968
 - https://github.com/shakacode/agent-workflows/issues/392#issuecomment-5555246299
 - https://github.com/shakacode/agent-workflows/pull/761
 - https://github.com/shakacode/agent-workflows/pull/695
