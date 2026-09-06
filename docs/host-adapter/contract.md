@@ -287,7 +287,6 @@ Host-specific tools must be checked before use:
 If the tool is unavailable, record the fallback or the blocker. Do not turn an
 unavailable host tool into a portable requirement for all users.
 
-
 ## Optional Astra execution capabilities
 
 These capabilities depend on the active host and API mode. Check availability
