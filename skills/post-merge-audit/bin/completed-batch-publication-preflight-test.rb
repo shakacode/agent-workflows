@@ -1221,6 +1221,77 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     )
   end
 
+  def test_blocked_receipt_and_reassessment_preserve_missing_source_snapshots
+    assert_missing_source_snapshots_replay(1)
+  end
+
+  def test_blocked_receipt_and_reassessment_preserve_all_missing_source_snapshots
+    assert_missing_source_snapshots_replay(:all)
+  end
+
+  def assert_missing_source_snapshots_replay(missing)
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    waiver_verifier = valid_waiver_verifier(input)
+    input.fetch("target_snapshots").shift(missing == :all ? input.fetch("target_snapshots").length : missing)
+    result = assess_input(input, waiver_verifier:)
+
+    refute result.fetch("eligible"), missing.inspect
+    assert_equal "BLOCKED", result.fetch("verdict")
+    assert CompletedBatchPublicationPreflight.valid_receipt?(result), missing.inspect
+    assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+      result,
+      coordination_backend: BACKEND,
+      waiver_verifier:,
+      target_verifier: valid_target_verifier(input),
+      coordination_verifier: valid_coordination_verifier(input, BACKEND)
+    ), missing.inspect
+  end
+
+  def test_missing_source_snapshot_does_not_authenticate_an_injected_artifact
+    input = verification_artifact_input
+    original = assess_input(input)
+    artifact = original.dig("snapshot", "targets", 0, "supporting_artifact")
+    input.fetch("target_snapshots").clear
+    result = assess_input(input, waiver_verifier: ->(**) {})
+    result.dig("snapshot", "targets", 0)["supporting_artifact"] = artifact
+    result["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(result.fetch("snapshot"))
+    result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      result.reject { |key, _value| key == "receipt_digest" }
+    )
+
+    refute result.fetch("eligible")
+    refute CompletedBatchPublicationPreflight.valid_receipt?(result)
+  end
+
+  def test_missing_source_snapshot_rejects_resealed_malformed_absence_placeholders
+    mutations = {
+      "non-null state" => ->(result) { result.dig("snapshot", "targets", 0)["state"] = "merged" },
+      "missing field" => ->(result) { result.dig("snapshot", "targets", 0).delete("head_sha") },
+      "extra field" => ->(result) { result.dig("snapshot", "targets", 0)["extra"] = nil },
+      "missing blocker" => lambda do |result|
+        result.fetch("blockers").reject! { |blocker| blocker.end_with?("target snapshot is absent") }
+      end,
+      "eligible receipt" => lambda do |result|
+        result["eligible"] = true
+        result["verdict"] = "ELIGIBLE"
+        result["blockers"] = []
+      end
+    }
+    mutations.each do |label, mutate|
+      input = fixture("completed-batch-publication-hichee-terminal.json")
+      waiver_verifier = valid_waiver_verifier(input)
+      input.fetch("target_snapshots").clear
+      result = assess_input(input, waiver_verifier:)
+      mutate.call(result)
+      result["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(result.fetch("snapshot"))
+      result["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+        result.reject { |key, _value| key == "receipt_digest" }
+      )
+
+      refute CompletedBatchPublicationPreflight.valid_receipt?(result), label
+    end
+  end
+
   def test_artifact_receipt_and_reassessment_preserve_case_insensitive_repository_identity
     input = verification_artifact_input
     authenticated_input = JSON.parse(JSON.generate(input))

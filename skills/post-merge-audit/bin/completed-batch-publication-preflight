@@ -241,7 +241,9 @@ module CompletedBatchPublicationPreflight
     targets.all? do |target|
       sources = source_rows.select { |row| row.is_a?(Hash) && same_target_identity?(row["target"], target) }
       snapshots = snapshot_rows.select { |row| row.is_a?(Hash) && same_target_identity?(row["target"], target) }
-      next false unless sources.one? && snapshots.one?
+      next false unless snapshots.one?
+      next absent_target_snapshot_valid?(receipt, snapshots.first, target) if sources.empty?
+      next false unless sources.one?
 
       source_present = sources.first.key?("supporting_artifact")
       snapshot_present = snapshots.first.key?("supporting_artifact")
@@ -256,6 +258,15 @@ module CompletedBatchPublicationPreflight
     end
   rescue KeyError, NoMethodError, TypeError
     false
+  end
+
+  def absent_target_snapshot_valid?(receipt, snapshot, target)
+    expected_keys = %w[target state head_sha completed_at no_pr_evidence source verification_source]
+    receipt["eligible"] == false && receipt["verdict"] == "BLOCKED" &&
+      receipt["blockers"].is_a?(Array) &&
+      receipt["blockers"].include?("#{target_label(target)} target snapshot is absent") &&
+      snapshot.keys.sort == expected_keys.sort &&
+      snapshot.reject { |key, _value| key == "target" }.values.all?(&:nil?)
   end
 
   def same_target_identity?(value, target)
