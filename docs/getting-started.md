@@ -30,6 +30,7 @@ paths the examples use. The exceptions are the agent transcripts in Steps 3,
 | Git | 2.41 or newer recommended; verified with 2.50.1 | Cloning the pack and reading repository state. Any recent Git completes this guide; the optional pinned-copy drift checker needs 2.41+ for full-fidelity checks (see [adoption.md](adoption.md)). |
 | Bash | 3.2 or newer; verified with macOS stock bash 3.2.57 | The installer and the shell helper scripts. |
 | Ruby | Ruby 3 series; verified with 3.3.6, and this repo's CI pins 3.4 | The seam doctor, status, and upgrade helpers. Plain Ruby only — no gems to install. |
+| Python | 3.9 or newer; this repo's lint CI pins 3.13 | The `$audit-chats` local inventory helper and this repo's validation suite. Plain Python only — no packages to install. |
 | GitHub CLI (`gh`) | 2.x, authenticated (walkthrough machine: 2.89.0) | Workflows that read GitHub, such as `$pr-batch` and `$address-review`. Not needed for install or adoption. Run `gh auth status` to confirm login. |
 | An agent host | A current release of Codex CLI or Claude Code | Actually loads and runs the installed skills. |
 
@@ -244,7 +245,9 @@ All selected checks passed. The branch is ready for a PR update.
 
 The shape is what matters: the agent reads the seam first, picks checks that
 cover the changed files, runs them in order, and reports each command with a
-PASS or FAIL line, stopping on the first failure. That reporting contract is
+PASS or FAIL line. On failure, pause the sequence for bounded diagnosis and
+correction, then continue within the authorized scope; required checks remain
+gates until they pass. That reporting contract is
 defined in `skills/verify/SKILL.md`.
 
 If the agent cannot find the skill, re-check Step 1 (`agent-workflows-status`
@@ -506,7 +509,8 @@ skill or document that implements it.
   ([tdd skill](../skills/tdd/SKILL.md)).
 - **Run `verify` before every PR create or update** — the same Step 3
   loop: checks chosen from the repo seam, one PASS or FAIL line per
-  command, stop on the first failure.
+  command, pause on failure for bounded diagnosis and correction, then continue
+  within the authorized scope. Required checks must still pass.
 - **Prove a bug fix, do not assert it.** The `verify-pr-fix` skill
   reproduces the failure before the fix, confirms it is gone after, and
   states plainly what was not exercised — evidence before assertions

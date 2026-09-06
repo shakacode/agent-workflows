@@ -42,6 +42,7 @@ and implementation plans are collected in the final reference section.
 | Run an attended work window or leave authorized work moving overnight | [Attended And Overnight Workflow](attended-and-overnight-workflow.md) |
 | Finish and archive a stale PR-batch task | Use the `$close-batch` skill |
 | Run repository control towers with one prioritized, deep-linked human-attention desk | [Control Tower And Human Attention Desk](control-tower-prompts.md) |
+| Audit local Codex tasks and visible ChatGPT chats for archive and follow-up actions | Use the `$audit-chats` skill |
 | Understand task ownership, cross-task requests, approvals, and heartbeat communication | [User-Facing Coordination](user-facing-coordination.md) |
 | Understand a PR one conceptual change and rationale at a time | Use the `$pr-walkthrough` skill |
 | Decide whether an issue or proposed fix is worth doing | [Issue And Fix Evaluation](issue-evaluation.md) |

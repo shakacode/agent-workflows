@@ -524,6 +524,9 @@ Use the canonical [Autonomous Merge Eligibility](../../workflows/pr-batch-integr
 ## Merge Assurance Gate
 
 Use the canonical [Merge Assurance Gate](../../workflows/pr-batch-integration-closeout.md#merge-assurance-gate) section. This entrypoint is a compatibility route and must not mirror integration or closeout policy.
+That component owns the canonical `diff-identity` invocation, trusted-base
+optional approval-hold policy, selected-workflow continuity, and receipt
+propagation; do not substitute caller-authored digests or waivers.
 
 ## Goal Prompt Template
 
