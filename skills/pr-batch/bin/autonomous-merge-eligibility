@@ -312,7 +312,8 @@ begin
     trusted_base_sha: base_sha.strip,
     pr_paths: current_integration_paths,
     policy:,
-    base_ref: objective.fetch("base_ref")
+    base_ref: objective.fetch("base_ref"),
+    git_executable: git_command
   }
   current_integration = if objective.fetch("base_sha") == base_sha.strip
                           CurrentIntegrationEvidence.base_unchanged(**integration_arguments)

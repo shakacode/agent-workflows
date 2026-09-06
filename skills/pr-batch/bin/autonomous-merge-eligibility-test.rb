@@ -74,6 +74,43 @@ class AutonomousMergeEligibilityTest < Minitest::Test
     end
   end
 
+  def test_live_evaluator_routes_current_integration_reads_through_the_injected_git
+    Dir.mktmpdir("autonomous-merge-trusted-git-integration", SAFE_TMP_PARENT) do |tool_root|
+      trusted_git = File.join(tool_root, "git")
+      trusted_log = File.join(tool_root, "trusted-git.log")
+      git_name = "git#{RbConfig::CONFIG.fetch('EXEEXT')}"
+      git_candidates = ENV.fetch("PATH").split(File::PATH_SEPARATOR).map do |directory|
+        File.join(directory, git_name)
+      end
+      real_git_candidate = git_candidates.find { |path| File.file?(path) && File.executable?(path) }
+      refute_nil real_git_candidate, "git must be available on PATH for this test"
+      real_git = File.realpath(real_git_candidate)
+      File.write(trusted_git, <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.open(#{trusted_log.inspect}, "a") { |file| file.puts(ARGV.join("\t")) }
+        exec(#{real_git.inspect}, *ARGV)
+      RUBY
+      File.chmod(0o755, trusted_git)
+
+      result = evaluate(subprocess_env: { "AUTONOMOUS_MERGE_GIT" => trusted_git }) do |recorded_base, root|
+        stale_evaluation(
+          root:, recorded_base:,
+          head_path: "lib/feature.rb",
+          base_delta_path: "docs/guide.md"
+        )
+      end
+
+      assert_equal "autonomous-merge-eligible", result.fetch("verdict")
+      assert_equal "reuse-exact-head", result.dig("current_integration", "reuse", "decision")
+      invocations = File.file?(trusted_log) ? File.readlines(trusted_log, chomp: true) : []
+      %w[merge-base diff].each do |subcommand|
+        assert invocations.any? { |line| line.split("\t").include?(subcommand) },
+               "current-integration `git #{subcommand}` bypassed AUTONOMOUS_MERGE_GIT; " \
+               "trusted invocations: #{invocations.inspect}"
+      end
+    end
+  end
+
   def test_live_evaluator_rejects_relative_and_writable_git_overrides_before_execution
     Dir.mktmpdir("autonomous-merge-untrusted-git", SAFE_TMP_PARENT) do |root|
       calibration_path = write_calibration(root)

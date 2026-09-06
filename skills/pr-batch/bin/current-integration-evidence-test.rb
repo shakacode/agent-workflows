@@ -271,6 +271,50 @@ class CurrentIntegrationEvidenceTest < Minitest::Test
     end
   end
 
+  def test_collect_routes_every_git_read_through_the_bound_trusted_executable
+    with_repository(base_delta_path: "docs/guide.md") do |fixture|
+      value = snapshot(fixture)
+      value["candidate"] = nil
+      wrapper_dir = Dir.mktmpdir("current-integration-trusted-git")
+      wrapper = File.join(wrapper_dir, "git")
+      log = File.join(wrapper_dir, "invocations.log")
+      system_git = CurrentIntegrationEvidence::SYSTEM_TOOL_DIRS
+                   .map { |directory| File.join(directory, "git") }
+                   .find { |path| File.file?(path) && File.executable?(path) }
+      refute_nil system_git
+      File.write(wrapper, <<~RUBY)
+        #!#{RbConfig.ruby}
+        File.open(#{log.inspect}, "a") { |file| file.puts(ARGV.join("\t")) }
+        exec(#{system_git.inspect}, *ARGV)
+      RUBY
+      FileUtils.chmod(0o755, wrapper)
+
+      result = CurrentIntegrationEvidence.collect(
+        repo_root: fixture.fetch(:root),
+        repo: "example/repo",
+        pr_number: 7,
+        recorded_base_sha: fixture.fetch(:recorded_base),
+        head_sha: fixture.fetch(:head),
+        trusted_base_sha: fixture.fetch(:current_base),
+        pr_paths: [fixture.fetch(:head_path)],
+        policy: AutonomousMergePolicy.parse("{}"),
+        changelog_path: "CHANGELOG.md",
+        snapshot_reader: ->(**) { value },
+        git_executable: wrapper
+      )
+
+      assert_equal "git-merge-tree", result.dig("candidate", "source")
+      assert_equal fixture.fetch(:candidate_tree), result.dig("candidate", "tree_oid")
+      invocations = File.file?(log) ? File.readlines(log, chomp: true) : []
+      %w[check-ref-format cat-file merge-base rev-parse diff init merge-tree].each do |subcommand|
+        assert invocations.any? { |line| line.split("\t").include?(subcommand) },
+               "bound trusted git was not used for `git #{subcommand}`; invocations: #{invocations.inspect}"
+      end
+    ensure
+      FileUtils.remove_entry(wrapper_dir) if wrapper_dir && File.exist?(wrapper_dir)
+    end
+  end
+
   def test_library_loads_its_policy_dependency_without_caller_ordering
     library = File.expand_path("../lib/current_integration_evidence", __dir__)
     _stdout, stderr, status = Open3.capture3(
