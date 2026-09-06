@@ -64,8 +64,11 @@ monitor before sending. This procedure is not a concurrent dispatch service.
 Keep attempt records on the task's owning host at
 `<resolved Codex home>/audit-chats/recovery/<task-id>.md`, outside repository
 worktrees. Use the host-provided task id as one filename component, not a path.
-Read that same record on every run; create its parent directory and record when
-absent. Do not overwrite prior attempts. If records cannot be read or saved, or
+Read that same record on every run. Before treating an absent file as a first
+attempt, check the target's recent turns and known recovery handoffs for an
+earlier resume request; missing or contradictory history is Unknown. For a
+verified first attempt, create the parent directory and record. Do not overwrite
+prior attempts. If records cannot be read or saved, or
 a known earlier attempt's record is missing, report Unknown and do not resume.
 Other hosts must consult this owning-host record, not create their own copy.
 
@@ -86,14 +89,11 @@ turn. If live state cannot be established, leave it Unknown.
 For a restart handoff, use the applicable same-task resume guidance in
 [pause](../../pause/SKILL.md), preserving any requested model/effort selection
 through the host control. For an unplanned quota interruption without a handoff,
-send a short continuation to the existing task:
-
-> Resume only your existing authorized work. Read your restart handoff and
-> reconcile live task ownership, preserved local work, and current PR/issue
-> state before acting. Follow your installed workflow's bounded status recovery
-> when applicable. Do not duplicate active work, retry already-completed work,
-> renew expired authority, or bypass remaining approval gates. Advance the
-> next safe step and report only a concrete blocker or material outcome.
+use [continue](../../continue/SKILL.md) to reconstruct context from the latest
+completed and interrupted turns, preserving the authority and ownership checks
+above. Missing context remains Unknown, not an invented handoff. The existing
+task receives a short instruction to use that checkpoint for its already
+authorized work, not a new assignment.
 
 One submission per observed interruption; no automatic resend after a timeout,
 ambiguous response, or another failure. Reconcile the saved entry on later runs

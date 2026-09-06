@@ -18,6 +18,8 @@ When the user explicitly asks to recover interrupted tasks, read
 [Interrupted-task recovery](references/interrupted-task-recovery.md) first.
 It narrows inventory reconciliation to recovery candidates and may resume existing
 Codex tasks; ordinary audit and cleanup requests never imply resume authority.
+An explicit recovery request also authorizes creating and updating its scoped
+attempt records and recovery report, not other durable records or settings.
 
 ## Establish the inventory
 

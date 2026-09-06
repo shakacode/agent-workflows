@@ -227,8 +227,9 @@ After quota exhaustion or an app restart, explicitly request its optional
 ```text
 Use $audit-chats to recover interrupted Codex tasks for this repository on
 this host. Resume only existing, still-authorized work; prioritize PRs close to
-completion. Leave active, intentionally paused, and genuinely blocked tasks
-alone. Show me only exceptions needing my decision and save the recovery report.
+completion. Leave active, priority-paused, and genuinely blocked tasks alone.
+Recover pause-for-restart handoffs only after verifying their restart condition.
+Show me only exceptions needing my decision and save the recovery report.
 ```
 
 Add your required model and effort to that prompt when applicable. Recovery
