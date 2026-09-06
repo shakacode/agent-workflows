@@ -252,7 +252,8 @@ module CompletedBatchAuditReceipt
       trusted_applicability,
       trusted_applicability_digest,
       expected_batch_id:,
-      expected_targets: deterministic
+      expected_targets: deterministic,
+      publication_preflight:
     )
     marker = comment_marker(comment_body)
     if accepted_deferral_input

@@ -1529,10 +1529,17 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     tampered["rationale"] = "tampered after the trusted decision"
     wrong_batch = JSON.parse(JSON.generate(proof))
     wrong_batch["batch_id"] = "batch-other"
+    contradictory = JSON.parse(JSON.generate(proof))
+    contradictory["rationale"] = "a separately valid trusted topology decision"
+    contradictory_digest = CompletedBatchPublicationPreflight.digest(contradictory)
+    assert CompletedBatchAuditReceipt.validate_trusted_applicability_artifact!(
+      contradictory, contradictory_digest, expected_batch_id: "batch-184", expected_targets: [target]
+    ), "the contradictory proof must be valid independently of the supplied preflight"
     candidates = {
       "missing" => [nil, nil],
       "tampered" => [tampered, digest],
-      "wrong batch" => [wrong_batch, CompletedBatchPublicationPreflight.digest(wrong_batch)]
+      "wrong batch" => [wrong_batch, CompletedBatchPublicationPreflight.digest(wrong_batch)],
+      "valid but preflight-contradictory" => [contradictory, contradictory_digest]
     }
     receipts = { "blocked" => followup_marker, "UNKNOWN" => unknown_marker }
     github_calls = []
@@ -1558,6 +1565,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
                   expected_batch_id: "batch-184",
                   targets: [target],
                   receipt:,
+                  publication_preflight: preflight,
                   coordination_backend: "n/a",
                   trusted_applicability: candidate,
                   trusted_applicability_digest: candidate_digest
@@ -1574,37 +1582,42 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_empty coordination_calls
   end
 
-  def test_unknown_publish_preserves_behavior_with_valid_applicability_proof
-    with_fake_gh do |env, directory|
-      env.delete("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT")
-      targets_path = write_json(
-        directory,
-        "targets.json",
-        [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
-      )
-      receipt_path = File.join(directory, "receipt.txt")
-      File.write(receipt_path, unknown_marker)
+  def test_noncomplete_publish_preserves_behavior_with_matching_or_absent_preflight
+    { "blocked" => followup_marker, "UNKNOWN" => unknown_marker }.each do |audit_status, receipt|
+      %w[matching absent].each do |preflight_mode|
+        with_fake_gh do |env, directory|
+          env.delete("COMPLETED_BATCH_AUDIT_PUBLICATION_PREFLIGHT") if preflight_mode == "absent"
+          targets_path = write_json(
+            directory,
+            "targets.json",
+            [{ "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }]
+          )
+          receipt_path = File.join(directory, "receipt.txt")
+          File.write(receipt_path, receipt)
 
-      out, err, status = capture_receipt_cli(
-        env,
-        "ruby",
-        SCRIPT,
-        "publish",
-        "--expected-batch-id",
-        "batch-184",
-        "--targets-json",
-        targets_path,
-        "--receipt",
-        receipt_path
-      )
+          out, err, status = capture_receipt_cli(
+            env,
+            "ruby",
+            SCRIPT,
+            "publish",
+            "--expected-batch-id",
+            "batch-184",
+            "--targets-json",
+            targets_path,
+            "--receipt",
+            receipt_path
+          )
 
-      assert status.success?, err
-      result = JSON.parse(out)
-      assert result.fetch("well_formed")
-      refute result.fetch("ready")
-      assert_equal "UNKNOWN", result.dig("fields", "audit_status")
-      assert_includes result.fetch("chat_reference"), "Completed-batch audit: UNKNOWN"
-      assert File.exist?(env.fetch("FAKE_GH_LOG")), "valid proof must preserve non-complete publication"
+          assert status.success?, "#{audit_status}/#{preflight_mode}: #{err}"
+          result = JSON.parse(out)
+          assert result.fetch("well_formed")
+          refute result.fetch("ready")
+          assert_equal audit_status, result.dig("fields", "audit_status")
+          assert_includes result.fetch("chat_reference"), "#issuecomment-9001"
+          calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+          assert_equal(1, calls.count { |call| call.include?("--method POST") })
+        end
+      end
     end
   end
 
