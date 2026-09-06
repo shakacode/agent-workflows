@@ -25,7 +25,7 @@ The [maintainer-approved #392 decision, recorded September 5 at 22:34 UTC](https
 
 ## Recovery principle
 
-Stop converting every review observation into implementation demand. Separate discovery, admission, implementation, and acceptance. Preserve a small safety floor and make the remaining process earn its cost in measured results. Use the existing finishing owner. Consider selective context/branch resets, small coherent integration groups, and component extraction only when the tower admits them under the governing decision.
+Stop converting every review observation into implementation demand. Separate discovery, admission, implementation, and acceptance. Preserve a small safety floor and make the remaining process earn its cost in measured results. Have the maintainer and control tower reconcile finishing ownership before implementation resumes. Consider selective context/branch resets, small coherent integration groups, and component extraction only when the tower admits them under the governing decision.
 
 Recovery does not require a new scheduler, dashboard, review engine, evidence schema, or repository-wide rewrite before work can resume. Current admission follows the status update above.
 

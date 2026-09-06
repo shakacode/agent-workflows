@@ -72,6 +72,7 @@ Public storytelling should use repository-linked facts and aggregate metrics. Pr
 - https://github.com/shakacode/agent-workflows/issues/392#issuecomment-5557218968
 - https://github.com/shakacode/agent-workflows/issues/392#issuecomment-5555246299
 - https://github.com/shakacode/agent-workflows/pull/761
+- https://github.com/shakacode/agent-workflows/pull/762
 - https://github.com/shakacode/agent-workflows/pull/695
 - https://github.com/shakacode/agent-workflows/issues/742
 - https://github.com/shakacode/agent-workflows/issues/645
