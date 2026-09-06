@@ -1,0 +1,9 @@
+Keep small-diff history concise
+
+Keep durable rationale in Git history while the pull request owns replayable
+agent, QA, review, and decision evidence.
+
+Fixes #318
+
+Co-Authored-By: Fixture Agent <fixture-agent@example.com>
+Agent-Session: fixture-session-318

@@ -1,0 +1,302 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+
+replay_helper = File.expand_path("../../post-merge-audit/bin/closeout-evidence-replay", __dir__)
+load replay_helper
+
+module ConciseHistoryCheck
+  module_function
+
+  AGENT_DETAILS_OPEN = "<details>\n<summary>Agent details</summary>"
+  PR_EVIDENCE_ARTIFACTS = [
+    "### Commands and results",
+    "### Exact-head and replay evidence",
+    "### QA Evidence",
+    "<!-- qa-evidence v2",
+    "<!-- hosted-qa-evidence v1",
+    "### Coordination and reviewer telemetry",
+    "<!-- priority-finding-dispositions v1",
+    "### Decision log",
+    "### Merge confidence",
+    "<!-- completed-batch-audit v1",
+    "### Audit receipts"
+  ].freeze
+  REQUIRED_REPLAY_ARTIFACTS = [
+    "### QA Evidence",
+    "<!-- qa-evidence v2",
+    "<!-- priority-finding-dispositions v1"
+  ].freeze
+  PR_ONLY_COMMIT_ARTIFACTS = ([AGENT_DETAILS_OPEN] + PR_EVIDENCE_ARTIFACTS).freeze
+  TERMINAL_REPLAY_VERDICTS = %w[SATISFIED WAIVED NOT_APPLICABLE].freeze
+  TRAILER_LINE = /\A(?<token>[A-Za-z0-9][A-Za-z0-9-]*):[ \t]+\S/
+  NON_RATIONALE_TRAILER_NAMES = %w[Signed-off-by].freeze
+  FENCE_OPEN = /\A {0,3}(?<fence>`{3,}|~{3,})/
+  INLINE_CODE_SPAN = /(?<!`)(?<delimiter>`+)(?!`).*?(?<!`)\k<delimiter>(?!`)/m
+
+  def run(argv)
+    options = parse_options(argv)
+    pr_body = File.read(options.fetch(:pr_body), encoding: "UTF-8")
+    commit_message = File.read(options.fetch(:commit_message), encoding: "UTF-8")
+    diff = File.read(options.fetch(:diff), encoding: "UTF-8")
+    result = check(pr_body, commit_message, diff, options)
+    puts JSON.pretty_generate(result)
+    result.fetch("status") == "PASS" ? 0 : 1
+  rescue OptionParser::ParseError, KeyError => e
+    warn "Error: #{e.message}"
+    64
+  rescue Errno::ENOENT => e
+    warn "Error: #{e.message}"
+    1
+  end
+
+  def parse_options(argv)
+    options = { issue_linkage: [], provenance_trailers: [] }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: concise-history-check --pr-body PATH --commit-message PATH --diff PATH --expected-head-sha SHA [requirements]"
+      opts.on("--pr-body PATH", "PR body containing the canonical Agent details disclosure") do |path|
+        options[:pr_body] = path
+      end
+      opts.on("--commit-message PATH", "Commit or squash message to check") do |path|
+        options[:commit_message] = path
+      end
+      opts.on("--diff PATH", "Unified diff used as proportionality context") do |path|
+        options[:diff] = path
+      end
+      opts.on("--expected-head-sha SHA", "Full head SHA used to replay PR evidence") do |sha|
+        raise OptionParser::InvalidArgument, "expected head must be a full SHA" unless sha.match?(/\A[0-9a-f]{40}\z/i)
+
+        options[:expected_head_sha] = sha.downcase
+      end
+      opts.on("--require-issue-linkage TEXT", "Require this exact nonempty commit-message line; repeatable") do |text|
+        if text.strip.empty? || text.match?(/[\r\n]/)
+          raise OptionParser::InvalidArgument, "issue linkage must be one nonempty line"
+        end
+
+        options[:issue_linkage] << text
+      end
+      opts.on("--require-provenance-trailer NAME", "Require a nonempty NAME: value trailer; repeatable") do |name|
+        unless name.match?(/\A[A-Za-z0-9][A-Za-z0-9-]*\z/)
+          raise OptionParser::InvalidArgument, "provenance trailer name must contain only letters, digits, and hyphens"
+        end
+
+        options[:provenance_trailers] << name
+      end
+    end
+    parser.parse!(argv)
+    raise OptionParser::InvalidArgument, "unexpected arguments: #{argv.join(' ')}" unless argv.empty?
+
+    %i[pr_body commit_message diff expected_head_sha].each do |key|
+      raise OptionParser::MissingArgument, key.to_s.tr("_", "-") unless options[key]
+    end
+    raise OptionParser::MissingArgument, "require-issue-linkage" if options[:issue_linkage].empty?
+
+    options
+  end
+
+  def check(pr_body, commit_message, diff, options)
+    disclosure, disclosure_errors = agent_details(pr_body)
+    artifact_errors = disclosure ? missing_pr_artifacts(pr_body, disclosure) : []
+    replay = disclosure ? CloseoutEvidenceReplay.replay(disclosure, expected_head_sha: options[:expected_head_sha]) : nil
+    replay_errors = if replay && !TERMINAL_REPLAY_VERDICTS.include?(replay.fetch("overall_verdict"))
+                      ["PR evidence did not replay to a terminal verdict"]
+                    else
+                      []
+                    end
+    message_lines = commit_message.lines.map(&:strip)
+    trailer_start = terminal_trailer_start(message_lines, options[:provenance_trailers])
+    trailer_lines = message_lines.drop(trailer_start)
+    subject = message_lines.first.to_s
+    rationale = message_lines.take(trailer_start).drop(1).reject do |line|
+      line.empty? || options[:issue_linkage].include?(line) ||
+        terminal_metadata_trailer_names(options[:provenance_trailers]).any? do |name|
+          line.match?(/\A#{Regexp.escape(name)}:[ \t]+\S/)
+        end
+    end
+    missing_linkage = options[:issue_linkage].reject { |line| message_lines.include?(line) }
+    missing_trailers = options[:provenance_trailers].reject do |name|
+      trailer_lines.any? { |line| line.match?(/\A#{Regexp.escape(name)}:[ \t]+\S.*$/) }
+    end
+    duplicated_artifacts = PR_ONLY_COMMIT_ARTIFACTS.select { |artifact| commit_message.include?(artifact) }
+    stats = diff_stats(diff)
+    errors = disclosure_errors + artifact_errors + replay_errors
+    errors << "commit message subject is missing" if subject.empty?
+    errors << "commit message durable rationale is missing" if rationale.empty?
+    errors << "missing issue linkage: #{missing_linkage.join(', ')}" unless missing_linkage.empty?
+    errors << "missing provenance trailers: #{missing_trailers.join(', ')}" unless missing_trailers.empty?
+    errors << "commit message duplicates PR-only artifacts" unless duplicated_artifacts.empty?
+    errors << "diff must contain at least one changed file" if stats.fetch("files").zero?
+
+    {
+      "contract" => "concise-history-check",
+      "version" => 1,
+      "status" => errors.empty? ? "PASS" : "FAIL",
+      "pr_evidence" => {
+        "canonical_agent_details" => disclosure_errors.empty?,
+        "replay_verdict" => replay&.fetch("overall_verdict", "UNKNOWN") || "UNKNOWN",
+        "artifacts" => disclosure ? PR_EVIDENCE_ARTIFACTS.select { |artifact| disclosure.include?(artifact) } : []
+      },
+      "commit_history" => {
+        "subject" => subject,
+        "durable_rationale" => !rationale.empty?,
+        "issue_linkage" => options[:issue_linkage] - missing_linkage,
+        "provenance_trailers" => options[:provenance_trailers] - missing_trailers,
+        "duplicated_pr_artifacts" => duplicated_artifacts
+      },
+      "diff" => stats,
+      "errors" => errors
+    }
+  end
+
+  def terminal_trailer_start(message_lines, provenance_trailers)
+    allowed = terminal_metadata_trailer_names(provenance_trailers)
+    index = message_lines.length - 1
+    index -= 1 while index >= 0 && message_lines[index].empty?
+    while index >= 0
+      trailer = message_lines[index].match(TRAILER_LINE)
+      break unless trailer && allowed.any? { |name| trailer[:token].casecmp?(name) }
+
+      index -= 1
+    end
+    index + 1
+  end
+
+  def terminal_metadata_trailer_names(provenance_trailers)
+    (provenance_trailers + NON_RATIONALE_TRAILER_NAMES).freeze
+  end
+
+  def diff_stats(diff)
+    {
+      "files" => diff.lines.count { |line| line.start_with?("diff --git ") },
+      "added_lines" => diff.lines.count { |line| line.start_with?("+") && !line.start_with?("+++") },
+      "deleted_lines" => diff.lines.count { |line| line.start_with?("-") && !line.start_with?("---") }
+    }
+  end
+
+  def agent_details(pr_body)
+    errors = []
+    markdown_body = markdown_without_code(pr_body)
+    structural_body = markdown_without_html_comments(markdown_body)
+    unless structural_body.scan(AGENT_DETAILS_OPEN).length == 1
+      errors << "PR body must contain exactly one canonical Agent details disclosure"
+    end
+    return [nil, errors] unless errors.empty?
+
+    start = structural_body.index(AGENT_DETAILS_OPEN)
+    depth = 0
+    finish = nil
+    structural_body.to_enum(:scan, %r{</?details(?:\s[^>]*)?>}).each do
+      tag = Regexp.last_match
+      next if tag.begin(0) < start
+
+      depth += tag[0].start_with?("<details") ? 1 : -1
+      next unless depth.zero?
+
+      finish = tag.end(0)
+      break
+    end
+    return [nil, errors << "Agent details disclosure must close after it opens"] unless finish
+
+    [markdown_body[start...finish], errors]
+  end
+
+  def structural_markdown(markdown)
+    markdown_without_html_comments(markdown_without_code(markdown))
+  end
+
+  def markdown_without_code(markdown)
+    fence = nil
+    structural = markdown.each_line.map do |line|
+      if fence
+        closing_fence = /\A {0,3}#{Regexp.escape(fence[0])}{#{fence.length},}[ \t]*(?:\r?\n)?\z/
+        fence = nil if line.match?(closing_fence)
+        line.gsub(/[^\r\n]/, " ")
+      elsif (opening = line.match(FENCE_OPEN))
+        fence = opening[:fence]
+        line.gsub(/[^\r\n]/, " ")
+      else
+        line
+      end
+    end.join
+    structural.gsub(INLINE_CODE_SPAN) { |span| span.gsub(/[^\r\n]/, " ") }
+  end
+
+  def markdown_without_html_comments(markdown)
+    in_comment = false
+    markdown.each_line.map do |line|
+      characters = line.chars
+      index = 0
+      while index < characters.length
+        marker_length = if in_comment && characters[index, 3].join == "-->"
+                          in_comment = false
+                          3
+                        elsif !in_comment && characters[index, 4].join == "<!--"
+                          in_comment = true
+                          4
+                        elsif in_comment
+                          1
+                        else
+                          index += 1
+                          next
+                        end
+        marker_length.times do |offset|
+          position = index + offset
+          characters[position] = " " unless characters[position].match?(/[\r\n]/)
+        end
+        index += marker_length
+      end
+      characters.join
+    end.join
+  end
+
+  def missing_pr_artifacts(pr_body, disclosure)
+    errors = REQUIRED_REPLAY_ARTIFACTS.filter_map do |artifact|
+      "missing PR evidence artifact: #{artifact}" unless disclosure.include?(artifact)
+    end
+    leaked = PR_EVIDENCE_ARTIFACTS.reject do |artifact|
+      artifact_count(pr_body, artifact) == artifact_count(disclosure, artifact)
+    end
+    errors << "PR evidence artifacts must stay inside Agent details: #{leaked.join(', ')}" unless leaked.empty?
+    errors
+  end
+
+  def artifact_count(markdown, artifact)
+    if artifact.start_with?("<!--")
+      count_comment_artifacts(markdown_without_code(markdown), artifact)
+    else
+      structural_markdown(markdown).scan(artifact).length
+    end
+  end
+
+  def count_comment_artifacts(markdown, artifact)
+    count = 0
+    in_comment = false
+    markdown.each_line do |line|
+      index = 0
+      while index < line.length
+        if in_comment
+          if line[index, 3] == "-->"
+            in_comment = false
+            index += 3
+          else
+            index += 1
+          end
+        elsif line[index, artifact.length] == artifact
+          count += 1
+          in_comment = true
+          index += artifact.length
+        elsif line[index, 4] == "<!--"
+          in_comment = true
+          index += 4
+        else
+          index += 1
+        end
+      end
+    end
+    count
+  end
+end
+
+exit(ConciseHistoryCheck.run(ARGV)) if $PROGRAM_NAME == __FILE__
