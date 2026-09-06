@@ -6,6 +6,14 @@ argument-hint: '[base tag/commit or range]'
 
 # Post-Merge Audit
 
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Audit merged PRs as a batch after batch work or before the next release step.
 Use visible chat only to choose the obvious just-run batch default; use git,
 GitHub, and coordination ground truth for every audit fact.
@@ -309,6 +317,12 @@ still-open lanes:
   plan or an explicit coordinator action that names the missing evidence or
   decision.
 
+### Range-Level Structural Review
+
+If the audited range also needs a codebase-health lens, run `$structural-review`
+explicitly on that same range, including release/range audits without worked
+issues or QA lanes. This audit does not auto-invoke sibling axes.
+
 ## Codex And Claude Coordination
 
 When using both Codex and Claude:
@@ -428,11 +442,11 @@ completed-batch audit before its final handoff. Each completed-batch audit is
 owned by its batch coordinator. A parent orchestration agent only reconciles
 the durable audit handoff.
 
-Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, and final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`.
+Only the batch coordinator publishes the full `completed-batch-audit v1` wrapper as a durable GitHub comment and emits its human-readable closeout guidance, verified compact receipt reference, the Unblock Block when the status is not clean, and the final `Conversation status` line in chat, after it compares qualifying-checker and advisory-auditor reports and dispositions findings. When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section inside the canonical description's `Agent details` disclosure, under `### Audit receipts`.
 
 Put `What changed:`, `Action needed:`, and `Next:` before the compact receipt so
-the receipt can still immediately precede the final `Conversation status:`
-line.
+the receipt can open the closing lines before the Unblock Block when status is
+not clean, and before the final `Conversation status:` line.
 Qualifying-checker and advisory-auditor reports return evidence/results for coordinator comparison; they must not publish the durable receipt comment or emit its compact reference or coordinator readiness/status line.
 Advisory auditors must not issue the qualifying clean/ready verdict.
 
@@ -447,6 +461,10 @@ disposition is not `SATISFIED`, explicit valid `NOT_APPLICABLE`, or `WAIVED`
 with an authenticated replayable maintainer-waiver comment; or when
 the configured coordination seam is unavailable. `unknown`, `in_progress`,
 missing, stale-head, and malformed QA evidence block completion.
+
+The issue-to-result-PR projection requires an authenticated same-repository symmetric closing relationship, a closed source issue, a merged result PR, the exact result head, and ordered terminal timestamps; do not union the source issue and result PR as two publication targets, and re-authenticate the projection before ordinary receipt publish or replay. When typed for publication-preflight parsing, accepted lane-target forms are exactly `issue:N`, `pr:N`, or `pull_request:N`; malformed, unknown, or type-ambiguous spellings fail closed. These parsing forms are not distinct agent-coordination claim identities. Legacy bare `N`, `#N`, and positive integer lane targets remain compatible. This projection is only for issue-to-result-PR publication; it does not authorize auxiliary ad-hoc target mappings or multiple coordination lanes for one publication target.
+
+An explicitly URL-less terminal `done` lane that already names mixed issue and pull-request targets reconciles the shared scalar `pr_state` per target only when durable terminal evidence exists, the scalar matches one resolved terminal state, every target state is freshly authenticated, the issue head remains absent, and exact-head QA stays bound to the pull request; this does not derive or union targets from a URL or admit auxiliary lanes.
 
 A normal terminal `done` lane still requires its coordination target state and
 terminal evidence. Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation.
@@ -532,9 +550,9 @@ A marker has separate well-formed, archive-ready, and blocker-union outputs. Cle
 
 Replay the final visible status line from the normalized blocker union: render a nonterminal record as `<ref> (<current status>): <action>`, imperfect terminal evidence as `<ref> (terminal): evidence UNKNOWN` or `evidence missing`, and exact `UNKNOWN` scalars as `<field>: UNKNOWN`. External blockers must be nonempty single-line text without HTML comment tokens; normalize and dedupe them with marker blockers. If marker parsing fails, replay `well=false`, `ready=false`, and the nonempty blocker `completed-batch-audit marker invalid`; normalize and union any sanitized external blockers. Its final status must be exact nonempty `Follow-ups`, never `Ready` or an empty blocker line. Use `Ready` iff archive-ready and the union is empty; otherwise use nonempty `Follow-ups` with that exact union.
 
-Use exactly `Conversation status: Ready for archiving.` only when archive-ready and the blocker union is empty. Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.`
+Use exactly `Conversation status: Ready for archiving.` only when archive-ready and the blocker union is empty. Otherwise use exactly `Conversation status: Follow-ups remain — <each exact action or blocker>.` and emit the [Unblock Block](../../workflows/pr-processing.md#unblock-block) immediately before it, with one entry per blocker in that same union.
 
-In final chat, this compact receipt line immediately precedes the exact `Conversation status` final line; never include the full wrapper:
+In final chat, this compact receipt line opens the closing lines: it is followed by the [Unblock Block](../../workflows/pr-processing.md#unblock-block) whenever the status is not clean, and then by the exact `Conversation status` final line; never include the full wrapper:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 

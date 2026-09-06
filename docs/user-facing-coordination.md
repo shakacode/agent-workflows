@@ -89,12 +89,27 @@ authority, merge without asking the user to perform the authorized mechanical
 action. Continue to use the repository submission policy and all exact-head
 assurance gates; autonomous authority does not bypass them.
 
-When current exact-diff human approval is genuinely required, first complete
-the one-concept-at-a-time PR walkthrough if human understanding is the blocker.
+When current exact-diff human approval is genuinely required and human
+understanding is the blocker, use `$pr-walkthrough`. Direct chat requests remain
+live and read-only. Publish only when the user or an authorized workflow
+explicitly selects publication with comment authority. In that mode, put
+the orientation and all conceptual sections on GitHub in one pass under
+`$pr-walkthrough`'s mandatory inline-thread and no-anchor-stop rules, and let the owning task consume replies
+asynchronously. A publication-authority blocker is not an explicit skip.
 Then refresh readiness and present the full exact head SHA, the sorted gate set,
 and rollback status before asking one final question that names the exact
 approval needed. Walkthrough participation is not approval, and any head change
 invalidates both the walkthrough identity and the approval request.
+
+When a prerequisite PR is otherwise ready and only its human review and merge
+decision remains under `merge_authority: ask`, treat that dependency as
+`blocked-user-input`, not an external failure. Do not spend external-blocker
+retries or create monitoring automation for it. Start the exact-diff walkthrough
+first when the prerequisite is an authorized batch target; otherwise provide
+the exact external PR link and instruct the user either to merge it and reply
+only after it is merged, or to explicitly authorize adding it as a batch target
+so target resolution, preflight, and the walkthrough can run. A reply or merge
+decision alone does not clear an external prerequisite or authorize its merge.
 
 ## Heartbeat And Automation Lifecycle
 
@@ -124,7 +139,8 @@ A durable issue, receipt, or blocker list is evidence, not a next step.
 Keep `Action needed:` separate: name the exact user action, or use `none`. A
 handoff may not make the user infer an action from technical status, durable
 references, or a `Conversation status:` blocker union. Preserve any required
-receipt immediately before the final `Conversation status:` line.
+receipt before the closing stack: the Unblock Block when the status is not
+clean, then the final `Conversation status:` line.
 
 ## Output Contract
 
@@ -146,8 +162,8 @@ Everything between checkpoints is silent; a tool-call preamble is not a
 checkpoint. An HST-v1 actionable notification is not a separate category: it is
 emitted at the `decision-required`, `merge-decision`, or `final-handoff`
 checkpoint whose state it reports; closeout and archive completion is a
-`final-handoff`. A direct answer, an explicitly requested status report, a turn of a
-required interactive exchange such as the `ask` merge-authority walkthrough, and
+`final-handoff`. A direct answer, an explicitly requested status report, a turn
+of an explicitly requested interactive exchange such as a live PR walkthrough, and
 a required safety stop are always allowed without being checkpoints. Every
 user-visible message counts in exactly one bucket of the closeout marker.
 

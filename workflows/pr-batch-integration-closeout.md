@@ -3,7 +3,8 @@
 This component owns integration and PR closeout from an accepted worker
 implementation head through one precise readiness, merged, or no-PR handoff.
 Load it after [worker execution](pr-batch-worker-execution.md) produces
-`worker-execution-handoff v1`.
+`worker-execution-handoff v1` and the [Task Review Loop](pr-batch-task-review.md)
+completes for that implementation head.
 
 ## Boundary
 
@@ -23,13 +24,16 @@ modes consume this component's exact-head evidence.
 
 ## Input Contract
 
-Start only with a complete `worker-execution-handoff v1`: stable target and
-lane identity, accepted base, exact implementation head, branch/worktree,
-changed paths and scope decisions, focused verification evidence, dependency
-state, QA needs, review hints, and any meaningful-stop or `UNKNOWN` facts.
-Refresh the live target, base, head, permissions, repository seams, and optional
-coordination holder/generation before mutation. Missing required facts remain
-`UNKNOWN`; never reconstruct them from task titles or worker prose.
+Require a complete `worker-execution-handoff v1`, not reconstructed worker prose.
+Before mutation, refresh live target/base/head, permissions, repository seams,
+and optional coordination holder/generation. Also replay the reducer under the
+[Task Review Loop](pr-batch-task-review.md), including canonical diff provenance.
+Require `task_complete` and `dependent_task_permitted: true`, binding accepted task identity,
+brief/report/package digests, last round digest, accepted base and exact implementation head
+to that handoff. Retain replay evidence; a worker handoff alone is insufficient.
+Missing, stale, foreign, blocked, or incomplete evidence returns to the task loop
+before mutation, push or publication. This never replaces final whole-branch validation, independent review, or CI
+on the resulting integration head.
 
 ## Output Contract
 
@@ -48,7 +52,8 @@ CI. The integration owner, not the implementation worker, performs this phase:
 
 1. Verify that the `worker-execution-handoff v1` matches the accepted target,
    lane, branch/worktree, changed-path envelope, and exact reachable commit.
-   Require a clean committed implementation head. Propagate a meaningful-stop
+   Verify the task-review completion required by the Input Contract before
+   proceeding. Require a clean committed implementation head. Propagate a meaningful-stop
    packet or `UNKNOWN` fact without pushing or opening a PR.
 2. Fetch the configured base and refresh its full SHA. Re-run the trusted
    dependency permission needed for `validation_open`, and consume the optional
@@ -470,18 +475,18 @@ includes this evidence block:
 ```markdown
 ### QA Evidence
 
-- QA lane: <agent id, branch/worktree, claim status, last heartbeat status; required QA needs concrete owner/worktree; only private claim/heartbeat may be UNKNOWN>
+- QA lane: <agent id, branch/worktree, claim/heartbeat status; required QA needs a concrete owner/worktree; only private coordination may be UNKNOWN>
 - Scope checked: <changed areas, PRs, release phase, and why this QA depth was enough>
 - Tested at: <PR/head SHA(s), audited range, or "not applicable: no PR/code changes">
 - Automated checks: <commands, CI links, or "covered by worker validation: ...">
 - Manual checks: <workflow/app smoke checks, screenshots, or "not applicable: ...">
 - User-visible UI change: <yes | no>
-- Visual evidence: <durable before/after URL(s), destination, and paint check; blocked human-attachment paths; or reasoned "not applicable: no user-visible UI change">
+- Visual evidence: <durable URL(s), destination, and paint check; blocked reason and remedy; or reasoned not applicable>
 - Interaction change: <yes | no; yes requires clip/measured substitute, no requires reasoned not applicable>
 - Interaction evidence: <durable clip URL, exact measured_substitute with labeled before/after/tolerance values and units, or reasoned "not applicable: ...">
 - Visual fix: <yes | no; yes requires observed unfixed failure, no requires reasoned not applicable>
 - Negative control: <observed unfixed failure, or reasoned "not applicable: no visual fix">
-- Performance evidence: <repo performance-seam result with source=<stable command/report/ref>, baseline_value=<number><unit>, and candidate_value=<number><unit> plus bundle_hygiene/measured_metric classification; non-byte bundle_hygiene names metric_name=<bundle/asset shape metric>; measured_metric names metric_name=<runtime/user metric>; or reasoned "not applicable: ...">
+- Performance evidence: <repo-seam source, baseline/candidate values and units, bundle_hygiene or measured_metric classification, and required metric_name; or reasoned not applicable>
 - Findings: <none, fixed in PR(s), waived with link, or follow-up recommended with tracking outcome/link>
 - QA required: <yes | no>
 - QA required rationale: <one-line reason for the decision and selected QA depth>
@@ -508,6 +513,7 @@ automated_checks: <commands, CI links, or covered-by-worker-validation note>
 manual_checks: <manual smoke checks or not applicable>
 user_visible_ui_change: <yes | no>
 visual_evidence_destination: <github_pr | linked_tracker | repo_artifact_store | human_attachment_pending | not_applicable>
+visual_evidence_blocked_reason: <uploader_absent | uploader_denied | no_configured_store | upload_failed: reason>
 visual_evidence: <durable: before/after https URL(s) | blocked: human attachment required; prepared local artifacts: absolute paths | not applicable: reason>
 paint_check: <passed: painted/rendered target inspected | not applicable: reason>
 interaction_change: <yes | no>
@@ -525,6 +531,9 @@ process_gap_disposition: <script | schema | checklist+replay | park | not applic
 For `required: no`, record `status: not_applicable` and
 `release_blocking: not_applicable`. Replay treats any other terminal pair as an
 inconsistent omission record and returns `UNKNOWN`.
+
+Use `visual_evidence_blocked_reason` only with `human_attachment_pending`;
+missing or extra values replay as `UNKNOWN`.
 
 Historical `qa-evidence v1` receipts remain replayable for backward
 compatibility. Do not emit v1 for new closeout evidence. The presence of any v2
@@ -724,9 +733,9 @@ Every target must use one explicit final state:
   `auto_merge_when_gates_pass`, the coordinator must merge instead of handing
   off this state unless release-mode policy, branch protection, or tool failure
   blocks the mechanical merge; document that blocker when using this state.
-- `ready-no-merge-authority`: all readiness gates passed, but `merge_authority`
-  is `none` or `ask` and no merge approval has been given, including a declined
-  `ask` decision.
+- `ready-no-merge-authority`: gates passed; authority is `none` or an
+  unapproved or declined `ask`. This remains the target state while the batch is
+  `blocked-user-input`.
 - `waiting-on-checks-or-review`: current-head checks or configured review agents
   are still pending, missing, or not yet triaged.
 - `external-gate-failing`: the remaining blocker is outside the PR's code, such
@@ -778,17 +787,17 @@ End the final user-visible message carrying the batch handoff with the exact arc
 
 ### Goal Mode Completion Contract
 
-Use this compact, self-contained `GMCC-v4` line verbatim in PR-batch goal
+Use this compact, self-contained `GMCC-v5` line verbatim in PR-batch goal
 prompts.
-`GMCC-v4` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
+`GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 
-GMCC-v4:CI@head/configured-reviewers pending|missing|untriaged|failed or threads unresolved|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;no auth=>ready-no-merge-authority;auto=>exact verdict/head/sorted-gates/rollback; merge iff autonomous-merge-eligible OR human-approved-for-current-head+durable-decision(proven-human+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
+GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;stop clear/done/term/budget/user;noauth=>ready-no-merge-authority;ask=>own:walk|ext:user(merge|auth:add);blocked-user-input=>0retry/watch;auto=>exact verdict/head/sorted-gates/rollback;merge iff autonomous-merge-eligible|human-approved-for-current-head+durable-decision(proven+merge-authority);else ready-human-review-required|autonomous-merge-evidence-unknown;merge+close PR/target/issue.
 
-`GMCC-v4` expands to this canonical contract:
+`GMCC-v5` expands to this canonical contract:
 
-Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. For an autonomously clearable blocker, prefer one deduplicated deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint persists without loading parent context, while a material change resumes once with only `state_delta` and reruns security, origin, coordination, overlap, review, readiness, and exact-head gates. If deterministic watching is unavailable, use one bounded model-mediated fallback: the default fast window is four 15-minute polls, then the interval doubles to a four-hour cap, with finite unchanged-run, model-call, and token ceilings. Stop or pause on clear, done, terminal, non-resumable, `blocked-user-input`, or budget state and preserve an exact restart-safe manual-resume handoff; do not create a duplicate. If neither watcher is available, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
+Goal Mode Completion Contract: `waiting-on-checks-or-review` is not an overall Goal-mode terminal state; pending, missing, or untriaged current-head CI or configured review agents, unresolved current-head review threads, failures, or UNKNOWN => NOT COMPLETE; poll/fix; after a watch window, report NOT COMPLETE with resume instructions. For an autonomously clearable blocker, prefer one deduplicated deterministic state-change watcher with a stable persisted identity: an unchanged fingerprint persists without loading parent context, while a material change resumes once with only `state_delta` and reruns security, origin, coordination, overlap, review, readiness, and exact-head gates. If deterministic watching is unavailable, use one bounded model-mediated fallback: the default fast window is four 15-minute polls, then the interval doubles to a four-hour cap, with finite unchanged-run, model-call, and token ceilings. Stop or pause on clear, done, terminal, non-resumable, `blocked-user-input`, or budget state and preserve an exact restart-safe manual-resume handoff; do not create a duplicate. If neither watcher is available, preserve exact manual resume instructions. A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE. `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging. `ask` starts the owned-target walkthrough; external refs require the user to merge or authorize target addition, with `blocked-user-input` and no retry/watch. With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
-The `auto-clear=>watch(same:0wake,delta:gates)` phrase in the compact `GMCC-v4` line
+The `auto-clear=>watch(same:0wake,delta:gates)` phrase in the compact `GMCC-v5` line
 is the preferred watcher. Before creating its bounded fallback, detect whether
 the host can run a deterministic probe without resuming the parent task. A
 qualifying state-change watcher:
@@ -844,10 +853,7 @@ The heartbeat targets the current thread rather than starting a standalone task,
 
 Pressure checks:
 
-- A batch with 5 PRs, 3 pending hosted checks, and clean review threads is NOT COMPLETE.
-- An autonomously clearable blocked goal gets one deterministic state-change watcher when supported; unchanged evidence does not wake the parent. A bounded, deduplicated 15-minute-fast-window/backoff monitor is the fallback. Stop or pause either mode on unblocked, terminal, non-resumable, user-input, or budget state.
 - A blocker that publishes an exact future reset time gets one same-thread heartbeat scheduled for that time, because neither the deterministic watcher nor the bounded fallback cadence guarantees a probe at that exact published time; use it as the single scheduled mechanism for that blocker and gate; do not start or retain either watcher mode for the same gate, and create or update its durable record before stopping or replacing any existing watcher so no wake is lost. Replay updates that one heartbeat instead of duplicating it, and a terminal state pauses or deletes it. An `UNKNOWN` retry time, a `blocked-user-input` blocker, or an unavailable scheduling capability creates no automation and keeps the exact manual resume instructions.
-- `ready-no-merge-authority` is terminal only when `merge_authority` does not allow merging.
 - With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.
 
 ## Integration, Review, And Merge Readiness
@@ -1051,7 +1057,7 @@ The closeout lane is:
     or environment content into the handoff. Usage evidence remains
     informational and does not block or satisfy CI, review, QA, merge, audit, or
     archive-readiness gates.
-14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A completed-batch audit has separate well-formed, archive-ready, and blocker-union outputs. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` only when archive-ready and the union is empty. Otherwise make `Conversation status: Follow-ups remain — <each exact action or blocker>.` the last user-visible line, with every normalized blocker. Before emitting that final message, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff.
+14. End the final user-visible message after the audit. A conversation is archive-ready only when the audit is clean and there are no OUTSTANDING findings, follow-ups, unresolved questions, pending work, or `UNKNOWN` facts. A `findings: OUTSTANDING <refs>` value contributes every exact ref to the blocker union even without a record. Every nonterminal record and every record with imperfect terminal evidence contributes its ref and action/block reason; normalize and dedupe without dropping a distinct ref. Clean/none permits no records or only fully evidenced terminal records. A blocked/follow-ups marker permits `findings: none` with valid open, pending, unresolved, `UNKNOWN`, or imperfect terminal records, but it is non-ready; an `UNKNOWN` current-status record is valid only in that non-clean state or the all-`UNKNOWN` scalar state. Use `Conversation status: Ready for archiving.` iff archive-ready and the union is empty; otherwise put an `Unblock:` block with every normalized blocker immediately before the final `Conversation status: Follow-ups remain — <each exact action or blocker>.` line. Before emitting that final message, validate its Batch Coordination Declaration mechanically rather than by self-report: resolve `PR_BATCH_SKILL_DIR` with the env-var / loaded-skill / repo-local pinned-copy chain, then run `"${PR_BATCH_SKILL_DIR}/bin/coordination-declaration" --handoff <drafted-handoff-path-or->` against the drafted handoff. It exits 0 only when the handoff carries exactly one acceptable `coordination:` line. A nonzero exit is a hard blocker: report NOT COMPLETE and fix the declaration instead of emitting a clean handoff.
 
 ## Self-Review Gate
 
@@ -1151,6 +1157,13 @@ Before fixing a bug, changing existing behavior, or implementing new behavior, f
 Avoid horizontal TDD batches: write one failing behavior test through the public interface, implement only enough code for that behavior, then repeat.
 
 ## Local Validation Gate
+
+Reuse applicable local results through the canonical
+[Verification evidence reuse](../skills/verify/references/verification-evidence.md)
+contract before scheduling another identical check. Repository-required repeats,
+clean committed full validation, combined-tip validation, and current-head CI
+remain mandatory. A previous passing local check does not satisfy a new review
+cohort or a hosted check.
 
 Run `.agents/bin/ci-detect` first when it exists and routing details matter.
 
@@ -1291,18 +1304,17 @@ PRs; never derive it from the PR's own text.
 `gh pr checks --required`, falls back to the full `gh pr checks` list when no
 required checks exist, ignores cancelled/superseded rows, and prints a `verdict`
 of `READY`, `NOT_READY`, or `UNKNOWN` plus the `failing`/`pending` check names
-(`required_used` records whether required checks gated the verdict). Treat
-`UNKNOWN` (an empty check list) as not ready and request hosted CI or maintainer
-status-check configuration before merge; skipped checks still need CI selector or
-maintainer-waiver evidence allowed by `AGENTS.md`. (As of #3844, `main` defines
-zero required status-check contexts, so the helper falls back to the full list;
-if required checks are later configured per #3844 option (a), it uses them.)
-When hosted CI was explicitly requested for the current head, pass each requested
-Actions run id or URL as `--requested-hosted-run <run-id-or-url>`; the helper
-then blocks only those requested current-head hosted runs while leaving unrelated
-advisory checks advisory. When no usable required checks exist, the requested
-runs become the gate instead of the full advisory list. A stale requested run for
-an older head is `UNKNOWN`, not success.
+(`required_used` records whether required checks gated). An empty check list is
+`UNKNOWN`; request hosted CI or configure status checks. Skips need CI-selector
+or `AGENTS.md` waiver evidence. Configured required checks gate; without them,
+the helper uses its advisory list unless runs are selected below.
+For requested CI, pass current-head runs with
+`--requested-hosted-run <run-id-or-url>`. Required checks always gate; otherwise
+only selected runs gate. Unselected non-required checks—even failures or pending
+ones—are informational. Without required checks, selected runs replace the
+advisory list; completed rows must carry the exact head for merge assurance.
+Require or select relied-on hosted Markdown checks. Older-head runs are
+`UNKNOWN`.
 Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 
 Avoid long-lived `gh ... --watch` commands in agent sessions. Avoid relying on
@@ -1533,15 +1545,15 @@ Before saying a PR is ready to merge:
 
 ```bash
 gh pr view <PR> --json headRefOid,mergeStateStatus,reviewDecision,isDraft,labels,latestReviews,reviews,comments,mergedAt
-# Resolve PR_BATCH_SKILL_DIR, then capture the machine-owned exact-head CI result.
-"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> \
-  --repo <OWNER/REPO> > "${CI_RESULT_PATH}"
+"${PR_BATCH_SKILL_DIR}/bin/diff-identity" --base-ref <BASE_BRANCH> --diff-base-sha <REVIEWED_DIFF_BASE_SHA> --head-sha <FULL_HEAD_SHA>
+"${PR_BATCH_SKILL_DIR}/bin/pr-ci-readiness" <PR> --repo <OWNER/REPO> --trusted-repo-root "${TRUSTED_CONSUMER_REPO_ROOT}" --diff-base-sha <REVIEWED_DIFF_BASE_SHA> > "${CI_RESULT_PATH}"
 ```
 
 The resulting `pr-ci-readiness` v2 contract owns complete, scoped exact-head
-evidence for required status checks, GitHub Actions, Dependabot, and other
-checks. Raw `gh pr checks` output is diagnostic only and legacy v1 CI consumers
-must migrate to the scoped v2 result.
+evidence. Receipts keep live base separate from reviewed diff-base SHA and bind
+canonical diff identity, raw rows, and trusted policy dispositions. Changed,
+required, selected, active, incomplete, stale, unknown, ambiguous, or
+caller-edited evidence blocks.
 
 Then run the repo's merge ledger (see `merge_ledger` in
 `.agents/agent-workflow.yml`) for `<PR>` in strict mode with an explicit
@@ -1576,23 +1588,29 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 ### Ask Merge Authority Walkthrough Gate
 
 When `merge_authority` is `ask` and every ordinary gate is clean,
-automatically start the exact-diff PR walkthrough before asking for merge
-approval. Use `$pr-walkthrough` when available; otherwise apply its read-only
-contract inline: inspect the complete diff first, group it into conceptual
-changes, explain the reason, behavior, tradeoffs, risks, and proof for exactly
-one change at a time, then wait for explicit readiness before continuing.
+automatically publish the complete exact-diff PR walkthrough before asking for
+merge approval. Use `$pr-walkthrough` when available; otherwise apply its
+contract inline: inspect the complete diff and build the full coverage map.
+Prepare every conceptual section up front. Publish one PR-level orientation and
+all sections to GitHub in one pass under `$pr-walkthrough`'s mandatory
+inline-thread and no-anchor-stop rules: use one `COMMENT` review, with a separately
+replyable inline thread per concept on an honest changed line. If any concept
+has no honest anchor, explain the limitation and stop; do not claim complete
+threaded coverage. Publish without waiting for repeated chat turns. The owning task consumes
+PR replies asynchronously. Use a live
+interactive walkthrough only when the maintainer explicitly requests one.
 
-Use full interactive mode for large or complex PRs and concise interactive mode
-for smaller cohesive PRs. Treat a PR as large when it exceeds any trusted-base
+Use full mode for large or complex PRs and concise mode for smaller cohesive
+PRs. Treat a PR as large when it exceeds any trusted-base
 `autonomous_merge.thresholds` maximum for changed files, changed lines, or
 commits. Complexity, cross-cutting behavior, security, migrations,
 architecture, or difficult rollback may require full mode below those limits.
 Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
 
-After it completes or is skipped, refresh the diff identity and ordinary
+After publication or an explicit skip, refresh the diff identity and ordinary
 readiness. If the diff identity changed, invalidate the walkthrough and
-readiness evidence, then restart the walkthrough or stop. If an ordinary gate
+readiness evidence, then rebuild and republish the walkthrough or stop. If an ordinary gate
 newly fails, stop. Ask one final merge decision only when the refreshed diff
 identity matches the recorded identity, ordinary readiness remains clean, and
 merge is allowed; a completed walkthrough must have explained that same diff
@@ -1859,6 +1877,8 @@ put exactly one record in merge-context `selected_hosted_runs`:
 {"provider":"external-ci","run_id":"<selected-workflow-or-run-id>"}
 ```
 
+A selected CircleCI workflow UUID cannot be policy-dispositioned.
+
 Do not add advisory or merely observed runs. A nonempty list requires this
 closed trusted-base seam:
 
@@ -1939,7 +1959,9 @@ not gate.
 "${PR_BATCH_SKILL_DIR}/bin/merge-assurance" \
   --ci-result "${CI_RESULT_PATH}" \
   --autonomous-result "${AUTONOMOUS_RESULT_PATH}" \
-  --context "${MERGE_CONTEXT_PATH}" > "${MERGE_ASSURANCE_RECEIPT_PATH}"
+  --context "${MERGE_CONTEXT_PATH}" \
+  --trusted-repo-root "${TRUSTED_CONSUMER_REPO_ROOT}" \
+  > "${MERGE_ASSURANCE_RECEIPT_PATH}"
 ```
 
 This helper owns final merge-authority, follow-up accounting, and `UNKNOWN`
@@ -1973,7 +1995,7 @@ chain, then run:
 ```
 
 `pr-merge-submit` requires the fresh receipt unconditionally and revalidates its
-bindings, freshness, and selected hosted-CI records before any queue or
+bindings, freshness, selected hosted-CI records, and policy-aware live CI before any queue or
 guarded-direct mutation. A missing, cancelled, failed, nonterminal, stale-head,
 or mismatched-PR selected record blocks before the first GitHub call or
 repository guard.
@@ -2125,7 +2147,7 @@ When `coordination_backend: n/a`, `coordination_status` must instead be a `compl
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
-Immediately before the exact final `Conversation status` line, emit only:
+Existing verified receipt only; missing means no line and an Unblock blocker:
 
 Completed-batch audit: <clean|follow-ups-remain|UNKNOWN> — [durable v1 receipt](<exact-comment-url>); SHA-256 `<64-lowercase-hex>`; author `<login>`; version `<created_at>/<updated_at>`.
 
