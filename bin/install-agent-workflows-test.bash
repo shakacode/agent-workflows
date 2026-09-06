@@ -7324,7 +7324,8 @@ test_install_replaces_prompt_contract_directory_symlinks_without_following_child
   local tmp target external_docs managed_dir file_name mode
   tmp="$(mktemp -d)"
 
-  for managed_dir in host-adapter schemas; do
+  # docs/schemas keeps main's unowned-symlink refusal from #695, so only host-adapter is exercised here.
+  for managed_dir in host-adapter; do
     if [[ "$managed_dir" = host-adapter ]]; then
       file_name="contract.md"
     else
