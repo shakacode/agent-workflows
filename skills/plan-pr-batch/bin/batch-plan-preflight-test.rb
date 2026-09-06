@@ -498,6 +498,68 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_recovery_ignores_companion_key_inside_multiline_quoted_scalar
+    Dir.mktmpdir("batch-plan-quoted-scalar-companion-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      cases = {
+        "double quoted" => <<~YAML,
+          notes: "release notes
+          companion_path_conventions: invalid
+          end of notes"
+          malformed: [
+        YAML
+        "single quoted" => <<~YAML
+          notes: 'release notes
+          companion_path_conventions: invalid
+          end of notes'
+          malformed: [
+        YAML
+      }
+
+      cases.each do |label, yaml|
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), yaml)
+
+        result, stderr, status = evaluate(input_for, chdir: root)
+
+        assert status.success?, "#{label}: #{stderr}"
+        assert_equal "accepted", result.fetch("status"), label
+        assert_empty result.fetch("violations"), label
+        assert_empty result.fetch("advisories"), label
+      end
+    end
+  end
+
+  def test_malformed_recovery_strips_invalid_utf8_comments_from_companion_fragment
+    with_companion_repo do |root, fixture|
+      declared = <<~YAML
+        companion_path_conventions: # \xFF
+          # \xFF
+          - source_glob: #{fixture.fetch('source_glob')}
+            companion_glob: #{fixture.fetch('companion_glob')}
+        malformed: [
+      YAML
+      cases = {
+        "comment line" => ["companion_path_conventions: []\n# \xFF\nbase_branch: [\n", []],
+        "trailing comment" => ["companion_path_conventions: [] # \xFF\nbase_branch: [\n", []],
+        "declared conventions" => [declared, ["companion-path-omitted"]]
+      }
+
+      cases.each do |label, (yaml, advisory_codes)|
+        File.binwrite(File.join(root, ".agents", "agent-workflow.yml"), yaml.b)
+
+        result, stderr, status = evaluate(
+          companion_input(fixture, paths: [fixture.fetch("source_path")]),
+          chdir: root
+        )
+
+        assert status.success?, "#{label}: #{stderr}"
+        assert_equal "accepted", result.fetch("status"), label
+        assert_empty result.fetch("violations"), label
+        assert_equal advisory_codes, result.fetch("advisories").map { |item| item.fetch("code") }, label
+      end
+    end
+  end
+
   def test_merged_companion_policy_keys_fail_closed
     with_companion_repo do |root, fixture|
       File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)

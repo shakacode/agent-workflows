@@ -831,8 +831,10 @@ module BatchPlanPreflight
     root_indentation = companion_policy_root_indentation(lines)
     return [:absent, nil] if root_indentation.nil?
 
+    quoted = companion_policy_quoted_line_starts(lines)
     starts = lines.each_index.select do |index|
-      companion_policy_key_line?(lines[index]) &&
+      !quoted[index] &&
+        companion_policy_key_line?(lines[index]) &&
         companion_policy_line_indentation(lines[index]) == root_indentation
     end
     return [:absent, nil] if starts.empty?
@@ -856,7 +858,7 @@ module BatchPlanPreflight
         false
       end
     end
-    fragment = lines[start_index...(finish || lines.length)].join
+    fragment = companion_policy_strip_comments(lines[start_index...(finish || lines.length)])
     state, node = companion_policy_node_from_stream(Psych.parse_stream(fragment))
     state == :present ? [state, node] : [:invalid, nil]
   rescue Psych::Exception
@@ -865,6 +867,62 @@ module BatchPlanPreflight
 
   def companion_policy_key_line?(line)
     line.b.match?(/\A[ \t]*(?:companion_path_conventions|["']companion_path_conventions["'])\s*:/)
+  end
+
+  def companion_policy_quoted_line_starts(lines)
+    state = :normal
+    lines.map do |line|
+      quoted = state != :normal
+      state, _comment_index = companion_policy_scan_line(line, state)
+      quoted
+    end
+  end
+
+  def companion_policy_strip_comments(lines)
+    state = :normal
+    lines.filter_map do |line|
+      state, comment_index = companion_policy_scan_line(line, state)
+      next line unless comment_index
+
+      content = line[0...comment_index].rstrip
+      "#{content}\n" unless content.empty?
+    end.join
+  end
+
+  def companion_policy_scan_line(line, state)
+    index = 0
+    while index < line.length
+      char = line[index]
+      case state
+      when :normal
+        case char
+        when "'"
+          state = :single_quote if companion_policy_quote_opener?(line, index)
+        when '"'
+          state = :double_quote if companion_policy_quote_opener?(line, index)
+        when "#"
+          return [state, index] if index.zero? || line[index - 1].match?(/[ \t]/)
+        end
+      when :single_quote
+        if char == "'"
+          escaped_quote = line[index + 1] == "'"
+          index += 1 if escaped_quote
+          state = :normal unless escaped_quote
+        end
+      when :double_quote
+        if char == "\\"
+          index += 1
+        elsif char == '"'
+          state = :normal
+        end
+      end
+      index += 1
+    end
+    [state, nil]
+  end
+
+  def companion_policy_quote_opener?(line, index)
+    line[0...index].match?(/(?:\A[ \t]*|[-:?][ \t]+|[,\[{][ \t]*)\z/)
   end
 
   def companion_policy_root_indentation(lines)
