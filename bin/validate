@@ -121,6 +121,8 @@ bin/push-downstream --config downstream.yml >/dev/null
 echo "== helper tests =="
 ruby bin/lint-test.rb
 ruby skills/autoreview/bin/autoreview-target-state-test.rb
+ruby skills/continue/bin/authorized-completion-test.rb
+ruby skills/verify/bin/verification-evidence-reuse-test.rb
 ruby skills/address-review/bin/fetch-pr-review-data-test.rb
 ruby skills/address-review/bin/address-review-summary-template-test.rb
 ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
@@ -166,6 +168,7 @@ JSON_SCHEMER_VERSION="${JSON_SCHEMER_VERSION}" ruby skills/pr-batch/bin/batch-us
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/pr-batch/bin/model-routing-contract-test.rb
 ruby skills/pr-batch/bin/dispatcher-capability-preflight-test.rb
 ruby skills/pr-batch/bin/single_target_entrypoint_test.rb
+ruby skills/pr-batch/bin/diff-identity-test.rb
 ruby skills/pr-batch/bin/pr-ci-readiness-test.rb
 ruby skills/pr-batch/bin/merge-assurance-test.rb
 ruby skills/pr-batch/bin/hosted-qa-gate-contract-test.rb
