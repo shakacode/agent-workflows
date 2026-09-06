@@ -1274,7 +1274,8 @@ module CompletedBatchAuditReceipt
       waiver_verifier: method(:authenticated_publication_waiver_comment),
       target_verifier: method(:authenticated_publication_target_snapshot),
       artifact_verifier: method(:authenticated_publication_supporting_artifact_snapshot),
-      coordination_verifier: method(:authenticated_publication_coordination_status)
+      coordination_verifier: method(:authenticated_publication_coordination_status),
+      target_projection_verifier: method(:authenticated_publication_target_projection)
     )
   end
 
@@ -1308,6 +1309,10 @@ module CompletedBatchAuditReceipt
     CompletedBatchPublicationPreflight.verified_supporting_artifact_api_snapshot(payload, target)
   rescue Error, KeyError
     nil
+  end
+
+  def authenticated_publication_target_projection(source:, target:)
+    CompletedBatchPublicationPreflight.authenticated_target_projection(source:, target:)
   end
 
   def authenticated_publication_coordination_status(backend:, batch_id:)

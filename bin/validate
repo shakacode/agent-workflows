@@ -70,6 +70,9 @@ ruby bin/agent-workflows-trust-audit-test.rb
 echo "== repository security policy =="
 ruby bin/repository-security-policy-test.rb
 
+echo "== attended and overnight workflow doc contract =="
+ruby bin/attended-and-overnight-workflow-contract-test.rb
+
 echo "== secure GitHub Actions gate =="
 ruby skills/secure-github-actions/bin/secure-github-actions-scan-test.rb
 ruby skills/secure-github-actions/bin/secure-github-actions-review-lens-test.rb
@@ -120,6 +123,7 @@ bin/push-downstream --config downstream.yml >/dev/null
 
 echo "== helper tests =="
 ruby bin/lint-test.rb
+ruby bin/process-gap-mechanism-target-test.rb
 ruby skills/autoreview/bin/autoreview-target-state-test.rb
 ruby skills/continue/bin/authorized-completion-test.rb
 ruby skills/verify/bin/verification-evidence-reuse-test.rb
