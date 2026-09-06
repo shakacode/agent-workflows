@@ -409,7 +409,7 @@ module PrCiReadiness
   def circleci_approval_held_evidence?(row)
     return false unless optional_phase_timestamp?(row, "started_at")
     return false unless row.key?("completed_at") && row["completed_at"].nil?
-    return false unless row.key?("actions") && row["actions"].nil?
+    return false if row.key?("actions") && !row["actions"].nil?
 
     workflow_id = circleci_workflow_id(row)
     output = row["output"]
@@ -1125,13 +1125,13 @@ module PrCiReadiness
             "started_at" => row.fetch("started_at", "UNKNOWN"),
             "completed_at" => row.fetch("completed_at", "UNKNOWN"),
             "details_url" => row.fetch("details_url", "UNKNOWN"),
-            "actions" => row.fetch("actions", "UNKNOWN"),
             "output" => if output.is_a?(Hash) && output.key?("title") && output.key?("summary")
                           { "title" => output["title"], "summary" => output["summary"] }
                         else
                           "UNKNOWN"
                         end
           )
+          normalized["actions"] = row["actions"] if row.key?("actions")
         end
         normalized
       end
