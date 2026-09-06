@@ -350,6 +350,29 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_unrelated_malformed_policy_preserves_aligned_flow_sequence
+    with_companion_repo do |root, fixture|
+      source_glob = fixture.fetch("source_glob").inspect
+      companion_glob = fixture.fetch("companion_glob").inspect
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        base_branch: [
+        companion_path_conventions: [
+          { source_glob: #{source_glob}, companion_glob: #{companion_glob} }
+        ]
+        malformed: [
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
   def test_indented_malformed_policy_preserves_companion_sequence
     with_companion_repo do |root, fixture|
       File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)

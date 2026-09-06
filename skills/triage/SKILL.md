@@ -232,6 +232,8 @@ precise blocker.
    sole active editor, the coordinator durably records the reservation,
    refreshes authoritative file-touch maps, lane lifecycle state, and
    active-lane claim and collision checks, and reruns `batch-plan-preflight`;
+   run it from inside the verified consumer worktree so the helper resolves the
+   consumer Git top level from the invocation directory;
    the worker continues without user approval or a blocked lifecycle only
    after the preflight accepts.
    Before a worker in a multi-editor wave changes an added path, it persists a
@@ -240,7 +242,9 @@ precise blocker.
    reference, and pauses at a safe checkpoint. The coordinator processes
    expansion requests serially, records an active
    `expansion_path_reservations` entry, refreshes authoritative file-touch maps
-   and lane lifecycle state, and reruns `batch-plan-preflight`. For every
+   and lane lifecycle state, and reruns `batch-plan-preflight`.
+   Run it from inside the verified consumer worktree so the helper resolves the
+   consumer Git top level from the invocation directory. For every
    multi-editor request, acceptance alone does not authorize resume: the
    requester must durably transition out of `blocked`, a fresh preflight must
    accept, and the requester must be absent from `launch.held_lane_ids`; when

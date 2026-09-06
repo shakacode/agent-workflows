@@ -846,7 +846,15 @@ module BatchPlanPreflight
       next false if line.strip.empty? || line.lstrip.start_with?("#")
 
       line_indent = companion_policy_line_indentation(line)
-      line_indent < key_indent || (line_indent == key_indent && !line.lstrip.start_with?("-"))
+      if line_indent < key_indent
+        true
+      elsif line_indent == key_indent
+        continue_fragment = companion_policy_flow_terminator_line?(line) &&
+                            companion_policy_flow_collection_open?(lines, start_index, index)
+        !line.lstrip.start_with?("-") && !continue_fragment
+      else
+        false
+      end
     end
     fragment = lines[start_index...(finish || lines.length)].join
     state, node = companion_policy_node_from_stream(Psych.parse_stream(fragment))
@@ -870,6 +878,15 @@ module BatchPlanPreflight
 
   def companion_policy_line_indentation(line)
     line.b.match(/\A[ \t]*/).to_s.length
+  end
+
+  def companion_policy_flow_terminator_line?(line)
+    line.lstrip.match?(/\A[}\]](?:[ \t]*(?:#.*)?)?\r?\n?\z/)
+  end
+
+  def companion_policy_flow_collection_open?(lines, start_index, finish_index)
+    fragment = lines[start_index...finish_index].join
+    fragment.count("[{") > fragment.count("]}")
   end
 
   def yaml_document_boundary_line?(line)
