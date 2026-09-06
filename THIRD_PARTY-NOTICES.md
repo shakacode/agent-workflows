@@ -36,6 +36,8 @@ SOFTWARE.
 
 Project: [obra/superpowers](https://github.com/obra/superpowers)
 
+Adapted source: [Subagent-Driven Development](https://github.com/obra/superpowers/blob/44c9b2d6e889982ac18c27d05a19fefe335194e1/skills/subagent-driven-development/SKILL.md)
+
 Adapted source: [Writing Good Tests](https://github.com/obra/superpowers/blob/44c9b2d6e889982ac18c27d05a19fefe335194e1/skills/test-driven-development/writing-good-tests.md)
 
 License source: [LICENSE](https://github.com/obra/superpowers/blob/44c9b2d6e889982ac18c27d05a19fefe335194e1/LICENSE)

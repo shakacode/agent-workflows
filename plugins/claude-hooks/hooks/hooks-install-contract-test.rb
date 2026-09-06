@@ -108,6 +108,18 @@ class HooksInstallContractTest < Minitest::Test
     assert_includes documentation, "Codex"
   end
 
+  def test_the_withdrawn_merge_gate_is_documented_as_structured_only
+    documentation = File.read(DOCS)
+    normalized = documentation.gsub(/\s+/, " ")
+    section = normalized[/## No merge-command gate (.*?) ## Enable the adapter/, 1]
+
+    refute_nil section, "the merge-gate policy must stay in its own section"
+    assert_includes section, "proposed in issue #276"
+    assert_includes section, "withdrawn from PR #343"
+    assert_includes section, "structured host tool/argv identity"
+    assert_includes section, "fail closed"
+  end
+
   private
 
   def assert_adapter(hook, basename)
