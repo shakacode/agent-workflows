@@ -373,6 +373,40 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_unrelated_malformed_policy_preserves_quoted_flow_sequence
+    Dir.mktmpdir("batch-plan-quoted-flow-sequence") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      FileUtils.mkdir_p(File.join(root, "lib"))
+      FileUtils.mkdir_p(File.join(root, "sig"))
+      File.write(File.join(root, "lib", "task].rb"), "fixture\n")
+      File.write(File.join(root, "sig", "task.rbs"), "fixture\n")
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions: [
+          { source_glob: "lib/{name}].rb", companion_glob: "sig/{name}.rbs" }
+        ]
+        malformed: [
+      YAML
+
+      lane_record = lane("lane-a", target: issue_target(461))
+      input = input_for(
+        lanes: [lane_record],
+        maps: {
+          "lane-a" => planned_path_evidence(
+            ["lib/task].rb"],
+            source_kind: "issue",
+            evidence_ref: "issue://owner/repo/461#planned-paths"
+          )
+        }
+      )
+
+      result, stderr, status = evaluate(input, chdir: root)
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
   def test_indented_malformed_policy_preserves_companion_sequence
     with_companion_repo do |root, fixture|
       File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)

@@ -886,7 +886,51 @@ module BatchPlanPreflight
 
   def companion_policy_flow_collection_open?(lines, start_index, finish_index)
     fragment = lines[start_index...finish_index].join
-    fragment.count("[{") > fragment.count("]}")
+    line = lines[finish_index].to_s.b.lstrip
+    return false unless line.start_with?("]") || line.start_with?("}")
+
+    opener = line.start_with?("]") ? "[" : "{"
+    closer = line.start_with?("]") ? "]" : "}"
+    companion_policy_flow_opener_open?(fragment, opener, closer)
+  end
+
+  def companion_policy_flow_opener_open?(fragment, opener, closer)
+    open_count = 0
+    state = :normal
+    index = 0
+    while index < fragment.length
+      char = fragment[index]
+      case state
+      when :normal
+        case char
+        when "'"
+          state = :single_quote
+        when '"'
+          state = :double_quote
+        when "#"
+          index = fragment.index("\n", index) || fragment.length
+          next
+        when opener
+          open_count += 1
+        when closer
+          open_count -= 1 if open_count.positive?
+        end
+      when :single_quote
+        next unless char == "'"
+
+        escaped_quote = fragment[index + 1] == "'"
+        index += 1 if escaped_quote
+        state = :normal unless escaped_quote
+      when :double_quote
+        if char == "\\"
+          index += 1
+        elsif char == '"'
+          state = :normal
+        end
+      end
+      index += 1
+    end
+    open_count.positive?
   end
 
   def yaml_document_boundary_line?(line)
