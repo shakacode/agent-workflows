@@ -52,6 +52,8 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_VERIFIED_WORKED_SCOPE_SOURCES =
     "A worked-issue scope verified from either the authenticated single-controller proof or required coordination " \
     "state is a verified batch subset."
+  REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK = "If the audited range also needs a codebase-health lens, run `$structural-review` explicitly on that same range, including release/range audits without worked issues or QA lanes. This audit does not auto-invoke sibling axes."
+  REQUIRED_STRUCTURAL_REVIEW_ENTRY_POINT = "- **After a batch audit:** invoke `$structural-review` explicitly on the same range audited by `$post-merge-audit` when you want the codebase-health lens. `post-merge-audit` does not auto-run `structural-review` for you."
   REQUIRED_COMPLETED_BATCH_MODE_SCOPE = "In completed-batch mode only:"
   REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP = "Once every batch target has a final state, the batch coordinator must run its completed-batch audit before its final handoff. Each completed-batch audit is owned by its batch coordinator. A parent orchestration agent only reconciles the durable audit handoff."
   OBSOLETE_COMPLETED_BATCH_AUDIT_TRIGGER = "Once it detects that every batch target has a final state, the parent orchestration agent must run the completed-batch audit before its final handoff."
@@ -242,6 +244,21 @@ class PostMergeAuditPolicyTest < Minitest::Test
     normalized_text = text.gsub(/\s+/, " ")
 
     assert_includes normalized_text, REQUIRED_PR_PROCESSING_EXCEPTION
+  end
+
+  def test_post_merge_audit_mentions_structural_review_as_a_separate_axis
+    text = File.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
+    range_section = text.match(/^### Range-Level Structural Review\n(?<body>.*?)(?=^##? |\z)/m)
+
+    refute_nil range_section, "Structural review must be outside the per-PR and per-issue lists"
+    assert_includes range_section[:body].gsub(/\s+/, " "), REQUIRED_STRUCTURAL_REVIEW_AUDIT_CHECK
+  end
+
+  def test_structural_review_entry_point_remains_explicit
+    text = File.read(File.join(ROOT, "skills/structural-review/SKILL.md"), encoding: "UTF-8")
+    normalized_text = text.gsub(/\s+/, " ")
+
+    assert_includes normalized_text, REQUIRED_STRUCTURAL_REVIEW_ENTRY_POINT
   end
 
   def test_outputs_include_issue_creation_accounting
