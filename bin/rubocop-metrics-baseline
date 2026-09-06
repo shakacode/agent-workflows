@@ -1,0 +1,232 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "fileutils"
+require "json"
+require "open3"
+require_relative "ruby_file_surface"
+
+module RubocopMetrics
+  COPS = %w[
+    Metrics/AbcSize
+    Metrics/BlockLength
+    Metrics/ClassLength
+    Metrics/CyclomaticComplexity
+    Metrics/MethodLength
+    Metrics/ModuleLength
+    Metrics/ParameterLists
+    Metrics/PerceivedComplexity
+  ].freeze
+  BASELINE_PATH = File.join("test", "fixtures", "rubocop-metrics-baseline.json")
+
+  def self.version(root)
+    File.read(File.join(root, ".rubocop-version"), encoding: "UTF-8").strip
+  end
+
+  class Profile
+    def initialize(root:)
+      @root = root
+    end
+
+    def build
+      files = tracked_ruby_files
+      result = files.empty? ? empty_result : rubocop_result(files)
+      {
+        "schema_version" => 1,
+        "rubocop_version" => version,
+        "cops" => COPS,
+        "files" => metric_files(result.fetch("files"))
+      }
+    end
+
+    private
+
+    def empty_result
+      { "metadata" => { "rubocop_version" => version }, "files" => [] }
+    end
+
+    def rubocop_result(files)
+      output, error_output, status = Open3.capture3(
+        "rubocop", *rubocop_arguments(files), chdir: @root
+      )
+      unless [0, 1].include?(status.exitstatus)
+        raise "rubocop failed (exit #{status.exitstatus}): #{error_output.strip}"
+      end
+
+      JSON.parse(output).tap { |result| verify_version!(result) }
+    end
+
+    def rubocop_arguments(files)
+      [
+        "_#{version}_",
+        "--only", COPS.join(","),
+        "--format", "json",
+        "--ignore-disable-comments",
+        "--force-exclusion",
+        *files
+      ]
+    end
+
+    def verify_version!(result)
+      actual = result.dig("metadata", "rubocop_version")
+      return if actual == version
+
+      raise "expected RuboCop #{version}, got #{actual.inspect}"
+    end
+
+    def tracked_ruby_files
+      output, error_output, status = Open3.capture3(
+        "git", "ls-files", "-z", "--", chdir: @root
+      )
+      raise "git ls-files failed: #{error_output.strip}" unless status.success?
+
+      output.split("\0").select { |path| tracked_ruby_file?(path) }.sort
+    end
+
+    def tracked_ruby_file?(path)
+      File.file?(File.join(@root, path)) && ruby_file?(path)
+    end
+
+    def ruby_file?(path)
+      RubyFileSurface.ruby_file?(File.join(@root, path))
+    end
+
+    def metric_files(files)
+      files.sort_by { |file| file.fetch("path") }.filter_map do |file|
+        cops = metric_cops(file.fetch("offenses"))
+        [file.fetch("path"), cops] unless cops.empty?
+      end.to_h
+    end
+
+    def metric_cops(offenses)
+      profile = {}
+      offenses.each { |offense| append_metric(profile, offense) }
+      profile.sort.to_h { |cop, values| [cop, values.sort.reverse] }
+    end
+
+    def append_metric(profile, offense)
+      cop = offense.fetch("cop_name")
+      return unless COPS.include?(cop)
+
+      (profile[cop] ||= []) << metric_value(offense.fetch("message"))
+    end
+
+    def metric_value(message)
+      match = message.match(%r{(?<actual>\d+(?:\.\d+)?)/\d+(?:\.\d+)?\]\z})
+      raise "cannot read metric value from #{message.inspect}" unless match
+
+      actual = match[:actual]
+      actual.include?(".") ? actual.to_f : actual.to_i
+    end
+
+    def version
+      @version ||= RubocopMetrics.version(@root)
+    end
+  end
+
+  class Baseline
+    def initialize(root:, stdout: $stdout, stderr: $stderr)
+      @root = root
+      @stdout = stdout
+      @stderr = stderr
+    end
+
+    def refresh
+      write_baseline(current_profile)
+      @stdout.puts "Refreshed #{BASELINE_PATH}"
+      0
+    rescue StandardError => e
+      @stderr.puts "RuboCop metrics baseline refresh failed: #{e.message}"
+      1
+    end
+
+    def check
+      increases = metric_increases(read_baseline.fetch("files"), current_profile.fetch("files"))
+      return report_pass if increases.empty?
+
+      report_increases(increases)
+    rescue StandardError => e
+      @stderr.puts "RuboCop metrics baseline check failed: #{e.message}"
+      1
+    end
+
+    private
+
+    def current_profile
+      Profile.new(root: @root).build
+    end
+
+    def report_pass
+      @stdout.puts "PASS RuboCop metrics baseline"
+      0
+    end
+
+    def report_increases(increases)
+      @stderr.puts "RuboCop metrics baseline increased:"
+      increases.each { |increase| @stderr.puts "  #{increase}" }
+      @stderr.puts "Reduce the metrics or deliberately refresh with bin/rubocop-metrics-baseline refresh."
+      1
+    end
+
+    def write_baseline(profile)
+      path = File.join(@root, BASELINE_PATH)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "#{JSON.pretty_generate(profile)}\n")
+    end
+
+    def read_baseline
+      baseline = JSON.parse(File.read(baseline_file, encoding: "UTF-8"))
+      verify_cops!(baseline)
+      actual_version = baseline.fetch("rubocop_version")
+      expected_version = current_version
+      return baseline if actual_version == expected_version
+
+      raise "baseline uses RuboCop #{actual_version}; expected #{expected_version}; refresh it"
+    end
+
+    def verify_cops!(baseline)
+      return if baseline.fetch("cops") == COPS
+
+      raise "baseline cop set differs from the current Metrics cop set; refresh it"
+    end
+
+    def baseline_file
+      File.join(@root, BASELINE_PATH)
+    end
+
+    def current_version
+      RubocopMetrics.version(@root)
+    end
+
+    def metric_increases(baseline_files, current_files)
+      current_files.flat_map do |path, current_cops|
+        current_cops.flat_map do |cop, current_values|
+          baseline_values = baseline_files.dig(path, cop) || []
+          metric_increases_for(path, cop, baseline_values, current_values)
+        end
+      end
+    end
+
+    def metric_increases_for(path, cop, baseline_values, current_values)
+      current_values.filter_map.with_index do |value, index|
+        baseline_value = baseline_values[index]
+        next if baseline_value && value <= baseline_value
+
+        "#{path} #{cop} value ##{index + 1}: #{baseline_value || 0} -> #{value}"
+      end
+    end
+  end
+end
+
+if $PROGRAM_NAME == __FILE__
+  root = File.expand_path("..", __dir__)
+  runner = RubocopMetrics::Baseline.new(root: root)
+  case ARGV
+  when ["check"]
+    exit runner.check
+  when ["refresh"]
+    exit runner.refresh
+  else
+    abort "Usage: bin/rubocop-metrics-baseline check|refresh"
+  end
+end

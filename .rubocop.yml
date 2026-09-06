@@ -12,6 +12,7 @@ Layout/EmptyLinesAroundBlockBody:
 Layout/LineLength:
   Enabled: false
 
+# Temporary default-metrics debt is ratcheted; see docs/rubocop-metrics.md.
 Metrics/AbcSize:
   Enabled: false
 
