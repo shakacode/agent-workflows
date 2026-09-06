@@ -232,8 +232,6 @@ precise blocker.
    sole active editor, the coordinator durably records the reservation,
    refreshes authoritative file-touch maps, lane lifecycle state, and
    active-lane claim and collision checks, and reruns `batch-plan-preflight`;
-   run it from inside the verified consumer worktree so the helper resolves the
-   consumer Git top level from the invocation directory;
    the worker continues without user approval or a blocked lifecycle only
    after the preflight accepts.
    Before a worker in a multi-editor wave changes an added path, it persists a
@@ -243,18 +241,19 @@ precise blocker.
    expansion requests serially, records an active
    `expansion_path_reservations` entry, refreshes authoritative file-touch maps
    and lane lifecycle state, and reruns `batch-plan-preflight`.
-   Run it from inside the verified consumer worktree so the helper resolves the
-   consumer Git top level from the invocation directory. For every
-   multi-editor request, acceptance alone does not authorize resume: the
-   requester must durably transition out of `blocked`, a fresh preflight must
-   accept, and the requester must be absent from `launch.held_lane_ids`; when
-   launch or relaunch is needed, it must also be present in
+   For every multi-editor request, acceptance alone does not authorize resume:
+   the requester must durably transition out of `blocked`, a fresh preflight
+   must accept, and the requester must be absent from `launch.held_lane_ids`;
+   when launch or relaunch is needed, it must also be present in
    `launch.eligible_lane_ids`. Under maximum-concurrency-one serialization, the
    current holder must also release the slot before resume. The reservation persists until the
    verified PR file-touch map contains the path or the request is cancelled,
    and it is removed once reflected or cancelled. A collision or `UNKNOWN`
    collision state remains stopped until then. A missing path alone is not
    material scope growth and must not produce `blocked-user-input`.
+   Run both `batch-plan-preflight` invocations from inside the verified consumer
+   worktree so the helper resolves the consumer Git top level from the
+   invocation directory.
    After an issue or trusted ad-hoc lane opens its implementation PR, keep the original canonical target unchanged and replace planned-path evidence with the lane-keyed verified PR file-touch map; its repository must match the target, while a PR-origin target also requires the exact target PR number.
    Directory renames use a distinct `expansion-rename-reservation` v1 record
    with canonical, distinct `old` and `new` endpoints; only this typed rename
