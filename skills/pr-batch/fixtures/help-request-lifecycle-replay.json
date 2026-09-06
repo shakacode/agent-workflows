@@ -1,0 +1,226 @@
+{
+  "contract": "help-request-lifecycle-input",
+  "version": 1,
+  "events": [
+    {
+      "event_id": "20260823T054818.000000Z-help4846",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "help_requested",
+      "at": "2026-08-23T05:48:18Z",
+      "reason": "permission",
+      "message": "Scope permission needed for server_manager.rbs API reconciliation and CHANGELOG.md user-visible entry."
+    },
+    {
+      "event_id": "phase-01",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-23T06:02:00Z",
+      "previous_phase": "blocked",
+      "phase": "implementation"
+    },
+    {
+      "event_id": "phase-02",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-23T07:00:00Z",
+      "previous_phase": "implementation",
+      "phase": "review"
+    },
+    {
+      "event_id": "20260823T080000.000000Z-help4846-repeat1",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "help_requested",
+      "at": "2026-08-23T08:00:00Z",
+      "reason": "permission",
+      "message": "Scope permission needed for server_manager.rbs API reconciliation and CHANGELOG.md user-visible entry."
+    },
+    {
+      "event_id": "phase-03",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-23T09:00:00Z",
+      "previous_phase": "review",
+      "phase": "implementation"
+    },
+    {
+      "event_id": "phase-04",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-23T10:00:00Z",
+      "previous_phase": "implementation",
+      "phase": "review"
+    },
+    {
+      "event_id": "20260823T120000.000000Z-help4846-repeat2",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "help_requested",
+      "at": "2026-08-23T12:00:00Z",
+      "reason": "permission",
+      "message": "Scope permission needed for server_manager.rbs API reconciliation and CHANGELOG.md user-visible entry."
+    },
+    {
+      "event_id": "phase-05",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-23T13:00:00Z",
+      "previous_phase": "review",
+      "phase": "implementation"
+    },
+    {
+      "event_id": "phase-06",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-23T14:00:00Z",
+      "previous_phase": "implementation",
+      "phase": "review"
+    },
+    {
+      "event_id": "phase-07",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-24T03:00:00Z",
+      "previous_phase": "blocked",
+      "phase": "implementation"
+    },
+    {
+      "event_id": "20260824T040000.000000Z-help4846-repeat3",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "help_requested",
+      "at": "2026-08-24T04:00:00Z",
+      "reason": "permission",
+      "message": "Scope permission needed for server_manager.rbs API reconciliation and CHANGELOG.md user-visible entry."
+    },
+    {
+      "event_id": "phase-08",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-24T05:00:00Z",
+      "previous_phase": "implementation",
+      "phase": "review"
+    },
+    {
+      "event_id": "phase-09",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-24T06:00:00Z",
+      "previous_phase": "review",
+      "phase": "implementation"
+    },
+    {
+      "event_id": "phase-10",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-24T07:00:00Z",
+      "previous_phase": "implementation",
+      "phase": "review"
+    },
+    {
+      "event_id": "20260824T080000.000000Z-help4846-repeat4",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "help_requested",
+      "at": "2026-08-24T08:00:00Z",
+      "reason": "permission",
+      "message": "Scope permission needed for server_manager.rbs API reconciliation and CHANGELOG.md user-visible entry."
+    },
+    {
+      "event_id": "phase-11",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-24T09:00:00Z",
+      "previous_phase": "review",
+      "phase": "implementation"
+    },
+    {
+      "event_id": "phase-12",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-24T10:00:00Z",
+      "previous_phase": "implementation",
+      "phase": "review"
+    },
+    {
+      "event_id": "phase-13",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-25T07:00:00Z",
+      "previous_phase": "blocked",
+      "phase": "implementation"
+    },
+    {
+      "event_id": "phase-14",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-25T08:00:00Z",
+      "previous_phase": "implementation",
+      "phase": "review"
+    },
+    {
+      "event_id": "phase-15",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "phase.changed",
+      "at": "2026-08-26T00:00:00Z",
+      "previous_phase": "review",
+      "phase": "implementation"
+    },
+    {
+      "event_id": "scope-exhausted",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "error",
+      "at": "2026-08-26T00:44:24Z",
+      "severity": "P2",
+      "category": "authorized-scope-exhausted",
+      "message": "Repeat review accepted five findings; the RBS surface repair requires a prohibited fifth path."
+    },
+    {
+      "event_id": "lane-closed",
+      "batch_id": "ror-a-issue-4846-20260817",
+      "lane": "review",
+      "agent_id": "ror-a-review",
+      "type": "lane_closed",
+      "at": "2026-08-26T00:44:31Z",
+      "terminal": "abandoned"
+    }
+  ]
+}

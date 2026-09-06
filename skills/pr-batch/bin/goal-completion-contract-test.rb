@@ -213,6 +213,9 @@ CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>"
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
+BATCH_TITLE_MULTIPLE_PROMPT_SUFFIX_RULE =
+  "Fill the optional `<A?>` slot with A, B, C, etc. only when creating multiple batch prompts; " \
+  "omit it for a single batch prompt."
 GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>"
 LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>"
 BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
@@ -232,6 +235,17 @@ BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
 BATCH_TITLE_SPACING_RULE =
   "Render exactly one empty line immediately before and after the `Batch title:` line. " \
   "Keep the target-specific invocation above that title block and `Thread handle:` below it."
+BATCH_TITLE_PLAN_LINK =
+  "[Plan To Goal Handoff](../../workflows/pr-processing.md#plan-to-goal-handoff)"
+BATCH_TITLE_METADATA_WORKFLOW_LINK =
+  "[Verified Source-Issue Title Metadata](pr-batch-intake.md#verified-source-issue-title-metadata)"
+BATCH_TITLE_METADATA_SKILL_LINK =
+  "[Verified Source-Issue Title Metadata](../../workflows/pr-batch-intake.md#verified-source-issue-title-metadata)"
+CONTINUATION_TITLE_IDENTIFIER_RULE =
+  "After fail-closed target extraction and source verification, apply the same title rule: include `<ID?>` only " \
+  "for exactly one verified source issue, even alongside PR or ad-hoc execution targets; omit it for zero or " \
+  "multiple verified source issues. Evidence, blocker, dependency, next-action, comment, and example refs are not " \
+  "targets and cannot supply title identifiers."
 CONTINUATION_HANDLE_SELECTION_RULE =
   "Otherwise, after exact target and lane resolution, derive one top-level `Thread handle:` using the normal " \
   "`<batch-short>-<lane>-<word>` rule: use the resumed lane id or owner slug for exactly one resumed lane; use " \
@@ -1658,11 +1672,13 @@ class GoalCompletionContractTest < Minitest::Test
   end
 
   def test_linear_title_verification_names_portable_seam_and_evidence
-    assert_squished_includes @verified_batch_title_contract, "`AGENTS.md` `linear_issue_verification` seam",
-                             "workflows/pr-batch-intake.md"
-    assert_squished_includes @verified_batch_title_contract, "resolve tool/account", "workflows/pr-batch-intake.md"
-    assert_squished_includes @verified_batch_title_contract, "exact ID, canonical URL, state, and timestamp",
-                             "workflows/pr-batch-intake.md"
+    {
+      "workflows/pr-batch-intake.md" => @prompt_intake
+    }.each do |label, text|
+      assert_squished_includes text, "`AGENTS.md` `linear_issue_verification` seam", label
+      assert_squished_includes text, "resolve tool/account", label
+      assert_squished_includes text, "exact ID, canonical URL, state, and timestamp", label
+    end
   end
 
   def test_batch_title_instructions_pin_local_date_source

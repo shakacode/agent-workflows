@@ -4,6 +4,9 @@
 require "json"
 require "optparse"
 require "tempfile"
+require "time"
+
+require_relative "../../pr-batch/lib/help_request_lifecycle"
 
 UNKNOWN = "UNKNOWN"
 DEFAULT_TIMEOUT_SECONDS = 20
@@ -138,7 +141,33 @@ ensure
   stderr_file&.close!
 end
 
-options = { batch_ids: [], prs: [], issues: [], targets: [], timeout: DEFAULT_TIMEOUT_SECONDS }
+def help_request_lifecycle(batch_payload, now:, max_open_seconds:, lane: nil)
+  unless batch_payload.is_a?(Hash) && batch_payload["events"].is_a?(Array)
+    return { "status" => UNKNOWN, "error" => "batch event history unavailable" }
+  end
+
+  event_note = batch_payload["section_notes"].is_a?(Hash) && present_string(batch_payload["section_notes"]["events"])
+  return { "status" => UNKNOWN, "error" => event_note } if event_note
+
+  HelpRequestLifecycle.evaluate(
+    { "events" => batch_payload.fetch("events") },
+    now: now,
+    max_open_seconds: max_open_seconds,
+    lane: lane
+  )
+rescue HelpRequestLifecycle::InputError => e
+  { "status" => UNKNOWN, "error" => e.message }
+end
+
+options = {
+  batch_ids: [],
+  prs: [],
+  issues: [],
+  targets: [],
+  timeout: DEFAULT_TIMEOUT_SECONDS,
+  now: Time.now.utc,
+  help_request_max_open_seconds: HelpRequestLifecycle::DEFAULT_MAX_OPEN_SECONDS
+}
 parser = OptionParser.new do |opts|
   opts.banner = "Usage: batch-status [--batch-id ID] [--repo OWNER/REPO] [--pr N | --issue N | --target OWNER/REPO#N] [--json]"
   opts.on("--batch-id ID", "Inspect a registered batch (repeatable)") { |value| options[:batch_ids] << value }
@@ -147,6 +176,12 @@ parser = OptionParser.new do |opts|
   opts.on("--issue NUMBER", Integer, "Inspect an issue number") { |value| options[:issues] << value }
   opts.on("--target REF", "Inspect OWNER/REPO#N and detect PR versus issue") { |value| options[:targets] << value }
   opts.on("--timeout SECONDS", Float, "External probe deadline") { |value| options[:timeout] = value }
+  opts.on("--now ISO8601", "Evaluation time for deterministic help-request age") do |value|
+    options[:now] = Time.iso8601(value)
+  end
+  opts.on("--help-request-max-open-seconds N", Integer, "Age that requires blocked-user-input closeout") do |value|
+    options[:help_request_max_open_seconds] = value
+  end
   opts.on("--json", "Emit machine-readable JSON") { options[:json] = true }
   opts.on("-h", "--help", "Show this help") do
     puts opts
@@ -156,7 +191,7 @@ end
 
 begin
   parser.parse!(ARGV)
-rescue OptionParser::ParseError => e
+rescue OptionParser::ParseError, ArgumentError => e
   warn e.message
   warn parser
   exit 64
@@ -170,6 +205,11 @@ end
 
 unless options[:timeout].positive? && options[:timeout].finite?
   warn "--timeout must be a positive finite number"
+  exit 64
+end
+
+unless options[:help_request_max_open_seconds].positive?
+  warn "--help-request-max-open-seconds must be a positive integer"
   exit 64
 end
 
@@ -208,6 +248,9 @@ end
 helper = bounded_helper
 batch_unknowns = []
 resolved_batch_ids = []
+batch_payloads = {}
+help_request_lifecycles = {}
+lane_help_request_lifecycles = {}
 options[:batch_ids].each do |batch_id|
   unless helper
     batch_unknowns << "batch #{batch_id}: bounded agent-coordination helper unavailable"
@@ -220,14 +263,33 @@ options[:batch_ids].each do |batch_id|
     "status", "--batch-id", batch_id, "--json"
   )
   if batch_error
+    batch_payloads[batch_id] = nil
+    help_request_lifecycles[batch_id] = help_request_lifecycle(
+      nil,
+      now: options.fetch(:now),
+      max_open_seconds: options.fetch(:help_request_max_open_seconds)
+    )
     batch_unknowns << "batch #{batch_id}: #{batch_error}"
     next
   end
 
   unless batch_payload.is_a?(Hash)
+    batch_payloads[batch_id] = nil
+    help_request_lifecycles[batch_id] = help_request_lifecycle(
+      nil,
+      now: options.fetch(:now),
+      max_open_seconds: options.fetch(:help_request_max_open_seconds)
+    )
     batch_unknowns << "batch #{batch_id}: response was not an object"
     next
   end
+
+  batch_payloads[batch_id] = batch_payload
+  help_request_lifecycles[batch_id] = help_request_lifecycle(
+    batch_payload,
+    now: options.fetch(:now),
+    max_open_seconds: options.fetch(:help_request_max_open_seconds)
+  )
 
   batches = batch_payload["batches"].is_a?(Array) ? batch_payload["batches"].select { |item| item.is_a?(Hash) } : []
   batch = batches.find { |candidate| candidate["batch_id"] == batch_id }
@@ -238,6 +300,8 @@ options[:batch_ids].each do |batch_id|
 
   resolved_batch_id = present_string(batch["batch_id"]) || batch_id
   resolved_batch_ids << resolved_batch_id
+  batch_payloads[resolved_batch_id] = batch_payload
+  help_request_lifecycles[resolved_batch_id] = help_request_lifecycles.fetch(batch_id)
   repo = present_string(batch["repo"]) || options[:repo]
   unless repo
     batch_unknowns << "batch #{resolved_batch_id}: repository UNKNOWN"
@@ -271,7 +335,7 @@ options[:batch_ids].each do |batch_id|
         coordination_target: parsed_target.fetch(:coordination_target),
         expected_owner: owner,
         batch_id: resolved_batch_id,
-        lane: present_string(lane["name"]) || UNKNOWN
+        lane: present_string(lane["name"])
       }
     end
   end
@@ -322,6 +386,38 @@ items = requests.map do |request|
     unknowns << "coordination holder divergence: batch owner #{expected_owner}, active claim #{holder}"
   end
   heartbeat = holder && heartbeats.find { |candidate| candidate.is_a?(Hash) && candidate["agent_id"] == holder }
+  batch_id = request[:batch_id] || present_string(claim["batch_id"])
+  lane = request[:lane] || present_string(claim["lane"])
+  unknowns << "batch lane: registration and claim metadata unavailable" if batch_id && !lane
+  lifecycle = { "status" => UNKNOWN, "error" => "batch id unavailable for target-scoped replay" }
+  if batch_id
+    unless batch_payloads.key?(batch_id)
+      batch_payload, batch_error = run_json(
+        helper,
+        "--timeout", options[:timeout].to_s,
+        "status", "--batch-id", batch_id, "--json"
+      )
+      if batch_error
+        batch_payloads[batch_id] = nil
+        message = "batch #{batch_id}: #{batch_error}"
+        batch_unknowns << message unless batch_unknowns.include?(message)
+      else
+        batch_payloads[batch_id] = batch_payload
+      end
+    end
+    lifecycle = if lane
+                  lane_cache_key = [batch_id, lane]
+                  lane_help_request_lifecycles[lane_cache_key] ||= help_request_lifecycle(
+                    batch_payloads[batch_id],
+                    now: options.fetch(:now),
+                    max_open_seconds: options.fetch(:help_request_max_open_seconds),
+                    lane: lane
+                  )
+                else
+                  { "status" => UNKNOWN, "error" => "lane unavailable for target-scoped replay" }
+                end
+  end
+  unknowns << "help-request lifecycle: #{lifecycle['error']}" if lifecycle["status"] == UNKNOWN
   record = holder ? (heartbeat || claim) : {}
   runner = runner_for(record)
   machine_id = present_string(record["machine_id"]) || UNKNOWN
@@ -340,8 +436,8 @@ items = requests.map do |request|
   end
 
   {
-    "batch_id" => request[:batch_id] || UNKNOWN,
-    "lane" => request[:lane] || "#{repo}##{number}",
+    "batch_id" => batch_id || UNKNOWN,
+    "lane" => lane || (batch_id ? UNKNOWN : "#{repo}##{number}"),
     "target" => {
       "repo" => repo,
       "number" => number,
@@ -356,6 +452,7 @@ items = requests.map do |request|
     "codex_deep_link" => deep_link,
     "codex_deep_link_machine_id" => deep_link == UNKNOWN ? UNKNOWN : machine_id,
     "heartbeat" => heartbeat || UNKNOWN,
+    "help_request_lifecycle" => lifecycle,
     "github_state" => github&.fetch("state", UNKNOWN) || UNKNOWN,
     "unknowns" => unknowns
   }
@@ -365,6 +462,7 @@ payload = {
   "schema_version" => 1,
   "batch_id" => resolved_batch_ids.length == 1 ? resolved_batch_ids.first : UNKNOWN,
   "batch_ids" => resolved_batch_ids,
+  "help_request_lifecycles" => help_request_lifecycles,
   "items" => items,
   "unknowns" => batch_unknowns
 }

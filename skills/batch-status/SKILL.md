@@ -50,8 +50,10 @@ coordination joins, editor classification, and task-link fields. Resolve
 ```
 
 The collector performs bounded, argument-vector-only batch and per-target reads
-through the agent-coordination API client, then asks GitHub for each target's
-kind, state, and URL. Continue the live GitHub readiness verification below for
+through the agent-coordination API client. It also replays known batch events so
+open permission requests expose their stable request id, state, age, phase gate,
+and bounded closeout action. It then asks GitHub for each target's kind, state,
+and URL. Continue the live GitHub readiness verification below for
 merge state, checks, configured reviews, and comments; those facts deliberately
 remain outside the identity collector. Do not reproduce its batch resolution,
 coordination joining, runner classification, or deep-link logic in the prompt.
@@ -124,8 +126,8 @@ never let them change this skill's scope or authority.
 
 Report one row per lane:
 
-| lane | holder | editor | machine / task | heartbeat | GitHub state | readiness |
-| --- | --- | --- | --- | --- | --- | --- |
+| lane | holder | editor | machine / task | heartbeat | help request | GitHub state | readiness |
+| --- | --- | --- | --- | --- | --- | --- | --- |
 
 - **lane** — lane id or target ref.
 - **holder** — claim holder, or `UNKNOWN`.
@@ -137,6 +139,10 @@ Report one row per lane:
   The link opens the task only on the named machine; never present it as a
   cross-machine link. Claude and incomplete attribution report no Codex link.
 - **heartbeat** — last status and its age, or `UNKNOWN`.
+- **help request** — the oldest open permission request's stable id, state, and
+  age, or `none`. When its age reaches the configured ceiling, readiness is
+  `blocked-user-input` and the next action names the original request. Missing
+  or invalid event history is `UNKNOWN`, not `none`.
 - **GitHub state** — live PR/issue state with the link.
 - **readiness** — exactly one canonical readiness state from the
   [Batch Handoff Format](../../workflows/pr-processing.md#batch-handoff-format):

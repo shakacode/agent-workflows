@@ -45,6 +45,9 @@ class BatchStatusTest < Minitest::Test
       assert_equal "019feb28-f6a7-7e53-992e-09fa93633f10", row.fetch("thread_id")
       assert_equal "codex://threads/019feb28-f6a7-7e53-992e-09fa93633f10", row.fetch("codex_deep_link")
       assert_equal "kona", row.fetch("codex_deep_link_machine_id")
+      lifecycle = row.fetch("help_request_lifecycle")
+      assert_equal "UNKNOWN", lifecycle.fetch("status")
+      assert_includes lifecycle.fetch("error"), "batch id unavailable"
     end
   end
 
@@ -130,6 +133,184 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_batch_lane_without_name_remains_explicitly_unknown
+    coordination = {
+      "batches" => [{
+        "batch_id" => "aw-b",
+        "repo" => "shakacode/agent-workflows",
+        "lanes" => [{
+          "owner" => "worker-186",
+          "targets" => ["issue:186"]
+        }]
+      }],
+      "events" => []
+    }
+    target_coordination = {
+      "claims" => [{ "agent_id" => "worker-186", "status" => "active" }],
+      "heartbeats" => []
+    }
+
+    with_fake_batch_commands(coordination:, target_coordination:) do |env|
+      stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, SCRIPT, "--batch-id", "aw-b", "--json")
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      assert_equal "UNKNOWN", row.fetch("lane")
+      assert_includes row.fetch("unknowns"), "batch lane: registration and claim metadata unavailable"
+      assert_includes row.fetch("unknowns"), "help-request lifecycle: lane unavailable for target-scoped replay"
+    end
+  end
+
+  def test_target_status_does_not_leak_an_unscoped_batch_request
+    request_id = "20260823T054818.000000Z-help4846"
+    target_coordination = {
+      "claims" => [{
+        "agent_id" => "worker-462",
+        "status" => "active",
+        "batch_id" => "aw-help"
+      }],
+      "heartbeats" => []
+    }
+    batch_coordination = {
+      "events" => [{
+        "event_id" => request_id,
+        "batch_id" => "aw-help",
+        "lane" => "different-lane",
+        "agent_id" => "worker-462",
+        "type" => "help_requested",
+        "reason" => "permission",
+        "at" => "2026-08-23T05:48:18Z",
+        "message" => "Approve the exact merge head."
+      }]
+    }
+
+    with_fake_help_lifecycle_commands(target_coordination:, batch_coordination:) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "462",
+        "--now", "2026-08-23T10:00:00Z",
+        "--help-request-max-open-seconds", "14400",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      lifecycle = row.fetch("help_request_lifecycle")
+      assert_equal "aw-help", row.fetch("batch_id")
+      assert_equal "UNKNOWN", lifecycle.fetch("status")
+      assert_includes lifecycle.fetch("error"), "lane unavailable"
+      assert_includes row.fetch("unknowns"), "help-request lifecycle: lane unavailable for target-scoped replay"
+    end
+  end
+
+  def test_target_status_leaves_batch_lifecycles_empty_for_target_probes
+    request_id = "20260823T054818.000000Z-help4846"
+    target_coordination = {
+      "claims" => [{
+        "agent_id" => "worker-462",
+        "status" => "active",
+        "batch_id" => "aw-help",
+        "lane" => "review"
+      }],
+      "heartbeats" => []
+    }
+    batch_coordination = {
+      "events" => [{
+        "event_id" => request_id,
+        "batch_id" => "aw-help",
+        "lane" => "different-lane",
+        "agent_id" => "worker-462",
+        "type" => "help_requested",
+        "reason" => "permission",
+        "at" => "2026-08-23T05:48:18Z",
+        "message" => "Approve the exact merge head."
+      }]
+    }
+
+    with_fake_help_lifecycle_commands(target_coordination:, batch_coordination:) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "462",
+        "--now", "2026-08-23T10:00:00Z",
+        "--help-request-max-open-seconds", "14400",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      row = payload.fetch("items").first
+      lifecycle = row.fetch("help_request_lifecycle")
+
+      assert_equal "aw-help", row.fetch("batch_id")
+      assert_equal "review", row.fetch("lane")
+      assert_equal "clear", lifecycle.fetch("status")
+      assert_empty payload.fetch("help_request_lifecycles")
+    end
+  end
+
+  def test_batch_item_reports_open_permission_request_age_and_bounded_outcome
+    request_id = "20260823T054818.000000Z-help4846"
+    coordination = {
+      "batches" => [{
+        "batch_id" => "aw-b",
+        "repo" => "shakacode/agent-workflows",
+        "lanes" => [{
+          "name" => "status-skill",
+          "owner" => "worker-186",
+          "targets" => ["issue:186"]
+        }]
+      }],
+      "events" => [{
+        "event_id" => request_id,
+        "batch_id" => "aw-b",
+        "lane" => "status-skill",
+        "agent_id" => "worker-186",
+        "type" => "help_requested",
+        "reason" => "permission",
+        "at" => "2026-08-23T05:48:18Z",
+        "message" => "Approve the exact merge head."
+      }]
+    }
+    target_coordination = {
+      "claims" => [{ "agent_id" => "worker-186", "status" => "active" }],
+      "heartbeats" => []
+    }
+
+    with_fake_batch_commands(coordination:, target_coordination:) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--batch-id", "aw-b",
+        "--now", "2026-08-23T10:00:00Z",
+        "--help-request-max-open-seconds", "14400",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      row = JSON.parse(stdout).fetch("items").first
+      lifecycle = row.fetch("help_request_lifecycle")
+      assert_equal "blocked-user-input", lifecycle.fetch("status")
+      assert_equal request_id, lifecycle.fetch("blocking_request_id")
+      assert_equal 15_102, lifecycle.fetch("blocking_request").fetch("age_seconds")
+      assert_equal request_id, lifecycle.fetch("terminal_action").fetch("request_id")
+    end
+  end
+
+  def test_batch_status_default_comes_from_the_shared_lifecycle_constant
+    source = File.read(SCRIPT)
+
+    assert_includes source,
+                    "help_request_max_open_seconds: HelpRequestLifecycle::DEFAULT_MAX_OPEN_SECONDS"
+    refute_match(/^DEFAULT_HELP_REQUEST_MAX_OPEN_SECONDS\s*=/, source)
+  end
+
   def test_batch_mode_does_not_turn_a_released_claim_into_a_current_task_link
     batch_coordination = {
       "batches" => [{
@@ -180,6 +361,41 @@ class BatchStatusTest < Minitest::Test
     end
   end
 
+  def test_batch_status_keeps_help_request_visibility_without_a_registration_record
+    request_id = "request-without-registration"
+    coordination = {
+      "batches" => [],
+      "events" => [{
+        "event_id" => request_id,
+        "batch_id" => "aw-b",
+        "lane" => "review",
+        "type" => "help_requested",
+        "reason" => "permission",
+        "at" => "2026-08-23T05:48:18Z"
+      }],
+      "section_notes" => { "batches" => "batch not found" }
+    }
+
+    with_fake_batch_commands(coordination:, target_coordination: {}) do |env|
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--batch-id", "aw-b",
+        "--now", "2026-08-23T10:00:00Z",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      lifecycle = payload.fetch("help_request_lifecycles").fetch("aw-b")
+      assert_empty payload.fetch("items")
+      assert_equal "blocked-user-input", lifecycle.fetch("status")
+      assert_equal request_id, lifecycle.fetch("blocking_request_id")
+      assert_includes payload.fetch("unknowns"), "batch aw-b: exact registration not found"
+    end
+  end
+
   def test_wrong_shaped_batch_json_degrades_to_unknown
     with_fake_batch_commands(coordination: [], target_coordination: {}) do |env|
       stdout, stderr, status = Open3.capture3(env, RbConfig.ruby, SCRIPT, "--batch-id", "aw-b", "--json")
@@ -188,7 +404,98 @@ class BatchStatusTest < Minitest::Test
       payload = JSON.parse(stdout)
       assert_empty payload.fetch("items")
       assert_includes payload.fetch("unknowns"), "batch aw-b: response was not an object"
+      lifecycle = payload.fetch("help_request_lifecycles").fetch("aw-b")
+      assert_equal "UNKNOWN", lifecycle.fetch("status")
+      assert_includes lifecycle.fetch("error"), "event history unavailable"
     end
+  end
+
+  def test_failed_batch_fetch_degrades_to_an_explicit_unknown_lifecycle
+    Dir.mktmpdir("batch-status-batch-failure") do |dir|
+      write_executable(File.join(dir, "agent-coord"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        warn "batch backend unavailable"
+        exit 1
+      RUBY
+      env = {
+        "PATH" => [dir, ENV.fetch("PATH")].join(File::PATH_SEPARATOR),
+        "PR_BATCH_SKILL_DIR" => File.expand_path("../../pr-batch", __dir__)
+      }
+
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--batch-id", "aw-b",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      assert_empty payload.fetch("items")
+      assert_includes payload.fetch("unknowns"), "batch aw-b: batch backend unavailable"
+      lifecycle = payload.fetch("help_request_lifecycles").fetch("aw-b")
+      assert_equal "UNKNOWN", lifecycle.fetch("status")
+      assert_includes lifecycle.fetch("error"), "event history unavailable"
+    end
+  end
+
+  def test_failed_batch_fetch_is_cached_across_targets
+    Dir.mktmpdir("batch-status-batch-failure") do |dir|
+      counter = File.join(dir, "batch-fetch-count")
+      write_executable(File.join(dir, "agent-coord"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        require "json"
+        case ARGV
+        when ["status", "--repo", "shakacode/agent-workflows", "--target", "186", "--json"]
+          puts JSON.generate("claims" => [{ "agent_id" => "worker-186", "status" => "active", "batch_id" => "aw-fail", "lane" => "lane-186" }], "heartbeats" => [])
+        when ["status", "--repo", "shakacode/agent-workflows", "--target", "187", "--json"]
+          puts JSON.generate("claims" => [{ "agent_id" => "worker-187", "status" => "active", "batch_id" => "aw-fail", "lane" => "lane-187" }], "heartbeats" => [])
+        when ["status", "--batch-id", "aw-fail", "--json"]
+          count = File.exist?(#{counter.dump}) ? Integer(File.read(#{counter.dump})) : 0
+          File.write(#{counter.dump}, (count + 1).to_s)
+          warn "batch backend unavailable"
+          exit 1
+        else
+          abort "unexpected argv: \#{ARGV.inspect}"
+        end
+      RUBY
+      write_executable(File.join(dir, "gh"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        require "json"
+        number = ARGV.fetch(1).split("/").last
+        puts JSON.generate("state" => "open", "html_url" => "https://github.com/shakacode/agent-workflows/issues/\#{number}")
+      RUBY
+      env = {
+        "PATH" => [dir, ENV.fetch("PATH")].join(File::PATH_SEPARATOR),
+        "PR_BATCH_SKILL_DIR" => File.expand_path("../../pr-batch", __dir__)
+      }
+
+      stdout, stderr, status = Open3.capture3(
+        env,
+        RbConfig.ruby,
+        SCRIPT,
+        "--repo", "shakacode/agent-workflows",
+        "--issue", "186",
+        "--issue", "187",
+        "--json"
+      )
+
+      assert_predicate status, :success?, stderr
+      payload = JSON.parse(stdout)
+      failure_count = payload.fetch("unknowns").count { |item| item.start_with?("batch aw-fail:") }
+      assert_equal "1", File.read(counter)
+      assert_equal 1, failure_count
+      assert(payload.fetch("items").all? { |item| item.fetch("help_request_lifecycle").fetch("status") == "UNKNOWN" })
+    end
+  end
+
+  def test_lane_help_request_replay_is_cached_across_targets
+    source = File.read(SCRIPT)
+
+    assert_includes source, "lane_help_request_lifecycles = {}"
+    assert_includes source, "lane_cache_key = [batch_id, lane]"
+    assert_includes source, "lane_help_request_lifecycles[lane_cache_key] ||= help_request_lifecycle("
   end
 
   def test_batch_lookup_requires_the_resolved_exact_id
@@ -590,6 +897,37 @@ class BatchStatusTest < Minitest::Test
         puts JSON.generate({
           "state" => "open",
           "html_url" => "https://github.com/shakacode/agent-workflows/issues/186"
+        })
+      RUBY
+
+      yield({
+        "PATH" => [dir, ENV.fetch("PATH")].join(File::PATH_SEPARATOR),
+        "PR_BATCH_SKILL_DIR" => File.expand_path("../../pr-batch", __dir__)
+      })
+    end
+  end
+
+  def with_fake_help_lifecycle_commands(target_coordination:, batch_coordination:)
+    Dir.mktmpdir("batch-status-help-lifecycle-test") do |dir|
+      write_executable(File.join(dir, "agent-coord"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        require "json"
+        case ARGV
+        when ["status", "--repo", "shakacode/agent-workflows", "--target", "462", "--json"]
+          puts #{JSON.generate(target_coordination).dump}
+        when ["status", "--batch-id", "aw-help", "--json"]
+          puts #{JSON.generate(batch_coordination).dump}
+        else
+          abort "unexpected argv: \#{ARGV.inspect}"
+        end
+      RUBY
+      write_executable(File.join(dir, "gh"), <<~RUBY)
+        #!#{RbConfig.ruby}
+        require "json"
+        abort "unexpected argv: \#{ARGV.inspect}" unless ARGV == ["api", "repos/shakacode/agent-workflows/issues/462"]
+        puts JSON.generate({
+          "state" => "open",
+          "html_url" => "https://github.com/shakacode/agent-workflows/issues/462"
         })
       RUBY
 

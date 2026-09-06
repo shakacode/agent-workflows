@@ -222,6 +222,37 @@ failure records best-effort `UNKNOWN` event evidence; the primary operation
 continues immediately without waiting further on the event. Public claim
 comments are not a typed event transport.
 
+The backend-assigned `event_id` of `help_requested` is its stable request id.
+Persist that id in the worker-attention record and reuse it; do not emit a new
+request while the same request remains open. Its initial state is `open`. The
+coordinator changes it to `resolved` or `declined` only by recording the
+append-only lifecycle event `help_request.resolved` or
+`help_request.declined`, with the original id in `evidence`. These lifecycle
+records do not add to the four typed operational-signal kinds. A failed or
+unavailable resolution write leaves the request open. Legacy `help_requested`
+events need no migration because their existing `event_id` becomes the request
+id. Repeating the same resolution outcome is idempotent; contradictory answer
+events make the replay `UNKNOWN` and keep later gated phases blocked.
+
+Before any later `implementation` or `review` phase transition for that lane,
+replay the batch event history with
+`skills/pr-batch/bin/help-request-lifecycle --lane <lane> --require-phase <phase>`.
+Exit 2 is a hard stop naming the open permission request; do not write the phase
+transition. An open permission request with no lane context is conservatively
+included in every lane-scoped replay rather than treated as permission to
+advance. The default age ceiling is 14,400 seconds and can be configured with
+`--max-open-seconds`. At or beyond the ceiling, close the lane as
+`blocked-user-input` and put the original request id in the `lane_closed`
+event's `evidence`; do not substitute a later generic blocker such as
+`authorized-scope-exhausted`. This bounded closeout does not resolve or decline
+the request. `batch-status` reports each known request's state and age from the
+same replay. Missing or invalid event history is `UNKNOWN`, never permission to
+advance.
+
+For lifecycle replay, `phase.changed` records the destination in `phase`.
+Lifecycle-aware `lane_closed` records the outcome in `status`; legacy history
+may use `terminal`. A record missing its applicable field is invalid.
+
 Backends that auto-emit `claim.acquired`, `claim.released`, and `phase.changed`
 own those lifecycle events; workers do not duplicate them. After terminal
 releases, run a read-only check only when the active backend advertises an
