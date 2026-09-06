@@ -6,4 +6,19 @@
 # from submitting CHANGES_REQUESTED review objects, which the main branch
 # ruleset would otherwise honor as a merge block until a human dismisses them.
 reviews:
+  # Keep CodeRabbit advisory and quiet: its substantive walkthrough remains
+  # available, while skipped/rate-limit prose and GitHub progress checks do not
+  # occupy the PR timeline.
+  profile: chill
+  review_status: false
+  review_progress: false
+  in_progress_fortune: false
+  collapse_walkthrough: true
   request_changes_workflow: false
+  auto_review:
+    # The lifecycle workflow applies one of these labels on PR creation and on
+    # conversion from draft to ready. This avoids a review for every push.
+    enabled: false
+    labels:
+      - coderabbit:first-pass
+      - coderabbit:ready
