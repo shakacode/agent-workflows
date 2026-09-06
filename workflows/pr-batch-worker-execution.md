@@ -145,6 +145,12 @@ material security, privacy, compliance, or release-policy changes; an
 uncoordinatable active lane; consequential ambiguity; or verification would be
 weakened.
 
+A worker stop returns control to the coordinator, not directly to the user.
+The coordinator first resolves the question from existing authority and evidence,
+including bounded diagnosis or independent review. Only a required decision beyond
+that authority becomes a human question. Keep the lane stopped on its actual
+security, ownership, scope, or verification gate until resolved.
+
 Queue one compact `worker-attention v1` record rather than a transcript:
 
 - target, lane, current branch/worktree/head, and safe working-tree state;

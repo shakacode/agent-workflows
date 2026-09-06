@@ -1153,6 +1153,13 @@ Avoid horizontal TDD batches: write one failing behavior test through the public
 
 ## Local Validation Gate
 
+Reuse applicable local results through the canonical
+[Verification evidence reuse](../skills/verify/references/verification-evidence.md)
+contract before scheduling another identical check. Repository-required repeats,
+clean committed full validation, combined-tip validation, and current-head CI
+remain mandatory. A previous passing local check does not satisfy a new review
+cohort or a hosted check.
+
 Run `.agents/bin/ci-detect` first when it exists and routing details matter.
 
 Then run `.agents/bin/validate`, or a tighter set that covers the same changed
