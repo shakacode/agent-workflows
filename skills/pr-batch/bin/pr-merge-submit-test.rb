@@ -364,7 +364,7 @@ class PrMergeSubmitTest < Minitest::Test
     )
     assert_equal 1, malformed_result.fetch(:status).exitstatus
     assert_includes malformed_result.fetch(:stderr),
-                    "Error: trusted-base merge-submission policy is invalid YAML:"
+                    "Error: trusted-base ci_readiness policy could not be authenticated:"
     assert_empty malformed_log
 
     invalid_base_result, invalid_base_log, = run_cli(
@@ -372,7 +372,7 @@ class PrMergeSubmitTest < Minitest::Test
     )
     assert_equal 1, invalid_base_result.fetch(:status).exitstatus
     assert_includes invalid_base_result.fetch(:stderr),
-                    "Error: trusted-base merge-submission policy is unavailable:"
+                    "Error: trusted-base ci_readiness policy could not be authenticated:"
     assert_empty invalid_base_log
   end
 
@@ -827,6 +827,54 @@ class PrMergeSubmitTest < Minitest::Test
     end
   ensure
     ENV["PATH"] = original_path
+  end
+
+  def test_readiness_refresh_reuses_trusted_transport_and_closed_environment
+    original = ENV.to_h.slice("PATH", "GH_CONFIG_DIR")
+    Dir.mktmpdir("submission-readiness-transport") do |dir|
+      marker = File.join(dir, "shim-ran")
+      captured = File.join(dir, "environment.json")
+      shim = File.join(dir, "gh")
+      trusted = File.join(dir, "trusted-gh")
+      File.write(shim, "#!#{RbConfig.ruby}\nFile.write(#{marker.inspect}, 'ran')\nputs '{}'")
+      File.write(trusted, "#!#{RbConfig.ruby}\nrequire 'json'\nFile.write(#{captured.inspect}, JSON.generate(ENV.to_h))\nputs '{}'")
+      FileUtils.chmod(0o755, [shim, trusted])
+      ENV["PATH"] = dir
+      ENV["GH_CONFIG_DIR"] = File.join(dir, "untrusted-config")
+      runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => trusted })
+      readiness = runner.instance_variable_get(:@ci_readiness_runner)
+      readiness.instance_variable_set(:@gh_env, { "GH_HOST" => HOST })
+
+      assert_equal "{}\n", readiness.send(:capture_required!, "gh", "api", "test")
+      refute_path_exists marker
+      environment = JSON.parse(File.read(captured))
+      assert_equal HOST, environment.fetch("GH_HOST")
+      refute environment.key?("GH_CONFIG_DIR")
+    end
+  ensure
+    %w[PATH GH_CONFIG_DIR].each { |name| ENV[name] = original[name] }
+  end
+
+  def test_readiness_refresh_preserves_transport_timeout_and_cancellation
+    original_timeout = ENV["PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS"]
+    Dir.mktmpdir("submission-readiness-timeout") do |dir|
+      trusted = File.join(dir, "trusted-gh")
+      File.write(trusted, "#!#{RbConfig.ruby}\nsleep 5\n")
+      FileUtils.chmod(0o755, trusted)
+      ENV["PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS"] = "0.1"
+      runner = PrMergeSubmit::Runner.new(system_tools: { "gh" => trusted })
+      readiness = runner.instance_variable_get(:@ci_readiness_runner)
+      readiness.instance_variable_set(:@gh_env, { "GH_HOST" => HOST })
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      error = assert_raises(PrCiReadiness::Error) { readiness.send(:capture_required!, "gh", "api", "test") }
+      assert_includes error.message, "timed out"
+      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 3
+      runner.instance_variable_set(:@cancellation_signal, "INT")
+      error = assert_raises(PrCiReadiness::Error) { readiness.send(:capture_required!, "gh", "api", "test") }
+      assert_includes error.message, "cancelled by SIGINT"
+    end
+  ensure
+    ENV["PR_MERGE_SUBMIT_GH_TIMEOUT_SECONDS"] = original_timeout
   end
 
   def test_run_gh_uses_closed_environment_with_only_supported_nonempty_tokens
@@ -1521,6 +1569,54 @@ class PrMergeSubmitTest < Minitest::Test
     assert_empty log
   end
 
+  def test_trusted_base_ci_policy_rejects_receipt_with_deleted_policy_evidence
+    policy = {
+      "version" => 1,
+      "optional_approval_held_checks" => [{
+        "id" => "storybook-review-app", "app_slug" => "circleci-checks",
+        "name" => "storybook-review-app"
+      }]
+    }
+    result, log = run_cli(
+      mode: "direct", merge_submission: { "mode" => "direct" }, ci_readiness: policy
+    )
+
+    refute result.fetch(:status).success?
+    assert_includes result.fetch(:stderr),
+                    "ci policy evidence does not match authenticated trusted-base policy"
+    assert_empty log
+  end
+
+  def test_final_submission_refreshes_policy_aware_ci_and_blocks_changed_hold
+    receipt, trusted_policy = policy_aware_receipt
+    unchanged_ci = receipt.dig("evidence", "ci_result")
+    unchanged_readiness = Object.new
+    unchanged_readiness.define_singleton_method(:assess_authenticated) { |**| unchanged_ci }
+    unchanged_runner = PrMergeSubmit::Runner.new(ci_readiness_runner: unchanged_readiness)
+    unchanged_runner.instance_variable_set(:@merge_assurance_receipt, receipt)
+    unchanged_runner.instance_variable_set(:@trusted_ci_policy, trusted_policy)
+    unchanged_runner.instance_variable_set(:@repo_root, Dir.pwd)
+
+    assert_nil unchanged_runner.send(:validate_current_policy_aware_ci!)
+
+    current_ci = JSON.parse(JSON.generate(receipt.dig("evidence", "ci_result")))
+    current_ci.dig("scopes", "other")["policy_dispositions"] = []
+    current_ci.dig("scopes", "other")["state"] = "NOT_READY"
+    current_ci["verdict"] = "NOT_READY"
+    current_ci["ordinary_verdict"] = "NOT_READY"
+    fake_readiness = Object.new
+    fake_readiness.define_singleton_method(:assess_authenticated) { |**| current_ci }
+    runner = PrMergeSubmit::Runner.new(ci_readiness_runner: fake_readiness)
+    runner.instance_variable_set(:@merge_assurance_receipt, receipt)
+    runner.instance_variable_set(:@trusted_ci_policy, trusted_policy)
+    runner.instance_variable_set(:@repo_root, Dir.pwd)
+
+    error = assert_raises(PrMergeSubmit::Error) do
+      runner.send(:validate_current_policy_aware_ci!)
+    end
+    assert_includes error.message, "current policy-aware CI evidence does not qualify"
+  end
+
   def test_authenticated_semantic_tracker_receipt_reaches_the_merge_mutation
     result, log = run_cli(mode: "queue", receipt_mode: :semantic, merge_submission: merge_queue_policy)
 
@@ -1567,7 +1663,8 @@ class PrMergeSubmitTest < Minitest::Test
   def test_evidence_digest_and_envelope_binding_mismatches_stop_before_any_gh_call
     {
       digest_mismatch: "evidence digest mismatch",
-      binding_mismatch: "bindings or accounting do not match"
+      binding_mismatch: "bindings or accounting do not match",
+      diff_base_binding_mismatch: "bindings or accounting do not match"
     }.each do |receipt_mode, expected|
       result, log = run_cli(mode: "direct", receipt_mode:)
 
@@ -1750,6 +1847,7 @@ class PrMergeSubmitTest < Minitest::Test
     trusted_policy_observer: nil,
     merge_commit_oid: MERGE_COMMIT_SHA,
     merge_submission: SOURCE_REPO_POLICY,
+    ci_readiness: nil,
     policy_fixture: :present,
     receipt_base_sha: nil,
     guard_fixture: :executable,
@@ -1770,7 +1868,8 @@ class PrMergeSubmitTest < Minitest::Test
                                             [File.expand_path("../../..", __dir__), BASE_SHA, HEAD_SHA]
                                           else
                                             prepare_consumer_repo(
-                                              dir, merge_submission:, policy_fixture:, guard_fixture:
+                                              dir, merge_submission:, ci_readiness:,
+                                                   policy_fixture:, guard_fixture:
                                             )
                                           end
       if !source_repo_policy &&
@@ -2081,6 +2180,11 @@ class PrMergeSubmitTest < Minitest::Test
       "context" => { "host" => host },
       "repo" => repo,
       "pr" => pr_number,
+      "base" => { "ref" => base_ref, "sha" => base_sha },
+      "diff_base_sha" => base_sha,
+      "diff_identity" => DiffIdentity.derive(
+        base_ref:, diff_base_sha: base_sha, head_sha: head
+      ),
       "head_sha" => head,
       "checked_at" => checked_at,
       "verdict" => "READY",
@@ -2189,9 +2293,12 @@ class PrMergeSubmitTest < Minitest::Test
       "repo" => repo,
       "pr" => pr_number,
       "base" => { "ref" => base_ref, "sha" => base_sha },
+      "diff_base_sha" => base_sha,
       "head_sha" => head,
       "authority" => "auto_merge_when_gates_pass",
-      "diff_identity" => "e" * 64,
+      "diff_identity" => DiffIdentity.derive(
+        base_ref:, diff_base_sha: base_sha, head_sha: head
+      ),
       "human_merge_decision" => nil,
       "walkthrough" => nil,
       "semantic_github_actions_change" => semantic,
@@ -2229,6 +2336,8 @@ class PrMergeSubmitTest < Minitest::Test
       receipt["evidence_digest"] = "sha256:#{'0' * 64}"
     when :binding_mismatch
       receipt["bindings"]["diff_identity"] = "f" * 64
+    when :diff_base_binding_mismatch
+      receipt["bindings"]["diff_base_sha"] = "f" * 40
     when :stale
       receipt["issued_at"] = (now - 301).iso8601
     when :future
@@ -2261,6 +2370,63 @@ class PrMergeSubmitTest < Minitest::Test
     File.write(path, JSON.generate(receipt))
   end
 
+  def policy_aware_receipt
+    now = Time.now.utc
+    checked_at = (now - 1).iso8601
+    workflow_id = "ac163d39-bfa6-4c1d-9daa-5dff74e2200a"
+    workflow_url = "https://app.circleci.com/workflow/#{workflow_id}"
+    row = {
+      "kind" => "check_run", "id" => 31, "name" => "storybook-review-app",
+      "status" => "in_progress", "conclusion" => nil,
+      "started_at" => checked_at, "completed_at" => nil,
+      "head_sha" => HEAD_SHA, "app_slug" => "circleci-checks",
+      "dependabot" => false, "actions" => nil, "details_url" => workflow_url,
+      "output" => {
+        "title" => "Workflow: storybook-review-app",
+        "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - Blocked\n"
+      }
+    }
+    disposition = {
+      "disposition" => "optional_approval_held", "rule_id" => "storybook-review-app",
+      "kind" => "check_run", "id" => 31, "app_slug" => "circleci-checks",
+      "name" => "storybook-review-app", "head_sha" => HEAD_SHA,
+      "provider_run_id" => workflow_id
+    }
+    trusted_policy = {
+      "version" => 1,
+      "provenance" => "git:#{BASE_SHA}:#{PrCiReadiness::POLICY_PATH}@#{'9' * 40}",
+      "base" => { "ref" => "main", "sha" => BASE_SHA },
+      "optional_approval_held_checks" => [{
+        "id" => "storybook-review-app", "app_slug" => "circleci-checks",
+        "name" => "storybook-review-app"
+      }]
+    }
+    Dir.mktmpdir("policy-aware-receipt") do |dir|
+      path = File.join(dir, "receipt.json")
+      write_merge_assurance_receipt(
+        path, mode: :valid, repo: "owner/repo", head: HEAD_SHA,
+              base_ref: "main", base_sha: BASE_SHA, host: HOST, pr_number: 42, gh_dir: dir
+      )
+      evidence = JSON.parse(File.read(path)).fetch("evidence")
+      evidence.fetch("ci_result").tap do |ci_result|
+        ci_result["ci_policy"] = trusted_policy
+        ci_result.dig("scopes", "other").merge!(
+          "state" => "READY", "rows" => [row], "policy_dispositions" => [disposition]
+        )
+      end
+      receipt = MergeAssurance.assess(
+        ci_result: evidence.fetch("ci_result"),
+        autonomous_result: evidence.fetch("autonomous_result"),
+        context: evidence.fetch("context"),
+        selected_hosted_ci_receipts: evidence.fetch("selected_hosted_ci_receipts"),
+        trusted_ci_policy: trusted_policy, now:
+      )
+      raise "policy-aware receipt fixture did not qualify: #{receipt.inspect}" unless receipt["eligible"]
+
+      return receipt, trusted_policy
+    end
+  end
+
   def with_fake_gh(dir)
     original_path = ENV.fetch("PATH")
     original_log = ENV["GH_LOG"]
@@ -2285,7 +2451,7 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def semantic_issue_payload(host:, repo:, pr_number:, head:)
+  def semantic_issue_payload(host:, repo:, pr_number:, base_ref:, diff_base_sha:, head:)
     tracker = semantic_tracker(host:, repo:, pr_number:)
     {
       "id" => 101,
@@ -2299,7 +2465,9 @@ class PrMergeSubmitTest < Minitest::Test
         "Verify the semantic workflow behavior after merge.",
         "semantic-tracker-source-pr: #{tracker['source_pr']}",
         "semantic-tracker-head-sha: #{head}",
-        "semantic-tracker-diff-identity: #{'e' * 64}",
+        "semantic-tracker-diff-identity: #{DiffIdentity.derive(
+          base_ref:, diff_base_sha:, head_sha: head
+        )}",
         "semantic-tracker-operation-digest: " \
           "#{MergeAssurance.semantic_tracker_operation_digest(tracker)}"
       ].join("\n"),
@@ -2307,11 +2475,14 @@ class PrMergeSubmitTest < Minitest::Test
     }
   end
 
-  def prepare_consumer_repo(dir, merge_submission:, policy_fixture:, guard_fixture:)
+  def prepare_consumer_repo(
+    dir, merge_submission:, policy_fixture:, guard_fixture:, ci_readiness: nil
+  )
     root = File.join(dir, "consumer")
     FileUtils.mkdir_p(File.join(root, ".agents/bin"))
     policy = { "base_branch" => "main" }
     policy["merge_submission"] = merge_submission unless merge_submission.nil?
+    policy["ci_readiness"] = ci_readiness unless ci_readiness.nil?
     policy_path = File.join(root, ".agents/agent-workflow.yml")
     case policy_fixture
     when :present
@@ -2500,7 +2671,8 @@ class PrMergeSubmitTest < Minitest::Test
                        %("headRefName" => #{head_ref_name.inspect},)
                      end
     semantic_issue = semantic_issue_payload(
-      host: HOST, repo: "owner/repo", pr_number: 42, head:
+      host: HOST, repo: "owner/repo", pr_number: 42,
+      base_ref: base, diff_base_sha: base_sha, head:
     )
     queue_payload = if mode == "queue_missing_entry"
                       { "data" => { "enqueuePullRequest" => { "mergeQueueEntry" => nil } } }

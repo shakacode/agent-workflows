@@ -599,6 +599,32 @@ cd /path/to/consumer/repo
 agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
 ```
 
+Consumers that intentionally leave named, non-required CircleCI workflows on
+their provider approval hold may opt into the closed trusted-base policy:
+
+```yaml
+ci_readiness:
+  version: 1
+  optional_approval_held_checks:
+    - id: storybook-review-app
+      app_slug: circleci-checks
+      name: storybook-review-app
+```
+
+List only exact hosted workflow names whose approval hold is informational for
+that repository. The seam doctor rejects malformed, unknown, or ambiguous
+rules. Readiness still blocks required or explicitly selected workflows,
+active jobs, incomplete inventories, and stale or unrecognized provider
+evidence. The helper retains the raw check row and authenticates the policy from
+the live base commit; editing the working tree or a receipt cannot create a
+waiver.
+
+After upgrading, update authoritative readiness and assurance callers to pass
+the trusted consumer root and reviewed effective merge-base SHA. Walkthroughs
+and decisions must use `skills/pr-batch/bin/diff-identity` to bind the base ref,
+reviewed diff-base SHA, and full head SHA. Previously accepted caller-supplied
+opaque digests are intentionally rejected.
+
 The autonomous-merge gate takes effect from the installed workflow pack even
 when a consumer has no `autonomous_merge` mapping; omission uses portable
 defaults rather than a permissive grace period. Preset-based downstream sync
