@@ -8,6 +8,8 @@ require "tmpdir"
 
 class AgentDoctorWorkflowsCLIIntegrationTest < Minitest::Test
   ROOT = File.expand_path("../..", __dir__)
+  RELEASE_POLL_SECONDS = 0.005
+  RELEASE_JOIN_TIMEOUT_SECONDS = 5
 
   def setup
     @tmp = Dir.mktmpdir("agent-workflows-doctor-timeout")
@@ -21,8 +23,8 @@ class AgentDoctorWorkflowsCLIIntegrationTest < Minitest::Test
     FileUtils.remove_entry(@tmp)
   end
 
-  def test_status_helper_completing_after_four_seconds_is_healthy
-    stdout, stderr, status = doctor(delay: 4.1)
+  def test_status_helper_completing_inside_the_budget_is_healthy
+    stdout, stderr, status = doctor_with_released_status_helper
     payload = JSON.parse(stdout)
 
     assert_predicate status, :success?, stderr
@@ -107,9 +109,39 @@ class AgentDoctorWorkflowsCLIIntegrationTest < Minitest::Test
     refute_path_exists marker
   end
 
-  def doctor(delay:, timeout: nil, environment: {})
-    environment = { "DOCTOR_STATUS_DELAY_SECONDS" => delay.to_s }.merge(environment)
-    environment["AGENT_DOCTOR_WORKFLOW_STATUS_TIMEOUT_SECONDS"] = timeout.to_s if timeout
+  # Runs the doctor against a status helper that stays alive until this test
+  # releases it, so the healthy path covers a helper the doctor actually waits
+  # on without racing a fixed sleep against the wrapper budget. A wall-clock
+  # margin is what makes such assertions load sensitive; the release handshake
+  # removes the margin instead of retuning it.
+  def doctor_with_released_status_helper
+    started = File.join(@tmp, "status-started")
+    release = File.join(@tmp, "status-released")
+    releaser = Thread.new do
+      sleep RELEASE_POLL_SECONDS until File.exist?(started)
+      File.write(release, "released\n")
+    end
+
+    doctor(environment: { "DOCTOR_STATUS_STARTED_FILE" => started, "DOCTOR_STATUS_RELEASE_FILE" => release })
+  ensure
+    stop_releaser(releaser)
+  end
+
+  # A releaser failure must never replace the doctor result this test asserts on.
+  def stop_releaser(releaser)
+    return unless releaser
+
+    releaser.kill
+    releaser.join(RELEASE_JOIN_TIMEOUT_SECONDS)
+  rescue StandardError
+    nil
+  end
+
+  def doctor(delay: nil, timeout: nil, environment: {})
+    defaults = {}
+    defaults["DOCTOR_STATUS_DELAY_SECONDS"] = delay.to_s if delay
+    defaults["AGENT_DOCTOR_WORKFLOW_STATUS_TIMEOUT_SECONDS"] = timeout.to_s if timeout
+    environment = defaults.merge(environment)
     Open3.capture3(environment, File.join(ROOT, "bin/agent-workflows-doctor"), "--stack-json",
                    "--host", "codex", "--target", @target, "--source", @source)
   end
@@ -119,7 +151,12 @@ class AgentDoctorWorkflowsCLIIntegrationTest < Minitest::Test
     File.write(helper, <<~'RUBY')
       #!/usr/bin/env ruby
       require "json"
-      sleep Float(ENV.fetch("DOCTOR_STATUS_DELAY_SECONDS"))
+      if (release = ENV["DOCTOR_STATUS_RELEASE_FILE"])
+        File.write(ENV.fetch("DOCTOR_STATUS_STARTED_FILE"), "started\n")
+        sleep 0.005 until File.exist?(release)
+      else
+        sleep Float(ENV.fetch("DOCTOR_STATUS_DELAY_SECONDS"))
+      end
       host = ENV.fetch("DOCTOR_STATUS_HOST", ARGV.fetch(ARGV.index("--host") + 1))
       target = ENV.fetch("DOCTOR_STATUS_TARGET", ARGV.fetch(ARGV.index("--target") + 1))
       source = ENV.fetch("DOCTOR_STATUS_SOURCE", ARGV.fetch(ARGV.index("--source") + 1))
