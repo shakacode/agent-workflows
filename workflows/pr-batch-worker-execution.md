@@ -1,8 +1,8 @@
 # PR-Batch Worker Execution
 
 This component owns bounded implementation for an accepted lane.
-Load after prompt intake, planning, dependency preflight, and dispatch, before
-creating the lane worktree or editing files.
+Load after prompt intake, planning, dependency preflight, and dispatcher
+selection, before implementation dispatch, lane-worktree creation, or editing.
 
 ## Boundary
 
@@ -21,13 +21,19 @@ own base integration, conflict resolution, final validation, PR publication,
 review convergence, hosted CI, readiness, merge, production, promotion, or
 release.
 
+Before implementation dispatch, use the [Task Review Loop](pr-batch-task-review.md)
+to create the task brief consumed here. Return after the committed handoff for
+its task review and fix rounds.
+
 ## Input Contract
 
 Consume one lane record with known values for:
 
 - the exact accepted target and stable coordination identity;
-- lane id, goal, non-goals, supported diagnosis, invariants, acceptance
-  criteria, required verification, stop conditions, and owned paths;
+- the accepted task brief with its exact identity and digest as the sole source
+  of the task goal and acceptance requirements;
+- execution controls for non-goals, supported diagnosis, invariants, required
+  verification, stop conditions, and owned paths;
 - repository root, accepted base commit, worktree path, and branch name;
 - the latest dependency-gate permission for the requested action;
 - focused verification commands or their repository discovery seam;
@@ -147,6 +153,12 @@ consequential architecture, performance, compatibility, or product decisions;
 material security, privacy, compliance, or release-policy changes; an
 uncoordinatable active lane; consequential ambiguity; or verification would be
 weakened.
+
+A worker stop returns control to the coordinator, not directly to the user.
+The coordinator first resolves the question from existing authority and evidence,
+including bounded diagnosis or independent review. Only a required decision beyond
+that authority becomes a human question. Keep the lane stopped on its actual
+security, ownership, scope, or verification gate until resolved.
 
 Queue one compact `worker-attention v1` record rather than a transcript:
 

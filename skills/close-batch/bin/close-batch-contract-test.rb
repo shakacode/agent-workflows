@@ -100,11 +100,17 @@ class CloseBatchContractTest < Minitest::Test
     assert_includes @normalized, "For a `batch-coordinator` task, run the completed-batch audit when the canonical workflow requires it."
   end
 
-  def test_attention_is_interactive_and_does_not_grant_merge_authority
+  def test_attention_is_github_native_and_does_not_grant_merge_authority
     walkthrough = [
       "Start `$pr-walkthrough` for the exact current diff",
-      "one conceptual change per response",
-      "refresh readiness after the walkthrough",
+      "A direct chat request uses live, read-only interaction; it does not grant comment authority",
+      "Use published-review mode when the recorded `ask` workflow selects it or the user explicitly requests it with comment authority",
+      "Prepare the complete map",
+      "publish the orientation and every concept to GitHub in one pass",
+      "mandatory inline-thread and no-anchor-stop rules",
+      "The owning task consumes replies asynchronously",
+      "use live interaction only when the maintainer explicitly asks",
+      "After the walkthrough, refresh readiness",
       "ask the merge question separately"
     ]
     decision = [
@@ -143,8 +149,9 @@ class CloseBatchContractTest < Minitest::Test
     assert_includes @normalized, "per-target final states and Batch Handoff Format sections"
     assert_includes @normalized, "mechanically validate its `coordination:` declaration through the resolved `$pr-batch` helper before emitting the final message"
     assert_includes @normalized, "A nonzero result is `NOT COMPLETE`"
-    assert_includes @normalized, "Emit the compact `Completed-batch audit:` line immediately before the final `Conversation status:` line only from an existing verified receipt or after explicit closeout authority permits publication."
-    assert_includes @normalized, "During a read-only assessment with no verified receipt, list the missing receipt as an exact blocker and do not publish or invent one."
+    assert_includes @normalized, "Emit the compact `Completed-batch audit:` line before the closing stack — the Unblock Block when the status is not clean, then the final `Conversation status:` line — only from an existing verified receipt."
+    assert_includes @normalized, "If explicit closeout authority permits publication, publish and verify the receipt first."
+    assert_includes @normalized, "During a read-only assessment with no verified receipt, emit no receipt line; list the missing receipt as an exact blocker and matching Unblock entry, and do not publish or invent one."
   end
 
   def test_canonical_workflow_still_owns_lifecycle_and_closeout_details

@@ -73,9 +73,51 @@ host/profile:
 | `plugin-companion` | Native `scw` plugin only | License, workflows, docs, helpers, metadata, status, and upgrades |
 
 `--mode copy|symlink` controls how installer-managed assets are materialized.
-It is separate from `--delivery-mode flat|plugin-companion`. New installs
-default to `flat`; metadata written before delivery modes existed is also read
-as `flat`.
+It is separate from `--delivery-mode flat|plugin-companion`.
+
+### Fresh-Install Delivery Default
+
+**Decision (issue #248): the generic installer keeps `flat` as its fresh-install
+default. This is an explicit product decision, not an inherited side effect of
+the legacy-metadata compatibility rule.**
+
+Rationale:
+
+- Companion mode cannot bootstrap itself. It requires an already enabled native
+  `scw` plugin, and the installer deliberately leaves host plugin installation
+  and updates to the host plugin flow. Defaulting a clean home to
+  `plugin-companion` would make the historical no-flag command fail on every
+  clean host.
+- Detecting an active plugin and silently selecting companion would make the
+  no-flag result depend on ambient machine state and would change what the
+  documented unattended command does on hosts that already have the plugin.
+- `flat` is the only mode that works on a clean home with no host plugin
+  support, no marketplace access, and no network, such as Codex IDE and
+  offline or restricted hosts.
+- The case for native delivery is real but is a documentation and
+  opinionated-setup concern rather than an unattended-default concern. Plugin
+  namespaces avoid collisions with unrelated personal skills, and native
+  delivery gives the host ownership of provider identity and updates. Prefer
+  the native `scw` plugin plus `--delivery-mode plugin-companion` on
+  plugin-capable Codex CLI/Desktop and Claude Code, and choose it explicitly
+  rather than having the installer infer it.
+
+Unchanged by this decision:
+
+- Deliberate `--delivery-mode flat` installation stays supported.
+- Metadata predating `delivery_mode` continues to resolve as `flat`.
+- Exactly one auto-invocable Agent Workflows surface stays enforced: `flat`
+  requires native `scw` to be inactive, `plugin-companion` requires it to be
+  active, and unknown native state fails closed.
+- Unrelated personal skills under `<target>/skills` are preserved in both modes.
+
+Revisit this decision when the installer can bootstrap and prove native `scw`
+from its own host contract, when partial-failure ownership between host plugin
+installation and companion installation is defined, and when
+`agent-workflows-status`, `upgrade-agent-workflows`, and `agent-stack` can
+report and replay an adaptive default consistently. A native-plugin-first
+default belongs to the opinionated ShakaCode `agent-stack` profile and is
+tracked separately from this generic installer default.
 
 ## Native Plugin Paths
 
@@ -453,7 +495,8 @@ consumer-owned docs under `<target>/docs`.
 The metadata file records host, artifact mode, skill delivery mode, source
 clone, pack version, source revision, branch, remote, and install time. Copy
 installs also record `managed_skill_copy_fingerprints`,
-`managed_pack_doc_copy_fingerprints`, and `managed_pack_root_copy_fingerprints`,
+`managed_pack_doc_copy_fingerprints`, `managed_pack_helper_copy_fingerprints`,
+and `managed_pack_root_copy_fingerprints`,
 including every installed `<target>/docs/solutions/*` document and the
 third-party notice. On repeat installation, these fingerprints
 prove that an installed managed copy has not been edited even when the recorded
@@ -556,6 +599,32 @@ For each active consumer repo:
 cd /path/to/consumer/repo
 agent-workflow-seam-doctor --shared "$HOME/src/agent-workflows"
 ```
+
+Consumers that intentionally leave named, non-required CircleCI workflows on
+their provider approval hold may opt into the closed trusted-base policy:
+
+```yaml
+ci_readiness:
+  version: 1
+  optional_approval_held_checks:
+    - id: storybook-review-app
+      app_slug: circleci-checks
+      name: storybook-review-app
+```
+
+List only exact hosted workflow names whose approval hold is informational for
+that repository. The seam doctor rejects malformed, unknown, or ambiguous
+rules. Readiness still blocks required or explicitly selected workflows,
+active jobs, incomplete inventories, and stale or unrecognized provider
+evidence. The helper retains the raw check row and authenticates the policy from
+the live base commit; editing the working tree or a receipt cannot create a
+waiver.
+
+After upgrading, update authoritative readiness and assurance callers to pass
+the trusted consumer root and reviewed effective merge-base SHA. Walkthroughs
+and decisions must use `skills/pr-batch/bin/diff-identity` to bind the base ref,
+reviewed diff-base SHA, and full head SHA. Previously accepted caller-supplied
+opaque digests are intentionally rejected.
 
 The autonomous-merge gate takes effect from the installed workflow pack even
 when a consumer has no `autonomous_merge` mapping; omission uses portable

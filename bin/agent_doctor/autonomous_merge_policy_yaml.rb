@@ -16,11 +16,13 @@ module AutonomousMergePolicy
     workflows/pr-batch-security-floor.md
     workflows/pr-batch-worker-execution.md
     workflows/pr-batch-integration-closeout.md
+    workflows/pr-batch-unblock.md
     workflows/pr-production-release.md
     skills/pr-batch/SKILL.md skills/pr-monitoring/SKILL.md
     skills/plan-pr-batch/SKILL.md skills/triage/SKILL.md
     bin/agent_doctor/autonomous_merge_policy.rb bin/agent_doctor/autonomous_merge_policy_globs.rb
     bin/agent_doctor/autonomous_merge_policy_yaml.rb
+    bin/agent_doctor/ci_readiness_policy.rb
     skills/pr-batch/bin/autonomous-merge-eligibility skills/pr-batch/bin/autonomous-merge-calibrate
     skills/pr-batch/bin/autonomous-merge-closeout skills/pr-batch/bin/*contract-test.rb
     skills/pr-batch/lib/autonomous_merge_*.rb
@@ -40,7 +42,7 @@ module AutonomousMergePolicy
   # these excludes and never remove one.
   PORTABLE_POLICY_EXCLUDES = %w[
     AGENTS.md **/AGENTS.md CLAUDE.md **/CLAUDE.md **/SKILL.md
-    **/autonomous_merge_*.rb **/current_integration_*.rb
+    **/autonomous_merge_*.rb **/ci_readiness_policy.rb **/current_integration_*.rb
     **/autonomous-merge-* **/check_goal_prompt_size.rb
     **/*contract-test.rb workflows/** .agents/** docs/adr/**
   ].freeze

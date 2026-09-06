@@ -1,5 +1,13 @@
 # PR Batch Skills Usage
 
+For Codex route preferences, consult the unmeasured `astra-pilot-v1`
+[central profile](../skills/plan-pr-batch/references/model-routing-profiles.json) through the plan skill's
+`bin/model-routing-profile --role <role>`. It supersedes named GPT-5.6
+recommendations below for listed roles; retain those as comparison baselines.
+Routes remain advisory and never qualify a verdict or replace host evidence.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Use this guide when deciding between issue triage, planning, single-lane direct
 work, and execution skills for agent batch work.
 
@@ -102,8 +110,8 @@ requested and observed route honestly without blocking on the binding alone.
 | `$spec`              | The user has vague feature or bug intent with no concrete issue, finding, or proposed fix yet.              | A traceable spec plus executable tasks ready for `$plan-pr-batch`.                    |
 | `$plan-pr-batch`     | The user wants to choose, verify, or shape issues/PRs before launching workers.                             | A Batch Plan with separate coordinator and staged worker model/effort routes plus a target-specific ready `$pr-batch` prompt. |
 | `$pr-batch`          | One or more exact targets are trusted and ready to run or convert into a `/goal` prompt.                    | A single-target lane, launch plan, worker split, or final `/goal` prompt.              |
-| `$close-batch`       | A stale batch task needs live recovery, any required walkthrough or decision, and archive-safe closeout.   | Resumed closeout, one interactive attention route when needed, or a canonical archive verdict. |
-| `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | An exact-diff, one-change-at-a-time explanation with questions between each change.   |
+| `$close-batch`       | A stale batch task needs live recovery, any required walkthrough or decision, and archive-safe closeout.   | Resumed closeout, one asynchronous attention route when needed, or a canonical archive verdict. |
+| `$pr-walkthrough`    | A human wants to understand a PR before deciding, especially when it is large or complex.                   | A live, read-only chat walkthrough, or a complete GitHub review when publication is explicitly or workflow-selected. |
 | `$replicate-ci`      | Local validation is green but hosted CI is red, or runner/toolchain parity is suspected.                   | A CI parity report with reproduction result, environment delta, and next action.      |
 
 The `agents/openai.yaml` file under a skill is optional Codex UI metadata for skill picker display text and the default prompt. Add it only for skills that need Codex picker metadata; it is not required for every skill. Deliberate exclusion: `qa-stress` ships without picker metadata because destructive stress campaigns must be invoked by explicit request, not surfaced through default picker prompting.
@@ -324,13 +332,12 @@ omit the queue summary and note that queue state is unavailable.
    such a condition.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
-   `Use $pr-batch...` for Claude/generic), then put a short `Batch title:`
-   line using the optional validated `repo_prefix` from
-   `.agents/agent-workflow.yml` when present. Otherwise use the deterministic
-   repository-name abbreviation (`agent-workflows` -> `AW`), A/B/C only when
-   multiple prompts are produced, `MM-DD HH:MM` from
-   `date +'%m-%d %H:%M'` in the local shell, and a short title.
-   `skills/pr-batch/SKILL.md` carries the full fallback derivation rule.
+   `Use $pr-batch...` for Claude/generic), then render the exact
+   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block through
+   canonical [Verified Batch Title Selection](../workflows/pr-batch-intake.md#verified-batch-title-selection).
+   The prompt template keeps the title and surrounding blank lines stable;
+   prompt intake owns prefix, issue-identifier, trust, time, and spacing
+   selection.
    Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
    `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
    and a coordinator-chosen session word. Add the compact `Lane Card:` line so
@@ -360,14 +367,27 @@ multi-lane packing and collision mechanics; QA, validation, review, CI,
 readiness, handoff, and closeout remain unchanged.
 
 Choose `ask` when a human should understand the exact-diff PR before deciding:
-after ordinary gates are clean, the coordinator automatically starts
-`$pr-walkthrough`, explains one conceptual change at a time in full mode for
-large or complex PRs (concise mode for smaller cohesive PRs), then refreshes the
-diff identity and readiness. A changed identity invalidates the walkthrough and
-restarts or stops it; a newly failing gate stops it. The coordinator asks the
+after ordinary gates are clean, the coordinator automatically publishes
+`$pr-walkthrough`. It prepares the complete exact-diff map up front, then posts
+the orientation and every conceptual section to GitHub in one pass under the
+skill's mandatory inline-thread and no-anchor-stop rules. The owning task consumes replies
+asynchronously; live interaction is used only when the maintainer explicitly
+asks. Large or complex PRs use full mode and smaller cohesive PRs use concise
+mode. A changed identity invalidates the walkthrough and causes a rebuild and
+republish or stop; a newly failing gate stops it. The coordinator asks the
 one final merge question only when the refreshed identity matches the recorded
 identity and readiness remains clean; a completed walkthrough must have
 explained that same diff. The walkthrough itself is not approval.
+
+If a prerequisite PR is already ready and only its human review and merge
+decision remains under `ask`, `$pr-batch` reports `blocked-user-input` instead
+of treating it as an external failure. It starts the walkthrough first for an
+authorized batch target; for an external prerequisite it gives the exact PR
+link and asks the user either to merge it and reply only after it is merged, or
+to explicitly authorize adding it as a batch target so preflight and the
+walkthrough can run. A reply or merge decision alone does not clear an external
+prerequisite or authorize its merge. This decision gate does not consume
+external-blocker retries or start monitoring automation.
 
 The `$pr-batch` prompt must preserve the preflight/trust rules from
 [skills/pr-batch/SKILL.md](../skills/pr-batch/SKILL.md): workers must be able
@@ -429,7 +449,15 @@ record it and proceed to consolidated triage instead of parking in
   them to `skills/pr-batch/bin/pr-ci-readiness` with `--requested-hosted-run` so
   readiness waits for the explicitly requested current-head hosted runs only; in
   repos with no usable required checks, those requested runs gate readiness
-  instead of the full advisory check list.
+  instead of the full advisory check list. Once any hosted run is explicitly
+  requested, all exact-head non-required checks from GitHub Actions, Dependabot,
+  and external providers remain recorded as informational rows—including failing
+  and pending unselected checks—without becoming gates. The receipt records every successfully
+  completed selected run with its exact head SHA so merge assurance can verify
+  the non-gating scopes came from this mode. A
+  repository that relies on a hosted Markdown formatter or linter should make
+  that check required or explicitly select its run; required checks always keep
+  gating readiness.
 - Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`.
 - Use `$replicate-ci` when local validation is green but hosted CI is red, or
   when a failing hosted check appears to depend on runner/toolchain parity.
@@ -449,3 +477,17 @@ reason, or both forms at once is a hard blocker: report NOT COMPLETE instead of
 a clean handoff.
 Silence is not an accepted value; a batch that wrote nothing to the coordination
 backend must say so in the declaration.
+
+<!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Unblock Block`. -->
+
+Unblock Block: when a batch stops non-clean, the last thing before the exact
+`Conversation status: Follow-ups remain — <each exact action or blocker>.` line
+is an `Unblock:` block with one numbered entry per blocker in that same union.
+Each entry is tagged `[you]`, `[agent]`, or `[external]` so an operator can tell
+at a glance whether anything is owed from them, names the smallest next action
+or wait instruction with the exact command, paste-ready prompt, URL, question,
+exact trigger or clearing condition, and carries a `Help:` line offering a different
+route to clearing the same blocker (waive, rerun, reassign, cancel, escalate)
+or exactly `none — <reason>`. A clean batch omits the block because the
+normalized blocker union is empty. See
+[Unblock Block](../workflows/pr-processing.md#unblock-block).
