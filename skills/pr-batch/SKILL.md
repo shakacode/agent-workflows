@@ -6,6 +6,16 @@ argument-hint: '[task, exact issue/PR numbers, or filters]'
 
 # PR Batch
 
+For new Codex planning, resolve the advisory `astra-pilot-v1` profile from
+[central routing data](../plan-pr-batch/references/model-routing-profiles.json) with the plan skill's
+`bin/model-routing-profile --role <role>`. Its named preferences supersede the
+GPT-5.6 recommendations below for the listed roles; those recommendations and
+planning tables remain the established comparison baseline. Keep explicit user
+routes, verified host support, portable fallback, and independent evidence rules.
+This is an unmeasured pilot, not a measured promotion.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Run one or more PR work lanes through one canonical process. A single target is
 a batch of one, not a separate workflow.
 
