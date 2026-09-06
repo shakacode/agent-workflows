@@ -309,8 +309,12 @@ _Avoid_: drain (reserved for cancellation), cleanup, sweep
   worker instances never overlap.
 - A **Claim** is held by exactly one **Instance**; **Supersede (claim operation)** replaces the instance for the same **Lane identity**, **Takeover** replaces the owner after the holder is **Dead** or a fallback claim expires — both bump the **Generation** when the backend supports fencing.
 - **Worker phase** answers "is it progressing?"; **Live/Stale/Dead** answers "is it running?"; **Wedged** is live without worker-phase progress.
-- A **Merge backlog** item belongs to the repository **Control tower** once
-  the **Lane** that opened it ends; a lane never keeps a PR alive to merge it.
+- A **Merge backlog** item belongs to the repository **Control tower** only
+  after the **Lane** that opened it, including its batch coordinator's
+  integration closeout, reaches a terminal state without merging it: handed
+  off, closed, or dead. While that closeout is still running, the coordinator
+  merges and the tower leaves the PR alone; a lane never idles just to keep a
+  PR alive.
 - A **Human-attention label** is applied by the **Control tower** after the
   autonomous-merge eligibility gate hands a PR to the human, and stripped by
   the planned CI automation when the head changes. Until that automation exists,
