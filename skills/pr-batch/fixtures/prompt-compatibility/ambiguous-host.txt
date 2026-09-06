@@ -1,0 +1,5 @@
+Prompt host: codex
+Prompt mode: batch
+Preferred route: sol/xhigh
+Route requirement: advisory
+Use $pr-batch to complete this batch.

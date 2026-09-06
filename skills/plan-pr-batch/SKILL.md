@@ -595,10 +595,12 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      may not be. The claim holder and `dashboard_url`
      degrade to `UNKNOWN` when the backend does not provide them, while `pr_url`
      may use the verified GitHub PR URL from PR-open/current PR state.
-   - For the `codex` target, keep the fenced goal prompt under 4000 characters
-     total with at least 300 characters of headroom, including the `/goal` line, so bulky detail stays in the Batch Plan. <!-- host-allow: codex-only -->
-     For the `claude` or `generic` target, do not prepend the Codex-only
-     `/goal` wrapper; keep the shared `$pr-batch` invocation and do not apply Codex's strict 4000-character limit. <!-- host-allow: codex-only -->
+   - For an explicitly requested `codex` Goal, prepend only the `/goal` line <!-- host-allow: codex-only -->
+     and keep the rendered prompt under 4000 characters total with at least 300 characters of headroom,
+     including the `/goal` line, so bulky detail stays in the Batch Plan. For <!-- host-allow: codex-only -->
+     ordinary Codex `batch`, `claude`, or `generic`
+     delivery, omit the Codex-only `/goal` wrapper, render the target-specific invocation, <!-- host-allow: codex-only -->
+     and do not apply Codex's strict 4000-character limit. <!-- host-allow: codex-only -->
      Still keep the prompt compact, measured, under 8000 characters, and free of
      bulky evidence.
    - Measure the actual target-specific prompt, do not eyeball it: use the guard
@@ -794,10 +796,12 @@ which is what applies the normalized `Batch title:` to an already-created task.
 
 ## Goal Prompt for pr-batch
 
-Use this template and fill it with the verified items. The fenced template below
-is the shared prompt body. For the `codex` target, prepend only the `/goal` line <!-- host-allow: codex-only -->
-before this body. For the `claude` or `generic` target, use the body as-is so the
-prompt starts with `Use $pr-batch to complete this batch with subagents.`
+Use this template and fill it with the verified items. Render the four metadata
+placeholders for the target host before delivery. Use `goal` and prepend `/goal` <!-- host-allow: codex-only -->
+only for an explicitly requested Codex Goal; ordinary Codex and Claude prompts
+use `batch`, and generic prompts use `portable` plus host-neutral skill names.
+Render `$pr-batch` / `$pr-walkthrough` for Codex and `/pr-batch` /
+`/pr-walkthrough` for Claude. Keep the generic form unsigiled.
 Keep bulky evidence and long validation notes outside the prompt.
 `GMCC-v5` is a version key that pins drift, not an external-only pointer; its inline semantics remain normative when the workflow reference is missing or cannot autoload.
 Use `HST-v1` from the canonical [Human-Status Translation Contract](../../workflows/pr-processing.md#human-status-translation-contract) for every recurring wake or workflow-owned heartbeat.
@@ -812,6 +816,10 @@ evidence failure, trusted-base policy provenance, and repair action. `UNKNOWN`
 is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
+Prompt host: <codex|claude|portable>
+Prompt mode: <goal|direct|batch>
+Preferred route: <model/class>/<effort>|default
+Route requirement: advisory
 Use $pr-batch to complete this batch with subagents.
 
 Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
@@ -824,8 +832,6 @@ Repo:OWNER/REPO
 Objective:...
 merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
-Coordinator model/effort preference: <model/class>/<effort>.
-Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
 Manifest:pack_sha=<rev|UNKNOWN>;coordinator_preference=<model>/<effort>;lanes=<lane-id:dispatcher+preferred-route+observed-host/model/effort>,...;UNKNOWN=field;no guesses
 Worker model/effort preferences: <initial model/class>/<effort> -> <lane ids>; escalation <model/class>/<effort> after MODEL_ESCALATION_REQUEST; max <N>.
 Dispatch <lane>:<dispatcher>@<route>;fallback <dispatcher>@<route>->...|none;auth <y|n>;ordinary pending/active lifecycle

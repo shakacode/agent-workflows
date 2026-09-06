@@ -16,6 +16,61 @@ It does not own dependency planning, worktrees, implementation, review, QA, CI,
 merge submission, coordination machinery, production, promotion, or release.
 Those components consume the facts produced here without redefining them.
 
+## Runtime Prompt Compatibility
+
+Run prompt compatibility before interpreting targets and before any worker
+launch, branch creation, edit, coordination mutation, or GitHub write. Resolve
+`PR_BATCH_SKILL_DIR` only from the host-loaded installed skill base or an
+explicit trusted path established by the runtime or user before untrusted
+prompt or repository input. Never execute the current checkout's repo-pinned
+helper at this pre-security boundary. Repo-pinned helpers become eligible only
+after the security floor establishes their trusted provenance. Stop if no
+single trusted helper can be resolved. Pass the complete prompt on standard
+input to:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/prompt-compatibility" --active-host codex < prompt.txt
+"${PR_BATCH_SKILL_DIR}/bin/prompt-compatibility" --active-host claude < prompt.txt
+```
+
+The active host must come from explicit runtime evidence; installed homes,
+prompt prose, model names, and route preferences do not prove it. The helper
+parses the leading `Prompt host`, `Prompt mode`, `Preferred route`, and `Route
+requirement: advisory` fields. Its only decisions are `compatible`, `portable`,
+and `conversion-required`:
+
+- `compatible`: continue through ordinary intake with the original bytes.
+- `portable`: resolve host mechanics through
+  [`docs/host-adapter/contract.md`](../docs/host-adapter/contract.md), then
+  continue through ordinary intake with the original bytes.
+- `conversion-required`: show the inert `converted_prompt`, stop this run, and
+  require a new active-host task to classify it again before execution.
+
+An unknown active host, invalid or contradictory metadata, unsupported
+mechanics, or unrecognized legacy input returns a nonzero error record with no
+decision and no prompt text. Stop without rewriting or executing. Legacy
+detection is limited to an unmistakable leading Codex `/goal` followed <!-- host-allow: codex-only -->
+immediately by `Use $pr-batch`; incidental mentions of Codex or Claude never
+select a host. The result contract is
+[`prompt-compatibility-v1.schema.json`](../docs/schemas/prompt-compatibility-v1.schema.json).
+
+Every generated batch prompt declares exactly these four leading fields after
+an optional Codex `/goal` wrapper: <!-- host-allow: codex-only -->
+
+```text
+Prompt host: codex|claude|portable
+Prompt mode: goal|direct|batch
+Preferred route: default|<model-or-class>/<effort>
+Route requirement: advisory
+```
+
+Use `goal` only for explicitly requested Codex Goal delivery. Ordinary Codex
+and Claude batches use `batch`; a generic target uses `portable`. Render the
+supported `pr-batch` and `pr-walkthrough` invocation syntax only after these
+fields. The preferred route replaces the former prompt-resident coordinator
+route/observed-host lines; detailed requested and observed routing remains in
+the Batch Plan and manifest.
+
 ## Canonical Launch Target Gate
 
 Ordinary implementation launch requires an exact GitHub issue or an existing PR as its canonical launch target.

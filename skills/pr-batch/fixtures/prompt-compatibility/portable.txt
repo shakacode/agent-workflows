@@ -1,0 +1,6 @@
+Prompt host: portable
+Prompt mode: batch
+Preferred route: default
+Route requirement: advisory
+Use the pr-batch skill to complete this batch with subagents.
+Objective: Resolve host mechanics through the adapter contract.

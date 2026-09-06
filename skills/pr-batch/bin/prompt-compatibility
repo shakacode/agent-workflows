@@ -1,0 +1,436 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "optparse"
+
+CONTRACT_REFERENCE = "docs/host-adapter/contract.md"
+CONTRACT_PROTOCOL = "Prompt compatibility protocol: 1"
+CONTRACT_PATHS = [
+  File.expand_path("../../../docs/host-adapter/contract.md", __dir__),
+  File.expand_path("../docs/host-adapter/contract.md", __dir__)
+].freeze
+HEADER_NAMES = ["Prompt host", "Prompt mode", "Preferred route", "Route requirement"].freeze
+RESERVED_HEADER_LIKE =
+  /^[ \t]*(?:Prompt[ \t._-]+(?:host|mode)|Preferred[ \t._-]+route|Route[ \t._-]+requirement)(?:[ \t]*(?::+|=)|[ \t]+[^\r\n]+)/i
+CANONICAL_HEADER = /\A(?:Prompt host|Prompt mode|Preferred route|Route requirement): [^\r\n]*\r?\n?\z/
+BATCH_TARGET_LIKE =
+  /^[ \t]*Batch[ \t._-]+size[ \t._-]+target\b/i
+SUPPORTED_HOSTS = %w[codex claude].freeze
+SUPPORTED_PROMPT_HOSTS = (SUPPORTED_HOSTS + ["portable"]).freeze
+SUPPORTED_MODES = %w[goal direct batch].freeze
+SKILL_NAMES = %w[pr-batch pr-walkthrough].freeze
+SKILLS_ROOT = File.expand_path("../..", __dir__)
+# Keep the pack-wide skill-name set stable so partial installs do not change
+# cross-host skill detection.
+KNOWN_SKILL_NAMES = %w[
+  address-review
+  adversarial-pr-review
+  autoreview
+  batch-status
+  benchmark-verification
+  close-batch
+  close-session
+  continue
+  evaluate-issue
+  fix-flaky-tests
+  manual-testing
+  pause
+  plan-issue-triage
+  plan-pr-batch
+  plan-review
+  post-merge-audit
+  pr-batch
+  pr-monitoring
+  pr-walkthrough
+  qa-stress
+  replicate-ci
+  run-ci
+  secure-github-actions
+  spec
+  status
+  structural-review
+  task-observer
+  tdd
+  triage
+  type-design-review
+  untrusted-contributor-intake
+  update-changelog
+  verify
+  verify-pr-fix
+].freeze
+PROTECTED_LABELS = %w[
+  Objective Target Targets Scope Dependencies Permissions Safety QA Review merge_authority
+].freeze
+PROTECTED_PREFIXES = ["Work item:", "Safety gates:", "Merge authority:"].freeze
+CLAUDE_RUNTIME_MECHANICS = [
+  %r{(?<![[:alnum:]_/$])/(?:code-review|loop|resume)\b},
+  %r{(?<![[:alnum:]_/$])claude\s+--(?:resume|continue)\b}i,
+  %r{(?<![[:alnum:]_/$])/plugin\b},
+  %r{(?<![[:alnum:]_/$])/pr-review-toolkit:review-pr\b},
+  /\bClaude (?:Agent|Workflow)\b/,
+  /(?:\b(?:Agent|Workflow)\b|`(?:Agent|Workflow)`|(?:\*\*|\*|__|_)(?:Agent|Workflow)(?:\*\*|\*|__|_))\s+(?:tool|subagents?|workers?)\b/,
+  %r{(?<![[:alnum:]_/$])(?:["']?isolation["']?[ \t]*(?::|=)[ \t]*)(?:['"])?worktree(?:['"])?\b}
+].freeze
+CODEX_RUNTIME_MECHANICS = [
+  %r{(?<![[:alnum:]_/$])codex\s+review\b}i,
+  /\b(?:interrupt_agent|list_agents)\b/,
+  /\b(?:spawn_agent|send_message|followup_task|wait_agent)\b/,
+  /\bsandbox_permissions["'`]?[ \t]*:[ \t]*["'`]?(?:require_escalated|use_default)\b["'`]?/
+].freeze
+GOAL_WRAPPER = %r{\A/goal\r?\n}
+LEGACY_CODEX = %r{\A/goal\r?\nUse \$pr-batch(?:\s|\z)}
+
+def emit_error(reason, active_host)
+  puts JSON.generate(
+    "contract" => "prompt-compatibility",
+    "version" => 1,
+    "error" => reason,
+    "active_host" => active_host,
+    "execute_allowed" => false,
+    "stop_required" => true
+  )
+  exit 2
+end
+
+def decision_result(decision, active_host:, prompt_host:, prompt_mode:, preferred_route:,
+                    prompt: nil, converted_prompt: nil, adapter_contract: nil)
+  executable = %w[compatible portable].include?(decision)
+  {
+    "contract" => "prompt-compatibility",
+    "version" => 1,
+    "decision" => decision,
+    "active_host" => active_host,
+    "prompt_host" => prompt_host,
+    "prompt_mode" => prompt_mode,
+    "preferred_route" => preferred_route,
+    "route_requirement" => "advisory",
+    "execute_allowed" => executable,
+    "stop_required" => !executable,
+    "adapter_contract" => adapter_contract,
+    "prompt" => prompt,
+    "converted_prompt" => converted_prompt
+  }
+end
+
+def line_ending(prompt)
+  prompt.include?("\r\n") ? "\r\n" : "\n"
+end
+
+def headers_for(host, mode, route, ending)
+  [
+    "Prompt host: #{host}",
+    "Prompt mode: #{mode}",
+    "Preferred route: #{route}",
+    "Route requirement: advisory"
+  ].join(ending) + ending
+end
+
+def max_batch_wave_capacity(prompt_host)
+  prompt_host == "codex" ? 10 : 5
+end
+
+def skill_mechanics(text, sigil, names = KNOWN_SKILL_NAMES)
+  names.select do |name|
+    text.match?(%r{(?<![[:alnum:]_/$])#{Regexp.escape(sigil)}#{Regexp.escape(name)}\b})
+  end
+end
+
+def special_host_mechanic?(text)
+  text.match?(%r{(?<![[:alnum:]_/$])(?:\$|/)scw:[[:alnum:]-]+\b}) ||
+    text.match?(%r{(?<![[:alnum:]_/$])/(?:goal|simplify)\b})
+end
+
+def protected_line?(line)
+  PROTECTED_LABELS.any? { |label| line.start_with?("#{label}:") } ||
+    PROTECTED_PREFIXES.any? { |prefix| line.start_with?(prefix) }
+end
+
+def runtime_mechanic?(text, patterns)
+  patterns.any? { |pattern| text.match?(pattern) }
+end
+
+def unsupported_conversion_runtime_mechanic?(text)
+  special_host_mechanic?(text) ||
+    runtime_mechanic?(text, CLAUDE_RUNTIME_MECHANICS + CODEX_RUNTIME_MECHANICS)
+end
+
+def unsupported_for_prompt_host?(text, prompt_host)
+  return true if text.match?(%r{(?<![[:alnum:]_/$])(?:\$|/)scw:[[:alnum:]-]+\b})
+  return true if text.match?(%r{(?<![[:alnum:]_/$])/goal\b})
+
+  case prompt_host
+  when "codex"
+    runtime_mechanic?(text, CLAUDE_RUNTIME_MECHANICS)
+  when "claude"
+    text.match?(%r{(?<![[:alnum:]_/$])/simplify\b}) ||
+      runtime_mechanic?(text, CODEX_RUNTIME_MECHANICS)
+  else
+    true
+  end
+end
+
+def rewritable_mechanic_line?(line, sigil)
+  escaped = Regexp.escape(sigil)
+  line.match?(/\AUse #{escaped}pr-batch\b/) ||
+    line.match?(/\ABase:[^\r\n]*verify #{escaped}pr-batch\+workflow;/) ||
+    line.match?(/\A- Resolve `#{escaped}pr-batch`;/) ||
+    line.match?(/\A- ask=>#{escaped}pr-walkthrough;/)
+end
+
+def rewrite_host_mechanics(prompt, target_host)
+  source_sigil, target_sigil = target_host == "codex" ? ["/", "$"] : ["$", "/"]
+  rewritten_lines = prompt.lines.map do |line|
+    next line unless rewritable_mechanic_line?(line, source_sigil)
+
+    SKILL_NAMES.reduce(line) do |rewritten, name|
+      rewritten.gsub(
+        %r{(?<![[:alnum:]_/$])#{Regexp.escape(source_sigil)}#{Regexp.escape(name)}\b},
+        "#{target_sigil}#{name}"
+      )
+    end
+  end
+  rewritten_lines.join
+end
+
+def convert(prompt, source_host, source_mode, target_host, preferred_route)
+  ending = line_ending(prompt)
+  converted = prompt.sub(GOAL_WRAPPER, "")
+  target_mode = source_mode == "goal" && target_host == "claude" ? "batch" : source_mode
+  converted = converted.sub(/^Prompt host: #{source_host}(?=\r?$)/, "Prompt host: #{target_host}")
+  converted = converted.sub(/^Prompt mode: #{source_mode}(?=\r?$)/, "Prompt mode: #{target_mode}")
+  converted = converted.sub(
+    /^Batch size target: #{source_host}(?=;)/,
+    "Batch size target: #{target_host}"
+  )
+  converted = rewrite_host_mechanics(converted, target_host)
+
+  return converted unless source_mode == "legacy-goal"
+  return converted unless source_host == "codex" && target_host == "claude"
+
+  body = converted.sub(%r{\AUse [/$]pr-batch\b}) do |invocation|
+    invocation.sub(%r{[/$]}, "/")
+  end
+  headers_for(target_host, "batch", preferred_route, ending) + body
+end
+
+def converted_prompt_compatible?(prompt, target_host)
+  has_goal_wrapper = prompt.match?(GOAL_WRAPPER)
+  header_text = has_goal_wrapper ? prompt.sub(GOAL_WRAPPER, "") : prompt
+  header_lines = header_text.lines.first(4).map { |line| line.delete_suffix("\n").delete_suffix("\r") }
+  return false unless header_lines.all? { |line| line.match?(CANONICAL_HEADER) }
+  return false unless header_lines.map { |line| line.split(": ", 2).first } == HEADER_NAMES
+
+  metadata = header_lines.to_h { |line| line.split(": ", 2) }
+  mode = metadata.fetch("Prompt mode")
+  return false unless metadata.fetch("Prompt host") == target_host
+  return false unless metadata.fetch("Route requirement") == "advisory"
+  return false unless %w[direct batch].include?(mode) || (target_host == "codex" && mode == "goal")
+  return false unless has_goal_wrapper == (target_host == "codex" && mode == "goal")
+
+  body = header_text.lines.drop(4).join
+  wrong_sigil = target_host == "codex" ? "/" : "$"
+  return false if skill_mechanics(body, wrong_sigil).any?
+  return false if unsupported_for_prompt_host?(body, target_host)
+
+  named_mechanics = skill_mechanics(body, "/") + skill_mechanics(body, "$")
+  return false if (named_mechanics - SKILL_NAMES).any?
+
+  batch_target_error(prompt, target_host).nil?
+end
+
+def verified_conversion(prompt, source_host, source_mode, target_host, preferred_route, active_host)
+  converted = convert(prompt, source_host, source_mode, target_host, preferred_route)
+  emit_error("unsafe-conversion", active_host) unless converted_prompt_compatible?(converted, target_host)
+  converted
+end
+
+def validate_cross_host_mechanics(body, prompt_host, active_host)
+  source_sigil = prompt_host == "codex" ? "$" : "/"
+  unsupported_skills = skill_mechanics(body, source_sigil) - SKILL_NAMES
+  if unsupported_skills.any? || unsupported_conversion_runtime_mechanic?(body)
+    emit_error("unsupported-host-mechanic", active_host)
+  end
+  protected_mechanic = body.lines.any? do |line|
+    protected_line?(line) && skill_mechanics(line, source_sigil, SKILL_NAMES).any?
+  end
+  emit_error("protected-field-host-mechanic", active_host) if protected_mechanic
+  unsupported_supported_mechanic = body.lines.any? do |line|
+    skill_mechanics(line, source_sigil, SKILL_NAMES).any? &&
+      !rewritable_mechanic_line?(line, source_sigil)
+  end
+  emit_error("unsupported-host-mechanic", active_host) if unsupported_supported_mechanic
+end
+
+def batch_target_error(prompt, prompt_host)
+  declarations = prompt.lines.count { |line| line.match?(BATCH_TARGET_LIKE) }
+  targets = prompt.scan(/^Batch size target: (codex|claude|generic);[ \t]*wave:/).flatten
+  return "invalid-batch-size-target" if targets.length != declarations
+  return "duplicate-batch-size-target" if targets.length > 1
+
+  expected_target = prompt_host == "portable" ? "generic" : prompt_host
+  return "contradictory-batch-size-target" if targets.any? && targets.first != expected_target
+
+  wave_line = prompt.lines.find { |line| line.match?(BATCH_TARGET_LIKE) }
+  if wave_line
+    wave_match = wave_line.chomp.match(%r{\ABatch size target: (codex|claude|generic);[ \t]*wave: (\d+)/(\d+)\z})
+    return "invalid-batch-size-target" unless wave_match
+
+    wave_cap = wave_match[2].to_i
+    wave_items = wave_match[3].to_i
+    return "invalid-batch-size-target" if wave_cap > max_batch_wave_capacity(expected_target)
+    return "invalid-batch-size-target" if wave_items > wave_cap
+  end
+
+  nil
+end
+
+def validate_batch_target(prompt, prompt_host, active_host)
+  error = batch_target_error(prompt, prompt_host)
+  emit_error(error, active_host) if error
+end
+
+options = { active_hosts: [] }
+OptionParser.new do |parser|
+  parser.on("--active-host HOST") { |host| options.fetch(:active_hosts) << host }
+end.parse!
+
+active_hosts = options.fetch(:active_hosts)
+active_host = active_hosts.one? ? active_hosts.first : "ambiguous"
+emit_error("ambiguous-active-host", active_host) unless SUPPORTED_HOSTS.include?(active_host)
+
+raw_prompt = $stdin.binmode.read
+prompt = raw_prompt.dup.force_encoding(Encoding::UTF_8)
+emit_error("invalid-encoding", active_host) unless prompt.valid_encoding?
+
+has_goal_wrapper = prompt.match?(GOAL_WRAPPER)
+header_text = has_goal_wrapper ? prompt.sub(GOAL_WRAPPER, "") : prompt
+header_lines = header_text.lines.first(4).map { |line| line.delete_suffix("\n").delete_suffix("\r") }
+header_counts = HEADER_NAMES.to_h do |name|
+  [name, header_text.scan(/^#{Regexp.escape(name)}:/).length]
+end
+malformed_reserved_header = header_text.lines.any? do |line|
+  line.match?(RESERVED_HEADER_LIKE) && !line.match?(CANONICAL_HEADER)
+end
+emit_error("invalid-metadata", active_host) if malformed_reserved_header
+has_reserved_header = header_counts.values.any?(&:positive?)
+complete_headers = header_counts.values.all?(1) &&
+                   header_lines.map { |line| line.split(": ", 2).first } == HEADER_NAMES
+
+if has_reserved_header && !complete_headers
+  emit_error("invalid-metadata", active_host)
+end
+
+if complete_headers
+  metadata = header_lines.to_h { |line| line.split(": ", 2) }
+  prompt_host = metadata.fetch("Prompt host")
+  prompt_mode = metadata.fetch("Prompt mode")
+  preferred_route = metadata.fetch("Preferred route")
+  route_requirement = metadata.fetch("Route requirement")
+  body = header_text.lines.drop(4).join
+
+  emit_error("unsupported-prompt-host", active_host) unless SUPPORTED_PROMPT_HOSTS.include?(prompt_host)
+  emit_error("unsupported-prompt-mode", active_host) unless SUPPORTED_MODES.include?(prompt_mode)
+  if prompt_mode == "goal" && prompt_host != "codex"
+    emit_error("unsupported-host-mode", active_host)
+  end
+  route_pattern = %r{\A[[:alnum:]][[:alnum:] ._:+-]*/[[:alnum:]][[:alnum:]_.:+-]*\z}
+  unless preferred_route == "default" || preferred_route.match?(route_pattern)
+    emit_error("invalid-preferred-route", active_host)
+  end
+  emit_error("non-advisory-route", active_host) unless route_requirement == "advisory"
+
+  valid_wrapper = prompt_host == "codex" && prompt_mode == "goal" ? has_goal_wrapper : !has_goal_wrapper
+  emit_error("host-mode-wrapper-mismatch", active_host) unless valid_wrapper
+
+  emit_error("empty-prompt-body", active_host) if body.match?(/\A[[:space:]]*\z/)
+
+  if prompt_host == "portable" &&
+     (skill_mechanics(body, "/").any? || skill_mechanics(body, "$").any? ||
+       unsupported_conversion_runtime_mechanic?(body))
+    emit_error("unsupported-host-mechanic", active_host)
+  end
+
+  contradictory = case prompt_host
+                  when "codex" then skill_mechanics(body, "/").any?
+                  when "claude" then skill_mechanics(body, "$").any?
+                  end
+  emit_error("contradictory-host-mechanic", active_host) if contradictory
+  if prompt_host != "portable" && unsupported_for_prompt_host?(body, prompt_host)
+    emit_error("unsupported-host-mechanic", active_host)
+  end
+
+  if prompt_host != "portable" && prompt_host != active_host
+    validate_cross_host_mechanics(body, prompt_host, active_host)
+  end
+
+  validate_batch_target(prompt, prompt_host, active_host)
+
+  if prompt_host == "portable"
+    contract_available = CONTRACT_PATHS.any? do |path|
+      File.file?(path) && File.read(path).include?(CONTRACT_PROTOCOL)
+    end
+    emit_error("adapter-contract-unavailable", active_host) unless contract_available
+    result = decision_result(
+      "portable",
+      active_host:,
+      prompt_host:,
+      prompt_mode:,
+      preferred_route:,
+      adapter_contract: CONTRACT_REFERENCE,
+      prompt:
+    )
+  elsif prompt_host == active_host
+    result = decision_result(
+      "compatible",
+      active_host:,
+      prompt_host:,
+      prompt_mode:,
+      preferred_route:,
+      prompt:
+    )
+  else
+    converted_prompt = verified_conversion(
+      prompt, prompt_host, prompt_mode, active_host, preferred_route, active_host
+    )
+    result = decision_result(
+      "conversion-required",
+      active_host:,
+      prompt_host:,
+      prompt_mode:,
+      preferred_route:,
+      converted_prompt:
+    )
+  end
+elsif prompt.match?(LEGACY_CODEX)
+  legacy_body = prompt.sub(GOAL_WRAPPER, "")
+  emit_error("unsupported-host-mechanic", active_host) if unsupported_for_prompt_host?(legacy_body, "codex")
+  validate_batch_target(prompt, "codex", active_host)
+  result = if active_host == "codex"
+             decision_result(
+               "compatible",
+               active_host:,
+               prompt_host: "codex",
+               prompt_mode: "legacy-goal",
+               preferred_route: "default",
+               prompt:
+             )
+           else
+             validate_cross_host_mechanics(legacy_body, "codex", active_host)
+             converted_prompt = verified_conversion(
+               prompt, "codex", "legacy-goal", active_host, "default", active_host
+             )
+             decision_result(
+               "conversion-required",
+               active_host:,
+               prompt_host: "codex",
+               prompt_mode: "legacy-goal",
+               preferred_route: "default",
+               converted_prompt:
+             )
+           end
+else
+  emit_error("unrecognized-prompt", active_host)
+end
+
+puts JSON.generate(result)
