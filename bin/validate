@@ -120,6 +120,8 @@ bin/push-downstream --config downstream.yml >/dev/null
 
 echo "== helper tests =="
 ruby bin/lint-test.rb
+ruby skills/manual-testing/bin/configured-evidence-upload-test.rb
+ruby skills/manual-testing/bin/github-user-attachments-upload-test.rb
 ruby skills/autoreview/bin/autoreview-target-state-test.rb
 ruby skills/continue/bin/authorized-completion-test.rb
 ruby skills/verify/bin/verification-evidence-reuse-test.rb

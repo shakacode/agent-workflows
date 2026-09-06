@@ -25,6 +25,15 @@ hosted_ci_trigger: "n/a"
 hosted_qa_gate: "n/a"
 ci_change_detector: "n/a"
 
+# Optional, fail-closed direct visual-evidence uploader. Omission keeps the
+# undocumented GitHub endpoint disabled. Enabling this exact closed mapping also
+# requires an executable repo-owned `.agents/bin/upload-evidence` wrapper that
+# prints one `https://github.com/user-attachments/assets/<asset-id>` URL.
+# visual_evidence_uploader:
+#   version: 1
+#   provider: github_user_attachments
+#   verified: true
+
 # Optional first-phase hosted runtime QA policy. Adoption is two-phase: land
 # this policy and its executable verifier first, then runtime PRs are governed
 # by the trusted-base copy.

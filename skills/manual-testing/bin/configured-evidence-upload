@@ -1,0 +1,184 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "optparse"
+require "tmpdir"
+require "yaml"
+require_relative "../lib/bounded_command"
+require_relative "../lib/evidence_upload"
+
+module ConfiguredEvidenceUpload
+  POLICY_PATH = ".agents/agent-workflow.yml"
+  WRAPPER_PATH = ".agents/bin/upload-evidence"
+  POLICY_KEY = "visual_evidence_uploader"
+  POLICY = {
+    "version" => 1,
+    "provider" => "github_user_attachments",
+    "verified" => true
+  }.freeze
+  FULL_SHA = /\A[0-9a-f]{40}\z/i
+  DEFAULT_TIMEOUT_SECONDS = 30.0
+  OUTPUT_LIMIT_BYTES = 8 * 1024
+  WRAPPER_LIMIT_BYTES = 64 * 1024
+
+  class Failure < StandardError
+    def initialize(message, code = 1)
+      @code = code
+      super(message)
+    end
+
+    attr_reader :code
+  end
+
+  module_function
+
+  def run(argv)
+    options = parse_options(argv)
+    repo_root = verified_repo_root(options.fetch(:repo_root))
+    trusted_base = verified_trusted_base(options.fetch(:trusted_base))
+    artifact = ManualTesting::EvidenceUpload.verified_artifact(argv.fetch(0))
+
+    resolved_base = git!(repo_root, "rev-parse", "--verify", "#{trusted_base}^{commit}").stdout.strip.downcase
+    fail_closed("trusted base did not resolve exactly") unless resolved_base == trusted_base.downcase
+
+    policy_tree = git!(repo_root, "ls-tree", resolved_base, "--", POLICY_PATH).stdout.strip
+    fail_closed("trusted-base #{POLICY_KEY} configuration is absent", 69) if policy_tree.empty?
+
+    policy_yaml = git!(repo_root, "show", "#{resolved_base}:#{POLICY_PATH}").stdout
+    policy = parse_policy(policy_yaml)
+    unless policy == POLICY
+      fail_closed("trusted-base #{POLICY_KEY} is absent or not the exact verified version 1 configuration", 69)
+    end
+
+    result = with_trusted_wrapper(repo_root, resolved_base) do |wrapper|
+      bounded_capture(
+        [wrapper, artifact],
+        chdir: repo_root,
+        timeout: options.fetch(:timeout),
+        env: { "MANUAL_TESTING_SKILL_DIR" => File.expand_path("..", __dir__) }
+      )
+    end
+    fail_closed("configured uploader timed out") if result.timed_out
+    fail_closed("configured uploader output exceeded #{OUTPUT_LIMIT_BYTES} bytes") if result.output_too_large
+    fail_closed("configured uploader left a running process group") if result.process_group_leaked
+    fail_closed("configured uploader failed with exit #{exit_code(result.status)}") unless result.status&.success?
+
+    url = exact_attachment_url(result.stdout)
+    fail_closed("configured uploader returned an invalid GitHub user-attachments URL") unless url
+
+    puts url
+    0
+  rescue OptionParser::ParseError => e
+    warn "configured-evidence-upload: #{e.message}"
+    64
+  rescue Psych::Exception
+    warn "configured-evidence-upload: trusted-base #{POLICY_KEY} configuration is malformed"
+    69
+  rescue ManualTesting::EvidenceUpload::UnsafeArtifact => e
+    warn "configured-evidence-upload: #{e.message}"
+    1
+  rescue Failure => e
+    warn "configured-evidence-upload: #{e.message}"
+    e.code
+  rescue Errno::ENOENT, Errno::EACCES => e
+    warn "configured-evidence-upload: #{e.message}"
+    1
+  end
+
+  def parse_options(argv)
+    options = { timeout: DEFAULT_TIMEOUT_SECONDS }
+    parser = OptionParser.new do |opts|
+      opts.banner = "Usage: configured-evidence-upload --repo-root PATH --trusted-base SHA [--timeout SECONDS] FILE"
+      opts.on("--repo-root PATH") { |value| options[:repo_root] = value }
+      opts.on("--trusted-base SHA") { |value| options[:trusted_base] = value }
+      opts.on("--timeout SECONDS", Float) { |value| options[:timeout] = value }
+      opts.on("-h", "--help") do
+        puts opts
+        exit 0
+      end
+    end
+    parser.parse!(argv)
+    raise OptionParser::MissingArgument, "--repo-root" unless options[:repo_root]
+    raise OptionParser::MissingArgument, "--trusted-base" unless options[:trusted_base]
+    raise OptionParser::InvalidArgument, "--timeout must be positive and finite" unless
+      options[:timeout].positive? && options[:timeout].finite?
+    raise OptionParser::InvalidArgument, "exactly one FILE is required" unless argv.length == 1
+
+    options
+  end
+
+  def verified_repo_root(path)
+    expanded = File.expand_path(path)
+    fail_closed("repository root is not a real directory") unless File.directory?(expanded)
+
+    File.realpath(expanded)
+  end
+
+  def verified_trusted_base(value)
+    fail_closed("trusted base must be a full 40-character SHA", 64) unless value.match?(FULL_SHA)
+
+    value
+  end
+
+  def parse_policy(yaml)
+    document = YAML.safe_load(yaml, permitted_classes: [], permitted_symbols: [], aliases: false)
+    fail_closed("trusted-base policy must be a mapping", 69) unless document.is_a?(Hash)
+
+    document[POLICY_KEY]
+  end
+
+  def with_trusted_wrapper(repo_root, base_sha)
+    tree = git!(repo_root, "ls-tree", base_sha, "--", WRAPPER_PATH).stdout.strip
+    match = tree.match(/\A100755 blob [0-9a-f]{40}\t#{Regexp.escape(WRAPPER_PATH)}\z/)
+    fail_closed("trusted-base uploader wrapper is missing or not executable") unless match
+
+    wrapper_bytes = git!(repo_root, "show", "#{base_sha}:#{WRAPPER_PATH}", output_limit: WRAPPER_LIMIT_BYTES).stdout
+    fail_closed("trusted-base uploader wrapper is empty") if wrapper_bytes.empty?
+
+    Dir.mktmpdir("configured-evidence-upload-wrapper") do |directory|
+      File.chmod(0o700, directory)
+      wrapper = File.join(directory, "upload-evidence")
+      File.open(wrapper, File::WRONLY | File::CREAT | File::EXCL, 0o700) { |file| file.write(wrapper_bytes) }
+      yield wrapper
+    end
+  end
+
+  def git!(repo_root, *arguments, output_limit: OUTPUT_LIMIT_BYTES)
+    result = bounded_capture(
+      ["git", "-C", repo_root, *arguments],
+      chdir: repo_root,
+      timeout: 10.0,
+      output_limit:
+    )
+    fail_closed("git inspection timed out") if result.timed_out
+    fail_closed("git inspection output exceeded #{output_limit} bytes") if result.output_too_large
+    fail_closed("git inspection left a running process group") if result.process_group_leaked
+    fail_closed("git inspection failed") unless result.status&.success?
+
+    result
+  end
+
+  def bounded_capture(command, chdir:, timeout:, env: {}, output_limit: OUTPUT_LIMIT_BYTES)
+    ManualTesting::BoundedCommand.new(timeout:, output_limit:).capture(command, chdir:, env:)
+  end
+
+  def exact_attachment_url(stdout)
+    lines = stdout.lines.map(&:strip).reject(&:empty?)
+    return unless lines.length == 1 && ManualTesting::EvidenceUpload.exact_attachment_url?(lines.first)
+
+    lines.first
+  end
+
+  def exit_code(status)
+    return 1 unless status
+    return 128 + status.termsig if status.signaled?
+
+    status.exitstatus || 1
+  end
+
+  def fail_closed(message, code = 1)
+    raise Failure.new(message, code)
+  end
+end
+
+exit(ConfiguredEvidenceUpload.run(ARGV)) if $PROGRAM_NAME == __FILE__

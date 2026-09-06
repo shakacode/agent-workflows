@@ -435,7 +435,7 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     assert_equal "SATISFIED", data.fetch("qa_evidence").fetch("verdict")
   end
 
-  def test_v2_github_only_prepared_artifacts_are_blocked_until_human_attachment
+  def test_v2_absent_configured_uploader_keeps_human_attachment_pending
     data = run_replay(<<~MARKDOWN)
       <!-- qa-evidence v2
       required: yes
@@ -463,6 +463,34 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     MARKDOWN
 
     assert_equal "BLOCKED", data.fetch("qa_evidence").fetch("verdict")
+  end
+
+  def test_v2_configured_uploader_success_replays_as_github_pr_evidence
+    evidence = "https://github.com/user-attachments/assets/12345678-1234-1234-1234-123456789abc"
+    data = run_replay(
+      durable_github_marker("").gsub(
+        %r{https://github\.com/user-attachments/assets/(?:1111|2222)},
+        evidence
+      )
+    )
+
+    qa = data.fetch("qa_evidence")
+    assert_equal "SATISFIED", qa.fetch("verdict")
+    assert_equal "github_pr", qa.dig("fields", "visual_evidence_destination")
+    assert_includes qa.dig("fields", "visual_evidence"), evidence
+  end
+
+  def test_v2_configured_uploader_failure_keeps_human_attachment_pending
+    data = run_replay(
+      blocked_visual_evidence_marker(
+        "visual_evidence_blocked_reason: upload_failed: configured uploader failed with exit 9\n"
+      )
+    )
+
+    qa = data.fetch("qa_evidence")
+    assert_equal "BLOCKED", qa.fetch("verdict")
+    assert_equal "human_attachment_pending", qa.dig("fields", "visual_evidence_destination")
+    assert_match(%r{/tmp/before\.png}, qa.dig("fields", "visual_evidence"))
   end
 
   def test_v2_blocked_upload_must_name_why_the_uploader_was_unavailable

@@ -89,6 +89,43 @@ blocker. Do not fake a manual pass from static inspection.
      explicitly configured and verified that integration. That limits GitHub's
      API, not agents: a host whose browser tooling can set a file input on an
      authenticated github.com session completes the UI upload flow normally.
+     The portable direct-upload seam is enabled only when the trusted-base
+     `.agents/agent-workflow.yml` contains this exact closed mapping:
+
+     ```yaml
+     visual_evidence_uploader:
+       version: 1
+       provider: github_user_attachments
+       verified: true
+     ```
+
+     Resolve `MANUAL_TESTING_SKILL_DIR` through the explicit environment value,
+     the loaded skill directory, then a repo-local pinned
+     `.agents/skills/manual-testing` copy. Run its
+     `bin/configured-evidence-upload --repo-root <root> --trusted-base
+     <accepted-base-SHA> <file>` once per artifact. The helper invokes only the
+     fixed `.agents/bin/upload-evidence` wrapper materialized from the trusted base,
+     passes the file as one argv value, bounds runtime/output, and accepts only
+     one exact `https://github.com/user-attachments/assets/<asset-id>` line.
+     It passes the resolved skill root as `MANUAL_TESTING_SKILL_DIR`, so a
+     deliberately verified wrapper can delegate to the MIT-attributed reference
+     implementation without a host-specific path:
+
+     ```bash
+     #!/usr/bin/env bash
+     set -euo pipefail
+     exec "${MANUAL_TESTING_SKILL_DIR:?}/bin/github-user-attachments-upload" "$@"
+     ```
+
+     Never call that reference helper merely because it is installed.
+
+     Omitted or malformed configuration, a missing/changed/unsafe wrapper or
+     file, unsupported type, authentication or upload failure, timeout,
+     non-201 response, extra output, or any other URL shape is an upload
+     failure, not durable evidence. Preserve `human_attachment_pending`, the
+     blocked QA/release state, and the matching blocked reason; never copy the
+     local path into a durable field. On success, use `github_pr` with the
+     returned URL and omit `visual_evidence_blocked_reason`.
      Record the matching `visual_evidence_blocked_reason`: `uploader_absent`
      (no upload tool exists), `uploader_denied` (the tool exists but the host
      permission policy refused the call, which only a human can pre-provision
