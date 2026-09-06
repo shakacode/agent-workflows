@@ -1134,6 +1134,25 @@ class CoordinationTelemetryContractTest < Minitest::Test
     end
   end
 
+  def test_batch_audit_action_sites_require_coordination
+    {
+      WORKFLOW_PATH => "### Coordination Telemetry And Provenance",
+      COORDINATION_DOC_PATH => "## Operational Signal Events"
+    }.each do |path, heading|
+      text = extract_section(read_repo_file(path), heading).gsub(/\s+/, " ")
+      action = "For `coordination_required`, after terminal releases, run a read-only check only when " \
+               "the active backend advertises an `agent-coord`-compatible telemetry-completeness audit capability"
+      assert_includes text, action, path
+      assert_includes text,
+                      "For `coordination_not_applicable`, skip all telemetry-audit backend calls even with a " \
+                      "configured backend.", path
+      assert_includes text,
+                      "A trusted `coordination_backend: n/a` under `coordination_required` is a pre-launch " \
+                      "stop, not a skipped telemetry audit.", path
+      refute_match(%r{Backend `n/a` skips this check|backend `n/a` skips the check}, text, path)
+    end
+  end
+
   def test_batch_audit_section_contract_rejects_each_missing_required_concept
     expected_concepts = [
       "compatible capability",

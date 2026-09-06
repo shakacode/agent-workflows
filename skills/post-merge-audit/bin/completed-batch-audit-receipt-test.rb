@@ -207,6 +207,83 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal "clean", result.dig("fields", "verdict")
   end
 
+  def test_old_publication_snapshot_requires_fresh_bound_publication_despite_refreshed_proof
+    preflight = publication_preflight
+    assert preflight.fetch("eligible")
+    old_snapshot = preflight.fetch("snapshot").reject do |key, _value|
+      %w[coordination_applicability applicability_proof_digest].include?(key)
+    end
+    old_value = CompletedBatchAuditReceipt.encoded_snapshot_value(old_snapshot)
+    old_marker = ready_marker.sub(/^scope_evidence:.*\n/, "\\0publication_snapshot: #{old_value}\n")
+    original = old_marker.dup.freeze
+    replay_options = {
+      expected_batch_id: "batch-184",
+      publication_preflight: preflight,
+      expected_targets: preflight.fetch("source_input").fetch("expected_targets"),
+      coordination_backend: "n/a",
+      **trusted_applicability(preflight)
+    }
+    fresh_marker = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, preflight)
+    target_payload = publication_target_payload
+    authenticated_api = lambda do |host, endpoint, method: "GET", input: nil|
+      unless [host, endpoint, method, input] == ["github.com", "repos/acme/widgets/pulls/184", "GET", nil]
+        raise "unexpected target verification request"
+      end
+
+      target_payload
+    end
+    with_stubbed_gh_api(authenticated_api) do
+      fresh_replay = CompletedBatchAuditReceipt.replay_marker(fresh_marker, **replay_options)
+      assert fresh_replay.fetch("ready"), "matching snapshot must pass the same replay environment"
+      replayed = CompletedBatchAuditReceipt.replay_marker(old_marker, **replay_options)
+
+      assert replayed.fetch("well_formed")
+      refute replayed.fetch("ready")
+      assert_equal ["completed-batch-audit publication snapshot mismatch or stale"], replayed.fetch("blockers")
+    end
+    assert_equal original, old_marker, "replay must not repair the old receipt in place"
+
+    with_fake_gh do |env, directory|
+      targets_path = write_json(directory, "targets.json", preflight.fetch("source_input").fetch("expected_targets"))
+      receipt_path = File.join(directory, "receipt.txt")
+      File.write(receipt_path, ready_marker)
+      out, err, status = capture_receipt_cli(
+        env, "ruby", SCRIPT, "publish", "--expected-batch-id", "batch-184",
+        "--targets-json", targets_path, "--receipt", receipt_path
+      )
+
+      assert status.success?, err
+      published = JSON.parse(out)
+      assert published.fetch("ready")
+      assert_empty published.fetch("blockers")
+      assert_includes published.fetch("chat_reference"), "#issuecomment-9001"
+      refute_equal old_value, published.fetch("fields").fetch("publication_snapshot")
+      calls = File.readlines(env.fetch("FAKE_GH_LOG"), chomp: true)
+      assert_equal(1, calls.count { |call| call.include?("--method POST") })
+      refute(calls.any? { |call| call.match?(/--method (?:PATCH|DELETE)/) })
+    end
+  end
+
+  def test_archive_guidance_distinguishes_old_snapshot_migration_from_accepted_deferral
+    root = File.expand_path("../../..", __dir__)
+    %w[
+      skills/post-merge-audit/SKILL.md
+      workflows/post-merge-audit.md
+      workflows/pr-batch-integration-closeout.md
+    ].each do |path|
+      text = File.read(File.join(root, path), encoding: "UTF-8").gsub(/\s+/, " ")
+      assert_includes text,
+                      "An old helper-managed `publication_snapshot` missing `coordination_applicability` or " \
+                      "`applicability_proof_digest` stays non-ready even after replay refresh.", path
+      assert_includes text,
+                      "Preserve the old comment; establish trusted applicability proof and a fresh eligible " \
+                      "preflight, then use ordinary `publish` with a fresh marker to create a newly bound " \
+                      "receipt and reference after all gates pass.", path
+      assert_includes text,
+                      "Ordinary snapshot migration is not the accepted-deferral-only `supersede` operation.", path
+    end
+  end
+
   def test_ror_blocked_receipt_becomes_ready_only_through_authenticated_accepted_deferral
     blocked = File.read(
       File.join(FIXTURES, "completed-batch-accepted-deferral-ror-blocked.txt"),
