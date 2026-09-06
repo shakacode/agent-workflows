@@ -39,6 +39,7 @@ and implementation plans are collected in the final reference section.
 | --- | --- |
 | Understand what each skill does and when to use it | [Skill Guide](skills.md) |
 | Choose between issue triage, one-PR lanes, batch planning, and batch execution | [PR Batch Skills Usage](pr-batch-skills.md) |
+| Run an attended work window or leave authorized work moving overnight | [Attended And Overnight Workflow](attended-and-overnight-workflow.md) |
 | Finish and archive a stale PR-batch task | Use the `$close-batch` skill |
 | Run repository control towers with one prioritized, deep-linked human-attention desk | [Control Tower And Human Attention Desk](control-tower-prompts.md) |
 | Audit local Codex tasks and visible ChatGPT chats for archive and follow-up actions | Use the `$audit-chats` skill |
@@ -83,6 +84,7 @@ useful technical references, but are secondary to the user journeys above.
 | Signed-launch rollout incident and prevention controls | [Postmortem: Unsupported Signed-Launch Enforcement](postmortems/2026-08-06-unsupported-signed-launch-enforcement.md) |
 | Machine-readable review output | [Review Finding Schema](review-finding-schema.md) |
 | Privacy-safe batch usage telemetry | [Batch Usage Receipt v1](batch-usage-receipt.md) |
+| Advisory Astra routing and reproducible behavior comparisons | [Astra Routing And Behavior Pilot](astra-tuning.md) |
 | Host-text architecture decision | [ADR 0001: Identical Skill Text Across Hosts](adr/0001-identical-skill-text-across-hosts.md) |
 | Compound Engineering architecture decision | [ADR 0002: Compose Compound Engineering Inside Agent Workflows](adr/0002-compose-compound-engineering-inside-agent-workflows.md) |
 | Autonomous merge eligibility decision | [ADR 0003: Smarter Autonomous Merge Gates](adr/0003-smarter-autonomous-merge-gates.md) |

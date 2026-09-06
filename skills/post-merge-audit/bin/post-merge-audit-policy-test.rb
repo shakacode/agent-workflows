@@ -75,6 +75,14 @@ class PostMergeAuditPolicyTest < Minitest::Test
   REQUIRED_WAIVER_PUBLICATION_REPLAY_RULE = "Receipt publication and replay independently re-fetch and compare the bound waiver; a self-consistent preflight digest is not authentication."
   REQUIRED_RAW_PREFLIGHT_INPUT_BINDING = "The preflight receipt embeds the canonical raw v1 input as `source_input` with `source_input_digest`; digests prove integrity only and never authenticate terminal facts."
   REQUIRED_LIVE_PREFLIGHT_REASSESSMENT = "Before publish or replay accepts a complete receipt, it re-assesses that bound source input, re-fetches each exact target through authenticated `gh api`, reruns bounded exact-batch coordination status when a backend applies, and re-authenticates any waiver; missing, altered, stale, or mismatched terminal facts block before POST or ready replay."
+  REQUIRED_ISSUE_RESULT_PR_PROJECTION = "The issue-to-result-PR projection requires an authenticated same-repository symmetric closing relationship, a closed source issue, a merged result PR, the exact result head, and ordered terminal timestamps; do not union the source issue and result PR as two publication targets, and re-authenticate the projection before ordinary receipt publish or replay."
+  REQUIRED_TYPED_LANE_TARGETS = "When typed for publication-preflight parsing, accepted lane-target forms are exactly `issue:N`, `pr:N`, or `pull_request:N`; malformed, unknown, or type-ambiguous spellings fail closed. These parsing forms are not distinct agent-coordination claim identities. Legacy bare `N`, `#N`, and positive integer lane targets remain compatible."
+  REQUIRED_NARROW_PROJECTION_SCOPE = "This projection is only for issue-to-result-PR publication; it does not authorize auxiliary ad-hoc target mappings or multiple coordination lanes for one publication target."
+  REQUIRED_MIXED_TARGET_RECONCILIATION = "An explicitly URL-less terminal `done` lane that already names mixed issue and pull-request targets reconciles the shared scalar `pr_state` per target only when durable terminal evidence exists, the scalar matches one resolved terminal state, every target state is freshly authenticated, the issue head remains absent, and exact-head QA stays bound to the pull request; this does not derive or union targets from a URL or admit auxiliary lanes."
+  ISSUE_RESULT_PR_PROJECTION_FILES = [
+    "skills/post-merge-audit/SKILL.md",
+    "workflows/post-merge-audit.md"
+  ].freeze
   REQUIRED_TRUSTED_RECEIPT_WORKFLOW_CONFIG = "Completed-batch receipt `publish` and `replay` require explicit `--workflow-config <trusted repo workflow config>`; they load `coordination_backend` only from that YAML seam, never from an environment or receipt override. The preflight receipt's top-level `coordination_backend`, bound raw `source_input` coordination mode, and snapshot backend must all match the trusted configured backend. A matching real backend must rerun bounded exact-batch coordination status; a matching trusted `n/a` backend must use only the typed no-backend proof and must not invoke coordination. Missing, malformed, or mismatched config/backend facts block before publication or ready replay."
   REQUIRED_TRUSTED_UI_CLASSIFICATION = "Each `qa_evidence` row must carry a coordinator-owned `user_visible_ui_change` value of exact `yes` or `no`, bound to that row's canonical target and publication snapshot; `yes` requires strict visual-evidence v2 replay, `no` preserves historical non-UI v1 replay, and missing, invalid, or v2-contradictory classification blocks."
   REQUIRED_PUBLIC_FALLBACK_PUBLICATION_BLOCK = "Configured `public claim-comment fallback` is advisory ownership state only; it must not invoke private `agent-coord`, and without a separate authenticated terminal coordination contract it leaves completed-batch publication blocked as `UNKNOWN`."
@@ -478,6 +486,17 @@ class PostMergeAuditPolicyTest < Minitest::Test
                       "#{relative_path} should block an unmerged coordinated target"
       assert_includes normalized_text, "in_progress",
                       "#{relative_path} should block in-progress QA"
+    end
+  end
+
+  def test_issue_targeted_lanes_project_only_to_one_authenticated_result_pr
+    ISSUE_RESULT_PR_PROJECTION_FILES.each do |relative_path|
+      normalized_text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+
+      assert_includes normalized_text, REQUIRED_ISSUE_RESULT_PR_PROJECTION, relative_path
+      assert_includes normalized_text, REQUIRED_TYPED_LANE_TARGETS, relative_path
+      assert_includes normalized_text, REQUIRED_NARROW_PROJECTION_SCOPE, relative_path
+      assert_includes normalized_text, REQUIRED_MIXED_TARGET_RECONCILIATION, relative_path
     end
   end
 
