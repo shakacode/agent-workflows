@@ -1,0 +1,10 @@
+HTTP/2 429
+date: Tue, 01 Sep 2026 10:00:00 GMT
+x-github-request-id: C0DE:SECONDARY-NO-RETRY
+x-ratelimit-resource: core
+x-ratelimit-limit: 5000
+x-ratelimit-used: 10
+x-ratelimit-remaining: 4990
+x-ratelimit-reset: 1788260400
+
+{"message":"Secondary rate limit; retry timing unavailable."}

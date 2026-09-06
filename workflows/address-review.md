@@ -743,7 +743,17 @@ before mutating GitHub or the branch.
    - Treat style nits, speculative suggestions, documentation/comment/naming requests, changelog wording, test-shape preferences, and "could consider" feedback as `OPTIONAL` (not `SKIPPED`) so low-risk nits can be handled or logged without blocking merge readiness.
    - Reserve `SKIPPED` for duplicate comments, factually incorrect suggestions, status posts, acknowledgments, and non-actionable summaries.
    - If the API returns 404, tell me the PR or comment does not exist.
-   - If the API returns 403, tell me to check `gh auth status`.
+   - A 403 alone does not prove invalid authentication. Parse already captured
+     representative response headers with `github-api-canary --headers-file PATH`
+     (source checkout: `bin/github-api-canary`); only make its default one-shot
+     `/user` request when the failed operation did not preserve representative
+     headers. Do not use `gh auth status` as invalid-credential proof while that
+     representative core bucket is exhausted.
+   - Honor `Retry-After` or `X-RateLimit-Reset`; when `remaining=0`, do not retry
+     before the canary's exact `retry_at`.
+   - A conflicting `GET /rate_limit` snapshot is an inconsistency, not restoration.
+     Keep required review, exact-head, security, and merge evidence blocked or
+     `UNKNOWN` until the representative API evidence is available.
    - If nothing is returned after cutoff filtering, tell me no new review feedback was found since the last summary comment and mention `check all reviews`.
    - If nothing is returned without a cutoff, tell me no review comments were found.
 

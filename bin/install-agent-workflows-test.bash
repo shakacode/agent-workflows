@@ -211,6 +211,20 @@ test_codex_host_install_writes_helpers_and_metadata() {
   assert_file "$target/docs/solutions/README.md"
   assert_file "$target/bin/agent-workflow-seam-doctor"
   assert_file "$target/bin/agent-workflow-writing-style"
+  assert_file "$target/bin/github-api-canary"
+  cat > "$tmp/github-api-canary.headers" <<'EOF'
+HTTP/2 200
+x-github-request-id: INSTALL:CANARY
+x-ratelimit-resource: core
+x-ratelimit-limit: 5000
+x-ratelimit-used: 1
+x-ratelimit-remaining: 4999
+x-ratelimit-reset: 1788260400
+
+EOF
+  canary_output="$("$target/bin/github-api-canary" --headers-file "$tmp/github-api-canary.headers")"
+  ruby -rjson -e 'result = JSON.parse(ARGV.fetch(0)); abort result.inspect unless result["status"] == "healthy"' \
+    "$canary_output" || fail "installed GitHub API canary could not parse captured representative headers"
   mkdir -p "$tmp/.agents" "$tmp/docs" "$tmp/home"
   printf 'Installed resolver smoke.\n' > "$tmp/docs/repository-style.md"
   printf 'writing_style: docs/repository-style.md\n' > "$tmp/.agents/agent-workflow.yml"

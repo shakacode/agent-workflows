@@ -125,7 +125,18 @@ The helper defaults the repo to `gh repo view`; pass `--repo OWNER/REPO` to over
 
 If any commit in the range cannot be mapped to a PR, the helper prints an explicit `UNKNOWN` row for that commit. Carry that row into the full table with `Result` set to `UNKNOWN`, investigate it, and do not finish the sweep until the row is resolved to a merged PR classification or explicitly reported as a blocker. Do not silently drop it.
 
-A sudden spike of `UNKNOWN` rows can indicate stale GitHub authentication, API rate limits, or a temporary API failure rather than genuinely unmapped commits. Run `gh auth status` and rerun the helper when the UNKNOWN count looks suspicious.
+A sudden spike of `UNKNOWN` rows can indicate stale GitHub authentication, API
+rate limits, or a temporary API failure rather than genuinely unmapped commits.
+A 403 alone does not prove invalid authentication. Parse already captured
+representative response headers with `github-api-canary --headers-file PATH`
+(source checkout: `bin/github-api-canary`); only make its default one-shot
+`/user` request when the failed operation did not preserve representative
+headers. Do not use `gh auth status` as invalid-credential proof while that
+representative core bucket is exhausted. Honor `Retry-After` or
+`X-RateLimit-Reset`; when `remaining=0`, do not retry before the canary's exact
+`retry_at`. A conflicting `GET /rate_limit` snapshot is an inconsistency, not
+restoration. Keep affected rows `UNKNOWN` and do not finish the sweep until
+the representative API evidence is available.
 
 The fallback makes one GitHub API call per commit whose subject lacks `(#NNNN)`. Typical RC ranges complete quickly, but large ranges with many direct commits can hit rate limits. Direct version-bump commits, bot commits, and release-automation commits may be expected `UNKNOWN` rows; keep them in the table with `Result` set to `UNKNOWN`, choose `internal` or `release-process`, and explain that no PR-backed changelog entry exists.
 
