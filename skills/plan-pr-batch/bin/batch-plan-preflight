@@ -85,6 +85,8 @@ module BatchPlanPreflight
     "bin",
     "stage-dependency-gate"
   )
+  STAGE_DEPENDENCY_CLEANUP_CONFIRMED = "confirmed-zero"
+  STAGE_DEPENDENCY_CLEANUP_UNKNOWN = "UNKNOWN"
   STAGE_DEPENDENCY_REPLAY_POLL_SECONDS = 0.01
   STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS = 0.25
   STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS = 5
@@ -133,9 +135,10 @@ module BatchPlanPreflight
 
   module_function
 
-  def violation(code, path, message, lane_ids: nil)
+  def violation(code, path, message, lane_ids: nil, evidence: nil)
     item = { "code" => code, "path" => path, "message" => message }
     item["lane_ids"] = lane_ids if lane_ids
+    item["evidence"] = evidence if evidence
     item
   end
 
@@ -1026,13 +1029,10 @@ module BatchPlanPreflight
               pgroup: true,
               unsetenv_others: true
             )
-            status = wait_for_stage_dependency_gate(pid)
-            if status == :timeout
-              return [nil, violation(
-                "stage-dependency-replay-timeout",
-                "$.stage_dependency_replay",
-                "The fixed stage-dependency-gate helper exceeded the bounded replay timeout."
-              )]
+            outcome = await_stage_dependency_gate(pid)
+            status = outcome.fetch(:status)
+            if status.nil? || !outcome.fetch(:signals).empty?
+              return [nil, stage_dependency_lifecycle_violation(outcome)]
             end
             unless status.success?
               return [nil, violation(
@@ -1062,42 +1062,119 @@ module BatchPlanPreflight
     )]
   end
 
-  def wait_for_stage_dependency_gate(pid)
+  # Waits for the replay child inside the bounded deadline, then confirms the
+  # whole owned process group is gone. Returns the child status together with
+  # the exact cleanup state, so a confirmed-zero group is never conflated with
+  # one whose exit could not be confirmed.
+  def await_stage_dependency_gate(pid)
     deadline = monotonic_time + STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS
+    status = nil
     loop do
       waited = Process.waitpid2(pid, Process::WNOHANG)
-      return waited.last if waited
+      if waited
+        status = waited.last
+        break
+      end
       break if monotonic_time >= deadline
 
       sleep STAGE_DEPENDENCY_REPLAY_POLL_SECONDS
     end
+    return stage_dependency_forced_outcome(pid, "timeout") if status.nil?
 
-    terminate_stage_dependency_process_group(pid)
-    :timeout
+    group_deadline = monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
+    if wait_for_stage_dependency_process_group_exit(pid, group_deadline)
+      return stage_dependency_outcome(
+        phase: "exit",
+        status: status,
+        cleanup_confirmed: true,
+        signals: []
+      )
+    end
+
+    stage_dependency_forced_outcome(pid, "exit")
   rescue Errno::ECHILD
-    :timeout
+    stage_dependency_forced_outcome(pid, "timeout")
   end
 
+  def stage_dependency_forced_outcome(pid, phase)
+    confirmed, signals = terminate_stage_dependency_process_group(pid)
+    stage_dependency_outcome(
+      phase: phase, status: nil, cleanup_confirmed: confirmed, signals: signals
+    )
+  end
+
+  def stage_dependency_outcome(phase:, status:, cleanup_confirmed:, signals:)
+    {
+      phase: phase,
+      status: status,
+      cleanup_confirmed: cleanup_confirmed,
+      signals: signals
+    }
+  end
+
+  def stage_dependency_lifecycle_violation(outcome)
+    evidence = stage_dependency_cleanup_evidence(outcome)
+    unless outcome.fetch(:cleanup_confirmed)
+      return violation(
+        "stage-dependency-replay-cleanup-unconfirmed",
+        "$.stage_dependency_replay",
+        "The fixed stage-dependency-gate helper process group could not be confirmed " \
+        "terminated, so the replay result is not trustworthy.",
+        evidence: evidence
+      )
+    end
+    if outcome.fetch(:phase) == "timeout"
+      return violation(
+        "stage-dependency-replay-timeout",
+        "$.stage_dependency_replay",
+        "The fixed stage-dependency-gate helper exceeded the bounded replay timeout.",
+        evidence: evidence
+      )
+    end
+
+    violation(
+      "stage-dependency-replay-cleanup-incomplete",
+      "$.stage_dependency_replay",
+      "The fixed stage-dependency-gate helper exited while descendants were still running " \
+      "in its process group, so the replay output is not trustworthy.",
+      evidence: evidence
+    )
+  end
+
+  def stage_dependency_cleanup_evidence(outcome)
+    confirmed = outcome.fetch(:cleanup_confirmed)
+    evidence = {
+      "phase" => outcome.fetch(:phase),
+      "timeout_seconds" => STAGE_DEPENDENCY_REPLAY_TIMEOUT_SECONDS,
+      "process_group_cleanup" =>
+        confirmed ? STAGE_DEPENDENCY_CLEANUP_CONFIRMED : STAGE_DEPENDENCY_CLEANUP_UNKNOWN,
+      "surviving_process_count" => confirmed ? 0 : STAGE_DEPENDENCY_CLEANUP_UNKNOWN
+    }
+    signals = outcome.fetch(:signals)
+    evidence["signals"] = signals unless signals.empty?
+    evidence
+  end
+
+  # Terminates and reaps the whole owned process group, escalating TERM to KILL.
+  # Returns whether the group was observed empty, plus the signals actually
+  # delivered, so cleanup evidence never overstates what was done.
   def terminate_stage_dependency_process_group(pid)
     signal_stage_dependency_process_group("TERM", pid)
-    sleep_until_stage_dependency_deadline(
-      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
-    )
-    signal_stage_dependency_process_group("KILL", pid)
+    grace = monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
+    wait_for_stage_dependency_child(pid, grace)
+    return [true, %w[TERM]] if wait_for_stage_dependency_process_group_exit(pid, grace)
 
-    wait_for_stage_dependency_child(
-      pid,
-      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
-    )
-    wait_for_stage_dependency_process_group_exit(
-      pid,
-      monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
-    )
+    signal_stage_dependency_process_group("KILL", pid)
+    grace = monotonic_time + STAGE_DEPENDENCY_REPLAY_TERMINATION_GRACE_SECONDS
+    wait_for_stage_dependency_child(pid, grace)
+    [wait_for_stage_dependency_process_group_exit(pid, grace), %w[TERM KILL]]
   end
 
+  # Cleanup must never raise: a signal failure has to surface as UNKNOWN cleanup
+  # evidence, not escape into the caller's generic execution-failed rescue.
   def signal_stage_dependency_process_group(signal, pid)
     Process.kill(signal, -pid)
-  rescue Errno::ESRCH
+  rescue SystemCallError
     nil
   end
 
@@ -1118,7 +1195,7 @@ module BatchPlanPreflight
     true
   rescue Errno::ESRCH
     false
-  rescue Errno::EPERM
+  rescue SystemCallError
     true
   end
 
@@ -1131,17 +1208,16 @@ module BatchPlanPreflight
     !stage_dependency_process_group_alive?(pid)
   end
 
-  def sleep_until_stage_dependency_deadline(deadline)
-    loop do
-      remaining = deadline - monotonic_time
-      return if remaining <= 0
-
-      sleep [STAGE_DEPENDENCY_REPLAY_POLL_SECONDS, remaining].min
-    end
-  end
-
   def monotonic_time
     Process.clock_gettime(Process::CLOCK_MONOTONIC)
+  end
+
+  # True only when this file is the program being executed, so tests can load
+  # the module and drive the bounded replay lifecycle directly.
+  def executed_as_main?
+    File.realpath($PROGRAM_NAME) == HELPER_PATH
+  rescue SystemCallError
+    false
   end
 
   def complete_stage_dependency_gate?(gate, plan, lane_ids)
@@ -1549,26 +1625,28 @@ module BatchPlanPreflight
   end
 end
 
-begin
-  parsed_input = JSON.parse($stdin.read)
-rescue JSON::ParserError
-  parsed_input = nil
-  output = BatchPlanPreflight.result(
-    "rejected", [], [],
-    [BatchPlanPreflight.violation("malformed-json", "$", "Input must be valid JSON.")]
-  )
+if BatchPlanPreflight.executed_as_main?
+  begin
+    parsed_input = JSON.parse($stdin.read)
+  rescue JSON::ParserError
+    parsed_input = nil
+    output = BatchPlanPreflight.result(
+      "rejected", [], [],
+      [BatchPlanPreflight.violation("malformed-json", "$", "Input must be valid JSON.")]
+    )
+  end
+  begin
+    output ||= BatchPlanPreflight.evaluate(parsed_input)
+  rescue KeyError, NoMethodError, TypeError, ArgumentError
+    output = BatchPlanPreflight.result(
+      "rejected", [], [],
+      [BatchPlanPreflight.violation(
+        "invalid-envelope",
+        "$",
+        "The v1 envelope is incomplete or contains malformed structured fields."
+      )]
+    )
+  end
+  puts JSON.generate(output)
+  exit(output["status"] == "accepted" ? 0 : 1)
 end
-begin
-  output ||= BatchPlanPreflight.evaluate(parsed_input)
-rescue KeyError, NoMethodError, TypeError, ArgumentError
-  output = BatchPlanPreflight.result(
-    "rejected", [], [],
-    [BatchPlanPreflight.violation(
-      "invalid-envelope",
-      "$",
-      "The v1 envelope is incomplete or contains malformed structured fields."
-    )]
-  )
-end
-puts JSON.generate(output)
-exit(output["status"] == "accepted" ? 0 : 1)
