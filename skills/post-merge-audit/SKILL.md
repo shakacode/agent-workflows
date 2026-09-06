@@ -308,9 +308,12 @@ still-open lanes:
   outcome (`blocked`, `unknown`, or release-audit `in_progress`) into the issue
   plan or an explicit coordinator action that names the missing evidence or
   decision.
-- Structural review: if the audited range also needs a codebase-health lens,
-  run `$structural-review` explicitly on that same range; this audit does not
-  auto-invoke sibling axes.
+
+### Range-Level Structural Review
+
+If the audited range also needs a codebase-health lens, run `$structural-review`
+explicitly on that same range, including release/range audits without worked
+issues or QA lanes. This audit does not auto-invoke sibling axes.
 
 ## Codex And Claude Coordination
 

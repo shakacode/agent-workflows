@@ -19,10 +19,24 @@ Resolve writing style before authoring human-facing prose. Run
 `agent-workflow-writing-style --repo-root <trusted-repository-root> --format json`
 from the installed executable on `PATH`; if it is unavailable there, resolve
 the same executable from the loaded Agent Workflows pack's `bin/` directory or
-an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. Stop with upgrade or
-installation guidance if the shared resolver is unavailable; do not duplicate
-its packaged default in a skill.
-When the resolver exits nonzero, stop and surface the resolver error to the user; do not proceed without a style guide.
+an explicit `AGENT_WORKFLOW_WRITING_STYLE_RESOLVER` path. If neither location
+is usable, follow the fallback below and report upgrade or installation
+guidance; do not duplicate the packaged default in a skill.
+
+If presentation tooling is unavailable, continue independent authorized work.
+For prose, a previously verified guide may be reused only while its trusted
+configuration and source are unchanged. Otherwise use the loaded trusted pack's
+`docs/writing-style.md` only after verifying that repository configuration is
+absent or readable and valid, with no explicit `writing_style` override, and
+that no valid user-global override takes precedence. Record the fallback source and tooling
+limitation. If that verification is unavailable, hold prose authoring and return
+the precise resolution problem to the coordinator while independent work continues.
+A nonzero resolver exit is not proof of missing tooling: inspect its error.
+Until the error is classified and the existing fallback preconditions are
+verified, hold prose authoring while independent authorized work continues.
+An explicit malformed repository value blocks authoring; never bypass it with
+the default. The coordinator asks the user only if the resolution needs a decision
+outside existing authority.
 
 The resolver returns one complete guide plus observable provenance: `repo`,
 `user-global`, or `portable-default`. Repository configuration wins. A missing
@@ -54,7 +68,10 @@ For adversarial pre-merge or post-merge PR review, use `.agents/skills/adversari
 For an interactive human-oriented explanation of a PR, use
 `.agents/skills/pr-walkthrough/SKILL.md` when skills are available. It presents
 one conceptual change at a time, explains why it exists, and pauses for
-questions before continuing.
+questions before continuing. Its walkthrough identity must come from the
+installed `pr-batch/bin/diff-identity` helper using the base ref, reviewed
+diff-base SHA, and full head SHA; an opaque caller-supplied digest is not an
+identity receipt.
 
 ## User-Facing Coordination Contract
 
@@ -879,8 +896,6 @@ Persist `launch-pending` before worker launch; after spawn, persist ordinary `ac
 Assignment activation uses ordinary durable lifecycle state; no project signing key, fixed trust anchor, launch-confirmation receipt, or human waiver is required.
 A dispatcher or instance change still requires stop/reconcile replacement fencing and a single-use proof bound to the exact prior and replacement assignment identities.
 Same-lane worker/model replacement is a nonterminal claim reassignment or supersession operation; it must never emit a terminal lane closeout. Before consuming replacement proof, preserve and verify known `status`, `terminal`, `closed_at`, and `pr_state`; missing or `UNKNOWN` terminal facts fail closed, and a truly terminal lane requires reconciliation or explicit replanning instead of replacement. The first terminal event remains immutable: later authenticated completion may reconcile an `abandoned` lane or a `superseded` issue with typed no-PR evidence, but code-bearing completion after terminal `superseded` is a premature terminal supersession / replacement protocol violation.
-The issue-to-result-PR projection requires an authenticated same-repository symmetric closing relationship, a closed source issue, a merged result PR, the exact result head, and ordered terminal timestamps; do not union the source issue and result PR as two publication targets, and re-authenticate the projection before ordinary receipt publish or replay. When typed for publication-preflight parsing, accepted lane-target forms are exactly `issue:N`, `pr:N`, or `pull_request:N`; malformed, unknown, or type-ambiguous spellings fail closed. These parsing forms are not distinct agent-coordination claim identities. Legacy bare `N`, `#N`, and positive integer lane targets remain compatible. This projection is only for issue-to-result-PR publication; it does not authorize auxiliary ad-hoc target mappings or multiple coordination lanes for one publication target.
-An explicitly URL-less terminal `done` lane that already names mixed issue and pull-request targets reconciles the shared scalar `pr_state` per target only when durable terminal evidence exists, the scalar matches one resolved terminal state, every target state is freshly authenticated, the issue head remains absent, and exact-head QA stays bound to the pull request; this does not derive or union targets from a URL or admit auxiliary lanes.
 The helper selects and records only: it never launches workers or mutates a coordination backend. Do not infer dispatch authority from generic subagent wording. Preserve supplied lane state. In Goal mode, an authorized `selected` result resumes only after durable persistence; `blocked-user-input` stops on the same persisted decision request.
 
 Resolve `base_branch` from repo configuration or inline `AGENTS.md` configuration;
