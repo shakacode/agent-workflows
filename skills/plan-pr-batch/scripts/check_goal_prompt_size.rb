@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "stringio"
+require "json"
 
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
@@ -13,36 +14,9 @@ PLANNING_PASS_ROUTE_ROW =
   /^\|\s*`(?<classification>[a-z-]+)`\s*\|\s*`(?<neutral>[^`]+)`\s*\|\s*`(?<codex>[^`]+)`\s*\|\s*`(?<claude>[^`]+)`\s*\|\s*$/
 PLANNING_PASS_DISPOSITION_ROW =
   /^\|\s*`(?<case_id>[A-Za-z-]+)`\s*\|\s*`(?<disposition>[a-z-]+)`\s*\|\s*`(?<max_reviews>[01])`\s*\|\s*`(?<compare>yes|no)`\s*\|\s*`(?<restart>yes|no)`\s*\|\s*$/
-PLANNING_PASS_ACCEPTANCE_CASES = [
-  {
-    id: "simple",
-    classification: "affirmatively-simple",
-    neutral: "balanced/medium",
-    codex: "Terra/medium",
-    claude: "Sonnet 5/medium"
-  },
-  {
-    id: "routine multi-lane",
-    classification: "routine-multi-lane",
-    neutral: "balanced/high",
-    codex: "Terra/high",
-    claude: "Sonnet 5/high"
-  },
-  {
-    id: "uncertain single target",
-    classification: "default-or-uncertain-single-target",
-    neutral: "strongest/high",
-    codex: "Sol/high",
-    claude: "Opus 5/high"
-  },
-  {
-    id: "pinned high risk",
-    classification: "pinned-high-risk-or-escalation",
-    neutral: "strongest/xhigh",
-    codex: "Sol/xhigh",
-    claude: "Opus 5/xhigh"
-  }
-].freeze
+PLANNING_PASS_ACCEPTANCE_CASES = JSON.parse(
+  File.read(File.expand_path("../references/model-routing-profiles.json", __dir__))
+).fetch("legacy_planning_cases").map { |entry| entry.transform_keys(&:to_sym) }.freeze
 PLANNING_PASS_DISPOSITION_CASES = [
   {
     id: "stronger current",
@@ -275,8 +249,8 @@ TRIAGE_GOAL_PROMPT_BASE_RESOLUTION_LINE =
 GOAL_PROMPT_FALLBACK_LINE =
   "- Resolve `$pr-batch`; autoload/self-contained: load persisted state before preflight; " \
   "persist output before resume/launch; preflight issue/PR only."
-ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;large/complex full;refresh;" \
-                              "chg=>redo/stop;gate fail=>stop;ask iff same clean"
+ASK_WALKTHROUGH_PROMPT_LINE = "- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;" \
+                              "chg=>redo/stop;fail=>stop;ask iff same clean"
 ITEM_FIXTURE_FIELD_PREFIXES = ["- Target:", "  Original:", "  Goal:", "  Notes:", "  Done when:"].freeze
 READY_ITEM_DONE_WHEN_LINE =
   "Done when: requested `merge_authority` final state with PR/no-PR evidence or no-fix rationale."
@@ -336,7 +310,7 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "If CI/reviews are pending, finish runnable in-scope closeout work before each bounded poll.",
   "Triage only after the complete review cohort settles; do not wait for unrelated validation CI before that consolidated triage.",
   "report `blocked-user-input` without consuming external-blocker retries or starting monitoring",
-  "For an owned target, start the exact-diff walkthrough before asking the final merge question.",
+  "For an owned target, publish the complete exact-diff walkthrough under the `ask` route below before asking the final merge question.",
   "For an external dependency-only reference, instruct the user either to merge it and reply only after it is merged, or to explicitly authorize adding it as a target",
   "a reply or merge decision alone does not clear the prerequisite or authorize its merge.",
   "GMCC-v5 compatibility fallback:",
@@ -348,9 +322,14 @@ CANONICAL_CONTINUATION_SNIPPET_PHRASES = [
   "If recurring current-thread wake-ups are unavailable, preserve exact manual resume instructions.",
   "Terminal or NOT COMPLETE handoff states allowed: `merged`, `ready-gates-clean`, `ready-no-merge-authority`, `ready-human-review-required`, `autonomous-merge-evidence-unknown`, `waiting-on-checks-or-review` after bounded polling, `blocked-user-input` with exact question/thread URL, `external-gate-failing` with evidence and no local fix, or `no-pr-evidence` where applicable.",
   "With `auto_merge_when_gates_pass`, done requires ordinary readiness plus `autonomous-merge-eligible`, or `human-approved-for-current-head` whose exact live verdict/head, exact sorted gate set, rollback disposition, and durable proven-human decision with verified merge authority are established; otherwise stop in the exact autonomous eligibility state, and unless another real blocker prevents it, merge and close the PR, target, and issue.",
-  "With `ask`, after ordinary gates are clean, automatically start the exact-diff PR walkthrough before approval.",
-  "After it completes or is skipped, refresh the diff identity and ordinary readiness.",
-  "If the diff identity changed, invalidate the walkthrough and readiness evidence, then restart the walkthrough or stop.",
+  "With `ask`, after ordinary gates are clean, automatically publish the complete exact-diff PR walkthrough before approval.",
+  "Prepare every conceptual section up front",
+  "mandatory inline-thread and no-anchor-stop rules",
+  "without waiting for repeated chat turns",
+  "The owning task consumes PR replies asynchronously",
+  "use a live interactive walkthrough only when the maintainer explicitly requests one.",
+  "After publication or an explicit skip, refresh the diff identity and ordinary readiness.",
+  "If the diff identity changed, invalidate the walkthrough and readiness evidence, then rebuild and republish the walkthrough or stop.",
   "If an ordinary gate newly fails, stop.",
   "Ask one final merge decision only when the refreshed diff identity matches the recorded identity, ordinary readiness remains clean, and merge is allowed; a completed walkthrough must have explained that same diff identity.",
   "Walkthrough participation is not merge approval.",
@@ -841,24 +820,12 @@ host_aware_batch_sizing_phrase_checks = {
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
     ["less than 300 characters of headroom", 1],
-    ["Default single-target future coordinator: Sol/high", 1],
-    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
-    ["Default single-target future coordinator: Opus 5/high", 1],
-    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
-    ["Opus 5/xhigh exception:", 1],
-    ["`claude-profile v1`", 1],
     ["subagents alone do", 1]
   ],
   "skills/plan-pr-batch/SKILL.md" => [
     ["`codex`: up to 10 independent items, or 8", 1],
     ["`claude`: up to 5 independent items, or 3", 1],
     ["`generic`: use the Claude-sized 5/3", 1],
-    ["Default single-target future coordinator: Sol/high", 1],
-    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
-    ["Default single-target future coordinator: Opus 5/high", 1],
-    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
-    ["Opus 5/xhigh exception:", 1],
-    ["`claude-profile v1`", 1],
     ["If any field needed for comparison is `UNKNOWN`, make no", 1]
   ],
   "skills/pr-batch/SKILL.md" => [
@@ -951,12 +918,6 @@ if enforce_restart_docs_drift
   host_aware_batch_sizing_phrase_checks["docs/pr-batch-skills.md"] = [
     ["Codex-targeted waves may use up to 10", 1],
     ["Claude and generic waves use up to 5", 1],
-    ["Default single-target future coordinator: Sol/high", 1],
-    ["Affirmatively simple single-target future coordinator: Terra/high", 1],
-    ["Default single-target future coordinator: Opus 5/high", 1],
-    ["Affirmatively simple single-target future coordinator: Sonnet 5/high", 1],
-    ["Opus 5/xhigh exception:", 1],
-    ["`claude-profile v1`", 1],
     ["at most one bounded independent", 1]
   ]
   host_aware_batch_sizing_text_by_path["docs/pr-batch-skills.md"] = pr_batch_docs_text

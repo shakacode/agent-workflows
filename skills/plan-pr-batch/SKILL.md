@@ -6,6 +6,16 @@ argument-hint: '[issue/PR numbers, labels, milestone, or search query]'
 
 # Plan PR Batch
 
+For new Codex planning, resolve the advisory `astra-pilot-v1` profile from
+[central routing data](references/model-routing-profiles.json) with the plan skill's
+`bin/model-routing-profile --role <role>`. Its named preferences supersede the
+GPT-5.6 recommendations below for the listed roles; those recommendations and
+planning tables remain the established comparison baseline. Keep explicit user
+routes, verified host support, portable fallback, and independent evidence rules.
+This is an unmeasured pilot, not a measured promotion.
+If a partial or pinned installation lacks the resolver or data, continue with
+established or portable advisory routes; use the complete pack to access the pilot.
+
 Create verified scope and a goal prompt for `$pr-batch`. Do not implement items here.
 
 If the request is vague feature or bug intent, use `$spec` first to produce requirements, design, and tasks before planning the batch.
@@ -173,8 +183,8 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
      `merge_authority`, ask for `none`, `ask`, or
      `auto_merge_when_gates_pass`; do not leave this field as an unresolved
      placeholder in the generated prompt. Explain that `ask` automatically
-     walks through the exact-diff PR one conceptual change at a time before its
-     one final merge decision.
+     publishes the complete exact-diff walkthrough as separately replyable
+     GitHub concepts before its one final merge decision.
    - Accept refs like `#123`, PR/issue URLs, label/milestone/search filters, or a pasted list. Treat an unbound direct prompt as planning/reconciliation input only; do not turn it into an implementation lane unless the complete durable ad-hoc override record is already present in trusted input.
 
 2. Verify
@@ -850,7 +860,7 @@ Workers:paths=coord!=perm;path+resv;multi=>coord;stop:contradiction/ambig/scope-
 - For coordination, respect coordination claims and dependencies: stable ids+heartbeats; register before launch when supported; claim refusal=>stop; push holder/generation check; known deps=>gate permissions; missing/UNKNOWN deps=>stop.
 Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
-- ask=>$pr-walkthrough;large/complex full;refresh;chg=>redo/stop;gate fail=>stop;ask iff same clean
+- ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
 ```
 

@@ -1,6 +1,10 @@
 # ShakaCode Agent Workflows
 
-Portable Codex and Claude workflow pack for ShakaCode repositories.
+Portable Codex and Claude workflow pack.
+
+[![ShakaCode Agent Workflows — Run AI coding agents in fleets, safely](https://agents.shakacode.com/og.png)](https://agents.shakacode.com)
+
+**[Documentation →](https://agents.shakacode.com)**
 
 This repository packages reusable agent skills, workflow prompts, and helper
 scripts for PR batches, review triage, merge readiness, CI routing, changelog
@@ -267,6 +271,10 @@ Use [docs/source-pack-glossary.md](docs/source-pack-glossary.md) for canonical
 vocabulary around source-pack distribution, install paths, seams, readiness
 states, review findings, and state-machine fixtures.
 
+### Examples and adopters
+
+- [shakacode/shakaperf](https://github.com/shakacode/shakaperf): TypeScript/yarn monorepo with `.agents/agent-workflow.yml` in the `.agents/` seam.
+
 ## Maintainer Sync Reference
 
 Most teams can adopt the source pack with the Quick Start and Consumer Repo
@@ -292,6 +300,9 @@ The docs for this pack are the
 [ShakaCode Agent Workflow Playbook](docs/README.md). Start there when deciding
 which workflow to use, how to install the pack, how to adopt it in a consumer
 repo, or how to validate the agent workflow contract.
+
+To report a suspected vulnerability, follow the
+[Security Policy](SECURITY.md).
 
 ## License
 

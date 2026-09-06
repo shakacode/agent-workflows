@@ -818,7 +818,7 @@ class GoalCompletionContractTest < Minitest::Test
                  "ready-prerequisite mutation must delete the production classification"
     refute_includes squish(deletion), squish(READY_PREREQUISITE_ASK_GATE_RULE)
     assert_squished_includes @workflow_resume_prompt,
-                             "For an owned target, start the exact-diff walkthrough before asking the final merge question",
+                             "For an owned target, publish the complete exact-diff walkthrough under the `ask` route below before asking the final merge question",
                              "canonical ready-prerequisite owned-target route"
     assert_squished_includes @workflow_resume_prompt,
                              "For an external dependency-only reference, instruct the user either to merge it and " \

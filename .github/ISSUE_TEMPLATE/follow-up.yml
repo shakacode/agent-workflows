@@ -1,6 +1,7 @@
 name: Follow-up
 description: File self-contained follow-up work found during a PR, review, batch, or audit.
 title: "Follow-up: "
+labels: ["follow-up"]
 body:
   - type: markdown
     attributes:
