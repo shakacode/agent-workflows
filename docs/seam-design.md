@@ -108,8 +108,8 @@ source template to a mechanically implied companion template:
 
 ```yaml
 companion_path_conventions:
-  - source_glob: react_on_rails/lib/**/{name}.rb
-    companion_glob: react_on_rails/sig/**/{name}.rbs
+  - source_glob: source/**/{name}.ext
+    companion_glob: companion/**/{name}.meta
 ```
 
 Templates are canonical repository-relative paths. A non-terminal `**/`

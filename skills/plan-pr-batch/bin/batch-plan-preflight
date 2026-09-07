@@ -839,7 +839,7 @@ module BatchPlanPreflight
     end
     return [:absent, nil] if starts.empty?
     return [:invalid, nil] unless starts.one?
-    return [:invalid, nil] if lines.any? { |line| yaml_document_boundary_line?(line) }
+    return [:invalid, nil] unless companion_policy_single_document?(lines, quoted)
 
     start_index = starts.first
     key_indent = companion_policy_line_indentation(lines[start_index])
@@ -922,7 +922,7 @@ module BatchPlanPreflight
   end
 
   def companion_policy_quote_opener?(line, index)
-    line[0...index].match?(/(?:\A[ \t]*|[-:?][ \t]+|[,\[{][ \t]*)\z/)
+    line[0...index].match?(/(?:\A[ \t]*|[-?][ \t]+|:[ \t]*|[,\[{][ \t]*)\z/)
   end
 
   def companion_policy_root_indentation(lines)
@@ -939,7 +939,7 @@ module BatchPlanPreflight
   end
 
   def companion_policy_flow_terminator_line?(line)
-    line.lstrip.match?(/\A[}\]](?:[ \t]*(?:#.*)?)?\r?\n?\z/)
+    line.lstrip.match?(/\A[}\]]+(?:[ \t]*(?:#.*)?)?\r?\n?\z/)
   end
 
   def companion_policy_flow_collection_open?(lines, start_index, finish_index)
@@ -995,6 +995,16 @@ module BatchPlanPreflight
     line.b.match?(/\A(?:---|\.\.\.)(?:[ \t]*(?:#.*)?)?\r?\n?\z/)
   end
 
+  def companion_policy_single_document?(lines, quoted)
+    boundaries = lines.each_index.select do |index|
+      !quoted[index] && yaml_document_boundary_line?(lines[index])
+    end
+    return true if boundaries.empty?
+
+    first_content = lines.index { |line| !line.strip.empty? && !line.lstrip.start_with?("#") }
+    boundaries == [first_content] && lines[first_content].b.match?(/\A---(?:[ \t]*(?:#.*)?)?\r?\n?\z/)
+  end
+
   def companion_conventions_from_node(node)
     return unless node.is_a?(Psych::Nodes::Sequence)
 
@@ -1042,11 +1052,13 @@ module BatchPlanPreflight
   def companion_template_tokens(template, single_named_per_segment: false, single_globstar: false)
     return nil unless canonical_repository_relative_path?(template)
 
-    tokens = { "globstars" => 0, "stars" => 0, "named" => [] }
-    template.split("/").each do |segment|
+    segments = template.split("/")
+    tokens = { "globstars" => 0, "globstar_terminal" => nil, "stars" => 0, "named" => [] }
+    segments.each_with_index do |segment, index|
       case segment
       when "**"
         tokens["globstars"] += 1
+        tokens["globstar_terminal"] = index == segments.length - 1
       when "*"
         tokens["stars"] += 1
       else

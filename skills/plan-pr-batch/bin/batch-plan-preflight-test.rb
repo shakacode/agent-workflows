@@ -238,6 +238,28 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_globstar_terminal_position_mismatch_is_rejected
+    fixture = {
+      "repository" => "owner/repo",
+      "issue" => 461,
+      "lane_id" => "lane-globstar-position-mismatch",
+      "source_glob" => "lib/**/{name}.rb",
+      "companion_glob" => "sig/{name}/**",
+      "source_path" => "lib/task.rb",
+      "companion_path" => "sig/task"
+    }
+    with_companion_fixture(fixture) do |root|
+      result, _stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
   def test_globstar_matches_zero_directories
     fixture = {
       "repository" => "owner/repo",
@@ -373,6 +395,29 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_unrelated_malformed_policy_preserves_compound_flow_terminator
+    with_companion_repo do |root, fixture|
+      source_glob = fixture.fetch("source_glob").inspect
+      companion_glob = fixture.fetch("companion_glob").inspect
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions: [
+          { source_glob: #{source_glob},
+            companion_glob: #{companion_glob}
+        }]
+        malformed: [
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
   def test_unrelated_malformed_policy_preserves_quoted_flow_sequence
     Dir.mktmpdir("batch-plan-quoted-flow-sequence") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
@@ -400,6 +445,35 @@ class BatchPlanPreflightTest < Minitest::Test
       )
 
       result, stderr, status = evaluate(input, chdir: root)
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
+  def test_unrelated_malformed_policy_preserves_no_space_quoted_flow_values
+    fixture = {
+      "repository" => "owner/repo",
+      "issue" => 461,
+      "lane_id" => "lane-no-space-flow-values",
+      "source_glob" => "lib/{name} #part.rb",
+      "companion_glob" => "sig/{name}.rbs",
+      "source_path" => "lib/task #part.rb",
+      "companion_path" => "sig/task.rbs"
+    }
+    with_companion_fixture(fixture) do |root|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions: [
+          {"source_glob":"#{fixture.fetch('source_glob')}","companion_glob":"#{fixture.fetch('companion_glob')}"}
+        ]
+        malformed: [
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
 
       assert status.success?, stderr
       assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
@@ -504,12 +578,14 @@ class BatchPlanPreflightTest < Minitest::Test
       cases = {
         "double quoted" => <<~YAML,
           notes: "release notes
+          ---
           companion_path_conventions: invalid
           end of notes"
           malformed: [
         YAML
         "single quoted" => <<~YAML
           notes: 'release notes
+          ---
           companion_path_conventions: invalid
           end of notes'
           malformed: [
@@ -674,6 +750,27 @@ class BatchPlanPreflightTest < Minitest::Test
       refute status.success?
       assert_includes result.fetch("violations").map { |item| item.fetch("code") },
                       "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_malformed_policy_fallback_allows_leading_document_marker
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        ---
+        companion_path_conventions:
+          - source_glob: #{fixture.fetch('source_glob')}
+            companion_glob: #{fixture.fetch('companion_glob')}
+        malformed: [
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
     end
   end
 
