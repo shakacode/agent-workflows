@@ -217,6 +217,25 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_implicitly_typed_companion_globs_fail_closed
+    %w[null true 2026-09-07].each do |value|
+      Dir.mktmpdir("batch-plan-typed-companion-glob") do |root|
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+          companion_path_conventions:
+            - source_glob: #{value}
+              companion_glob: #{value}
+        YAML
+
+        result, _stderr, status = evaluate(input_for, chdir: root)
+
+        refute status.success?, value
+        assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                        "companion-path-conventions-invalid", value
+      end
+    end
+  end
+
   def test_adjacent_named_placeholders_are_rejected_as_ambiguous
     Dir.mktmpdir("batch-plan-ambiguous-companion") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))

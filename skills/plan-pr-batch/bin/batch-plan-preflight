@@ -1105,7 +1105,13 @@ module BatchPlanPreflight
   end
 
   def yaml_string_scalar?(node)
-    node.is_a?(Psych::Nodes::Scalar) && [nil, "tag:yaml.org,2002:str"].include?(node.tag)
+    return false unless node.is_a?(Psych::Nodes::Scalar)
+    return true if node.tag == "tag:yaml.org,2002:str" || !node.plain
+    return false unless node.tag.nil?
+
+    Psych.safe_load(node.value, permitted_classes: [], permitted_symbols: [], aliases: false).is_a?(String)
+  rescue Psych::Exception
+    false
   end
 
   def invalid_companion_path_conventions
