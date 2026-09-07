@@ -23,14 +23,17 @@ Use the closed
 Resolve `PR_BATCH_SKILL_DIR` from an explicit environment variable, the loaded
 skill directory, or the repo-local `.agents/skills/pr-batch` copy. Stop with a
 precise blocker when the helper is unavailable. Pass one contract on standard
-input:
+input. For every review, reuse, completion, or scratch-cleanup decision, pass
+the already-verified lane worktree root so the helper performs repository-backed
+validation itself:
 
 ```bash
-"${PR_BATCH_SKILL_DIR}/bin/task-review-loop" < task-review-loop-v1.json
+"${PR_BATCH_SKILL_DIR}/bin/task-review-loop" --repository-root "$REVIEW_WORKTREE_ROOT" \
+  < task-review-loop-v1.json
 ```
 
 The helper reads contract artifacts and emits one deterministic JSON decision.
-Git must be available to parse exact-diff paths with read-only `git apply --numstat -z`.
+Git must be available for read-only repository and exact-diff validation.
 It does not create or update worktrees, claims, files, commits, branches, PRs,
 checks, or backend state.
 
@@ -38,9 +41,11 @@ Canonical record digests use UTF-8 JSON with object keys sorted recursively and
 array order preserved. Remove the record's own `digest` field before hashing,
 then prefix the lowercase SHA-256 value with `sha256:`. Artifact digests cover
 the exact raw bytes at `path`; `byte_count` covers the same bytes.
-These hashes establish supplied-artifact consistency, not independent Git
-provenance. The coordinator owns repository and range verification before
-invoking this artifact-reading reducer.
+Hashes establish supplied-artifact consistency. In repository-backed mode the
+helper also derives `HEAD^{commit}` from that root, requires the current report
+and package to name it, and independently derives canonical diff bytes from the
+repository. The coordinator still owns selection of the trusted lane root; the
+helper never accepts a repository path from task-review JSON.
 
 The output status is exactly one of:
 
@@ -110,14 +115,12 @@ git diff --no-ext-diff --no-textconv --no-color --no-relative --binary \
 
 Do not pass `--no-prefix`, custom prefixes, or a path filter. Recapture existing
 noncanonical artifacts before review; the reducer does not infer prefix modes.
-Immediately before every reducer invocation, the coordinator must use its
-already-trusted lane repository and declared base/head to recapture canonical
-diff bytes with the command above and compare them byte-for-byte with each
-current and retained round's exact-diff artifact. Verify the repository and
-range against the coordinator's accepted lane state, not artifact-supplied
-authority. A mismatch or unavailable verification blocks invocation and
-dependent work. Do not repair a mismatch by merely recomputing submitted
-digests. Keep successful comparison evidence with the task handoff.
+On every repository-backed invocation, the helper recaptures every current and
+retained round's canonical diff from each package's exact base/head and compares
+it byte-for-byte with the submitted exact-diff artifact. A mismatch or
+unavailable repository verification blocks dependent work. Do not repair a
+mismatch by merely recomputing submitted digests. Keep successful comparison
+evidence with the task handoff.
 Require successful capture before setting its raw-byte digest and
 byte count and set `truncated` to false. Every exact-diff and findings artifact
 must resolve to a regular file no larger than 16 MiB (16,777,216 bytes).
@@ -148,8 +151,9 @@ report digest. Before a round counts, the helper verifies both retained record
 digests, reloads its exact-diff artifact, and binds task identity, brief,
 scope, base/head, expected head, actors, prior-round digest, and the exact
 report commit slice. A missing or internally mismatched historical package
-fails closed before cap adjudication or dependent work. Repository-derived
-authenticity remains the coordinator's pre-invocation check above.
+fails closed before cap adjudication or dependent work. Repository-backed mode
+also recaptures the historical package's canonical diff before that round can
+count.
 
 ## Review Findings And Independence
 
@@ -256,6 +260,45 @@ Only non-blocking findings with complete evidence-backed `disproven`, `waived`,
 or `deferred` adjudications can reduce to `task_complete` at the cap. Missing,
 duplicate, foreign, unsupported, or `UNKNOWN` adjudication evidence fails
 closed.
+
+## Owned Scratch Lifecycle
+
+Use `task-scratch-lifecycle` only for disposable per-run files. Create a private
+root before writing scratch, supplying the full accepted task identity and the
+exact relative leaf-file allowlist:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/task-scratch-lifecycle" create \
+  --repository-root "$REVIEW_WORKTREE_ROOT" \
+  --scratch-parent "$SCRATCH_PARENT" \
+  --identity-file "$TASK_BRIEF_PATH" \
+  --allow-relative review-notes.txt \
+  > "$SCRATCH_RECEIPT_PATH"
+```
+
+Keep the returned receipt outside the disposable root as durable ownership
+evidence. It binds the complete task identity, canonical worktree and Git common
+directory, private root path, random run token, device/inode/owner/mode, and the
+exact allowlist. Do not adopt an existing or legacy directory, copy a receipt,
+or put durable review, coordination, wake, Git, or worktree state in this root.
+
+After a final clean review, give cleanup that same receipt and the original
+task-review input:
+
+```bash
+"${PR_BATCH_SKILL_DIR}/bin/task-scratch-lifecycle" cleanup \
+  --receipt "$SCRATCH_RECEIPT_PATH" \
+  --review-input "$TASK_REVIEW_INPUT_PATH"
+```
+
+Cleanup revalidates receipt identity and ownership, rejects unexpected entries,
+and invokes repository-backed `task-review-loop` at the receipt's canonical
+worktree. It accepts only `task_complete` with exactly `review-clean` at the
+live head; cap-adjudicated completion does not authorize deletion. The lifecycle
+helper is the only owner allowed to delete that root. `task-review-loop` remains
+read-only, and `goal-state-change-monitor` neither classifies these artifacts
+nor deletes them. Every failure preserves the root and all durable or external
+state for reconciliation.
 
 ## Handoff To Existing Owners
 

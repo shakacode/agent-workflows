@@ -1,0 +1,360 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "digest"
+require "fileutils"
+require "json"
+require "open3"
+require "optparse"
+require "securerandom"
+require "time"
+require "tmpdir"
+
+module TaskScratchLifecycle
+  MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
+  IDENTITY_KEYS = %w[batch_id lane_id plan_digest plan_id task_id].freeze
+  OWNER_BASENAME = ".task-scratch-owner.json"
+  RECEIPT_KEYS = %w[
+    allowlist contract created_at digest identity repository_common_dir root_device root_inode root_mode
+    root_owner run_token scratch_parent scratch_root version worktree_root
+  ].freeze
+  TASK_REVIEW_HELPER = File.expand_path("task-review-loop", __dir__)
+
+  class LifecycleError < StandardError; end
+
+  module_function
+
+  def fail!(reason)
+    raise LifecycleError, reason
+  end
+
+  def canonicalize(value)
+    case value
+    when Hash
+      value.keys.sort.to_h { |key| [key, canonicalize(value.fetch(key))] }
+    when Array
+      value.map { |entry| canonicalize(entry) }
+    else
+      value
+    end
+  end
+
+  def record_digest(record)
+    payload = record.reject { |key, _value| key == "digest" }
+    "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonicalize(payload)))}"
+  end
+
+  def digest?(value)
+    value.is_a?(String) && value.match?(/\Asha256:[0-9a-f]{64}\z/)
+  end
+
+  def nonempty_string?(value)
+    return false unless value.is_a?(String)
+
+    normalized = value.unicode_normalize(:nfkc).strip
+    value == normalized && !normalized.empty? && normalized.casecmp("UNKNOWN").nonzero?
+  end
+
+  def identity?(value)
+    value.is_a?(Hash) && value.keys.sort == IDENTITY_KEYS.sort &&
+      %w[batch_id lane_id plan_id task_id].all? { |key| nonempty_string?(value[key]) } &&
+      digest?(value["plan_digest"])
+  end
+
+  def read_regular_bytes(path, label)
+    fail!("#{label}-path-invalid") unless nonempty_string?(path)
+
+    File.open(path, File::RDONLY | File::NONBLOCK) do |file|
+      stat = file.stat
+      fail!("#{label}-not-regular-file") unless stat.file?
+      fail!("#{label}-too-large") if stat.size > MAX_ARTIFACT_BYTES
+
+      bytes = file.binmode.read(MAX_ARTIFACT_BYTES + 1).to_s
+      fail!("#{label}-too-large") if bytes.bytesize > MAX_ARTIFACT_BYTES
+      bytes
+    end
+  rescue JSON::ParserError
+    fail!("#{label}-invalid")
+  rescue SystemCallError, ArgumentError
+    fail!("#{label}-unreadable")
+  end
+
+  def read_json(path, label)
+    JSON.parse(read_regular_bytes(path, label))
+  rescue JSON::ParserError
+    fail!("#{label}-invalid")
+  end
+
+  def git_output(worktree_root, *arguments)
+    stdout, stderr, status = Open3.capture3("git", *arguments, chdir: worktree_root)
+    fail!("repository-invalid") unless status.success? && stderr.empty?
+
+    stdout.strip
+  rescue SystemCallError, ArgumentError
+    fail!("repository-invalid")
+  end
+
+  def repository_identity(repository_root)
+    canonical_input = File.realpath(repository_root)
+    worktree_root = File.realpath(git_output(canonical_input, "rev-parse", "--show-toplevel"))
+    fail!("repository-root-mismatch") unless canonical_input == worktree_root
+
+    common_dir_value = git_output(worktree_root, "rev-parse", "--git-common-dir")
+    common_dir = File.realpath(File.expand_path(common_dir_value, worktree_root))
+    [worktree_root, common_dir]
+  rescue SystemCallError, ArgumentError
+    fail!("repository-invalid")
+  end
+
+  def relative_leaf?(path)
+    return false unless nonempty_string?(path) && !path.start_with?("/")
+
+    parts = path.split("/", -1)
+    parts.all? { |part| !part.empty? && part != "." && part != ".." } && path != OWNER_BASENAME
+  end
+
+  def normalize_allowlist(values)
+    fail!("allowlist-required") unless values.is_a?(Array) && !values.empty?
+    fail!("allowlist-path-invalid") unless values.all? { |path| relative_leaf?(path) }
+    fail!("allowlist-duplicate") unless values.uniq.length == values.length
+
+    values.sort
+  end
+
+  def create(options)
+    identity_source = read_json(options[:identity_file], "identity-source")
+    identity = identity_source.is_a?(Hash) ? identity_source["identity"] : nil
+    fail!("task-identity-invalid") unless identity?(identity)
+
+    worktree_root, common_dir = repository_identity(options[:repository_root])
+    scratch_parent = File.realpath(options[:scratch_parent])
+    fail!("scratch-parent-invalid") unless File.directory?(scratch_parent)
+    allowlist = normalize_allowlist(options[:allowlist])
+    scratch_root = Dir.mktmpdir("task-scratch-", scratch_parent)
+    File.chmod(0o700, scratch_root)
+    root_stat = File.stat(scratch_root)
+    run_token = SecureRandom.hex(32)
+    receipt = {
+      "contract" => "task-scratch-lifecycle-receipt",
+      "version" => 1,
+      "identity" => identity,
+      "worktree_root" => worktree_root,
+      "repository_common_dir" => common_dir,
+      "scratch_parent" => scratch_parent,
+      "scratch_root" => scratch_root,
+      "run_token" => run_token,
+      "root_device" => root_stat.dev,
+      "root_inode" => root_stat.ino,
+      "root_owner" => root_stat.uid,
+      "root_mode" => root_stat.mode & 0o777,
+      "allowlist" => allowlist,
+      "created_at" => Time.now.utc.iso8601(6)
+    }
+    receipt["digest"] = record_digest(receipt)
+    File.write(
+      File.join(scratch_root, OWNER_BASENAME),
+      JSON.generate(
+        "contract" => "task-scratch-owner",
+        "version" => 1,
+        "identity" => identity,
+        "scratch_root" => scratch_root,
+        "run_token" => run_token,
+        "receipt_digest" => receipt.fetch("digest")
+      ),
+      mode: "w",
+      perm: 0o600
+    )
+    {
+      "contract" => "task-scratch-lifecycle-decision",
+      "version" => 1,
+      "status" => "created",
+      "receipt" => receipt
+    }
+  end
+
+  def validate_receipt(receipt)
+    fail!("receipt-invalid") unless receipt.is_a?(Hash) && receipt.keys.sort == RECEIPT_KEYS.sort
+    fail!("receipt-invalid") unless receipt["contract"] == "task-scratch-lifecycle-receipt" && receipt["version"] == 1
+    fail!("receipt-identity-invalid") unless identity?(receipt["identity"])
+    fail!("receipt-digest-invalid") unless digest?(receipt["digest"]) && receipt["digest"] == record_digest(receipt)
+    fail!("receipt-run-token-invalid") unless receipt["run_token"].is_a?(String) &&
+                                              receipt["run_token"].match?(/\A[0-9a-f]{64}\z/)
+    fail!("receipt-created-at-invalid") unless nonempty_string?(receipt["created_at"])
+    normalize_allowlist(receipt["allowlist"])
+    receipt
+  end
+
+  def validate_owned_root(receipt)
+    scratch_root = receipt.fetch("scratch_root")
+    scratch_parent = receipt.fetch("scratch_parent")
+    fail!("scratch-root-missing") unless File.directory?(scratch_root) && !File.symlink?(scratch_root)
+    fail!("scratch-root-path-mismatch") unless File.realpath(scratch_root) == scratch_root
+    fail!("scratch-parent-path-mismatch") unless File.realpath(File.dirname(scratch_root)) == scratch_parent
+
+    stat = File.stat(scratch_root)
+    expected = [receipt["root_device"], receipt["root_inode"], receipt["root_owner"], receipt["root_mode"]]
+    actual = [stat.dev, stat.ino, stat.uid, stat.mode & 0o777]
+    fail!("scratch-root-ownership-mismatch") unless actual == expected && stat.uid == Process.uid &&
+                                                    (stat.mode & 0o777) == 0o700
+
+    marker = read_json(File.join(scratch_root, OWNER_BASENAME), "owner-marker")
+    expected_marker = {
+      "contract" => "task-scratch-owner",
+      "version" => 1,
+      "identity" => receipt.fetch("identity"),
+      "scratch_root" => scratch_root,
+      "run_token" => receipt.fetch("run_token"),
+      "receipt_digest" => receipt.fetch("digest")
+    }
+    fail!("owner-marker-mismatch") unless marker == expected_marker
+    stat
+  rescue SystemCallError, ArgumentError
+    fail!("scratch-root-unreadable")
+  end
+
+  def expected_directories(allowlist)
+    allowlist.flat_map do |path|
+      parts = path.split("/")
+      (1...parts.length).map { |length| parts.first(length).join("/") }
+    end.uniq
+  end
+
+  def validate_allowlisted_contents(root, allowlist)
+    actual_files = []
+    actual_directories = []
+    Dir.glob(File.join(root, "**", "*"), File::FNM_DOTMATCH).sort.each do |path|
+      basename = File.basename(path)
+      next if [".", ".."].include?(basename)
+
+      relative = path.delete_prefix("#{root}/")
+      stat = File.lstat(path)
+      if stat.directory? && !stat.symlink?
+        actual_directories << relative
+      elsif stat.file? && !stat.symlink?
+        actual_files << relative
+      else
+        fail!("scratch-entry-type-invalid")
+      end
+    end
+    allowed_files = allowlist + [OWNER_BASENAME]
+    fail!("scratch-entry-not-allowlisted") unless (actual_files - allowed_files).empty?
+    fail!("scratch-directory-not-allowlisted") unless (actual_directories - expected_directories(allowlist)).empty?
+  rescue SystemCallError, ArgumentError
+    fail!("scratch-root-unreadable")
+  end
+
+  def clean_review?(receipt, review_input_path)
+    review_bytes = read_regular_bytes(review_input_path, "review-input")
+    review_input = JSON.parse(review_bytes)
+    fail!("review-identity-mismatch") unless review_input.is_a?(Hash) &&
+                                             review_input["identity"] == receipt.fetch("identity")
+    stdout, stderr, status = Open3.capture3(
+      TASK_REVIEW_HELPER,
+      "--repository-root",
+      receipt.fetch("worktree_root"),
+      stdin_data: review_bytes
+    )
+    fail!("review-validation-unavailable") unless status.success? && stderr.empty?
+
+    decision = JSON.parse(stdout)
+    decision == {
+      "contract" => "task-review-loop-decision",
+      "version" => 1,
+      "status" => "task_complete",
+      "dependent_task_permitted" => true,
+      "reasons" => ["review-clean"]
+    }
+  rescue JSON::ParserError
+    fail!("review-input-invalid")
+  end
+
+  def remove_allowlisted_root(receipt)
+    root = receipt.fetch("scratch_root")
+    parent = receipt.fetch("scratch_parent")
+    quarantine = File.join(parent, ".task-scratch-cleanup-#{receipt.fetch('run_token')}")
+    fail!("cleanup-quarantine-exists") if File.exist?(quarantine) || File.symlink?(quarantine)
+
+    File.rename(root, quarantine)
+    moved_stat = File.stat(quarantine)
+    unless moved_stat.dev == receipt["root_device"] && moved_stat.ino == receipt["root_inode"]
+      File.rename(quarantine, root) unless File.exist?(root)
+      fail!("scratch-root-rebound")
+    end
+    validate_allowlisted_contents(quarantine, receipt.fetch("allowlist"))
+    receipt.fetch("allowlist").each do |relative|
+      path = File.join(quarantine, relative)
+      File.unlink(path) if File.file?(path) && !File.symlink?(path)
+    end
+    File.unlink(File.join(quarantine, OWNER_BASENAME))
+    expected_directories(receipt.fetch("allowlist")).sort_by { |path| -path.count("/") }.each do |relative|
+      path = File.join(quarantine, relative)
+      Dir.rmdir(path) if File.directory?(path)
+    end
+    Dir.rmdir(quarantine)
+  rescue LifecycleError
+    File.rename(quarantine, root) if File.directory?(quarantine) && !File.exist?(root)
+    raise
+  rescue SystemCallError, ArgumentError
+    File.rename(quarantine, root) if File.directory?(quarantine) && !File.exist?(root)
+    fail!("cleanup-filesystem-failure")
+  end
+
+  def cleanup(options)
+    receipt = validate_receipt(read_json(options[:receipt], "receipt"))
+    worktree_root, common_dir = repository_identity(receipt.fetch("worktree_root"))
+    fail!("repository-identity-mismatch") unless worktree_root == receipt["worktree_root"] &&
+                                                 common_dir == receipt["repository_common_dir"]
+    validate_owned_root(receipt)
+    validate_allowlisted_contents(receipt.fetch("scratch_root"), receipt.fetch("allowlist"))
+    fail!("review-clean-required") unless clean_review?(receipt, options[:review_input])
+
+    remove_allowlisted_root(receipt)
+    {
+      "contract" => "task-scratch-lifecycle-decision",
+      "version" => 1,
+      "status" => "cleaned",
+      "removed_root" => receipt.fetch("scratch_root"),
+      "plan_identity" => receipt.fetch("identity")
+    }
+  end
+end
+
+mode = ARGV.shift
+options = { allowlist: [] }
+parser = OptionParser.new do |option_parser|
+  option_parser.on("--repository-root PATH") { |value| options[:repository_root] = value }
+  option_parser.on("--scratch-parent PATH") { |value| options[:scratch_parent] = value }
+  option_parser.on("--identity-file PATH") { |value| options[:identity_file] = value }
+  option_parser.on("--allow-relative PATH") { |value| options[:allowlist] << value }
+  option_parser.on("--receipt PATH") { |value| options[:receipt] = value }
+  option_parser.on("--review-input PATH") { |value| options[:review_input] = value }
+end
+
+begin
+  parser.parse!
+  decision = case mode
+             when "create"
+               TaskScratchLifecycle.create(options)
+             when "cleanup"
+               TaskScratchLifecycle.cleanup(options)
+             else
+               TaskScratchLifecycle.fail!("mode-invalid")
+             end
+  puts JSON.generate(decision)
+rescue TaskScratchLifecycle::LifecycleError => e
+  puts JSON.generate(
+    "contract" => "task-scratch-lifecycle-decision",
+    "version" => 1,
+    "status" => "blocked",
+    "reason" => e.message
+  )
+  exit 1
+rescue OptionParser::ParseError
+  puts JSON.generate(
+    "contract" => "task-scratch-lifecycle-decision",
+    "version" => 1,
+    "status" => "blocked",
+    "reason" => "options-invalid"
+  )
+  exit 1
+end

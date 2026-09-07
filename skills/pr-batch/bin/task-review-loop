@@ -4,6 +4,7 @@
 require "digest"
 require "json"
 require "open3"
+require "optparse"
 
 finding_validator = File.expand_path("../../../bin/validate-review-findings", __dir__)
 unless File.file?(finding_validator)
@@ -879,9 +880,10 @@ module TaskReviewLoop
     errors.compact.uniq
   end
 
-  def reduce(input, cap_authority = cap_authority_from_env)
+  def reduce(input, cap_authority = cap_authority_from_env, repository_root: nil)
     findings_cache = {}
     errors = validate(input, findings_cache, cap_authority)
+    errors.concat(repository_errors(input, repository_root)) if repository_root
     unless errors.empty?
       return decision("blocked", false, errors.sort)
     end
@@ -909,6 +911,59 @@ module TaskReviewLoop
     end
   end
 
+  def repository_errors(input, repository_root)
+    return ["repository-input-invalid"] unless input.is_a?(Hash)
+
+    canonical_root = File.realpath(repository_root)
+    top_level, top_level_stderr, top_level_status = Open3.capture3(
+      "git", "rev-parse", "--show-toplevel", chdir: canonical_root
+    )
+    return ["repository-root-invalid"] unless top_level_status.success? && top_level_stderr.empty?
+    return ["repository-root-invalid"] unless File.realpath(top_level.strip) == canonical_root
+
+    head, head_stderr, head_status = Open3.capture3(
+      "git", "rev-parse", "--verify", "HEAD^{commit}", chdir: canonical_root
+    )
+    return ["repository-head-unavailable"] unless head_status.success? && head_stderr.empty?
+
+    current_head = head.strip
+    supplied_heads = [
+      input["expected_current_head_sha"],
+      input.dig("worker_report", "head_sha"),
+      input.dig("review_package", "head_sha")
+    ]
+    errors = []
+    errors << "repository-head-mismatch" unless supplied_heads.all? { |supplied| supplied == current_head }
+
+    packages = [["review-package", input["review_package"]]]
+    Array(input["rounds"]).each do |round|
+      packages << ["review-round-#{round['number']}", round["review_package"]] if round.is_a?(Hash)
+    end
+    packages.each do |label, package|
+      next unless package.is_a?(Hash)
+
+      captured, capture_stderr, capture_status = Open3.capture3(
+        "git", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-relative", "--binary",
+        "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=none", "--submodule=short",
+        package["base_sha"].to_s, package["head_sha"].to_s, "--", chdir: canonical_root
+      )
+      unless capture_status.success? && capture_stderr.empty?
+        errors << "#{label}-canonical-diff-unavailable"
+        next
+      end
+
+      submitted, artifact_error = load_artifact(package["exact_diff"], "#{label}-exact-diff")
+      if artifact_error
+        errors << artifact_error
+      elsif submitted != captured
+        errors << "#{label}-canonical-diff-mismatch"
+      end
+    end
+    errors
+  rescue SystemCallError, ArgumentError, TypeError
+    ["repository-root-invalid"]
+  end
+
   def cap_blocking_reasons(input, document)
     findings = document.fetch("review_findings")
     reasons = []
@@ -932,9 +987,16 @@ module TaskReviewLoop
   end
 end
 
+options = {}
+OptionParser.new do |parser|
+  parser.on("--repository-root PATH", "Validate review evidence against repository-derived HEAD and diffs") do |value|
+    options[:repository_root] = value
+  end
+end.parse!
+
 begin
   input = JSON.parse($stdin.read)
-  puts JSON.generate(TaskReviewLoop.reduce(input))
+  puts JSON.generate(TaskReviewLoop.reduce(input, repository_root: options[:repository_root]))
 rescue JSON::ParserError
   puts JSON.generate(TaskReviewLoop.decision("blocked", false, ["malformed-json"]))
 end

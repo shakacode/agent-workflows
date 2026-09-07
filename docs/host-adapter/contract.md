@@ -152,6 +152,8 @@ weaken the existing batch, lane, coordination, or task-review schemas.
 | Exact-diff review packages, finding artifacts, and round checkpoints | Durable evidence | Bind the full task-review identity, brief/report/package digests, exact base/head SHAs, actors, round chain, artifact byte digests, schema/version, and coverage. Recapture the exact diff and validate the current head before every review or reuse. |
 | Pause and continue handoffs | Durable restart hints, never authority | Batch/lane, repository-qualified target, actor/thread, worktree, branch, head, claim generation, and live-state references are sufficient because resume treats the handoff as stale evidence and revalidates authoritative artifacts before work. Non-batch handoffs likewise require live repository and process checks. |
 | Goal monitor state, decisions, wake IDs, acknowledgements, and handoffs | Disposable scratch until terminal enqueue/acknowledgement is settled | Bind the adapter's exact plan identity and stable repository/task-scoped monitor id. The reducer binds wake IDs and every emitted monitor artifact to that plan; `blocker_state` fingerprints code/review facts such as head SHA. |
+| Scratch lifecycle receipt and owner marker | Durable ownership capability until cleanup completes | `task-scratch-lifecycle` binds the full task-review identity, canonical worktree and Git common directory, private root path, random run token, device/inode/owner/mode, exact allowlist, creation time, and receipt digest. A copied, legacy, malformed, or foreign receipt/root is not adoptable. Keep the receipt outside the disposable root. |
+| Lifecycle-created allowlisted scratch root | Disposable scratch | Contains only the owner marker, explicitly allowlisted relative leaf files, and their parent directories. It may be removed only by the creating lifecycle contract after repository-backed `review-clean`; unexpected content fails closed and is preserved. |
 | Generated prompts and scratch evidence | Disposable scratch unless admitted to a versioned artifact above | Filenames and task numbers confer no identity. Recreate prompt-only context from the accepted brief; a diff, finding file, or other evidence becomes reusable only through its owning schema, exact digest, and identity checks. |
 
 Validate the applicable identity before resume, dispatch, edit, review,
@@ -170,34 +172,40 @@ change through its blocker-state delta and reruns the current-head gates.
 The goal monitor does not classify external review or coordination artifacts
 from caller-supplied summaries. It rejects an `artifact_boundary` observation
 with `external-artifact-authority-required` before monitor-state mutation.
-Review reuse belongs to the `task-review-loop` controller and reducer: the
-controller captures repository `HEAD`, while the reducer opens the referenced
-exact diff and findings, verifies byte counts and digests, and binds the full
-task identity and expected current head. A moved head therefore makes the
-review package stale and requires recapture. Coordination reuse remains an
-independent live-backend check of the repository-qualified target, batch/lane,
-holder, generation, instance, schema, and timestamps; a code-head move alone
-does not invalidate that ownership history. Neither authority may be replaced
-with a monitor summary.
+Review reuse belongs to repository-backed `task-review-loop`. Invoke
+`task-review-loop --repository-root <verified-lane-root>`: the helper derives
+`HEAD^{commit}`, requires the current report/package to name it, opens and
+digest-validates review artifacts, and recaptures current and retained canonical
+diffs byte-for-byte from Git. A moved head therefore makes the review package
+stale and requires recapture, while the helper remains read-only. Coordination
+reuse remains an independent live-backend check of the repository-qualified
+target, batch/lane, holder, generation, instance, schema, and timestamps; a
+code-head move alone does not invalidate that ownership history. Neither
+authority may be replaced with a monitor summary.
 
-Cleanup is allowlisted, not directory-wide. Only after a clean final task review
-or closeout may the adapter remove disposable scratch whose exact path and plan
-identity prove that the current run owns it. Preserve durable receipts, Git
-history, retained review rounds, unresolved wake delivery, and externally owned
-worktrees. An identity failure preserves the artifact for reconciliation rather
-than deleting it.
+Cleanup is allowlisted, not directory-wide. Create disposable scratch only with
+`task-scratch-lifecycle create`, passing the canonical repository root, a private
+scratch parent, the accepted identity source, and every permitted relative leaf
+path. Persist its returned receipt outside the scratch root. After clean review,
+invoke `task-scratch-lifecycle cleanup` with that receipt and the original
+task-review input. The helper revalidates the live repository, full identity,
+root ownership marker and filesystem identity, exact allowlist, and the original
+review input through repository-backed `task-review-loop` before atomically
+isolating and deleting only that root.
 
 The goal monitor cannot prove a clean task review, its repository-derived
 current head, or ownership of an arbitrary caller-supplied state path. It never
 deletes persistent monitor state. The compatibility option
 `--cleanup-after-clean-review` fails before filesystem or lock access with
 `cleanup-authority-required`; this preserves copied, tracked, foreign, and
-externally located state without leaving a sibling lock. Cleanup belongs to the
-adapter that created an allowlisted private scratch root. That adapter may
-remove only its own disposable files after the authoritative task-review or
-closeout reducer returns a clean terminal decision for the same full task
-identity and current head; it must retain pending wake delivery, durable
-receipts, Git history, review rounds, and external worktrees.
+externally located state without leaving a sibling lock. Cleanup belongs
+exclusively to `task-scratch-lifecycle`, which created the allowlisted private
+root. Only exact `task_complete` plus `review-clean` for the same identity and
+live head permits removal; cap-adjudicated completion never authorizes scratch
+deletion. Missing or legacy identity, a copied/foreign root, unexpected content,
+a moved head, or any validation failure preserves every file. Pending wake
+delivery, durable receipts, coordination evidence, Git history, review rounds,
+and externally owned worktrees are always outside its deletion authority.
 
 ## Scheduled Monitoring and Planning-Chat Lifecycle
 
