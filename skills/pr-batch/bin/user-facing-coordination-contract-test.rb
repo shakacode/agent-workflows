@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 require "json"
 
@@ -40,7 +42,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
     full_path = File.join(ROOT, path)
     return "" unless File.file?(full_path)
 
-    File.read(full_path, encoding: "UTF-8").gsub(/\s+/, " ").strip
+    SkillStageSource.read(full_path, encoding: "UTF-8").gsub(/\s+/, " ").strip
   end
 
   def normalized_with_integration_closeout(path)
@@ -49,7 +51,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
 
   def test_normalization_keeps_compatibility_files_scoped_and_composition_explicit
     [WORKFLOW, PR_BATCH].each do |path|
-      source = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      source = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
       assert_equal source.gsub(/\s+/, " ").strip, normalized(path), path
 
       combined = normalized_with_integration_closeout(path)
@@ -59,7 +61,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   end
 
   def normalized_section(path, heading, end_heading:)
-    source = File.read(File.join(ROOT, path), encoding: "UTF-8")
+    source = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
     start = source.index(heading)
     raise "missing #{heading.inspect} in #{path}" unless start
 
@@ -236,7 +238,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
 
   def test_coordination_changes_preserve_exact_gmcc_v5_merge_authority_clauses
     [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
       assert_includes text, GMCC_V5, path
       refute_includes text, "GMCC-v3:", path
     end

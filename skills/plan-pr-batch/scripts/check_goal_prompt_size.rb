@@ -3,6 +3,7 @@
 
 require "stringio"
 require "json"
+require_relative "../../pr-batch/lib/skill_stage_source"
 
 CODEX_GOAL_PROMPT_CHAR_LIMIT = 4_000
 CLAUDE_GENERIC_GOAL_PROMPT_CHAR_LIMIT = 8_000
@@ -374,14 +375,14 @@ def read_repo_file(path)
   full_path = File.join(REPO_ROOT, path)
   abort_with_failure("#{path} not found at #{full_path}") unless File.exist?(full_path)
 
-  File.read(full_path, encoding: "UTF-8")
+  SkillStageSource.read(full_path, encoding: "UTF-8")
 end
 
 def read_optional_repo_file(path)
   full_path = File.join(REPO_ROOT, path)
   return nil unless File.file?(full_path)
 
-  File.read(full_path, encoding: "UTF-8")
+  SkillStageSource.read(full_path, encoding: "UTF-8")
 end
 
 def extract_section(text, start_marker, end_heading)
@@ -649,7 +650,7 @@ end
 skill_path = File.expand_path("../SKILL.md", __dir__)
 abort_with_failure("SKILL.md not found at #{skill_path}") unless File.exist?(skill_path)
 
-skill_text = File.read(skill_path, encoding: "UTF-8")
+skill_text = SkillStageSource.read(skill_path, encoding: "UTF-8")
 assert_goal_prompt_heading_is_line_anchored
 workflow_source_text = read_repo_file("workflows/pr-processing.md")
 integration_closeout_text = read_repo_file("workflows/pr-batch-integration-closeout.md")
@@ -659,9 +660,9 @@ pr_batch_skill_text = read_repo_file("skills/pr-batch/SKILL.md")
 triage_skill_text = read_repo_file("skills/triage/SKILL.md")
 batch_plan_preflight_text = read_repo_file("skills/plan-pr-batch/bin/batch-plan-preflight")
 triage_prompt_contract_text = triage_skill_text.gsub(/^ {3}/, "")
-prompt_template = extract_goal_prompt_template(skill_text, "## Goal Prompt for pr-batch",
+prompt_template = extract_goal_prompt_template(SkillStageSource.stage(skill_path, "prompt-template"), "## Goal Prompt for pr-batch",
                                                label: "plan-pr-batch goal prompt template")
-pr_batch_prompt_template = extract_goal_prompt_template(pr_batch_skill_text, "## Goal Prompt Template",
+pr_batch_prompt_template = extract_goal_prompt_template(SkillStageSource.stage(File.join(REPO_ROOT, "skills/pr-batch/SKILL.md"), "prompt-template"), "## Goal Prompt Template",
                                                         label: "pr-batch goal prompt template")
 workflow_goal_section = extract_section(
   workflow_text,

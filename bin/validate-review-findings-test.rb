@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../skills/pr-batch/lib/skill_stage_source"
+
 require "json"
 require "minitest/autorun"
 require "tmpdir"
@@ -94,7 +96,7 @@ class ValidateReviewFindingsTest < Minitest::Test
     root = File.expand_path("..", __dir__)
 
     PROVENANCE_GUIDANCE_PATHS.each do |relative_path|
-      text = File.read(File.join(root, relative_path))
+      text = SkillStageSource.read(File.join(root, relative_path))
       assert_includes text, PROVENANCE_GUIDANCE, relative_path
       assert_includes text, UNKNOWN_GUIDANCE, relative_path
     end

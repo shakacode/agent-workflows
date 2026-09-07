@@ -27,6 +27,7 @@ unless File.file?(COORDINATION_DECLARATION_HELPER)
   )
 end
 load COORDINATION_DECLARATION_HELPER
+require_relative "../lib/skill_stage_source"
 
 ROOT = File.expand_path("../../..", __dir__)
 
@@ -69,7 +70,7 @@ COORDINATION_DECLARATION_RULE = "Batch Coordination Declaration: every final bat
 MISSING_DECLARATION_BLOCKER = CoordinationDeclaration::MISSING_DECLARATION_BLOCKER
 
 def read_repo_file(path)
-  File.read(path, encoding: "UTF-8")
+  SkillStageSource.read(path, encoding: "UTF-8")
 end
 
 def normalize_prose(text)
