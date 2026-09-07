@@ -16,6 +16,7 @@ unless File.file?(receipt_parser_path)
   )
 end
 load receipt_parser_path
+require_relative "../lib/skill_stage_source"
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
@@ -399,7 +400,7 @@ CANONICAL_READINESS_STATES = %w[
 READINESS_STATE_KEYS = /\b(?:final_state|readiness_state|target_state):\s*`?([A-Za-z0-9_-]+)`?/
 
 def read_repo_file(path)
-  File.read(path, encoding: "UTF-8")
+  SkillStageSource.read(path, encoding: "UTF-8")
 end
 
 def extract_goal_prompt_template(skill_text, heading, end_heading: /^##\s+/)
