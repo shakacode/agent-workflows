@@ -3244,6 +3244,86 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_accepts_clean_initialized_gitlink_at_recorded_head
+    with_clean_gitlink_checkout do |repo_root, _submodule_root, base_sha, _submodule_sha, operations, marker|
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      assert matches, error
+      refute File.exist?(marker), "checkout probe executed submodule-controlled code"
+    end
+  end
+
+  def test_checkout_binding_rejects_dirty_or_staged_gitlink_contents
+    with_clean_gitlink_checkout do |repo_root, submodule_root, base_sha, _submodule_sha, operations, marker|
+      tracked_path = File.join(submodule_root, "tracked.txt")
+      File.write(tracked_path, "dirty\n")
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has tracked working-tree changes", error
+      refute File.exist?(marker), "checkout probe executed submodule-controlled code"
+
+      git! "-c", "core.fsmonitor=false", "-c", "filter.local-tool.clean=cat",
+           "-C", submodule_root, "add", "tracked.txt"
+      FileUtils.rm_f(marker)
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has staged tracked changes", error
+      refute File.exist?(marker), "checkout probe executed submodule-controlled code"
+    end
+  end
+
+  def test_checkout_binding_rejects_gitlink_hidden_index_entries
+    with_clean_gitlink_checkout do |repo_root, submodule_root, base_sha, _submodule_sha, operations, marker|
+      git! "-c", "core.fsmonitor=false", "-C", submodule_root,
+           "update-index", "--skip-worktree", "tracked.txt"
+      File.write(File.join(submodule_root, "tracked.txt"), "hidden dirty content\n")
+      FileUtils.rm_f(marker)
+
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has index-hidden tracked entries", error
+      refute File.exist?(marker), "checkout probe executed submodule-controlled code"
+    end
+  end
+
+  def test_checkout_binding_rejects_missing_or_noncanonical_gitlink_checkout
+    with_clean_gitlink_checkout do |repo_root, submodule_root, base_sha, _submodule_sha, operations, marker|
+      File.rename(File.join(submodule_root, ".git"), File.join(submodule_root, ".git-disabled"))
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_includes error, "trusted checkout gitlink state could not be verified"
+      refute File.exist?(marker), "checkout probe executed submodule-controlled code"
+    end
+
+    with_clean_gitlink_checkout do |repo_root, submodule_root, base_sha, _submodule_sha, operations, marker|
+      moved_submodule = File.join(repo_root, "moved-dependency")
+      File.rename(submodule_root, moved_submodule)
+      File.symlink(moved_submodule, submodule_root)
+
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has tracked working-tree changes", error
+      refute File.exist?(marker), "checkout probe executed submodule-controlled code"
+    end
+  end
+
+  def test_checkout_binding_rejects_gitlink_head_mismatch
+    with_clean_gitlink_checkout do |repo_root, submodule_root, base_sha, submodule_sha, operations, marker|
+      File.write(File.join(submodule_root, "second.txt"), "second\n")
+      git! "-c", "core.fsmonitor=false", "-C", submodule_root, "add", "second.txt"
+      git! "-c", "core.fsmonitor=false", "-C", submodule_root,
+           "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "new submodule head"
+      refute_equal submodule_sha,
+                   git_output!("-c", "core.fsmonitor=false", "-C", submodule_root, "rev-parse", "HEAD")
+      FileUtils.rm_f(marker)
+
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has tracked working-tree changes", error
+      refute File.exist?(marker), "checkout probe executed submodule-controlled code"
+    end
+  end
+
   def test_git_object_ids_are_exactly_sha1_or_sha256_length
     assert_match GIT_OBJECT_ID_PATTERN, "a" * 40
     assert_match GIT_OBJECT_ID_PATTERN, "b" * 64
@@ -5564,6 +5644,54 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   private
+
+  def with_clean_gitlink_checkout
+    Dir.mktmpdir("trusted-base-gitlink") do |repo_root|
+      Dir.mktmpdir("trusted-base-gitlink-source") do |source_root|
+        git! "-C", source_root, "init", "--quiet", "--initial-branch=main"
+        File.write(File.join(source_root, "tracked.txt"), "trusted\n")
+        git! "-C", source_root, "add", "tracked.txt"
+        git! "-C", source_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+             "commit", "--quiet", "-m", "trusted submodule"
+        submodule_sha = git_output!("-C", source_root, "rev-parse", "HEAD")
+
+        git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+        git! "-c", "protocol.file.allow=always", "-C", repo_root,
+             "submodule", "add", "--quiet", source_root, "vendor/dependency"
+        git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+             "commit", "--quiet", "-m", "trusted superproject"
+        base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+
+        submodule_root = File.join(repo_root, "vendor", "dependency")
+        submodule_git_dir = git_output!("-C", submodule_root, "rev-parse", "--absolute-git-dir")
+        marker = File.join(repo_root, "submodule-controlled-code-ran")
+        local_tool = File.join(submodule_git_dir, "local-tool")
+        File.write(local_tool, "#!/bin/sh\ntouch #{Shellwords.escape(marker)}\n")
+        FileUtils.chmod(0o755, local_tool)
+        FileUtils.mkdir_p(File.join(submodule_git_dir, "info"))
+        File.write(File.join(submodule_git_dir, "info", "attributes"), "tracked.txt filter=local-tool\n")
+        git! "-C", submodule_root, "config", "filter.local-tool.clean", local_tool
+        git! "-C", submodule_root, "config", "diff.external", local_tool
+        git! "-C", submodule_root, "config", "core.fsmonitor", local_tool
+        FileUtils.mkdir_p(File.join(submodule_git_dir, "hooks"))
+        FileUtils.cp(local_tool, File.join(submodule_git_dir, "hooks", "post-checkout"))
+
+        previous_executable = TrustedGitState.executable
+        previous_local_env_vars = TrustedGitState.local_env_vars
+        TrustedGitState.executable = REAL_GIT
+        TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+          REAL_GIT,
+          unsetenv_others: true
+        )
+        operations = TrustedBaseHighRiskOperations.new
+
+        yield repo_root, submodule_root, base_sha, submodule_sha, operations, marker
+      end
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
 
   def install_process_state_executable(directory, source_candidates: %w[/usr/bin/ps /bin/ps])
     source = source_candidates.find { |path| File.executable?(path) }

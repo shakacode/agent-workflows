@@ -1908,6 +1908,7 @@ end
 
 class TrustedBaseHighRiskOperations
   INDEX_ENTRY_PATTERN = /\A(?<mode>\d{6}) (?<oid>[0-9a-f]{40}|[0-9a-f]{64}) (?<stage>\d)\t(?<path>.+)\z/m
+  MAX_GITLINK_DEPTH = 32
   TRACKED_WORKTREE_CHANGES = "trusted checkout has tracked working-tree changes"
 
   def git_toplevel
@@ -2024,7 +2025,7 @@ class TrustedBaseHighRiskOperations
   # attributes and filter drivers that select them live in `.git/info` and local
   # config beyond any `-c`/`GIT_CONFIG_*` override. Compare raw bytes against the
   # index instead; the staged probe above already bound the index to HEAD.
-  def worktree_matches_index?(root)
+  def worktree_matches_index?(root, gitlink_ancestors: Set.new, gitlink_depth: 0)
     entries, entries_error = tracked_index_entries(root)
     return [false, entries_error] if entries_error
 
@@ -2043,6 +2044,14 @@ class TrustedBaseHighRiskOperations
         link_oids, link_error = raw_blob_oids(root, "--stdin", stdin_data: File.readlink(path), expected_count: 1)
         return [false, link_error] if link_error
         return [false, TRACKED_WORKTREE_CHANGES] unless link_oids == [entry.fetch(:oid)]
+      when "160000"
+        gitlink_matches, gitlink_error = gitlink_matches_index?(
+          root,
+          entry,
+          gitlink_ancestors:,
+          gitlink_depth:
+        )
+        return [false, gitlink_error] unless gitlink_matches
       else
         return [false, "trusted checkout has tracked entries with unsupported mode #{mode}"]
       end
@@ -2078,6 +2087,57 @@ class TrustedBaseHighRiskOperations
     return [nil, "trusted checkout has unmerged index entries"] if entries.any? { |entry| entry.fetch(:stage) != "0" }
 
     [entries, nil]
+  end
+
+  def gitlink_matches_index?(root, entry, gitlink_ancestors:, gitlink_depth:)
+    relative_path = entry.fetch(:path)
+    return [false, "trusted checkout gitlink state could not be verified"] if relative_path.match?(/[\n\r]/)
+    if gitlink_depth >= MAX_GITLINK_DEPTH
+      return [false, "trusted checkout gitlink nesting exceeds verification limit"]
+    end
+
+    root = File.realpath(root)
+    path = File.join(root.b, relative_path)
+    return [false, TRACKED_WORKTREE_CHANGES] unless File.lstat(path).directory?
+    return [false, "trusted checkout gitlink state could not be verified"] unless File.realpath(path) == path
+    return [false, "trusted checkout gitlink nesting is cyclic"] if gitlink_ancestors.include?(path)
+
+    stdout, stderr, status = capture_checkout_git_probe(path, "rev-parse", "--show-toplevel")
+    toplevel = stdout.to_s.lines(chomp: true)
+    canonical_toplevel = File.realpath(toplevel.fetch(0)) if status&.success? && toplevel.one?
+    unless status&.success? && canonical_toplevel == path
+      return [false, "trusted checkout gitlink state could not be verified: #{stderr.to_s.lines.first&.strip}"]
+    end
+
+    stdout, stderr, status = capture_checkout_git_probe(path, "rev-parse", "--verify", "HEAD^{commit}")
+    head_oid = stdout.to_s.strip
+    unless status&.success? && head_oid.match?(GIT_OBJECT_ID_PATTERN)
+      return [false, "trusted checkout gitlink HEAD could not be resolved: #{stderr.to_s.lines.first&.strip}"]
+    end
+
+    return [false, TRACKED_WORKTREE_CHANGES] unless head_oid == entry.fetch(:oid)
+
+    hidden_entries, hidden_error = hidden_tracked_index_entries?(path)
+    return [false, hidden_error] if hidden_error
+    return [false, "trusted checkout has index-hidden tracked entries"] if hidden_entries
+
+    _stdout, stderr, status = capture_checkout_git_probe(
+      path,
+      "diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv",
+      "--ignore-submodules=none", "HEAD", "--"
+    )
+    return [false, "trusted checkout has staged tracked changes"] if status.respond_to?(:exitstatus) && status.exitstatus == 1
+    unless status&.success?
+      return [false, "trusted checkout gitlink staged state could not be verified: #{stderr.to_s.lines.first&.strip}"]
+    end
+
+    worktree_matches_index?(
+      path,
+      gitlink_ancestors: gitlink_ancestors.dup.add(path),
+      gitlink_depth: gitlink_depth + 1
+    )
+  rescue ArgumentError, SystemCallError => e
+    [false, "trusted checkout gitlink state could not be verified: #{e.message.lines.first&.strip}"]
   end
 
   def regular_file_matches_mode?(path, mode)
