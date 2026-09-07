@@ -467,6 +467,72 @@ def assert_remediation_authority_section_contract(section, location)
 end
 
 class CoordinationTelemetryContractTest < Minitest::Test
+  # Instruction contracts only: catch a status prompt that calls the collector
+  # before the gate, or treats deliberately absent coordination as degraded.
+  def assert_batch_status_applicability_contract(text)
+    assert text.include?("## Coordination applicability"), "status must gate its collector before probing"
+    gate = extract_section(text, "## Coordination applicability").gsub(/\s+/, " ")
+
+    assert_includes gate, "canonical trusted applicability outcome"
+    assert_includes gate, "before the executable collector or any doctor, status, or backend helper"
+    assert_includes gate, "skip the collector entirely"
+    assert_includes gate, "exact controller-local target scope and direct GitHub cross-verification"
+    assert_includes gate, "intentionally absent coordination fields as `not applicable`"
+    assert_includes gate, "Missing or contradictory applicability stays `UNKNOWN`"
+    assert_includes gate, "Do not infer N/A from a missing backend or claim"
+    assert_includes gate, "Only `coordination_required` enters the collector, bounded probes, joins, and coordination-only degradation below"
+    assert_operator text.index("## Coordination applicability"), :<, text.index('"${BATCH_STATUS_SKILL_DIR}/bin/batch-status"')
+    assert_includes text, 'agent-coord-bounded" --timeout 20 doctor --json'
+    assert_includes text, "backend unreachable, degraded, timed out"
+  end
+
+  def test_batch_status_bypasses_the_entire_collector_before_coordination_probes
+    assert_batch_status_applicability_contract(read_repo_file(File.join(ROOT, "skills/batch-status/SKILL.md")))
+  end
+
+  # The reusable prompt is also an executable instruction surface: a guarded
+  # Inputs section alone must not leave copied loop prompts calling the backend.
+  def assert_evaluation_applicability_contract(text)
+    inputs = extract_section(text, "## Inputs").gsub(/\s+/, " ")
+    prompt = extract_section(text, "## Loop Prompt").gsub(/\s+/, " ")
+    [inputs, prompt].each do |section|
+      assert_includes section, "Consume the canonical trusted applicability outcome before any coordination probe"
+      assert_includes section, "For `coordination_not_applicable`, make no coordination calls"
+      assert_includes section, "exact controller-supplied scope, git/GitHub, and local evidence"
+      assert_includes section, "intentionally absent coordination fields are `not applicable`, not `UNKNOWN`, stale, or dead"
+      assert_includes section, "Missing or contradictory applicability remains `UNKNOWN`"
+      assert_includes section, "For `coordination_required`, preserve bounded coordination probes and degradation"
+    end
+    assert_operator inputs.index("trusted applicability"), :<, inputs.index('agent-coord-bounded" --timeout 20 doctor')
+    assert_includes text, "Use a checker instance distinct from every maker"
+    assert_includes prompt, "always use a checker independent from every maker"
+    assert_includes inputs, "durable scheduler or dependency state that survives the controller/session boundary remains `coordination_required`"
+    assert_includes inputs, "Only `coordination_required` may call a private-backend merge-ledger helper"
+  end
+
+  def test_evaluation_inputs_and_reusable_prompt_gate_coordination_without_losing_checker_independence
+    assert_evaluation_applicability_contract(read_repo_file(File.join(ROOT, "workflows/continuous-evaluation-loop.md")))
+  end
+
+  def test_status_and_evaluation_contracts_reject_missing_partial_and_late_guards
+    status = read_repo_file(File.join(ROOT, "skills/batch-status/SKILL.md"))
+    evaluation = read_repo_file(File.join(ROOT, "workflows/continuous-evaluation-loop.md"))
+    status_gate = extract_section(status, "## Coordination applicability")
+    prompt = extract_section(evaluation, "## Loop Prompt")
+    mutants = [
+      [method(:assert_batch_status_applicability_contract), status.sub(status_gate, "\n"), "missing status guard"],
+      [method(:assert_batch_status_applicability_contract),
+       status.sub("skip the collector entirely", "skip only the later doctor call"), "partial collector guard"],
+      [method(:assert_batch_status_applicability_contract),
+       "\"${BATCH_STATUS_SKILL_DIR}/bin/batch-status\" --json\n#{status}", "collector before guard"],
+      [method(:assert_evaluation_applicability_contract),
+       evaluation.sub(prompt, prompt.sub("make no coordination calls", "read coordination status")), "unguarded reusable prompt"]
+    ]
+    mutants.each do |contract, mutant, label|
+      assert_raises(Minitest::Assertion, label) { contract.call(mutant) }
+    end
+  end
+
   def test_address_review_authenticates_applicability_before_any_coordination_command
     applicability_gate =
       "Before any coordination command, establish exactly one trusted `coordination_applicability` outcome from " \

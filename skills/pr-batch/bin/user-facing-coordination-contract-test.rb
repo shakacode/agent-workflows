@@ -5,6 +5,7 @@ require_relative "../lib/skill_stage_source"
 
 require "minitest/autorun"
 require "json"
+require "yaml"
 
 class UserFacingCoordinationContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
@@ -22,6 +23,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   SPEC = "skills/spec/SKILL.md"
   PLAN_ISSUE_TRIAGE = "skills/plan-issue-triage/SKILL.md"
   QA_STRESS = "skills/qa-stress/SKILL.md"
+  CLOSE_BATCH = "skills/close-batch/SKILL.md"
   README = "README.md"
   SKILL_GUIDE = "docs/skills.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
@@ -202,7 +204,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes text, "never gates readiness"
     assert_includes text, "never blocks a handoff"
     assert_includes text, "The Lane Card, the `Next:` instruction, the `Action needed:` line"
-    assert_includes text, "Collapsing them into a single terminal structure is deliberately out of scope"
+    assert_includes text, "at or below `compact_terminal_structure_max_lanes`"
+    assert_includes text, "Larger or multi-repo batches keep the existing split closing stack"
+    refute_includes text, "Collapsing them into a single terminal structure is deliberately out of scope"
   end
 
   def test_coordinator_narration_volume_marker_is_shadow_only_in_the_two_fyi_surfaces
@@ -370,6 +374,42 @@ class UserFacingCoordinationContractTest < Minitest::Test
     post_merge = normalized(POST_MERGE_AUDIT)
     refute_includes post_merge,
                     "emits only its verified compact receipt reference plus the final `Conversation status` line"
+  end
+
+  def test_compact_terminal_structure_threshold_is_explicit
+    policy = YAML.safe_load(File.read(File.join(ROOT, ".agents", "agent-workflow.yml")), aliases: false)
+    assert_equal 2, policy.fetch("compact_terminal_structure_max_lanes")
+
+    [DOC, WORKFLOW, PR_BATCH, CLOSE_BATCH].each do |path|
+      text = normalized(path)
+      assert_includes text.downcase, "compact terminal structure", path
+      assert_includes text, "compact_terminal_structure_max_lanes", path
+      assert_includes text, "single-repo batches", path
+      assert_includes text, "required receipt", path
+    end
+  end
+
+  def test_compact_terminal_structure_preserves_checkpoint_scope_and_lane_identity
+    text = normalized_section(WORKFLOW, "### Coordinator Output Contract", end_heading: /^###\s+/)
+    assert_includes text, "optional positive integer; when omitted, keep the split closing stack"
+    assert_includes text, "distinct durable lanes, including completed lanes"
+    assert_includes text, "not running worker instances, PRs/targets, or emitted Lane Cards"
+    assert_includes text, "A lane with multiple targets counts once"
+    assert_includes text, "only the final-handoff layout"
+    assert_includes text, "separate `pr-open` checkpoint still occurs once per PR when it opens"
+
+    example = normalized("examples/agent-workflow.yml")
+    assert_includes example, "# compact_terminal_structure_max_lanes: 2"
+    assert_includes example, "Omit to keep the split closing stack"
+
+    terminal = normalized_section(DOC, "## Terminal Next-Step Contract", end_heading: /^##\s+/)
+    assert_includes terminal, "[Output Contract](#output-contract)"
+    assert_includes terminal, "preserves these required strings and their order"
+
+    closeout = normalized_section(INTEGRATION_CLOSEOUT, "### Coordinator Closeout Lane", end_heading: /^##\s+/)
+    assert_includes closeout,
+                    "When the compact terminal structure seam applies to single-repo batches " \
+                    "at or below `compact_terminal_structure_max_lanes`"
   end
 
   def test_close_session_consumes_the_shared_model
