@@ -141,6 +141,20 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_same_path_source_reservation_does_not_duplicate_companion_advisory
+    with_companion_repo do |root, fixture|
+      source = fixture.fetch("source_path")
+      reservation = expansion_path_reservation(lane_id: fixture.fetch("lane_id"), path: source)
+      input = companion_input(fixture, paths: [source], reservations: [reservation])
+
+      result, stderr, status = evaluate(input, chdir: root)
+
+      assert status.success?, stderr
+      advisories = result.fetch("advisories").select { |item| item["code"] == "companion-path-omitted" }
+      assert_equal 1, advisories.length
+    end
+  end
+
   def test_repo_without_companion_conventions_preserves_existing_result
     Dir.mktmpdir("batch-plan-no-companion-config") do |root|
       result, stderr, status = evaluate(input_for, chdir: root)
@@ -1003,6 +1017,22 @@ class BatchPlanPreflightTest < Minitest::Test
         ---
           companion_path_conventions: invalid
           malformed: [
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_malformed_policy_fallback_uses_least_content_indentation
+    Dir.mktmpdir("batch-plan-less-indented-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+          malformed: [
+        companion_path_conventions: invalid
       YAML
 
       result, _stderr, status = evaluate(input_for, chdir: root)

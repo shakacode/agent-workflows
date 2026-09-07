@@ -697,7 +697,7 @@ module BatchPlanPreflight
 
     effective_maps.flat_map do |lane_id, map|
       effective_paths = map.fetch("paths")
-      effective_paths.flat_map do |source_path|
+      effective_paths.uniq.flat_map do |source_path|
         conventions.filter_map do |convention|
           captures = match_companion_source(convention.fetch("source_glob"), source_path)
           next unless captures
@@ -841,10 +841,10 @@ module BatchPlanPreflight
 
   def companion_policy_fragment_node(yaml)
     lines = yaml.to_s.b.lines
-    root_indentation = companion_policy_root_indentation(lines)
+    quoted = companion_policy_quoted_line_starts(lines)
+    root_indentation = companion_policy_root_indentation(lines, quoted)
     return [:absent, nil] if root_indentation.nil?
 
-    quoted = companion_policy_quoted_line_starts(lines)
     starts = lines.each_index.select do |index|
       !quoted[index] &&
         companion_policy_key_line?(lines[index]) &&
@@ -997,9 +997,9 @@ module BatchPlanPreflight
     )
   end
 
-  def companion_policy_root_indentation(lines)
+  def companion_policy_root_indentation(lines, quoted)
     allow_document_start = true
-    lines.each do |line|
+    indentations = lines.each_with_index.filter_map do |line, index|
       next if line.strip.empty? || line.lstrip.start_with?("#")
       next if allow_document_start && yaml_directive_line?(line)
 
@@ -1008,9 +1008,10 @@ module BatchPlanPreflight
         next
       end
 
-      return companion_policy_line_indentation(line)
+      allow_document_start = false
+      companion_policy_line_indentation(line) unless quoted[index]
     end
-    nil
+    indentations.min
   end
 
   def companion_policy_line_indentation(line)
