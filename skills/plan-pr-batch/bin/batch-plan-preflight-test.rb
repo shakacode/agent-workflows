@@ -675,6 +675,26 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_unrelated_root_merge_uses_anchor_definition_at_alias_position
+    Dir.mktmpdir("batch-plan-reused-root-merge-anchor") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<-YAML)
+  defaults: &defaults
+    base_branch: main
+  <<: *defaults
+  later: &defaults
+    companion_path_conventions: invalid
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+      assert_empty result.fetch("advisories")
+    end
+  end
+
   def test_malformed_declared_companion_policy_fails_closed
     Dir.mktmpdir("batch-plan-malformed-companion-policy") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
@@ -771,6 +791,23 @@ class BatchPlanPreflightTest < Minitest::Test
       assert status.success?, stderr
       assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
                       "companion-path-omitted"
+    end
+  end
+
+  def test_malformed_policy_fallback_uses_indentation_after_document_marker
+    Dir.mktmpdir("batch-plan-indented-document-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        ---
+          companion_path_conventions: invalid
+          malformed: [
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
     end
   end
 
