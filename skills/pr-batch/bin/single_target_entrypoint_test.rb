@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "json"
 require "open3"
 require "tmpdir"
@@ -7,7 +9,7 @@ require "tmpdir"
 ROOT = File.expand_path("../../..", __dir__)
 
 def read_repo_file(path)
-  File.read(File.join(ROOT, path), encoding: "UTF-8")
+  SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
 end
 
 def assert(condition, message)

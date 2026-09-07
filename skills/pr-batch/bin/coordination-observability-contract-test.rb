@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -29,10 +31,10 @@ class CoordinationObservabilityContractTest < Minitest::Test
   def setup
     @component = File.read(COMPONENT_PATH, encoding: "UTF-8")
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
-    @skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    @skill = SkillStageSource.read(SKILL_PATH, encoding: "UTF-8")
     @pause_skill = File.read(PAUSE_SKILL_PATH, encoding: "UTF-8")
     @backend_doc = File.read(BACKEND_DOC_PATH, encoding: "UTF-8")
-    @address_review_skill = File.read(ADDRESS_REVIEW_SKILL_PATH, encoding: "UTF-8")
+    @address_review_skill = SkillStageSource.read(ADDRESS_REVIEW_SKILL_PATH, encoding: "UTF-8")
     @address_review_workflow = File.read(ADDRESS_REVIEW_WORKFLOW_PATH, encoding: "UTF-8")
   end
 
