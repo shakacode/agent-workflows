@@ -617,6 +617,23 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_recovery_does_not_open_quotes_inside_plain_scalars
+    Dir.mktmpdir("batch-plan-plain-scalar-quote") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        notes: foo:"unterminated
+        companion_path_conventions: invalid
+        malformed: [
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
   def test_malformed_recovery_strips_invalid_utf8_comments_from_companion_fragment
     with_companion_repo do |root, fixture|
       declared = <<~YAML
@@ -815,6 +832,28 @@ class BatchPlanPreflightTest < Minitest::Test
   def test_malformed_policy_fallback_allows_leading_document_marker
     with_companion_repo do |root, fixture|
       File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        ---
+        companion_path_conventions:
+          - source_glob: #{fixture.fetch('source_glob')}
+            companion_glob: #{fixture.fetch('companion_glob')}
+        malformed: [
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
+  def test_malformed_policy_fallback_allows_directive_before_document_marker
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        %YAML 1.1
         ---
         companion_path_conventions:
           - source_glob: #{fixture.fetch('source_glob')}

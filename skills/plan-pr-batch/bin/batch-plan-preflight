@@ -954,7 +954,7 @@ module BatchPlanPreflight
 
   def companion_policy_quote_opener?(line, index)
     line[0...index].match?(
-      /(?:(?:\A[ \t]*|[-?][ \t]+|:[ \t]*|[,\[{][ \t]*)(?:[!&][^ \t\r\n]+[ \t]+)*)\z/
+      /(?:(?:\A[ \t]*|[-?][ \t]+|:[ \t]+|["']:[ \t]*|[,\[{][ \t]*)(?:[!&][^ \t\r\n]+[ \t]+)*)\z/
     )
   end
 
@@ -962,6 +962,7 @@ module BatchPlanPreflight
     allow_document_start = true
     lines.each do |line|
       next if line.strip.empty? || line.lstrip.start_with?("#")
+      next if allow_document_start && yaml_directive_line?(line)
 
       if allow_document_start && yaml_document_start_line?(line)
         allow_document_start = false
@@ -1011,13 +1012,19 @@ module BatchPlanPreflight
     line.b.match?(/\A---(?:[ \t]*(?:#.*)?)?\r?\n?\z/)
   end
 
+  def yaml_directive_line?(line)
+    line.b.match?(/\A%[^\r\n]*(?:\r?\n)?\z/)
+  end
+
   def companion_policy_single_document?(lines, quoted)
     boundaries = lines.each_index.select do |index|
       !quoted[index] && yaml_document_boundary_line?(lines[index])
     end
     return true if boundaries.empty?
 
-    first_content = lines.index { |line| !line.strip.empty? && !line.lstrip.start_with?("#") }
+    first_content = lines.index do |line|
+      !line.strip.empty? && !line.lstrip.start_with?("#") && !yaml_directive_line?(line)
+    end
     boundaries == [first_content] && yaml_document_start_line?(lines[first_content])
   end
 
