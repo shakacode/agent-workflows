@@ -303,12 +303,13 @@ helper is the only owner allowed to delete that root. `task-review-loop` remains
 read-only, and `goal-state-change-monitor` neither classifies these artifacts
 nor deletes them. Cleanup holds an exclusive lock on the durable receipt without
 creating a lock artifact. After isolating the owned root, it retains an open
-directory descriptor for descriptor-relative validation and deletion, and
-rechecks the quarantine pathname against the receipt-bound device and inode
-before deletion. Rollback occurs only when this invocation moved the still-intact
-owned root. A concurrent cleanup or pre-deletion replacement fails closed without
-deleting foreign or owned files. Every failure preserves all durable or external
-state for reconciliation.
+directory descriptor and opens each allowlisted path one component at a time with
+no-follow descriptor-relative operations. It atomically detaches each
+identity-verified entry to a random private name before descriptor-relative
+removal, including the final owned root and cleanup holder. Rollback occurs only
+when this invocation moved the still-intact owned root. A concurrent cleanup or
+pre-deletion replacement fails closed without deleting foreign or owned files.
+Every failure preserves all durable or external state for reconciliation.
 
 ## Handoff To Existing Owners
 

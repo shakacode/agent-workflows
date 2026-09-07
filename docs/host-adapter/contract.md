@@ -194,10 +194,12 @@ task-review input. The helper revalidates the live repository, full identity,
 root ownership marker and filesystem identity, exact allowlist, and the original
 review input through repository-backed `task-review-loop` before atomically
 isolating and deleting only that root. Cleanup holds an exclusive lock on the durable receipt,
-creates no lock artifact, and keeps an open directory descriptor for
-descriptor-relative validation and deletion. It rolls back only a still-intact
-owned root moved by that invocation; concurrent cleanup and quarantine
-replacement fail closed without deleting the replacement.
+creates no lock artifact, and keeps an open directory descriptor while it opens
+each allowlisted path one component at a time with no-follow descriptor-relative operations.
+It atomically detaches each identity-verified entry to a random private name before
+descriptor-relative removal, including the final owned root and cleanup holder. It
+rolls back only a still-intact owned root moved by that invocation; concurrent
+cleanup and entry replacement fail closed without deleting the replacement.
 
 The goal monitor cannot prove a clean task review, its repository-derived
 current head, or ownership of an arbitrary caller-supplied state path. It never

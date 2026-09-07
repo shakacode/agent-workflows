@@ -3,6 +3,7 @@
 
 require "digest"
 require "fileutils"
+require "fiddle/import"
 require "json"
 require "open3"
 require "optparse"
@@ -19,6 +20,32 @@ module TaskScratchLifecycle
     root_owner run_token scratch_parent scratch_root version worktree_root
   ].freeze
   TASK_REVIEW_HELPER = File.expand_path("task-review-loop", __dir__)
+
+  module CleanupSyscalls
+    extend Fiddle::Importer
+    dlload Fiddle.dlopen(nil)
+    extern "int openat(int, const char *, int, ...)"
+    extern "int mkdirat(int, const char *, unsigned int)"
+    extern "int renameat(int, const char *, int, const char *)"
+    extern "int unlinkat(int, const char *, int)"
+    if RUBY_PLATFORM.include?("darwin")
+      extern "int renameatx_np(int, const char *, int, const char *, unsigned int)"
+
+      def self.rename_no_replace(source_directory_fd, source, destination_directory_fd, destination)
+        renameatx_np(source_directory_fd, source, destination_directory_fd, destination, 0x4)
+      end
+
+      REMOVE_DIRECTORY = 0x80
+    else
+      extern "int renameat2(int, const char *, int, const char *, unsigned int)"
+
+      def self.rename_no_replace(source_directory_fd, source, destination_directory_fd, destination)
+        renameat2(source_directory_fd, source, destination_directory_fd, destination, 0x1)
+      end
+
+      REMOVE_DIRECTORY = 0x200
+    end
+  end
 
   class LifecycleError < StandardError; end
 
@@ -238,37 +265,192 @@ module TaskScratchLifecycle
   end
 
   def root_identity_matches?(stat, receipt)
-    stat.directory? && !stat.symlink? &&
+    stat.directory? &&
       [stat.dev, stat.ino, stat.uid, stat.mode & 0o777] == [
         receipt["root_device"], receipt["root_inode"], receipt["root_owner"], receipt["root_mode"]
       ]
   end
 
-  def owned_root_path?(path, receipt)
-    root_identity_matches?(File.lstat(path), receipt)
-  rescue SystemCallError, ArgumentError
-    false
+  def same_identity?(left, right)
+    left && right && left.dev == right.dev && left.ino == right.ino
   end
 
-  def open_owned_root(path, receipt)
-    file = File.open(path, File::RDONLY | File::NOFOLLOW)
-    fail!("scratch-root-rebound") unless root_identity_matches?(file.stat, receipt)
-    file
-  rescue LifecycleError
-    file&.close
-    raise
-  rescue SystemCallError, ArgumentError
-    file&.close
-    fail!("scratch-root-rebound")
+  def open_at(directory, name)
+    descriptor = CleanupSyscalls.openat(
+      directory.fileno,
+      name,
+      File::RDONLY | File::NONBLOCK | File::NOFOLLOW
+    )
+    raise SystemCallError.new("openat #{name}", Fiddle.last_error) if descriptor == -1
+
+    File.for_fd(descriptor, autoclose: true)
   end
 
-  def within_directory(file, &block)
+  def directory_children(file)
     duplicate = file.dup
     duplicate.autoclose = false
     directory = Dir.for_fd(duplicate.fileno)
-    directory.chdir(&block)
+    directory.children.sort
   ensure
     directory&.close
+  end
+
+  def entry_matches?(directory, name, expected_stat)
+    candidate = open_at(directory, name)
+    same_identity?(candidate.stat, expected_stat)
+  rescue SystemCallError, ArgumentError
+    false
+  ensure
+    candidate&.close
+  end
+
+  def entry_missing?(directory, name)
+    candidate = open_at(directory, name)
+    false
+  rescue Errno::ENOENT
+    true
+  rescue SystemCallError, ArgumentError
+    false
+  ensure
+    candidate&.close
+  end
+
+  def scan_allowlisted_tree(root, allowlist)
+    expected_files = allowlist + [OWNER_BASENAME]
+    expected_dirs = expected_directories(allowlist)
+    files = {}
+    directories = {
+      "" => { io: root, parent: nil, name: nil, stat: root.stat }
+    }
+    pending = [""]
+    until pending.empty?
+      relative_parent = pending.shift
+      parent = directories.fetch(relative_parent).fetch(:io)
+      directory_children(parent).each do |name|
+        relative = relative_parent.empty? ? name : "#{relative_parent}/#{name}"
+        child = open_at(parent, name)
+        stat = child.stat
+        if stat.directory?
+          unless expected_dirs.include?(relative)
+            child.close
+            fail!("scratch-directory-not-allowlisted")
+          end
+          directories[relative] = { io: child, parent: parent, name: name, stat: stat }
+          pending << relative
+        elsif stat.file?
+          unless expected_files.include?(relative)
+            child.close
+            fail!("scratch-entry-not-allowlisted")
+          end
+          files[relative] = { io: child, parent: parent, name: name, stat: stat }
+        else
+          child.close
+          fail!("scratch-entry-type-invalid")
+        end
+      rescue Errno::ELOOP
+        fail!("scratch-entry-type-invalid")
+      end
+    end
+    [files, directories]
+  rescue LifecycleError
+    (files&.values.to_a + directories&.values.to_a).each do |record|
+      record[:io]&.close unless record[:io]&.closed? || record[:io].equal?(root)
+    end
+    raise
+  rescue SystemCallError, ArgumentError
+    (files&.values.to_a + directories&.values.to_a).each do |record|
+      record[:io]&.close unless record[:io]&.closed? || record[:io].equal?(root)
+    end
+    fail!("scratch-root-unreadable")
+  end
+
+  def tree_bindings_current?(files, directories)
+    records = files.values + directories.reject { |relative, _record| relative.empty? }.values
+    records.all? do |record|
+      entry_matches?(record.fetch(:parent), record.fetch(:name), record.fetch(:stat))
+    end
+  end
+
+  def owner_marker_matches?(file, receipt)
+    file.rewind
+    bytes = file.read(MAX_ARTIFACT_BYTES + 1).to_s
+    return false if bytes.bytesize > MAX_ARTIFACT_BYTES
+
+    marker = JSON.parse(bytes)
+    marker == {
+      "contract" => "task-scratch-owner",
+      "version" => 1,
+      "identity" => receipt.fetch("identity"),
+      "scratch_root" => receipt.fetch("scratch_root"),
+      "run_token" => receipt.fetch("run_token"),
+      "receipt_digest" => receipt.fetch("digest")
+    }
+  rescue JSON::ParserError, SystemCallError, ArgumentError
+    false
+  end
+
+  def rollback_moved_root(parent, holder, root_name, receipt)
+    return false unless parent && holder && entry_missing?(parent, root_name)
+
+    payload = open_at(holder, "payload")
+    return false unless root_identity_matches?(payload.stat, receipt)
+
+    CleanupSyscalls.rename_no_replace(holder.fileno, "payload", parent.fileno, root_name).zero?
+  rescue SystemCallError, ArgumentError
+    false
+  ensure
+    payload&.close
+  end
+
+  def empty_entry_matches?(directory, name, expected_stat)
+    entry = open_at(directory, name)
+    same_identity?(entry.stat, expected_stat) && directory_children(entry).empty?
+  rescue SystemCallError, ArgumentError
+    false
+  ensure
+    entry&.close
+  end
+
+  def detach_and_remove(directory, name, expected_stat, directory_entry: false)
+    private_name = nil
+    10.times do
+      candidate = ".task-scratch-delete-#{SecureRandom.hex(16)}"
+      result = CleanupSyscalls.rename_no_replace(directory.fileno, name, directory.fileno, candidate)
+      if result.zero?
+        private_name = candidate
+        break
+      end
+      raise SystemCallError.new("renameat #{name}", Fiddle.last_error) unless Fiddle.last_error == Errno::EEXIST::Errno
+    end
+    fail!("scratch-entry-rebound") unless private_name
+
+    captured = open_at(directory, private_name)
+    fail!("scratch-entry-rebound") unless same_identity?(captured.stat, expected_stat)
+    fail!("scratch-entry-rebound") if directory_entry && !directory_children(captured).empty?
+    flags = directory_entry ? CleanupSyscalls::REMOVE_DIRECTORY : 0
+    result = CleanupSyscalls.unlinkat(directory.fileno, private_name, flags)
+    raise SystemCallError.new("unlinkat #{private_name}", Fiddle.last_error) unless result.zero?
+  ensure
+    captured&.close
+  end
+
+  def create_cleanup_holder(parent)
+    10.times do
+      name = ".task-scratch-cleanup-#{SecureRandom.hex(16)}"
+      result = CleanupSyscalls.mkdirat(parent.fileno, name, 0o700)
+      return name if result.zero?
+      raise SystemCallError.new("mkdirat cleanup holder", Fiddle.last_error) unless
+        Fiddle.last_error == Errno::EEXIST::Errno
+    end
+    fail!("cleanup-holder-unavailable")
+  end
+
+  def remove_empty_matching_entry(directory, name, stat)
+    return unless empty_entry_matches?(directory, name, stat)
+
+    detach_and_remove(directory, name, stat, directory_entry: true)
+  rescue LifecycleError, SystemCallError, ArgumentError
+    nil
   end
 
   def expected_directories(allowlist)
@@ -330,44 +512,61 @@ module TaskScratchLifecycle
   def remove_allowlisted_root(receipt)
     root = receipt.fetch("scratch_root")
     parent = receipt.fetch("scratch_parent")
-    quarantine = File.join(parent, ".task-scratch-cleanup-#{receipt.fetch('run_token')}")
     moved_by_invocation = false
     intact = true
-    fail!("cleanup-quarantine-exists") if File.exist?(quarantine) || File.symlink?(quarantine)
+    parent_file = File.open(parent, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    fail!("scratch-parent-invalid") unless parent_file.stat.directory?
+    holder_name = create_cleanup_holder(parent_file)
+    holder = open_at(parent_file, holder_name)
+    holder_stat = holder.stat
+    fail!("cleanup-holder-invalid") unless holder_stat.directory? && holder_stat.uid == Process.euid &&
+                                           (holder_stat.mode & 0o077).zero?
+    root_name = File.basename(root)
+    result = CleanupSyscalls.renameat(parent_file.fileno, root_name, holder.fileno, "payload")
+    raise SystemCallError.new("renameat scratch root", Fiddle.last_error) unless result.zero?
 
-    File.rename(root, quarantine)
     moved_by_invocation = true
-    owned_root = open_owned_root(quarantine, receipt)
-    within_directory(owned_root) do
-      validate_allowlisted_contents(".", receipt.fetch("allowlist"))
-    end
-    fail!("scratch-root-rebound") unless owned_root_path?(quarantine, receipt)
+    owned_root = open_at(holder, "payload")
+    fail!("scratch-root-rebound") unless root_identity_matches?(owned_root.stat, receipt)
+    files, directories = scan_allowlisted_tree(owned_root, receipt.fetch("allowlist"))
+    fail!("owner-marker-mismatch") unless owner_marker_matches?(files.fetch(OWNER_BASENAME).fetch(:io), receipt)
+    fail!("scratch-entry-rebound") unless tree_bindings_current?(files, directories)
 
     intact = false
-    within_directory(owned_root) do
-      receipt.fetch("allowlist").each do |relative|
-        File.unlink(relative) if File.file?(relative) && !File.symlink?(relative)
-      end
-      File.unlink(OWNER_BASENAME)
-      expected_directories(receipt.fetch("allowlist")).sort_by { |path| -path.count("/") }.each do |relative|
-        Dir.rmdir(relative) if File.directory?(relative) && !File.symlink?(relative)
-      end
+    receipt.fetch("allowlist").each do |relative|
+      record = files[relative]
+      detach_and_remove(record.fetch(:parent), record.fetch(:name), record.fetch(:stat)) if record
     end
-    owned_root.close
-    owned_root = nil
-    fail!("scratch-root-rebound") unless owned_root_path?(quarantine, receipt)
-    Dir.rmdir(quarantine)
+    marker = files.fetch(OWNER_BASENAME)
+    detach_and_remove(marker.fetch(:parent), marker.fetch(:name), marker.fetch(:stat))
+    directories.reject { |relative, _record| relative.empty? }
+               .sort_by { |relative, _record| -relative.count("/") }
+               .each do |_relative, record|
+      detach_and_remove(
+        record.fetch(:parent),
+        record.fetch(:name),
+        record.fetch(:stat),
+        directory_entry: true
+      )
+    end
+    detach_and_remove(holder, "payload", owned_root.stat, directory_entry: true)
     moved_by_invocation = false
+    detach_and_remove(parent_file, holder_name, holder_stat, directory_entry: true)
+    holder_name = nil
   rescue LifecycleError
-    owned_root&.close
-    File.rename(quarantine, root) if moved_by_invocation && intact && owned_root_path?(quarantine, receipt) &&
-                                     !File.exist?(root) && !File.symlink?(root)
+    rollback_moved_root(parent_file, holder, root_name, receipt) if moved_by_invocation && intact
     raise
   rescue SystemCallError, ArgumentError
-    owned_root&.close
-    File.rename(quarantine, root) if moved_by_invocation && intact && owned_root_path?(quarantine, receipt) &&
-                                     !File.exist?(root) && !File.symlink?(root)
+    rollback_moved_root(parent_file, holder, root_name, receipt) if moved_by_invocation && intact
     fail!("cleanup-filesystem-failure")
+  ensure
+    (files&.values.to_a + directories&.values.to_a).each do |record|
+      record[:io]&.close unless record[:io]&.closed? || record[:io].equal?(owned_root)
+    end
+    owned_root&.close unless owned_root&.closed?
+    holder&.close unless holder&.closed?
+    remove_empty_matching_entry(parent_file, holder_name, holder_stat) if holder_name && holder_stat && parent_file
+    parent_file&.close unless parent_file&.closed?
   end
 
   def cleanup(options)
