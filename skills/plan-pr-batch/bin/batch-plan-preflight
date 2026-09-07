@@ -865,7 +865,9 @@ module BatchPlanPreflight
         true
       elsif line_indent == key_indent
         continue_fragment = companion_policy_flow_collection_open?(lines, start_index, index)
-        !line.lstrip.start_with?("-") && !continue_fragment
+        continue_sequence = line.lstrip.start_with?("-") &&
+                            companion_policy_block_sequence_value_line?(lines[start_index])
+        !continue_sequence && !continue_fragment
       else
         false
       end
@@ -882,6 +884,12 @@ module BatchPlanPreflight
       /\A[ \t]*(?:[!&][^ \t\r\n]+[ \t]+)*
        (?:companion_path_conventions|["']companion_path_conventions["'])\s*:/x
     )
+  end
+
+  def companion_policy_block_sequence_value_line?(line)
+    _state, comment_index = companion_policy_scan_line(line, :normal)
+    content = (comment_index ? line[0...comment_index] : line).rstrip
+    companion_policy_key_line?(content) && content.end_with?(":")
   end
 
   def companion_policy_quoted_line_starts(lines)

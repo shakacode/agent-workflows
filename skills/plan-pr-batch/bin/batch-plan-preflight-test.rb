@@ -857,6 +857,22 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_recovery_stops_before_unrelated_root_sequence
+    Dir.mktmpdir("batch-plan-unrelated-root-sequence") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions: []
+        - broken
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+    end
+  end
+
   def test_malformed_recovery_recognizes_decorated_policy_keys
     ["&policy", "!policy"].each do |property|
       Dir.mktmpdir("batch-plan-decorated-policy-key") do |root|
