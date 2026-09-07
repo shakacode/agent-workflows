@@ -1,8 +1,12 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 require "json"
+require "digest"
+require "yaml"
 
 class UserFacingCoordinationContractTest < Minitest::Test
   ROOT = File.expand_path("../../..", __dir__)
@@ -16,13 +20,16 @@ class UserFacingCoordinationContractTest < Minitest::Test
   PAUSE = "skills/pause/SKILL.md"
   POST_MERGE_AUDIT = "skills/post-merge-audit/SKILL.md"
   PR_MONITORING = "skills/pr-monitoring/SKILL.md"
+  BATCH_STATUS = "skills/batch-status/SKILL.md"
   PR_WALKTHROUGH = "skills/pr-walkthrough/SKILL.md"
   SPEC = "skills/spec/SKILL.md"
   PLAN_ISSUE_TRIAGE = "skills/plan-issue-triage/SKILL.md"
   QA_STRESS = "skills/qa-stress/SKILL.md"
+  CLOSE_BATCH = "skills/close-batch/SKILL.md"
   README = "README.md"
   SKILL_GUIDE = "docs/skills.md"
   HST_REPLAY = "skills/pr-batch/fixtures/human-status-translation-replay.json"
+  OWNER_ROUTE_REPLAY = "skills/pr-batch/fixtures/owner-route-pr383-replay.json"
   GMCC_V5 = "GMCC-v5:CI@head/configured-reviewers pending|missing|untriaged|failed|" \
             "threads open|UNKNOWN=>waiting-on-checks-or-review/NOT COMPLETE;poll/fix;" \
             "auto-clear=>watch(same:0wake,delta:gates);fallback:4x15m+exp/4h|manual;" \
@@ -40,7 +47,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
     full_path = File.join(ROOT, path)
     return "" unless File.file?(full_path)
 
-    File.read(full_path, encoding: "UTF-8").gsub(/\s+/, " ").strip
+    SkillStageSource.read(full_path, encoding: "UTF-8").gsub(/\s+/, " ").strip
   end
 
   def normalized_with_integration_closeout(path)
@@ -49,7 +56,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
 
   def test_normalization_keeps_compatibility_files_scoped_and_composition_explicit
     [WORKFLOW, PR_BATCH].each do |path|
-      source = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      source = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
       assert_equal source.gsub(/\s+/, " ").strip, normalized(path), path
 
       combined = normalized_with_integration_closeout(path)
@@ -59,7 +66,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
   end
 
   def normalized_section(path, heading, end_heading:)
-    source = File.read(File.join(ROOT, path), encoding: "UTF-8")
+    source = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
     start = source.index(heading)
     raise "missing #{heading.inspect} in #{path}" unless start
 
@@ -200,7 +207,9 @@ class UserFacingCoordinationContractTest < Minitest::Test
     assert_includes text, "never gates readiness"
     assert_includes text, "never blocks a handoff"
     assert_includes text, "The Lane Card, the `Next:` instruction, the `Action needed:` line"
-    assert_includes text, "Collapsing them into a single terminal structure is deliberately out of scope"
+    assert_includes text, "at or below `compact_terminal_structure_max_lanes`"
+    assert_includes text, "Larger or multi-repo batches keep the existing split closing stack"
+    refute_includes text, "Collapsing them into a single terminal structure is deliberately out of scope"
   end
 
   def test_coordinator_narration_volume_marker_is_shadow_only_in_the_two_fyi_surfaces
@@ -236,7 +245,7 @@ class UserFacingCoordinationContractTest < Minitest::Test
 
   def test_coordination_changes_preserve_exact_gmcc_v5_merge_authority_clauses
     [WORKFLOW, PR_BATCH, PLAN_PR_BATCH, TRIAGE].each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
       assert_includes text, GMCC_V5, path
       refute_includes text, "GMCC-v3:", path
     end
@@ -272,6 +281,179 @@ class UserFacingCoordinationContractTest < Minitest::Test
       assert_includes text, "one exact question", path
       assert_includes text, "manual resume instructions", path
     end
+  end
+
+  def test_cross_task_blockers_have_a_validated_owner_route
+    doc = normalized(DOC)
+    assert_includes doc, "Owner route:"
+    assert_includes doc, "work item"
+    assert_includes doc, "runner"
+    assert_includes doc, "stable workspace or log location"
+    assert_includes doc, "thread handle"
+    assert_includes doc, "task, thread, or session identifier"
+    assert_includes doc, "branch and exact head"
+    assert_includes doc, "Owner route: unavailable"
+    assert_includes doc, "Owner route: inconsistent"
+    assert_includes doc, "no Codex sidebar task"
+    assert_includes doc, "coordinator owns bounded follow-up"
+
+    workflow = normalized(WORKFLOW)
+    assert_includes workflow, "Canonical owner-route rules:"
+    assert_includes workflow, "Cross-Task Blocker Owner Route"
+    assert_includes workflow, "HST-v1 actionable"
+    assert_includes workflow, "Owner route: unavailable"
+    assert_includes workflow, "Owner route: inconsistent"
+
+    batch_status = normalized(BATCH_STATUS)
+    assert_includes batch_status, "Owner route", BATCH_STATUS
+    assert_includes batch_status, "collector's `owner_route` object", BATCH_STATUS
+    assert_includes batch_status, "host-provided task or workspace lookup", BATCH_STATUS
+    assert_includes batch_status, "For a lane with no active cross-task or cross-runner blocker, render `n/a`", BATCH_STATUS
+    assert_includes batch_status, "never present it as a cross-machine link", BATCH_STATUS
+    assert_includes batch_status, "For Conductor/Claude, report no Codex task link", BATCH_STATUS
+    assert_includes batch_status, "do not print raw PID, process-group ID (PGID), lease, or queue-position", BATCH_STATUS
+  end
+
+  def test_owner_route_consistency_fails_closed_without_weakening_gates
+    doc = normalized(DOC)
+    assert_includes doc, "claim and heartbeat"
+    assert_includes doc, "repository, work item, workspace, branch, and session"
+    assert_includes doc, "fail closed"
+    assert_includes doc, "validator isolation"
+    assert_includes doc, "exact-head"
+    assert_includes doc, "merge gates"
+
+    workflow = normalized(WORKFLOW)
+    assert_includes workflow, "This boundary changes presentation only."
+    assert_includes workflow, "validator isolation"
+    assert_includes workflow, "exact-head evidence"
+    assert_includes workflow, "merge gates"
+  end
+
+  def test_pr383_owner_route_replay_is_actionable_and_coalesced
+    replay = JSON.parse(File.read(File.join(ROOT, OWNER_ROUTE_REPLAY), encoding: "UTF-8"))
+    assert_equal "owner-route-replay-v1", replay.fetch("schema_version")
+    assert_equal 383, replay.dig("source", "pull_request")
+
+    observations = replay.fetch("observations")
+    assert_operator observations.length, :>, 1
+    previous_fingerprint = nil
+    replayed_emissions = observations.map do |observation|
+      changed = observation.fetch("material_fingerprint") != previous_fingerprint
+      previous_fingerprint = observation.fetch("material_fingerprint")
+      changed && !observation["actionable_checkpoint"].nil?
+    end
+    assert_equal observations.map { |observation| observation.fetch("emit_user_message") }, replayed_emissions
+    assert_equal 2, replayed_emissions.count(true)
+    assert_equal 2, replay.fetch("expected_user_messages").length
+    assert_equal 2, observations.map { |observation| observation.fetch("material_fingerprint") }.uniq.length
+    assert_operator observations.map { |observation| observation.dig("durable_diagnostics", "pid") }.uniq.length, :>, 1
+    assert_equal observations[0].fetch("material_fingerprint"), observations[1].fetch("material_fingerprint")
+    refute_equal observations[1].fetch("material_fingerprint"), observations[2].fetch("material_fingerprint")
+    assert_equal observations[0].dig("durable_diagnostics", "log"),
+                 observations[1].dig("durable_diagnostics", "log")
+    refute_equal observations[1].dig("durable_diagnostics", "log"),
+                 observations[2].dig("durable_diagnostics", "log")
+    assert_equal "bounded_retries_exhausted", observations[0].fetch("actionable_checkpoint")
+    assert_nil observations[1].fetch("actionable_checkpoint")
+    assert_equal "bounded_retry_exhausted_after_log_rotation", observations[2].fetch("actionable_checkpoint")
+
+    messages = replay.fetch("expected_user_messages")
+    message = messages.first
+    [
+      "What changed:",
+      "Action needed: none.",
+      "Next:",
+      "Owner route:",
+      "https://github.com/shakacode/agent-workflows/pull/383",
+      "Conductor/Claude",
+      "workspace `la-paz`",
+      "`/tmp/pr383-validate6.log`",
+      "aw-pr383-harbor",
+      "session `claude-session-pr383`",
+      "no Codex sidebar task",
+      "cross-app deep link is unavailable",
+      "codex/ruby-packaging-design",
+      "e2ab23a74875d18d9d6589131244009a6ed4a005"
+    ].each { |value| assert_includes message, value }
+    refute_match(/\bPID\b|\bPGID\b|\blease\b|queue position/i, message)
+    assert_includes messages.last, "`/tmp/pr383-validate7.log`"
+    refute_equal messages.first, messages.last
+
+    observations.each do |observation|
+      claim = observation.fetch("claim")
+      heartbeat = observation.fetch("heartbeat")
+      host_task = observation.fetch("host_task")
+      navigation = observation.fetch("navigation")
+      fingerprint_source = [
+        "#{claim.fetch('repo')}##{claim.fetch('target')}",
+        observation.fetch("blocker_state"),
+        claim.fetch("agent_id"),
+        heartbeat.fetch("host"),
+        heartbeat.fetch("workspace"),
+        heartbeat.fetch("thread_handle"),
+        heartbeat.fetch("session_id"),
+        host_task.fetch("url"),
+        heartbeat.fetch("branch"),
+        host_task.fetch("head"),
+        observation.dig("durable_diagnostics", "log"),
+        "codex_sidebar_task=#{navigation.fetch('codex_sidebar_task')}",
+        "cross_app_deep_link=#{navigation.fetch('cross_app_deep_link')}",
+        "current_task_can_navigate=#{navigation.fetch('current_task_can_navigate')}",
+        "current_task_can_message=#{navigation.fetch('current_task_can_message')}"
+      ].join("|")
+      assert_equal "sha256:#{Digest::SHA256.hexdigest(fingerprint_source)}",
+                   observation.fetch("material_fingerprint")
+      assert_equal claim.fetch("agent_id"), heartbeat.fetch("agent_id")
+      assert_equal "#{claim.fetch('repo')}##{claim.fetch('target')}", heartbeat.fetch("target")
+      %w[branch host thread_handle session_id].each do |field|
+        assert_equal claim.fetch(field), heartbeat.fetch(field), "PR #383 #{field} binding drifted"
+      end
+      assert_equal claim.fetch("repo"), host_task.fetch("repository")
+      assert_equal claim.fetch("target"), host_task.fetch("work_item")
+      assert_equal heartbeat.fetch("workspace"), host_task.fetch("workspace")
+      assert_equal claim.fetch("branch"), host_task.fetch("branch")
+      assert_equal claim.fetch("session_id"), host_task.fetch("session_id")
+      messages.each do |expected_message|
+        assert_includes expected_message, host_task.fetch("url")
+        assert_includes expected_message, host_task.fetch("head")
+      end
+    end
+
+    variants = replay.fetch("variants").to_h { |variant| [variant.fetch("id"), variant] }
+    untitled = variants.fetch("untitled-codex-child-task")
+    untitled_input = untitled.fetch("input")
+    fallback_title = [
+      untitled_input.fetch("work_item"),
+      untitled_input.fetch("role"),
+      "—",
+      untitled_input.fetch("thread_handle")
+    ].join(" ")
+    assert_nil untitled_input.fetch("task_title")
+    assert_equal untitled.fetch("expected_fallback_title"), fallback_title
+    assert_includes untitled.fetch("expected_owner_route"), fallback_title
+    assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("task_id")
+    assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("deep_link")
+    assert_includes untitled.fetch("expected_owner_route"), untitled_input.fetch("work_item_url")
+    assert untitled_input.fetch("current_task_can_navigate")
+    assert untitled_input.fetch("current_task_can_message")
+    assert_includes untitled.fetch("expected_owner_route"), "can navigate to and message the owner"
+
+    inconsistent = variants.fetch("stale-claim-session-cross-repository")
+    inconsistent_input = inconsistent.fetch("input")
+    refute_equal inconsistent_input.dig("claim", "session_id"),
+                 inconsistent_input.dig("heartbeat", "session_id")
+    refute_equal inconsistent_input.dig("claim", "repo"),
+                 inconsistent_input.dig("claim_session_task", "repository")
+    assert_equal inconsistent_input.dig("claim", "repo"),
+                 inconsistent_input.dig("heartbeat_session_task", "repository")
+    assert_includes inconsistent.fetch("expected_owner_route"), "Owner route: inconsistent"
+    refute_includes inconsistent.fetch("expected_owner_route"), inconsistent.fetch("forbidden_owner_link")
+
+    unavailable = variants.fetch("owner-unreachable")
+    assert(unavailable.fetch("input").values.all?(&:nil?))
+    assert_includes unavailable.fetch("expected_owner_route"), "Owner route: unavailable"
+    assert_includes unavailable.fetch("expected_owner_route"), "coordinator owns bounded follow-up"
   end
 
   def test_ambiguity_guard_synthesizes_ownership_without_raw_events
@@ -368,6 +550,42 @@ class UserFacingCoordinationContractTest < Minitest::Test
     post_merge = normalized(POST_MERGE_AUDIT)
     refute_includes post_merge,
                     "emits only its verified compact receipt reference plus the final `Conversation status` line"
+  end
+
+  def test_compact_terminal_structure_threshold_is_explicit
+    policy = YAML.safe_load(File.read(File.join(ROOT, ".agents", "agent-workflow.yml")), aliases: false)
+    assert_equal 2, policy.fetch("compact_terminal_structure_max_lanes")
+
+    [DOC, WORKFLOW, PR_BATCH, CLOSE_BATCH].each do |path|
+      text = normalized(path)
+      assert_includes text.downcase, "compact terminal structure", path
+      assert_includes text, "compact_terminal_structure_max_lanes", path
+      assert_includes text, "single-repo batches", path
+      assert_includes text, "required receipt", path
+    end
+  end
+
+  def test_compact_terminal_structure_preserves_checkpoint_scope_and_lane_identity
+    text = normalized_section(WORKFLOW, "### Coordinator Output Contract", end_heading: /^###\s+/)
+    assert_includes text, "optional positive integer; when omitted, keep the split closing stack"
+    assert_includes text, "distinct durable lanes, including completed lanes"
+    assert_includes text, "not running worker instances, PRs/targets, or emitted Lane Cards"
+    assert_includes text, "A lane with multiple targets counts once"
+    assert_includes text, "only the final-handoff layout"
+    assert_includes text, "separate `pr-open` checkpoint still occurs once per PR when it opens"
+
+    example = normalized("examples/agent-workflow.yml")
+    assert_includes example, "# compact_terminal_structure_max_lanes: 2"
+    assert_includes example, "Omit to keep the split closing stack"
+
+    terminal = normalized_section(DOC, "## Terminal Next-Step Contract", end_heading: /^##\s+/)
+    assert_includes terminal, "[Output Contract](#output-contract)"
+    assert_includes terminal, "preserves these required strings and their order"
+
+    closeout = normalized_section(INTEGRATION_CLOSEOUT, "### Coordinator Closeout Lane", end_heading: /^##\s+/)
+    assert_includes closeout,
+                    "When the compact terminal structure seam applies to single-repo batches " \
+                    "at or below `compact_terminal_structure_max_lanes`"
   end
 
   def test_close_session_consumes_the_shared_model

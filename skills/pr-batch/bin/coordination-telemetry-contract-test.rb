@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 require "json"
 
@@ -179,7 +181,7 @@ EXPECTED_OPERATIONAL_SIGNALS = {
 }.freeze
 
 def read_repo_file(path)
-  File.read(path, encoding: "UTF-8")
+  SkillStageSource.read(path, encoding: "UTF-8")
 end
 
 def extract_section(text, heading)

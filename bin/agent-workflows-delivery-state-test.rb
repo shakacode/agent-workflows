@@ -1173,6 +1173,43 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_claude_versionless_manifest_is_active_when_receipt_records_a_commit_sha
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      target = File.join(tmp, "claude")
+      FileUtils.mkdir_p(File.join(target, "plugins"))
+      File.write(File.join(target, "settings.json"), "#{JSON.generate('enabledPlugins' => { 'scw@agent-workflows' => true })}\n")
+
+      # Claude records the tracked marketplace commit as the receipt version once the manifest omits `version`.
+      %w[3f9a6c2d8e1b4a7f0c5d9e2b6a1f8c3d7e0b4a9f 85cce0381e78].each do |sha|
+        plugin_root = File.join(target, "plugins/cache/agent-workflows/scw", sha)
+        write_manifest(plugin_root, host: "claude")
+        manifest_path = File.join(plugin_root, ".claude-plugin/plugin.json")
+        manifest = JSON.parse(File.read(manifest_path))
+        manifest.delete("version")
+        File.write(manifest_path, "#{JSON.pretty_generate(manifest)}\n")
+        File.write(
+          File.join(target, "plugins/installed_plugins.json"),
+          "#{JSON.generate('version' => 2, 'plugins' => { 'scw@agent-workflows' => [{ 'scope' => 'user', 'installPath' => plugin_root, 'version' => sha }] })}\n"
+        )
+
+        out, err, status = run_state("check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "plugin-companion", "--json")
+        native = JSON.parse(out).fetch("native")
+        assert_equal "active", native["state"], "#{sha}: #{native.inspect}"
+        assert_equal ["example"], native["skill_names"], sha
+        assert status.success?, "#{sha}: #{out}#{err}"
+      end
+
+      # A manifest that still declares a version must keep matching the receipt.
+      plugin_root = File.join(target, "plugins/cache/agent-workflows/scw/85cce0381e78")
+      manifest_path = File.join(plugin_root, ".claude-plugin/plugin.json")
+      manifest = JSON.parse(File.read(manifest_path)).merge("version" => "0.1.0")
+      File.write(manifest_path, "#{JSON.pretty_generate(manifest)}\n")
+      out, _err, status = run_state("check", "--host", "claude", "--target", target, "--source", File.expand_path("..", __dir__), "--delivery-mode", "plugin-companion", "--json")
+      refute status.success?, out
+      assert_equal "unknown", JSON.parse(out).dig("native", "state")
+    end
+  end
+
   def test_native_state_read_errors_are_structured_unknown
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       injection = File.join(tmp, "binread-error.rb")

@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../../pr-batch/lib/skill_stage_source"
+
 require "minitest/autorun"
 
 class PrWalkthroughContractTest < Minitest::Test
@@ -72,7 +74,7 @@ class PrWalkthroughContractTest < Minitest::Test
 
   def test_ask_authority_automatically_walks_through_before_merge_decision
     [WORKFLOW, INTEGRATION_CLOSEOUT, PR_MONITORING].each do |path|
-      text = File.read(path).gsub(/\s+/, " ")
+      text = SkillStageSource.read(path).gsub(/\s+/, " ")
 
       phrases = [
         "automatically publish the complete exact-diff PR walkthrough",
@@ -119,7 +121,7 @@ class PrWalkthroughContractTest < Minitest::Test
   end
 
   def test_pr_batch_routes_ask_authority_walkthrough_to_closeout_component
-    pr_batch = File.read(PR_BATCH)
+    pr_batch = SkillStageSource.read(PR_BATCH)
 
     assert_includes pr_batch,
                     "[automatic GitHub-native exact-diff walkthrough]" \

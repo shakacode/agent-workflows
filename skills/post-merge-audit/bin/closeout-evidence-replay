@@ -38,6 +38,84 @@ module CloseoutEvidenceReplay
   VALID_PERFORMANCE_IMPACTS = %w[not_applicable bundle_hygiene measured_metric].freeze
   VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 P3 Must-Fix BLOCKING].freeze
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
+  # These vocabularies compose across measured-metric and bundle-hygiene classification: shape
+  # nouns, terminal position, and bounded qualifiers affect multiple predicates. Run the full
+  # replay matrix after changing any vocabulary rather than reasoning about one list in isolation.
+  STRUCTURAL_COUNT_TOKENS = %w[chunk chunks file files module modules test tests].freeze
+  SIZE_METRIC_TOKENS = %w[asset assets bundle bundles byte bytes shape shapes size sizes].freeze
+  BUILD_OUTPUT_SHAPE_TOKENS = (STRUCTURAL_COUNT_TOKENS + SIZE_METRIC_TOKENS).freeze
+  BUNDLE_HYGIENE_STRUCTURAL_TOKENS = (STRUCTURAL_COUNT_TOKENS - %w[test tests]).freeze
+  BUNDLE_HYGIENE_SHAPE_TOKENS = (BUNDLE_HYGIENE_STRUCTURAL_TOKENS + SIZE_METRIC_TOKENS).freeze
+  # Runtime-memory names are the only reason a terminal size/byte noun measures behavior rather
+  # than build output, so they are the sole carve-out from the terminal-size rejection.
+  MEMORY_METRIC_TOKENS = %w[heap memory ram resident rss].freeze
+  # Bounded qualifier vocabulary so a single inserted word (`file_total_count`) cannot disguise a
+  # structural or size count as a runtime measurement.
+  COUNT_QUALIFIER_TOKENS = %w[total totals overall aggregate all unique distinct num number].freeze
+  UNRESOLVED_METRIC_TOKENS = %w[missing unavailable unmeasured unknown placeholder tbd todo].freeze
+  UNRESOLVED_METRIC_EXACT_TOKENS = %w[na nan nil none null pending undefined unset].freeze
+  PERFORMANCE_EVIDENCE_FIELD_NAMES = %w[source metric_name baseline_value candidate_value].freeze
+  PERFORMANCE_EVIDENCE_FIELD_PATTERN = PERFORMANCE_EVIDENCE_FIELD_NAMES.map { |name| Regexp.escape(name) }.join("|")
+  # Status words are the unbounded single-token prose exception. Other prose labels must be
+  # punctuation-bounded or multi-token and non-authority-shaped so malformed HTTPS fails closed.
+  HTTPS_PROSE_LABEL_STATUSES = %w[available disabled enabled enforced failed ok only optional passed required supported].freeze
+  HTTPS_PROSE_ABBREVIATIONS = %w[e.g i.e].freeze
+  # Bounded protocol/version vocabulary. Only these shapes name a protocol rather than a consumer
+  # path, so `HTTP/2` is removed before local-path detection while a repository path such as
+  # `ARTIFACTS/2.3` stays visible to it.
+  HTTPS_PROTOCOL_LABEL_NAMES = %w[alpn grpc h2 h2c h3 http https quic spdy ssl tls ws wss].freeze
+  HTTPS_PROTOCOL_LABEL_NAME_PATTERN = HTTPS_PROTOCOL_LABEL_NAMES.map { |name| Regexp.escape(name) }.join("|")
+  # Protocol names also qualify a following numeric version (`HTTP 2.0`), so the vocabulary is
+  # shared rather than duplicated as a second hand-tuned list.
+  HTTPS_VERSION_QUALIFIER = /
+    \A(?:#{(HTTPS_PROTOCOL_LABEL_NAMES + %w[protocol version]).map { |name| Regexp.escape(name) }.join('|')})\z
+  /ix
+  # A decimal measurement with an optional unit (`99.9%`, `2.4s`, `1.5x`, `12ms`). One decimal
+  # group and no dot before the unit, so no hostname or dotted-quad address can match: a host needs
+  # an alphabetic label after its final dot.
+  HTTPS_PROSE_MEASUREMENT = /\A[-+]?\d+(?:\.\d+)?[A-Za-z%]{0,4}\z/
+  # A dotted numeric version, optionally a slash- or dash-separated list of them (`1.2/1.3`,
+  # `1.2-1.3`), optionally carrying constraint notation (`>=1.3`, `^1.2`, `1.3+`). No letters and no
+  # authority separators, and at most two dots per version, so no hostname or dotted-quad matches.
+  HTTPS_PROSE_VERSION_LIST = %r{
+    \A(?:[<>]=?|[\^~=])?
+    \d{1,2}(?:\.\d{1,2}){1,2}
+    (?:[/-]\d{1,2}(?:\.\d{1,2}){1,2})*
+    \+?\z
+  }x
+  # Path-boundary lookarounds keep `screenshots/2.3/1.4` intact: a version list only qualifies when
+  # no path separator abuts it on either side.
+  HTTPS_PROTOCOL_LABEL_CLEANUP = %r{
+    (?<![\w./-])
+    (?:
+      (?:#{HTTPS_PROTOCOL_LABEL_NAME_PATTERN})/\d{1,2}(?:\.\d{1,2}){0,2}
+      |\d{1,2}(?:\.\d{1,2}){1,2}(?:/\d{1,2}(?:\.\d{1,2}){1,2})+
+    )
+    (?![\w./-])
+  }ix
+  # Authority and path markers have Unicode and percent-encoded spellings that URL and IDNA
+  # parsers fold to ASCII, so `example｡test` and `example%2Etest` resolve exactly like
+  # `example.test`. Fold them before classification, or a homoglyph host reads as prose. NFKC
+  # covers the fullwidth forms; IDNA's three alternate full stops need an explicit mapping.
+  HTTPS_IDNA_FULL_STOPS = /[\u3002\uFF0E\uFF61]/
+  HTTPS_ENCODED_AUTHORITY_MARKER = /%(?:2[eEfF]|3[aA]|40|5[cC])/
+  HTTPS_ENCODED_AUTHORITY_MARKERS = {
+    "%2e" => ".", "%2f" => "/", "%3a" => ":", "%40" => "@", "%5c" => "\\"
+  }.freeze
+  # Prose delimiters that wrap a label token (`"TLS 1.3"`, `` `TLS 1.3` ``, `(HTTP/2)`,
+  # `**TLS 1.3**`) and must be removed before authority classification. Runs are stripped so
+  # Markdown emphasis of any width is handled; the delimiters carry no authority meaning, and a
+  # wrapped host such as `**available.example.test**` still fails closed on its own shape.
+  HTTPS_PROSE_LEADING_DELIMITERS = /\A[(\[{"'`*_]+/
+  HTTPS_PROSE_TRAILING_DELIMITERS = /[)\]}"'`*_]+\z/
+  HTTPS_PROSE_LABEL_STATUS_PATTERN = HTTPS_PROSE_LABEL_STATUSES.map { |status| Regexp.escape(status) }.join("|")
+  HTTPS_PROSE_LABEL_RECOGNIZED_STATUS = /
+    \A(?:[1-5]\d{2}\s+)?(?:#{HTTPS_PROSE_LABEL_STATUS_PATTERN})(?=\s|[,;]|\.(?:\s|\z)|\z)
+  /ix
+  HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*/i
+  # Keep performance-only URL stripping aligned with semicolon-delimited evidence fields without
+  # truncating field-like semicolon parameters in visual or interaction artifact URLs.
+  PERFORMANCE_HTTPS_TOKEN = /(?<![A-Za-z0-9+.-])https:[^\s<>()]*?(?=;\s*(?:#{PERFORMANCE_EVIDENCE_FIELD_PATTERN})\s*=|[\s<>()]|\z)/i
   LOCAL_MEDIA_EXTENSION = /\.(?:avi|avif|bmp|gif|heic|heif|ico|jpe?g|m4v|mov|mp4|png|svg|tiff?|webm|webp)\b/i
   MEASUREMENT_VALUE = %r{([-+]?\d+(?:\.\d+)?)([A-Za-z%]+(?:/[A-Za-z]+)?)}i
   EPHEMERAL_ARTIFACT_SCHEME = /\b(?:about|blob|chrome-extension|data|file|filesystem|ftp|http|mediastream|moz-extension):/i
@@ -46,6 +124,27 @@ module CloseoutEvidenceReplay
     \b(?:missing|unavailable|unmeasured|unknown|tbd|not[ _](?:available|measured))\b|n/a
   }ix
   URI_SCHEME = %r{\A[A-Za-z][A-Za-z0-9+.-]*://}
+  # Opaque (non-`scheme://`) schemes denoting a reference this gate cannot validate. URI_SCHEME
+  # covers the `scheme://` forms; this covers the rest. Enumerated rather than inferred from shape:
+  # a Git `<rev>:<path>` reference such as `HEAD:reports/perf.json` or `main:path/to/report` is the
+  # documented stable-ref form and is structurally identical to an opaque scheme, so no shape rule
+  # separates them. http/https are excluded here because `HTTPS:` is also the prose-label form.
+  # Not exhaustive against the IANA registry, and cannot be: an opaque scheme is structurally
+  # identical to a Git `<rev>:<path>` ref, so shape inference is unavailable and this is
+  # necessarily "schemes seen in practice" rather than "all non-durable schemes". Treat a
+  # fall-through as a gap to close here, not as evidence a scheme is durable.
+  NON_DURABLE_OPAQUE_SCHEMES = %w[
+    about blob callto chrome-extension data facetime file filesystem ftp geo intent javascript
+    mailto market matrix mediastream moz-extension sms tel vbscript view-source ws wss
+  ].freeze
+  NON_DURABLE_OPAQUE_SCHEME = /
+    \A(?:#{NON_DURABLE_OPAQUE_SCHEMES.map { |scheme| Regexp.escape(scheme) }.join('|')}):
+  /ix
+  # A repo-seam source is a command, report, or ref rather than prose, so a schemeless `https:` is
+  # a malformed reference there and joins the opaque set.
+  NON_DURABLE_SOURCE_SCHEME = /
+    \A(?:#{(NON_DURABLE_OPAQUE_SCHEMES + %w[http https]).map { |scheme| Regexp.escape(scheme) }.join('|')}):
+  /ix
 
   def run(argv)
     options, parser = parse_options(argv)
@@ -114,6 +213,11 @@ module CloseoutEvidenceReplay
   end
 
   def replay(text, expected_head_sha: nil, require_priority_dispositions: false, require_visual_evidence_v2: false)
+    # A PR body is untrusted input and may carry invalid bytes. Reject undecodable UTF-8 before
+    # parsing so corrupt evidence cannot become authoritative after replacement-character scrubbing.
+    text = text.to_s.dup.force_encoding(Encoding::UTF_8)
+    return invalid_utf8_replay unless text.valid_encoding?
+
     qa_v1_markers = marker_bodies(text, "qa-evidence v1")
     qa_v2_markers = marker_bodies(text, "qa-evidence v2")
     applicable_v2_markers = qa_v2_markers.select do |marker|
@@ -589,7 +693,7 @@ module CloseoutEvidenceReplay
 
   def disallowed_durable_reference?(value)
     non_url_text = without_https_urls(value)
-    path_candidate_text = without_schema_slash_labels(non_url_text)
+    path_candidate_text = without_https_urls(without_schema_slash_labels(value))
     local_path = absolute_local_path?(non_url_text) ||
                  path_candidate_text.match?(
                    %r{(?:\A|[\s("'=;])(?:\./\S++|\.\./\S++|~[/\\]\S++|[A-Za-z]:[^/\\\s]++|[^/\s]++/\S++)}
@@ -605,7 +709,20 @@ module CloseoutEvidenceReplay
   end
 
   def without_schema_slash_labels(value)
-    value.gsub(%r{\b(?:before/after|baseline/candidate|pass/fail|on/off|yes/no)\b}i, "")
+    cleaned = value.dup
+
+    https_token_matches(value).reverse_each do |match|
+      label, label_start = https_prose_label(value, match)
+      next unless label
+
+      label_range = label_start...(label_start + label.length)
+      cleaned[label_range] = cleaned[label_range].gsub(HTTPS_PROTOCOL_LABEL_CLEANUP, "")
+    end
+
+    cleaned.gsub(
+      %r{\b(?:before/after|baseline/candidate|pass/fail|on/off|yes/no)\b}i,
+      ""
+    )
   end
 
   def failed_visual_artifact_claim?(value)
@@ -655,7 +772,7 @@ module CloseoutEvidenceReplay
   end
 
   def labeled_measurement_pair?(value, first_key, second_key)
-    non_url_text = without_https_urls(value)
+    non_url_text = without_performance_https_urls(value)
     first = labeled_measurements(non_url_text, first_key)
     second = labeled_measurements(non_url_text, second_key)
     return false unless first.length == 1 && second.length == 1
@@ -670,20 +787,199 @@ module CloseoutEvidenceReplay
   end
 
   def without_https_urls(value)
-    value.gsub(%r{(?<![A-Za-z0-9+.-])https://[^\s<>()]+}i, "")
+    value.gsub(HTTPS_TOKEN, "")
+  end
+
+  def without_performance_https_urls(value)
+    value.gsub(PERFORMANCE_HTTPS_TOKEN, "")
   end
 
   def http_urls(value)
-    value.scan(%r{(?<![A-Za-z0-9+.-])https://[^\s<>()]+}i)
+    https_token_matches(value).filter_map do |match|
+      match[0] unless prose_https_label?(value, match)
+    end
+  end
+
+  def https_token_matches(value)
+    matches = []
+    offset = 0
+    while (match = HTTPS_TOKEN.match(value, offset))
+      matches << match
+      offset = match.end(0)
+    end
+    matches
   end
 
   def valid_https_url?(value)
     !parse_https_url(value).nil?
   end
 
+  def malformed_https_reference?(value)
+    http_urls(value).any? { |url| !valid_https_url?(url) }
+  end
+
+  def prose_https_label?(value, match)
+    !https_prose_label(value, match).nil?
+  end
+
+  # Delimiter stripping, status recognition, protocol/version detection, authority sniffing, and
+  # boundary handling all interact here through shared locals. As with the vocabulary constants at
+  # the top of this file, run the full replay matrix after changing any one branch rather than
+  # reasoning about it in isolation.
+  def https_prose_label(value, match)
+    # Uppercase HTTPS: is the explicit prose-label form; lowercase https: remains a URL scheme
+    # and therefore fails closed when whitespace makes it malformed.
+    return unless match[0] == "HTTPS:"
+
+    suffix = value[match.end(0)..]
+    return unless suffix&.match?(/\A\s+/)
+
+    raw_label = suffix.lstrip
+    # Track the offset forward instead of re-searching for the label text later: `index` could
+    # otherwise land on an earlier occurrence if the stripped prefix ever gained an alphanumeric.
+    raw_label_start = match.end(0) + (suffix.length - raw_label.length)
+    if (next_https = HTTPS_TOKEN.match(raw_label))
+      raw_label = raw_label[0...next_https.begin(0)].rstrip
+      direct_url_boundary = raw_label.empty? || prose_url_boundary_token?(raw_label)
+      # An empty label means "label present but with no text", which both callers rely on to
+      # exclude this `HTTPS:` from URL validation: the pair is truthy and spans an empty range.
+      # Returning nil here would mark it "not a label" and the token would be validated as a URL,
+      # failing as malformed.
+      return ["", match.end(0)] if direct_url_boundary
+
+    end
+    leading_symbols = raw_label[/\A[^\p{Alnum}]*/u]
+    # `:` never decorates a prose label, so a leading run containing one opens an authority
+    # (`[::1];`) that the decorative strip below would otherwise erase.
+    return if leading_symbols.match?(%r{[/\\:]})
+
+    label = raw_label.sub(/\A[^\p{Alnum}]+/u, "")
+    return if label.empty?
+
+    label_start = raw_label_start + (raw_label.length - label.length)
+
+    recognized_status = label.match?(HTTPS_PROSE_LABEL_RECOGNIZED_STATUS)
+
+    punctuation_bounded = label.match?(/[;,]|\.(?=\s|\z)/)
+    prose_label = label.split(/[;,]|\.(?=\s|\z)/, 2).first.strip
+    return if prose_label.include?("\\")
+    return if path_shaped_https_label?(prose_label)
+    return if authority_shaped_https_label?(prose_label)
+    return if text_tokens(prose_label).length < 2 && !punctuation_bounded && !recognized_status
+
+    continuation = label[prose_label.length..].to_s.sub(/\A(?:[;,]|\.(?=\s|\z))\s*/, "")
+    return if continuation.match?(%r{[/\\]})
+    return if !continuation.empty? && authority_shaped_https_label?(continuation)
+
+    # `prose_label` splits `label` on the right only, and `label` already begins with an
+    # alphanumeric, so the two share a start offset.
+    [prose_label, label_start]
+  end
+
+  # Text between `HTTPS:` and the next URL that introduces that URL rather than naming a reference
+  # of its own: a single plain word (`link`, `artifact`, `see:`), a Markdown link opener, or an
+  # autolink opener. A colon is allowed only as a word's final character, matching the
+  # trailing-colon prose rule in authority_colon_shape?. Markdown link text is prose and is checked
+  # as such, so a host-, port-, path-, or authority-shaped prefix still fails closed either way.
+  def prose_url_boundary_token?(raw_label)
+    return true if raw_label == "<"
+
+    if (markdown_link = raw_label.match(/\A\[([^\[\]]*)\]\(\z/))
+      link_text = markdown_link[1].strip
+      return true if link_text.empty?
+
+      return !link_text.include?("\\") &&
+             !path_shaped_https_label?(link_text) &&
+             !authority_shaped_https_label?(link_text)
+    end
+
+    # Normalize after the Markdown branch, not before: stripping `[` off a link opener would
+    # leave `artifact](` and lose the branch that handles it.
+    token = normalized_https_prose_token(raw_label)
+    # A trailing colon makes an opaque scheme look exactly like a connector, so an enumerated
+    # scheme is rejected here rather than hidden in front of an otherwise valid URL.
+    return false if token.match?(NON_DURABLE_OPAQUE_SCHEME)
+
+    token.match?(/\A\p{Alnum}[\p{Alnum}_-]*:?\z/u)
+  end
+
+  # A `/` marks a path unless the token is a bounded protocol or version shape; a `\` always does.
+  # Both are tested after marker folding, so `host%5Cpath` and `host／path` cannot slip past. Shared
+  # so the
+  # Markdown-link branch applies the same rule as ordinary prose rather than drifting from it.
+  def path_shaped_https_label?(label)
+    label.split(/\s+/).any? do |token|
+      token = normalized_https_prose_token(token)
+      next true if token.include?("\\")
+
+      token.include?("/") &&
+        !token.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z}) &&
+        !token.match?(HTTPS_PROSE_VERSION_LIST)
+    end
+  end
+
+  def authority_shaped_https_label?(label)
+    tokens = label.split(/\s+/)
+    tokens.each_with_index.any? do |token, index|
+      square_bracketed = token.start_with?("[")
+      token = normalized_https_prose_token(token)
+      # Checked before the exemptions below: the trailing-colon prose rule would otherwise read
+      # `view-source:` as a bounded label rather than as a scheme.
+      next true if token.match?(NON_DURABLE_OPAQUE_SCHEME)
+
+      # A token that is nothing but a delimiter splits to an empty list, so coerce before the
+      # shape tests. An empty authority carries no host evidence; a lone `[` still fails closed
+      # through square_bracketed below.
+      authority = token.split(/[?#]/, 2).first.to_s
+      next false if authority.include?(".") && HTTPS_PROSE_ABBREVIATIONS.include?(authority.downcase)
+      next false if authority.match?(/\A(?:[A-Za-z][A-Za-z0-9_-]*v|v)\d+(?:\.\d+)+\z/i)
+      next false if !token.match?(%r{[?#/]}) && authority.match?(HTTPS_PROSE_MEASUREMENT)
+
+      if !token.match?(/[?#]/) && authority.match?(HTTPS_PROSE_VERSION_LIST)
+        previous_token = normalized_https_prose_token(tokens[index - 1]) if index.positive?
+        next false if previous_token&.match?(HTTPS_VERSION_QUALIFIER)
+      end
+      next false if authority.match?(%r{\A[A-Za-z][A-Za-z0-9_-]*/\d+(?:\.\d+)*\z})
+
+      authority.include?(".") || authority_colon_shape?(authority) ||
+        userinfo_shaped_https_authority?(authority) || square_bracketed
+    end
+  end
+
+  # `user@host` is authority-shaped with or without a password, and with or without a dot in the
+  # host. A leading `@` is a handle mention (`@octocat`) rather than userinfo, so it stays prose.
+  def userinfo_shaped_https_authority?(authority)
+    authority.include?("@") && !authority.start_with?("@")
+  end
+
+  # A colon marks an authority (`host:port`, IPv6, userinfo) or an opaque scheme (`mailto:someone`)
+  # unless it only terminates a prose label such as `status:`. That trailing-colon form is the sole
+  # exemption, so every scheme- and authority-shaped token still fails closed.
+  def authority_colon_shape?(authority)
+    authority.include?(":") && !authority.match?(/\A[^:]+:\z/)
+  end
+
+  def normalized_https_prose_token(token)
+    folded_https_authority_markers(
+      token.sub(HTTPS_PROSE_LEADING_DELIMITERS, "").sub(HTTPS_PROSE_TRAILING_DELIMITERS, "")
+    )
+  end
+
+  # Never raises: classification must return a verdict even on invalid encoding.
+  def folded_https_authority_markers(token)
+    token = token.unicode_normalize(:nfkc).gsub(HTTPS_IDNA_FULL_STOPS, ".")
+    return token unless token.match?(HTTPS_ENCODED_AUTHORITY_MARKER)
+
+    token.gsub(HTTPS_ENCODED_AUTHORITY_MARKER) { |marker| HTTPS_ENCODED_AUTHORITY_MARKERS.fetch(marker.downcase) }
+  rescue ArgumentError, Encoding::CompatibilityError
+    token
+  end
+
   def unresolved_hosted_criterion_evidence?(evidence)
     return false if valid_https_url?(evidence)
+    return true if malformed_https_reference?(evidence)
     return true if evidence.match?(URI_SCHEME)
+    return true if evidence.match?(NON_DURABLE_OPAQUE_SCHEME)
 
     evidence.match?(HOSTED_CRITERION_UNRESOLVED_PLACEHOLDER)
   end
@@ -703,11 +999,45 @@ module CloseoutEvidenceReplay
     normalized_host = uri.host.downcase
     return if normalized_host == "private-user-images.githubusercontent.com"
     return if normalized_host == "localhost" || normalized_host.end_with?(".localhost")
-    return if normalized_host.match?(/\A127(?:\.\d{1,3}){3}\z/) || normalized_host == "0.0.0.0"
+    return if loopback_or_unspecified_host?(normalized_host)
 
     uri
   rescue URI::Error
     nil
+  end
+
+  # Dotted-quad `127.0.0.1` is only one spelling. `inet_aton` also accepts short, decimal, hex, and
+  # octal forms — `127.1`, `2130706433`, `0x7f000001`, `0177.0.0.1`, `0` — which resolve to the same
+  # loopback or unspecified address, so rejecting only the dotted-quad leaves the intent unmet.
+  def loopback_or_unspecified_host?(host)
+    address = inet_aton_value(host)
+    return false unless address
+
+    address >> 24 == 127 || address.zero?
+  end
+
+  # Nil unless the host is entirely numeric in one of the inet_aton forms; a registrable domain
+  # always carries a non-numeric label, so this cannot capture one.
+  def inet_aton_value(host)
+    parts = host.split(".", -1)
+    return if parts.empty? || parts.length > 4
+
+    values = parts.map { |part| inet_aton_part(part) }
+    return if values.any?(&:nil?)
+
+    last = values.pop
+    return if last >= 1 << (8 * (4 - values.length))
+    return if values.any? { |value| value > 255 }
+
+    values.each_with_index.sum { |value, index| value << (8 * (3 - index)) } + last
+  end
+
+  def inet_aton_part(part)
+    case part
+    when /\A0[xX][0-9a-fA-F]+\z/ then Integer(part, 16)
+    when /\A0[0-7]*\z/ then Integer(part, 8)
+    when /\A[1-9]\d*\z/ then Integer(part, 10)
+    end
   end
 
   def negated_or_passing_failure_claim?(value)
@@ -718,7 +1048,7 @@ module CloseoutEvidenceReplay
   end
 
   def valid_bundle_hygiene?(value)
-    non_url_text = without_https_urls(value)
+    non_url_text = without_performance_https_urls(value)
     measurements = %w[baseline_value candidate_value].flat_map do |key|
       labeled_measurements(non_url_text, key)
     end
@@ -727,37 +1057,111 @@ module CloseoutEvidenceReplay
     end
     return true if byte_units
 
-    names = non_url_text.scan(/(?:\A|[\s;])metric_name\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
-    return false unless names.length == 1
+    metric_name = extract_single_metric_name(non_url_text)
+    return false unless metric_name
 
-    shape_tokens = %w[asset bundle byte bytes chunk file module shape size]
-    text_tokens(names.first.first).any? { |token| shape_tokens.include?(token) }
+    bundle_hygiene_shape?(text_tokens(metric_name))
+  end
+
+  def bundle_hygiene_shape?(tokens)
+    return true if tokens.length == 1 && BUNDLE_HYGIENE_SHAPE_TOKENS.include?(tokens.first)
+
+    size_metric_shape?(tokens) || qualified_terminal_count?(tokens, BUNDLE_HYGIENE_STRUCTURAL_TOKENS)
   end
 
   def valid_measured_metric?(value)
-    non_url_text = without_https_urls(value)
-    names = non_url_text.scan(/(?:\A|[\s;])metric_name\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
-    return false unless names.length == 1
+    # Fail closed in this order: unresolved/vacuous names, build-size shapes, structural counts,
+    # then byte-valued non-memory metrics. Each later carve-out assumes the earlier shape checks.
+    non_url_text = without_performance_https_urls(value)
+    metric_name = extract_single_metric_name(non_url_text)
+    return false unless metric_name
 
-    metric_name = names.first.first.strip
-    size_tokens = %w[asset bundle byte bytes size]
     metric_tokens = text_tokens(metric_name)
-    return false if metric_tokens.any? { |token| size_tokens.include?(token) }
+    return false if metric_tokens.empty?
+    # A purely numeric name (`123`, `3.14`, `1_2`) names nothing; the consumer seam owns which
+    # words are meaningful, but a name has to contain a word.
+    return false if metric_tokens.none? { |token| token.match?(/[a-z]/) }
+    return false if metric_name.match?(UNRESOLVED_PLACEHOLDER) ||
+                    metric_name.match?(/\A(?:metric|metrics|na|nan|notapplicable)\z/i)
+    return false if unresolved_metric_tokens?(metric_tokens)
 
-    runtime_tokens = %w[
-      cls cpu duration fcp fid fps inp interaction latency lcp load memory paint
-      responsiveness runtime speed throughput time timing ttfb vital web
-    ]
-    return false unless metric_tokens.any? { |token| runtime_tokens.include?(token) }
+    # Consumer-defined names are accepted deliberately; the portable gate constrains evidence
+    # shape and known sentinels while repositories own the meaning of their domain vocabulary.
+    return false if qualifier_only_terminal_count?(metric_tokens)
+    return false if size_metric_shape?(metric_tokens)
+    return false if structural_metric_count?(metric_tokens)
 
     measurement_units = %w[baseline_value candidate_value].flat_map do |key|
       labeled_measurements(non_url_text, key).map { |measurement| measurement.fetch(1) }
     end
+
     byte_valued = measurement_units.any? { |unit| unit.match?(/\A(?:[kmgt]i?)?b(?:ytes?)?\z/i) }
-    memory_metric = metric_tokens.any? { |token| %w[heap memory ram resident rss].include?(token) }
+    memory_metric = runtime_memory_metric?(metric_tokens)
     return false if byte_valued && !memory_metric
 
     true
+  end
+
+  def extract_single_metric_name(non_url_text)
+    names = non_url_text.scan(/(?:\A|[\s;])metric_name\s*=\s*([^;\s][^;]*?)(?=\s*(?:;|\z))/i)
+    names.length == 1 ? names.first.first.strip : nil
+  end
+
+  def unresolved_metric_tokens?(tokens)
+    # A terminal sentinel declares the measurement itself unresolved (`checkout_latency_unknown`)
+    # at any name length. The short-name bound governs only non-terminal sentinels, where it limits
+    # false positives for longer consumer domain names such as `missing_translation_count`;
+    # semantic placeholder classification beyond that boundary requires a separate product contract.
+    tokens == %w[n a] ||
+      UNRESOLVED_METRIC_TOKENS.include?(tokens.last) ||
+      UNRESOLVED_METRIC_EXACT_TOKENS.include?(tokens.last) ||
+      (tokens.length <= 2 && tokens.any? { |token| UNRESOLVED_METRIC_TOKENS.include?(token) }) ||
+      tokens.each_cons(2).any? { |first, second| first == "not" && %w[applicable available measured].include?(second) }
+  end
+
+  def structural_metric_count?(tokens)
+    (tokens.length == 1 && STRUCTURAL_COUNT_TOKENS.include?(tokens.first)) ||
+      qualified_terminal_count?(tokens, STRUCTURAL_COUNT_TOKENS)
+  end
+
+  # An empty prefix (the bare name `count`/`counts`) is vacuously "all qualifiers" here by design,
+  # so a name that names nothing but a count stays rejected. Do not "fix" the empty case.
+  def qualifier_only_terminal_count?(tokens)
+    !tokens.empty? && %w[count counts].include?(tokens.last) &&
+      tokens[0...-1].all? { |token| COUNT_QUALIFIER_TOKENS.include?(token) }
+  end
+
+  def size_metric_shape?(tokens)
+    return true if tokens.length == 1 && SIZE_METRIC_TOKENS.include?(tokens.first)
+
+    # A terminal size/shape noun names build output whatever the prefix says. Only byte/size nouns
+    # have a runtime-memory carve-out (`heap_size`, `resident_set_size`).
+    if SIZE_METRIC_TOKENS.include?(tokens.last)
+      return true unless %w[byte bytes size sizes].include?(tokens.last)
+
+      return !runtime_memory_metric?(tokens)
+    end
+
+    # The carve-out deliberately stops at the bare `*_bytes`/`*_size` shape. `heap_byte_count`
+    # stays rejected because a terminal `count` names an occurrence tally, not a memory reading;
+    # widening it is part of the metric-vocabulary decision tracked separately.
+    qualified_terminal_count?(tokens, SIZE_METRIC_TOKENS)
+  end
+
+  def runtime_memory_metric?(tokens)
+    scoped_tokens = SIZE_METRIC_TOKENS.include?(tokens.last) ? tokens[0...-1] : tokens
+    scoped_tokens.any? { |token| MEMORY_METRIC_TOKENS.include?(token) } &&
+      scoped_tokens.none? { |token| BUILD_OUTPUT_SHAPE_TOKENS.include?(token) }
+  end
+
+  # Terminal `*_count` over a `vocabulary` noun, looking through consecutive bounded qualifiers so
+  # `file_total_overall_count` is rejected while `module_load_count` stays valid.
+  def qualified_terminal_count?(tokens, vocabulary)
+    return false unless tokens.length >= 2 && %w[count counts].include?(tokens.last)
+
+    noun_index = tokens.length - 2
+    noun_index -= 1 while noun_index >= 0 && COUNT_QUALIFIER_TOKENS.include?(tokens[noun_index])
+    noun_index >= 0 && vocabulary.include?(tokens[noun_index])
   end
 
   def valid_repo_seam_source?(value)
@@ -769,13 +1173,23 @@ module CloseoutEvidenceReplay
     return false if source.match?(/\A(?:command|report|ref|source)\z/i)
 
     return valid_https_url?(source) if source.match?(%r{\Ahttps?://}i)
+    return false if source.match?(NON_DURABLE_SOURCE_SCHEME)
     return false if source.include?("://")
 
     source.match?(%r{\A[A-Za-z0-9][A-Za-z0-9._:#@/-]*\z})
   end
 
+  # Segments on separators and case transitions. A concatenated all-caps compound (`FILECOUNT`)
+  # has neither and stays one token, so vocabulary classification does not see it; separating it
+  # would take a word list rather than a rule. Explicitly out of scope: the contract validates
+  # evidence shape, and the metric vocabulary is the consumer seam's to define.
   def text_tokens(value)
-    value.downcase.split(/[^a-z0-9]+/).reject(&:empty?)
+    value
+      .gsub(/([A-Z]+)([A-Z][a-z])/, '\\1 \\2')
+      .gsub(/([a-z0-9])([A-Z])/, '\\1 \\2')
+      .downcase
+      .split(/[^a-z0-9]+/)
+      .reject(&:empty?)
   end
 
   def replay_priority(marker, expected_head_sha: nil, required: false)
@@ -980,6 +1394,26 @@ module CloseoutEvidenceReplay
       "missing" => ["exactly one hosted-qa-evidence v1 marker is required"],
       "errors" => [],
       "marker_count" => marker_count
+    }
+  end
+
+  def invalid_utf8_replay
+    reason = "input contains invalid UTF-8"
+    qa = unknown(reason)
+    hosted_qa = {
+      "verdict" => "UNKNOWN",
+      "marker_version" => 1,
+      "fields" => {},
+      "criteria" => [],
+      "missing" => [reason],
+      "errors" => []
+    }
+    priority = priority_unknown(reason)
+    {
+      "overall_verdict" => overall_verdict([qa, hosted_qa, priority]),
+      "qa_evidence" => qa,
+      "hosted_qa_evidence" => hosted_qa,
+      "priority_finding_dispositions" => priority
     }
   end
 
