@@ -84,7 +84,7 @@ module CodexPluginManifestCheck
     marketplace = load_manifest(root, errors, CLAUDE_MARKETPLACE_RELATIVE_PATH)
 
     if codex_manifest
-      validate_manifest_metadata(root, codex_manifest, errors)
+      validate_manifest_metadata(root, codex_manifest, errors, version_policy: :required)
       validate_skills_path(root, codex_manifest, errors)
       validate_interface(codex_manifest, errors)
       validate_no_consumer_policy(codex_manifest, errors)
@@ -94,7 +94,7 @@ module CodexPluginManifestCheck
       validate_no_consumer_policy(codex_marketplace, errors)
     end
     if claude_manifest
-      validate_manifest_metadata(root, claude_manifest, errors)
+      validate_manifest_metadata(root, claude_manifest, errors, version_policy: :commit)
       validate_claude_display_name(claude_manifest, errors)
       validate_skills_path(root, claude_manifest, errors)
       validate_no_consumer_policy(claude_manifest, errors)
@@ -190,12 +190,16 @@ module CodexPluginManifestCheck
     nil
   end
 
-  def validate_manifest_metadata(root, manifest, errors)
+  def validate_manifest_metadata(root, manifest, errors, version_policy:)
     expected_version = read_required_file(root, "VERSION", errors)&.strip
     expected_description = read_readme_description(root, errors)
 
     errors << "name must be #{EXPECTED_NAME.inspect}" unless manifest["name"] == EXPECTED_NAME
-    errors << "version must match VERSION #{expected_version.inspect}" if expected_version && manifest["version"] != expected_version
+    if version_policy == :required
+      errors << "version must match VERSION #{expected_version.inspect}" if expected_version && manifest["version"] != expected_version
+    elsif manifest.key?("version")
+      errors << "Claude manifest must omit version so Git-backed installs track commit revisions"
+    end
     errors << "description must match README summary #{expected_description.inspect}" if expected_description && manifest["description"] != expected_description
     errors << "repository must be #{EXPECTED_REPOSITORY.inspect}" unless manifest["repository"] == EXPECTED_REPOSITORY
   end
