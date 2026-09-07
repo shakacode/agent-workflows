@@ -1116,6 +1116,58 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                  result.fetch("snapshot_digest")
   end
 
+  def test_known_coordination_terminal_casing_preserves_raw_evidence_and_replays
+    cases = [
+      [issue_to_result_pr_input, %w[merged MERGED Merged], ->(source:, target:) { issue_projection_proof(source:, target:) }],
+      [no_pr_input, %w[closed CLOSED Closed], nil],
+      [mixed_issue_and_pr_lane_input, %w[merged MERGED closed CLOSED], nil]
+    ]
+    cases.each do |template, states, projection|
+      states.each do |state|
+        input = Marshal.load(Marshal.dump(template))
+        lanes = input.dig("coordination_status", "batches", 0, "lanes")
+        lane = lanes.find { |row| row["pr_state"] == state.downcase } || lanes.first
+        lane["pr_state"] = state
+        original = Marshal.load(Marshal.dump(input))
+        result = assess_input(input, target_projection_verifier: projection)
+
+        assert result.fetch("eligible"), "#{state}: #{result.fetch('blockers').join('; ')}"
+        assert_equal original, input
+        assert_equal CompletedBatchPublicationPreflight.canonicalize(original), result.fetch("source_input")
+        assert_equal CompletedBatchPublicationPreflight.digest(original), result.fetch("source_input_digest")
+        assert CompletedBatchPublicationPreflight.valid_receipt?(result)
+        assert CompletedBatchPublicationPreflight.reassessed_receipt_valid?(
+          result, coordination_backend: BACKEND,
+                  trusted_applicability: result.fetch("applicability_proof"),
+                  trusted_applicability_digest: result.fetch("applicability_proof_digest"),
+                  waiver_verifier: valid_waiver_verifier(input), target_verifier: valid_target_verifier(input),
+                  coordination_verifier: valid_coordination_verifier(input, BACKEND),
+                  target_projection_verifier: projection
+        )
+      end
+    end
+  end
+
+  def test_coordination_terminal_casing_does_not_accept_other_states_or_normalize_raw_authentication
+    [nil, "UNKNOWN", "OPEN", "CLOSED", "merged ", " MERGED", "closed_unmerged", "mergED!"].each do |state|
+      input = issue_to_result_pr_input
+      input.dig("coordination_status", "batches", 0, "lanes", 0)["pr_state"] = state
+      result = assess_input(input, target_projection_verifier: ->(source:, target:) { issue_projection_proof(source:, target:) })
+      refute result.fetch("eligible"), state.inspect
+    end
+
+    input = issue_to_result_pr_input
+    input.dig("coordination_status", "batches", 0, "lanes", 0)["pr_state"] = "MERGED"
+    live = Marshal.load(Marshal.dump(input.fetch("coordination_status")))
+    live.dig("batches", 0, "lanes", 0)["pr_state"] = "merged"
+    result = assess_input(
+      input, coordination_verifier: ->(**_arguments) { live },
+             target_projection_verifier: ->(source:, target:) { issue_projection_proof(source:, target:) }
+    )
+    refute result.fetch("eligible"), "raw evidence casing drift must remain unauthenticated"
+    assert(result.fetch("blockers").any? { |blocker| blocker.include?("drift") })
+  end
+
   def test_numeric_issue_lane_projects_to_one_authenticated_result_pr_target_and_caches_proof
     input = issue_to_result_pr_input
     source = {

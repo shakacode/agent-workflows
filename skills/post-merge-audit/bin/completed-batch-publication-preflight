@@ -656,7 +656,7 @@ module CompletedBatchPublicationPreflight
       per_target_terminal_candidate = targets.length > 1 && target_states.length > 1 &&
                                       %w[pr_url issue_url target_url].none? { |field| lane.key?(field) } &&
                                       valid_terminal_lane?(lane) && lane["terminal"] == "done" &&
-                                      target_states.include?(lane["pr_state"]) &&
+                                      target_states.include?(canonical_coordination_target_state(lane["pr_state"])) &&
                                       !normalized_known_string(lane["evidence_url"]).nil?
       targets.each do |resolved|
         target = resolved.fetch("target")
@@ -862,26 +862,35 @@ module CompletedBatchPublicationPreflight
     blockers << "coordination batch completion timestamp is absent or invalid" unless valid_timestamp?(batch["completed_at"])
   end
 
+  # Coordination retains the provider's spelling in authenticated source_input.
+  # Only known terminal states have case-insensitive comparison semantics.
+  def canonical_coordination_target_state(value)
+    return value.downcase if value.is_a?(String) && /\A(?:merged|closed)\z/i.match?(value)
+
+    scalar_or_nil(value)
+  end
+
   def canonical_lane_snapshots(entries, target_completion_modes, blockers)
     entries.map do |entry|
       lane = entry.fetch("lane")
       target = entry.fetch("target")
       completion_mode = target_completion_modes[target_key(target)]
       terminal_state = lane["terminal"]
+      target_state = canonical_coordination_target_state(lane["pr_state"])
       terminal = valid_terminal_lane?(lane)
       blockers << "#{target_label(target)} coordination lane is nonterminal" unless terminal
       expected_state = target["type"] == "pull_request" ? "merged" : "closed"
       evidence = normalized_known_string(lane["evidence_url"])
       per_target_completion = completion_mode == AUTHENTICATED_PER_TARGET_TERMINAL_RECONCILIATION
       coordination_completion = terminal_state == "done" && evidence &&
-                                (lane["pr_state"] == expected_state || per_target_completion)
+                                (target_state == expected_state || per_target_completion)
       later_target_completion = completion_mode == AUTHENTICATED_TARGET_AFTER_COORDINATION_CLOSEOUT
       unless coordination_completion || later_target_completion
         if terminal && RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state)
           blockers << "#{target_label(target)} target completion is not authenticated after coordination closeout"
         end
         blockers << "#{target_label(target)} coordination target state is not #{expected_state}" \
-          unless lane["pr_state"] == expected_state
+          unless target_state == expected_state
         blockers << "#{target_label(target)} coordination terminal evidence is absent" unless evidence
       end
       snapshot = {
@@ -890,7 +899,7 @@ module CompletedBatchPublicationPreflight
         "status" => scalar_or_nil(lane["status"]),
         "terminal" => scalar_or_nil(lane["terminal"]),
         "closed_at" => scalar_or_nil(lane["closed_at"]),
-        "target_state" => per_target_completion ? expected_state : scalar_or_nil(lane["pr_state"]),
+        "target_state" => per_target_completion ? expected_state : target_state,
         "evidence" => evidence
       }
       if terminal && per_target_completion
@@ -1048,7 +1057,7 @@ module CompletedBatchPublicationPreflight
       end
       lane = lanes_by_target.dig(key, "lane")
       projection = lanes_by_target.dig(key, "target_projection")
-      lane_state = lane&.fetch("pr_state", nil)
+      lane_state = canonical_coordination_target_state(lane&.fetch("pr_state", nil))
       verified_target_facts = {
         "target" => target,
         "state" => state,
