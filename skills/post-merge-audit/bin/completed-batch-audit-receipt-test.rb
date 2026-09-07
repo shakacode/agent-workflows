@@ -1381,6 +1381,31 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     assert_equal [[REAL_BACKEND, "batch-184"]], coordination_calls
   end
 
+  def test_uppercase_coordination_state_survives_publication_and_archive_replay
+    preflight = publication_preflight(coordination_backend: REAL_BACKEND, pr_state: "MERGED")
+    assert preflight.fetch("eligible"), preflight.fetch("blockers").join("\n")
+    coordination_status = preflight.dig("source_input", "coordination_status")
+    assert_equal "MERGED", coordination_status.dig("batches", 0, "lanes", 0, "pr_state")
+    target_payload = publication_target_payload
+    api = ->(_host, _endpoint, **_options) { target_payload }
+    coordination = ->(**_arguments) { coordination_status }
+
+    with_stubbed_gh_api(api) do
+      with_stubbed_coordination_status(coordination) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight, expected_batch_id: "batch-184", targets: preflight.fetch("targets"),
+                     coordination_backend: REAL_BACKEND
+        )
+        marker = CompletedBatchAuditReceipt.bind_publication_snapshot(ready_marker, preflight)
+        replay = CompletedBatchAuditReceipt.replay_marker(
+          marker, expected_batch_id: "batch-184", expected_targets: preflight.fetch("targets"),
+                  publication_preflight: preflight, coordination_backend: REAL_BACKEND
+        )
+        assert replay.fetch("ready"), replay.fetch("blockers").join("\n")
+      end
+    end
+  end
+
   def test_complete_publication_reauthenticates_issue_to_result_pr_projection
     preflight, target, proof, coordination_status = projected_publication_preflight
     assert preflight.fetch("eligible"), preflight.fetch("blockers").join("\n")
@@ -3635,7 +3660,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     [stdout.force_encoding(Encoding::UTF_8), stderr.force_encoding(Encoding::UTF_8), status]
   end
 
-  def publication_preflight(head_sha: "a" * 40, waived: false, coordination_backend: "n/a")
+  def publication_preflight(head_sha: "a" * 40, waived: false, coordination_backend: "n/a", pr_state: "merged")
     target = { "host" => "github.com", "repo" => "acme/widgets", "type" => "pull_request", "number" => 184 }
     waiver_url = "https://github.com/acme/widgets/pull/184#issuecomment-9184"
     evidence = <<~MARKER
@@ -3680,7 +3705,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
                                   "status" => "done",
                                   "terminal" => "done",
                                   "closed_at" => "2026-07-18T17:59:59Z",
-                                  "pr_state" => "merged",
+                                  "pr_state" => pr_state,
                                   "pr_url" => "https://github.com/acme/widgets/pull/184",
                                   "evidence_url" => "https://github.com/acme/widgets/pull/184"
                                 }]
