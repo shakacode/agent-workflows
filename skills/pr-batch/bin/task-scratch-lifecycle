@@ -394,6 +394,7 @@ module TaskScratchLifecycle
 
     payload = open_at(holder, "payload")
     return false unless root_identity_matches?(payload.stat, receipt)
+    return false unless entry_matches?(holder, "payload", payload.stat)
 
     CleanupSyscalls.rename_no_replace(holder.fileno, "payload", parent.fileno, root_name).zero?
   rescue SystemCallError, ArgumentError
@@ -409,6 +410,14 @@ module TaskScratchLifecycle
     false
   ensure
     entry&.close
+  end
+
+  def unlink_bound_entry(directory, name, expected_stat, directory_entry:)
+    fail!("scratch-entry-rebound") unless entry_matches?(directory, name, expected_stat)
+
+    flags = directory_entry ? CleanupSyscalls::REMOVE_DIRECTORY : 0
+    result = CleanupSyscalls.unlinkat(directory.fileno, name, flags)
+    raise SystemCallError.new("unlinkat #{name}", Fiddle.last_error) unless result.zero?
   end
 
   def detach_and_remove(directory, name, expected_stat, directory_entry: false)
@@ -427,9 +436,7 @@ module TaskScratchLifecycle
     captured = open_at(directory, private_name)
     fail!("scratch-entry-rebound") unless same_identity?(captured.stat, expected_stat)
     fail!("scratch-entry-rebound") if directory_entry && !directory_children(captured).empty?
-    flags = directory_entry ? CleanupSyscalls::REMOVE_DIRECTORY : 0
-    result = CleanupSyscalls.unlinkat(directory.fileno, private_name, flags)
-    raise SystemCallError.new("unlinkat #{private_name}", Fiddle.last_error) unless result.zero?
+    unlink_bound_entry(directory, private_name, expected_stat, directory_entry: directory_entry)
   ensure
     captured&.close
   end
@@ -529,7 +536,8 @@ module TaskScratchLifecycle
     owned_root = open_at(holder, "payload")
     fail!("scratch-root-rebound") unless root_identity_matches?(owned_root.stat, receipt)
     files, directories = scan_allowlisted_tree(owned_root, receipt.fetch("allowlist"))
-    fail!("owner-marker-mismatch") unless owner_marker_matches?(files.fetch(OWNER_BASENAME).fetch(:io), receipt)
+    marker = files[OWNER_BASENAME]
+    fail!("owner-marker-mismatch") unless marker && owner_marker_matches?(marker.fetch(:io), receipt)
     fail!("scratch-entry-rebound") unless tree_bindings_current?(files, directories)
 
     intact = false
@@ -537,7 +545,6 @@ module TaskScratchLifecycle
       record = files[relative]
       detach_and_remove(record.fetch(:parent), record.fetch(:name), record.fetch(:stat)) if record
     end
-    marker = files.fetch(OWNER_BASENAME)
     detach_and_remove(marker.fetch(:parent), marker.fetch(:name), marker.fetch(:stat))
     directories.reject { |relative, _record| relative.empty? }
                .sort_by { |relative, _record| -relative.count("/") }

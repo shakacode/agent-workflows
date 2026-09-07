@@ -197,8 +197,14 @@ isolating and deleting only that root. Cleanup holds an exclusive lock on the du
 creates no lock artifact, and keeps an open directory descriptor while it opens
 each allowlisted path one component at a time with no-follow descriptor-relative operations.
 It atomically detaches each identity-verified entry to a random private name before
-descriptor-relative removal, including the final owned root and cleanup holder. It
-rolls back only a still-intact owned root moved by that invocation; concurrent
+descriptor-relative removal, including the final owned root and cleanup holder,
+then repeats the no-follow identity check immediately before each destructive
+unlink or rollback rename with no callback or subprocess in between. The receipt
+lock serializes lifecycle helpers that honor this contract. Portable filesystems
+do not expose conditional-by-inode unlink or rename, so hostile same-UID code
+inside that final check/syscall boundary is outside the supported concurrency
+contract and the host must isolate the scratch parent from it. Cleanup rolls back
+only a still-intact owned root moved by that invocation; supported concurrent
 cleanup and entry replacement fail closed without deleting the replacement.
 
 The goal monitor cannot prove a clean task review, its repository-derived

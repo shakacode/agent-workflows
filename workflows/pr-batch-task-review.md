@@ -306,10 +306,16 @@ creating a lock artifact. After isolating the owned root, it retains an open
 directory descriptor and opens each allowlisted path one component at a time with
 no-follow descriptor-relative operations. It atomically detaches each
 identity-verified entry to a random private name before descriptor-relative
-removal, including the final owned root and cleanup holder. Rollback occurs only
-when this invocation moved the still-intact owned root. A concurrent cleanup or
-pre-deletion replacement fails closed without deleting foreign or owned files.
-Every failure preserves all durable or external state for reconciliation.
+removal, including the final owned root and cleanup holder, then repeats the
+no-follow identity check immediately before each destructive unlink or rollback
+rename with no callback or subprocess in between. The receipt lock serializes
+lifecycle helpers that honor this contract. Portable filesystems do not expose
+conditional-by-inode unlink or rename, so hostile same-UID code inside that final
+check/syscall boundary is outside the supported concurrency contract; the host
+must isolate the scratch parent from it. Rollback occurs only when this invocation
+moved the still-intact owned root. Supported concurrent cleanup or pre-deletion
+replacement fails closed without deleting foreign or owned files. Every failure
+preserves all durable or external state for reconciliation.
 
 ## Handoff To Existing Owners
 
