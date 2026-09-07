@@ -1,7 +1,7 @@
 # Control Tower And Human Attention Desk
 
 These prompts implement the short-term operating model recorded in
-[Multi-Repository Control Towers And Human Attention Desk](plans/2026-09-02-multi-repository-control-tower-and-human-attention-desk.md).
+[Multi-Repository Control Towers And Human Attention Desk](../project/plans/2026-09-02-multi-repository-control-tower-and-human-attention-desk.md).
 The dated plan is a point-in-time decision record. The live file layout,
 snapshot schema, writer state, and desk rules that the prompts depend on are the
 [Snapshot And Desk Contract](#snapshot-and-desk-contract) at the end of this

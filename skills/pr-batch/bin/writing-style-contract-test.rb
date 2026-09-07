@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 require "yaml"
 
@@ -24,7 +26,7 @@ class WritingStyleContractTest < Minitest::Test
   ].freeze
 
   def read(relative_path)
-    File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+    SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
   end
 
   def test_every_initial_authoring_surface_explicitly_resolves_the_shared_guide

@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -62,7 +64,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     @component = File.read(COMPONENT_PATH, encoding: "UTF-8")
     @production_release = File.read(PRODUCTION_RELEASE_PATH, encoding: "UTF-8")
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
-    @skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    @skill = SkillStageSource.read(SKILL_PATH, encoding: "UTF-8")
     @validate_workflow = File.read(VALIDATE_WORKFLOW_PATH, encoding: "UTF-8")
   end
 
