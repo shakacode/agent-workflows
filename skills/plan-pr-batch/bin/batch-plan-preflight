@@ -895,7 +895,7 @@ module BatchPlanPreflight
       quoted = state != :normal
       state, comment_index = companion_policy_scan_line(line, state)
       if !quoted && companion_policy_block_scalar_header?(line, comment_index)
-        block_scalar_indent = line_indent
+        block_scalar_indent = companion_policy_block_scalar_parent_indent(line, comment_index, line_indent)
       end
       quoted
     end
@@ -906,6 +906,11 @@ module BatchPlanPreflight
     content.match?(
       /(?:\A[ \t]*|:\s+|-\s+)(?:[!&][^ \t\r\n]+\s+)*[|>](?:[1-9][+-]?|[+-][1-9]?)?\z/
     )
+  end
+
+  def companion_policy_block_scalar_parent_indent(line, comment_index, line_indent)
+    content = (comment_index ? line[0...comment_index] : line).strip
+    content.start_with?("|", ">") ? [line_indent - 1, 0].max : line_indent
   end
 
   def companion_policy_strip_comments(lines)
@@ -921,7 +926,7 @@ module BatchPlanPreflight
 
       state, comment_index = companion_policy_scan_line(line, state)
       if companion_policy_block_scalar_header?(line, comment_index)
-        block_scalar_indent = line_indent
+        block_scalar_indent = companion_policy_block_scalar_parent_indent(line, comment_index, line_indent)
       end
       next line unless comment_index
 
