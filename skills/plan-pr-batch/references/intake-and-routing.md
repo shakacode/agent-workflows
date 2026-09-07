@@ -116,7 +116,7 @@ add scope, dependency, route, and capacity facts, but must not redefine intake.
    - Treat the repo's private coordination backend (see `coordination_backend`
      in `.agents/agent-workflow.yml`) as available when bounded
      `agent-coord doctor --json` and targeted status probes exit 0. Resolve
-     `PR_BATCH_SKILL_DIR` using the helper path chain above, then run
+     `PR_BATCH_SKILL_DIR` using the [entrypoint helper path chain](../SKILL.md#plan-pr-batch), then run
      `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --repo <resolved-owner/repo> --target <issue-or-pr> --json`
      for exact targets; for known batch dependencies, run
      `"${PR_BATCH_SKILL_DIR}/bin/agent-coord-bounded" --timeout 20 status --batch-id <batch-id> --json`.

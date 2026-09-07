@@ -14,7 +14,7 @@ For each included PR:
 - Approval semantics: flag any merge that treated an AI reviewer approval, positive issue comment, or "no actionable comments" summary as required maintainer approval or a special approval gate. Also flag any AI finding that was ignored even though it identified a confirmed blocker such as a correctness regression, failing test, security issue, API contract break, data-loss risk, or missing required maintainer approval.
 - Adversarial review: flag any requested adversarial review that finished after merge, reviewed an older head SHA, or left untriaged `BLOCKING` or `DISCUSS` findings.
 - Changelog: if the diff or PR body indicates a user-visible behavior, API, error message, configuration, performance, security, or breaking change, verify the repo's changelog (see `changelog` in `.agents/agent-workflow.yml`) has a matching entry. When entries are missing, recommend running `/update-changelog`.
-- Lockfiles: if the PR changed committed lockfiles, verify the PR evidence satisfies the lockfile content-diff requirement from the Handoff Contract in `.agents/skills/pr-batch/SKILL.md`.
+- Lockfiles: if the PR changed committed lockfiles, verify the PR evidence satisfies the lockfile content-diff requirement from the [Handoff Contract](../../pr-batch/references/planning.md#handoff-contract).
 - Closing evidence: for any PR whose body or linked issue uses analysis, benchmark, or investigation
   evidence to support a `close` or `document/work around` disposition, verify the conclusion applies the
   full gate from the "Evaluate the fix plan separately" step in `.agents/skills/evaluate-issue/SKILL.md`:

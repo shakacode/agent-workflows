@@ -44,16 +44,44 @@ module SkillStageSource
 
       # Keep existing section contracts relative to their entrypoint. Actual
       # source links/anchors are separately checked by the stage graph tests.
-      source.gsub(/(?<!!)\[([^\]]*)\]\(([^)\s]+)\)/) do |link|
-        label = Regexp.last_match(1)
-        target = Regexp.last_match(2)
-        next link if target.match?(%r{\A(?:[a-z][a-z0-9+.-]*:|/|#|<)}i)
+      rebase_prose_links(source, stage_path, path)
+    end
+  end
 
-        file, anchor = target.split("#", 2)
-        absolute = File.expand_path(file, File.dirname(stage_path))
-        adjusted = Pathname.new(absolute).relative_path_from(Pathname.new(File.expand_path(File.dirname(path))))
-        "[#{label}](#{adjusted}#{anchor ? "##{anchor}" : ''})"
+  def rebase_prose_links(source, stage_path, path)
+    fence = nil
+    chunks = [String.new]
+    source.each_line do |line|
+      if fence
+        chunks << line
+        if line.match?(/\A {0,3}#{Regexp.escape(fence[0])}{#{fence.length},}[ \t]*\r?\n?\z/)
+          fence = nil
+          chunks << String.new
+        end
+      elsif (opening = line.match(/\A {0,3}(`{3,}|~{3,})/))
+        chunks[-1] = rebase_links(chunks.last, stage_path, path)
+        fence = opening[1]
+        chunks << line
+      else
+        chunks[-1] << line
       end
+    end
+    chunks[-1] = rebase_links(chunks.last, stage_path, path) unless fence
+    chunks.join
+  end
+
+  def rebase_links(prose, stage_path, path)
+    # Match code spans before links so literal examples retain their bytes.
+    pattern = /(?<code>(?<ticks>`+)(?!`).*?(?<!`)\k<ticks>(?!`))|(?<!!)\[(?<label>[^\]]*)\]\((?<target>[^)\s]+)\)/m
+    prose.gsub(pattern) do |link|
+      match = Regexp.last_match
+      target = match[:target]
+      next link if match[:code] || target.match?(%r{\A(?:[a-z][a-z0-9+.-]*:|/|#|<)}i)
+
+      file, anchor = target.split("#", 2)
+      absolute = File.expand_path(file, File.dirname(stage_path))
+      adjusted = Pathname.new(absolute).relative_path_from(Pathname.new(File.expand_path(File.dirname(path))))
+      "[#{match[:label]}](#{adjusted}#{anchor ? "##{anchor}" : ''})"
     end
   end
 

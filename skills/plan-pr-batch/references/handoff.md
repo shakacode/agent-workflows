@@ -16,7 +16,7 @@
    - After the target-specific invocation line, render the exact
      `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block through
      canonical [Verified Batch Title Selection](../../../workflows/pr-batch-intake.md#verified-batch-title-selection).
-     This entrypoint preserves the prompt template below and consumes the
+     This stage preserves the [prompt template](prompt-template.md) and consumes the
      verified title facts unchanged; it does not redefine prefix, identifier,
      trust, time, or spacing selection.
    - Add `Thread handle:` as the first worker-specific line. Derive

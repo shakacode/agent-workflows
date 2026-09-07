@@ -50,7 +50,7 @@ Use `AGENTS.md` and the canonical
 [Maintainer Attention Contract](../../../workflows/pr-processing.md#maintainer-attention-contract)
 section in `.agents/workflows/pr-processing.md`. Keep this skill as a routing
 entry point: worker goals should carry the contract before target assignment,
-and the goal prompt template above repeats the key worker-facing rules. The
+and the [goal prompt template](prompt-template.md) repeats the key worker-facing rules. The
 detailed policy belongs in the canonical workflow.
 
 ## Batch Handoff Format

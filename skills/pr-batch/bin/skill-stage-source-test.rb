@@ -99,6 +99,30 @@ class SkillStageSourceTest < Minitest::Test
     end
   end
 
+  def test_projection_preserves_code_while_rebasing_real_links
+    with_skill do |root, path|
+      literal = '[0-9](../\\\\.[0-9]+)? and [Receipt](<exact-comment-url>)'
+      blocks = ["```bash\n#{literal}\n```\n", "~~~~markdown\n```\n#{literal}\n~~~~~\n"]
+      inline = "`#{literal}` and ``example ` [link](../kept.md)``"
+      stage = File.join(root, "skills/pr-batch/references/planning.md")
+      File.write(stage, "# Planning\n\n#{blocks.join}\n#{inline}\n\n[Real](../../../docs/guide.md#anchor)\n")
+      projected = SkillStageSource.read(path)
+      blocks.each { |block| assert_includes projected, block }
+      assert_includes projected, inline
+      assert_includes projected, "[Real](../../docs/guide.md#anchor)"
+    end
+  end
+
+  def test_checkpoint_regexes_and_receipt_template_remain_usable_in_raw_stages
+    %w[fetch review-wave].each do |stage|
+      raw = File.read(File.join(STAGE_ROOT, "skills/address-review/references/#{stage}.md"))
+      refute_includes raw, '(../\\\\.[0-9]+)?'
+      assert_includes raw, '(\\\\.[0-9]+)?'
+    end
+    raw = File.read(File.join(STAGE_ROOT, "skills/post-merge-audit/references/output.md"))
+    assert_includes raw, "[Durable receipt](<exact-comment-url>)"
+  end
+
   def test_entrypoint_guards_remain_visible_without_expanding_stages
     guards = {
       "pr-batch" => ["pr-batch-intake.md", "pr-batch-security-floor.md", "pr-batch-task-review.md",

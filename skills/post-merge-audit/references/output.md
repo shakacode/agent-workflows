@@ -161,7 +161,7 @@ the markers, and never reruns `publish` to retry description sync:
 <!-- completed-batch-audit-summary:start -->
 #### Completed-batch audit
 
-**Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](../<exact-comment-url>).
+**Status:** <Clean — no outstanding findings or follow-ups.|Follow-ups remain — see the durable receipt.|Unknown — see the durable receipt.> [Durable receipt](<exact-comment-url>).
 <!-- completed-batch-audit-summary:end -->
 ```
 
