@@ -308,14 +308,18 @@ no-follow descriptor-relative operations. It atomically detaches each
 identity-verified entry to a random private name before descriptor-relative
 removal, including the final owned root and cleanup holder, then repeats the
 no-follow identity check immediately before each destructive unlink or rollback
-rename with no callback or subprocess in between. The receipt lock serializes
-lifecycle helpers that honor this contract. Portable filesystems do not expose
-conditional-by-inode unlink or rename, so hostile same-UID code inside that final
-check/syscall boundary is outside the supported concurrency contract; the host
-must isolate the scratch parent from it. Rollback occurs only when this invocation
-moved the still-intact owned root. Supported concurrent cleanup or pre-deletion
-replacement fails closed without deleting foreign or owned files. Every failure
-preserves all durable or external state for reconciliation.
+rename with no callback or subprocess in between. This cooperative cleanup
+boundary covers receipt-lock-serialized lifecycle helper invocations that honor
+the contract; mutations visible before the final check fail closed. Portable
+filesystems do not expose conditional-by-inode unlink or rename. Hostile same-UID
+mutation inside the unavoidable final check/syscall interval is outside the
+supported cooperative contract and can redirect deletion. That is a documented
+limitation, not a host prerequisite: Codex and Claude semantics do not depend on
+host-provided same-UID isolation. Rollback occurs only when this
+invocation moved the still-intact owned root. Contract-honoring concurrent
+cleanup and replacements visible before the final check fail closed without
+deleting foreign or owned files. Every failure preserves all durable or external
+state for reconciliation.
 
 ## Handoff To Existing Owners
 

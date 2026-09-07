@@ -199,13 +199,17 @@ each allowlisted path one component at a time with no-follow descriptor-relative
 It atomically detaches each identity-verified entry to a random private name before
 descriptor-relative removal, including the final owned root and cleanup holder,
 then repeats the no-follow identity check immediately before each destructive
-unlink or rollback rename with no callback or subprocess in between. The receipt
-lock serializes lifecycle helpers that honor this contract. Portable filesystems
-do not expose conditional-by-inode unlink or rename, so hostile same-UID code
-inside that final check/syscall boundary is outside the supported concurrency
-contract and the host must isolate the scratch parent from it. Cleanup rolls back
-only a still-intact owned root moved by that invocation; supported concurrent
-cleanup and entry replacement fail closed without deleting the replacement.
+unlink or rollback rename with no callback or subprocess in between. This
+cooperative cleanup boundary covers receipt-lock-serialized lifecycle helper
+invocations that honor the contract; mutations visible before the final check
+fail closed. Portable filesystems do not expose conditional-by-inode unlink or
+rename. Hostile same-UID mutation inside the unavoidable final check/syscall
+interval is outside the supported cooperative contract and can redirect deletion.
+That is a documented limitation, not a host prerequisite: Codex and Claude
+semantics do not depend on host-provided same-UID isolation. Cleanup rolls back
+only a still-intact owned root moved by that invocation. Contract-honoring
+concurrent cleanup and replacements visible before the final check fail closed
+without deleting the replacement.
 
 The goal monitor cannot prove a clean task review, its repository-derived
 current head, or ownership of an arbitrary caller-supplied state path. It never

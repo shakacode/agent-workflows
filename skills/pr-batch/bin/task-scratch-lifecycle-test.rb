@@ -42,7 +42,13 @@ class TaskScratchLifecycleTest < Minitest::Test
     assert_includes host_contract, "one component at a time with no-follow descriptor-relative operations"
     assert_includes host_contract, "random private name before descriptor-relative removal"
     assert_includes host_contract, "immediately before each destructive unlink or rollback rename"
-    assert_includes host_contract, "hostile same-UID code inside that final check/syscall boundary"
+    assert_includes host_contract, "cooperative cleanup boundary"
+    assert_includes host_contract,
+                    "Hostile same-UID mutation inside the unavoidable final check/syscall interval is outside " \
+                    "the supported cooperative contract and can redirect deletion"
+    assert_includes host_contract, "documented limitation, not a host prerequisite"
+    assert_includes host_contract, "Codex and Claude semantics do not depend on host-provided same-UID isolation"
+    refute_includes host_contract, "host must isolate the scratch parent"
     assert_includes workflow, "task-review-loop\" --repository-root \"$REVIEW_WORKTREE_ROOT\""
     assert_includes workflow, "task-scratch-lifecycle\" create"
     assert_includes workflow, "task-scratch-lifecycle\" cleanup"
@@ -52,7 +58,13 @@ class TaskScratchLifecycleTest < Minitest::Test
     assert_includes workflow, "one component at a time with no-follow descriptor-relative operations"
     assert_includes workflow, "random private name before descriptor-relative removal"
     assert_includes workflow, "immediately before each destructive unlink or rollback rename"
-    assert_includes workflow, "hostile same-UID code inside that final check/syscall boundary"
+    assert_includes workflow, "cooperative cleanup boundary"
+    assert_includes workflow,
+                    "Hostile same-UID mutation inside the unavoidable final check/syscall interval is outside " \
+                    "the supported cooperative contract and can redirect deletion"
+    assert_includes workflow, "documented limitation, not a host prerequisite"
+    assert_includes workflow, "Codex and Claude semantics do not depend on host-provided same-UID isolation"
+    refute_includes workflow, "host must isolate the scratch parent"
   end
 
   def test_clean_review_cleanup_removes_only_the_created_allowlisted_root
