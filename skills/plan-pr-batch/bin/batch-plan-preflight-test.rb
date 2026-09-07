@@ -731,6 +731,22 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_quoted_merge_key_does_not_declare_companion_policy
+    Dir.mktmpdir("batch-plan-quoted-merge-key") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        "<<":
+          companion_path_conventions: invalid
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+    end
+  end
+
   def test_unrelated_root_merge_uses_anchor_definition_at_alias_position
     Dir.mktmpdir("batch-plan-reused-root-merge-anchor") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
