@@ -1389,10 +1389,34 @@ end
 WORKFLOW_CONFIG_PATH = ".agents/agent-workflow.yml"
 TRUSTED_BASE_POLICY_KEYS = Set.new(%w[enabled repository remote ref]).freeze
 
-def valid_trusted_base_ref?(ref)
-  ref.is_a?(String) && ref.match?(%r{\Arefs/heads/[A-Za-z0-9][A-Za-z0-9._/-]*\z}) &&
-    !ref.include?("..") && !ref.include?("@{") && !ref.end_with?(".") && !ref.end_with?("/") &&
-    ref.split("/").none? { |component| component.empty? || component.start_with?(".") || component.end_with?(".lock") }
+def trusted_base_ref_validity(ref)
+  return [false, nil] unless ref.is_a?(String) && !ref.empty? && !ref.include?("\0") && ref.start_with?("refs/heads/")
+
+  stdout, stderr, status = capture_trusted_git_probe("check-ref-format", ref)
+  unless status.respond_to?(:success?) && status.respond_to?(:exitstatus)
+    return [nil, "trusted base ref validity probe did not return a process status"]
+  end
+
+  stdout = stdout.to_s.dup.force_encoding(Encoding::UTF_8)
+  stderr = stderr.to_s.dup.force_encoding(Encoding::UTF_8)
+  unless stdout.valid_encoding? && stderr.valid_encoding? && !stdout.include?("\0") && !stderr.include?("\0")
+    return [nil, "trusted base ref validity probe returned malformed output"]
+  end
+
+  if status.success? && status.exitstatus&.zero?
+    return [nil, "trusted base ref validity probe returned malformed output"] unless stdout.empty? && stderr.empty?
+
+    return [true, nil]
+  end
+  return [false, nil] if status.exitstatus == 1 && stdout.empty? && stderr.empty?
+
+  detail = stderr.lines.first&.strip
+  outcome = status.exitstatus ? "failed with exit #{status.exitstatus}" : "did not exit normally"
+  message = "trusted base ref validity probe #{outcome}"
+  message = "#{message}: #{detail}" unless detail.to_s.empty?
+  [nil, message]
+rescue StandardError => e
+  [nil, "trusted base ref validity probe failed: #{e.message.lines.first&.strip}"]
 end
 
 def trusted_remote_name_validity(remote)
@@ -1430,7 +1454,10 @@ end
 def operator_trusted_base_ref
   configured = ENV.fetch(TRUSTED_BASE_REF_ENV, nil)
   return [nil, nil] unless configured
-  return [configured, nil] if valid_trusted_base_ref?(configured)
+
+  valid, error = trusted_base_ref_validity(configured)
+  return [nil, error] if error
+  return [configured, nil] if valid
 
   [nil, "#{TRUSTED_BASE_REF_ENV} must name one full refs/heads/... ref"]
 end
@@ -1489,7 +1516,9 @@ def trusted_base_policy_from_yaml(yaml, repo:)
   end
 
   ref = policy["ref"]
-  unless valid_trusted_base_ref?(ref)
+  ref_valid, ref_error = trusted_base_ref_validity(ref)
+  return [nil, ref_error] if ref_error
+  unless ref_valid
     return [nil, "trusted_base_high_risk_acceptance.ref is malformed"]
   end
 
@@ -1654,9 +1683,13 @@ def trusted_remote_default_ref(root, remote_url)
   object_match = records[1]&.match(/\A([0-9a-f]+)\tHEAD\z/)
   ref = symref_match&.[](1)
   sha = object_match&.[](1)
-  unless terminated && valid_trusted_base_ref?(ref) && sha&.match?(GIT_OBJECT_ID_PATTERN)
+  unless terminated && ref && sha&.match?(GIT_OBJECT_ID_PATTERN)
     return [nil, "authenticated remote default ref probe returned malformed output"]
   end
+
+  ref_valid, ref_error = trusted_base_ref_validity(ref)
+  return [nil, ref_error] if ref_error
+  return [nil, "authenticated remote default ref probe returned malformed output"] unless ref_valid
 
   [{ ref:, sha:, source: "authenticated-remote-default-head" }, nil]
 rescue StandardError => e

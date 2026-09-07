@@ -2112,21 +2112,24 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def test_trusted_base_accepts_nondefault_ref_only_with_operator_owned_anchor
-    policy = trusted_base_policy("ref" => "refs/heads/release/trusted")
-    with_trusted_base_preflight(
-      policy:,
-      fetched_policy: policy,
-      fixture_env_overrides: {
-        TRUSTED_BASE_REF_ENV => "refs/heads/release/trusted",
-        "PREFLIGHT_TEST_GRAPH_BASE_REF" => "release/trusted",
-        "PREFLIGHT_TEST_REST_BASE_REF" => "release/trusted"
-      }
-    ) do |env, trust_config_path, repo_root, _provenance|
-      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+    ["release+candidate", "release@2026", "développement", "リリース"].each do |branch|
+      ref = "refs/heads/#{branch}"
+      policy = trusted_base_policy("ref" => ref)
+      with_trusted_base_preflight(
+        policy:,
+        fetched_policy: policy,
+        fixture_env_overrides: {
+          TRUSTED_BASE_REF_ENV => ref,
+          "PREFLIGHT_TEST_GRAPH_BASE_REF" => branch,
+          "PREFLIGHT_TEST_REST_BASE_REF" => branch
+        }
+      ) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
 
-      assert status.success?, out
-      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
-      assert_includes out, %("policy_ref_anchor":"operator-environment:#{TRUSTED_BASE_REF_ENV}")
+        assert status.success?, "#{ref}: #{out}"
+        assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED", ref
+        assert_includes out, %("policy_ref_anchor":"operator-environment:#{TRUSTED_BASE_REF_ENV}"), ref
+      end
     end
   end
 
@@ -3108,6 +3111,85 @@ class PrSecurityPreflightTest < Minitest::Test
 
         assert_trusted_base_blocked(out, status)
         assert_includes out, "Trusted-base high-risk acceptance unavailable:", label
+      end
+    end
+  end
+
+  def test_trusted_base_policy_accepts_branch_refs_validated_by_real_git
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+    TrustedGitState.executable = REAL_GIT
+    TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+      REAL_GIT,
+      unsetenv_others: true
+    )
+
+    ["release+candidate", "release@2026", "développement", "リリース"].each do |branch|
+      ref = "refs/heads/#{branch}"
+      yaml = YAML.dump(trusted_base_policy("ref" => ref))
+
+      policy, error = trusted_base_policy_from_yaml(yaml, repo: "owner/repo")
+
+      assert_nil error, ref
+      assert_equal ref, policy.fetch("ref"), ref
+    end
+  ensure
+    TrustedGitState.executable = previous_executable
+    TrustedGitState.local_env_vars = previous_local_env_vars
+  end
+
+  def test_trusted_base_policy_rejects_branch_refs_rejected_by_real_git
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+    TrustedGitState.executable = REAL_GIT
+    TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+      REAL_GIT,
+      unsetenv_others: true
+    )
+
+    ["", "main", "refs/tags/main", "refs/heads/foo bar", "refs/heads/foo~bar", "refs/heads/foo^bar",
+     "refs/heads/foo?bar", "refs/heads/foo*bar", "refs/heads/foo@{bar", "refs/heads/foo//bar",
+     "refs/heads/foo.lock", "refs/heads/foo\0bar"].each do |ref|
+      yaml = YAML.dump(trusted_base_policy("ref" => ref))
+
+      policy, error = trusted_base_policy_from_yaml(yaml, repo: "owner/repo")
+
+      assert_nil policy, ref.inspect
+      assert_equal "trusted_base_high_risk_acceptance.ref is malformed", error, ref.inspect
+    end
+  ensure
+    TrustedGitState.executable = previous_executable
+    TrustedGitState.local_env_vars = previous_local_env_vars
+  end
+
+  def test_trusted_base_policy_rejects_malformed_or_failed_ref_validity_probe
+    cases = [
+      {
+        label: "missing process status",
+        response: ["", "simulated timeout", nil],
+        expected: "trusted base ref validity probe did not return a process status"
+      },
+      {
+        label: "unexpected successful output",
+        response: ["unexpected\n", "", TestCommandStatus.new(0)],
+        expected: "trusted base ref validity probe returned malformed output"
+      },
+      {
+        label: "fatal probe failure",
+        response: ["", "fatal: simulated failure", TestCommandStatus.new(128)],
+        expected: "trusted base ref validity probe failed with exit 128: fatal: simulated failure"
+      }
+    ]
+
+    cases.each do |test_case|
+      matcher = ->(args) { args == ["check-ref-format", "refs/heads/main"] }
+      with_trusted_git_probe_fault(matcher, test_case.fetch(:response)) do
+        yaml = YAML.dump(trusted_base_policy)
+
+        policy, error = trusted_base_policy_from_yaml(yaml, repo: "owner/repo")
+
+        assert_nil policy, test_case.fetch(:label)
+        assert_equal test_case.fetch(:expected), error, test_case.fetch(:label)
       end
     end
   end
@@ -4220,22 +4302,25 @@ class PrSecurityPreflightTest < Minitest::Test
 
   def test_authenticated_remote_default_ref_probe_requires_exact_symref_receipt
     calls = []
-    response = [
-      "ref: refs/heads/main\tHEAD\n#{'e' * 40}\tHEAD\n",
-      "",
-      TestCommandStatus.new(0)
-    ]
+    response = ["ref: refs/heads/main\tHEAD\n#{'e' * 40}\tHEAD\n", "", TestCommandStatus.new(0)]
     original_capture = Object.instance_method(:capture_trusted_git_probe)
     Object.send(:define_method, :capture_trusted_git_probe) do |*args, **options|
       calls << [args, options]
-      response
+      if args.include?("ls-remote")
+        response
+      else
+        original_capture.bind(self).call(*args, **options)
+      end
     end
     Object.send(:private, :capture_trusted_git_probe)
 
-    anchor, error = trusted_remote_default_ref("/verified/repo", "https://github.com/owner/repo.git")
-    assert_nil error
-    assert_equal "refs/heads/main", anchor.fetch(:ref)
-    assert_equal "e" * 40, anchor.fetch(:sha)
+    ["main", "release+candidate", "release@2026", "développement", "リリース"].each do |branch|
+      response = ["ref: refs/heads/#{branch}\tHEAD\n#{'e' * 40}\tHEAD\n", "", TestCommandStatus.new(0)]
+      anchor, error = trusted_remote_default_ref("/verified/repo", "https://github.com/owner/repo.git")
+      assert_nil error, branch
+      assert_equal "refs/heads/#{branch}", anchor.fetch(:ref), branch
+      assert_equal "e" * 40, anchor.fetch(:sha), branch
+    end
     assert_equal ["-C", "/verified/repo", "ls-remote", "--symref", "--exit-code",
                   "https://github.com/owner/repo.git", "HEAD"], calls.first.first
     assert_equal({ timeout_seconds: TRUSTED_BASE_FETCH_TIMEOUT_SECONDS }, calls.first.last)
@@ -6918,7 +7003,7 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def with_trusted_base_preflight(policy: trusted_base_policy, fetched_policy: policy, fixture_env_overrides: {},
-                                  during_fetch: nil)
+                                  trusted_ref: "refs/heads/main", during_fetch: nil)
     with_fake_gh("trusted-base-high-risk") do |env, trust_config_path, log_path, dir|
       repo_root = File.join(dir, "consumer")
       FileUtils.mkdir_p(repo_root)
@@ -6937,6 +7022,7 @@ class PrSecurityPreflightTest < Minitest::Test
         expected_merge_sha: merge_sha,
         fetch_fail: fixture_env_overrides["PREFLIGHT_TEST_FETCH_FAIL"] == "1",
         checkout_matches: fixture_env_overrides["PREFLIGHT_TEST_CHECKOUT_MISMATCH"] != "1",
+        trusted_ref:,
         trusted_ref_sha: fixture_env_overrides["PREFLIGHT_TEST_TRUSTED_REF_SHA"],
         during_fetch:
       )
