@@ -15,6 +15,7 @@ module TaskScratchLifecycle
   MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
   IDENTITY_KEYS = %w[batch_id lane_id plan_digest plan_id task_id].freeze
   OWNER_BASENAME = ".task-scratch-owner.json"
+  CREATE_DECISION_KEYS = %w[contract receipt status version].freeze
   RECEIPT_KEYS = %w[
     allowlist contract created_at digest identity repository_common_dir root_device root_inode root_mode
     root_owner run_token scratch_parent scratch_root version worktree_root
@@ -142,7 +143,16 @@ module TaskScratchLifecycle
   def read_claimed_receipt(file)
     bytes = file.binmode.read(MAX_ARTIFACT_BYTES + 1).to_s
     fail!("receipt-too-large") if bytes.bytesize > MAX_ARTIFACT_BYTES
-    JSON.parse(bytes)
+    document = JSON.parse(bytes)
+    return document if document.is_a?(Hash) && document.keys.sort == RECEIPT_KEYS.sort
+
+    valid_wrapper = document.is_a?(Hash) && document.keys.sort == CREATE_DECISION_KEYS.sort &&
+                    document["contract"] == "task-scratch-lifecycle-decision" &&
+                    document["version"] == 1 && document["status"] == "created" &&
+                    document["receipt"].is_a?(Hash)
+    fail!("receipt-invalid") unless valid_wrapper
+
+    document.fetch("receipt")
   rescue JSON::ParserError
     fail!("receipt-invalid")
   end

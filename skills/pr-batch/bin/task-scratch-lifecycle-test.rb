@@ -36,6 +36,8 @@ class TaskScratchLifecycleTest < Minitest::Test
     assert_includes host_contract, "task-review-loop --repository-root"
     assert_includes host_contract, "task-scratch-lifecycle create"
     assert_includes host_contract, "task-scratch-lifecycle cleanup"
+    assert_includes host_contract, "accepts that exact `created` decision directly"
+    assert_includes host_contract, "unchanged nested raw receipt for compatibility"
     assert_includes host_contract, "cap-adjudicated completion never authorizes scratch deletion"
     assert_includes host_contract, "exclusive lock on the durable receipt"
     assert_includes host_contract, "open directory descriptor"
@@ -52,6 +54,8 @@ class TaskScratchLifecycleTest < Minitest::Test
     assert_includes workflow, "task-review-loop\" --repository-root \"$REVIEW_WORKTREE_ROOT\""
     assert_includes workflow, "task-scratch-lifecycle\" create"
     assert_includes workflow, "task-scratch-lifecycle\" cleanup"
+    assert_includes workflow, "accepts that exact `created` decision directly"
+    assert_includes workflow, "unchanged nested raw receipt"
     assert_includes workflow, "The lifecycle helper is the only owner allowed to delete that root"
     assert_includes workflow, "exclusive lock on the durable receipt"
     assert_includes workflow, "open directory descriptor"
@@ -137,6 +141,84 @@ class TaskScratchLifecycleTest < Minitest::Test
       assert_equal repository_log_before, git_output(repository, "log", "--format=%H")
       assert_equal worktrees_before, git_output(repository, "worktree", "list", "--porcelain")
       assert_empty git_output(repository, "status", "--porcelain")
+    end
+  end
+
+  def test_documented_create_output_round_trips_directly_into_cleanup
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, base_sha, head_sha = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+
+      create_stdout, create_stderr, create_status = Open3.capture3(
+        HELPER,
+        "create",
+        "--repository-root", repository,
+        "--scratch-parent", scratch_parent,
+        "--identity-file", identity_path,
+        "--allow-relative", "evidence.json"
+      )
+      File.binwrite(receipt_path, create_stdout)
+      assert create_status.success?, create_stderr
+      created = JSON.parse(create_stdout)
+      scratch_root = created.dig("receipt", "scratch_root")
+      File.write(File.join(scratch_root, "evidence.json"), "{}\n")
+      review_input_path, = write_clean_review_input(durable_root, repository, base_sha, head_sha)
+
+      cleaned, cleanup_stderr, cleanup_status = run_cleanup(receipt_path, review_input_path)
+
+      assert cleanup_status.success?, cleanup_stderr
+      assert_equal "cleaned", cleaned.fetch("status")
+      assert_equal scratch_root, cleaned.fetch("removed_root")
+      refute_path_exists scratch_root
+      assert_equal create_stdout, File.binread(receipt_path)
+    end
+  end
+
+  def test_cleanup_rejects_noncanonical_create_wrappers_before_touching_scratch
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"]
+      )
+      assert create_status.success?, create_stderr
+      scratch_root = created.dig("receipt", "scratch_root")
+      File.write(File.join(scratch_root, "evidence.json"), "{}\n")
+      variants = {
+        "extra field" => created.merge("unexpected" => true),
+        "wrong contract" => created.merge("contract" => "other-decision"),
+        "wrong version" => created.merge("version" => 2),
+        "wrong status" => created.merge("status" => "cleaned"),
+        "missing receipt" => created.reject { |key, _value| key == "receipt" },
+        "non-object receipt" => created.merge("receipt" => [])
+      }
+
+      variants.each do |label, wrapper|
+        receipt_path = File.join(durable_root, "#{label.tr(' ', '-')}.json")
+        File.write(receipt_path, JSON.generate(wrapper))
+
+        blocked, stderr, status = run_cleanup(receipt_path, identity_path)
+
+        refute status.success?, label
+        assert_empty stderr, label
+        assert_equal "blocked", blocked.fetch("status"), label
+        assert_equal "receipt-invalid", blocked.fetch("reason"), label
+        assert_path_exists scratch_root, label
+      end
     end
   end
 

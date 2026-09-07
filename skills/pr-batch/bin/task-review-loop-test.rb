@@ -234,6 +234,48 @@ class TaskReviewLoopTest < Minitest::Test
     end
   end
 
+  def test_repository_mode_rejects_malformed_package_endpoints_before_git_can_use_them
+    Dir.mktmpdir("task-review-loop-repository") do |directory|
+      repository = File.join(directory, "repository")
+      Dir.mkdir(repository)
+      system("git", "init", "--quiet", repository) || raise("git init failed")
+      system("git", "-C", repository, "config", "user.name", "Test") || raise("git config failed")
+      system("git", "-C", repository, "config", "user.email", "test@example.com") || raise("git config failed")
+      source_path = File.join(repository, "work.txt")
+      File.write(source_path, "base\n")
+      system("git", "-C", repository, "add", "work.txt") || raise("git add failed")
+      system("git", "-C", repository, "commit", "--quiet", "-m", "base") || raise("git commit failed")
+      original = consequential_breakage_input(directory, changed_paths: ["work.txt"])
+
+      {
+        "current package" => lambda do |input, endpoint|
+          input["review_package"] = with_digest(
+            input.fetch("review_package").merge("base_sha" => endpoint).reject { |key, _value| key == "digest" }
+          )
+        end,
+        "retained package" => lambda do |input, endpoint|
+          retained = input.dig("rounds", 0, "review_package")
+          input["rounds"][0]["review_package"] = with_digest(
+            retained.merge("base_sha" => endpoint).reject { |key, _value| key == "digest" }
+          )
+        end
+      }.each do |label, mutate|
+        input = JSON.parse(JSON.generate(original))
+        sentinel_path = File.join(directory, "#{label.tr(' ', '-')}-sentinel.txt")
+        sentinel_bytes = "preserve external file\n"
+        File.binwrite(sentinel_path, sentinel_bytes)
+        mutate.call(input, "--output=#{sentinel_path}")
+
+        output, stderr, status = evaluate_repository(input, repository)
+
+        assert status.success?, "#{label}: #{stderr}"
+        assert_equal "blocked", output.fetch("status"), label
+        assert_equal sentinel_bytes, File.binread(sentinel_path), label
+        assert_equal ["input-schema-invalid"], output.fetch("reasons"), label
+      end
+    end
+  end
+
   def test_repository_backed_mode_rejects_a_moved_head_without_touching_coordination_evidence
     Dir.mktmpdir("task-review-loop-repository") do |directory|
       repository = File.join(directory, "repository")

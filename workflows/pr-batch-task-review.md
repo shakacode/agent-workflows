@@ -280,8 +280,10 @@ exact relative leaf-file allowlist:
   > "$SCRATCH_RECEIPT_PATH"
 ```
 
-Keep the returned receipt outside the disposable root as durable ownership
-evidence. It binds the complete task identity, canonical worktree and Git common
+Keep the returned create decision outside the disposable root as durable
+ownership evidence; cleanup accepts that exact `created` decision directly.
+For compatibility it also accepts the unchanged nested raw receipt, but no
+other wrapper shape. The receipt binds the complete task identity, canonical worktree and Git common
 directory, private root path, random run token, device/inode/owner/mode, and the
 exact allowlist. Do not adopt an existing or legacy directory, copy a receipt,
 or put durable review, coordination, wake, Git, or worktree state in this root.

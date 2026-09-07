@@ -883,7 +883,7 @@ module TaskReviewLoop
   def reduce(input, cap_authority = cap_authority_from_env, repository_root: nil)
     findings_cache = {}
     errors = validate(input, findings_cache, cap_authority)
-    errors.concat(repository_errors(input, repository_root)) if repository_root
+    errors.concat(repository_errors(input, repository_root)) if repository_root && errors.empty?
     unless errors.empty?
       return decision("blocked", false, errors.sort)
     end

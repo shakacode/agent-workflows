@@ -188,8 +188,10 @@ authority may be replaced with a monitor summary.
 Cleanup is allowlisted, not directory-wide. Create disposable scratch only with
 `task-scratch-lifecycle create`, passing the canonical repository root, a private
 scratch parent, the accepted identity source, and every permitted relative leaf
-path. Persist its returned receipt outside the scratch root. After clean review,
-invoke `task-scratch-lifecycle cleanup` with that receipt and the original
+path. Persist its returned create decision outside the scratch root; cleanup
+accepts that exact `created` decision directly, or the unchanged nested raw
+receipt for compatibility, and rejects every other wrapper shape. After clean review,
+invoke `task-scratch-lifecycle cleanup` with that persisted document and the original
 task-review input. The helper revalidates the live repository, full identity,
 root ownership marker and filesystem identity, exact allowlist, and the original
 review input through repository-backed `task-review-loop` before atomically
