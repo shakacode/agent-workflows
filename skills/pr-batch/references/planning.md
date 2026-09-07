@@ -73,9 +73,12 @@ Before implementation or worker launch, produce:
 13. A final `/goal` prompt when the user asked for Goal mode.
 <!-- host-branch: codex-only end -->
 
-After any target-specific invocation line, each pasteable batch prompt keeps
-the canonical `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block
-near the top. Resolve it through
+After any target-specific invocation line, each primary pasteable batch prompt
+puts the editable controls first in this exact order: `Batch title:`, `Repo:`,
+`Objective:`, and `merge_authority:`. Use one space after every control-field
+colon and exactly one blank line after `merge_authority:`. Do not add
+`Targets:`; `Items:` remains the single canonical target section. Resolve the
+`Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` value through
 [Verified Batch Title Selection](../../../workflows/pr-batch-intake.md#verified-batch-title-selection)
 without reinterpreting its verified intake facts.
 Use `Thread handle:` as the first worker-specific line: derive `<batch-short>`

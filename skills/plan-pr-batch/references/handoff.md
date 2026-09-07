@@ -13,8 +13,12 @@
      is heuristic: prefer host-exposed runtime signals over installed-home
      auto-detection, and choose `generic` when both Codex and Claude are
      plausible.
-   - After the target-specific invocation line, render the exact
-     `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block through
+   - After the target-specific invocation line, put the editable controls first
+     in this exact order: `Batch title:`, `Repo:`, `Objective:`, and
+     `merge_authority:`. Use one space after every control-field colon and
+     exactly one blank line after `merge_authority:`. Do not add `Targets:`;
+     `Items:` remains the single canonical target section. Render
+     `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` through
      canonical [Verified Batch Title Selection](../../../workflows/pr-batch-intake.md#verified-batch-title-selection).
      This stage preserves the [prompt template](prompt-template.md) and consumes the
      verified title facts unchanged; it does not redefine prefix, identifier,
