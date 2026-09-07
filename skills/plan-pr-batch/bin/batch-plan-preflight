@@ -847,7 +847,8 @@ module BatchPlanPreflight
 
     starts = lines.each_index.select do |index|
       !quoted[index] &&
-        companion_policy_key_line?(lines[index]) &&
+        (companion_policy_key_line?(lines[index]) ||
+         companion_policy_explicit_key_line?(lines[index])) &&
         companion_policy_line_indentation(lines[index]) == root_indentation
     end
     return [:absent, nil] if starts.empty?
@@ -856,6 +857,12 @@ module BatchPlanPreflight
 
     start_index = starts.first
     key_indent = companion_policy_line_indentation(lines[start_index])
+    explicit_value_index = if companion_policy_explicit_key_line?(lines[start_index])
+                             ((start_index + 1)...lines.length).find do |index|
+                               line = lines[index]
+                               !line.strip.empty? && !line.lstrip.start_with?("#")
+                             end
+                           end
     finish = ((start_index + 1)...lines.length).find do |index|
       line = lines[index]
       next false if line.strip.empty? || line.lstrip.start_with?("#")
@@ -867,7 +874,8 @@ module BatchPlanPreflight
         continue_fragment = companion_policy_flow_collection_open?(lines, start_index, index)
         continue_sequence = line.lstrip.start_with?("-") &&
                             companion_policy_block_sequence_value_line?(lines[start_index])
-        !continue_sequence && !continue_fragment
+        continue_explicit_value = index == explicit_value_index && line.lstrip.start_with?(":")
+        !continue_sequence && !continue_fragment && !continue_explicit_value
       else
         false
       end
@@ -883,6 +891,13 @@ module BatchPlanPreflight
     line.b.match?(
       /\A[ \t]*(?:[!&][^ \t\r\n]+[ \t]+)*
        (?:companion_path_conventions|["']companion_path_conventions["'])\s*:/x
+    )
+  end
+
+  def companion_policy_explicit_key_line?(line)
+    line.b.match?(
+      /\A[ \t]*\?[ \t]+(?:[!&][^ \t\r\n]+[ \t]+)*
+       (?:companion_path_conventions|["']companion_path_conventions["'])\s*(?:\#.*)?\z/x
     )
   end
 

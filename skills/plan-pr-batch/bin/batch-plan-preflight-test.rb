@@ -1043,6 +1043,42 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_policy_fallback_recognizes_explicit_mapping_key
+    Dir.mktmpdir("batch-plan-explicit-invalid-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        ? companion_path_conventions
+        : invalid
+        malformed: [
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        ? companion_path_conventions
+        :
+          - source_glob: #{fixture.fetch('source_glob')}
+            companion_glob: #{fixture.fetch('companion_glob')}
+        malformed: [
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
   def test_malformed_policy_fallback_preserves_aligned_flow_entries
     with_companion_repo do |root, fixture|
       ["[", "&rules [", "!rules ["].each do |header|
