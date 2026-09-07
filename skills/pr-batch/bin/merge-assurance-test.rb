@@ -4976,7 +4976,7 @@ class MergeAssuranceTest < Minitest::Test
       "status" => "in_progress", "conclusion" => nil,
       "started_at" => "2026-07-30T11:58:00Z", "completed_at" => nil,
       "head_sha" => HEAD_SHA, "app_slug" => "circleci-checks",
-      "dependabot" => false, "actions" => nil, "details_url" => workflow_url,
+      "dependabot" => false, "details_url" => workflow_url,
       "output" => {
         "title" => "Workflow: storybook-review-app",
         "summary" => "[View CircleCI Workflow](#{workflow_url})\n\n* start - Blocked\n"
