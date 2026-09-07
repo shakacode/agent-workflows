@@ -1395,6 +1395,38 @@ def valid_trusted_base_ref?(ref)
     ref.split("/").none? { |component| component.empty? || component.start_with?(".") || component.end_with?(".lock") }
 end
 
+def trusted_remote_name_validity(remote)
+  return [false, nil] unless remote.is_a?(String) && !remote.empty? && !remote.include?("\0")
+
+  stdout, stderr, status = capture_trusted_git_probe(
+    "check-ref-format", "refs/remotes/#{remote}/probe"
+  )
+  unless status.respond_to?(:success?) && status.respond_to?(:exitstatus)
+    return [nil, "trusted remote name validity probe did not return a process status"]
+  end
+
+  stdout = stdout.to_s.dup.force_encoding(Encoding::UTF_8)
+  stderr = stderr.to_s.dup.force_encoding(Encoding::UTF_8)
+  unless stdout.valid_encoding? && stderr.valid_encoding? && !stdout.include?("\0") && !stderr.include?("\0")
+    return [nil, "trusted remote name validity probe returned malformed output"]
+  end
+
+  if status.success? && status.exitstatus&.zero?
+    return [nil, "trusted remote name validity probe returned malformed output"] unless stdout.empty? && stderr.empty?
+
+    return [true, nil]
+  end
+  return [false, nil] if status.exitstatus == 1 && stdout.empty? && stderr.empty?
+
+  detail = stderr.lines.first&.strip
+  outcome = status.exitstatus ? "failed with exit #{status.exitstatus}" : "did not exit normally"
+  message = "trusted remote name validity probe #{outcome}"
+  message = "#{message}: #{detail}" unless detail.to_s.empty?
+  [nil, message]
+rescue StandardError => e
+  [nil, "trusted remote name validity probe failed: #{e.message.lines.first&.strip}"]
+end
+
 def operator_trusted_base_ref
   configured = ENV.fetch(TRUSTED_BASE_REF_ENV, nil)
   return [nil, nil] unless configured
@@ -1450,7 +1482,9 @@ def trusted_base_policy_from_yaml(yaml, repo:)
   return [nil, "trusted_base_high_risk_acceptance.repository must match #{repo}"] unless repository.is_a?(String) && repository.casecmp?(repo)
 
   remote = policy["remote"]
-  unless remote.is_a?(String) && remote.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/) && !remote.end_with?(".")
+  remote_valid, remote_error = trusted_remote_name_validity(remote)
+  return [nil, remote_error] if remote_error
+  unless remote_valid
     return [nil, "trusted_base_high_risk_acceptance.remote is malformed"]
   end
 

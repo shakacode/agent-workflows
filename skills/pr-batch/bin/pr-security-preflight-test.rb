@@ -3112,6 +3112,98 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_policy_accepts_remote_names_validated_by_real_git
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+    TrustedGitState.executable = REAL_GIT
+    TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+      REAL_GIT,
+      unsetenv_others: true
+    )
+
+    ["team/origin", "foo+bar", "foo@bar", "foo=bar", "foo.", "équipe/origin", "リモート"].each do |remote|
+      yaml = YAML.dump(trusted_base_policy("remote" => remote))
+
+      policy, error = trusted_base_policy_from_yaml(yaml, repo: "owner/repo")
+
+      assert_nil error, remote
+      assert_equal remote, policy.fetch("remote"), remote
+    end
+  ensure
+    TrustedGitState.executable = previous_executable
+    TrustedGitState.local_env_vars = previous_local_env_vars
+  end
+
+  def test_trusted_base_policy_rejects_remote_names_rejected_by_real_git
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+    TrustedGitState.executable = REAL_GIT
+    TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+      REAL_GIT,
+      unsetenv_others: true
+    )
+
+    ["", "foo:bar", "foo bar", "foo~bar", "foo^bar", "foo?bar", "foo*bar", "foo@{bar", "foo//bar",
+     "foo.lock", "foo\0bar"].each do |remote|
+      yaml = YAML.dump(trusted_base_policy("remote" => remote))
+
+      policy, error = trusted_base_policy_from_yaml(yaml, repo: "owner/repo")
+
+      assert_nil policy, remote.inspect
+      assert_equal "trusted_base_high_risk_acceptance.remote is malformed", error, remote.inspect
+    end
+  ensure
+    TrustedGitState.executable = previous_executable
+    TrustedGitState.local_env_vars = previous_local_env_vars
+  end
+
+  def test_trusted_base_policy_rejects_malformed_or_failed_remote_name_validity_probe
+    cases = [
+      {
+        label: "missing process status",
+        response: ["", "simulated timeout", nil],
+        expected: "trusted remote name validity probe did not return a process status"
+      },
+      {
+        label: "unexpected successful output",
+        response: ["unexpected\n", "", TestCommandStatus.new(0)],
+        expected: "trusted remote name validity probe returned malformed output"
+      },
+      {
+        label: "fatal probe failure",
+        response: ["", "fatal: simulated failure", TestCommandStatus.new(128)],
+        expected: "trusted remote name validity probe failed with exit 128: fatal: simulated failure"
+      }
+    ]
+
+    cases.each do |test_case|
+      matcher = ->(args) { args == ["check-ref-format", "refs/remotes/origin/probe"] }
+      with_trusted_git_probe_fault(matcher, test_case.fetch(:response)) do
+        yaml = YAML.dump(trusted_base_policy)
+
+        policy, error = trusted_base_policy_from_yaml(yaml, repo: "owner/repo")
+
+        assert_nil policy, test_case.fetch(:label)
+        assert_equal test_case.fetch(:expected), error, test_case.fetch(:label)
+      end
+    end
+  end
+
+  def test_trusted_base_accepts_real_git_remote_names_through_exact_scoped_url_lookup
+    ["team/origin", "foo+bar", "foo@bar", "foo=bar", "foo.", "équipe/origin", "リモート"].each do |remote|
+      policy = trusted_base_policy("remote" => remote)
+      with_trusted_base_preflight(policy:, fetched_policy: policy) do |env, trust_config_path, repo_root, _provenance|
+        git! "-C", repo_root, "remote", "rename", "origin", remote
+
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert status.success?, "#{remote}: #{out}"
+        assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED", remote
+        assert_includes out, "SECURITY_PREFLIGHT_OK", remote
+      end
+    end
+  end
+
   def test_trusted_base_rejects_duplicate_yaml_keys
     duplicate_policy_yaml = <<~YAML
       pr_security_preflight:
