@@ -2197,6 +2197,132 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rejects_untrusted_provenance_control_event_actors
+    event_types = %w[
+      AutoMergeEnabledEvent AutoRebaseEnabledEvent AutoSquashEnabledEvent AddedToMergeQueueEvent
+      AutoMergeDisabledEvent RemovedFromMergeQueueEvent ReviewDismissedEvent BaseRefChangedEvent
+      BaseRefDeletedEvent BaseRefForcePushedEvent AutomaticBaseChangeFailedEvent
+      AutomaticBaseChangeSucceededEvent HeadRefDeletedEvent HeadRefRestoredEvent
+    ]
+
+    event_types.each_with_index do |event_type, index|
+      timeline_nodes = trusted_base_timeline_nodes(
+        {
+          "id" => "provenance-event-#{index}",
+          "__typename" => event_type,
+          "actor" => { "id" => "actor-9", "login" => "outside-user", "__typename" => "User" }
+        }
+      )
+      overrides = {
+        "PREFLIGHT_TEST_TIMELINE_TOTAL" => timeline_nodes.size.to_s,
+        "PREFLIGHT_TEST_TIMELINE_NODES" => JSON.generate(timeline_nodes)
+      }
+
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "timeline actor outside-user is not in trusted actor allowlist", event_type
+        assert_includes out, "GitHub API coverage findings: none", event_type
+      end
+    end
+  end
+
+  def test_trusted_base_accepts_trusted_provenance_control_event_actors
+    event_types = %w[
+      AutoMergeEnabledEvent AutoRebaseEnabledEvent AutoSquashEnabledEvent AddedToMergeQueueEvent
+      AutoMergeDisabledEvent RemovedFromMergeQueueEvent ReviewDismissedEvent BaseRefChangedEvent
+      BaseRefDeletedEvent BaseRefForcePushedEvent AutomaticBaseChangeFailedEvent
+      AutomaticBaseChangeSucceededEvent HeadRefDeletedEvent HeadRefRestoredEvent
+    ]
+    provenance_events = event_types.each_with_index.map do |event_type, index|
+      {
+        "id" => "provenance-event-#{index}",
+        "__typename" => event_type,
+        "actor" => { "id" => "actor-9", "login" => "trusted-collaborator", "__typename" => "User" }
+      }
+    end
+    timeline_nodes = trusted_base_timeline_nodes(*provenance_events)
+    overrides = {
+      "PREFLIGHT_TEST_TIMELINE_TOTAL" => timeline_nodes.size.to_s,
+      "PREFLIGHT_TEST_TIMELINE_NODES" => JSON.generate(timeline_nodes)
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+      write_trust_config(trust_config_path, users: %w[justin808 trusted-collaborator])
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_provenance_control_event_actors_are_queried_and_identity_bound
+    event_types = %w[
+      AutoMergeEnabledEvent AutoRebaseEnabledEvent AutoSquashEnabledEvent AddedToMergeQueueEvent
+      AutoMergeDisabledEvent RemovedFromMergeQueueEvent ReviewDismissedEvent BaseRefChangedEvent
+      BaseRefDeletedEvent BaseRefForcePushedEvent AutomaticBaseChangeFailedEvent
+      AutomaticBaseChangeSucceededEvent HeadRefDeletedEvent HeadRefForcePushedEvent HeadRefRestoredEvent
+      MergedEvent
+    ]
+
+    event_types.each do |event_type|
+      assert_includes TIMELINE_ACTOR_IDENTITY_TYPENAMES, event_type
+      assert_match(
+        /\.\.\. on #{event_type} \{ [^\n]*actor \{ \.\.\. on Node \{ id \} login __typename \}/,
+        PR_TIMELINE_NODES_FRAGMENT,
+        event_type
+      )
+    end
+  end
+
+  def test_trusted_base_accepts_metadata_bot_timeline_comment_author
+    timeline_nodes = trusted_base_timeline_nodes(
+      {
+        "id" => "comment-event-1",
+        "__typename" => "IssueComment",
+        "author" => { "id" => "actor-9", "login" => "github-actions[bot]", "__typename" => "Bot" }
+      }
+    )
+    overrides = {
+      "PREFLIGHT_TEST_TIMELINE_TOTAL" => timeline_nodes.size.to_s,
+      "PREFLIGHT_TEST_TIMELINE_NODES" => JSON.generate(timeline_nodes)
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+      write_trust_config(trust_config_path, users: %w[justin808], metadata_bots: %w[github-actions])
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "GitHub API coverage findings: none"
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
+  def test_trusted_base_rejects_untrusted_timeline_comment_author
+    timeline_nodes = trusted_base_timeline_nodes(
+      {
+        "id" => "comment-event-1",
+        "__typename" => "IssueComment",
+        "author" => { "id" => "actor-9", "login" => "outside-bot[bot]", "__typename" => "Bot" }
+      }
+    )
+    overrides = {
+      "PREFLIGHT_TEST_TIMELINE_TOTAL" => timeline_nodes.size.to_s,
+      "PREFLIGHT_TEST_TIMELINE_NODES" => JSON.generate(timeline_nodes)
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "timeline author outside-bot[bot] is not in trusted actor or metadata allowlist"
+      assert_includes out, "GitHub API coverage findings: none"
+    end
+  end
+
   def test_trusted_base_rejects_non_ancestor_merge_result
     unrelated_sha = "f" * 40
     with_trusted_base_preflight(
@@ -5997,6 +6123,28 @@ class PrSecurityPreflightTest < Minitest::Test
       trusted_metadata_bots:#{yaml_list(metadata_bots)}
       trusted_teams:#{yaml_list(teams)}
     YAML
+  end
+
+  def trusted_base_timeline_nodes(*events)
+    [
+      {
+        "id" => "commit-event-1",
+        "__typename" => "PullRequestCommit",
+        "commit" => {
+          "authors" => {
+            "totalCount" => 1,
+            "pageInfo" => { "hasNextPage" => false, "endCursor" => nil },
+            "nodes" => [{ "user" => { "id" => "actor-1", "login" => "justin808", "__typename" => "User" } }]
+          }
+        }
+      },
+      *events,
+      {
+        "id" => "merged-event-1",
+        "__typename" => "MergedEvent",
+        "actor" => { "id" => "actor-1", "login" => "justin808", "__typename" => "User" }
+      }
+    ]
   end
 
   def init_git_remote(root, repo, url: "https://github.com/#{repo}.git")

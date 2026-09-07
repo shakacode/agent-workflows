@@ -1664,17 +1664,21 @@ def graph_pr_merge_actor_login(target)
   logins.first if logins.map { |login| normalized_login(login) }.uniq.size == 1
 end
 
-def graph_pr_timeline_actor_logins(target)
+def graph_pr_timeline_identity_logins(target, typenames:, field:)
   Array(target.dig("timelineItems", "nodes")).filter_map do |item|
     next unless item.is_a?(Hash)
+    next unless typenames.include?(item["__typename"])
 
-    case item["__typename"]
-    when *TIMELINE_AUTHOR_IDENTITY_TYPENAMES
-      item.dig("author", "login")
-    when *TIMELINE_ACTOR_IDENTITY_TYPENAMES
-      item.dig("actor", "login")
-    end
+    item.dig(field, "login")
   end
+end
+
+def graph_pr_timeline_author_logins(target)
+  graph_pr_timeline_identity_logins(target, typenames: TIMELINE_AUTHOR_IDENTITY_TYPENAMES, field: "author")
+end
+
+def graph_pr_timeline_actor_logins(target)
+  graph_pr_timeline_identity_logins(target, typenames: TIMELINE_ACTOR_IDENTITY_TYPENAMES, field: "actor")
 end
 
 def exact_pr_provenance(result, repo:, policy_ref:, trust_config:, team_cache:)
@@ -1731,6 +1735,12 @@ def exact_pr_provenance(result, repo:, policy_ref:, trust_config:, team_cache:)
     return [nil, "PR merge actor is not in trusted actor allowlist"]
   end
 
+  graph_pr_timeline_author_logins(target).each do |login|
+    next if allowed_metadata_actor?(repo, login, trust_config, team_cache)
+
+    return [nil, "timeline author #{login} is not in trusted actor or metadata allowlist"]
+  end
+
   graph_pr_timeline_actor_logins(target).each do |login|
     next if trusted_actor?(repo, login, trust_config, team_cache)
 
@@ -1761,8 +1771,12 @@ TIMELINE_NESTED_ACTOR_TYPENAMES = Set.new(
 TIMELINE_AUTHOR_IDENTITY_TYPENAMES = Set.new(%w[IssueComment PullRequestReview]).freeze
 TIMELINE_ACTOR_IDENTITY_TYPENAMES = Set.new(
   %w[
-    ClosedEvent CrossReferencedEvent MentionedEvent MergedEvent ReadyForReviewEvent
-    HeadRefForcePushedEvent ReopenedEvent ReviewRequestedEvent SubscribedEvent UnsubscribedEvent
+    AddedToMergeQueueEvent AutoMergeDisabledEvent AutoMergeEnabledEvent AutoRebaseEnabledEvent
+    AutoSquashEnabledEvent AutomaticBaseChangeFailedEvent AutomaticBaseChangeSucceededEvent
+    BaseRefChangedEvent BaseRefDeletedEvent BaseRefForcePushedEvent ClosedEvent CrossReferencedEvent
+    HeadRefDeletedEvent HeadRefForcePushedEvent HeadRefRestoredEvent MentionedEvent MergedEvent
+    ReadyForReviewEvent RemovedFromMergeQueueEvent ReopenedEvent ReviewDismissedEvent
+    ReviewRequestedEvent SubscribedEvent UnsubscribedEvent
   ]
 ).freeze
 
@@ -2309,6 +2323,20 @@ PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
   ... on UnsubscribedEvent { id actor { ... on Node { id } login __typename } }
   ... on ClosedEvent { id actor { ... on Node { id } login __typename } }
   ... on ReopenedEvent { id actor { ... on Node { id } login __typename } }
+  ... on AddedToMergeQueueEvent { id actor { ... on Node { id } login __typename } }
+  ... on AutoMergeDisabledEvent { id actor { ... on Node { id } login __typename } }
+  ... on AutoMergeEnabledEvent { id actor { ... on Node { id } login __typename } }
+  ... on AutoRebaseEnabledEvent { id actor { ... on Node { id } login __typename } }
+  ... on AutoSquashEnabledEvent { id actor { ... on Node { id } login __typename } }
+  ... on AutomaticBaseChangeFailedEvent { id actor { ... on Node { id } login __typename } }
+  ... on AutomaticBaseChangeSucceededEvent { id actor { ... on Node { id } login __typename } }
+  ... on BaseRefChangedEvent { id actor { ... on Node { id } login __typename } }
+  ... on BaseRefDeletedEvent { id actor { ... on Node { id } login __typename } }
+  ... on BaseRefForcePushedEvent { id actor { ... on Node { id } login __typename } }
+  ... on HeadRefDeletedEvent { id actor { ... on Node { id } login __typename } }
+  ... on HeadRefRestoredEvent { id actor { ... on Node { id } login __typename } }
+  ... on RemovedFromMergeQueueEvent { id actor { ... on Node { id } login __typename } }
+  ... on ReviewDismissedEvent { id actor { ... on Node { id } login __typename } }
   ... on MergedEvent { id createdAt actor { ... on Node { id } login __typename } }
   ... on PullRequestCommit {
     id
