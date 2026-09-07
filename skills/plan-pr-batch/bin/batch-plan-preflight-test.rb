@@ -1093,6 +1093,23 @@ class BatchPlanPreflightTest < Minitest::Test
                         "companion-path-conventions-invalid", content
       end
     end
+
+    Dir.mktmpdir("batch-plan-gapped-block-scalar") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        notes:
+            |-
+          "
+        companion_path_conventions: invalid
+        malformed: [
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
   end
 
   def test_malformed_policy_fallback_uses_yaml_plain_scalar_scanning_in_flows
