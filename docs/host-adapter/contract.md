@@ -137,6 +137,43 @@ mechanism:
 If a host lacks a mechanism for the requested verb, stop with a precise blocker
 instead of silently weakening the workflow.
 
+## Task-Local Artifact Identity and Retention
+
+Codex and Claude apply this same identity and retention contract. Host-specific
+storage paths are adapter details; they do not create a second task ledger or
+weaken the existing batch, lane, coordination, or task-review schemas.
+
+| Local artifact class | Retention | Identity and reuse contract |
+| --- | --- | --- |
+| Batch and goal manifests, including dependency plans and gate results | Durable evidence | Bind the repository-qualified target, batch id, immutable plan id and digest, schema/version, and creation or observation time. A gate result is reusable only for its exact plan input and current live-dependency snapshot. |
+| Dispatcher assignment and decision state | Durable for the active lane; retain the final assignment receipt | Bind the enclosing verified batch/plan manifest plus lane id, dispatcher, instance id, launch token, lifecycle, and task-brief digest. Same lane numbering outside that verified manifest is foreign state. |
+| Coordination lifecycle state and receipts | Durable evidence | The existing repository-qualified target, batch/lane, holder, generation, instance, schema, and timestamps are sufficient because this state proves ownership and history, not task completion. Recheck the live record before mutation; never rewrite it merely because a plan or code head moved. |
+| Task briefs and worker reports | Durable evidence | `task-review-loop` v1 binds batch, lane, plan id/digest, and task id; the brief and report digests bind their exact contents, while reports also bind base/head SHAs and commits. A changed brief or head invalidates the dependent report/package, not the coordination history. |
+| Exact-diff review packages, finding artifacts, and round checkpoints | Durable evidence | Bind the full task-review identity, brief/report/package digests, exact base/head SHAs, actors, round chain, artifact byte digests, schema/version, and coverage. Recapture the exact diff and validate the current head before every review or reuse. |
+| Pause and continue handoffs | Durable restart hints, never authority | Batch/lane, repository-qualified target, actor/thread, worktree, branch, head, claim generation, and live-state references are sufficient because resume treats the handoff as stale evidence and revalidates authoritative artifacts before work. Non-batch handoffs likewise require live repository and process checks. |
+| Goal monitor state, decisions, wake IDs, acknowledgements, and handoffs | Disposable scratch until terminal enqueue/acknowledgement is settled | Bind the adapter's exact plan identity and stable repository/task-scoped monitor id. The reducer binds wake IDs and every emitted reusable artifact to that plan; `blocker_state` fingerprints code/review facts such as head SHA. |
+| Generated prompts and scratch evidence | Disposable scratch unless admitted to a versioned artifact above | Filenames and task numbers confer no identity. Recreate prompt-only context from the accepted brief; a diff, finding file, or other evidence becomes reusable only through its owning schema, exact digest, and identity checks. |
+
+Validate the applicable identity before resume, dispatch, edit, review,
+completion, or GitHub mutation. Missing, blank, malformed, ambiguous,
+case-insensitive `UNKNOWN`, foreign, stale, or conflicting identity fails closed
+with a diagnostic naming the rejected boundary. Never fabricate missing
+historical identity: legacy state stays incomplete unless an already-supported
+reconciliation path independently proves its identity.
+
+A moved head invalidates every SHA-bound code or review artifact and requires a
+fresh capture/review. It does not invalidate unrelated durable coordination
+evidence whose repository, batch/lane, ownership generation, schema, and
+timestamps still validate; plan-bound monitor state instead reports the head
+change through its blocker-state delta and reruns the current-head gates.
+
+Cleanup is allowlisted, not directory-wide. Only after a clean final task review
+or closeout may the adapter remove disposable scratch whose exact path and plan
+identity prove that the current run owns it. Preserve durable receipts, Git
+history, retained review rounds, unresolved wake delivery, and externally owned
+worktrees. An identity failure preserves the artifact for reconciliation rather
+than deleting it.
+
 ## Scheduled Monitoring and Planning-Chat Lifecycle
 
 The portable completion contract prefers one deduplicated deterministic
@@ -169,12 +206,20 @@ waking action, fails closed. For bounded migration, legacy
 `acknowledged_wake_ids` is dropped on the next state persistence.
 
 Every `goal-state-change-observation` must carry a nonempty, known
-`plan_identity`. The identity is an exact opaque value: leading or trailing
-whitespace and case-insensitive `UNKNOWN` are invalid. The reducer persists the
-identity and rejects a state file created for another plan. A legacy state file
-without `plan_identity` fails closed with `plan-identity-missing`; the adapter
-must reconcile or replace that state instead of assigning it to the current
-plan, because the reducer cannot prove which plan created it.
+`plan_identity`. Its producer derives one stable opaque value from the accepted
+repository, batch, lane, immutable plan id/digest, and task identity; the stable
+`monitor_id` separately names the repository/task-scoped monitor. A filename or
+sequential task number alone is never identity. Leading or trailing whitespace,
+blank strings, non-strings, and case-insensitive `UNKNOWN` fail respectively as
+`plan-identity-ambiguous`, `plan-identity-blank`,
+`plan-identity-malformed`, and `plan-identity-unknown`; absence fails as
+`plan-identity-missing`. The reducer persists the identity, carries it on every
+decision and restart handoff, includes it in each wake ID, and rejects foreign
+state as `plan-identity-collision` before reuse. A legacy state file or nested
+reusable artifact without `plan_identity` fails closed with
+`plan-identity-missing`; the adapter must reconcile or replace that state
+instead of assigning it to the current plan, because the reducer cannot prove
+which plan created it.
 
 `blocker_state` is an object whose arrays are set-valued collections; adapters
 must encode ordered sequences as keyed objects. The reducer canonicalizes object

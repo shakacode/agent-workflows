@@ -9,6 +9,7 @@ require "tmpdir"
 
 ROOT = File.expand_path("../../..", __dir__)
 HELPER = File.join(ROOT, "skills/pr-batch/bin/goal-state-change-monitor")
+HOST_ADAPTER_CONTRACT = File.join(ROOT, "docs/host-adapter/contract.md")
 
 class GoalStateChangeMonitorTest < Minitest::Test
   def observation(overrides = {})
@@ -76,6 +77,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
     Digest::SHA256.hexdigest(
       JSON.generate(
         canonicalize_for_digest(
+          "plan_identity" => input.fetch("plan_identity"),
           "monitor_id" => input.fetch("monitor_id"),
           "probe_sequence" => input.fetch("probe_sequence"),
           "fingerprint" => fingerprint,
@@ -83,6 +85,29 @@ class GoalStateChangeMonitorTest < Minitest::Test
         )
       )
     )
+  end
+
+  def test_host_adapter_contract_inventories_task_local_artifact_identity_and_retention
+    contract = File.read(HOST_ADAPTER_CONTRACT)
+    normalized_contract = contract.gsub(/\s+/, " ")
+
+    [
+      "Batch and goal manifests",
+      "Dispatcher assignment and decision state",
+      "Coordination lifecycle state and receipts",
+      "Task briefs and worker reports",
+      "Exact-diff review packages, finding artifacts, and round checkpoints",
+      "Pause and continue handoffs",
+      "Goal monitor state, decisions, wake IDs, acknowledgements, and handoffs",
+      "Generated prompts and scratch evidence"
+    ].each { |artifact_class| assert_includes normalized_contract, artifact_class }
+    assert_includes normalized_contract.downcase, "durable evidence"
+    assert_includes normalized_contract, "disposable scratch"
+    assert_includes normalized_contract, "before resume, dispatch, edit, review, completion, or GitHub mutation"
+    assert_includes normalized_contract, "A moved head invalidates every SHA-bound code or review artifact"
+    assert_includes normalized_contract, "Never fabricate missing historical identity"
+    assert_includes normalized_contract, "externally owned worktrees"
+    assert_includes normalized_contract, "Codex and Claude apply this same identity and retention contract"
   end
 
   def test_deterministic_watcher_suppresses_unchanged_parent_wakes
@@ -162,12 +187,13 @@ class GoalStateChangeMonitorTest < Minitest::Test
     assert_equal 0, receipt.fetch("missed_transitions")
   end
 
-  def test_changed_fingerprint_wakes_parent_with_compact_delta
+  def test_moved_head_invalidates_code_state_without_invalidating_plan_bound_monitor_evidence
     Dir.mktmpdir do |directory|
       state_path = File.join(directory, "monitor.json")
       baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
       assert baseline_status.success?, baseline_stderr
       assert_equal false, baseline.fetch("wake_parent")
+      assert_equal "plan-a", baseline.fetch("plan_identity")
 
       changed_state = { "head" => "b" * 40, "pending" => [] }
       decision, stderr, status = run_helper(
@@ -182,6 +208,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert status.success?, stderr
       assert_equal "wake-state-change", decision.fetch("action")
       assert decision.fetch("wake_parent")
+      assert_equal "plan-a", decision.fetch("plan_identity")
       assert_equal(
         {
           "changes" => [
@@ -191,6 +218,10 @@ class GoalStateChangeMonitorTest < Minitest::Test
         },
         decision.fetch("state_delta")
       )
+      persisted = JSON.parse(File.read(state_path))
+      assert_equal "plan-a", persisted.fetch("plan_identity")
+      assert_equal "thread-393:checks", persisted.fetch("monitor_id")
+      assert_equal({ "model_calls" => 0, "tokens" => 0 }, persisted.fetch("usage"))
     end
   end
 
@@ -876,6 +907,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
         {
           "contract" => "goal-state-change-budget-handoff",
           "version" => 1,
+          "plan_identity" => "plan-a",
           "monitor_id" => "thread-393:checks",
           "reason" => "model-calls-ceiling",
           "fingerprint" => decision.fetch("fingerprint"),
@@ -1995,10 +2027,127 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
-  def test_observation_requires_an_exact_known_plan_identity
-    invalid_plan_identities = [nil, "", "UNKNOWN", "unknown", " plan-a", "plan-a "]
+  def test_cross_plan_wake_tokens_cannot_acknowledge_the_same_numbered_task
+    Dir.mktmpdir do |directory|
+      plan_a_path = File.join(directory, "plan-a-monitor.json")
+      plan_b_path = File.join(directory, "plan-b-monitor.json")
+      changed_state = { "head" => "b" * 40, "pending" => [] }
 
-    invalid_plan_identities.each do |plan_identity|
+      _plan_a_baseline, plan_a_baseline_stderr, plan_a_baseline_status = run_helper(plan_a_path, observation)
+      assert plan_a_baseline_status.success?, plan_a_baseline_stderr
+      plan_a_observation = observation(
+        "blocker_state" => changed_state,
+        "probe_sequence" => 1,
+        "observed_at" => "2026-08-09T00:15:00Z"
+      )
+      plan_a_wake, plan_a_stderr, plan_a_status = run_helper(plan_a_path, plan_a_observation)
+      assert plan_a_status.success?, plan_a_stderr
+
+      plan_b_baseline = observation("plan_identity" => "plan-b")
+      _plan_b_decision, plan_b_baseline_stderr, plan_b_baseline_status = run_helper(plan_b_path, plan_b_baseline)
+      assert plan_b_baseline_status.success?, plan_b_baseline_stderr
+      plan_b_observation = plan_b_baseline.merge(
+        "blocker_state" => changed_state,
+        "probe_sequence" => 1,
+        "observed_at" => "2026-08-09T00:15:00Z"
+      )
+      plan_b_wake, plan_b_stderr, plan_b_status = run_helper(plan_b_path, plan_b_observation)
+      assert plan_b_status.success?, plan_b_stderr
+
+      refute_equal plan_a_wake.fetch("wake_id"), plan_b_wake.fetch("wake_id")
+      persisted_before_foreign_ack = File.read(plan_b_path)
+
+      decision, stderr, status = run_helper(
+        plan_b_path,
+        plan_b_observation.merge("acknowledged_wake_id" => plan_a_wake.fetch("wake_id"))
+      )
+
+      assert_nil decision
+      refute status.success?
+      assert_includes stderr, '"reason":"invalid-wake-acknowledgement"'
+      assert_equal persisted_before_foreign_ack, File.read(plan_b_path)
+    end
+  end
+
+  def test_emitted_decisions_and_restart_handoffs_carry_plan_identity
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      assert_equal "plan-a", baseline.fetch("plan_identity")
+
+      terminal, terminal_stderr, terminal_status = run_helper(
+        state_path,
+        observation(
+          "task_status" => "terminal",
+          "probe_sequence" => 1,
+          "observed_at" => "2026-08-09T00:15:00Z"
+        )
+      )
+
+      assert terminal_status.success?, terminal_stderr
+      assert_equal "plan-a", terminal.fetch("plan_identity")
+      assert_equal "plan-a", terminal.fetch("handoff").fetch("plan_identity")
+      assert_equal terminal, JSON.parse(File.read(state_path)).fetch("last_decision")
+    end
+  end
+
+  def test_foreign_or_missing_identity_in_persisted_restart_artifacts_fails_closed
+    mutations = {
+      "foreign decision" => ->(state) { state.fetch("last_decision")["plan_identity"] = "plan-b" },
+      "foreign handoff" => lambda do |state|
+        state.fetch("last_decision").fetch("handoff")["plan_identity"] = "plan-b"
+      end,
+      "missing decision identity" => ->(state) { state.fetch("last_decision").delete("plan_identity") },
+      "missing handoff identity" => lambda do |state|
+        state.fetch("last_decision").fetch("handoff").delete("plan_identity")
+      end
+    }
+
+    mutations.each do |label, mutate|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        _terminal, terminal_stderr, terminal_status = run_helper(
+          state_path,
+          observation("task_status" => "terminal")
+        )
+        assert terminal_status.success?, terminal_stderr
+        persisted = JSON.parse(File.read(state_path))
+        mutate.call(persisted)
+        File.write(state_path, JSON.generate(persisted))
+        persisted_before_resume = File.read(state_path)
+
+        decision, stderr, status = run_helper(
+          state_path,
+          observation(
+            "task_status" => "terminal",
+            "probe_sequence" => 1,
+            "observed_at" => "2026-08-09T00:15:00Z"
+          )
+        )
+
+        expected_reason = label.start_with?("foreign") ? "plan-identity-collision" : "plan-identity-missing"
+        assert_nil decision, label
+        refute status.success?, label
+        assert_includes stderr, "\"reason\":\"#{expected_reason}\"", label
+        assert_equal persisted_before_resume, File.read(state_path), label
+      end
+    end
+  end
+
+  def test_observation_requires_an_exact_known_plan_identity
+    invalid_plan_identities = {
+      nil => "plan-identity-missing",
+      7 => "plan-identity-malformed",
+      "" => "plan-identity-blank",
+      "   " => "plan-identity-blank",
+      "UNKNOWN" => "plan-identity-unknown",
+      "unknown" => "plan-identity-unknown",
+      " plan-a" => "plan-identity-ambiguous",
+      "plan-a " => "plan-identity-ambiguous"
+    }
+
+    invalid_plan_identities.each do |plan_identity, expected_reason|
       Dir.mktmpdir do |directory|
         input = observation
         plan_identity.nil? ? input.delete("plan_identity") : input["plan_identity"] = plan_identity
@@ -2007,7 +2156,7 @@ class GoalStateChangeMonitorTest < Minitest::Test
 
         assert_nil decision
         refute status.success?
-        assert_includes stderr, '"reason":"plan-identity-required"'
+        assert_includes stderr, "\"reason\":\"#{expected_reason}\""
       end
     end
   end
@@ -2029,6 +2178,39 @@ class GoalStateChangeMonitorTest < Minitest::Test
       refute status.success?
       assert_includes stderr, '"reason":"plan-identity-missing"'
       assert_equal legacy_state, JSON.parse(File.read(state_path))
+    end
+  end
+
+  def test_invalid_persisted_plan_identity_reports_the_exact_reconciliation_reason
+    invalid_plan_identities = {
+      7 => "plan-identity-malformed",
+      "" => "plan-identity-blank",
+      "   " => "plan-identity-blank",
+      "UNKNOWN" => "plan-identity-unknown",
+      "unknown" => "plan-identity-unknown",
+      " plan-a" => "plan-identity-ambiguous",
+      "plan-a " => "plan-identity-ambiguous"
+    }
+
+    invalid_plan_identities.each do |plan_identity, expected_reason|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+        assert baseline_status.success?, baseline_stderr
+        invalid_state = JSON.parse(File.read(state_path)).merge("plan_identity" => plan_identity)
+        File.write(state_path, JSON.generate(invalid_state))
+        state_before_resume = File.read(state_path)
+
+        decision, stderr, status = run_helper(
+          state_path,
+          observation("probe_sequence" => 1, "observed_at" => "2026-08-09T00:15:00Z")
+        )
+
+        assert_nil decision
+        refute status.success?
+        assert_includes stderr, "\"reason\":\"#{expected_reason}\""
+        assert_equal state_before_resume, File.read(state_path)
+      end
     end
   end
 

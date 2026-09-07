@@ -46,9 +46,10 @@ def canonical_json(value)
   JSON.generate(canonicalize(value))
 end
 
-def wake_id_for(monitor_id:, probe_sequence:, fingerprint:, action:)
+def wake_id_for(plan_identity:, monitor_id:, probe_sequence:, fingerprint:, action:)
   Digest::SHA256.hexdigest(
     canonical_json(
+      "plan_identity" => plan_identity,
       "monitor_id" => monitor_id,
       "probe_sequence" => probe_sequence,
       "fingerprint" => fingerprint,
@@ -78,29 +79,71 @@ def sha256_digest?(value)
   value.is_a?(String) && value.match?(/\A[0-9a-f]{64}\z/)
 end
 
-def known_identity?(value)
-  value.is_a?(String) && value == value.strip && !value.empty? && !value.casecmp?("UNKNOWN")
+def identity_failure_reason(value, present: true)
+  return "plan-identity-missing" unless present
+  return "plan-identity-malformed" unless value.is_a?(String)
+  return "plan-identity-blank" if value.strip.empty?
+  return "plan-identity-ambiguous" unless value == value.strip
+
+  "plan-identity-unknown" if value.casecmp?("UNKNOWN")
 end
 
-def persisted_decision?(decision, monitor_id)
+def known_identity?(value)
+  identity_failure_reason(value).nil?
+end
+
+def plan_bound_artifacts(state)
+  return [] unless state.is_a?(Hash)
+
+  artifacts = [state]
+  last_decision = state["last_decision"]
+  if last_decision.is_a?(Hash)
+    artifacts << last_decision
+    artifacts << last_decision["handoff"] if last_decision["handoff"].is_a?(Hash)
+  end
+  pending_wake = state["pending_wake"]
+  if pending_wake.is_a?(Hash)
+    pending_decision = pending_wake["decision"]
+    if pending_decision.is_a?(Hash)
+      artifacts << pending_decision
+      artifacts << pending_decision["handoff"] if pending_decision["handoff"].is_a?(Hash)
+    end
+  end
+  artifacts
+end
+
+def persisted_identity_failure(state, expected_plan_identity)
+  plan_bound_artifacts(state).each do |artifact|
+    reason = identity_failure_reason(artifact["plan_identity"], present: artifact.key?("plan_identity"))
+    return reason if reason
+    return "plan-identity-collision" if artifact["plan_identity"] != expected_plan_identity
+  end
+  nil
+end
+
+def persisted_decision?(decision, plan_identity, monitor_id, validate_plan_identity: true)
   decision.is_a?(Hash) &&
     decision["contract"] == "goal-state-change-decision" &&
     decision["version"] == 1 &&
     decision["status"] == "ok" &&
+    (!validate_plan_identity || decision["plan_identity"] == plan_identity) &&
     decision["monitor_id"] == monitor_id &&
     decision["action"].is_a?(String) && !decision["action"].empty? &&
     sha256_digest?(decision["fingerprint"]) &&
     [true, false].include?(decision["wake_parent"]) &&
     %w[active paused stopped].include?(decision["monitor_status"]) &&
     (!decision.key?("wake_id") || sha256_digest?(decision["wake_id"])) &&
-    (!decision.key?("handoff") || decision["handoff"].is_a?(Hash)) &&
+    (!decision.key?("handoff") ||
+      (decision["handoff"].is_a?(Hash) &&
+       (!validate_plan_identity || decision["handoff"]["plan_identity"] == plan_identity))) &&
     (!decision.key?("state_delta") || decision["state_delta"].is_a?(Hash))
 end
 
-def persisted_acknowledgement_payload?(payload, state, wake_id)
+def persisted_acknowledgement_payload?(payload, state, wake_id, validate_plan_identity: true)
   return false unless payload.is_a?(Hash) && payload == canonicalize(payload)
   return false if payload.key?("observed_at")
   return false unless payload["acknowledged_wake_id"] == wake_id &&
+                      (!validate_plan_identity || payload["plan_identity"] == state["plan_identity"]) &&
                       payload["monitor_id"] == state["monitor_id"] &&
                       payload["probe_sequence"] == state["probe_sequence"]
 
@@ -108,13 +151,14 @@ def persisted_acknowledgement_payload?(payload, state, wake_id)
   Digest::SHA256.hexdigest(canonical_json(digest_payload)) == state["last_observation_digest"]
 end
 
-def persisted_state?(state)
+def persisted_state?(state, validate_plan_identity: true)
   return false unless state.is_a?(Hash)
 
   required_keys = %w[
-    contract version plan_identity monitor_id fingerprint blocker_state capability monitor_status limits polling_policy
+    contract version monitor_id fingerprint blocker_state capability monitor_status limits polling_policy
     usage unchanged_runs probe_sequence last_observation_digest last_checked_at last_decision
   ]
+  required_keys << "plan_identity" if validate_plan_identity
   return false unless required_keys.all? { |key| state.key?(key) }
 
   plan_identity = state["plan_identity"]
@@ -129,7 +173,7 @@ def persisted_state?(state)
 
   state["contract"] == "goal-state-change-monitor-state" &&
     state["version"] == 1 &&
-    known_identity?(plan_identity) &&
+    (!validate_plan_identity || known_identity?(plan_identity)) &&
     monitor_id.is_a?(String) && !monitor_id.empty? &&
     sha256_digest?(state["fingerprint"]) &&
     state["blocker_state"].is_a?(Hash) &&
@@ -150,14 +194,20 @@ def persisted_state?(state)
     sha256_digest?(state["last_observation_digest"]) &&
     (!state.key?("observation_digest_version") ||
       state["observation_digest_version"] == OBSERVATION_DIGEST_VERSION) &&
-    persisted_decision?(state["last_decision"], monitor_id) &&
+    persisted_decision?(
+      state["last_decision"], plan_identity, monitor_id, validate_plan_identity: validate_plan_identity
+    ) &&
     acknowledged_wake_ids.is_a?(Array) && acknowledged_wake_ids.all? { |wake_id| sha256_digest?(wake_id) } &&
     (!state.key?("pending_wake") ||
       (pending_wake.is_a?(Hash) && sha256_digest?(pending_wake["wake_id"]) &&
-       persisted_decision?(pending_wake_decision, monitor_id) &&
+       persisted_decision?(
+         pending_wake_decision, plan_identity, monitor_id, validate_plan_identity: validate_plan_identity
+       ) &&
        pending_wake_decision["wake_parent"] == true &&
        pending_wake_decision["wake_id"] == pending_wake["wake_id"] &&
-       persisted_acknowledgement_payload?(acknowledgement_payload, state, pending_wake["wake_id"]) &&
+       persisted_acknowledgement_payload?(
+         acknowledgement_payload, state, pending_wake["wake_id"], validate_plan_identity: validate_plan_identity
+       ) &&
        %w[wake-state-change stop-dependency-terminal fallback-model-poll].include?(pending_wake_decision["action"])))
 end
 
@@ -206,7 +256,8 @@ fail_json("wrong-contract") unless observation["contract"] == "goal-state-change
 monitor_id = observation["monitor_id"]
 fail_json("invalid-monitor-id") unless monitor_id.is_a?(String) && !monitor_id.empty?
 plan_identity = observation["plan_identity"]
-fail_json("plan-identity-required") unless known_identity?(plan_identity)
+plan_identity_failure = identity_failure_reason(plan_identity, present: observation.key?("plan_identity"))
+fail_json(plan_identity_failure) if plan_identity_failure
 capability = observation["capability"]
 fail_json("invalid-capability") unless %w[deterministic-watcher model-polling-only unsupported].include?(capability)
 task_status = observation["task_status"]
@@ -284,13 +335,17 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
                  fail_json("corrupt-persisted-state")
                end
              end
-  if previous.is_a?(Hash) && !known_identity?(previous["plan_identity"])
-    repaired_identity_state = previous.merge("plan_identity" => plan_identity)
-    reason = persisted_state?(repaired_identity_state) ? "plan-identity-missing" : "corrupt-persisted-state"
-    fail_json(reason)
+  if previous
+    identity_failure = persisted_identity_failure(previous, plan_identity)
+    unless persisted_state?(previous)
+      if identity_failure && persisted_state?(previous, validate_plan_identity: false)
+        fail_json(identity_failure)
+      end
+
+      fail_json("corrupt-persisted-state")
+    end
+    fail_json(identity_failure) if identity_failure
   end
-  fail_json("corrupt-persisted-state") if previous && !persisted_state?(previous)
-  fail_json("plan-identity-collision") if previous && previous["plan_identity"] != plan_identity
   fail_json("monitor-id-collision") if previous && previous["monitor_id"] != monitor_id
 
   legacy_digest_migrated = false
@@ -338,6 +393,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
         probe_sequence: probe_sequence
       ).map do |action|
         wake_id_for(
+          plan_identity: plan_identity,
           monitor_id: monitor_id,
           probe_sequence: probe_sequence,
           fingerprint: fingerprint,
@@ -381,6 +437,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
       "contract" => "goal-state-change-decision",
       "version" => 1,
       "status" => "ok",
+      "plan_identity" => plan_identity,
       "monitor_id" => monitor_id,
       "action" => "suppress-acknowledgement-retry",
       "fingerprint" => previous.fetch("fingerprint"),
@@ -411,6 +468,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
       "contract" => "goal-state-change-decision",
       "version" => 1,
       "status" => "ok",
+      "plan_identity" => plan_identity,
       "monitor_id" => monitor_id,
       "action" => "suppress-stale-probe",
       "fingerprint" => previous.fetch("fingerprint"),
@@ -436,6 +494,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
       "contract" => "goal-state-change-decision",
       "version" => 1,
       "status" => "ok",
+      "plan_identity" => plan_identity,
       "monitor_id" => monitor_id,
       "action" => monitor_status == "stopped" ? "already-stopped" : "manual-resume-required",
       "fingerprint" => previous.fetch("fingerprint"),
@@ -513,6 +572,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     "contract" => "goal-state-change-decision",
     "version" => 1,
     "status" => "ok",
+    "plan_identity" => plan_identity,
     "monitor_id" => monitor_id,
     "action" => if task_action
                   task_action
@@ -548,6 +608,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     decision["handoff"] = {
       "contract" => "goal-state-change-budget-handoff",
       "version" => 1,
+      "plan_identity" => plan_identity,
       "monitor_id" => monitor_id,
       "reason" => budget_reason,
       "fingerprint" => fingerprint,
@@ -562,6 +623,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     decision["handoff"] = {
       "contract" => "goal-state-change-monitor-handoff",
       "version" => 1,
+      "plan_identity" => plan_identity,
       "monitor_id" => monitor_id,
       "reason" => "task-#{task_status}",
       "fingerprint" => fingerprint,
@@ -574,6 +636,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     decision["handoff"] = {
       "contract" => "goal-state-change-monitor-handoff",
       "version" => 1,
+      "plan_identity" => plan_identity,
       "monitor_id" => monitor_id,
       "reason" => "blocked-user-input",
       "fingerprint" => fingerprint,
@@ -593,6 +656,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     decision["handoff"] = {
       "contract" => "goal-state-change-monitor-handoff",
       "version" => 1,
+      "plan_identity" => plan_identity,
       "monitor_id" => monitor_id,
       "reason" => unsupported_reason,
       "fingerprint" => fingerprint,
@@ -614,6 +678,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
   end
   if wake_parent
     wake_id = wake_id_for(
+      plan_identity: plan_identity,
       monitor_id: monitor_id,
       probe_sequence: probe_sequence,
       fingerprint: fingerprint,
