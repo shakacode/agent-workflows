@@ -1363,6 +1363,68 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
     end
   end
 
+  def test_complete_publication_reauthenticates_closed_unmerged_verification_artifact
+    preflight = verification_artifact_publication_preflight
+    target = preflight.fetch("targets").first
+    artifact_head = preflight.dig("snapshot", "targets", 0, "supporting_artifact", "head_sha")
+    artifact_payload = publication_artifact_payload(head_sha: artifact_head)
+    authenticated_api = verification_artifact_api(preflight, artifact_payload:)
+
+    with_stubbed_gh_api(authenticated_api) do
+      with_stubbed_coordination_status(
+        lambda do |backend:, batch_id:|
+          preflight.dig("source_input", "coordination_status") if
+            backend == REAL_BACKEND && batch_id == "ac-296-verification-20260905"
+        end
+      ) do
+        CompletedBatchAuditReceipt.validate_publication_preflight!(
+          preflight,
+          expected_batch_id: "ac-296-verification-20260905",
+          targets: [target],
+          coordination_backend: REAL_BACKEND,
+          **trusted_applicability(preflight)
+        )
+      end
+    end
+
+    artifact_payload.fetch("head")["sha"] = "b" * 40
+    with_stubbed_gh_api(authenticated_api) do
+      with_stubbed_coordination_status(
+        ->(**_keywords) { preflight.dig("source_input", "coordination_status") }
+      ) do
+        assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError) do
+          CompletedBatchAuditReceipt.validate_publication_preflight!(
+            preflight,
+            expected_batch_id: "ac-296-verification-20260905",
+            targets: [target],
+            coordination_backend: REAL_BACKEND,
+            **trusted_applicability(preflight)
+          )
+        end
+      end
+    end
+  end
+
+  def test_resealed_verification_artifact_snapshot_tampering_cannot_bypass_replay
+    preflight = verification_artifact_publication_preflight
+    preflight.dig("snapshot", "targets", 0, "supporting_artifact")["role"] = "implementation_result"
+    preflight["snapshot_digest"] = CompletedBatchPublicationPreflight.digest(preflight.fetch("snapshot"))
+    preflight["receipt_digest"] = CompletedBatchPublicationPreflight.digest(
+      preflight.reject { |key, _value| key == "receipt_digest" }
+    )
+
+    refute CompletedBatchPublicationPreflight.valid_receipt?(preflight)
+    assert_raises(CompletedBatchAuditReceipt::PublicationPreflightError) do
+      CompletedBatchAuditReceipt.validate_publication_preflight!(
+        preflight,
+        expected_batch_id: "ac-296-verification-20260905",
+        targets: preflight.fetch("targets"),
+        coordination_backend: REAL_BACKEND,
+        **trusted_applicability(preflight)
+      )
+    end
+  end
+
   def test_complete_publication_rejects_forged_no_backend_receipt_in_trusted_real_backend_context
     preflight = publication_preflight
     target = {
@@ -4032,6 +4094,166 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       "verified_at" => "2026-08-25T12:00:00Z",
       "rationale" => "trusted controller verified policy and topology"
     }
+  end
+
+  def verification_artifact_publication_preflight
+    primary_target = {
+      "host" => "github.com",
+      "repo" => "shakacode/agent-coordination",
+      "type" => "issue",
+      "number" => 296
+    }
+    issue_url = "https://github.com/shakacode/agent-coordination/issues/296"
+    artifact_url = "https://github.com/shakacode/agent-coordination/pull/303"
+    evidence_url = "#{issue_url}#issuecomment-5548937494"
+    artifact_head = "fe40abb9ec6d45aa25fccad2982bbec57ab5fb22"
+    coordination_status = {
+      "scope" => { "kind" => "batch", "batch_id" => "ac-296-verification-20260905" },
+      "batches" => [{
+        "batch_id" => "ac-296-verification-20260905",
+        "repo" => "shakacode/agent-coordination",
+        "status" => "completed",
+        "updated_at" => "2026-09-05T03:07:47Z",
+        "completed_at" => "2026-09-05T03:07:47Z",
+        "lanes" => [{
+          "name" => "verify296",
+          "targets" => ["296"],
+          "status" => "done",
+          "terminal" => "done",
+          "closed_at" => "2026-09-05T03:07:47Z",
+          "pr_state" => "closed",
+          "pr_url" => artifact_url,
+          "evidence_url" => "#{issue_url}#issuecomment-5548937493"
+        }]
+      }]
+    }
+    input = {
+      "contract" => "completed-batch-publication-preflight-input",
+      "version" => 1,
+      "batch_id" => "ac-296-verification-20260905",
+      "coordination_applicability" => "coordination_required",
+      "expected_targets" => [primary_target],
+      "coordination_status" => coordination_status,
+      "target_snapshots" => [{
+        "target" => primary_target,
+        "state" => "closed",
+        "head_sha" => "not_applicable",
+        "source" => issue_url,
+        "no_pr_evidence" => {
+          "url" => issue_url,
+          "rationale" => "verification-only issue; no product implementation PR was merged",
+          "target" => primary_target
+        },
+        "supporting_artifact" => { "url" => evidence_url }
+      }],
+      "qa_evidence" => [{
+        "target" => primary_target,
+        "user_visible_ui_change" => "no",
+        "evidence" => <<~MARKER
+          <!-- qa-evidence v1
+          required: no
+          status: not_applicable
+          head_sha: not_applicable
+          tested_at: verification-only issue #296 completed without product-code delivery
+          scope: temporary PR #303 closed unmerged after exact-head verification
+          automated_checks: hosted checks passed at #{artifact_head}
+          manual_checks: verification evidence recorded on the primary issue
+          findings: none
+          release_blocking: not_applicable
+          process_gap_disposition: checklist+replay
+          -->
+        MARKER
+      }]
+    }
+    comment = publication_artifact_comment(evidence_url:, artifact_head:)
+    proof = applicability_proof(input)
+    CompletedBatchPublicationPreflight.assess(
+      input,
+      coordination_backend: REAL_BACKEND,
+      trusted_applicability: proof,
+      trusted_applicability_digest: CompletedBatchPublicationPreflight.digest(proof),
+      waiver_verifier: ->(**_keywords) { comment },
+      target_verifier: lambda do |target:|
+        {
+          "target" => target,
+          "state" => "closed",
+          "head_sha" => nil,
+          "completed_at" => "2026-09-05T03:05:00Z",
+          "verification_source" => "authenticated gh api"
+        }
+      end,
+      artifact_verifier: lambda do |target:|
+        {
+          "target" => target,
+          "state" => "closed_unmerged",
+          "head_sha" => artifact_head,
+          "closed_at" => "2026-09-05T03:07:21Z",
+          "verification_source" => "authenticated gh api"
+        }
+      end,
+      coordination_verifier: lambda do |backend:, batch_id:|
+        coordination_status if backend == REAL_BACKEND && batch_id == "ac-296-verification-20260905"
+      end
+    )
+  end
+
+  def publication_artifact_comment(evidence_url:, artifact_head:)
+    {
+      "id" => Integer(evidence_url[/#issuecomment-(\d+)\z/, 1], 10),
+      "html_url" => evidence_url,
+      "issue_url" => "https://api.github.com/repos/shakacode/agent-coordination/issues/296",
+      "body" => <<~BODY,
+        <!-- completed-batch-supporting-artifact v1
+        primary_target: https://github.com/shakacode/agent-coordination/issues/296
+        artifact_pr: https://github.com/shakacode/agent-coordination/pull/303
+        head_sha: #{artifact_head}
+        role: verification_only
+        -->
+      BODY
+      "user" => { "login" => "justin808", "type" => "User" },
+      "author_association" => "MEMBER",
+      "created_at" => "2026-09-05T04:00:00Z",
+      "updated_at" => "2026-09-05T04:00:00Z"
+    }
+  end
+
+  def publication_artifact_payload(head_sha:)
+    {
+      "number" => 303,
+      "html_url" => "https://github.com/shakacode/agent-coordination/pull/303",
+      "state" => "closed",
+      "merged" => false,
+      "merged_at" => nil,
+      "closed_at" => "2026-09-05T03:07:21Z",
+      "head" => { "sha" => head_sha }
+    }
+  end
+
+  def verification_artifact_api(preflight, artifact_payload:)
+    artifact = preflight.dig("snapshot", "targets", 0, "supporting_artifact")
+    comment = publication_artifact_comment(
+      evidence_url: artifact.fetch("evidence_url"),
+      artifact_head: artifact.fetch("head_sha")
+    )
+    lambda do |_host, endpoint, **_options|
+      case endpoint
+      when "repos/shakacode/agent-coordination/issues/296"
+        {
+          "number" => 296,
+          "html_url" => "https://github.com/shakacode/agent-coordination/issues/296",
+          "state" => "closed",
+          "closed_at" => "2026-09-05T03:05:00Z"
+        }
+      when "repos/shakacode/agent-coordination/issues/comments/5548937494"
+        comment
+      when "repos/shakacode/agent-coordination/collaborators/justin808/permission"
+        { "permission" => "write", "user" => { "login" => "justin808", "type" => "User" } }
+      when "repos/shakacode/agent-coordination/pulls/303"
+        artifact_payload
+      else
+        raise "unexpected endpoint: #{endpoint}"
+      end
+    end
   end
 
   def projected_publication_preflight

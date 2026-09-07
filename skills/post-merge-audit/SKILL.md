@@ -203,6 +203,17 @@ deep audit because modes imply different scope and base selection.
    done-unmerged lanes before reducing scope to merged PRs. Keep advisory rows
    marked `UNKNOWN` as needed, and do not infer confirmed completeness from
    merged PRs.
+   A closed verification-only issue may remain the primary target when its
+   terminal lane's `pr_url` names a temporary PR that was closed without merge.
+   This exception requires the issue target snapshot's additive
+   `supporting_artifact: {"url":"<exact same-issue comment URL>"}` evidence.
+   The comment must come from a current write-authorized human and contain
+   exactly one `completed-batch-supporting-artifact v1` marker with exact
+   `primary_target`, `artifact_pr`, `head_sha`, and `role: verification_only`
+   fields. The publication helper must authenticate both the marker and the
+   same-repository PR as closed, unmerged, and still at that exact head during
+   preflight and every receipt replay. Do not infer this role from prose or
+   silently discard a mismatched `pr_url`.
    When the batch/run id itself is unknown, scope that advisory scan to issues
    and open PRs active within the audit time window; use each claim's `batch:`
    field to surface candidate batch ids, not to filter as confirmed scope until

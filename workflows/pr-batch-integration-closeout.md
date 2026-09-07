@@ -2164,6 +2164,8 @@ terminal coordination contract it leaves completed-batch publication blocked as
 
 For `coordination_not_applicable`, `coordination_status` must be a typed single-controller proof: a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks.
 
+Closed-unmerged verification PRs follow the authenticated [supporting-artifact contract](post-merge-audit.md#coordination-rules); the issue stays primary and bare/prose-only `pr_url` blocks.
+
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 
 Existing verified receipt only; missing means no line and an Unblock blocker:
