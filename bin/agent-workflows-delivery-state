@@ -35,7 +35,8 @@ module AgentWorkflowsDeliveryState
     skills_root = File.realpath(File.expand_path(skills, root))
     plugin_root = File.realpath(root)
     return nil unless manifest.fetch("name") == "scw"
-    return nil if expected_version && manifest["version"] != expected_version
+    # Claude records the tracked marketplace commit as the receipt version when the manifest omits `version`.
+    return nil if expected_version && (host == "codex" || manifest.key?("version")) && manifest["version"] != expected_version
     if expected_source && normalized_plugin_source(manifest["repository"]) != normalized_plugin_source(expected_source)
       return nil
     end
