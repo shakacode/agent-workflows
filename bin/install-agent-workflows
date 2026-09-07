@@ -4196,6 +4196,9 @@ else
   fi
   if [[ "$delivery_mode" = "flat" ]]; then
     mkdir -p "$target/skills"
+    # Mirror copy_children_preserving_unrelated: an inherited GLOBIGNORE must
+    # not hide skills from this enumeration.
+    unset GLOBIGNORE
     for skill in "$repo_root"/skills/*; do
       [[ -d "$skill" ]] || continue
       skill_name="$(basename "$skill")"
