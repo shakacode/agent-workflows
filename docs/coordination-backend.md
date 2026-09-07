@@ -189,6 +189,14 @@ handoff instead of inventing a registration surface. A degraded registration
 write is `UNKNOWN`; preserve the manifest locally and report the exact retry or
 reconciliation needed.
 
+If a trusted-base or workflow-config refresh activates the private backend
+after a batch began under `n/a`, keep the original no-backend provenance
+explicit. Either record an authenticated transition for the same batch and lane
+identities, or stop with the exact repair action `coordination backend
+activation requires authenticated reconciliation of the existing non-backend
+terminal handoff`; do not fabricate a private-backend terminal snapshot for the
+original `n/a` run.
+
 ## Operational Signal Events
 
 An active private backend may expose a typed event interface. The portable
