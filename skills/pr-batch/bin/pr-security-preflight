@@ -440,6 +440,7 @@ def trusted_git_probe_env
     "GIT_CONFIG_GLOBAL" => File::NULL,
     "GIT_CONFIG_NOSYSTEM" => "1",
     "GIT_CONFIG_SYSTEM" => File::NULL,
+    "GIT_NO_LAZY_FETCH" => "1",
     "GIT_NO_REPLACE_OBJECTS" => "1",
     "GIT_OPTIONAL_LOCKS" => "0",
     "GIT_SSH_COMMAND" =>
@@ -1663,6 +1664,19 @@ def graph_pr_merge_actor_login(target)
   logins.first if logins.map { |login| normalized_login(login) }.uniq.size == 1
 end
 
+def graph_pr_timeline_actor_logins(target)
+  Array(target.dig("timelineItems", "nodes")).filter_map do |item|
+    next unless item.is_a?(Hash)
+
+    case item["__typename"]
+    when *TIMELINE_AUTHOR_IDENTITY_TYPENAMES
+      item.dig("author", "login")
+    when *TIMELINE_ACTOR_IDENTITY_TYPENAMES
+      item.dig("actor", "login")
+    end
+  end
+end
+
 def exact_pr_provenance(result, repo:, policy_ref:, trust_config:, team_cache:)
   target = result.fetch(:target)
   number = result.fetch(:number)
@@ -1715,6 +1729,12 @@ def exact_pr_provenance(result, repo:, policy_ref:, trust_config:, team_cache:)
   return [nil, "GraphQL and REST PR merge actors do not match"] unless graph_merge_actor.casecmp?(rest_merge_actor)
   unless trusted_actor?(repo, rest_merge_actor, trust_config, team_cache)
     return [nil, "PR merge actor is not in trusted actor allowlist"]
+  end
+
+  graph_pr_timeline_actor_logins(target).each do |login|
+    next if trusted_actor?(repo, login, trust_config, team_cache)
+
+    return [nil, "timeline actor #{login} is not in trusted actor allowlist"]
   end
 
   [{ head_sha:, merge_sha: }, nil]

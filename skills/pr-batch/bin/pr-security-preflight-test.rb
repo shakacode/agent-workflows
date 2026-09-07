@@ -1134,6 +1134,11 @@ class PrSecurityPreflightTest < Minitest::Test
     refute env.key?("GIT_NO_LAZY_FETCH")
   end
 
+  def test_trusted_git_probe_env_disables_lazy_fetch_without_changing_generic_probe_env
+    assert_equal "1", trusted_git_probe_env.fetch("GIT_NO_LAZY_FETCH")
+    refute PrBatchGitProbeEnv.probe_env.key?("GIT_NO_LAZY_FETCH")
+  end
+
   def test_git_probe_env_preserves_git_config_parameters_safe_directory_entries
     parameters = [
       "'safe.directory'='*'",
@@ -2147,6 +2152,51 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rejects_untrusted_force_push_only_timeline_actor
+    overrides = {
+      "PREFLIGHT_TEST_TIMELINE_TOTAL" => "3",
+      "PREFLIGHT_TEST_TIMELINE_NODES" =>
+        '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,' \
+        '"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1",' \
+        '"login":"justin808","__typename":"User"}}]}}},' \
+        '{"id":"force-event-1","__typename":"HeadRefForcePushedEvent",' \
+        '"actor":{"id":"actor-9","login":"outside-user","__typename":"User"}},' \
+        '{"id":"merged-event-1","__typename":"MergedEvent",' \
+        '"actor":{"id":"actor-1","login":"justin808","__typename":"User"}}]'
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "timeline actor outside-user is not in trusted actor allowlist"
+      assert_includes out, "GitHub API coverage findings: none"
+    end
+  end
+
+  def test_trusted_base_accepts_trusted_force_push_only_timeline_actor
+    overrides = {
+      "PREFLIGHT_TEST_TIMELINE_TOTAL" => "3",
+      "PREFLIGHT_TEST_TIMELINE_NODES" =>
+        '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,' \
+        '"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1",' \
+        '"login":"justin808","__typename":"User"}}]}}},' \
+        '{"id":"force-event-1","__typename":"HeadRefForcePushedEvent",' \
+        '"actor":{"id":"actor-9","login":"trusted-collaborator","__typename":"User"}},' \
+        '{"id":"merged-event-1","__typename":"MergedEvent",' \
+        '"actor":{"id":"actor-1","login":"justin808","__typename":"User"}}]'
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+      write_trust_config(trust_config_path, users: %w[justin808 trusted-collaborator])
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
   def test_trusted_base_rejects_non_ancestor_merge_result
     unrelated_sha = "f" * 40
     with_trusted_base_preflight(
@@ -3128,6 +3178,56 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_does_not_lazy_fetch_missing_promisor_object
+    Dir.mktmpdir("trusted-base-promisor") do |repo_root|
+      tracked_path = File.join(repo_root, "tracked.txt")
+      endpoint_marker = File.join(repo_root, "lazy-fetch-endpoint-ran")
+      ssh_helper = File.join(repo_root, "trusted-ssh-probe")
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      File.write(tracked_path, "trusted\n")
+      git! "-C", repo_root, "add", "tracked.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "trusted"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+      git_dir = git_output!("-C", repo_root, "rev-parse", "--absolute-git-dir")
+      File.write(ssh_helper, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> #{Shellwords.escape(endpoint_marker)}\nexit 1\n")
+      FileUtils.chmod(0o755, ssh_helper)
+      git! "-C", repo_root, "config", "extensions.partialClone", "origin"
+      git! "-C", repo_root, "config", "remote.origin.promisor", "true"
+      git! "-C", repo_root, "config", "remote.origin.partialclonefilter", "blob:none"
+      git! "-C", repo_root, "config", "remote.origin.url", "ssh://example.invalid/repo.git"
+      assert_equal "origin", git_output!("-C", repo_root, "config", "--get", "extensions.partialClone")
+      assert_equal "true", git_output!("-C", repo_root, "config", "--get", "remote.origin.promisor")
+
+      commit_object = File.join(git_dir, "objects", base_sha[0, 2], base_sha[2..])
+      assert File.file?(commit_object), "expected a loose commit object in the real-Git fixture"
+      File.delete(commit_object)
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      previous_ssh_executable = TrustedGitState.ssh_executable
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      TrustedGitState.ssh_executable = ssh_helper
+
+      matches, error = TrustedBaseHighRiskOperations.new.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main"
+      )
+      refute matches
+      assert_includes error, "trusted checkout HEAD could not be resolved"
+      refute File.exist?(endpoint_marker), "missing promisor object contacted its endpoint or helper"
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+      TrustedGitState.ssh_executable = previous_ssh_executable if defined?(previous_ssh_executable)
+    end
+  end
+
   def test_checkout_binding_rejects_hidden_index_flags_and_local_diff_overrides
     Dir.mktmpdir("trusted-base-checkout-flags") do |repo_root|
       tracked_path = File.join(repo_root, "tracked.txt")
@@ -3324,11 +3424,150 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_recursively_verifies_nested_gitlinks
+    with_clean_gitlink_checkout do |repo_root, submodule_root, _base_sha, _submodule_sha, operations, marker|
+      Dir.mktmpdir("trusted-base-nested-gitlink-source") do |nested_source|
+        git! "-C", nested_source, "init", "--quiet", "--initial-branch=main"
+        File.write(File.join(nested_source, "nested.txt"), "nested trusted\n")
+        git! "-C", nested_source, "add", "nested.txt"
+        git! "-C", nested_source, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+             "commit", "--quiet", "-m", "trusted nested submodule"
+        git! "-c", "protocol.file.allow=always", "-c", "core.fsmonitor=false",
+             "-c", "filter.local-tool.clean=cat", "-C", submodule_root,
+             "submodule", "add", "--quiet", nested_source, "nested/dependency"
+        git! "-c", "core.fsmonitor=false", "-c", "filter.local-tool.clean=cat",
+             "-C", submodule_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+             "commit", "--quiet", "-am", "record nested submodule"
+      end
+      git! "-C", repo_root, "add", "vendor/dependency"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "record updated submodule"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+      nested_root = File.join(submodule_root, "nested", "dependency")
+      FileUtils.rm_f(marker)
+
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      assert matches, error
+      refute File.exist?(marker), "checkout probe executed submodule-controlled code"
+
+      File.write(File.join(nested_root, "nested.txt"), "nested dirty\n")
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has tracked working-tree changes", error
+      refute File.exist?(marker), "checkout probe executed submodule-controlled code"
+    end
+  end
+
+  def test_gitlink_recursion_rejects_depth_exhaustion_and_cycle
+    with_clean_gitlink_checkout do |repo_root, submodule_root, _base_sha, submodule_sha, operations, _marker|
+      entry = { mode: "160000", oid: submodule_sha, stage: "0", path: "vendor/dependency" }
+
+      matches, error = operations.gitlink_matches_index?(
+        repo_root,
+        entry,
+        gitlink_ancestors: Set.new,
+        gitlink_depth: TrustedBaseHighRiskOperations::MAX_GITLINK_DEPTH
+      )
+      refute matches
+      assert_equal "trusted checkout gitlink nesting exceeds verification limit", error
+
+      matches, error = operations.gitlink_matches_index?(
+        repo_root,
+        entry,
+        gitlink_ancestors: Set[File.realpath(submodule_root)],
+        gitlink_depth: 0
+      )
+      refute matches
+      assert_equal "trusted checkout gitlink nesting is cyclic", error
+    end
+  end
+
+  def test_checkout_binding_rejects_malformed_nested_index_and_gitlink_probe_failure
+    with_clean_gitlink_checkout do |repo_root, submodule_root, base_sha, _submodule_sha, operations, _marker|
+      canonical_submodule_root = File.realpath(submodule_root)
+      matcher = lambda do |args|
+        args.include?(canonical_submodule_root) && args.last(4) == ["ls-files", "-z", "--stage", "--"]
+      end
+      with_trusted_git_probe_fault(
+        matcher,
+        ["160000 not-an-object-id 0\tnested\0", "", TestCommandStatus.new(0)]
+      ) do
+        matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+        refute matches
+        assert_equal "trusted checkout index probe returned malformed output", error
+      end
+    end
+
+    with_clean_gitlink_checkout do |repo_root, submodule_root, base_sha, _submodule_sha, operations, _marker|
+      canonical_submodule_root = File.realpath(submodule_root)
+      matcher = lambda do |args|
+        args.include?(canonical_submodule_root) && args.last(2) == ["rev-parse", "--show-toplevel"]
+      end
+      with_trusted_git_probe_fault(
+        matcher,
+        ["", "fatal: simulated gitlink probe failure", TestCommandStatus.new(128)]
+      ) do
+        matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+        refute matches
+        assert_includes error, "trusted checkout gitlink state could not be verified"
+        assert_includes error, "simulated gitlink probe failure"
+      end
+    end
+  end
+
   def test_git_object_ids_are_exactly_sha1_or_sha256_length
     assert_match GIT_OBJECT_ID_PATTERN, "a" * 40
     assert_match GIT_OBJECT_ID_PATTERN, "b" * 64
     refute_match GIT_OBJECT_ID_PATTERN, "c" * 41
     refute_match GIT_OBJECT_ID_PATTERN, "d" * 63
+  end
+
+  def test_checkout_binding_accepts_real_sha256_gitlink
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+
+    Dir.mktmpdir("trusted-base-sha256-gitlink") do |repo_root|
+      Dir.mktmpdir("trusted-base-sha256-gitlink-source") do |source_root|
+        supported = system(
+          clean_git_env,
+          REAL_GIT,
+          "-C", source_root, "init", "--quiet", "--initial-branch=main", "--object-format=sha256",
+          out: File::NULL,
+          err: File::NULL
+        )
+        skip "local Git does not support SHA-256 repositories" unless supported
+
+        File.write(File.join(source_root, "tracked.txt"), "trusted sha256\n")
+        git! "-C", source_root, "add", "tracked.txt"
+        git! "-C", source_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+             "commit", "--quiet", "-m", "trusted SHA-256 submodule"
+        submodule_sha = git_output!("-C", source_root, "rev-parse", "HEAD")
+        assert_equal 64, submodule_sha.length
+
+        git! "-C", repo_root, "init", "--quiet", "--initial-branch=main", "--object-format=sha256"
+        git! "-c", "protocol.file.allow=always", "-C", repo_root,
+             "submodule", "add", "--quiet", source_root, "vendor/dependency"
+        git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+             "commit", "--quiet", "-m", "trusted SHA-256 superproject"
+        base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+        assert_equal 64, base_sha.length
+
+        TrustedGitState.executable = REAL_GIT
+        TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+          REAL_GIT,
+          unsetenv_others: true
+        )
+        matches, error = TrustedBaseHighRiskOperations.new.checkout_matches_fetched_base?(
+          repo_root,
+          base_sha,
+          "refs/heads/main"
+        )
+        assert matches, error
+      end
+    end
+  ensure
+    TrustedGitState.executable = previous_executable
+    TrustedGitState.local_env_vars = previous_local_env_vars
   end
 
   def test_authenticated_remote_default_ref_probe_requires_exact_symref_receipt
