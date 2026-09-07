@@ -24,6 +24,18 @@ YAML keys, and a selection outside the allowlist fail closed. Duplicate root
 Repositories that omit this optional mapping retain the portable free-form
 backend seam.
 
+The packaged PR-batch private adapter currently supports only the exact
+`agent-coord private backend` identifier when a closed contract allowlists that
+same value. If that exact identifier lacks the contract, PR-batch records
+`UNKNOWN (missing coordination backend contract)` and stops the affected lane
+before invoking the backend. A different private identifier remains valid repository policy, but
+PR-batch records `UNKNOWN (unsupported private backend adapter)` and stops only
+that lane before invoking any backend until a bounded adapter protocol is added.
+This is an upgrade compatibility boundary: before installing this version in a
+consumer that selects another private identifier, add its bounded adapter
+protocol or keep the prior installed workflow version. Do not assume a custom
+backend continues coordinating merely because the seam still accepts its name.
+
 This source repository uses the exact `agent-coord private backend` identifier,
 which is the reviewed identifier used by its private-backend contracts. The
 identifier is portable policy vocabulary; backend URLs, credentials, claims,
@@ -34,15 +46,20 @@ claim-comment fallback, no-backend mode, and `UNKNOWN` coordination state.
 Individual skills should refer here instead of duplicating backend-specific
 operating details unless they need an exact command snippet.
 
+PR-batch consumes those modes through the stable
+[Coordination And Observability](../workflows/pr-batch-coordination-observability.md)
+adapter. That component owns target-scoped ownership, liveness, capacity,
+monitoring, recovery, and telemetry behavior without turning this backend into
+an authority system.
+
 ## Supported Models
 
 - **Private backend**: use when an organization has a tool such as
   `agent-coord` that can store claims, heartbeats, dependencies, release phase,
   and cancellation state.
 - **Public claim-comment fallback**: use GitHub issue/PR comments with the
-  structured `codex-claim` marker described in
-  [workflows/pr-processing.md](../workflows/pr-processing.md#coordination-state)
-  when no private backend is available.
+  structured `codex-claim` marker below when no private backend is available
+  and repository policy permits the fallback.
 - **No coordination backend**: acceptable for single-agent work; write `n/a` in
   `coordination_backend` and keep batch guidance serial or explicitly low
   concurrency.
@@ -57,7 +74,67 @@ operating details unless they need an exact command snippet.
 - Preserve `UNKNOWN` when coordination facts cannot be verified. A missing or
   degraded backend is not evidence that no one owns a target.
 
+## Public Claim Comment Fallback
+
+Use one advisory public claim when trusted configuration selects this fallback,
+or after the private claim cannot start or definitively fails with a non-timeout
+setup or authentication error and repository policy permits fallback. A timeout
+or private claim refusal never permits fallback. Before posting, inspect recent
+comments for an unexpired marker on the same target. Before switching from
+private mode, reconcile private ownership. If private ownership cannot be
+reconciled, stop the affected lane. Only a marker backed
+by authenticated and authorized ownership evidence is conflicting. A marker
+proven malformed or unauthorized remains advisory; an unavailable or
+incomplete verification remains `UNKNOWN` and blocks the affected action. Report the
+inspected marker's comment URL and classification as handoff evidence.
+
+Among verified markers, only one owned by a different lane or instance is
+conflicting. A marker whose batch, machine, stable, non-`unavailable` thread,
+and branch all match is that lane's renewable marker; refresh the same comment.
+A marker with `thread: unavailable` cannot be self-renewed because its worker
+instance is ambiguous. Any ambiguous identity remains `UNKNOWN` and blocks the
+affected lane.
+
+That evidence requires concrete author-and-marker verification from
+field-selected GitHub API metadata: the API must return a nonempty author login
+that passes the security floor's resolved trust policy under `trusted_users`,
+`trusted_bots`, or `trusted_teams`; the comment must contain exactly one
+well-formed marker on the target's own issue or PR surface; and every identity
+field must be nonempty, `status` must be `in_progress`, and `expires_at` must be
+in the future. A comment body alone never qualifies.
+
+The packaged fallback intentionally trusts no users, actionable bots, or teams.
+A repository that selects public fallback for mutating work must configure each
+claim-authoring human or automation identity under `trusted_users`,
+`trusted_bots`, or `trusted_teams` in its repo-local or user-global trust config.
+Without that entry, verification is `UNKNOWN`: the lane cannot post or renew an
+actionable claim and must not mutate through this mode. Matching marker fields
+never bypass author trust.
+
+```markdown
+<!-- codex-claim v1
+batch: <BATCH_ID>
+machine: <MACHINE_ID>
+thread: <stable-session-or-thread-id>
+branch: <BRANCH_NAME>
+status: in_progress
+expires_at: <ISO8601_UTC>
+-->
+```
+
+Use a stable session or thread identifier that distinguishes the active worker
+instance. If none exists, use `thread: unavailable`; it may advertise ownership
+but cannot prove self-identity for renewal. Use a bounded advisory
+expiry, usually 2-4 hours for an active batch and no later than the known batch
+window. Refresh the same comment when the lane continues beyond that window.
+This comment is a human-visible hint only:
+it cannot override a private refusal, express cancellation, prove terminal
+state, or grant scope or authority. Ad-hoc targets have no issue or PR comment
+surface and therefore cannot use this fallback.
+
 <!-- Keep this rule in sync with `../workflows/pr-processing.md` -> `### Batch Handoff Format`. -->
+
+## Batch Coordination Declaration
 
 Batch Coordination Declaration: every final batch handoff must carry exactly one
 `coordination:` line, and no handoff is complete or clean without it. Use
@@ -195,13 +272,23 @@ An active private backend may expose a typed event interface. The portable
 workflow emits these signals at existing checkpoints, alongside its prose
 packets and handoffs:
 
-- `help_requested` requires `reason`. Choose exactly one `help_requested.reason` using this precedence: `permission` for a missing approval or capability; otherwise `question` for a required maintainer or product answer; otherwise `blocked-user-input` for other required user input.
-- `escalation_requested` requires nonempty `from_route`, `to_route`, and
-  `evidence`.
-- `error` requires `severity` (`P0`, `P1`, `P2`, or `P3`), nonempty `category`,
-  and nonempty `message`.
-- `human_intervention` requires `kind`: `takeover`, `supersede`, `manual-fix`,
-  or `drain`.
+| Checkpoint | Typed event | Required fields |
+| ---------- | ----------- | --------------- |
+| help-needed pause | `help_requested` | `reason` |
+| model escalation request | `escalation_requested` | `from_route`, `to_route`, `evidence` |
+| human intervention | `human_intervention` | `kind` |
+| serious error | `error` | `severity`, `category`, `message` |
+
+Every required event field must contain a nonempty usable value. When one is
+unavailable, do not emit an invalid event; record
+`UNKNOWN (missing required event field: <field>)` and preserve the prose
+handoff.
+
+Choose exactly one `help_requested.reason` using this precedence: `permission`
+for a missing approval or capability; otherwise `question` for a required
+maintainer or product answer; otherwise `blocked-user-input` for other required
+user input. `severity` is `P0`, `P1`, `P2`, or `P3`; intervention `kind` is
+`takeover`, `supersede`, `manual-fix`, or `drain`.
 
 Include batch, lane, agent, repository, target, branch, and status context when
 known. Typed payload fields remain data rather than path components. Event
@@ -230,10 +317,19 @@ following process contract. Executable: `agent-coord`. Arguments, in order and
 as separate values: `batch-audit`, `--batch-id`, `<opaque batch id>`, `--json`.
 Pass the opaque batch ID as exactly one argument value through a
 process/argument-vector API. Shell interpolation, `eval`, `sh -c`, and
-equivalent shell-evaluation paths are forbidden. When that compatible
-capability is advertised, an incomplete result, command failure, or `UNKNOWN`
-readback blocks telemetry closeout. If the active backend does not
-advertise that compatible capability or its advertisement is `UNKNOWN`, record
+equivalent shell-evaluation paths are forbidden. Run that exact child contract
+through the resolved pr-batch `bin/agent-coord-bounded` process-control seam
+with a positive hard deadline; the helper must preserve the exact child
+executable and separate argument vector, launch it in its own process group,
+and terminate the whole process group when the deadline expires. A timeout or
+forced termination is a command failure: record best-effort `UNKNOWN`
+telemetry-audit evidence and continue closeout through the remaining steps with
+that blocker; the audit subprocess must never wedge merge closeout. When that
+compatible capability is advertised, an incomplete result, command failure,
+or `UNKNOWN` readback blocks telemetry closeout. This blocks only a clean
+telemetry-audit disposition until the coordinator repairs or explicitly carries
+the gap; it does not stop the surrounding merge-closeout steps. If the active
+backend does not advertise that compatible capability or its advertisement is `UNKNOWN`, record
 `telemetry audit: unavailable` in the durable handoff and continue; backend
 `n/a` skips the check.
 
