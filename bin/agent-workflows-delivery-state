@@ -637,12 +637,14 @@ module AgentWorkflowsDeliveryState
   def installed_skill_paths(skills_path)
     return {} unless File.directory?(skills_path) && !File.symlink?(skills_path)
 
+    # An entry that cannot be inspected (removed mid-enumeration, or EACCES from a
+    # readable but non-searchable directory) fails the whole inventory closed.
+    # Skipping it could report `absent` and let a migration finish with the flat
+    # skill still in place.
     Dir.children(skills_path).each_with_object({}) do |name, paths|
       path = File.join(skills_path, name)
       stat = File.lstat(path)
       paths[path] = [stat.dev, stat.ino]
-    rescue SystemCallError
-      next
     end
   rescue SystemCallError
     nil

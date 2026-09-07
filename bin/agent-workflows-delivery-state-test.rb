@@ -1887,6 +1887,55 @@ class AgentWorkflowsDeliveryStateTest < Minitest::Test
     end
   end
 
+  def test_uninspectable_skill_entry_is_unknown_not_absent
+    Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
+      source = File.join(tmp, "source")
+      target = File.join(tmp, "codex")
+      injection = File.join(tmp, "fail-skill-entry-lstat.rb")
+      FileUtils.mkdir_p(source)
+      revision = create_source(source)
+      write_codex_native_state(target)
+      skills_path = File.join(target, "skills")
+      FileUtils.mkdir_p(skills_path)
+      FileUtils.cp_r(File.join(source, "skills/alpha"), File.join(skills_path, "alpha"))
+      FileUtils.cp_r(File.join(source, "skills/beta"), File.join(skills_path, "beta"))
+      # A readable but non-searchable skills directory still lists its entries
+      # while every per-entry lstat fails with EACCES. Inject that deterministically
+      # so the fixture does not depend on the test user's privileges.
+      File.write(injection, <<~RUBY)
+        class << File
+          alias_method :lstat_without_uninspectable_entry_fixture, :lstat
+
+          def lstat(path)
+            if File.dirname(File.expand_path(path)) == ENV.fetch("QA_UNINSPECTABLE_SKILLS_ROOT")
+              raise Errno::EACCES, path
+            end
+
+            lstat_without_uninspectable_entry_fixture(path)
+          end
+        end
+      RUBY
+      write_metadata(
+        target,
+        "host" => "codex", "mode" => "copy", "delivery_mode" => "flat",
+        "source" => source, "source_revision" => revision
+      )
+
+      out, _err, status = run_state_with_env(
+        { "RUBYOPT" => "-r#{injection}", "QA_UNINSPECTABLE_SKILLS_ROOT" => skills_path },
+        "migrate", "--host", "codex", "--target", target, "--source", source,
+        "--delivery-mode", "plugin-companion", "--json"
+      )
+
+      refute status.success?, "an uninspectable skill entry must not let migration report success: #{out}"
+      flat = JSON.parse(out).fetch("flat")
+      assert_equal "unknown", flat.fetch("state")
+      assert_equal [skills_path], flat.fetch("blocking")
+      assert_path_exists File.join(skills_path, "alpha/SKILL.md")
+      assert_path_exists File.join(skills_path, "beta/SKILL.md")
+    end
+  end
+
   def test_case_only_alias_is_reported_under_its_installed_spelling
     Dir.mktmpdir("agent-workflows-delivery-state") do |tmp|
       skip "requires a case-insensitive filesystem" unless case_insensitive_filesystem?(tmp)
