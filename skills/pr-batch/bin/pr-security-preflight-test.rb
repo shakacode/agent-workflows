@@ -1941,6 +1941,53 @@ class PrSecurityPreflightTest < Minitest::Test
     ENV.delete("PREFLIGHT_TEST_UNTRUSTED_COMMENT")
   end
 
+  def test_trusted_base_rejects_team_membership_revoked_during_isolated_fetch
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_TEAM_MEMBERSHIP_STATE" => "active" },
+      during_fetch: -> { ENV["PREFLIGHT_TEST_TEAM_MEMBERSHIP_STATE"] = "inactive" }
+    ) do |env, trust_config_path, repo_root, provenance|
+      write_trust_config(trust_config_path, users: [], teams: ["owner/maintainers"])
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "security-sensitive PR snapshot changed during trusted-base verification"
+      refute_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_operator team_membership_api_call_count(provenance.fetch(:log_path)), :>=, 2
+    end
+  end
+
+  def test_trusted_base_rechecks_stable_active_team_membership_after_isolated_fetch
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_TEAM_MEMBERSHIP_STATE" => "active" }
+    ) do |env, trust_config_path, repo_root, provenance|
+      write_trust_config(trust_config_path, users: [], teams: ["owner/maintainers"])
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_includes out, "SECURITY_PREFLIGHT_OK"
+      assert_equal 2, team_membership_api_call_count(provenance.fetch(:log_path))
+    end
+  end
+
+  def test_trusted_base_rejects_team_membership_lookup_failure_after_isolated_fetch
+    with_trusted_base_preflight(
+      fixture_env_overrides: { "PREFLIGHT_TEST_TEAM_MEMBERSHIP_STATE" => "active" },
+      during_fetch: -> { ENV["PREFLIGHT_TEST_TEAM_MEMBERSHIP_FAIL"] = "1" }
+    ) do |env, trust_config_path, repo_root, provenance|
+      write_trust_config(trust_config_path, users: [], teams: ["owner/maintainers"])
+
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "security-sensitive PR snapshot changed during trusted-base verification"
+      refute_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      assert_operator team_membership_api_call_count(provenance.fetch(:log_path)), :>=, 2
+    end
+  end
+
   def test_trusted_base_rejects_trusted_comment_inserted_during_isolated_fetch
     with_trusted_base_preflight(
       during_fetch: -> { ENV["PREFLIGHT_TEST_TRUSTED_COMMENT"] = "1" }
@@ -6780,7 +6827,7 @@ class PrSecurityPreflightTest < Minitest::Test
 
   def with_trusted_base_preflight(policy: trusted_base_policy, fetched_policy: policy, fixture_env_overrides: {},
                                   during_fetch: nil)
-    with_fake_gh("trusted-base-high-risk") do |env, trust_config_path, _log_path, dir|
+    with_fake_gh("trusted-base-high-risk") do |env, trust_config_path, log_path, dir|
       repo_root = File.join(dir, "consumer")
       FileUtils.mkdir_p(repo_root)
       head_sha = "a" * 40
@@ -6804,7 +6851,7 @@ class PrSecurityPreflightTest < Minitest::Test
       @trusted_base_operations ||= {}
       @trusted_base_operations[repo_root] = operations
 
-      provenance = { base_sha:, head_sha:, merge_sha:, operations:, path_git_marker: }
+      provenance = { base_sha:, head_sha:, merge_sha:, operations:, path_git_marker:, log_path: }
       fixture_env = env.merge(
         "GH_HOST" => "github.com",
         "PREFLIGHT_TEST_REPO_URL" => remote_url,
@@ -7037,6 +7084,12 @@ class PrSecurityPreflightTest < Minitest::Test
 
   def timeline_api_call_count(log_path)
     File.readlines(log_path).count { |line| line.include?("repos/owner/repo/issues/123/timeline?per_page=100") }
+  end
+
+  def team_membership_api_call_count(log_path)
+    File.readlines(log_path).count do |line|
+      line.include?("orgs/owner/teams/maintainers/memberships/justin808")
+    end
   end
 
   def canonical_bot_query_call_count(log_path)
@@ -7765,7 +7818,11 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "orgs/owner/teams/maintainers/memberships/justin808" ]; then
-        printf '{"state":"active"}'
+        if [ "${PREFLIGHT_TEST_TEAM_MEMBERSHIP_FAIL:-}" = "1" ]; then
+          printf 'simulated membership lookup failure\n' >&2
+          exit 1
+        fi
+        printf '{"state":"%s"}' "${PREFLIGHT_TEST_TEAM_MEMBERSHIP_STATE:-active}"
         exit 0
       fi
 

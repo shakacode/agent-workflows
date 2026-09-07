@@ -2335,7 +2335,7 @@ class TrustedBaseHighRiskOperations
   end
 end
 
-def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, team_cache:,
+def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:,
                                    operations: TrustedBaseHighRiskOperations.new, post_fetch_rescan: nil)
   return [nil, "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"] unless clean_for_trusted_base_high_risk_acceptance?(result)
 
@@ -2400,8 +2400,9 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
       next [nil, "post-fetch security-sensitive PR rescan is unavailable"]
     end
 
+    refreshed_team_cache = {}
     begin
-      refreshed_result = post_fetch_rescan.call
+      refreshed_result = post_fetch_rescan.call(refreshed_team_cache)
     rescue StandardError => e
       next [nil, "post-fetch security-sensitive PR rescan failed: #{e.message.lines.first&.strip}"]
     end
@@ -2420,7 +2421,7 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
       repo:,
       policy_ref: bootstrap_policy.fetch("ref"),
       trust_config:,
-      team_cache:
+      team_cache: refreshed_team_cache
     )
     next [nil, provenance_error] unless pr_provenance
 
@@ -3743,9 +3744,8 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
         repo:,
         github_host:,
         trust_config:,
-        team_cache:,
         operations: trusted_base_operations,
-        post_fetch_rescan: lambda do
+        post_fetch_rescan: lambda do |post_fetch_team_cache|
           scan_target(
             repo:,
             owner:,
@@ -3756,7 +3756,7 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
             include_reactions: options[:include_reactions],
             permission_cache:,
             trust_config:,
-            team_cache:,
+            team_cache: post_fetch_team_cache,
             canonical_bot_cache:
           )
         end
