@@ -476,7 +476,7 @@ Classify each PR:
 - OK
 - needs maintainer question
 - needs changelog update
-- needs follow-up issue
+- needs follow-up issue (only for an observed failure or verified defect with a fix smaller than the problem; style nits, hypothetical future mistakes, speculative hardening, and unreproduced bot suggestions are OK)
 - needs fix PR
 - needs revert consideration
 
