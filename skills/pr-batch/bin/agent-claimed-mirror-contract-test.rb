@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -73,7 +75,7 @@ class AgentClaimedMirrorContractTest < Minitest::Test
   private
 
   def read(path)
-    File.read(File.join(ROOT, path), encoding: "UTF-8")
+    SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
   end
 
   def assert_rule(text, rule, message = nil)

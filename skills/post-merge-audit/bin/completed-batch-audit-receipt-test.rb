@@ -6,6 +6,7 @@ require "fileutils"
 require "json"
 require "open3"
 require "tmpdir"
+require_relative "../../pr-batch/lib/skill_stage_source"
 
 load File.expand_path("completed-batch-publication-preflight", __dir__)
 load File.expand_path("completed-batch-audit-receipt", __dir__)
@@ -271,7 +272,7 @@ class CompletedBatchAuditReceiptTest < Minitest::Test
       workflows/post-merge-audit.md
       workflows/pr-batch-integration-closeout.md
     ].each do |path|
-      text = File.read(File.join(root, path), encoding: "UTF-8").gsub(/\s+/, " ")
+      text = SkillStageSource.read(File.join(root, path), encoding: "UTF-8").gsub(/\s+/, " ")
       assert_includes text,
                       "An old helper-managed `publication_snapshot` missing `coordination_applicability` or " \
                       "`applicability_proof_digest` stays non-ready even after replay refresh.", path
