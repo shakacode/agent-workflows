@@ -1040,6 +1040,25 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_policy_fallback_tracks_indented_block_scalar_header
+    Dir.mktmpdir("batch-plan-indented-block-scalar") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        notes:
+          |-
+            "
+        companion_path_conventions: invalid
+        malformed: [
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
   def test_malformed_policy_fallback_uses_yaml_plain_scalar_scanning_in_flows
     policies = {
       "apostrophe" => "companion_path_conventions: [{ source_glob: lib/it's/*, " \
