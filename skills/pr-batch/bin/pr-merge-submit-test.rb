@@ -2368,6 +2368,9 @@ class PrMergeSubmitTest < Minitest::Test
       "evidence_failures" => []
     }
     if mode == :reused_integration
+      ci_result = collected_ci_at_recorded_base(
+        repo:, head:, base_ref:, recorded_base: "9" * 40, host:, pr_number:
+      )
       autonomous_result["current_integration"] = {
         "contract" => "current-integration-evidence",
         "version" => 1,
@@ -2406,11 +2409,11 @@ class PrMergeSubmitTest < Minitest::Test
       "repo" => repo,
       "pr" => pr_number,
       "base" => { "ref" => base_ref, "sha" => base_sha },
-      "diff_base_sha" => base_sha,
+      "diff_base_sha" => ci_result.fetch("diff_base_sha"),
       "head_sha" => head,
       "authority" => "auto_merge_when_gates_pass",
       "diff_identity" => DiffIdentity.derive(
-        base_ref:, diff_base_sha: base_sha, head_sha: head
+        base_ref:, diff_base_sha: ci_result.fetch("diff_base_sha"), head_sha: head
       ),
       "human_merge_decision" => nil,
       "walkthrough" => nil,
@@ -2482,6 +2485,50 @@ class PrMergeSubmitTest < Minitest::Test
       receipt["evidence_digest"] = MergeAssurance.evidence_digest(receipt.fetch("evidence"))
     end
     File.write(path, JSON.generate(receipt))
+  end
+
+  # Exercise the supported collector, not a receipt fixture that claims CI
+  # observed the current live base. Submission must keep the two bases distinct.
+  def collected_ci_at_recorded_base(repo:, head:, base_ref:, recorded_base:, host:, pr_number:)
+    process_status = Open3.capture3(RbConfig.ruby, "-e", "exit 0").last
+    transport = lambda do |*argv, host:|
+      assert_equal HOST, host
+      payload = case argv.first(2)
+                when ["api", "repos/#{repo}/pulls/#{pr_number}"]
+                  {
+                    "id" => 42, "number" => pr_number,
+                    "head" => { "sha" => head, "ref" => "feature", "repo" => { "id" => 1 } },
+                    "base" => { "ref" => base_ref, "sha" => recorded_base }
+                  }
+                when %w[pr checks]
+                  [{ "name" => "required", "bucket" => "pass" }]
+                when %w[pr view]
+                  { "headRefOid" => head }
+                when %w[api graphql]
+                  { "data" => { "repository" => { "pullRequest" => { "reviews" => {
+                    "nodes" => [], "pageInfo" => { "hasNextPage" => false, "endCursor" => nil }
+                  } } } } }
+                else
+                  case argv.fetch(1)
+                  when %r{actions/runs\?head_sha=}
+                    { "total_count" => 0, "workflow_runs" => [] }
+                  when %r{/check-runs\?}
+                    { "total_count" => 0, "check_runs" => [] }
+                  when %r{/status\?}
+                    { "sha" => head, "state" => "pending", "total_count" => 0, "statuses" => [] }
+                  else
+                    raise "unexpected collector command: #{argv.inspect}"
+                  end
+                end
+      [JSON.generate(payload), "", process_status]
+    end
+    result = PrCiReadiness::Runner.new(read_transport: transport).assess_authenticated(
+      repo:, pr_number:, host:, requested_hosted_runs: [], trusted_repo_root: nil,
+      diff_base_sha: recorded_base
+    )
+    assert_equal "READY", result.fetch("verdict"), result.inspect
+    assert_equal recorded_base, result.dig("base", "sha")
+    result
   end
 
   def policy_aware_receipt

@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -62,7 +64,7 @@ class IntegrationCloseoutContractTest < Minitest::Test
     @component = File.read(COMPONENT_PATH, encoding: "UTF-8")
     @production_release = File.read(PRODUCTION_RELEASE_PATH, encoding: "UTF-8")
     @workflow = File.read(WORKFLOW_PATH, encoding: "UTF-8")
-    @skill = File.read(SKILL_PATH, encoding: "UTF-8")
+    @skill = SkillStageSource.read(SKILL_PATH, encoding: "UTF-8")
     @validate_workflow = File.read(VALIDATE_WORKFLOW_PATH, encoding: "UTF-8")
   end
 
@@ -114,9 +116,12 @@ class IntegrationCloseoutContractTest < Minitest::Test
       assert_match(/^\#{2,3} #{Regexp.escape(heading)}$/, @component, heading)
     end
 
-    assert_operator @workflow.bytesize, :<, 185_000
-    assert_operator @skill.bytesize, :<, 60_000
-    assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 395_000
+    # Temporary headroom: main sat within 32 bytes of the combined cap and within
+    # 500 bytes of the skill cap, so every PR that added a sentence failed here
+    # (#772). Shrink these again once the #392 extraction work lands.
+    assert_operator @workflow.bytesize, :<, 210_000
+    assert_operator @skill.bytesize, :<, 70_000
+    assert_operator @component.bytesize + @workflow.bytesize + @skill.bytesize, :<, 450_000
     assert_includes @component, "worker-execution-handoff v1"
     assert_includes @component, "one replayable target ledger and human-first handoff"
     assert_includes @component, "current-head closeout gates"

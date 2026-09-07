@@ -1588,23 +1588,29 @@ Merge qualification follows the canonical rule in `AGENTS.md` -> Review Workflow
 ### Ask Merge Authority Walkthrough Gate
 
 When `merge_authority` is `ask` and every ordinary gate is clean,
-automatically start the exact-diff PR walkthrough before asking for merge
-approval. Use `$pr-walkthrough` when available; otherwise apply its read-only
-contract inline: inspect the complete diff first, group it into conceptual
-changes, explain the reason, behavior, tradeoffs, risks, and proof for exactly
-one change at a time, then wait for explicit readiness before continuing.
+automatically publish the complete exact-diff PR walkthrough before asking for
+merge approval. Use `$pr-walkthrough` when available; otherwise apply its
+contract inline: inspect the complete diff and build the full coverage map.
+Prepare every conceptual section up front. Publish one PR-level orientation and
+all sections to GitHub in one pass under `$pr-walkthrough`'s mandatory
+inline-thread and no-anchor-stop rules: use one `COMMENT` review, with a separately
+replyable inline thread per concept on an honest changed line. If any concept
+has no honest anchor, explain the limitation and stop; do not claim complete
+threaded coverage. Publish without waiting for repeated chat turns. The owning task consumes
+PR replies asynchronously. Use a live
+interactive walkthrough only when the maintainer explicitly requests one.
 
-Use full interactive mode for large or complex PRs and concise interactive mode
-for smaller cohesive PRs. Treat a PR as large when it exceeds any trusted-base
+Use full mode for large or complex PRs and concise mode for smaller cohesive
+PRs. Treat a PR as large when it exceeds any trusted-base
 `autonomous_merge.thresholds` maximum for changed files, changed lines, or
 commits. Complexity, cross-cutting behavior, security, migrations,
 architecture, or difficult rollback may require full mode below those limits.
 Do not repeat a walkthrough already completed for the same diff identity, and
 honor an explicit request to skip or stop it.
 
-After it completes or is skipped, refresh the diff identity and ordinary
+After publication or an explicit skip, refresh the diff identity and ordinary
 readiness. If the diff identity changed, invalidate the walkthrough and
-readiness evidence, then restart the walkthrough or stop. If an ordinary gate
+readiness evidence, then rebuild and republish the walkthrough or stop. If an ordinary gate
 newly fails, stop. Ask one final merge decision only when the refreshed diff
 identity matches the recorded identity, ordinary readiness remains clean, and
 merge is allowed; a completed walkthrough must have explained that same diff
@@ -2134,6 +2140,8 @@ terminal coordination contract it leaves completed-batch publication blocked as
 `UNKNOWN`.
 
 When `coordination_backend: n/a`, `coordination_status` must instead be a `completed-batch-coordination-not-applicable` v1 object with the exact batch ID and target set, `mode: single_operator`, a known rationale, a durable HTTPS source, and a valid completion timestamp; missing or malformed typed evidence blocks. An issue-only no-PR target uses `head_sha: not_applicable` plus `no_pr_evidence` containing that exact issue URL, exact canonical target, and known rationale; it must not invent a commit SHA, and forged or malformed no-PR evidence blocks.
+
+Closed-unmerged verification PRs follow the authenticated [supporting-artifact contract](post-merge-audit.md#coordination-rules); the issue stays primary and bare/prose-only `pr_url` blocks.
 
 Replay parses the compact reference but never opens its URL; fetch the manifest-bound target and exact comment ID through authenticated `gh api`, then revalidate the target, comment, author, trusted association, unchanged timestamps/body, SHA-256, batch ID, wrapper version, and result.
 

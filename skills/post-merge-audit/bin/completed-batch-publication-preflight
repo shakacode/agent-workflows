@@ -32,6 +32,46 @@ module CompletedBatchPublicationPreflight
   WRITE_PERMISSIONS = %w[write maintain admin].freeze
   QA_WAIVER_MARKER = "qa-maintainer-waiver v1"
   HOSTED_QA_WAIVER_MARKER = "hosted-qa-maintainer-waiver v1"
+  TARGET_PROJECTION_CONTRACT = "github-issue-result-pr-projection"
+  TARGET_PROJECTION_VERSION = 1
+  TARGET_PROJECTION_VERIFICATION_SOURCE = "authenticated github graphql symmetric closing references"
+  TARGET_PROJECTION_MAX_PAGES = 100
+  AUTHENTICATED_PER_TARGET_TERMINAL_RECONCILIATION = "authenticated_per_target_terminal_reconciliation"
+  AUTHENTICATED_TARGET_AFTER_COORDINATION_CLOSEOUT = "authenticated_target_after_coordination_closeout"
+  TARGET_PROJECTION_QUERY = <<~GRAPHQL
+    query(
+      $owner: String!
+      $name: String!
+      $resultNumber: Int!
+      $sourceNumber: Int!
+      $resultCursor: String
+      $sourceCursor: String
+    ) {
+      repository(owner: $owner, name: $name) {
+        result: pullRequest(number: $resultNumber) {
+          number
+          url
+          state
+          mergedAt
+          headRefOid
+          closingIssuesReferences(first: 100, after: $resultCursor) {
+            nodes { number url state closedAt repository { nameWithOwner } }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+        source: issue(number: $sourceNumber) {
+          number
+          url
+          state
+          closedAt
+          closedByPullRequestsReferences(first: 100, after: $sourceCursor, includeClosedPrs: true) {
+            nodes { number url state mergedAt headRefOid repository { nameWithOwner } }
+            pageInfo { hasNextPage endCursor }
+          }
+        }
+      }
+    }
+  GRAPHQL
   TERMINAL_LANE_STATES = %w[done abandoned superseded].freeze
   RECONCILABLE_TERMINAL_LANE_STATES = %w[abandoned].freeze
   PUBLIC_CLAIM_COMMENT_FALLBACK_PATTERN = /\Apublic claim-comment fallback\.?\z/i
@@ -57,7 +97,9 @@ module CompletedBatchPublicationPreflight
     coordination_backend:,
     waiver_verifier: nil,
     target_verifier: nil,
-    coordination_verifier: nil
+    artifact_verifier: nil,
+    coordination_verifier: nil,
+    target_projection_verifier: nil
   )
     blockers = []
     input = {} unless input.is_a?(Hash)
@@ -68,6 +110,7 @@ module CompletedBatchPublicationPreflight
     batch_id = normalized_known_string(input["batch_id"])
     blockers << "publication batch id is invalid" unless batch_id
     expected_targets = validated_target_set(input["expected_targets"], blockers, "expected target")
+    snapshots = indexed_target_snapshots(input["target_snapshots"], expected_targets, blockers)
     no_backend = backend&.downcase == "n/a"
     if no_backend
       no_backend_evidence = resolved_no_backend_evidence(
@@ -90,23 +133,30 @@ module CompletedBatchPublicationPreflight
         blockers << "coordination status drift: #{drift.join(', ')}"
       end
       batch = resolved_batch(input["coordination_status"], batch_id, blockers)
-      lane_entries, resolved_targets = resolved_lanes(batch, expected_targets, blockers)
+      lane_entries, resolved_targets = resolved_lanes(
+        batch,
+        expected_targets,
+        blockers,
+        snapshots:,
+        target_projection_verifier:
+      )
     end
     compare_resolved_scope(expected_targets, resolved_targets, blockers)
-    snapshots = indexed_target_snapshots(input["target_snapshots"], expected_targets, blockers)
     qa_entries = indexed_qa_evidence(input["qa_evidence"], expected_targets, blockers)
 
     validate_batch_terminal(batch, blockers) unless no_backend
-    canonical_targets, authenticated_later_target_keys = canonical_target_snapshots(
+    canonical_targets, target_completion_modes = canonical_target_snapshots(
       expected_targets,
       snapshots,
       lane_entries,
       blockers,
-      target_verifier:
+      target_verifier:,
+      artifact_verifier:,
+      waiver_verifier:
     )
     canonical_lanes = canonical_lane_snapshots(
       lane_entries,
-      authenticated_later_target_keys,
+      target_completion_modes,
       blockers
     )
     canonical_qa = canonical_qa_snapshots(
@@ -114,6 +164,7 @@ module CompletedBatchPublicationPreflight
       snapshots,
       qa_entries,
       blockers,
+      target_completion_modes:,
       waiver_verifier:
     )
     snapshot = {
@@ -203,6 +254,7 @@ module CompletedBatchPublicationPreflight
     return false unless target_blockers.empty?
     return false unless targets == receipt["targets"]
     return false unless targets == receipt.dig("snapshot", "targets").map { |entry| entry.fetch("target") }
+    return false unless supporting_artifact_snapshots_valid?(receipt, targets)
 
     coordination = receipt.dig("snapshot", "coordination")
     if receipt.dig("snapshot", "coordination_backend").to_s.downcase == "n/a"
@@ -225,6 +277,80 @@ module CompletedBatchPublicationPreflight
     else
       receipt["verdict"] == "BLOCKED" && receipt["blockers"].is_a?(Array) && !receipt["blockers"].empty?
     end
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def supporting_artifact_snapshots_valid?(receipt, targets)
+    source_rows = receipt.dig("source_input", "target_snapshots")
+    snapshot_rows = receipt.dig("snapshot", "targets")
+    return false unless source_rows.is_a?(Array) && snapshot_rows.is_a?(Array)
+
+    targets.all? do |target|
+      sources = source_rows.select { |row| row.is_a?(Hash) && same_target_identity?(row["target"], target) }
+      snapshots = snapshot_rows.select { |row| row.is_a?(Hash) && same_target_identity?(row["target"], target) }
+      next false unless snapshots.one?
+      next absent_target_snapshot_valid?(receipt, snapshots.first, target) if sources.empty?
+      next false unless sources.one?
+
+      source_present = sources.first.key?("supporting_artifact")
+      snapshot_present = snapshots.first.key?("supporting_artifact")
+      next false unless source_present == snapshot_present
+      next true unless source_present
+
+      supporting_artifact_snapshot_valid?(
+        snapshots.first.fetch("supporting_artifact"),
+        target,
+        sources.first.fetch("supporting_artifact")
+      )
+    end
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def absent_target_snapshot_valid?(receipt, snapshot, target)
+    expected_keys = %w[target state head_sha completed_at no_pr_evidence source verification_source]
+    receipt["eligible"] == false && receipt["verdict"] == "BLOCKED" &&
+      receipt["blockers"].is_a?(Array) &&
+      receipt["blockers"].include?("#{target_label(target)} target snapshot is absent") &&
+      snapshot.keys.sort == expected_keys.sort &&
+      snapshot.reject { |key, _value| key == "target" }.values.all?(&:nil?)
+  end
+
+  def same_target_identity?(value, target)
+    candidate = validated_target(value)
+    expected = validated_target(target)
+    candidate && expected && target_key(candidate) == target_key(expected)
+  rescue KeyError, NoMethodError, TypeError
+    false
+  end
+
+  def supporting_artifact_snapshot_valid?(artifact, primary_target, source_evidence)
+    expected_keys = %w[
+      artifact_target closed_at evidence_author evidence_author_association evidence_body_sha256
+      evidence_comment_id evidence_created_at evidence_updated_at evidence_url head_sha primary_target
+      role state verification_source
+    ]
+    return false unless artifact.is_a?(Hash) && artifact.keys.sort == expected_keys.sort
+    return false unless artifact.fetch("primary_target") == primary_target
+    return false unless artifact.fetch("role") == "verification_only"
+    return false unless artifact.fetch("state") == "closed_unmerged"
+    return false unless artifact.fetch("verification_source") == "authenticated gh api"
+
+    target = validated_target(artifact.fetch("artifact_target"))
+    return false unless target&.fetch("type", nil) == "pull_request" && same_repository?(primary_target, target)
+    return false unless artifact.fetch("head_sha").to_s.match?(SHA_PATTERN)
+    return false unless valid_timestamp?(artifact.fetch("closed_at"))
+    return false unless valid_timestamp?(artifact.fetch("evidence_created_at"))
+    return false unless valid_timestamp?(artifact.fetch("evidence_updated_at"))
+    return false unless artifact.fetch("evidence_author").to_s.match?(SAFE_LOGIN_PATTERN)
+    return false unless TRUSTED_ASSOCIATIONS.include?(artifact.fetch("evidence_author_association"))
+    return false unless artifact.fetch("evidence_body_sha256").to_s.match?(/\A[0-9a-f]{64}\z/)
+    return false unless Integer(artifact.fetch("evidence_comment_id"), exception: false)&.positive?
+
+    reference = supporting_artifact_reference(source_evidence, primary_target)
+    reference && reference.fetch("url") == artifact.fetch("evidence_url") &&
+      reference.fetch("comment_id") == artifact.fetch("evidence_comment_id")
   rescue KeyError, NoMethodError, TypeError
     false
   end
@@ -278,7 +404,9 @@ module CompletedBatchPublicationPreflight
     coordination_backend:,
     waiver_verifier:,
     target_verifier:,
-    coordination_verifier:
+    coordination_verifier:,
+    artifact_verifier: nil,
+    target_projection_verifier: nil
   )
     return false unless valid_receipt?(receipt)
 
@@ -292,7 +420,9 @@ module CompletedBatchPublicationPreflight
       coordination_backend: trusted_backend,
       waiver_verifier:,
       target_verifier:,
-      coordination_verifier:
+      artifact_verifier:,
+      coordination_verifier:,
+      target_projection_verifier:
     )
     canonicalize(refreshed) == canonicalize(receipt)
   rescue KeyError, NoMethodError, TypeError
@@ -381,7 +511,7 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def resolved_lanes(batch, expected_targets, blockers)
+  def resolved_lanes(batch, expected_targets, blockers, snapshots: {}, target_projection_verifier: nil)
     return [[], []] unless batch
 
     lanes = batch["lanes"]
@@ -393,6 +523,15 @@ module CompletedBatchPublicationPreflight
     seen_names = {}
     seen_targets = {}
     entries = []
+    target_projection_cache = {}
+    cached_projection_verifier = if target_projection_verifier.respond_to?(:call)
+                                   lambda do |source:, target:|
+                                     key = [target_key(source), target_key(target)]
+                                     target_projection_cache.fetch(key) do
+                                       target_projection_cache[key] = target_projection_verifier.call(source:, target:)
+                                     end
+                                   end
+                                 end
     lanes.each do |lane|
       name = normalized_known_string(lane["name"])
       if !name || seen_names[name.downcase]
@@ -400,28 +539,60 @@ module CompletedBatchPublicationPreflight
       else
         seen_names[name.downcase] = true
       end
-      targets = targets_for_lane(lane, batch_repo, expected_targets)
-      if targets.empty?
+      target_blocker_count = blockers.length
+      targets = targets_for_lane(
+        lane,
+        batch_repo,
+        expected_targets,
+        snapshots,
+        blockers:,
+        lane_name: name,
+        target_projection_verifier: cached_projection_verifier
+      )
+      if targets.empty? && blockers.length == target_blocker_count
         blockers << "coordination lane #{name || 'UNKNOWN'} target is absent or ambiguous"
       end
-      targets.each do |target|
+      target_states = targets.map do |resolved|
+        resolved.dig("target", "type") == "pull_request" ? "merged" : "closed"
+      end.uniq
+      per_target_terminal_candidate = targets.length > 1 && target_states.length > 1 &&
+                                      %w[pr_url issue_url target_url].none? { |field| lane.key?(field) } &&
+                                      valid_terminal_lane?(lane) && lane["terminal"] == "done" &&
+                                      target_states.include?(lane["pr_state"]) &&
+                                      !normalized_known_string(lane["evidence_url"]).nil?
+      targets.each do |resolved|
+        target = resolved.fetch("target")
         key = target_key(target)
         if seen_targets[key]
           blockers << "#{target_label(target)} appears in multiple coordination lanes"
         else
           seen_targets[key] = true
         end
-        entries << { "name" => name, "target" => target, "lane" => lane }
+        entries << {
+          "name" => name,
+          "target" => target,
+          "target_projection" => resolved["target_projection"],
+          "per_target_terminal_candidate" => per_target_terminal_candidate,
+          "lane" => lane
+        }
       end
     end
     entries.sort_by! { |entry| target_sort_key(entry.fetch("target")) + [entry.fetch("name").to_s] }
     [entries, entries.map { |entry| entry.fetch("target") }]
   end
 
-  def targets_for_lane(lane, batch_repo, expected_targets)
-    url_targets = %w[pr_url issue_url target_url].filter_map do |field|
+  def targets_for_lane(
+    lane,
+    batch_repo,
+    expected_targets,
+    snapshots = {},
+    blockers: nil,
+    lane_name: nil,
+    target_projection_verifier: nil
+  )
+    url_targets_by_field = %w[pr_url issue_url target_url].to_h do |field|
       value = lane[field]
-      next if value.nil?
+      next [field, nil] if value.nil?
 
       url = normalized_known_string(value)
       return [] unless url
@@ -429,38 +600,149 @@ module CompletedBatchPublicationPreflight
       target = target_from_url(url)
       return [] unless target
 
-      target
+      [field, target]
     end
+    url_targets = url_targets_by_field.values.compact
     url_targets.uniq! { |target| target_key(target) }
-    return [] if url_targets.length > 1
+
+    unless lane.key?("targets")
+      return [] if url_targets.length > 1
+
+      target = url_targets.first
+      canonical_target = target && expected_targets.find { |candidate| target_key(candidate) == target_key(target) }
+      return canonical_target ? [{ "target" => canonical_target, "target_projection" => nil }] : []
+    end
 
     raw_targets = lane["targets"]
-    target_rows = []
-    if lane.key?("targets")
-      return [] unless raw_targets.is_a?(Array) && !raw_targets.empty?
+    return [] unless raw_targets.is_a?(Array) && !raw_targets.empty?
 
-      target_rows = raw_targets.map do |raw|
-        number = Integer(raw.to_s.sub(/\A#/, ""), exception: false)
+    parsed_targets = raw_targets.map { |raw| parsed_lane_target(raw) }
+    return [] if parsed_targets.any?(&:nil?) || parsed_targets.uniq.length != parsed_targets.length
+
+    if parsed_targets.one?
+      parsed = parsed_targets.first
+      artifact_primary_targets = expected_targets.select do |target|
+        target["repo"].casecmp?(batch_repo) && target["number"] == parsed.fetch("number") &&
+          (!parsed["type"] || target["type"] == parsed["type"])
+      end
+      if supporting_artifact_lane?(lane, artifact_primary_targets, url_targets_by_field, snapshots)
+        return [{ "target" => artifact_primary_targets.first, "target_projection" => nil }]
+      end
+    end
+    return [] if url_targets.length > 1
+
+    if url_targets.empty?
+      target_rows = parsed_targets.map do |parsed|
         candidates = expected_targets.select do |target|
-          target["repo"].casecmp?(batch_repo) && target["number"] == number
+          target["repo"].casecmp?(batch_repo) && target["number"] == parsed.fetch("number") &&
+            (!parsed["type"] || target["type"] == parsed["type"])
         end
         return [] unless candidates.one?
 
         candidates.first
       end
-      target_rows.uniq! { |target| target_key(target) }
+      unless target_rows.uniq { |target| target_key(target) }.length == target_rows.length
+        blockers&.<< "coordination lane #{lane_name || 'UNKNOWN'} contains duplicate or ambiguous target aliases"
+        return []
+      end
+
+      return target_rows.map { |target| { "target" => target, "target_projection" => nil } }
     end
 
-    if url_targets.any? && target_rows.any?
-      return [] unless url_targets.map { |target| target_key(target) } ==
-                       target_rows.map { |target| target_key(target) }
+    return [] unless url_targets.one? && parsed_targets.one?
 
-      url_targets
-    elsif url_targets.any?
-      url_targets
-    else
-      target_rows
+    target = url_targets.first
+    parsed = parsed_targets.first
+    return [] unless target["repo"].casecmp?(batch_repo)
+
+    direct_target = expected_targets.find do |candidate|
+      target_key(candidate) == target_key(target) && candidate["number"] == parsed.fetch("number") &&
+        (!parsed["type"] || parsed["type"] == target["type"])
     end
+    return [{ "target" => direct_target, "target_projection" => nil }] if direct_target
+    return [] if parsed["type"] && parsed["type"] != "issue"
+
+    source = validated_target(
+      "host" => target["host"],
+      "repo" => batch_repo,
+      "type" => "issue",
+      "number" => parsed.fetch("number")
+    )
+    projection = verified_target_projection(
+      source,
+      target,
+      expected_targets,
+      verifier: target_projection_verifier
+    )
+    return [] unless projection
+
+    canonical_target = expected_targets.find { |candidate| target_key(candidate) == target_key(target) }
+    [{ "target" => canonical_target, "target_projection" => projection }]
+  end
+
+  def parsed_lane_target(value)
+    value = value.to_s if value.is_a?(Integer)
+    normalized = normalized_known_string(value)
+    return unless normalized
+
+    typed = normalized.match(/\A(issue|pr|pull_request):(\d+)\z/)
+    untyped = normalized.match(/\A#?(\d+)\z/) unless typed
+    return unless typed || untyped
+
+    spelling = typed&.[](1)
+    number = Integer(typed ? typed[2] : untyped[1], 10, exception: false)
+    return unless number&.positive?
+
+    type = case spelling
+           when "issue" then "issue"
+           when "pr", "pull_request" then "pull_request"
+           end
+    { "type" => type, "number" => number }
+  end
+
+  def verified_target_projection(source, target, expected_targets, verifier:)
+    return unless source && target["type"] == "pull_request"
+    return unless source["host"] == target["host"] && source["repo"].casecmp?(target["repo"])
+    return unless expected_targets.any? { |candidate| target_key(candidate) == target_key(target) }
+    return unless verifier.respond_to?(:call)
+
+    verified = verifier.call(source:, target:)
+    return unless verified.is_a?(Hash) && verified.keys.sort == %w[
+      contract relationship result_head_sha result_merged_at result_target source_closed_at source_target
+      verification_source version
+    ].sort
+    return unless verified["contract"] == TARGET_PROJECTION_CONTRACT
+    return unless verified["version"] == TARGET_PROJECTION_VERSION
+    return unless validated_target(verified["source_target"]) == source
+    return unless validated_target(verified["result_target"]) == target
+    return unless verified["relationship"] == "closes_issue"
+    return unless verified["result_head_sha"].to_s.match?(SHA_PATTERN)
+    return unless valid_timestamp?(verified["result_merged_at"])
+    return unless valid_timestamp?(verified["source_closed_at"])
+    return unless Time.iso8601(verified["result_merged_at"]) <= Time.iso8601(verified["source_closed_at"])
+    return unless verified["verification_source"] == TARGET_PROJECTION_VERIFICATION_SOURCE
+
+    canonicalize(verified)
+  rescue KeyError, NoMethodError, TypeError, ArgumentError
+    nil
+  end
+
+  def supporting_artifact_lane?(lane, target_rows, url_targets_by_field, snapshots)
+    return false unless target_rows.one?
+
+    primary_target = target_rows.first
+    return false unless primary_target.fetch("type") == "issue"
+
+    artifact_target = url_targets_by_field["pr_url"]
+    return false unless artifact_target&.fetch("type", nil) == "pull_request"
+    return false unless same_repository?(primary_target, artifact_target)
+
+    primary_url_targets = %w[issue_url target_url].filter_map { |field| url_targets_by_field[field] }
+    return false unless primary_url_targets.all? { |target| same_target_identity?(target, primary_target) }
+
+    row = snapshots[target_key(primary_target)]
+    supporting_artifact_reference(row&.fetch("supporting_artifact", nil), primary_target) &&
+      same_target_url?(lane["pr_url"], artifact_target)
   end
 
   def compare_resolved_scope(expected, resolved, blockers)
@@ -482,17 +764,20 @@ module CompletedBatchPublicationPreflight
     blockers << "coordination batch completion timestamp is absent or invalid" unless valid_timestamp?(batch["completed_at"])
   end
 
-  def canonical_lane_snapshots(entries, authenticated_later_target_keys, blockers)
+  def canonical_lane_snapshots(entries, target_completion_modes, blockers)
     entries.map do |entry|
       lane = entry.fetch("lane")
       target = entry.fetch("target")
+      completion_mode = target_completion_modes[target_key(target)]
       terminal_state = lane["terminal"]
       terminal = valid_terminal_lane?(lane)
       blockers << "#{target_label(target)} coordination lane is nonterminal" unless terminal
       expected_state = target["type"] == "pull_request" ? "merged" : "closed"
       evidence = normalized_known_string(lane["evidence_url"])
-      coordination_completion = terminal_state == "done" && lane["pr_state"] == expected_state && evidence
-      later_target_completion = authenticated_later_target_keys[target_key(target)] == true
+      per_target_completion = completion_mode == AUTHENTICATED_PER_TARGET_TERMINAL_RECONCILIATION
+      coordination_completion = terminal_state == "done" && evidence &&
+                                (lane["pr_state"] == expected_state || per_target_completion)
+      later_target_completion = completion_mode == AUTHENTICATED_TARGET_AFTER_COORDINATION_CLOSEOUT
       unless coordination_completion || later_target_completion
         if terminal && RECONCILABLE_TERMINAL_LANE_STATES.include?(terminal_state)
           blockers << "#{target_label(target)} target completion is not authenticated after coordination closeout"
@@ -507,12 +792,16 @@ module CompletedBatchPublicationPreflight
         "status" => scalar_or_nil(lane["status"]),
         "terminal" => scalar_or_nil(lane["terminal"]),
         "closed_at" => scalar_or_nil(lane["closed_at"]),
-        "target_state" => scalar_or_nil(lane["pr_state"]),
+        "target_state" => per_target_completion ? expected_state : scalar_or_nil(lane["pr_state"]),
         "evidence" => evidence
       }
-      if terminal && later_target_completion
-        snapshot["completion_mode"] = "authenticated_target_after_coordination_closeout"
+      if terminal && per_target_completion
+        snapshot["coordination_target_state"] = scalar_or_nil(lane["pr_state"])
+        snapshot["completion_mode"] = completion_mode
+      elsif terminal && later_target_completion
+        snapshot["completion_mode"] = completion_mode
       end
+      snapshot["target_projection"] = entry["target_projection"] if entry["target_projection"]
       snapshot
     end
   end
@@ -597,11 +886,20 @@ module CompletedBatchPublicationPreflight
     end
   end
 
-  def canonical_target_snapshots(expected_targets, snapshots, lane_entries, blockers, target_verifier:)
+  def canonical_target_snapshots(
+    expected_targets,
+    snapshots,
+    lane_entries,
+    blockers,
+    target_verifier:,
+    artifact_verifier: nil,
+    waiver_verifier: nil
+  )
     lanes_by_target = lane_entries.to_h { |entry| [target_key(entry.fetch("target")), entry] }
-    authenticated_later_target_keys = {}
+    target_completion_modes = {}
     canonical_targets = expected_targets.map do |target|
       key = target_key(target)
+      lane_entry = lanes_by_target[key]
       row = snapshots[key]
       unless row
         blockers << "#{target_label(target)} target snapshot is absent"
@@ -622,7 +920,13 @@ module CompletedBatchPublicationPreflight
       blockers << "#{target_label(target)} target is not #{expected_state}" unless state == expected_state
       raw_head_sha = row["head_sha"].to_s.downcase
       no_pr_evidence = canonical_no_pr_evidence(row["no_pr_evidence"], target)
-      if target["type"] == "issue" && raw_head_sha == "not_applicable" && no_pr_evidence
+      issue_head_bound_to_separate_lane_pr = target["type"] == "issue" &&
+                                             row["head_sha"].nil? &&
+                                             lane_entry&.fetch("per_target_terminal_candidate", false) &&
+                                             !row.key?("no_pr_evidence")
+      if issue_head_bound_to_separate_lane_pr
+        head_sha = nil
+      elsif target["type"] == "issue" && raw_head_sha == "not_applicable" && no_pr_evidence
         head_sha = nil
       else
         head_sha = raw_head_sha
@@ -645,6 +949,7 @@ module CompletedBatchPublicationPreflight
         blockers << "#{target_label(target)} target state/head is not authenticated or fresh"
       end
       lane = lanes_by_target.dig(key, "lane")
+      projection = lanes_by_target.dig(key, "target_projection")
       lane_state = lane&.fetch("pr_state", nil)
       verified_target_facts = {
         "target" => target,
@@ -653,13 +958,21 @@ module CompletedBatchPublicationPreflight
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil,
         "no_pr_evidence" => no_pr_evidence
       }
+      if projection && verified_shape &&
+         !(projection["result_head_sha"].casecmp?(head_sha) &&
+           projection["result_merged_at"] == verified.fetch("completed_at"))
+        blockers << "#{target_label(target)} projected result facts disagree with authenticated target"
+      end
       authenticated_later_completion = authenticated_later_target_completion?(lane, verified_target_facts)
+      authenticated_per_target_reconciliation =
+        verified_shape && lane_entry&.fetch("per_target_terminal_candidate", false)
       if lane&.fetch("terminal", nil) == "superseded" &&
          authenticated_terminal_completion?(verified_target_facts) &&
          !authenticated_later_typed_no_pr_issue_supersession?(lane, verified_target_facts)
         blockers << "#{target_label(target)} premature terminal supersession / replacement protocol violation"
       end
-      if lane_state && state && lane_state != state && !authenticated_later_completion
+      if lane_state && state && lane_state != state && !authenticated_later_completion &&
+         !authenticated_per_target_reconciliation
         blockers << "#{target_label(target)} coordination and target state disagree"
       end
       snapshot = {
@@ -670,14 +983,150 @@ module CompletedBatchPublicationPreflight
         "source" => source,
         "verification_source" => verified_shape ? verified.fetch("verification_source") : nil
       }
+      if row.key?("supporting_artifact")
+        supporting_artifact = canonical_supporting_artifact(
+          row["supporting_artifact"],
+          target,
+          lane&.fetch("pr_url", nil),
+          comment_verifier: waiver_verifier,
+          artifact_verifier:
+        )
+        if supporting_artifact
+          snapshot["supporting_artifact"] = supporting_artifact
+        else
+          blockers << "#{target_label(target)} supporting artifact is not authenticated or fresh"
+        end
+      end
       snapshot["completed_at"] = verified_target_facts.fetch("completed_at") if authenticated_later_completion
-      authenticated_later_target_keys[key] = true if authenticated_later_completion
+      if authenticated_per_target_reconciliation
+        target_completion_modes[key] = AUTHENTICATED_PER_TARGET_TERMINAL_RECONCILIATION
+      elsif authenticated_later_completion
+        target_completion_modes[key] = AUTHENTICATED_TARGET_AFTER_COORDINATION_CLOSEOUT
+      end
       snapshot
     end
-    [canonical_targets, authenticated_later_target_keys]
+    [canonical_targets, target_completion_modes.freeze]
   end
 
-  def canonical_qa_snapshots(expected_targets, snapshots, qa_entries, blockers, waiver_verifier:)
+  def canonical_supporting_artifact(value, primary_target, lane_pr_url, comment_verifier:, artifact_verifier:)
+    reference = supporting_artifact_reference(value, primary_target)
+    return unless reference && comment_verifier.respond_to?(:call) && artifact_verifier.respond_to?(:call)
+
+    comment = comment_verifier.call(
+      host: primary_target.fetch("host"),
+      repo: primary_target.fetch("repo"),
+      comment_id: reference.fetch("comment_id")
+    )
+    marker = verified_supporting_artifact_comment(comment, reference:, primary_target:)
+    return unless marker
+
+    artifact_target = marker.fetch("artifact_target")
+    return unless same_target_url?(lane_pr_url, artifact_target)
+
+    authenticated = artifact_verifier.call(target: artifact_target)
+    valid_shape = authenticated.is_a?(Hash) &&
+                  authenticated.keys.sort == %w[closed_at head_sha state target verification_source] &&
+                  validated_target(authenticated["target"]) == artifact_target &&
+                  authenticated["state"] == "closed_unmerged" &&
+                  authenticated["head_sha"].to_s.downcase == marker.fetch("head_sha") &&
+                  valid_timestamp?(authenticated["closed_at"]) &&
+                  authenticated["verification_source"] == "authenticated gh api"
+    return unless valid_shape
+
+    marker.merge(
+      "state" => "closed_unmerged",
+      "closed_at" => authenticated.fetch("closed_at"),
+      "verification_source" => authenticated.fetch("verification_source")
+    )
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def supporting_artifact_reference(value, primary_target)
+    return unless primary_target["type"] == "issue"
+    return unless value.is_a?(Hash) && value.keys == ["url"]
+
+    waiver_comment_reference(value.fetch("url"), primary_target)
+  rescue KeyError, URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def verified_supporting_artifact_comment(comment, reference:, primary_target:)
+    return unless comment.is_a?(Hash)
+    return unless Integer(comment["id"], exception: false) == reference.fetch("comment_id")
+    return unless comment["html_url"] == reference.fetch("url")
+    return unless issue_api_url_matches_target?(comment["issue_url"], primary_target)
+    return unless valid_timestamp?(comment["created_at"]) && valid_timestamp?(comment["updated_at"])
+
+    author = waiver_comment_author(comment)
+    return unless author
+
+    association = comment["author_association"].to_s
+    return unless TRUSTED_ASSOCIATIONS.include?(association)
+
+    body = comment["body"]
+    return unless body.is_a?(String) && !body.empty?
+
+    fields = exact_marker_fields(
+      body,
+      marker_name: "completed-batch-supporting-artifact v1",
+      expected_fields: %w[primary_target artifact_pr head_sha role]
+    )
+    return unless fields
+    return unless same_target_url?(fields.fetch("primary_target"), primary_target)
+    return unless fields.fetch("role") == "verification_only"
+
+    artifact_target = target_from_url(fields.fetch("artifact_pr"))
+    return unless artifact_target&.fetch("type", nil) == "pull_request"
+    return unless same_repository?(primary_target, artifact_target)
+
+    head_sha = fields.fetch("head_sha").to_s.downcase
+    return unless head_sha.match?(SHA_PATTERN)
+
+    {
+      "role" => "verification_only",
+      "primary_target" => primary_target,
+      "artifact_target" => artifact_target,
+      "head_sha" => head_sha,
+      "evidence_url" => reference.fetch("url"),
+      "evidence_comment_id" => reference.fetch("comment_id"),
+      "evidence_author" => author,
+      "evidence_author_association" => association,
+      "evidence_body_sha256" => Digest::SHA256.hexdigest(body.encode(Encoding::UTF_8)),
+      "evidence_created_at" => comment.fetch("created_at"),
+      "evidence_updated_at" => comment.fetch("updated_at")
+    }
+  rescue KeyError, NoMethodError, TypeError, URI::InvalidURIError, ArgumentError
+    nil
+  end
+
+  def exact_marker_fields(body, marker_name:, expected_fields:)
+    return unless body.scan("<!-- #{marker_name}").length == 1
+
+    matches = body.scan(/<!-- #{Regexp.escape(marker_name)}\n(.*?)\n-->/m)
+    return unless matches.one?
+
+    lines = matches.first.fetch(0).lines(chomp: true)
+    return if lines.empty? || lines.any? { |line| line.include?("<!--") || line.include?("-->") }
+
+    field_pattern = Regexp.union(expected_fields)
+    fields = lines.each_with_object({}) do |line, parsed|
+      match = line.match(/\A(#{field_pattern}): (.+)\z/)
+      break unless match && !parsed.key?(match[1])
+
+      parsed[match[1]] = match[2]
+    end
+    fields if fields&.keys&.sort == expected_fields.sort
+  end
+
+  def canonical_qa_snapshots(
+    expected_targets,
+    snapshots,
+    qa_entries,
+    blockers,
+    target_completion_modes:,
+    waiver_verifier:
+  )
     expected_targets.map do |target|
       key = target_key(target)
       row = qa_entries[key]
@@ -685,6 +1134,9 @@ module CompletedBatchPublicationPreflight
       no_pr = canonical_no_pr_evidence(snapshots.dig(key, "no_pr_evidence"), target)
       head_sha = raw_head_sha.match?(SHA_PATTERN) ? raw_head_sha : nil
       no_pr_disposition = target["type"] == "issue" && raw_head_sha == "not_applicable" && no_pr
+      mixed_target_issue_disposition = target["type"] == "issue" &&
+                                       target_completion_modes[key] ==
+                                       AUTHENTICATED_PER_TARGET_TERMINAL_RECONCILIATION
       head_sha = nil if no_pr_disposition
       unless row
         blockers << "#{target_label(target)} QA evidence is absent"
@@ -720,6 +1172,9 @@ module CompletedBatchPublicationPreflight
       end
       if no_pr_disposition && !valid_no_pr_qa_disposition?(qa)
         blockers << "#{target_label(target)} QA evidence contradicts typed no-PR disposition"
+      end
+      if mixed_target_issue_disposition && !valid_no_pr_qa_disposition?(qa)
+        blockers << "#{target_label(target)} QA evidence contradicts mixed-target issue disposition"
       end
       unless %w[SATISFIED NOT_APPLICABLE WAIVED].include?(verdict)
         blockers << "#{target_label(target)} QA disposition is #{status || verdict}"
@@ -959,8 +1414,20 @@ module CompletedBatchPublicationPreflight
     nil
   end
 
+  def same_target_url?(value, target)
+    parsed = target_from_url(value)
+    parsed && target_key(parsed) == target_key(target)
+  end
+
   def target_key(target)
     [target.fetch("host").downcase, target.fetch("repo").downcase, target.fetch("type"), target.fetch("number")].join("|")
+  end
+
+  def same_repository?(left, right)
+    left.fetch("host").casecmp?(right.fetch("host")) &&
+      left.fetch("repo").casecmp?(right.fetch("repo"))
+  rescue KeyError, NoMethodError
+    false
   end
 
   def target_sort_key(target)
@@ -1133,6 +1600,42 @@ module CompletedBatchPublicationPreflight
     nil
   end
 
+  def authenticated_supporting_artifact_snapshot(target:, repository_root: Dir.pwd)
+    return unless target.fetch("type") == "pull_request"
+
+    payload = authenticated_gh_api(
+      target.fetch("host"),
+      "repos/#{target.fetch('repo')}/pulls/#{target.fetch('number')}",
+      repository_root:
+    )
+    verified_supporting_artifact_api_snapshot(payload, target)
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
+  def verified_supporting_artifact_api_snapshot(payload, target)
+    return unless payload.is_a?(Hash) && target.fetch("type") == "pull_request"
+    return unless Integer(payload["number"], exception: false) == target.fetch("number")
+    return unless same_target_url?(payload["html_url"], target)
+    return unless payload["state"] == "closed"
+    return unless payload.key?("merged") && payload["merged"] == false
+    return unless payload.key?("merged_at") && payload["merged_at"].nil?
+    return unless valid_timestamp?(payload["closed_at"])
+
+    head_sha = payload.dig("head", "sha").to_s.downcase
+    return unless head_sha.match?(SHA_PATTERN)
+
+    {
+      "target" => target,
+      "state" => "closed_unmerged",
+      "head_sha" => head_sha,
+      "closed_at" => payload.fetch("closed_at"),
+      "verification_source" => "authenticated gh api"
+    }
+  rescue KeyError, NoMethodError, TypeError
+    nil
+  end
+
   def verified_target_api_snapshot(payload, target)
     return unless payload.is_a?(Hash)
     return unless Integer(payload["number"], exception: false) == target.fetch("number")
@@ -1188,6 +1691,147 @@ module CompletedBatchPublicationPreflight
     nil
   end
 
+  def authenticated_target_projection(source:, target:, repository_root: Dir.pwd)
+    return unless source["type"] == "issue" && target["type"] == "pull_request"
+    return unless source["host"] == target["host"] && source["repo"].casecmp?(target["repo"])
+
+    owner, name = target.fetch("repo").split("/", 2)
+    return unless owner && name
+
+    result_cursor = nil
+    source_cursor = nil
+    result_contains_source = false
+    source_contains_result = false
+    result_facts = nil
+    source_facts = nil
+    seen_result_cursors = {}
+    seen_source_cursors = {}
+
+    TARGET_PROJECTION_MAX_PAGES.times do
+      variables = {
+        "owner" => owner,
+        "name" => name,
+        "resultNumber" => target.fetch("number"),
+        "sourceNumber" => source.fetch("number")
+      }
+      variables["resultCursor"] = result_cursor if result_cursor
+      variables["sourceCursor"] = source_cursor if source_cursor
+      payload = authenticated_gh_graphql(
+        target.fetch("host"),
+        query: TARGET_PROJECTION_QUERY,
+        variables:,
+        repository_root:
+      )
+      repository = payload&.dig("data", "repository")
+      return unless repository.is_a?(Hash)
+
+      result = repository["result"]
+      source_row = repository["source"]
+      current_result_facts = verified_projection_result_facts(result, target)
+      current_source_facts = verified_projection_source_facts(source_row, source)
+      return unless current_result_facts && current_source_facts
+      return if result_facts && result_facts != current_result_facts
+      return if source_facts && source_facts != current_source_facts
+
+      result_facts ||= current_result_facts
+      source_facts ||= current_source_facts
+      result_connection = result["closingIssuesReferences"]
+      source_connection = source_row["closedByPullRequestsReferences"]
+      return unless valid_projection_connection?(result_connection) && valid_projection_connection?(source_connection)
+
+      result_contains_source ||= result_connection.fetch("nodes").any? do |node|
+        projection_issue_node_matches?(node, source, source_facts)
+      end
+      source_contains_result ||= source_connection.fetch("nodes").any? do |node|
+        projection_pr_node_matches?(node, target, result_facts)
+      end
+      break if result_contains_source && source_contains_result
+
+      unless result_contains_source
+        result_cursor = next_projection_cursor(result_connection.fetch("pageInfo"), seen_result_cursors)
+        return unless result_cursor
+      end
+      unless source_contains_result
+        source_cursor = next_projection_cursor(source_connection.fetch("pageInfo"), seen_source_cursors)
+        return unless source_cursor
+      end
+    end
+    return unless result_contains_source && source_contains_result
+    return unless Time.iso8601(result_facts.fetch("merged_at")) <= Time.iso8601(source_facts.fetch("closed_at"))
+
+    canonicalize(
+      "contract" => TARGET_PROJECTION_CONTRACT,
+      "version" => TARGET_PROJECTION_VERSION,
+      "source_target" => source,
+      "result_target" => target,
+      "relationship" => "closes_issue",
+      "result_head_sha" => result_facts.fetch("head_sha"),
+      "result_merged_at" => result_facts.fetch("merged_at"),
+      "source_closed_at" => source_facts.fetch("closed_at"),
+      "verification_source" => TARGET_PROJECTION_VERIFICATION_SOURCE
+    )
+  rescue KeyError, NoMethodError, TypeError, ArgumentError
+    nil
+  end
+
+  def verified_projection_result_facts(row, target)
+    return unless row.is_a?(Hash)
+    return unless Integer(row["number"], exception: false) == target.fetch("number")
+    return unless same_target_url?(row["url"], target) && row["state"] == "MERGED"
+    return unless valid_timestamp?(row["mergedAt"])
+
+    head_sha = row["headRefOid"].to_s.downcase
+    return unless head_sha.match?(SHA_PATTERN)
+
+    { "head_sha" => head_sha, "merged_at" => row.fetch("mergedAt") }
+  rescue KeyError, TypeError
+    nil
+  end
+
+  def verified_projection_source_facts(row, source)
+    return unless row.is_a?(Hash)
+    return unless Integer(row["number"], exception: false) == source.fetch("number")
+    return unless same_target_url?(row["url"], source) && row["state"] == "CLOSED"
+    return unless valid_timestamp?(row["closedAt"])
+
+    { "closed_at" => row.fetch("closedAt") }
+  rescue KeyError, TypeError
+    nil
+  end
+
+  def valid_projection_connection?(connection)
+    connection.is_a?(Hash) && connection["nodes"].is_a?(Array) && connection["pageInfo"].is_a?(Hash)
+  end
+
+  def projection_issue_node_matches?(node, source, source_facts)
+    node.is_a?(Hash) && Integer(node["number"], exception: false) == source.fetch("number") &&
+      same_target_url?(node["url"], source) && node["state"] == "CLOSED" &&
+      node["closedAt"] == source_facts.fetch("closed_at") &&
+      node.dig("repository", "nameWithOwner").to_s.casecmp?(source.fetch("repo"))
+  rescue KeyError, TypeError
+    false
+  end
+
+  def projection_pr_node_matches?(node, target, result_facts)
+    node.is_a?(Hash) && Integer(node["number"], exception: false) == target.fetch("number") &&
+      same_target_url?(node["url"], target) && node["state"] == "MERGED" &&
+      node["mergedAt"] == result_facts.fetch("merged_at") &&
+      node["headRefOid"].to_s.downcase == result_facts.fetch("head_sha") &&
+      node.dig("repository", "nameWithOwner").to_s.casecmp?(target.fetch("repo"))
+  rescue KeyError, TypeError
+    false
+  end
+
+  def next_projection_cursor(page_info, seen)
+    return unless page_info.is_a?(Hash) && page_info["hasNextPage"] == true
+
+    cursor = normalized_known_string(page_info["endCursor"])
+    return unless cursor && !seen[cursor]
+
+    seen[cursor] = true
+    cursor
+  end
+
   def authenticated_gh_api(host, endpoint, repository_root: Dir.pwd)
     executable = trusted_system_tool("gh", outside_root: repository_root)
     account = trusted_local_account(repository_root)
@@ -1224,6 +1868,56 @@ module CompletedBatchPublicationPreflight
 
     payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
     payload if payload.is_a?(Hash)
+  rescue JSON::ParserError, SystemCallError, Timeout::Error
+    nil
+  end
+
+  def authenticated_gh_graphql(host, query:, variables:, repository_root: Dir.pwd)
+    executable = trusted_system_tool("gh", outside_root: repository_root)
+    account = trusted_local_account(repository_root)
+    return unless executable && account
+    return unless query.is_a?(String) && !query.empty? && variables.is_a?(Hash)
+
+    environment = {
+      "GH_HOST" => host,
+      "HOME" => account.dir,
+      "USER" => account.name,
+      "LOGNAME" => account.name,
+      "PATH" => SYSTEM_TOOL_DIRS.join(File::PATH_SEPARATOR),
+      "GH_PROMPT_DISABLED" => "1",
+      "GIT_TERMINAL_PROMPT" => "0"
+    }
+    GH_CREDENTIAL_ENV_KEYS.each do |credential|
+      value = ENV[credential]
+      environment[credential] = value if value && !value.empty?
+    end
+    valid_variables = variables.all? do |key, value|
+      key.to_s.match?(/\A[A-Za-z][A-Za-z0-9_]*\z/) && (value.is_a?(String) || value.is_a?(Integer))
+    end
+    return unless valid_variables
+
+    command = [executable, "api", "--hostname", host, "graphql", "-f", "query=#{query}"]
+    variables.keys.sort.each do |key|
+      value = variables.fetch(key)
+      command.concat([value.is_a?(Integer) ? "-F" : "-f", "#{key}=#{value}"])
+    end
+    result = with_safe_gh_directory(repository_root) do |directory|
+      capture_process(
+        command,
+        input: "",
+        timeout: gh_timeout_seconds,
+        environment:,
+        chdir: directory,
+        unsetenv_others: true
+      )
+    end
+    return unless result
+
+    stdout, _stderr, status = result
+    return unless status.success?
+
+    payload = JSON.parse(stdout.force_encoding("UTF-8").scrub)
+    payload if payload.is_a?(Hash) && !payload.key?("errors")
   rescue JSON::ParserError, SystemCallError, Timeout::Error
     nil
   end
@@ -1600,7 +2294,9 @@ module CompletedBatchPublicationPreflight
       coordination_backend: config["coordination_backend"],
       waiver_verifier: method(:authenticated_waiver_comment),
       target_verifier: method(:authenticated_target_snapshot),
-      coordination_verifier: method(:authenticated_coordination_status)
+      artifact_verifier: method(:authenticated_supporting_artifact_snapshot),
+      coordination_verifier: method(:authenticated_coordination_status),
+      target_projection_verifier: method(:authenticated_target_projection)
     )
     puts JSON.pretty_generate(result)
     result.fetch("eligible") ? 0 : 1

@@ -467,6 +467,90 @@ class MergeAssuranceTest < Minitest::Test
     assert_includes blocked.fetch("failures"), "autonomous_result reused current integration evidence is invalid"
   end
 
+  def test_ci_recorded_base_can_differ_from_validated_current_integration_base
+    recorded_base = "ed425c722e53eb1efec1d81d97027d5644aeef0a"
+    current_base = "7a5018e6433c656e7946af7ab9ac4236b88be190"
+    head = "91eb89e9666f82d7602a86b5f58d1e5aab46bbaf"
+    merge_context = context("auto_merge_when_gates_pass", head_sha: head, diff_base_sha: recorded_base)
+    rebind_context_base!(merge_context, base_sha: current_base, diff_base_sha: recorded_base)
+    autonomous = autonomous_result("autonomous-merge-eligible", head_sha: head, base_sha: current_base)
+    integration = reused_current_integration
+    integration.merge!(
+      "recorded_base_sha" => recorded_base, "head_sha" => head,
+      "current_base" => merge_context.fetch("base")
+    )
+    integration["candidate"] = {
+      "source" => "git-merge-tree", "oid" => nil,
+      "tree_oid" => "ef7184531a2363ba44482dfc62b5443a5417e1ba",
+      "parents" => [current_base, head]
+    }
+    autonomous["current_integration"] = integration
+    ci = ready_ci(base_sha: recorded_base, diff_base_sha: recorded_base, head_sha: head)
+
+    result = assess_with_replay(ci_result: ci, autonomous_result: autonomous, context: merge_context, now: NOW)
+
+    assert_equal true, result.fetch("eligible"), Array(result["failures"]).join("; ")
+    assert_equal recorded_base, result.dig("evidence", "ci_result", "base", "sha")
+    assert_equal current_base, result.dig("bindings", "base", "sha")
+    assert_equal integration, result.dig("bindings", "current_integration")
+  end
+
+  def test_ci_recorded_base_reuse_preserves_negative_evidence_gates
+    cases = {
+      "changed CI head" => ->(ci, _autonomous) { ci["head_sha"] = "c" * 40 },
+      "unrelated CI base" => ->(ci, _autonomous) { ci.fetch("base")["sha"] = "c" * 40 },
+      "different CI base ref" => ->(ci, _autonomous) { ci.fetch("base")["ref"] = "release" },
+      "stale CI" => ->(ci, _autonomous) { ci["checked_at"] = (NOW - 301).iso8601 },
+      "missing integration" => ->(_ci, autonomous) { autonomous["current_integration"] = nil },
+      "unsafe drift" => lambda do |_ci, autonomous|
+        autonomous.fetch("current_integration")["reuse"] = {
+          "decision" => "refresh-required", "reasons" => ["base-delta-not-reuse-safe"]
+        }
+      end,
+      "changed integration head" => lambda do |_ci, autonomous|
+        autonomous.fetch("current_integration")["head_sha"] = "c" * 40
+      end,
+      "malformed candidate" => lambda do |_ci, autonomous|
+        autonomous.dig("current_integration", "candidate")["parents"] = [BASE_SHA, "c" * 40]
+      end,
+      "untrusted helper" => ->(_ci, autonomous) { autonomous.fetch("helper_trust")["status"] = "unverified" },
+      "failed integration evidence" => ->(_ci, autonomous) { autonomous["evidence_failures"] = ["unsafe drift"] }
+    }
+    cases.each do |label, mutate|
+      ci = ready_ci(base_sha: "e" * 40, diff_base_sha: BASE_SHA)
+      autonomous = autonomous_result("autonomous-merge-eligible")
+      autonomous["current_integration"] = reused_current_integration
+      mutate.call(ci, autonomous)
+
+      result = assess_with_replay(
+        ci_result: ci, autonomous_result: autonomous,
+        context: context("auto_merge_when_gates_pass"), now: NOW
+      )
+
+      assert_equal false, result.fetch("eligible"), label
+      refute_empty result.fetch("failures"), label
+    end
+  end
+
+  def test_ci_recorded_base_reuse_does_not_rebind_old_policy_provenance
+    ci, trusted_policy = ready_ci_with_optional_hold
+    ci["base"] = { "ref" => "main", "sha" => "e" * 40 }
+    ci["ci_policy"] = Marshal.load(Marshal.dump(trusted_policy))
+    ci.fetch("ci_policy")["base"] = ci.fetch("base")
+    ci.fetch("ci_policy")["provenance"] = "git:#{'e' * 40}:#{PrCiReadiness::POLICY_PATH}@#{'9' * 40}"
+    autonomous = autonomous_result("autonomous-merge-eligible")
+    autonomous["current_integration"] = reused_current_integration
+
+    result = assess_with_replay(
+      ci_result: ci, autonomous_result: autonomous, trusted_ci_policy: trusted_policy,
+      context: context("auto_merge_when_gates_pass"), now: NOW
+    )
+
+    assert_equal false, result.fetch("eligible")
+    assert_includes result.fetch("failures"), "ci policy evidence does not match authenticated trusted-base policy"
+    refute_includes result.fetch("failures"), "ci_result base binding mismatch"
+  end
+
   def test_reused_current_integration_accepts_empty_base_delta_when_the_pr_side_is_safe
     autonomous = autonomous_result("autonomous-merge-eligible")
     integration = reused_current_integration
