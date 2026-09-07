@@ -220,6 +220,103 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_cleanup_rejects_digest_consistent_malformed_receipt_fields_with_structured_decisions
+    malformed_fields = {
+      "contract" => %w[other-receipt receipt-invalid],
+      "version" => %w[1 receipt-invalid],
+      "identity" => [[], "receipt-identity-invalid"],
+      "worktree_root" => [7, "receipt-worktree-root-invalid"],
+      "repository_common_dir" => [[], "receipt-repository-common-dir-invalid"],
+      "scratch_parent" => %w[relative-parent receipt-scratch-parent-invalid],
+      "scratch_root" => [{}, "receipt-scratch-root-invalid"],
+      "run_token" => [[], "receipt-run-token-invalid"],
+      "root_device" => %w[1 receipt-root-device-invalid],
+      "root_inode" => [[], "receipt-root-inode-invalid"],
+      "root_owner" => [-1, "receipt-root-owner-invalid"],
+      "root_mode" => [0o1000, "receipt-root-mode-invalid"],
+      "allowlist" => [{}, "allowlist-required"],
+      "created_at" => [7, "receipt-created-at-invalid"],
+      "digest" => [7, "receipt-digest-invalid"]
+    }
+
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"]
+      )
+      assert create_status.success?, create_stderr
+      receipt = created.fetch("receipt")
+      scratch_root = receipt.fetch("scratch_root")
+
+      malformed_fields.each do |field, (value, expected_reason)|
+        malformed_receipt = receipt.merge(field => value)
+        malformed_receipt["digest"] = lifecycle_digest(malformed_receipt) unless field == "digest"
+        receipt_path = File.join(durable_root, "#{field}.json")
+        File.write(receipt_path, JSON.generate(malformed_receipt))
+
+        blocked, stderr, status = run_cleanup(receipt_path, identity_path)
+
+        refute status.success?, field
+        assert_empty stderr, field
+        assert_equal "blocked", blocked.fetch("status"), field
+        assert_equal expected_reason, blocked.fetch("reason"), field
+        assert_path_exists scratch_root, field
+      end
+    end
+  end
+
+  def test_create_rejects_missing_options_before_creating_scratch
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      Dir.mkdir(scratch_parent)
+      cases = {
+        "repository root" => [
+          [HELPER, "create", "--scratch-parent", scratch_parent, "--identity-file", identity_path,
+           "--allow-relative", "evidence.json"],
+          "repository-root-invalid"
+        ],
+        "scratch parent" => [
+          [HELPER, "create", "--repository-root", repository, "--identity-file", identity_path,
+           "--allow-relative", "evidence.json"],
+          "scratch-parent-invalid"
+        ],
+        "identity file" => [
+          [HELPER, "create", "--repository-root", repository, "--scratch-parent", scratch_parent,
+           "--allow-relative", "evidence.json"],
+          "identity-source-path-invalid"
+        ],
+        "allowlist" => [
+          [HELPER, "create", "--repository-root", repository, "--scratch-parent", scratch_parent,
+           "--identity-file", identity_path],
+          "allowlist-required"
+        ]
+      }
+
+      cases.each do |label, (arguments, expected_reason)|
+        stdout, stderr, status = Open3.capture3(*arguments)
+
+        refute status.success?, label
+        assert_empty stderr, label
+        decision = JSON.parse(stdout)
+        assert_equal "blocked", decision.fetch("status"), label
+        assert_equal expected_reason, decision.fetch("reason"), label
+        assert_empty Dir.children(scratch_parent), label
+      end
+    end
+  end
+
   def test_plan_b_rejects_plan_a_scratch_even_with_the_same_task_numbering
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
       repository, base_sha, head_sha = build_repository(directory)

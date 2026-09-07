@@ -82,6 +82,16 @@ module TaskScratchLifecycle
     value == normalized && !normalized.empty? && normalized.casecmp("UNKNOWN").nonzero?
   end
 
+  def absolute_path?(value)
+    nonempty_string?(value) && value == File.absolute_path(value)
+  rescue ArgumentError
+    false
+  end
+
+  def nonnegative_integer?(value)
+    value.is_a?(Integer) && !value.negative?
+  end
+
   def identity?(value)
     value.is_a?(Hash) && value.keys.sort == IDENTITY_KEYS.sort &&
       %w[batch_id lane_id plan_id task_id].all? { |key| nonempty_string?(value[key]) } &&
@@ -174,6 +184,11 @@ module TaskScratchLifecycle
   end
 
   def create(options)
+    fail!("identity-source-path-invalid") unless nonempty_string?(options[:identity_file])
+    fail!("repository-root-invalid") unless nonempty_string?(options[:repository_root])
+    fail!("scratch-parent-invalid") unless nonempty_string?(options[:scratch_parent])
+    allowlist = normalize_allowlist(options[:allowlist])
+
     identity_source = read_json(options[:identity_file], "identity-source")
     identity = identity_source.is_a?(Hash) ? identity_source["identity"] : nil
     fail!("task-identity-invalid") unless identity?(identity)
@@ -181,7 +196,6 @@ module TaskScratchLifecycle
     worktree_root, common_dir = repository_identity(options[:repository_root])
     scratch_parent = File.realpath(options[:scratch_parent])
     fail!("scratch-parent-invalid") unless File.directory?(scratch_parent)
-    allowlist = normalize_allowlist(options[:allowlist])
     scratch_root = Dir.mktmpdir("task-scratch-", scratch_parent)
     File.chmod(0o700, scratch_root)
     root_stat = File.stat(scratch_root)
@@ -232,6 +246,16 @@ module TaskScratchLifecycle
     fail!("receipt-run-token-invalid") unless receipt["run_token"].is_a?(String) &&
                                               receipt["run_token"].match?(/\A[0-9a-f]{64}\z/)
     fail!("receipt-created-at-invalid") unless nonempty_string?(receipt["created_at"])
+    %w[worktree_root repository_common_dir scratch_parent scratch_root].each do |field|
+      reason_field = field.tr("_", "-")
+      fail!("receipt-#{reason_field}-invalid") unless absolute_path?(receipt[field])
+    end
+    %w[root_device root_inode root_owner].each do |field|
+      reason_field = field.tr("_", "-")
+      fail!("receipt-#{reason_field}-invalid") unless nonnegative_integer?(receipt[field])
+    end
+    valid_root_mode = nonnegative_integer?(receipt["root_mode"]) && receipt["root_mode"] <= 0o777
+    fail!("receipt-root-mode-invalid") unless valid_root_mode
     normalize_allowlist(receipt["allowlist"])
     receipt
   end

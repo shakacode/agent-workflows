@@ -2318,6 +2318,66 @@ class GoalStateChangeMonitorTest < Minitest::Test
     end
   end
 
+  def test_exact_historical_pending_wake_without_plan_identity_requires_reconciliation_before_mutation
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      waking_observation = observation(
+        "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+        "probe_sequence" => 1,
+        "observed_at" => "2026-08-09T00:15:00Z"
+      )
+      wake, wake_stderr, wake_status = run_helper(state_path, waking_observation)
+      assert wake_status.success?, wake_stderr
+      assert_equal "wake-state-change", wake.fetch("action")
+
+      historical_state = JSON.parse(File.read(state_path))
+      historical_state.delete("plan_identity")
+      pending_wake = historical_state.fetch("pending_wake")
+      decisions = [historical_state.fetch("last_decision"), pending_wake.fetch("decision")]
+      decisions.each do |decision|
+        decision.delete("plan_identity")
+        decision["handoff"]&.delete("plan_identity")
+      end
+      acknowledgement_payload = pending_wake.fetch("acknowledgement_payload")
+      acknowledgement_payload.delete("plan_identity")
+      historical_wake_id = Digest::SHA256.hexdigest(
+        JSON.generate(
+          canonicalize_for_digest(
+            "monitor_id" => historical_state.fetch("monitor_id"),
+            "probe_sequence" => historical_state.fetch("probe_sequence"),
+            "fingerprint" => historical_state.fetch("fingerprint"),
+            "action" => historical_state.dig("last_decision", "action")
+          )
+        )
+      )
+      historical_state.fetch("last_decision")["wake_id"] = historical_wake_id
+      pending_wake.fetch("decision")["wake_id"] = historical_wake_id
+      pending_wake["wake_id"] = historical_wake_id
+      acknowledgement_payload["acknowledged_wake_id"] = historical_wake_id
+      historical_state["last_observation_digest"] = Digest::SHA256.hexdigest(
+        JSON.generate(
+          canonicalize_for_digest(
+            acknowledgement_payload.reject { |key, _value| key == "acknowledged_wake_id" }
+          )
+        )
+      )
+      File.write(state_path, JSON.generate(historical_state))
+      state_before_resume = File.binread(state_path)
+
+      decision, stderr, status = run_helper(
+        state_path,
+        observation("probe_sequence" => 2, "observed_at" => "2026-08-09T00:30:00Z")
+      )
+
+      assert_nil decision
+      refute status.success?
+      assert_includes stderr, '"reason":"plan-identity-missing"'
+      assert_equal state_before_resume, File.binread(state_path)
+    end
+  end
+
   def test_invalid_persisted_plan_identity_reports_the_exact_reconciliation_reason
     invalid_plan_identities = {
       7 => "plan-identity-malformed",

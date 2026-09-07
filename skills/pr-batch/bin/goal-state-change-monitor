@@ -154,7 +154,7 @@ def persisted_acknowledgement_payload?(payload, state, wake_id, validate_plan_id
                       payload["probe_sequence"] == state["probe_sequence"]
 
   digest_payload = payload.reject { |key, _value| key == "acknowledged_wake_id" }
-  unless validate_plan_identity
+  if !validate_plan_identity && state.key?("plan_identity")
     digest_payload = digest_payload.merge("plan_identity" => state["plan_identity"])
   end
   Digest::SHA256.hexdigest(canonical_json(digest_payload)) == state["last_observation_digest"]
