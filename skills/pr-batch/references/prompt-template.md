@@ -50,5 +50,4 @@ Apply Batch QA Lane;include QA Evidence
 merge iff `merge_authority` is `auto_merge_when_gates_pass`|explicit merge approval;release+gates pass;record PR confidence
 - ask=>$pr-walkthrough;gh=all/reply;live=opt;refresh;chg=>redo/stop;fail=>stop;ask iff same clean
 Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state
-
 ```

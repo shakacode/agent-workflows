@@ -9,7 +9,12 @@ UNKNOWN = "UNKNOWN"
 DEFAULT_TIMEOUT_SECONDS = 20
 
 def present_string(value)
-  value.is_a?(String) && !value.strip.empty? ? value.strip : nil
+  return nil unless value.is_a?(String)
+
+  stripped = value.strip
+  return nil if stripped.empty? || stripped == UNKNOWN
+
+  stripped
 end
 
 def valid_repo?(value)
@@ -27,15 +32,26 @@ def parse_batch_target(value)
   }
 end
 
-def runner_for(record)
+def runner_from_host(record)
   host = present_string(record["host"])&.downcase
-  source = present_string(record["session_source"])
-  host_runner = if host == "codex"
-                  "Codex"
-                elsif host == "claude" || host == "claude-code" || host&.start_with?("claude-code/")
-                  "Claude"
-                end
-  source_runner = "Codex" if source == "codex_thread_id"
+  if host == "codex"
+    "Codex"
+  elsif host == "claude" || host == "claude-code" || host&.start_with?("claude-code/")
+    "Claude"
+  end
+end
+
+def runner_from_session_source(record)
+  "Codex" if present_string(record["session_source"]) == "codex_thread_id"
+end
+
+def codex_thread_source?(record)
+  present_string(record["session_source"]) == "codex_thread_id"
+end
+
+def runner_for(record)
+  host_runner = runner_from_host(record)
+  source_runner = runner_from_session_source(record)
   return UNKNOWN if host_runner && source_runner && host_runner != source_runner
 
   host_runner || source_runner || UNKNOWN
@@ -44,12 +60,143 @@ end
 def codex_deep_link(record, runner)
   return UNKNOWN unless runner == "Codex"
   return UNKNOWN unless present_string(record["machine_id"])
-  return UNKNOWN unless record["session_source"] == "codex_thread_id"
+  return UNKNOWN unless codex_thread_source?(record)
 
   thread_id = present_string(record["session_id"])
   return UNKNOWN unless thread_id&.match?(/\A[0-9A-Za-z-]+\z/)
 
   "codex://threads/#{thread_id}"
+end
+
+def coordination_target_number(value)
+  parse_batch_target(value)&.fetch(:number)
+end
+
+def owner_route_evidence(repo:, number:, url:, claim:, heartbeat:, holder:, expected_owner:, record:, runner:,
+                         machine_id:, thread_id:, deep_link:)
+  issues = []
+  missing = []
+  merged_record = claim.merge(record)
+  route_workspace = present_string(merged_record["workspace"])
+  repo_downcase = repo.downcase
+
+  if expected_owner && holder && expected_owner != holder
+    issues << "batch owner/claim holder mismatch"
+  end
+  if heartbeat.nil?
+    missing << "same-holder heartbeat"
+  else
+    claim_repo = present_string(claim["repo"])
+    claim_repo_downcase = claim_repo&.downcase
+    missing << "claim repo" unless claim_repo
+    issues << "claim repository mismatch" if claim_repo_downcase && claim_repo_downcase != repo_downcase
+    claim_target = coordination_target_number(claim["target"])
+    missing << "claim target" unless claim_target
+    issues << "claim work item mismatch" if claim_target && claim_target != number
+    heartbeat_target = present_string(heartbeat["target"])
+    heartbeat_target_downcase = heartbeat_target&.downcase
+    missing << "heartbeat target" unless heartbeat_target
+    if heartbeat_target_downcase &&
+       heartbeat_target_downcase != "#{repo_downcase}##{number}"
+      issues << "heartbeat work item mismatch"
+    end
+
+    %w[host branch thread_handle session_id].each do |field|
+      claim_value = present_string(claim[field])
+      heartbeat_value = present_string(heartbeat[field])
+      missing << "claim #{field}" unless claim_value
+      missing << "heartbeat #{field}" unless heartbeat_value
+      claim_comparison = field == "host" ? claim_value&.downcase : claim_value
+      heartbeat_comparison = field == "host" ? heartbeat_value&.downcase : heartbeat_value
+      issues << "claim/heartbeat #{field} mismatch" if claim_comparison && heartbeat_comparison && claim_comparison != heartbeat_comparison
+    end
+
+    claim_instance = present_string(claim["instance_id"])
+    heartbeat_instance = present_string(heartbeat["instance_id"])
+    if claim_instance && heartbeat_instance && claim_instance != heartbeat_instance
+      issues << "claim/heartbeat instance_id mismatch"
+    end
+    if runner == UNKNOWN && runner_from_host(heartbeat) && runner_from_session_source(heartbeat)
+      issues << "runner metadata conflict"
+    elsif runner == UNKNOWN
+      missing << "runner"
+    end
+    heartbeat_liveness = present_string(heartbeat["liveness"])
+    issues << "heartbeat liveness #{heartbeat_liveness}" if heartbeat_liveness && heartbeat_liveness != "live"
+    missing << "workspace" if runner == "Claude" && !route_workspace
+    if runner == "Codex"
+      missing << "Codex machine_id" if machine_id == UNKNOWN
+      missing << "Codex deep link" if deep_link == UNKNOWN
+    end
+    missing << "work item url" if url == UNKNOWN || !present_string(url)
+  end
+
+  binding_status = if issues.any?
+                     "inconsistent"
+                   elsif missing.any?
+                     "unavailable"
+                   else
+                     "consistent"
+                   end
+  route_record = binding_status == "consistent" ? merged_record : {}
+  route_runner = binding_status == "consistent" ? runner : UNKNOWN
+  route_machine = binding_status == "consistent" ? machine_id : UNKNOWN
+  route_thread = binding_status == "consistent" ? thread_id : UNKNOWN
+  route_link = binding_status == "consistent" ? deep_link : UNKNOWN
+
+  {
+    "binding_status" => binding_status,
+    "binding_issues" => issues,
+    "missing_fields" => missing,
+    "work_item" => {
+      "ref" => "#{repo}##{number}",
+      "url" => url
+    },
+    "holder" => holder || UNKNOWN,
+    "runner" => route_runner,
+    "workspace" => present_string(route_record["workspace"]) || UNKNOWN,
+    "branch" => present_string(route_record["branch"]) || UNKNOWN,
+    "thread_handle" => present_string(route_record["thread_handle"]) || UNKNOWN,
+    "session_id" => route_thread,
+    "instance_id" => present_string(route_record["instance_id"]) || UNKNOWN,
+    "machine_id" => route_machine,
+    "codex_deep_link" => route_link,
+    "codex_deep_link_machine_id" => route_link == UNKNOWN ? UNKNOWN : route_machine,
+    # The current coordination payload does not expose a supported stable log path.
+    "log_location" => UNKNOWN,
+    "host_task_lookup" => "required"
+  }
+end
+
+def owner_route_n_a(repo:, number:, url:)
+  {
+    "binding_status" => "n/a",
+    "binding_issues" => [],
+    "missing_fields" => [],
+    "work_item" => {
+      "ref" => "#{repo}##{number}",
+      "url" => url
+    },
+    "holder" => UNKNOWN,
+    "runner" => UNKNOWN,
+    "workspace" => UNKNOWN,
+    "branch" => UNKNOWN,
+    "thread_handle" => UNKNOWN,
+    "session_id" => UNKNOWN,
+    "instance_id" => UNKNOWN,
+    "machine_id" => UNKNOWN,
+    "codex_deep_link" => UNKNOWN,
+    "codex_deep_link_machine_id" => UNKNOWN,
+    "log_location" => UNKNOWN,
+    "host_task_lookup" => "required"
+  }
+end
+
+def owner_route_unavailable(repo:, number:, url:, missing_fields:)
+  owner_route_n_a(repo:, number:, url:).merge(
+    "binding_status" => "unavailable",
+    "missing_fields" => missing_fields
+  )
 end
 
 def bounded_helper
@@ -307,6 +454,10 @@ items = requests.map do |request|
       "--timeout", options[:timeout].to_s,
       "status", "--repo", repo, "--target", request.fetch(:coordination_target, number.to_s), "--json"
     )
+    if coordination && !coordination.is_a?(Hash)
+      coordination = nil
+      coordination_error = "response was not an object"
+    end
   else
     coordination_error = "bounded agent-coordination helper unavailable"
   end
@@ -314,9 +465,9 @@ items = requests.map do |request|
 
   claims = coordination.is_a?(Hash) && coordination["claims"].is_a?(Array) ? coordination["claims"] : []
   heartbeats = coordination.is_a?(Hash) && coordination["heartbeats"].is_a?(Array) ? coordination["heartbeats"] : []
-  claim = claims.find { |candidate| candidate.is_a?(Hash) && candidate["status"] == "active" } || {}
+  active_claim = claims.find { |candidate| candidate.is_a?(Hash) && candidate["status"] == "active" }
+  claim = active_claim || {}
   holder = present_string(claim["agent_id"])
-  unknowns << "coordination holder: no active claim" unless holder
   expected_owner = request[:expected_owner]
   if holder && expected_owner && holder != expected_owner
     unknowns << "coordination holder divergence: batch owner #{expected_owner}, active claim #{holder}"
@@ -327,17 +478,40 @@ items = requests.map do |request|
   machine_id = present_string(record["machine_id"]) || UNKNOWN
   thread_id = present_string(record["session_id"]) || UNKNOWN
   deep_link = codex_deep_link(record, runner)
-  unknowns << "editor: host/session metadata missing or conflicting" if runner == UNKNOWN
-  if runner == "Codex" && deep_link == UNKNOWN
+  if holder && runner == "Codex" && deep_link == UNKNOWN
     reason = if machine_id == UNKNOWN
                "machine_id missing"
-             elsif record["session_source"] != "codex_thread_id"
+             elsif !codex_thread_source?(record)
                "session_source is not codex_thread_id"
              else
                "thread_id missing or invalid"
              end
     unknowns << "Codex deep link: #{reason}"
   end
+
+  target_url = present_string(github&.fetch("html_url", UNKNOWN)) || UNKNOWN
+  owner_route = if active_claim.nil?
+                  if coordination_error
+                    owner_route_unavailable(
+                      repo:, number:, url: target_url,
+                      missing_fields: ["coordination state"]
+                    )
+                  else
+                    owner_route_n_a(repo:, number:, url: target_url)
+                  end
+                elsif holder
+                  owner_route_evidence(
+                    repo:, number:, url: target_url, claim:, heartbeat:, holder:, expected_owner:, record:, runner:,
+                    machine_id:, thread_id:, deep_link:
+                  )
+                else
+                  owner_route_unavailable(
+                    repo:, number:, url: target_url,
+                    missing_fields: ["claim agent_id", "same-holder heartbeat"]
+                  )
+                end
+  owner_route.fetch("binding_issues").each { |issue| unknowns << "owner route: #{issue}" }
+  owner_route.fetch("missing_fields").each { |field| unknowns << "owner route unavailable: missing #{field}" }
 
   {
     "batch_id" => request[:batch_id] || UNKNOWN,
@@ -346,16 +520,17 @@ items = requests.map do |request|
       "repo" => repo,
       "number" => number,
       "kind" => github_kind,
-      "url" => github&.fetch("html_url", UNKNOWN) || UNKNOWN
+      "url" => target_url
     },
     "holder" => holder || UNKNOWN,
     "editor" => runner,
     "runner" => runner,
     "machine_id" => machine_id,
     "thread_id" => thread_id,
-    "codex_deep_link" => deep_link,
-    "codex_deep_link_machine_id" => deep_link == UNKNOWN ? UNKNOWN : machine_id,
+    "codex_deep_link" => owner_route.fetch("codex_deep_link"),
+    "codex_deep_link_machine_id" => owner_route.fetch("codex_deep_link_machine_id"),
     "heartbeat" => heartbeat || UNKNOWN,
+    "owner_route" => owner_route,
     "github_state" => github&.fetch("state", UNKNOWN) || UNKNOWN,
     "unknowns" => unknowns
   }
