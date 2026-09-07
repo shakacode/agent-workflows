@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../../pr-batch/lib/skill_stage_source"
+
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -129,7 +131,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_post_merge_audit_defaults_to_follow_up_issue_creation
     REQUIRED_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, REQUIRED_DEFAULT, "#{relative_path} should state the default issue-creation behavior"
       OBSOLETE_APPROVAL_GATES.each do |obsolete|
@@ -142,7 +144,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
     placement_pattern = /When the deterministic anchor is a PR, the coordinator separately applies the helper-emitted managed `Completed-batch audit` section[^.]*\./
 
     COMPLETED_BATCH_AUDIT_PLACEMENT_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_equal [COMPLETED_BATCH_AUDIT_PLACEMENT_RULE], text.scan(placement_pattern),
                    "#{relative_path} should use the canonical completed-batch audit placement rule"
@@ -151,7 +153,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_replacement_preclose_guard_is_mirrored
     REPLACEMENT_PRECLOSE_GUARD_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
 
       assert_includes text, REQUIRED_REPLACEMENT_PRECLOSE_GUARD,
                       "#{relative_path} should use the canonical replacement pre-close guard"
@@ -170,7 +172,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/pr-production-release.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_LEDGER_COMMENT_EXCEPTION
@@ -186,7 +188,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_follow_up_issue_creation_treats_audited_content_as_untrusted
     REQUIRED_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_UNTRUSTED_CONTENT_GUARD
@@ -202,7 +204,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   end
 
   def test_skill_closing_gate_uses_affirmative_default
-    text = File.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
+    text = SkillStageSource.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
     normalized_text = text.gsub(/\s+/, " ")
 
     assert_includes normalized_text, REQUIRED_SKILL_CLOSING_DEFAULT
@@ -216,7 +218,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
   end
 
   def test_post_merge_audit_mentions_structural_review_as_a_separate_axis
-    text = File.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
+    text = SkillStageSource.read(File.join(ROOT, "skills/post-merge-audit/SKILL.md"), encoding: "UTF-8")
     range_section = text.match(/^### Range-Level Structural Review\n(?<body>.*?)(?=^##? |\z)/m)
 
     refute_nil range_section, "Structural review must be outside the per-PR and per-issue lists"
@@ -235,7 +237,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/pr-batch-integration-closeout.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_ISSUE_CREATION_ACCOUNTING
@@ -244,7 +246,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_unavailable_coordination_scope_requires_user_choice_before_deep_audit
     REQUIRED_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_UNAVAILABLE_COORDINATION_ASK
@@ -257,7 +259,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "workflows/post-merge-audit.md",
       "workflows/pr-batch-integration-closeout.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_COMPLETED_BATCH_AUDIT_OWNERSHIP,
@@ -282,7 +284,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, REQUIRED_COMPLETED_BATCH_MODE_SCOPE,
                       "#{relative_path} should scope completed-batch ownership to completed-batch mode"
@@ -339,7 +341,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_ARCHIVE_READY_CRITERIA,
@@ -366,7 +368,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, REQUIRED_COORDINATOR_COMBINED_HANDOFF_SCOPE,
                       "#{relative_path} should reserve completed-batch handoff outputs for the coordinator's combined handoff"
@@ -388,7 +390,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       terminal_contract = text.index(REQUIRED_TERMINAL_NEXT_STEP)
       completed_batch_only = text.index(REQUIRED_COMPLETED_BATCH_MODE_SCOPE)
 
@@ -406,7 +408,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
       "skills/post-merge-audit/SKILL.md",
       "workflows/post-merge-audit.md"
     ].each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
 
       assert_includes text, COMPLETED_BATCH_AUDIT_MARKER_HEADER,
                       "#{relative_path} should require the completed-batch audit marker header"
@@ -447,7 +449,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_complete_publication_requires_terminal_coordination_and_exact_head_qa_snapshot
     REQUIRED_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
       normalized_text = text.gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_PUBLICATION_PREFLIGHT,
@@ -491,7 +493,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_issue_targeted_lanes_project_only_to_one_authenticated_result_pr
     ISSUE_RESULT_PR_PROJECTION_FILES.each do |relative_path|
-      normalized_text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+      normalized_text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
 
       assert_includes normalized_text, REQUIRED_ISSUE_RESULT_PR_PROJECTION, relative_path
       assert_includes normalized_text, REQUIRED_TYPED_LANE_TARGETS, relative_path
@@ -502,7 +504,7 @@ class PostMergeAuditPolicyTest < Minitest::Test
 
   def test_accepted_deferral_is_append_only_authenticated_and_non_product_only
     REQUIRED_FILES.each do |relative_path|
-      text = File.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
+      text = SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8").gsub(/\s+/, " ")
 
       assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_LIFECYCLE, relative_path
       assert_includes text, REQUIRED_ACCEPTED_DEFERRAL_GUARD, relative_path
