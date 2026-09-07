@@ -3292,16 +3292,38 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
       ->(proof) { proof["completed_at"] = "not-a-timestamp" }
     ]
 
-    mutations.each_with_index do |mutate, index|
+    mutations.product(["n/a", BACKEND]).each_with_index do |(mutate, backend), index|
       input = no_backend_input
       mutate.call(input.fetch("coordination_status"))
-      result = assess_input(input, backend: "n/a")
+      coordination_calls = []
+      result = assess_input(input, backend: backend, coordination_verifier: lambda { |**arguments|
+        coordination_calls << arguments
+        flunk "malformed not-applicable evidence must not invoke coordination"
+      })
 
       refute result.fetch("eligible"), index
       assert_includes result.fetch("blockers"),
                       "typed no-backend coordination evidence is absent or invalid",
                       index
+      assert_nil result.dig("snapshot", "coordination", "verification_source"),
+                 "malformed typed evidence must not claim authenticated coordination provenance"
+      assert_empty coordination_calls
     end
+  end
+
+  def test_malformed_typed_evidence_regression_rejects_unconditional_authenticated_provenance
+    original = CompletedBatchPublicationPreflight.method(:canonical_coordination_snapshot)
+    unconditional_authenticated = lambda { |batch, lanes, evidence, **|
+      original.call(batch, lanes, evidence, authenticated: true)
+    }
+
+    failure = assert_raises(Minitest::Assertion) do
+      CompletedBatchPublicationPreflight.define_singleton_method(:canonical_coordination_snapshot, unconditional_authenticated)
+      test_no_backend_path_rejects_missing_or_malformed_typed_evidence
+    end
+    assert_includes failure.message, "malformed typed evidence must not claim authenticated coordination provenance"
+  ensure
+    CompletedBatchPublicationPreflight.define_singleton_method(:canonical_coordination_snapshot, original) if original
   end
 
   def test_cli_reads_the_repository_coordination_backend_seam

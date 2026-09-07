@@ -467,6 +467,49 @@ def assert_remediation_authority_section_contract(section, location)
 end
 
 class CoordinationTelemetryContractTest < Minitest::Test
+  # Instruction contract only: N/A release work must not follow the preferred
+  # backend probes, and bypassing probes must never lower release policy gates.
+  def assert_release_phase_applicability_contract(text)
+    phase = extract_section(text, "## Release Phase Gate").gsub(/\s+/, " ")
+    rules = [
+      "consume the trusted outcome of the **Coordination Applicability Gate** in the resolved processing workflow",
+      "Missing, `UNKNOWN`, or contradictory applicability stops before either probe",
+      "For `coordination_not_applicable`, skip both doctor and status probes",
+      "derive phase only from deterministic trusted `AGENTS.md` branch rules; unresolved phase remains `UNKNOWN`",
+      "Only `coordination_required` uses the backend preference and fallback in step 1",
+      "never silently downgrade a release-policy branch to ordinary base-branch handling",
+      "explicit human sign-off rather than confidence-only auto-merge",
+      "use the exact forward-port method from `AGENTS.md`",
+      "If the published phase and the tracker disagree",
+      "report it, and do not auto-merge"
+    ]
+    rules.each { |rule| assert_includes phase, rule }
+    assert_operator phase.index("Coordination Applicability Gate"), :<, phase.index("agent-coord doctor --json")
+    assert_includes phase, "If the backend is `UNKNOWN`, treat the configured base branch as ordinary development"
+    assert_includes text, "Merge authority never grants this authority"
+  end
+
+  def test_release_phase_scopes_backend_preference_without_weakening_release_policy
+    assert_release_phase_applicability_contract(read_repo_file(File.join(ROOT, "workflows/pr-production-release.md")))
+  end
+
+  def test_release_phase_contract_rejects_partial_guards_and_policy_downgrades
+    text = read_repo_file(File.join(ROOT, "workflows/pr-production-release.md"))
+    mutants = {
+      "N/A still calls status" => ["skip both doctor and status probes", "skip only doctor probes"],
+      "UNKNOWN permits probes" => ["contradictory applicability stops before either probe", "contradictory applicability permits probes"],
+      "required guard missing" => ["Only `coordination_required` uses the backend preference", "Every run uses the backend preference"],
+      "release branch downgrade" => ["never silently downgrade a release-policy branch", "silently downgrade a release-policy branch"],
+      "human sign-off removed" => ["explicit human sign-off rather than confidence-only auto-merge", "confidence-only auto-merge"]
+    }
+    mutants.each do |label, (before, after)|
+      pattern = Regexp.new(before.split.map { |word| Regexp.escape(word) }.join("\\s+"))
+      mutated = text.sub(pattern, after)
+      refute_equal text, mutated, label
+      assert_raises(Minitest::Assertion, label) { assert_release_phase_applicability_contract(mutated) }
+    end
+  end
+
   # Instruction contracts only: catch a status prompt that calls the collector
   # before the gate, or treats deliberately absent coordination as degraded.
   def assert_batch_status_applicability_contract(text)
