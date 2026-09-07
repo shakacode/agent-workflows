@@ -583,11 +583,23 @@ class BatchPlanPreflightTest < Minitest::Test
           end of notes"
           malformed: [
         YAML
-        "single quoted" => <<~YAML
+        "single quoted" => <<~YAML,
           notes: 'release notes
           ---
           companion_path_conventions: invalid
           end of notes'
+          malformed: [
+        YAML
+        "anchored double quoted" => <<~YAML,
+          notes: &note "release notes
+          companion_path_conventions: invalid
+          end of notes"
+          malformed: [
+        YAML
+        "tagged double quoted" => <<~YAML
+          notes: !text "release notes
+          companion_path_conventions: invalid
+          end of notes"
           malformed: [
         YAML
       }
@@ -633,6 +645,33 @@ class BatchPlanPreflightTest < Minitest::Test
         assert_empty result.fetch("violations"), label
         assert_equal advisory_codes, result.fetch("advisories").map { |item| item.fetch("code") }, label
       end
+    end
+  end
+
+  def test_malformed_recovery_preserves_hashes_in_block_scalar_paths
+    fixture = JSON.parse(File.read(COMPANION_PATH_REPLAY_FIXTURE)).merge(
+      "source_glob" => "lib/{name} #part.rb",
+      "source_path" => "lib/widget #part.rb",
+      "companion_glob" => "sig/{name}.rbs",
+      "companion_path" => "sig/widget.rbs"
+    )
+    with_companion_fixture(fixture) do |root|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions:
+          - source_glob: >-
+              #{fixture.fetch('source_glob')}
+            companion_glob: #{fixture.fetch('companion_glob')}
+        malformed: [
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
     end
   end
 

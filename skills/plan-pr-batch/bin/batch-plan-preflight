@@ -899,8 +899,19 @@ module BatchPlanPreflight
 
   def companion_policy_strip_comments(lines)
     state = :normal
+    block_scalar_indent = nil
     lines.filter_map do |line|
+      line_indent = companion_policy_line_indentation(line)
+      if block_scalar_indent
+        next line if line.strip.empty? || line_indent > block_scalar_indent
+
+        block_scalar_indent = nil
+      end
+
       state, comment_index = companion_policy_scan_line(line, state)
+      if companion_policy_block_scalar_header?(line, comment_index)
+        block_scalar_indent = line_indent
+      end
       next line unless comment_index
 
       content = line[0...comment_index].rstrip
@@ -942,7 +953,9 @@ module BatchPlanPreflight
   end
 
   def companion_policy_quote_opener?(line, index)
-    line[0...index].match?(/(?:\A[ \t]*|[-?][ \t]+|:[ \t]*|[,\[{][ \t]*)\z/)
+    line[0...index].match?(
+      /(?:(?:\A[ \t]*|[-?][ \t]+|:[ \t]*|[,\[{][ \t]*)(?:[!&][^ \t\r\n]+[ \t]+)*)\z/
+    )
   end
 
   def companion_policy_root_indentation(lines)
