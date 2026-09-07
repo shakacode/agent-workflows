@@ -286,3 +286,37 @@ Host-specific tools must be checked before use:
 
 If the tool is unavailable, record the fallback or the blocker. Do not turn an
 unavailable host tool into a portable requirement for all users.
+
+## Optional Astra execution capabilities
+
+These capabilities depend on the active host and API mode. Check availability
+before use; an unsupported feature stays optional and does not block portable
+work. A Codex or Claude tool with a similar name does not establish API support.
+Keep dependency, authority, ownership and current-head gates intact.
+
+- **Pending results:** while a tool or agent is running, do independent work
+  within the accepted scope. Keep its pending handle and consume the actual
+  result before dependent work or completion. Wait when that result is the next
+  dependency; do not repeat the operation to obtain a second handle.
+- **Steering:** incorporate a user update at the next safe checkpoint and
+  reconcile it with in-flight work. Steering does not cancel tools or undo
+  actions. Use explicit host cancellation when needed, verify the outcome, and
+  preserve completed work unless the user authorized reversing it.
+- **Effort:** honor explicit user choices. Change effort only through a supported
+  host control and retain honest requested versus observed values. Do not claim
+  that a prompt request changed runtime configuration.
+
+For an API adapter, the current OpenAI restrictions are:
+
+| Capability | Compatibility boundary |
+| --- | --- |
+| Async tools | GPT-6 Astra and later; application-run function/custom tools, not hosted built-ins. Use direct calls, not programmatic tool calling. In API multi-agent mode, do not combine async tools with parallel tool calls. |
+| Mid-turn steering | GPT-6 Astra over Responses WebSocket. Acceptance queues the update; it does not prove the model has applied it. Continue consuming events and outstanding tool results. |
+| Dynamic effort | `configuration_update` is Astra standard single-agent only, between responses. Preserve the request-level effort and replay updates in their original history positions; the response effort field still reflects the request setting. Adjacent updates are rejected. |
+| Compaction with dynamic effort | Do not combine updates with automatic compaction/truncation or standalone `/responses/compact`. Explicit `compaction_trigger` is supported; add a fresh update after compaction before the next user message. |
+
+These are adapter constraints, not portable orchestration requirements. Recheck
+[async compatibility](https://developers.openai.com/api/docs/guides/async-tool-calling#compatibility),
+[steering](https://developers.openai.com/api/docs/guides/steering), and
+[reasoning updates](https://developers.openai.com/api/docs/guides/reasoning#change-reasoning-mid-conversation)
+when implementing an adapter; do not assume these modes compose freely.

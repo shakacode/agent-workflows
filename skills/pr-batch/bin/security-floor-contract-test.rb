@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 SECURITY_FLOOR_ROOT = File.expand_path("../../..", __dir__)
@@ -17,7 +19,7 @@ class SecurityFloorContractTest < Minitest::Test
     @floor = File.read(SECURITY_FLOOR_PATH, encoding: "UTF-8")
     @workflow = File.read(SECURITY_FLOOR_WORKFLOW_PATH, encoding: "UTF-8")
     @intake = File.read(SECURITY_FLOOR_INTAKE_PATH, encoding: "UTF-8")
-    @skill = File.read(SECURITY_FLOOR_SKILL_PATH, encoding: "UTF-8")
+    @skill = SkillStageSource.read(SECURITY_FLOOR_SKILL_PATH, encoding: "UTF-8")
     @posture = File.read(SECURITY_FLOOR_POSTURE_PATH, encoding: "UTF-8")
   end
 
