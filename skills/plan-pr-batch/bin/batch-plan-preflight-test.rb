@@ -928,21 +928,23 @@ class BatchPlanPreflightTest < Minitest::Test
 
   def test_malformed_policy_fallback_preserves_aligned_flow_entries
     with_companion_repo do |root, fixture|
-      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
-        companion_path_conventions: [
-        { source_glob: "#{fixture.fetch('source_glob')}", companion_glob: "#{fixture.fetch('companion_glob')}" }
-        ]
-        malformed: [
-      YAML
+      ["[", "&rules [", "!rules ["].each do |header|
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+          companion_path_conventions: #{header}
+          { source_glob: "#{fixture.fetch('source_glob')}", companion_glob: "#{fixture.fetch('companion_glob')}" }
+          ]
+          malformed: [
+        YAML
 
-      result, stderr, status = evaluate(
-        companion_input(fixture, paths: [fixture.fetch("source_path")]),
-        chdir: root
-      )
+        result, stderr, status = evaluate(
+          companion_input(fixture, paths: [fixture.fetch("source_path")]),
+          chdir: root
+        )
 
-      assert status.success?, stderr
-      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
-                      "companion-path-omitted"
+        assert status.success?, "#{header}: #{stderr}"
+        assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                        "companion-path-omitted", header
+      end
     end
   end
 

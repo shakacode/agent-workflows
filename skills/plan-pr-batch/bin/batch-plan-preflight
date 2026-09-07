@@ -992,7 +992,8 @@ module BatchPlanPreflight
 
   def companion_policy_flow_value_line?(line)
     line.b.match?(
-      /\A[ \t]*(?:companion_path_conventions|["']companion_path_conventions["'])\s*:\s*[\[{]/
+      /\A[ \t]*(?:companion_path_conventions|["']companion_path_conventions["'])
+       \s*:\s*(?:[!&][^ \t\r\n]+[ \t]+)*[\[{]/x
     )
   end
 
