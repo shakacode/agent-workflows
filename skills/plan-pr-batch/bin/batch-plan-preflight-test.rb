@@ -831,6 +831,24 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_policy_fallback_ignores_brackets_in_block_plain_scalars
+    Dir.mktmpdir("batch-plan-block-policy-bracket") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions:
+          - source_glob: lib/{name}[.rb
+            companion_glob: sig/{name}.rbs
+        malformed: [
+      YAML
+
+      result, stderr, status = evaluate(input_for, chdir: root)
+
+      assert status.success?, stderr
+      assert_equal "accepted", result.fetch("status")
+      assert_empty result.fetch("violations")
+    end
+  end
+
   def test_unreadable_shared_policy_does_not_block_preflight
     Dir.mktmpdir("batch-plan-unreadable-companion") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))

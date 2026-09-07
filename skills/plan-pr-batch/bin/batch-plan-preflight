@@ -946,9 +946,17 @@ module BatchPlanPreflight
   end
 
   def companion_policy_flow_collection_open?(lines, start_index, finish_index)
+    return false unless companion_policy_flow_value_line?(lines[start_index])
+
     fragment = lines[start_index...finish_index].join
     companion_policy_flow_opener_open?(fragment, "[", "]") ||
       companion_policy_flow_opener_open?(fragment, "{", "}")
+  end
+
+  def companion_policy_flow_value_line?(line)
+    line.b.match?(
+      /\A[ \t]*(?:companion_path_conventions|["']companion_path_conventions["'])\s*:\s*[\[{]/
+    )
   end
 
   def companion_policy_flow_opener_open?(fragment, opener, closer)
