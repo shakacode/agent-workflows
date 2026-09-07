@@ -641,6 +641,24 @@ class CoordinationDeclarationContractTest < Minitest::Test
 
   # --- The rule text is present, and its removal is detected -----------------
 
+  def test_not_applicable_gate_requires_host_lifecycle_adapters_to_make_no_backend_calls
+    section = normalize_prose(extract_anchored_section(
+                                read_repo_file(WORKFLOW_PATH), "## Coordination Applicability Gate",
+                                end_heading: /^##[[:blank:]]+/
+                              ))
+
+    assert_includes section, "Before selecting `coordination_not_applicable`"
+    assert_includes section, "optional host lifecycle coordination adapters cannot invoke a backend"
+    assert_includes section, "operator or launcher must verify at host-session start"
+    assert_includes section, "`AGENT_WORKFLOWS_HOOKS=off`"
+    assert_includes section, "`AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV` is absent"
+    assert_includes section, "adapter is not registered"
+    assert_includes section, "stop before N/A launch"
+    assert_includes section, "child tool shell cannot change an already-running parent host hook"
+    assert_includes section, "adapter does not consume applicability"
+    assert_includes section, "this classification is prompt-driven and nothing verifies it at runtime"
+  end
+
   def test_every_required_surface_carries_the_canonical_rule
     normalized_rule = normalize_prose(COORDINATION_DECLARATION_RULE)
     missing = REQUIRED_SURFACES.reject do |_label, path|

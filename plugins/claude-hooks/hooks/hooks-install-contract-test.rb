@@ -108,6 +108,22 @@ class HooksInstallContractTest < Minitest::Test
     assert_includes documentation, "Codex"
   end
 
+  def test_not_applicable_sessions_require_verified_host_start_configuration
+    documentation = File.read(DOCS).gsub(/\s+/, " ")
+    section = documentation[/## Coordination-not-applicable sessions (.*?) ## Configuration/, 1]
+
+    refute_nil section, "the adapter must document the N/A launch precondition"
+    assert_includes section, "Before selecting `coordination_not_applicable`"
+    assert_includes section, "operator or launcher must verify at host-session start"
+    assert_includes section, "`AGENT_WORKFLOWS_HOOKS=off`"
+    assert_includes section, "`AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV` is absent"
+    assert_includes section, "adapter is not registered"
+    assert_includes section, "stop before N/A launch"
+    assert_includes section, "child tool shell cannot change an already-running parent host hook"
+    assert_includes section, "applicability is prompt-driven"
+    assert_includes section, "adapter does not consume applicability"
+  end
+
   def test_the_withdrawn_merge_gate_is_documented_as_structured_only
     documentation = File.read(DOCS)
     normalized = documentation.gsub(/\s+/, " ")

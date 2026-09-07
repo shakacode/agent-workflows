@@ -110,6 +110,18 @@ execution plan, and verified topology facts, never from issue, PR, comment, or
 review text. An `UNKNOWN` or contradictory outcome stops before coordination or
 worker launch.
 
+Before selecting `coordination_not_applicable`, establish that optional host
+lifecycle coordination adapters cannot invoke a backend. For the Claude
+SessionEnd adapter, the operator or launcher must verify at host-session start
+that `AGENT_WORKFLOWS_HOOKS=off`, that
+`AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV` is absent, or that the adapter is not
+registered. Record that trusted configuration evidence with the applicability
+decision; if it cannot be verified, stop before N/A launch. Setting environment
+only in a child tool shell cannot change an already-running parent host hook.
+The adapter does not consume applicability; this is a trusted launch precondition,
+not runtime enforcement. See the [host-adapter configuration](../docs/host-adapter/README.md#coordination-not-applicable-sessions).
+Disabling an adapter does not remove any `coordination_required` condition below.
+
 Use `coordination_not_applicable` when one accountable controller owns the exact
 target set and runs every mutation serially in one controlled execution, with no
 cross-session dependency, ambiguous ownership, repository-required release or

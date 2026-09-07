@@ -88,6 +88,28 @@ The explicit `args` array selects the host's exec form, so spaces or shell
 metacharacters in either path are not parsed as shell syntax. Claude Code
 substitutes its stable session-start project root for `${CLAUDE_PROJECT_DIR}`.
 
+## Coordination-not-applicable sessions
+
+Before selecting `coordination_not_applicable`, the operator or launcher must
+verify at host-session start that `AGENT_WORKFLOWS_HOOKS=off`, that
+`AGENT_WORKFLOWS_CONDITIONAL_DRAIN_ARGV` is absent, or that the adapter is not
+registered. These existing controls prevent backend invocation even when the
+repository has a real configured backend. Record the trusted host configuration
+with the [applicability decision](../../workflows/pr-processing.md#coordination-applicability-gate);
+if it cannot be verified, stop before N/A launch. Do not change live user settings
+implicitly to satisfy the precondition.
+
+Setting environment only in a child tool shell cannot change an already-running
+parent host hook. Configure the host through its operator or launcher before
+starting the session; a child-only export is not evidence of the parent hook's
+configuration. Coordination applicability is prompt-driven, and the adapter does
+not consume applicability. An enabled adapter with a conditional-drain
+advertisement can therefore invoke the backend regardless of the recorded
+applicability outcome. The backend's conditional claim check prevents a phantom
+event without a matching live claim, but does not satisfy the N/A no-call rule.
+This precondition is not runtime enforcement and does not remove any existing
+`coordination_required` condition.
+
 ## Configuration
 
 | Variable | Meaning |
