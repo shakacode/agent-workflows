@@ -892,7 +892,9 @@ module BatchPlanPreflight
 
   def companion_policy_block_scalar_header?(line, comment_index)
     content = (comment_index ? line[0...comment_index] : line).rstrip
-    content.match?(/(?:\A|:\s+|-\s+)[|>](?:[1-9][+-]?|[+-][1-9]?)?\z/)
+    content.match?(
+      /(?:\A|:\s+|-\s+)(?:[!&][^ \t\r\n]+\s+)*[|>](?:[1-9][+-]?|[+-][1-9]?)?\z/
+    )
   end
 
   def companion_policy_strip_comments(lines)

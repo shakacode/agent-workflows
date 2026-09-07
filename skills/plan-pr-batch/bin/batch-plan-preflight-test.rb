@@ -850,20 +850,23 @@ class BatchPlanPreflightTest < Minitest::Test
   end
 
   def test_malformed_policy_fallback_tracks_block_scalar_content
-    Dir.mktmpdir("batch-plan-block-scalar-policy") do |root|
-      FileUtils.mkdir_p(File.join(root, ".agents"))
-      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
-        notes: |
-          "
-        companion_path_conventions: invalid
-        malformed: [
-      YAML
+    headers = ["|", "&note |", "!text |"]
+    headers.each do |header|
+      Dir.mktmpdir("batch-plan-block-scalar-policy") do |root|
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+          notes: #{header}
+            "
+          companion_path_conventions: invalid
+          malformed: [
+        YAML
 
-      result, _stderr, status = evaluate(input_for, chdir: root)
+        result, _stderr, status = evaluate(input_for, chdir: root)
 
-      refute status.success?
-      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
-                      "companion-path-conventions-invalid"
+        refute status.success?, header
+        assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                        "companion-path-conventions-invalid", header
+      end
     end
   end
 
