@@ -27,6 +27,7 @@ class CodexPluginManifestCheckTest < Minitest::Test
     manifest = JSON.parse(File.read(File.join(root, ".claude-plugin/plugin.json"), encoding: "UTF-8"))
 
     assert_equal "ShakaCode Agent Workflows", manifest["displayName"]
+    refute manifest.key?("version"), "Git-backed Claude installs must use the commit SHA as their update key"
   end
 
   def test_current_codex_marketplace_publishes_scw_from_repository_url
@@ -210,14 +211,14 @@ class CodexPluginManifestCheckTest < Minitest::Test
     end
   end
 
-  def test_claude_version_must_match_version_file
+  def test_claude_manifest_rejects_explicit_version
     with_source_pack do |root|
       write_claude_manifest(root, "version" => "9.9.9")
 
       out, status = run_check(root)
 
       refute status.success?, out
-      assert_includes out, "version must match VERSION \"0.1.0\""
+      assert_includes out, "Claude manifest must omit version so Git-backed installs track commit revisions"
     end
   end
 
@@ -411,7 +412,7 @@ class CodexPluginManifestCheckTest < Minitest::Test
   end
 
   def write_claude_manifest(root, overrides = {})
-    manifest = base_manifest.reject { |key, _value| key == "interface" }
+    manifest = base_manifest.reject { |key, _value| %w[interface version].include?(key) }
                             .merge("displayName" => "ShakaCode Agent Workflows", "license" => "MIT")
                             .merge(overrides)
     File.write(File.join(root, ".claude-plugin/plugin.json"), "#{JSON.pretty_generate(manifest)}\n")
