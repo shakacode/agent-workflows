@@ -17,6 +17,10 @@ options = {}
 OptionParser.new do |parser|
   parser.banner = "Usage: goal-state-change-monitor --state PATH < observation.json"
   parser.on("--state PATH", "Restart-safe monitor state path") { |value| options[:state_path] = value }
+  parser.on(
+    "--cleanup-after-clean-review PLAN_IDENTITY",
+    "Remove this plan's settled monitor state after a clean terminal review"
+  ) { |value| options[:cleanup_plan_identity] = value }
 end.parse!
 
 def fail_json(reason)
@@ -79,6 +83,14 @@ def sha256_digest?(value)
   value.is_a?(String) && value.match?(/\A[0-9a-f]{64}\z/)
 end
 
+def full_git_sha?(value)
+  value.is_a?(String) && value.match?(/\A[0-9a-f]{40}\z/)
+end
+
+def nonempty_string?(value)
+  value.is_a?(String) && !value.strip.empty? && value == value.strip
+end
+
 def identity_failure_reason(value, present: true)
   return "plan-identity-missing" unless present
   return "plan-identity-malformed" unless value.is_a?(String)
@@ -92,6 +104,68 @@ def known_identity?(value)
   identity_failure_reason(value).nil?
 end
 
+def assess_artifact_boundary(boundary, plan_identity, blocker_state)
+  fail_json("artifact-boundary-object-required") unless boundary.is_a?(Hash)
+  unless boundary["contract"] == "task-local-artifact-boundary" && boundary["version"] == 1
+    fail_json("invalid-artifact-boundary-contract")
+  end
+
+  current_head_sha = boundary["current_head_sha"]
+  fail_json("invalid-artifact-boundary-head") unless full_git_sha?(current_head_sha)
+  fail_json("artifact-boundary-head-conflict") unless blocker_state["head"] == current_head_sha
+
+  sha_bound_artifacts = boundary["sha_bound_artifacts"]
+  fail_json("sha-bound-artifacts-array-required") unless sha_bound_artifacts.is_a?(Array)
+  assessed_sha_bound_artifacts = sha_bound_artifacts.map do |artifact|
+    valid_artifact = artifact.is_a?(Hash) &&
+                     nonempty_string?(artifact["artifact_id"]) &&
+                     full_git_sha?(artifact["head_sha"])
+    fail_json("invalid-sha-bound-artifact") unless valid_artifact
+    identity_reason = identity_failure_reason(
+      artifact["plan_identity"], present: artifact.key?("plan_identity")
+    )
+    fail_json(identity_reason) if identity_reason
+    fail_json("plan-identity-collision") unless artifact["plan_identity"] == plan_identity
+
+    reusable = artifact["head_sha"] == current_head_sha
+    {
+      "artifact_id" => artifact.fetch("artifact_id"),
+      "status" => reusable ? "reusable" : "invalidated",
+      "reason" => reusable ? "head-match" : "head-moved"
+    }
+  end
+
+  coordination_identity = boundary["coordination_identity"]
+  coordination_keys = %w[repository_target batch_id lane_id]
+  unless coordination_identity.is_a?(Hash) && coordination_keys.all? do |key|
+           nonempty_string?(coordination_identity[key])
+         end
+    fail_json("invalid-coordination-identity")
+  end
+
+  coordination_receipts = boundary["coordination_receipts"]
+  fail_json("coordination-receipts-array-required") unless coordination_receipts.is_a?(Array)
+  assessed_coordination_receipts = coordination_receipts.map do |receipt|
+    valid_receipt = receipt.is_a?(Hash) &&
+                    nonempty_string?(receipt["artifact_id"]) &&
+                    coordination_keys.all? { |key| receipt[key] == coordination_identity[key] } &&
+                    nonempty_string?(receipt["holder"]) &&
+                    positive_integer(receipt["generation"]) &&
+                    nonempty_string?(receipt["instance_id"]) &&
+                    nonempty_string?(receipt["schema"]) &&
+                    nonempty_string?(receipt["observed_at"])
+    fail_json("invalid-coordination-receipt-identity") unless valid_receipt
+
+    { "artifact_id" => receipt.fetch("artifact_id"), "status" => "reusable" }
+  end
+
+  {
+    "current_head_sha" => current_head_sha,
+    "sha_bound_artifacts" => assessed_sha_bound_artifacts,
+    "coordination_receipts" => assessed_coordination_receipts
+  }
+end
+
 def plan_bound_artifacts(state)
   return [] unless state.is_a?(Hash)
 
@@ -103,6 +177,8 @@ def plan_bound_artifacts(state)
   end
   pending_wake = state["pending_wake"]
   if pending_wake.is_a?(Hash)
+    acknowledgement_payload = pending_wake["acknowledgement_payload"]
+    artifacts << acknowledgement_payload if acknowledgement_payload.is_a?(Hash)
     pending_decision = pending_wake["decision"]
     if pending_decision.is_a?(Hash)
       artifacts << pending_decision
@@ -148,6 +224,9 @@ def persisted_acknowledgement_payload?(payload, state, wake_id, validate_plan_id
                       payload["probe_sequence"] == state["probe_sequence"]
 
   digest_payload = payload.reject { |key, _value| key == "acknowledged_wake_id" }
+  unless validate_plan_identity
+    digest_payload = digest_payload.merge("plan_identity" => state["plan_identity"])
+  end
   Digest::SHA256.hexdigest(canonical_json(digest_payload)) == state["last_observation_digest"]
 end
 
@@ -218,6 +297,51 @@ def persist_state(state_path, state)
   File.rename(temporary_path, state_path)
 end
 
+def cleanup_settled_monitor_state(state_path, plan_identity)
+  identity_reason = identity_failure_reason(plan_identity)
+  fail_json(identity_reason) if identity_reason
+  fail_json("cleanup-state-missing") unless File.file?(state_path) && !File.symlink?(state_path)
+
+  canonical_state_path = File.join(File.realpath(File.dirname(state_path)), File.basename(state_path))
+  File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
+    lock.flock(File::LOCK_EX)
+    fail_json("cleanup-state-missing") unless File.file?(state_path) && !File.symlink?(state_path)
+
+    state, bound_stat = File.open(state_path, "r") do |state_file|
+      [JSON.parse(state_file.read), state_file.stat]
+    rescue JSON::ParserError
+      fail_json("corrupt-persisted-state")
+    end
+    persisted_identity_reason = persisted_identity_failure(state, plan_identity)
+    unless persisted_state?(state)
+      if persisted_identity_reason && persisted_state?(state, validate_plan_identity: false)
+        fail_json(persisted_identity_reason)
+      end
+
+      fail_json("corrupt-persisted-state")
+    end
+    fail_json(persisted_identity_reason) if persisted_identity_reason
+    fail_json("cleanup-unsettled-wake") if state.key?("pending_wake")
+    fail_json("cleanup-monitor-not-stopped") unless state["monitor_status"] == "stopped"
+
+    current_stat = File.lstat(state_path)
+    unless current_stat.file? && current_stat.dev == bound_stat.dev && current_stat.ino == bound_stat.ino
+      fail_json("cleanup-state-rebound")
+    end
+
+    File.unlink(state_path)
+  end
+
+  puts JSON.generate(
+    "contract" => "goal-state-change-cleanup-decision",
+    "version" => 1,
+    "status" => "ok",
+    "plan_identity" => plan_identity,
+    "action" => "removed-owned-monitor-scratch",
+    "removed_paths" => [canonical_state_path]
+  )
+end
+
 def json_pointer_token(value)
   value.to_s.gsub("~", "~0").gsub("/", "~1")
 end
@@ -243,6 +367,10 @@ end
 
 state_path = options[:state_path]
 fail_json("missing-state-path") unless state_path.is_a?(String) && !state_path.empty?
+if options[:cleanup_plan_identity]
+  cleanup_settled_monitor_state(state_path, options.fetch(:cleanup_plan_identity))
+  exit
+end
 
 begin
   observation = JSON.parse($stdin.read)
@@ -265,6 +393,11 @@ fail_json("invalid-task-status") unless %w[resumable terminal not-resumable bloc
 dependency_status = observation["dependency_status"]
 fail_json("invalid-dependency-status") unless %w[nonterminal terminal].include?(dependency_status)
 fail_json("blocker-state-object-required") unless observation["blocker_state"].is_a?(Hash)
+artifact_boundary = if observation.key?("artifact_boundary")
+                      assess_artifact_boundary(
+                        observation.fetch("artifact_boundary"), plan_identity, observation.fetch("blocker_state")
+                      )
+                    end
 resume_instruction = observation["resume_instruction"]
 unless resume_instruction.is_a?(String) && !resume_instruction.strip.empty?
   fail_json("resume-instruction-required")
@@ -595,6 +728,7 @@ File.open("#{state_path}.lock", File::RDWR | File::CREAT, 0o600) do |lock|
     "wake_parent" => wake_parent,
     "monitor_status" => monitor_status
   }
+  decision["artifact_boundary"] = artifact_boundary if artifact_boundary
   if capability == "model-polling-only" && monitor_status == "active"
     exponent = [unchanged_runs - fast_attempts + 1, 0].max
     decision["next_interval_seconds"] = [fast_interval_seconds * (2**exponent), max_interval_seconds].min

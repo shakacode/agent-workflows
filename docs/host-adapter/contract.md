@@ -167,12 +167,34 @@ evidence whose repository, batch/lane, ownership generation, schema, and
 timestamps still validate; plan-bound monitor state instead reports the head
 change through its blocker-state delta and reruns the current-head gates.
 
+For a deterministic executable check, an observation may carry a
+`task-local-artifact-boundary` v1 object. Its `current_head_sha` must equal the
+full SHA in `blocker_state.head`. Each SHA-bound artifact supplies an artifact
+id, exact plan identity, and captured head; the reducer reports it as
+`reusable/head-match` only at that head and as `invalidated/head-moved`
+otherwise. The boundary separately supplies the expected repository target,
+batch, and lane for coordination receipts; each receipt must also retain its
+holder, positive generation, instance id, schema, and observation time. A valid
+coordination receipt remains `reusable` across a code-head move because its
+ownership identity does not depend on that SHA. Invalid or foreign identity
+fails before monitor-state mutation.
+
 Cleanup is allowlisted, not directory-wide. Only after a clean final task review
 or closeout may the adapter remove disposable scratch whose exact path and plan
 identity prove that the current run owns it. Preserve durable receipts, Git
 history, retained review rounds, unresolved wake delivery, and externally owned
 worktrees. An identity failure preserves the artifact for reconciliation rather
 than deleting it.
+
+The monitor exposes the narrow executable cleanup operation
+`--cleanup-after-clean-review PLAN_IDENTITY` for its own state path. The option
+is the adapter's explicit clean-terminal-review signal; the reducer then binds
+the regular file, validates the complete persisted state and exact plan
+identity under the monitor lock, and removes only that file. It refuses foreign
+identity, an unsettled `pending_wake`, a monitor not yet stopped, malformed
+state, or a path that changes after binding. It never accepts a directory or a
+caller-supplied deletion list, so durable receipts, Git history, retained review
+rounds, and external worktrees remain outside its deletion surface.
 
 ## Scheduled Monitoring and Planning-Chat Lifecycle
 

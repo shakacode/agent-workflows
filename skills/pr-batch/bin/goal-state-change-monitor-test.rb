@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "digest"
+require "fileutils"
 require "json"
 require "minitest/autorun"
 require "open3"
@@ -35,6 +36,17 @@ class GoalStateChangeMonitorTest < Minitest::Test
       "--state",
       state_path,
       stdin_data: JSON.generate(input)
+    )
+    [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
+  end
+
+  def run_cleanup(state_path, plan_identity)
+    stdout, stderr, status = Open3.capture3(
+      HELPER,
+      "--state",
+      state_path,
+      "--cleanup-after-clean-review",
+      plan_identity
     )
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
   end
@@ -190,16 +202,62 @@ class GoalStateChangeMonitorTest < Minitest::Test
   def test_moved_head_invalidates_code_state_without_invalidating_plan_bound_monitor_evidence
     Dir.mktmpdir do |directory|
       state_path = File.join(directory, "monitor.json")
-      baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+      head_a = "a" * 40
+      head_b = "b" * 40
+      artifact_boundary = {
+        "contract" => "task-local-artifact-boundary",
+        "version" => 1,
+        "current_head_sha" => head_a,
+        "coordination_identity" => {
+          "repository_target" => "shakacode/agent-workflows:issue:391",
+          "batch_id" => "aw-c-391-plan-bound-state",
+          "lane_id" => "aw391-implementation"
+        },
+        "sha_bound_artifacts" => [
+          {
+            "artifact_id" => "review-package-round-0",
+            "plan_identity" => "plan-a",
+            "head_sha" => head_a
+          }
+        ],
+        "coordination_receipts" => [
+          {
+            "artifact_id" => "claim-receipt",
+            "repository_target" => "shakacode/agent-workflows:issue:391",
+            "batch_id" => "aw-c-391-plan-bound-state",
+            "lane_id" => "aw391-implementation",
+            "holder" => "worker-1",
+            "generation" => 7,
+            "instance_id" => "instance-1",
+            "schema" => "claim-receipt-v1",
+            "observed_at" => "2026-08-09T00:00:00Z"
+          }
+        ]
+      }
+      initial = observation("artifact_boundary" => artifact_boundary)
+      baseline, baseline_stderr, baseline_status = run_helper(state_path, initial)
       assert baseline_status.success?, baseline_stderr
       assert_equal false, baseline.fetch("wake_parent")
       assert_equal "plan-a", baseline.fetch("plan_identity")
+      assert_equal(
+        {
+          "current_head_sha" => head_a,
+          "sha_bound_artifacts" => [
+            { "artifact_id" => "review-package-round-0", "status" => "reusable", "reason" => "head-match" }
+          ],
+          "coordination_receipts" => [
+            { "artifact_id" => "claim-receipt", "status" => "reusable" }
+          ]
+        },
+        baseline.fetch("artifact_boundary")
+      )
 
-      changed_state = { "head" => "b" * 40, "pending" => [] }
+      changed_state = { "head" => head_b, "pending" => [] }
       decision, stderr, status = run_helper(
         state_path,
         observation(
           "blocker_state" => changed_state,
+          "artifact_boundary" => artifact_boundary.merge("current_head_sha" => head_b),
           "probe_sequence" => 1,
           "observed_at" => "2026-08-09T00:15:00Z"
         )
@@ -210,9 +268,19 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert decision.fetch("wake_parent")
       assert_equal "plan-a", decision.fetch("plan_identity")
       assert_equal(
+        [
+          { "artifact_id" => "review-package-round-0", "status" => "invalidated", "reason" => "head-moved" }
+        ],
+        decision.dig("artifact_boundary", "sha_bound_artifacts")
+      )
+      assert_equal(
+        [{ "artifact_id" => "claim-receipt", "status" => "reusable" }],
+        decision.dig("artifact_boundary", "coordination_receipts")
+      )
+      assert_equal(
         {
           "changes" => [
-            { "path" => "/head", "previous" => "a" * 40, "current" => "b" * 40 },
+            { "path" => "/head", "previous" => head_a, "current" => head_b },
             { "path" => "/pending", "previous" => ["validate"], "current" => [] }
           ]
         },
@@ -222,6 +290,106 @@ class GoalStateChangeMonitorTest < Minitest::Test
       assert_equal "plan-a", persisted.fetch("plan_identity")
       assert_equal "thread-393:checks", persisted.fetch("monitor_id")
       assert_equal({ "model_calls" => 0, "tokens" => 0 }, persisted.fetch("usage"))
+    end
+  end
+
+  def test_clean_review_cleanup_removes_only_owned_settled_monitor_scratch
+    Dir.mktmpdir do |directory|
+      scratch_directory = File.join(directory, "scratch")
+      state_path = File.join(scratch_directory, "monitor.json")
+      durable_receipt = File.join(directory, "durable", "claim-receipt.json")
+      repository = File.join(directory, "repository")
+      external_worktree = File.join(directory, "external-worktree")
+      FileUtils.mkdir_p(File.dirname(durable_receipt))
+      FileUtils.mkdir_p(external_worktree)
+      File.write(durable_receipt, JSON.generate("contract" => "claim-receipt-v1"))
+      File.write(File.join(external_worktree, "owned-by-another-run"), "preserve\n")
+      system("git", "init", "--quiet", repository) || raise("git init failed")
+      File.write(File.join(repository, "tracked.txt"), "durable history\n")
+      system("git", "-C", repository, "add", "tracked.txt") || raise("git add failed")
+      system(
+        "git", "-C", repository, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "--quiet", "-m", "durable receipt"
+      ) || raise("git commit failed")
+      git_head, git_head_status = Open3.capture2("git", "-C", repository, "rev-parse", "HEAD")
+      assert git_head_status.success?
+      git_head = git_head.strip
+
+      _terminal, terminal_stderr, terminal_status = run_helper(
+        state_path,
+        observation("task_status" => "terminal")
+      )
+      assert terminal_status.success?, terminal_stderr
+
+      cleanup, cleanup_stderr, cleanup_status = run_cleanup(state_path, "plan-a")
+
+      assert cleanup_status.success?, cleanup_stderr
+      assert_equal "removed-owned-monitor-scratch", cleanup.fetch("action")
+      assert_equal ["#{File.realpath(scratch_directory)}/monitor.json"], cleanup.fetch("removed_paths")
+      refute_path_exists state_path
+      assert_path_exists durable_receipt
+      current_git_head, current_git_status = Open3.capture2("git", "-C", repository, "rev-parse", "HEAD")
+      assert current_git_status.success?
+      assert_equal git_head, current_git_head.strip
+      assert_path_exists File.join(external_worktree, "owned-by-another-run")
+
+      foreign_state_path = File.join(scratch_directory, "foreign.json")
+      _foreign, foreign_stderr, foreign_status = run_helper(
+        foreign_state_path,
+        observation("task_status" => "terminal")
+      )
+      assert foreign_status.success?, foreign_stderr
+      foreign_before = File.read(foreign_state_path)
+      foreign_cleanup, foreign_cleanup_stderr, foreign_cleanup_status = run_cleanup(foreign_state_path, "plan-b")
+      assert_nil foreign_cleanup
+      refute foreign_cleanup_status.success?
+      assert_includes foreign_cleanup_stderr, '"reason":"plan-identity-collision"'
+      assert_equal foreign_before, File.read(foreign_state_path)
+
+      pending_state_path = File.join(scratch_directory, "pending.json")
+      _baseline, baseline_stderr, baseline_status = run_helper(pending_state_path, observation)
+      assert baseline_status.success?, baseline_stderr
+      _wake, wake_stderr, wake_status = run_helper(
+        pending_state_path,
+        observation(
+          "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+          "probe_sequence" => 1,
+          "observed_at" => "2026-08-09T00:15:00Z"
+        )
+      )
+      assert wake_status.success?, wake_stderr
+      pending_before = File.read(pending_state_path)
+      pending_cleanup, pending_cleanup_stderr, pending_cleanup_status = run_cleanup(pending_state_path, "plan-a")
+      assert_nil pending_cleanup
+      refute pending_cleanup_status.success?
+      assert_includes pending_cleanup_stderr, '"reason":"cleanup-unsettled-wake"'
+      assert_equal pending_before, File.read(pending_state_path)
+
+      active_state_path = File.join(scratch_directory, "active.json")
+      _active, active_stderr, active_status = run_helper(active_state_path, observation)
+      assert active_status.success?, active_stderr
+      active_before = File.read(active_state_path)
+      active_cleanup, active_cleanup_stderr, active_cleanup_status = run_cleanup(active_state_path, "plan-a")
+      assert_nil active_cleanup
+      refute active_cleanup_status.success?
+      assert_includes active_cleanup_stderr, '"reason":"cleanup-monitor-not-stopped"'
+      assert_equal active_before, File.read(active_state_path)
+    end
+  end
+
+  def test_malformed_artifact_boundary_fails_before_monitor_state_mutation
+    Dir.mktmpdir do |directory|
+      state_path = File.join(directory, "monitor.json")
+
+      decision, stderr, status = run_helper(
+        state_path,
+        observation("artifact_boundary" => false)
+      )
+
+      assert_nil decision
+      refute status.success?
+      assert_includes stderr, '"reason":"artifact-boundary-object-required"'
+      refute_path_exists state_path
     end
   end
 
@@ -2131,6 +2299,57 @@ class GoalStateChangeMonitorTest < Minitest::Test
         refute status.success?, label
         assert_includes stderr, "\"reason\":\"#{expected_reason}\"", label
         assert_equal persisted_before_resume, File.read(state_path), label
+      end
+    end
+  end
+
+  def test_pending_acknowledgement_identity_reports_the_exact_reconciliation_reason
+    invalid_plan_identities = {
+      nil => "plan-identity-missing",
+      7 => "plan-identity-malformed",
+      "" => "plan-identity-blank",
+      "   " => "plan-identity-blank",
+      "UNKNOWN" => "plan-identity-unknown",
+      "unknown" => "plan-identity-unknown",
+      " plan-a" => "plan-identity-ambiguous",
+      "plan-a " => "plan-identity-ambiguous",
+      "plan-b" => "plan-identity-collision"
+    }
+
+    invalid_plan_identities.each do |plan_identity, expected_reason|
+      Dir.mktmpdir do |directory|
+        state_path = File.join(directory, "monitor.json")
+        _baseline, baseline_stderr, baseline_status = run_helper(state_path, observation)
+        assert baseline_status.success?, baseline_stderr
+        _wake, wake_stderr, wake_status = run_helper(
+          state_path,
+          observation(
+            "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+            "probe_sequence" => 1,
+            "observed_at" => "2026-08-09T00:15:00Z"
+          )
+        )
+        assert wake_status.success?, wake_stderr
+
+        persisted = JSON.parse(File.read(state_path))
+        payload = persisted.dig("pending_wake", "acknowledgement_payload")
+        plan_identity.nil? ? payload.delete("plan_identity") : payload["plan_identity"] = plan_identity
+        File.write(state_path, JSON.generate(persisted))
+        state_before_resume = File.read(state_path)
+
+        decision, stderr, status = run_helper(
+          state_path,
+          observation(
+            "blocker_state" => { "head" => "b" * 40, "pending" => [] },
+            "probe_sequence" => 2,
+            "observed_at" => "2026-08-09T00:30:00Z"
+          )
+        )
+
+        assert_nil decision
+        refute status.success?
+        assert_includes stderr, "\"reason\":\"#{expected_reason}\""
+        assert_equal state_before_resume, File.read(state_path)
       end
     end
   end
