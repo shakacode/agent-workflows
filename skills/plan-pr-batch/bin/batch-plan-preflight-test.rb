@@ -751,6 +751,43 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_aliased_companion_policy_key_fails_closed
+    Dir.mktmpdir("batch-plan-aliased-policy-key") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        policy_key: &policy_key companion_path_conventions
+        *policy_key: invalid
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_reused_anchor_names_do_not_hide_merged_companion_policy
+    Dir.mktmpdir("batch-plan-reused-merge-anchor") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        old: &shared
+          companion_path_conventions: invalid
+        middle: &middle
+          <<: *shared
+        newer: &shared
+          <<: *middle
+        <<: *shared
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
   def test_malformed_declared_companion_policy_fails_closed
     Dir.mktmpdir("batch-plan-malformed-companion-policy") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))

@@ -762,13 +762,15 @@ module BatchPlanPreflight
       next [] unless root.is_a?(Psych::Nodes::Mapping)
 
       root_pairs = root.children.each_slice(2).to_a
+      alias_targets = companion_policy_alias_targets(root)
       companion_values = root_pairs.filter_map do |key, value|
-        value if companion_policy_key_node?(key)
+        value if companion_policy_key_node?(key, alias_targets)
       end
 
-      if companion_values.empty? && root_pairs.any? { |key, _value| merge_key_node?(key) }
-        alias_targets = companion_policy_alias_targets(root)
-        return [:invalid, nil] if companion_policy_mapping_has_companion_key?(root, alias_targets)
+      if companion_values.empty? &&
+         root_pairs.any? { |key, _value| merge_key_node?(key) } &&
+         companion_policy_mapping_has_companion_key?(root, alias_targets)
+        return [:invalid, nil]
       end
 
       companion_values
@@ -779,7 +781,8 @@ module BatchPlanPreflight
     [:present, matching_values.first]
   end
 
-  def companion_policy_key_node?(node)
+  def companion_policy_key_node?(node, alias_targets = {})
+    node = alias_targets[node] if node.is_a?(Psych::Nodes::Alias)
     node.is_a?(Psych::Nodes::Scalar) && node.value == "companion_path_conventions"
   end
 
@@ -794,20 +797,21 @@ module BatchPlanPreflight
     when Psych::Nodes::Mapping, Psych::Nodes::Sequence
       anchors[node.anchor] = node if node.anchor
       node.children.each { |child| companion_policy_alias_targets(child, anchors, alias_targets) }
+    when Psych::Nodes::Scalar
+      anchors[node.anchor] = node if node.anchor
     end
     alias_targets
   end
 
-  def companion_policy_mapping_has_companion_key?(mapping, alias_targets, seen = {})
+  def companion_policy_mapping_has_companion_key?(mapping, alias_targets, seen = {}.compare_by_identity)
     return false unless mapping.is_a?(Psych::Nodes::Mapping)
+    return false if seen.key?(mapping)
 
-    anchor = mapping.anchor
-    return false if anchor && seen[anchor]
-
-    seen = seen.merge(anchor => true) if anchor
+    seen = seen.dup
+    seen[mapping] = true
 
     pairs = mapping.children.each_slice(2).to_a
-    return true if pairs.any? { |key, _value| companion_policy_key_node?(key) }
+    return true if pairs.any? { |key, _value| companion_policy_key_node?(key, alias_targets) }
 
     pairs.any? do |key, value|
       merge_key_node?(key) && companion_policy_merge_value_has_companion_key?(value, alias_targets, seen)
