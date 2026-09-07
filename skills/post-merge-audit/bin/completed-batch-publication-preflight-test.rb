@@ -1978,6 +1978,20 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     assert CompletedBatchPublicationPreflight.verified_target_api_snapshot(payload, normalized)
   end
 
+  def test_waiver_reference_accepts_www_alias_for_canonical_public_target
+    target = CompletedBatchPublicationPreflight.validated_target(
+      "host" => "www.github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_049
+    )
+    url = "https://www.github.com/shakacode/hichee/pull/10049#issuecomment-5000000000"
+
+    reference = CompletedBatchPublicationPreflight.waiver_comment_reference(url, target)
+
+    assert_equal({ "url" => url, "comment_id" => 5_000_000_000 }, reference)
+  end
+
   def test_receipt_binds_the_exact_raw_source_input
     input = fixture("completed-batch-publication-hichee-terminal.json")
     result = assess_input(input)
