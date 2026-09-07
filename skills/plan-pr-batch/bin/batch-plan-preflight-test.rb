@@ -104,6 +104,27 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_directory_rename_reservation_covers_companion_descendants
+    with_companion_repo do |root, fixture|
+      companion_directory = File.dirname(fixture.fetch("companion_path"))
+      reservation = expansion_rename_reservation(
+        lane_id: fixture.fetch("lane_id"),
+        old_path: companion_directory,
+        new_path: "renamed-#{companion_directory}"
+      )
+      input = companion_input(
+        fixture,
+        paths: [fixture.fetch("source_path")],
+        reservations: [reservation]
+      )
+
+      result, stderr, status = evaluate(input, chdir: root)
+
+      assert status.success?, stderr
+      refute(result.fetch("advisories").any? { |item| item["code"] == "companion-path-omitted" })
+    end
+  end
+
   def test_reserved_source_path_produces_companion_advisory
     with_companion_repo do |root, fixture|
       reservation = expansion_path_reservation(
@@ -744,6 +765,22 @@ class BatchPlanPreflightTest < Minitest::Test
       assert status.success?, stderr
       assert_equal "accepted", result.fetch("status")
       assert_empty result.fetch("violations")
+    end
+  end
+
+  def test_explicitly_tagged_merge_key_fails_closed
+    Dir.mktmpdir("batch-plan-tagged-merge-key") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        !!merge '<<':
+          companion_path_conventions: invalid
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
     end
   end
 

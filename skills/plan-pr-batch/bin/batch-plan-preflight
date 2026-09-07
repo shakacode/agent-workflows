@@ -705,6 +705,11 @@ module BatchPlanPreflight
           companion_path = render_companion_path(convention.fetch("companion_glob"), captures)
           next unless companion_path && File.file?(File.join(repo_root, companion_path))
           next if effective_paths.include?(companion_path)
+          next if map.fetch("renames").any? do |rename|
+            rename.values.any? do |endpoint|
+              companion_path == endpoint || companion_path.start_with?("#{endpoint}/")
+            end
+          end
 
           violation(
             "companion-path-omitted",
@@ -787,7 +792,9 @@ module BatchPlanPreflight
   end
 
   def merge_key_node?(node)
-    node.is_a?(Psych::Nodes::Scalar) && node.plain && node.value == "<<"
+    node.is_a?(Psych::Nodes::Scalar) &&
+      node.value == "<<" &&
+      (node.plain || node.tag == "tag:yaml.org,2002:merge")
   end
 
   def companion_policy_alias_targets(node, anchors = {}, alias_targets = {}.compare_by_identity)
