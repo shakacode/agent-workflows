@@ -165,7 +165,7 @@ HUMAN_STATUS_REQUIRED_PHRASES = [
   "security, ownership, retry, scope, continuous integration (CI), review, or merge gates"
 ].freeze
 PENDING_REVIEW_DRAFT_GUARD = "Current-head `PENDING` review drafts visible to the current authenticated viewer also block readiness; the helper inventories that viewer-visible scope paginated. Its `complete` value means only that pagination completed in the authenticated-viewer scope; other reviewers' unsubmitted drafts are not observable or covered, and incomplete or unavailable inventory is `UNKNOWN`."
-OBJECTIVE_PROMPT_LINE = "Objective:..."
+OBJECTIVE_PROMPT_LINE = "Objective: ..."
 LANE_CARD_URLS_GRAMMAR = "holder/branch/PR/phase/URLs/UNKNOWN"
 CANONICAL_CLOSEOUT_PROMPT_LINE =
   "Final:canonical closeout;links/tests/blockers/next/confidence/UNKNOWN/authority/QA/state"
@@ -224,6 +224,27 @@ CONTINUATION_INVOCATION_LINE = "Use $pr-batch to continue PR-batch closeout, not
 CONTINUATION_BATCH_TITLE_LINE = "Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <continuation title>"
 CONTINUATION_THREAD_HANDLE_LINE = "Thread handle: <batch-short>-<lane>-<word>"
 BATCH_TITLE_PLACEHOLDER = "<PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>"
+REPO_CONTROL_LINE = "Repo: OWNER/REPO"
+MERGE_AUTHORITY_CONTROL_LINE = "merge_authority: <none|ask|auto>"
+EDITABLE_CONTROL_BLOCK = [
+  BATCH_TITLE_LINE,
+  REPO_CONTROL_LINE,
+  OBJECTIVE_PROMPT_LINE,
+  MERGE_AUTHORITY_CONTROL_LINE
+].join("\n").freeze
+MERGE_AUTHORITY_NORMALIZATION_RULE =
+  "Immediately after resolving the visible value, normalize only `auto` to " \
+  "`auto_merge_when_gates_pass`; preserve `none`, `ask`, and an already-canonical " \
+  "`auto_merge_when_gates_pass` unchanged."
+MERGE_AUTHORITY_FAIL_CLOSED_RULE =
+  "A missing value, an unresolved placeholder, or any other value is invalid"
+MERGE_AUTHORITY_DURABLE_RULE =
+  "Before constructing any worker prompts, manifests, handoffs, merge-assurance contexts or receipts, " \
+  "audits, helper inputs, or other durable evidence, reject unnormalized `auto`; preserve `none`, `ask`, " \
+  "and an already-canonical `auto_merge_when_gates_pass` unchanged."
+PROMPT_GENERATION_AUTHORITY_EXCEPTION =
+  "In prompt-generation mode only, no supplied authority emits the editable " \
+  "`merge_authority: <none|ask|auto>` placeholder; the executor must resolve it before worker launch."
 GITHUB_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> #<issue-number> <MM-DD HH:MM> - <title>"
 LINEAR_BATCH_TITLE_SHAPE = "Batch title: <PROJECT> <A?> <LINEAR-ISSUE-ID> <MM-DD HH:MM> - <title>"
 BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
@@ -241,8 +262,10 @@ BATCH_TITLE_ISSUE_IDENTIFIER_RULE =
   "gates. Omit `<ID?>` for zero or multiple verified source issues; PR-only and trusted ad-hoc batches with no " \
   "verified source issue remain identifier-free; never guess a primary issue."
 BATCH_TITLE_SPACING_RULE =
-  "Render exactly one empty line immediately before and after the `Batch title:` line. " \
-  "Keep the target-specific invocation above that title block and `Thread handle:` below it."
+  "Primary pasteable prompts put `Batch title:` directly after the target-specific invocation, followed " \
+  "immediately by `Repo:`, `Objective:`, and `merge_authority:`. Render exactly one empty line after " \
+  "`merge_authority:` before `Thread handle:`. Specialized continuation prompts keep their own title and " \
+  "handle spacing."
 CONTINUATION_HANDLE_SELECTION_RULE =
   "Otherwise, after exact target and lane resolution, derive one top-level `Thread handle:` using the normal " \
   "`<batch-short>-<lane>-<word>` rule: use the resumed lane id or owner slug for exactly one resumed lane; use " \
@@ -1558,12 +1581,12 @@ class GoalCompletionContractTest < Minitest::Test
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
+      assert text.start_with?("#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
              "#{label} must put the standard batch title line after the invocation"
     end
 
     codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
-    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n"),
+    assert codex_goal_prompt.start_with?("#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}#{BATCH_TITLE_LINE}\n"),
            "skills/plan-pr-batch Codex goal prompt must put the standard batch title line after the Codex prefix"
   end
 
@@ -1598,18 +1621,30 @@ class GoalCompletionContractTest < Minitest::Test
     end
   end
 
-  def test_pasteable_goal_prompts_put_exactly_one_blank_line_around_batch_title
+  def test_primary_goal_prompts_put_editable_controls_first_with_one_blank_separator
     {
       "workflows/pr-processing.md goal prompt" => @workflow_goal_prompt,
       "skills/pr-batch goal prompt" => @pr_batch_goal_prompt,
       "skills/plan-pr-batch goal prompt" => @plan_goal_prompt
     }.each do |label, text|
-      expected_prefix = "#{PLAN_PR_BATCH_INVOCATION_LINE}\n#{BATCH_TITLE_LINE}\n\nThread handle:"
+      expected_prefix = "#{PLAN_PR_BATCH_INVOCATION_LINE}#{EDITABLE_CONTROL_BLOCK}\n\n" \
+                        "Thread handle: <batch-short>-<lane>-<word>\n"
       assert text.start_with?(expected_prefix),
-             "#{label} must have one blank line before and after Batch title"
+             "#{label} must put the editable control block first with exactly one blank separator"
       assert_equal 1, text.lines.count { |line| line.start_with?("Batch title:") },
                    "#{label} must contain one Batch title line"
+      assert_equal 1, text.scan(/^Items:$/).length, "#{label} must retain exactly one Items section"
+      assert_equal 0, text.scan(/^Targets:/).length, "#{label} must not add a duplicate Targets field"
     end
+
+    codex_goal_prompt = "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{@plan_goal_prompt}"
+    assert codex_goal_prompt.start_with?(
+      "#{PLAN_PR_BATCH_CODEX_GOAL_LINE}#{PLAN_PR_BATCH_INVOCATION_LINE}#{EDITABLE_CONTROL_BLOCK}\n\n"
+    ), "skills/plan-pr-batch Codex goal prompt must put editable controls after the Codex prefix"
+
+    assert_equal 1,
+                 [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].map(&:rstrip).uniq.length,
+                 "primary goal prompt templates must stay byte-for-byte synchronized"
 
     assert continuation_title_thread_handle_shape_valid?(@workflow_resume_prompt),
            "workflow continuation prompt must have one ordered title/Thread handle header"
@@ -1638,6 +1673,46 @@ class GoalCompletionContractTest < Minitest::Test
   def test_batch_title_spacing_rule_is_canonical_in_prompt_intake
     assert_squished_includes @verified_batch_title_contract, BATCH_TITLE_SPACING_RULE,
                              "workflows/pr-batch-intake.md"
+  end
+
+  def test_merge_authority_alias_is_compatible_normalized_and_fail_closed
+    canonical_intake = squish(@prompt_intake)
+    assert_text_includes canonical_intake, MERGE_AUTHORITY_NORMALIZATION_RULE,
+                         "workflows/pr-batch-intake.md"
+    assert_text_includes canonical_intake, MERGE_AUTHORITY_FAIL_CLOSED_RULE,
+                         "workflows/pr-batch-intake.md"
+    assert_squished_includes @prompt_intake, MERGE_AUTHORITY_DURABLE_RULE,
+                             "workflows/pr-batch-intake.md"
+    assert_squished_includes @prompt_intake, PROMPT_GENERATION_AUTHORITY_EXCEPTION,
+                             "workflows/pr-batch-intake.md"
+
+    assert_squished_includes @plan_pr_batch_skill,
+                             "Accept `none`, `ask`, the editable alias `auto`, and the compatible " \
+                             "canonical value `auto_merge_when_gates_pass`",
+                             "skills/plan-pr-batch"
+    assert_squished_includes @plan_pr_batch_skill, MERGE_AUTHORITY_NORMALIZATION_RULE,
+                             "skills/plan-pr-batch"
+    assert_squished_includes @pr_batch_skill,
+                             "Continue accepting `auto_merge_when_gates_pass` for compatibility",
+                             "skills/pr-batch"
+
+    [@workflow_goal_prompt, @pr_batch_goal_prompt, @plan_goal_prompt].each do |prompt|
+      assert_equal 1, prompt.scan(/^#{Regexp.escape(MERGE_AUTHORITY_CONTROL_LINE)}$/).length
+      refute_match(/^merge_authority: .*auto_merge_when_gates_pass/, prompt)
+      assert_text_includes prompt, "merge iff `merge_authority` is `auto_merge_when_gates_pass`",
+                           "durable execution contract"
+    end
+
+    continuation = extract_markdown_section(
+      @workflow,
+      "### Generic PR-Batch Continuation Prompt",
+      end_heading: /^###\s+/
+    )
+    assert_text_includes continuation, "use auto only when the visible request explicitly grants it",
+                         "continuation prompt"
+    assert_text_includes continuation,
+                         "normalize auto to auto_merge_when_gates_pass before workers or durable evidence",
+                         "continuation prompt"
   end
 
   def test_continuation_title_uses_the_same_verified_source_issue_cardinality

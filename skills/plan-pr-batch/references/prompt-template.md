@@ -19,16 +19,15 @@ is not `human-approval-required` and cannot be cleared by risk approval.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-
 Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+Repo: OWNER/REPO
+Objective: ...
+merge_authority: <none|ask|auto>
 
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
 Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
 PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
-Repo:OWNER/REPO
-Objective:...
-merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
