@@ -872,11 +872,27 @@ module BatchPlanPreflight
 
   def companion_policy_quoted_line_starts(lines)
     state = :normal
+    block_scalar_indent = nil
     lines.map do |line|
+      line_indent = companion_policy_line_indentation(line)
+      if block_scalar_indent
+        next true if line.strip.empty? || line_indent > block_scalar_indent
+
+        block_scalar_indent = nil
+      end
+
       quoted = state != :normal
-      state, _comment_index = companion_policy_scan_line(line, state)
+      state, comment_index = companion_policy_scan_line(line, state)
+      if !quoted && companion_policy_block_scalar_header?(line, comment_index)
+        block_scalar_indent = line_indent
+      end
       quoted
     end
+  end
+
+  def companion_policy_block_scalar_header?(line, comment_index)
+    content = (comment_index ? line[0...comment_index] : line).rstrip
+    content.match?(/(?:\A|:\s+|-\s+)[|>](?:[1-9][+-]?|[+-][1-9]?)?\z/)
   end
 
   def companion_policy_strip_comments(lines)
@@ -896,6 +912,7 @@ module BatchPlanPreflight
       char = line[index]
       case state
       when :normal
+        yield char if block_given?
         case char
         when "'"
           state = :single_quote if companion_policy_quote_opener?(line, index)
@@ -962,38 +979,11 @@ module BatchPlanPreflight
   def companion_policy_flow_opener_open?(fragment, opener, closer)
     open_count = 0
     state = :normal
-    index = 0
-    while index < fragment.length
-      char = fragment[index]
-      case state
-      when :normal
-        case char
-        when "'"
-          state = :single_quote
-        when '"'
-          state = :double_quote
-        when "#"
-          index = fragment.index("\n", index) || fragment.length
-          next
-        when opener
-          open_count += 1
-        when closer
-          open_count -= 1 if open_count.positive?
-        end
-      when :single_quote
-        if char == "'"
-          escaped_quote = fragment[index + 1] == "'"
-          index += 1 if escaped_quote
-          state = :normal unless escaped_quote
-        end
-      when :double_quote
-        if char == "\\"
-          index += 1
-        elsif char == '"'
-          state = :normal
-        end
+    fragment.each_line do |line|
+      state, = companion_policy_scan_line(line, state) do |char|
+        open_count += 1 if char == opener
+        open_count -= 1 if char == closer && open_count.positive?
       end
-      index += 1
     end
     open_count.positive?
   end

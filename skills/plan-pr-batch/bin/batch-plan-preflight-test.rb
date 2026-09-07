@@ -849,6 +849,46 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_policy_fallback_tracks_block_scalar_content
+    Dir.mktmpdir("batch-plan-block-scalar-policy") do |root|
+      FileUtils.mkdir_p(File.join(root, ".agents"))
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        notes: |
+          "
+        companion_path_conventions: invalid
+        malformed: [
+      YAML
+
+      result, _stderr, status = evaluate(input_for, chdir: root)
+
+      refute status.success?
+      assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                      "companion-path-conventions-invalid"
+    end
+  end
+
+  def test_malformed_policy_fallback_uses_yaml_plain_scalar_scanning_in_flows
+    policies = {
+      "apostrophe" => "companion_path_conventions: [{ source_glob: lib/it's/*, " \
+                      "companion_glob: sig/it's/* }]\nmalformed: [\n",
+      "hash" => "companion_path_conventions: [{ source_glob: lib/rev#v2/*, " \
+             "companion_glob: sig/rev#v2/* }]\nmalformed: [\n"
+    }
+
+    policies.each do |label, yaml|
+      Dir.mktmpdir("batch-plan-flow-plain-scalar") do |root|
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), yaml)
+
+        result, stderr, status = evaluate(input_for, chdir: root)
+
+        assert status.success?, "#{label}: #{stderr}\n#{result.inspect}"
+        assert_equal "accepted", result.fetch("status"), label
+        assert_empty result.fetch("violations"), label
+      end
+    end
+  end
+
   def test_unreadable_shared_policy_does_not_block_preflight
     Dir.mktmpdir("batch-plan-unreadable-companion") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))
