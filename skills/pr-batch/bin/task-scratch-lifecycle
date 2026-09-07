@@ -85,6 +85,31 @@ module TaskScratchLifecycle
     fail!("#{label}-invalid")
   end
 
+  def open_cleanup_claim(path)
+    fail!("receipt-path-invalid") unless nonempty_string?(path)
+
+    file = File.open(path, File::RDONLY | File::NONBLOCK | File::NOFOLLOW)
+    stat = file.stat
+    fail!("receipt-not-regular-file") unless stat.file?
+    fail!("receipt-too-large") if stat.size > MAX_ARTIFACT_BYTES
+    fail!("cleanup-already-running") unless file.flock(File::LOCK_EX | File::LOCK_NB)
+    file
+  rescue LifecycleError
+    file&.close
+    raise
+  rescue SystemCallError, ArgumentError
+    file&.close
+    fail!("receipt-unreadable")
+  end
+
+  def read_claimed_receipt(file)
+    bytes = file.binmode.read(MAX_ARTIFACT_BYTES + 1).to_s
+    fail!("receipt-too-large") if bytes.bytesize > MAX_ARTIFACT_BYTES
+    JSON.parse(bytes)
+  rescue JSON::ParserError
+    fail!("receipt-invalid")
+  end
+
   def git_output(worktree_root, *arguments)
     stdout, stderr, status = Open3.capture3("git", *arguments, chdir: worktree_root)
     fail!("repository-invalid") unless status.success? && stderr.empty?
@@ -212,6 +237,40 @@ module TaskScratchLifecycle
     fail!("scratch-root-unreadable")
   end
 
+  def root_identity_matches?(stat, receipt)
+    stat.directory? && !stat.symlink? &&
+      [stat.dev, stat.ino, stat.uid, stat.mode & 0o777] == [
+        receipt["root_device"], receipt["root_inode"], receipt["root_owner"], receipt["root_mode"]
+      ]
+  end
+
+  def owned_root_path?(path, receipt)
+    root_identity_matches?(File.lstat(path), receipt)
+  rescue SystemCallError, ArgumentError
+    false
+  end
+
+  def open_owned_root(path, receipt)
+    file = File.open(path, File::RDONLY | File::NOFOLLOW)
+    fail!("scratch-root-rebound") unless root_identity_matches?(file.stat, receipt)
+    file
+  rescue LifecycleError
+    file&.close
+    raise
+  rescue SystemCallError, ArgumentError
+    file&.close
+    fail!("scratch-root-rebound")
+  end
+
+  def within_directory(file, &block)
+    duplicate = file.dup
+    duplicate.autoclose = false
+    directory = Dir.for_fd(duplicate.fileno)
+    directory.chdir(&block)
+  ensure
+    directory&.close
+  end
+
   def expected_directories(allowlist)
     allowlist.flat_map do |path|
       parts = path.split("/")
@@ -272,50 +331,67 @@ module TaskScratchLifecycle
     root = receipt.fetch("scratch_root")
     parent = receipt.fetch("scratch_parent")
     quarantine = File.join(parent, ".task-scratch-cleanup-#{receipt.fetch('run_token')}")
+    moved_by_invocation = false
+    intact = true
     fail!("cleanup-quarantine-exists") if File.exist?(quarantine) || File.symlink?(quarantine)
 
     File.rename(root, quarantine)
-    moved_stat = File.stat(quarantine)
-    unless moved_stat.dev == receipt["root_device"] && moved_stat.ino == receipt["root_inode"]
-      File.rename(quarantine, root) unless File.exist?(root)
-      fail!("scratch-root-rebound")
+    moved_by_invocation = true
+    owned_root = open_owned_root(quarantine, receipt)
+    within_directory(owned_root) do
+      validate_allowlisted_contents(".", receipt.fetch("allowlist"))
     end
-    validate_allowlisted_contents(quarantine, receipt.fetch("allowlist"))
-    receipt.fetch("allowlist").each do |relative|
-      path = File.join(quarantine, relative)
-      File.unlink(path) if File.file?(path) && !File.symlink?(path)
+    fail!("scratch-root-rebound") unless owned_root_path?(quarantine, receipt)
+
+    intact = false
+    within_directory(owned_root) do
+      receipt.fetch("allowlist").each do |relative|
+        File.unlink(relative) if File.file?(relative) && !File.symlink?(relative)
+      end
+      File.unlink(OWNER_BASENAME)
+      expected_directories(receipt.fetch("allowlist")).sort_by { |path| -path.count("/") }.each do |relative|
+        Dir.rmdir(relative) if File.directory?(relative) && !File.symlink?(relative)
+      end
     end
-    File.unlink(File.join(quarantine, OWNER_BASENAME))
-    expected_directories(receipt.fetch("allowlist")).sort_by { |path| -path.count("/") }.each do |relative|
-      path = File.join(quarantine, relative)
-      Dir.rmdir(path) if File.directory?(path)
-    end
+    owned_root.close
+    owned_root = nil
+    fail!("scratch-root-rebound") unless owned_root_path?(quarantine, receipt)
     Dir.rmdir(quarantine)
+    moved_by_invocation = false
   rescue LifecycleError
-    File.rename(quarantine, root) if File.directory?(quarantine) && !File.exist?(root)
+    owned_root&.close
+    File.rename(quarantine, root) if moved_by_invocation && intact && owned_root_path?(quarantine, receipt) &&
+                                     !File.exist?(root) && !File.symlink?(root)
     raise
   rescue SystemCallError, ArgumentError
-    File.rename(quarantine, root) if File.directory?(quarantine) && !File.exist?(root)
+    owned_root&.close
+    File.rename(quarantine, root) if moved_by_invocation && intact && owned_root_path?(quarantine, receipt) &&
+                                     !File.exist?(root) && !File.symlink?(root)
     fail!("cleanup-filesystem-failure")
   end
 
   def cleanup(options)
-    receipt = validate_receipt(read_json(options[:receipt], "receipt"))
-    worktree_root, common_dir = repository_identity(receipt.fetch("worktree_root"))
-    fail!("repository-identity-mismatch") unless worktree_root == receipt["worktree_root"] &&
-                                                 common_dir == receipt["repository_common_dir"]
-    validate_owned_root(receipt)
-    validate_allowlisted_contents(receipt.fetch("scratch_root"), receipt.fetch("allowlist"))
-    fail!("review-clean-required") unless clean_review?(receipt, options[:review_input])
+    claim = open_cleanup_claim(options[:receipt])
+    begin
+      receipt = validate_receipt(read_claimed_receipt(claim))
+      worktree_root, common_dir = repository_identity(receipt.fetch("worktree_root"))
+      fail!("repository-identity-mismatch") unless worktree_root == receipt["worktree_root"] &&
+                                                   common_dir == receipt["repository_common_dir"]
+      validate_owned_root(receipt)
+      validate_allowlisted_contents(receipt.fetch("scratch_root"), receipt.fetch("allowlist"))
+      fail!("review-clean-required") unless clean_review?(receipt, options[:review_input])
 
-    remove_allowlisted_root(receipt)
-    {
-      "contract" => "task-scratch-lifecycle-decision",
-      "version" => 1,
-      "status" => "cleaned",
-      "removed_root" => receipt.fetch("scratch_root"),
-      "plan_identity" => receipt.fetch("identity")
-    }
+      remove_allowlisted_root(receipt)
+      {
+        "contract" => "task-scratch-lifecycle-decision",
+        "version" => 1,
+        "status" => "cleaned",
+        "removed_root" => receipt.fetch("scratch_root"),
+        "plan_identity" => receipt.fetch("identity")
+      }
+    ensure
+      claim.close
+    end
   end
 end
 

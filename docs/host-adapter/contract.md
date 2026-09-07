@@ -174,10 +174,12 @@ from caller-supplied summaries. It rejects an `artifact_boundary` observation
 with `external-artifact-authority-required` before monitor-state mutation.
 Review reuse belongs to repository-backed `task-review-loop`. Invoke
 `task-review-loop --repository-root <verified-lane-root>`: the helper derives
-`HEAD^{commit}`, requires the current report/package to name it, opens and
-digest-validates review artifacts, and recaptures current and retained canonical
-diffs byte-for-byte from Git. A moved head therefore makes the review package
-stale and requires recapture, while the helper remains read-only. Coordination
+`HEAD^{commit}`, requires the current report/package to name it, resolves every
+range endpoint as a commit, requires base ancestry, and compares the exact
+repository-derived ordered commit list with current and retained report/package
+provenance. It opens and digest-validates review artifacts and recaptures current
+and retained canonical diffs byte-for-byte from Git. A moved head therefore makes
+the review package stale and requires recapture, while the helper remains read-only. Coordination
 reuse remains an independent live-backend check of the repository-qualified
 target, batch/lane, holder, generation, instance, schema, and timestamps; a
 code-head move alone does not invalidate that ownership history. Neither
@@ -191,7 +193,11 @@ invoke `task-scratch-lifecycle cleanup` with that receipt and the original
 task-review input. The helper revalidates the live repository, full identity,
 root ownership marker and filesystem identity, exact allowlist, and the original
 review input through repository-backed `task-review-loop` before atomically
-isolating and deleting only that root.
+isolating and deleting only that root. Cleanup holds an exclusive lock on the durable receipt,
+creates no lock artifact, and keeps an open directory descriptor for
+descriptor-relative validation and deletion. It rolls back only a still-intact
+owned root moved by that invocation; concurrent cleanup and quarantine
+replacement fail closed without deleting the replacement.
 
 The goal monitor cannot prove a clean task review, its repository-derived
 current head, or ownership of an arbitrary caller-supplied state path. It never

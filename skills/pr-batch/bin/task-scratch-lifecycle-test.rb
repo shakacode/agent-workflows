@@ -37,10 +37,14 @@ class TaskScratchLifecycleTest < Minitest::Test
     assert_includes host_contract, "task-scratch-lifecycle create"
     assert_includes host_contract, "task-scratch-lifecycle cleanup"
     assert_includes host_contract, "cap-adjudicated completion never authorizes scratch deletion"
+    assert_includes host_contract, "exclusive lock on the durable receipt"
+    assert_includes host_contract, "open directory descriptor"
     assert_includes workflow, "task-review-loop\" --repository-root \"$REVIEW_WORKTREE_ROOT\""
     assert_includes workflow, "task-scratch-lifecycle\" create"
     assert_includes workflow, "task-scratch-lifecycle\" cleanup"
     assert_includes workflow, "The lifecycle helper is the only owner allowed to delete that root"
+    assert_includes workflow, "exclusive lock on the durable receipt"
+    assert_includes workflow, "open directory descriptor"
   end
 
   def test_clean_review_cleanup_removes_only_the_created_allowlisted_root
@@ -416,6 +420,236 @@ class TaskScratchLifecycleTest < Minitest::Test
     end
   end
 
+  def test_concurrent_cleanup_has_one_exclusive_owner_and_leaves_no_lock_or_quarantine
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      review_helper = File.join(helper_root, "task-review-loop")
+      FileUtils.cp(HELPER, lifecycle_helper)
+      File.write(
+        review_helper,
+        <<~RUBY
+          #!/usr/bin/env ruby
+          require "json"
+          $stdin.read
+          sleep 0.5
+          puts JSON.generate(
+            "contract" => "task-review-loop-decision",
+            "version" => 1,
+            "status" => "task_complete",
+            "dependent_task_permitted" => true,
+            "reasons" => ["review-clean"]
+          )
+        RUBY
+      )
+      File.chmod(0o755, lifecycle_helper)
+      File.chmod(0o755, review_helper)
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper
+      )
+      assert create_status.success?, create_stderr
+      receipt = created.fetch("receipt")
+      scratch_root = receipt.fetch("scratch_root")
+      File.write(File.join(scratch_root, "evidence.json"), "disposable\n")
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+      review_input_path = File.join(durable_root, "task-review-input.json")
+      File.write(receipt_path, JSON.generate(receipt))
+      File.write(review_input_path, JSON.generate("identity" => TASK_IDENTITY))
+
+      results = 2.times.map do
+        Thread.new { run_cleanup(receipt_path, review_input_path, helper: lifecycle_helper) }
+      end.map(&:value)
+      successful, blocked = results.partition { |_decision, _stderr, status| status.success? }
+
+      assert_equal 1, successful.length
+      assert_equal "cleaned", successful.first.first.fetch("status")
+      assert_equal 1, blocked.length
+      assert_equal "cleanup-already-running", blocked.first.first.fetch("reason")
+      refute_path_exists scratch_root
+      assert_equal JSON.generate(receipt), File.binread(receipt_path)
+      assert_empty Dir.glob(File.join(scratch_parent, ".task-scratch-cleanup-*"))
+      assert_empty Dir.glob(File.join(scratch_parent, ".task-scratch-cleanup-lock-*"))
+    end
+  end
+
+  def test_quarantine_replacement_is_rejected_without_moving_or_deleting_the_replacement
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      review_helper = File.join(helper_root, "task-review-loop")
+      instrumented_helper = File.read(HELPER).sub(
+        "    File.rename(root, quarantine)\n",
+        <<~RUBY.gsub(/^/, "    ")
+          File.rename(root, quarantine)
+          if ENV["TASK_SCRATCH_AFTER_MOVE_SIGNAL"]
+            File.write(ENV.fetch("TASK_SCRATCH_AFTER_MOVE_SIGNAL"), "moved")
+            sleep 0.01 until File.exist?(ENV.fetch("TASK_SCRATCH_AFTER_MOVE_RELEASE"))
+          end
+        RUBY
+      )
+      File.write(lifecycle_helper, instrumented_helper)
+      File.write(
+        review_helper,
+        <<~RUBY
+          #!/usr/bin/env ruby
+          require "json"
+          $stdin.read
+          puts JSON.generate(
+            "contract" => "task-review-loop-decision",
+            "version" => 1,
+            "status" => "task_complete",
+            "dependent_task_permitted" => true,
+            "reasons" => ["review-clean"]
+          )
+        RUBY
+      )
+      File.chmod(0o755, lifecycle_helper)
+      File.chmod(0o755, review_helper)
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json"],
+        helper: lifecycle_helper
+      )
+      assert create_status.success?, create_stderr
+      receipt = created.fetch("receipt")
+      scratch_root = receipt.fetch("scratch_root")
+      evidence_path = File.join(scratch_root, "evidence.json")
+      File.write(evidence_path, "owned scratch\n")
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+      review_input_path = File.join(durable_root, "task-review-input.json")
+      File.write(receipt_path, JSON.generate(receipt))
+      File.write(review_input_path, JSON.generate("identity" => TASK_IDENTITY))
+      signal_path = File.join(directory, "after-move.signal")
+      release_path = File.join(directory, "after-move.release")
+      cleanup = Thread.new do
+        run_cleanup(
+          receipt_path,
+          review_input_path,
+          helper: lifecycle_helper,
+          env: {
+            "TASK_SCRATCH_AFTER_MOVE_SIGNAL" => signal_path,
+            "TASK_SCRATCH_AFTER_MOVE_RELEASE" => release_path
+          }
+        )
+      end
+      sleep 0.01 until File.exist?(signal_path)
+      quarantine = Dir.glob(File.join(scratch_parent, ".task-scratch-cleanup-*")).fetch(0)
+      parked_root = File.join(scratch_parent, "parked-owned-root")
+      File.rename(quarantine, parked_root)
+      Dir.mkdir(quarantine, 0o700)
+      FileUtils.cp(File.join(parked_root, ".task-scratch-owner.json"), quarantine)
+      foreign_path = File.join(quarantine, "evidence.json")
+      File.write(foreign_path, "must survive\n")
+      File.write(release_path, "continue")
+
+      blocked, cleanup_stderr, cleanup_status = cleanup.value
+
+      refute cleanup_status.success?, cleanup_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "scratch-root-rebound", blocked.fetch("reason")
+      refute_path_exists scratch_root
+      assert_equal "owned scratch\n", File.read(File.join(parked_root, "evidence.json"))
+      assert_path_exists File.join(parked_root, ".task-scratch-owner.json")
+      assert_equal "must survive\n", File.read(foreign_path)
+    end
+  end
+
+  def test_filesystem_failure_after_owned_move_restores_the_complete_intact_root
+    Dir.mktmpdir("task-scratch-lifecycle") do |directory|
+      repository, = build_repository(directory)
+      identity_path = File.join(directory, "task-identity.json")
+      File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
+      scratch_parent = File.join(directory, "scratch-parent")
+      durable_root = File.join(directory, "durable")
+      helper_root = File.join(directory, "helper-bin")
+      Dir.mkdir(scratch_parent)
+      Dir.mkdir(durable_root)
+      Dir.mkdir(helper_root)
+      lifecycle_helper = File.join(helper_root, "task-scratch-lifecycle")
+      review_helper = File.join(helper_root, "task-review-loop")
+      instrumented_helper = File.read(HELPER).sub(
+        '    fail!("scratch-root-rebound") unless owned_root_path?(quarantine, receipt)',
+        "    raise Errno::EIO, \"injected failure after owned move\""
+      )
+      File.write(lifecycle_helper, instrumented_helper)
+      File.write(
+        review_helper,
+        <<~RUBY
+          #!/usr/bin/env ruby
+          require "json"
+          $stdin.read
+          puts JSON.generate(
+            "contract" => "task-review-loop-decision",
+            "version" => 1,
+            "status" => "task_complete",
+            "dependent_task_permitted" => true,
+            "reasons" => ["review-clean"]
+          )
+        RUBY
+      )
+      File.chmod(0o755, lifecycle_helper)
+      File.chmod(0o755, review_helper)
+      created, create_stderr, create_status = run_create(
+        repository,
+        scratch_parent,
+        identity_path,
+        ["evidence.json", "nested/notes.txt"],
+        helper: lifecycle_helper
+      )
+      assert create_status.success?, create_stderr
+      receipt = created.fetch("receipt")
+      scratch_root = receipt.fetch("scratch_root")
+      File.write(File.join(scratch_root, "evidence.json"), "owned evidence\n")
+      FileUtils.mkdir_p(File.join(scratch_root, "nested"))
+      File.write(File.join(scratch_root, "nested/notes.txt"), "owned notes\n")
+      receipt_path = File.join(durable_root, "scratch-receipt.json")
+      review_input_path = File.join(durable_root, "task-review-input.json")
+      File.write(receipt_path, JSON.generate(receipt))
+      File.write(review_input_path, JSON.generate("identity" => TASK_IDENTITY))
+      preserved = Dir.glob(File.join(scratch_root, "**", "*"), File::FNM_DOTMATCH).sort.to_h do |path|
+        [path.delete_prefix("#{scratch_root}/"), File.directory?(path) ? :directory : File.binread(path)]
+      end
+
+      blocked, cleanup_stderr, cleanup_status = run_cleanup(
+        receipt_path,
+        review_input_path,
+        helper: lifecycle_helper
+      )
+
+      refute cleanup_status.success?, cleanup_stderr
+      assert_equal "blocked", blocked.fetch("status")
+      assert_equal "cleanup-filesystem-failure", blocked.fetch("reason")
+      assert_path_exists scratch_root
+      restored = Dir.glob(File.join(scratch_root, "**", "*"), File::FNM_DOTMATCH).sort.to_h do |path|
+        [path.delete_prefix("#{scratch_root}/"), File.directory?(path) ? :directory : File.binread(path)]
+      end
+      assert_equal preserved, restored
+      assert_empty Dir.glob(File.join(scratch_parent, ".task-scratch-cleanup-*"))
+    end
+  end
+
   private
 
   def run_create(repository, scratch_parent, identity_path, allowlist, helper: HELPER)
@@ -431,8 +665,9 @@ class TaskScratchLifecycleTest < Minitest::Test
     [stdout.empty? ? nil : JSON.parse(stdout), stderr, status]
   end
 
-  def run_cleanup(receipt_path, review_input_path, helper: HELPER)
+  def run_cleanup(receipt_path, review_input_path, helper: HELPER, env: {})
     stdout, stderr, status = Open3.capture3(
+      env,
       helper,
       "cleanup",
       "--receipt", receipt_path,

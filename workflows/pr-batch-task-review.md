@@ -43,9 +43,13 @@ then prefix the lowercase SHA-256 value with `sha256:`. Artifact digests cover
 the exact raw bytes at `path`; `byte_count` covers the same bytes.
 Hashes establish supplied-artifact consistency. In repository-backed mode the
 helper also derives `HEAD^{commit}` from that root, requires the current report
-and package to name it, and independently derives canonical diff bytes from the
-repository. The coordinator still owns selection of the trusted lane root; the
-helper never accepts a repository path from task-review JSON.
+and package to name it, resolves every report/package range endpoint as a commit,
+requires `git merge-base --is-ancestor`, and derives
+`git rev-list --reverse <base>..<head>`. The derived list must exactly match the
+current and every retained report/package commit provenance. It also independently
+derives canonical diff bytes from the repository. The coordinator still owns
+selection of the trusted lane root; the helper never accepts a repository path
+from task-review JSON.
 
 The output status is exactly one of:
 
@@ -297,7 +301,13 @@ worktree. It accepts only `task_complete` with exactly `review-clean` at the
 live head; cap-adjudicated completion does not authorize deletion. The lifecycle
 helper is the only owner allowed to delete that root. `task-review-loop` remains
 read-only, and `goal-state-change-monitor` neither classifies these artifacts
-nor deletes them. Every failure preserves the root and all durable or external
+nor deletes them. Cleanup holds an exclusive lock on the durable receipt without
+creating a lock artifact. After isolating the owned root, it retains an open
+directory descriptor for descriptor-relative validation and deletion, and
+rechecks the quarantine pathname against the receipt-bound device and inode
+before deletion. Rollback occurs only when this invocation moved the still-intact
+owned root. A concurrent cleanup or pre-deletion replacement fails closed without
+deleting foreign or owned files. Every failure preserves all durable or external
 state for reconciliation.
 
 ## Handoff To Existing Owners

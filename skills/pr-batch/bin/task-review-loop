@@ -935,9 +935,21 @@ module TaskReviewLoop
     errors = []
     errors << "repository-head-mismatch" unless supplied_heads.all? { |supplied| supplied == current_head }
 
+    provenance_records = [
+      ["worker-report", input["worker_report"], "commits"],
+      ["review-package", input["review_package"], "commit_list"]
+    ]
     packages = [["review-package", input["review_package"]]]
     Array(input["rounds"]).each do |round|
-      packages << ["review-round-#{round['number']}", round["review_package"]] if round.is_a?(Hash)
+      next unless round.is_a?(Hash)
+
+      label = "review-round-#{round['number']}"
+      provenance_records << ["#{label}-worker-report", round["worker_report"], "commits"]
+      provenance_records << ["#{label}-review-package", round["review_package"], "commit_list"]
+      packages << [label, round["review_package"]]
+    end
+    provenance_records.each do |label, record, commits_key|
+      errors.concat(repository_commit_range_errors(label, record, commits_key, canonical_root))
     end
     packages.each do |label, package|
       next unless package.is_a?(Hash)
@@ -962,6 +974,50 @@ module TaskReviewLoop
     errors
   rescue SystemCallError, ArgumentError, TypeError
     ["repository-root-invalid"]
+  end
+
+  def repository_commit_range_errors(label, record, commits_key, repository_root)
+    return [] unless record.is_a?(Hash)
+
+    errors = []
+    endpoints = {}
+    { "base" => record["base_sha"], "head" => record["head_sha"] }.each do |name, supplied|
+      resolved, stderr, status = Open3.capture3(
+        "git", "rev-parse", "--verify", "#{supplied}^{commit}", chdir: repository_root
+      )
+      if status.success? && stderr.empty?
+        endpoints[name] = resolved.strip
+      else
+        errors << "#{label}-#{name}-commit-unavailable"
+      end
+    end
+    return errors unless endpoints.keys.sort == %w[base head]
+
+    _stdout, ancestor_stderr, ancestor_status = Open3.capture3(
+      "git", "merge-base", "--is-ancestor", endpoints.fetch("base"), endpoints.fetch("head"),
+      chdir: repository_root
+    )
+    unless ancestor_status.success?
+      errors << if ancestor_status.exitstatus == 1 && ancestor_stderr.empty?
+                  "#{label}-base-not-ancestor"
+                else
+                  "#{label}-commit-range-unavailable"
+                end
+      return errors
+    end
+
+    commits, commits_stderr, commits_status = Open3.capture3(
+      "git", "rev-list", "--reverse", "#{endpoints.fetch('base')}..#{endpoints.fetch('head')}",
+      chdir: repository_root
+    )
+    unless commits_status.success? && commits_stderr.empty?
+      errors << "#{label}-commit-range-unavailable"
+      return errors
+    end
+
+    repository_commits = commits.lines(chomp: true)
+    errors << "#{label}-#{commits_key.tr('_', '-')}-repository-mismatch" unless record[commits_key] == repository_commits
+    errors
   end
 
   def cap_blocking_reasons(input, document)
