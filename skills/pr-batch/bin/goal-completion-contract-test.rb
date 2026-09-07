@@ -16,6 +16,7 @@ unless File.file?(receipt_parser_path)
   )
 end
 load receipt_parser_path
+require_relative "../lib/skill_stage_source"
 
 ROOT = File.expand_path("../../..", __dir__)
 WORKFLOW_PATH = File.join(ROOT, "workflows/pr-processing.md")
@@ -389,7 +390,7 @@ CANONICAL_READINESS_STATES = %w[
 READINESS_STATE_KEYS = /\b(?:final_state|readiness_state|target_state):\s*`?([A-Za-z0-9_-]+)`?/
 
 def read_repo_file(path)
-  File.read(path, encoding: "UTF-8")
+  SkillStageSource.read(path, encoding: "UTF-8")
 end
 
 def extract_goal_prompt_template(skill_text, heading, end_heading: /^##\s+/)
@@ -818,7 +819,7 @@ class GoalCompletionContractTest < Minitest::Test
                  "ready-prerequisite mutation must delete the production classification"
     refute_includes squish(deletion), squish(READY_PREREQUISITE_ASK_GATE_RULE)
     assert_squished_includes @workflow_resume_prompt,
-                             "For an owned target, start the exact-diff walkthrough before asking the final merge question",
+                             "For an owned target, publish the complete exact-diff walkthrough under the `ask` route below before asking the final merge question",
                              "canonical ready-prerequisite owned-target route"
     assert_squished_includes @workflow_resume_prompt,
                              "For an external dependency-only reference, instruct the user either to merge it and " \

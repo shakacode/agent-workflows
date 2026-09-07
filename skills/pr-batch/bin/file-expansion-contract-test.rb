@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -71,9 +73,9 @@ WORKER_EXECUTION_PATH = File.join(ROOT, "workflows/pr-batch-worker-execution.md"
 class FileExpansionContractTest < Minitest::Test
   def setup
     @planning_contract_surfaces = PLANNING_CONTRACT_SURFACES.transform_values do |path|
-      File.read(path, encoding: "UTF-8")
+      SkillStageSource.read(path, encoding: "UTF-8")
     end
-    @compact_surfaces = COMPACT_SURFACES.transform_values { |path| File.read(path, encoding: "UTF-8") }
+    @compact_surfaces = COMPACT_SURFACES.transform_values { |path| SkillStageSource.read(path, encoding: "UTF-8") }
     @worker_execution = File.read(WORKER_EXECUTION_PATH, encoding: "UTF-8")
   end
 
