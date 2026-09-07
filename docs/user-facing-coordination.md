@@ -89,8 +89,13 @@ authority, merge without asking the user to perform the authorized mechanical
 action. Continue to use the repository submission policy and all exact-head
 assurance gates; autonomous authority does not bypass them.
 
-When current exact-diff human approval is genuinely required, first complete
-the one-concept-at-a-time PR walkthrough if human understanding is the blocker.
+When current exact-diff human approval is genuinely required and human
+understanding is the blocker, use `$pr-walkthrough`. Direct chat requests remain
+live and read-only. Publish only when the user or an authorized workflow
+explicitly selects publication with comment authority. In that mode, put
+the orientation and all conceptual sections on GitHub in one pass under
+`$pr-walkthrough`'s mandatory inline-thread and no-anchor-stop rules, and let the owning task consume replies
+asynchronously. A publication-authority blocker is not an explicit skip.
 Then refresh readiness and present the full exact head SHA, the sorted gate set,
 and rollback status before asking one final question that names the exact
 approval needed. Walkthrough participation is not approval, and any head change
@@ -136,6 +141,9 @@ handoff may not make the user infer an action from technical status, durable
 references, or a `Conversation status:` blocker union. Preserve any required
 receipt before the closing stack: the Unblock Block when the status is not
 clean, then the final `Conversation status:` line.
+The [Output Contract](#output-contract) permits a compact final layout for
+eligible small single-repo batches; it preserves these required strings and
+their order.
 
 ## Output Contract
 
@@ -157,8 +165,8 @@ Everything between checkpoints is silent; a tool-call preamble is not a
 checkpoint. An HST-v1 actionable notification is not a separate category: it is
 emitted at the `decision-required`, `merge-decision`, or `final-handoff`
 checkpoint whose state it reports; closeout and archive completion is a
-`final-handoff`. A direct answer, an explicitly requested status report, a turn of a
-required interactive exchange such as the `ask` merge-authority walkthrough, and
+`final-handoff`. A direct answer, an explicitly requested status report, a turn
+of an explicitly requested interactive exchange such as a live PR walkthrough, and
 a required safety stop are always allowed without being checkpoints. Every
 user-visible message counts in exactly one bucket of the closeout marker.
 
@@ -172,9 +180,16 @@ user-visible message counts in exactly one bucket of the closeout marker.
   correction that changes nothing for the reader is recorded in exactly one
   durable place — the PR description's `Agent details` decision log when the
   target has a PR, otherwise the final handoff's FYI / decisions made section.
-- **Unchanged closing stack:** `OC-v1` collapses no closing structure; that
-  consolidation is tracked in
+- **Compact terminal structure:** single-repo batches at or below
+  `compact_terminal_structure_max_lanes` may collapse the Lane Card, `Next:`,
+  `Action needed:`, required receipt, and exact `Conversation status:` into
+  one human-readable terminal structure; larger or multi-repo batches keep the
+  existing split closing stack. That consolidation is tracked in
   [issue 484](https://github.com/shakacode/agent-workflows/issues/484).
+  The optional threshold is a positive integer; omission keeps the split form.
+  Count distinct durable lanes in the batch, including completed lanes, not
+  worker instances, PRs/targets, or emitted Lane Cards. This affects only the
+  final-handoff layout; the separate `pr-open` checkpoint remains unchanged.
 
 At closeout, report a shadow-only `coordinator-narration-volume v1` marker of
 self-counted message and character volume. It gates nothing, blocks no handoff,
