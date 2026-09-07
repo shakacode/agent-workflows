@@ -80,6 +80,10 @@ Before triage or mutation, establish the configured target ownership; refusal or
 ## Triage and Completion
 
 Once inventory and ownership are verified, classify comments, select an authorized action, and complete verification/replies/receipts. Read [Triage](references/triage.md) for this stage.
+
+### Triage rules
+
+For comment classification and blocking lockfile dependency drift, follow the [Triage rules](references/triage.md#step-5-triage-comments).
 <!-- /stage-reference -->
 
 ## Completion

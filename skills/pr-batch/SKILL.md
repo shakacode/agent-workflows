@@ -235,6 +235,10 @@ reviews.”
 ## Planning Output
 
 Before implementation dispatch, record the plan and replay stage dependencies for each intended action. Read [Planning](references/planning.md) for this stage.
+
+### Handoff Contract
+
+For workflow, build, dependency and lockfile evidence, follow the [Handoff Contract](references/planning.md#handoff-contract).
 <!-- /stage-reference -->
 
 ## Autonomous Merge Eligibility
