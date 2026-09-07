@@ -1503,6 +1503,11 @@ Create follow-up tracking only when all of these are true:
 - The work is valuable outside the immediate review thread.
 - The work is not a duplicate of an existing issue or accepted roadmap item.
 - The work is not a blocker for the current PR.
+- The work fixes an observed failure or a verified defect, not a style nit, a
+  hypothetical future mistake, speculative hardening, or a review-bot
+  suggestion with no reproduced miss.
+- The likely fix is smaller than the problem. A fix that would add a helper,
+  schema, validator, or mode for a case nobody has hit is dropped, not filed.
 - The user explicitly chooses issue tracking after seeing the deferred bundle.
 
 When tracking is warranted:

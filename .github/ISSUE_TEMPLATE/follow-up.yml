@@ -10,6 +10,11 @@ body:
         **self-contained**: whoever picks this up later, human or agent, must be able to act on it
         without the originating conversation, PR thread, or chat session.
 
+        **Do not file** for style nits, hypothetical future mistakes, speculative hardening, or a
+        review-bot suggestion with no reproduced miss. A follow-up needs an observed failure or a
+        verified defect with a known affected user. If the likely fix adds a helper, schema,
+        validator, or mode for a case nobody has hit, drop it instead.
+
         For a recurring *process* miss, use the "Process gap" form instead - it collects the
         `workflows/pr-processing.md` disposition fields that process issues require.
   - type: textarea
