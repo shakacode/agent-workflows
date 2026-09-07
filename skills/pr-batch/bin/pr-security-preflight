@@ -449,12 +449,13 @@ def trusted_git_probe_env
   )
 end
 
-def capture_trusted_git_probe(*args, timeout_seconds: GIT_TIMEOUT_SECONDS)
+def capture_trusted_git_probe(*args, timeout_seconds: GIT_TIMEOUT_SECONDS, stdin_data: nil)
   git_executable = trusted_git_executable
   PrBatchGitProbeEnv.capture3(
     trusted_git_probe_env,
     git_executable,
     *args,
+    stdin_data:,
     timeout_seconds:,
     unsetenv_others: true
   )
@@ -1906,6 +1907,9 @@ def graph_node_identity_coverage_findings(target)
 end
 
 class TrustedBaseHighRiskOperations
+  INDEX_ENTRY_PATTERN = /\A(?<mode>\d{6}) (?<oid>[0-9a-f]{40}|[0-9a-f]{64}) (?<stage>\d)\t(?<path>.+)\z/m
+  TRACKED_WORKTREE_CHANGES = "trusted checkout has tracked working-tree changes"
+
   def git_toplevel
     trusted_git_toplevel
   end
@@ -1947,8 +1951,8 @@ class TrustedBaseHighRiskOperations
     [false, "PR merge result is not an ancestor of fetched trusted base: #{stderr.to_s.lines.first&.strip}"]
   end
 
-  def capture_checkout_git_probe(root, *args)
-    capture_trusted_git_probe(*TRUSTED_CHECKOUT_CONFIG_ARGS, "-C", root, *args)
+  def capture_checkout_git_probe(root, *args, stdin_data: nil)
+    capture_trusted_git_probe(*TRUSTED_CHECKOUT_CONFIG_ARGS, "-C", root, *args, stdin_data:)
   end
 
   def hidden_tracked_index_entries?(root)
@@ -2008,21 +2012,94 @@ class TrustedBaseHighRiskOperations
       return [false, "trusted checkout staged state could not be verified: #{staged_stderr.to_s.lines.first&.strip}"]
     end
 
-    _worktree_stdout, worktree_stderr, worktree_status = capture_checkout_git_probe(
-      root,
-      "diff", "--quiet", "--no-ext-diff", "--no-textconv",
-      "--ignore-submodules=none", "HEAD", "--"
-    )
-    if worktree_status.respond_to?(:exitstatus) && worktree_status.exitstatus == 1
-      return [false, "trusted checkout has tracked working-tree changes"]
-    end
-    unless worktree_status&.success?
-      return [false, "trusted checkout working-tree state could not be verified: #{worktree_stderr.to_s.lines.first&.strip}"]
-    end
+    worktree_matches, worktree_error = worktree_matches_index?(root)
+    return [false, worktree_error] unless worktree_matches
 
     [true, nil]
   rescue StandardError => e
     [false, "could not verify trusted checkout against fetched base: #{e.message.lines.first&.strip}"]
+  end
+
+  # `git diff`/`git status` push worktree bytes through clean filters, and the
+  # attributes and filter drivers that select them live in `.git/info` and local
+  # config beyond any `-c`/`GIT_CONFIG_*` override. Compare raw bytes against the
+  # index instead; the staged probe above already bound the index to HEAD.
+  def worktree_matches_index?(root)
+    entries, entries_error = tracked_index_entries(root)
+    return [false, entries_error] if entries_error
+
+    regular_entries = []
+    entries.each do |entry|
+      mode = entry.fetch(:mode)
+      path = File.join(root.b, entry.fetch(:path))
+      case mode
+      when "100644", "100755"
+        return [false, TRACKED_WORKTREE_CHANGES] unless regular_file_matches_mode?(path, mode)
+
+        regular_entries << entry
+      when "120000"
+        return [false, TRACKED_WORKTREE_CHANGES] unless File.symlink?(path)
+
+        link_oids, link_error = raw_blob_oids(root, "--stdin", stdin_data: File.readlink(path), expected_count: 1)
+        return [false, link_error] if link_error
+        return [false, TRACKED_WORKTREE_CHANGES] unless link_oids == [entry.fetch(:oid)]
+      else
+        return [false, "trusted checkout has tracked entries with unsupported mode #{mode}"]
+      end
+    end
+
+    paths = regular_entries.map { |entry| entry.fetch(:path) }
+    if paths.any? { |path| path.match?(/[\n\r]/) || path.start_with?('"') }
+      return [false, "trusted checkout has tracked paths the raw content probe cannot address"]
+    end
+
+    oids, oids_error = raw_blob_oids(
+      root, "--stdin-paths", stdin_data: paths.map { |path| "#{path}\n" }.join, expected_count: paths.size
+    )
+    return [false, oids_error] if oids_error
+    return [false, TRACKED_WORKTREE_CHANGES] unless oids == regular_entries.map { |entry| entry.fetch(:oid) }
+
+    [true, nil]
+  end
+
+  def tracked_index_entries(root)
+    stdout, stderr, status = capture_checkout_git_probe(root, "ls-files", "-z", "--stage", "--")
+    unless status&.success?
+      return [nil, "trusted checkout index could not be read: #{stderr.to_s.lines.first&.strip}"]
+    end
+
+    records = stdout.to_s.b.split("\0", -1)
+    terminated = records.length > 1 && records.pop.empty?
+    entries = records.map do |record|
+      match = INDEX_ENTRY_PATTERN.match(record)
+      { mode: match[:mode], oid: match[:oid], stage: match[:stage], path: match[:path] } if match
+    end
+    return [nil, "trusted checkout index probe returned malformed output"] if !terminated || entries.any?(&:nil?)
+    return [nil, "trusted checkout has unmerged index entries"] if entries.any? { |entry| entry.fetch(:stage) != "0" }
+
+    [entries, nil]
+  end
+
+  def regular_file_matches_mode?(path, mode)
+    stat = File.lstat(path)
+    # Git derives 100755 from the owner execute bit alone; ignore core.fileMode.
+    stat.file? && stat.mode.anybits?(0o100) == (mode == "100755")
+  rescue SystemCallError
+    false
+  end
+
+  def raw_blob_oids(root, *args, stdin_data:, expected_count:)
+    stdout, stderr, status = capture_checkout_git_probe(root, "hash-object", "--no-filters", *args, stdin_data:)
+    unless status&.success?
+      return [nil, "trusted checkout working-tree state could not be verified: #{stderr.to_s.lines.first&.strip}"]
+    end
+
+    oids = stdout.to_s.lines(chomp: true)
+    unless oids.size == expected_count && oids.all? { |oid| oid.match?(GIT_OBJECT_ID_PATTERN) }
+      return [nil, "trusted checkout raw content probe returned malformed output"]
+    end
+
+    [oids, nil]
   end
 end
 

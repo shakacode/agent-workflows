@@ -3175,6 +3175,75 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_compares_raw_tracked_contents_without_clean_filters
+    Dir.mktmpdir("trusted-base-clean-filter") do |repo_root|
+      tracked_path = File.join(repo_root, "tracked.txt")
+      link_path = File.join(repo_root, "link")
+      filter_marker = File.join(repo_root, ".git", "clean-filter-ran")
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      File.write(tracked_path, "trusted\n")
+      File.symlink("tracked.txt", link_path)
+      git! "-C", repo_root, "add", "tracked.txt", "link"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "trusted"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+      # Attributes from .git/info and a filter driver from local config survive every
+      # -c/GIT_CONFIG_* override, so the probe must never route worktree bytes through them.
+      FileUtils.mkdir_p(File.join(repo_root, ".git", "info"))
+      File.write(File.join(repo_root, ".git", "info", "attributes"), "tracked.txt filter=launder\n")
+      git! "-C", repo_root, "config", "filter.launder.clean",
+           "touch #{Shellwords.escape(filter_marker)} && printf 'trusted\\n'"
+
+      previous_executable = TrustedGitState.executable
+      previous_local_env_vars = TrustedGitState.local_env_vars
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      operations = TrustedBaseHighRiskOperations.new
+
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      assert matches, error
+
+      File.write(tracked_path, "laundered change\n")
+      # The clean filter echoes the committed bytes, so plain `git diff HEAD` hides the drift.
+      assert system(clean_git_env, REAL_GIT, "-C", repo_root, "diff", "--quiet", "HEAD", "--")
+      assert File.exist?(filter_marker)
+      FileUtils.rm_f(filter_marker)
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has tracked working-tree changes", error
+      refute File.exist?(filter_marker), "checkout probe executed the local clean filter"
+
+      File.write(tracked_path, "trusted\n")
+      File.unlink(link_path)
+      File.symlink("elsewhere.txt", link_path)
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has tracked working-tree changes", error
+
+      File.unlink(link_path)
+      File.write(link_path, "tracked.txt")
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has tracked working-tree changes", error
+
+      File.unlink(link_path)
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      refute matches
+      assert_equal "trusted checkout has tracked working-tree changes", error
+
+      File.symlink("tracked.txt", link_path)
+      matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
+      assert matches, error
+      refute File.exist?(filter_marker), "checkout probe executed the local clean filter"
+    ensure
+      TrustedGitState.executable = previous_executable if defined?(previous_executable)
+      TrustedGitState.local_env_vars = previous_local_env_vars if defined?(previous_local_env_vars)
+    end
+  end
+
   def test_git_object_ids_are_exactly_sha1_or_sha256_length
     assert_match GIT_OBJECT_ID_PATTERN, "a" * 40
     assert_match GIT_OBJECT_ID_PATTERN, "b" * 64
