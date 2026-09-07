@@ -235,7 +235,8 @@ been ambiguous outside the isolated fetch. The helper resolves the fetched commi
 `.agents/agent-workflow.yml` again from that commit. The fetched mapping must be
 complete and exactly match the bootstrap mapping. Acceptance additionally
 requires a closed merged non-fork PR, matching complete REST and GraphQL
-repository/head/merge facts, trusted and fully visible actors/interactions,
+repository/head/merge/merge-actor facts, trusted and fully visible
+actors/interactions (including the actor who merged the PR),
 complete API coverage with unique stable participant, timeline-event, and
 commit-author GraphQL node IDs, coherent typename/login/presentation facts for
 each ID, no suspicious findings or warnings, and proof that the exact merge

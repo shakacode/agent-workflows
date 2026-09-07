@@ -2087,6 +2087,66 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_trusted_base_rejects_untrusted_or_inconsistent_merge_actor
+    cases = {
+      "untrusted merge actor without other participation" => [
+        {
+          "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "0",
+          "PREFLIGHT_TEST_PARTICIPANT_NODES" => "[]",
+          "PREFLIGHT_TEST_TIMELINE_NODES" =>
+            '[{"id":"merged-event-1","__typename":"MergedEvent",' \
+            '"actor":{"id":"actor-9","login":"other-collaborator","__typename":"User"}}]',
+          "PREFLIGHT_TEST_MERGED_BY_LOGIN" => "other-collaborator"
+        },
+        "PR merge actor is not in trusted actor allowlist"
+      ],
+      "missing GraphQL merge event" => [
+        { "PREFLIGHT_TEST_TIMELINE_NODES" => '[{"id":"labeled-event-1","__typename":"LabeledEvent"}]' },
+        "GraphQL PR merge actor is missing or inconsistent"
+      ],
+      "missing REST merge actor" => [
+        { "PREFLIGHT_TEST_MISSING_MERGED_BY" => "1" },
+        "REST PR merge actor fact is missing or unavailable"
+      ],
+      "conflicting REST merge actor" => [
+        { "PREFLIGHT_TEST_MERGED_BY_LOGIN" => "other-maintainer" },
+        "GraphQL and REST PR merge actors do not match"
+      ]
+    }
+
+    cases.each do |label, (overrides, expected_rejection)|
+      with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_includes out, "GitHub API coverage findings: none", label
+        assert_includes out, "Trusted-base high-risk acceptance unavailable: #{expected_rejection}", label
+      end
+    end
+  end
+
+  def test_trusted_base_accepts_trusted_merge_actor_without_other_participation
+    overrides = {
+      "PREFLIGHT_TEST_TIMELINE_TOTAL" => "2",
+      "PREFLIGHT_TEST_TIMELINE_NODES" =>
+        '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":1,' \
+        '"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"user":{"id":"actor-1",' \
+        '"login":"justin808","__typename":"User"}}]}}},' \
+        '{"id":"merged-event-1","__typename":"MergedEvent",' \
+        '"actor":{"id":"actor-9","login":"trusted-collaborator","__typename":"User"}}]',
+      "PREFLIGHT_TEST_MERGED_BY_LOGIN" => "trusted-collaborator"
+    }
+
+    with_trusted_base_preflight(fixture_env_overrides: overrides) do |env, trust_config_path, repo_root, _provenance|
+      write_trust_config(trust_config_path, users: %w[justin808 trusted-collaborator])
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
+    end
+  end
+
   def test_trusted_base_rejects_non_ancestor_merge_result
     unrelated_sha = "f" * 40
     with_trusted_base_preflight(
@@ -2457,7 +2517,8 @@ class PrSecurityPreflightTest < Minitest::Test
       "timelineItems" => {
         "totalCount" => 3,
         "nodes" => [
-          { "id" => "merged-event-1", "__typename" => "MergedEvent" },
+          { "id" => "merged-event-1", "__typename" => "MergedEvent",
+            "actor" => { "id" => "actor-1", "login" => "justin808", "__typename" => "User" } },
           { "id" => "labeled-event-1", "__typename" => "LabeledEvent" },
           { "id" => "assigned-event-1", "__typename" => "AssignedEvent" }
         ]
@@ -2466,6 +2527,22 @@ class PrSecurityPreflightTest < Minitest::Test
 
     assert_empty graph_node_identity_coverage_findings(target)
     assert_includes PR_TIMELINE_NODES_FRAGMENT, "... on Node { id }"
+    assert_includes PR_TIMELINE_NODES_FRAGMENT,
+                    "... on MergedEvent { id createdAt actor { ... on Node { id } login __typename } }"
+  end
+
+  def test_merged_event_without_actor_identity_fails_closed
+    target = {
+      "participants" => { "totalCount" => 0, "nodes" => [] },
+      "timelineItems" => {
+        "totalCount" => 1,
+        "nodes" => [{ "id" => "merged-event-1", "__typename" => "MergedEvent" }]
+      }
+    }
+
+    finding = graph_node_identity_coverage_findings(target).fetch(0)
+    assert_equal "timelineItems", finding.fetch(:connection)
+    assert_equal "node identity unavailable", finding.fetch(:reason)
   end
 
   def test_standard_timeline_node_types_without_stable_identities_fail_closed
@@ -6082,8 +6159,14 @@ class PrSecurityPreflightTest < Minitest::Test
             rest_author_login="${PREFLIGHT_TEST_REST_AUTHOR_LOGIN:-justin808}"
             rest_author_json="$(printf '{\"login\":\"%s\"}' "$rest_author_login")"
           fi
+          if [ "${PREFLIGHT_TEST_MISSING_MERGED_BY:-}" = "1" ]; then
+            merged_by_json=null
+          else
+            merged_by_login="${PREFLIGHT_TEST_MERGED_BY_LOGIN:-justin808}"
+            merged_by_json="$(printf '{\"login\":\"%s\"}' "$merged_by_login")"
+          fi
           cat <<JSON
-      {"number":123,"state":"${state}","merged":${merged},"merged_at":"${merged_at}","user":${rest_author_json},"head":{"sha":"${head_sha}","repo":{"full_name":"${head_repo}"}},"base":{"ref":"${rest_base_ref}","repo":{"full_name":"${base_repo}"}},"merge_commit_sha":"${merge_sha}"}
+      {"number":123,"state":"${state}","merged":${merged},"merged_at":"${merged_at}","merged_by":${merged_by_json},"user":${rest_author_json},"head":{"sha":"${head_sha}","repo":{"full_name":"${head_repo}"}},"base":{"ref":"${rest_base_ref}","repo":{"full_name":"${base_repo}"}},"merge_commit_sha":"${merge_sha}"}
       JSON
           exit 0
         fi
@@ -6203,7 +6286,8 @@ class PrSecurityPreflightTest < Minitest::Test
           fi
           timeline_nodes="${PREFLIGHT_TEST_TIMELINE_NODES:-}"
           if [ -z "$timeline_nodes" ]; then
-            timeline_nodes="$(printf '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":%s,"pageInfo":{"hasNextPage":%s,"endCursor":null},"nodes":%s}}}]' "$commit_author_total" "$commit_author_has_next" "$commit_author_nodes")"
+            timeline_nodes="$(printf '[{"id":"commit-event-1","__typename":"PullRequestCommit","commit":{"authors":{"totalCount":%s,"pageInfo":{"hasNextPage":%s,"endCursor":null},"nodes":%s}}},{"id":"merged-event-1","__typename":"MergedEvent","createdAt":"2026-08-28T00:00:00Z","actor":%s}]' "$commit_author_total" "$commit_author_has_next" "$commit_author_nodes" "$commit_user_json")"
+            timeline_total="${PREFLIGHT_TEST_TIMELINE_TOTAL:-2}"
           fi
           cat <<JSON
       {"data":{"repository":{"pullRequest":{"number":123,"title":"Test PR","url":"https://github.com/owner/repo/pull/123","state":"${state}","mergedAt":"2026-08-28T00:00:00Z","isCrossRepository":${cross_repository},"baseRefName":"${graph_base_ref}","headRefOid":"${head_sha}","headRepository":{"nameWithOwner":"${head_repo}"},"mergeCommit":{"oid":"${merge_sha}"},"author":${author_json},"participants":{${participant_count_field}"pageInfo":{"hasNextPage":${participant_has_next},"endCursor":${participant_end_cursor}},"nodes":${participant_nodes}},"timelineItems":{"totalCount":${timeline_total},"pageInfo":{"hasNextPage":${timeline_has_next},"endCursor":${timeline_end_cursor}},"nodes":${timeline_nodes}}}}}}
