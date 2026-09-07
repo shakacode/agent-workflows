@@ -70,6 +70,9 @@ ruby bin/agent-workflows-trust-audit-test.rb
 echo "== repository security policy =="
 ruby bin/repository-security-policy-test.rb
 
+echo "== attended and overnight workflow doc contract =="
+ruby bin/attended-and-overnight-workflow-contract-test.rb
+
 echo "== secure GitHub Actions gate =="
 ruby skills/secure-github-actions/bin/secure-github-actions-scan-test.rb
 ruby skills/secure-github-actions/bin/secure-github-actions-review-lens-test.rb
@@ -96,6 +99,7 @@ ruby bin/validate-execution-provenance
 echo "== routing doc links =="
 ruby bin/validate-doc-links-test.rb
 ruby bin/validate-doc-links
+ruby skills/pr-batch/bin/skill-stage-source-test.rb
 
 echo "== installer and stack suites (contain source-revision tests) =="
 if ((skipped_cleanliness_dependent_suites)); then
@@ -120,6 +124,7 @@ bin/push-downstream --config downstream.yml >/dev/null
 
 echo "== helper tests =="
 ruby bin/lint-test.rb
+ruby bin/process-gap-mechanism-target-test.rb
 ruby skills/autoreview/bin/autoreview-target-state-test.rb
 ruby skills/continue/bin/authorized-completion-test.rb
 ruby skills/verify/bin/verification-evidence-reuse-test.rb
@@ -127,7 +132,11 @@ ruby skills/address-review/bin/fetch-pr-review-data-test.rb
 ruby skills/address-review/bin/address-review-summary-template-test.rb
 ruby skills/plan-pr-batch/bin/pr-file-touch-map-test.rb
 ruby skills/plan-pr-batch/bin/batch-plan-preflight-test.rb
+ruby skills/plan-pr-batch/bin/model-routing-profile-test.rb
+ruby skills/plan-pr-batch/bin/evaluate-workflow-behavior-test.rb
 AGENT_WORKFLOWS_SOURCE_CHECKOUT=1 ruby skills/plan-pr-batch/scripts/check_goal_prompt_size.rb
+ruby bin/check-control-tower-prompt-size-test.rb
+bin/check-control-tower-prompt-size
 ruby skills/pause/bin/pause-prompt-test.rb
 ruby skills/close-batch/bin/close-batch-contract-test.rb
 ruby skills/post-merge-audit/bin/post-merge-audit-policy-test.rb
@@ -180,6 +189,7 @@ ruby skills/pr-batch/bin/pr-security-preflight-test.rb
 ruby skills/pr-batch/bin/stale-assignment-sweep-test.rb
 ruby skills/pr-walkthrough/bin/pr-walkthrough-contract-test.rb
 ruby skills/task-observer/bin/task-observer-test.rb
+ruby skills/tdd/bin/tdd-quality-contract-test.rb
 ruby skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-contract-test.rb
 ruby skills/untrusted-contributor-intake/bin/untrusted-contributor-intake-preflight-test.rb
 ruby skills/update-changelog/bin/changelog-merged-prs-test.rb

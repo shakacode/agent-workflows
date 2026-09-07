@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 require_relative "../../../bin/agent_doctor/autonomous_merge_policy"
 require_relative "../lib/autonomous_merge_runtime_trust"
@@ -59,7 +61,7 @@ class AutonomousMergeContractTest < Minitest::Test
 
   def test_all_entry_points_preserve_eligibility_and_distinct_terminal_states
     PARITY_PATHS.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8").gsub(/\s+/, " ")
 
       assert_includes text, NECESSARY_NOT_SUFFICIENT, path
       assert_includes text, UNKNOWN_IS_NOT_APPROVAL, path
@@ -68,7 +70,7 @@ class AutonomousMergeContractTest < Minitest::Test
     end
 
     ROUTE_PATHS.each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
       assert_includes text, "pr-batch-integration-closeout.md#autonomous-merge-eligibility-gate", path
     end
   end
@@ -97,7 +99,7 @@ class AutonomousMergeContractTest < Minitest::Test
       skills/plan-pr-batch/SKILL.md
       skills/triage/SKILL.md
     ].each do |path|
-      text = File.read(File.join(ROOT, path), encoding: "UTF-8")
+      text = SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
 
       assert_includes text, "GMCC-v5:"
       assert_includes text, "ready-human-review-required"
@@ -308,12 +310,12 @@ class AutonomousMergeContractTest < Minitest::Test
   private
 
   def normalized_policy_prose(path)
-    File.read(File.join(ROOT, path), encoding: "UTF-8")
-        .lines
-        .map { |line| line.sub(/\A# ?/, "") }
-        .join
-        .delete("`")
-        .gsub(/\s+/, " ")
+    SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
+                    .lines
+                    .map { |line| line.sub(/\A# ?/, "") }
+                    .join
+                    .delete("`")
+                    .gsub(/\s+/, " ")
   end
 
   def match_any?(patterns, path)
