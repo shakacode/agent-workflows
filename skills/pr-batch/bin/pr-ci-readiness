@@ -89,10 +89,6 @@ module PrCiReadiness
     [row["workflow"].to_s, row["name"].to_s]
   end
 
-  def non_draft_head_rows(rows)
-    rows.reject { |row| draft_head_validation_row?(row) && evidence_row_state(row) != "UNKNOWN" }
-  end
-
   def draft_head_validation_row?(row)
     row.is_a?(Hash) &&
       row["workflow"].to_s == VALIDATION_WORKFLOW &&
@@ -118,8 +114,14 @@ module PrCiReadiness
   # Preserve required cancellations unless a current row with the exact same
   # workflow/name identity supersedes them. Full-list cancellations are noise.
   def readiness_rows(rows, required_used:, required_cancellations: [])
-    rows = non_draft_head_rows(rows)
-    required_cancellations = non_draft_head_rows(required_cancellations)
+    unless required_used
+      required_contexts = required_cancellations.map { |row| check_identity(row) }
+      # A draft label never exempts an explicitly required check or its successor.
+      rows = rows.reject do |row|
+        draft_head_validation_row?(row) && evidence_row_state(row) != "UNKNOWN" &&
+          !required_contexts.include?(check_identity(row))
+      end
+    end
     current_rows = active_rows(rows)
     gate_rows = required_used ? rows : current_rows + required_cancellations
     current_contexts = current_rows.map { |row| check_identity(row) }
@@ -245,7 +247,7 @@ module PrCiReadiness
     source:, head_sha:, complete:, rows:, checked_at:, error: nil,
     informational_rows: [], gates_verdict: true, policy_dispositions: nil
   )
-    normalized_rows = non_draft_head_rows(rows.is_a?(Array) ? rows : [])
+    normalized_rows = rows.is_a?(Array) ? rows : []
     blocking_rows = if policy_dispositions.nil?
                       normalized_rows
                     else
@@ -1113,13 +1115,21 @@ module PrCiReadiness
       runs.each { |run| validate_actions_run_identity!(run, head_sha) }
       runs.select! { |run| actions_run_targets_pr?(run, target_pr) }
       rows = []
+      jobs_by_run_id = {}
       current_runs = runs.group_by { |run| [run["workflow_id"], run["event"]] }
       current_runs = current_runs.values.map do |group|
-        non_cancelled = group.reject do |run|
-          run["status"] == "completed" && run["conclusion"] == "cancelled"
+        non_draft = group.reject do |run|
+          next false unless run["name"].to_s == VALIDATION_WORKFLOW
+
+          jobs = jobs_by_run_id[run.fetch("id")] ||= fetch_actions_jobs(repo, run.fetch("id"))
+          jobs.any? { |job| job["name"].to_s == DRAFT_HEAD_VALIDATION_CHECK }
         end
-        candidates = non_cancelled.empty? ? group : non_cancelled
-        candidates.max_by { |run| [run["run_number"], run["run_attempt"], run["id"]] }
+        if non_draft.empty?
+          raise Error, "draft-head validation does not establish current-head integration evidence"
+        end
+
+        # Only a newer run can supersede cancellation or failure evidence.
+        non_draft.max_by { |run| [run["run_number"], run["run_attempt"], run["id"]] }
       end
       current_runs.sort_by! { |run| [run["workflow_id"], run["event"]] }
       current_runs.each do |run|
@@ -1127,7 +1137,8 @@ module PrCiReadiness
         head_branch = run["head_branch"].to_s
         pull_request_numbers = Array(run["pull_requests"]).filter_map { |association| association["number"] }.sort
         rows << normalize_actions_row(run, "run", dependabot:, head_branch:, pull_request_numbers:)
-        fetch_actions_jobs(repo, run.fetch("id")).each do |job|
+        jobs = jobs_by_run_id[run.fetch("id")] ||= fetch_actions_jobs(repo, run.fetch("id"))
+        jobs.each do |job|
           rows << normalize_actions_row(job, "job", dependabot:, head_sha:, head_branch:, pull_request_numbers:)
         end
       end

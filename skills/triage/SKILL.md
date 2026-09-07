@@ -296,10 +296,17 @@ precise blocker.
    `Scope` data and carry the complete live replay inline or name its durable
    reference; persist or deliver both artifacts with stable planning state.
    Backend storage is optional and must not be assumed.
+   Each generated prompt must put the editable controls first after its
+   target-specific invocation, in this exact order: `Batch title:`, `Repo:`,
+   `Objective:`, and `merge_authority:`. Use one space after every control-field
+   colon and exactly one blank line after `merge_authority:`. Do not add
+   `Targets:`; `Items:` remains the single canonical target section. The
+   editable authority field is `merge_authority: <none|ask|auto>`. Immediately
+   normalize only `auto` to `auto_merge_when_gates_pass` before worker launch or
+   durable evidence; preserve `none`, `ask`, and an already-canonical long value,
+   and fail closed on missing, unresolved-placeholder, or invalid input.
    Each generated prompt must include `Batch size target: <codex|claude|generic>; wave: <cap/items>.`
-   with the selected target and current aggregate wave cap. Each generated prompt must include
-   `merge_authority:<none|ask|auto_merge_when_gates_pass>` with the value resolved from visible
-   authority or the operator's answer; never silently default an omitted value.
+   with the selected target and current aggregate wave cap.
    Each generated prompt must include
    `Coordinator model/effort preference: <model/class>/<effort>.` and
    `Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.` and

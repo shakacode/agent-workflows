@@ -1156,7 +1156,12 @@ independent review route or `none`. Keep it separate from the future
 The Lane Card `route` field carries preferred model/effort and observed
 host/model/effort/UNKNOWN separately.
 
-Use this goal prompt shape. Resolve the title block through canonical
+Use this goal prompt shape. After the target-specific invocation, put the
+editable controls first in this exact order: `Batch title:`, `Repo:`,
+`Objective:`, and `merge_authority:`. Use one space after every control-field
+colon and exactly one blank line after `merge_authority:`. Do not add a
+`Targets:` control; `Items:` remains the single canonical target section.
+Resolve the title value through canonical
 [Verified Batch Title Selection](pr-batch-intake.md#verified-batch-title-selection)
 and consume its verified intake facts unchanged. This compatibility workflow
 preserves the exact prompt template below without redefining prefix,
@@ -1169,16 +1174,15 @@ dispatch; workers copy it unchanged.
 
 ```text
 Use $pr-batch to complete this batch with subagents.
-
 Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>
+Repo: OWNER/REPO
+Objective: ...
+merge_authority: <none|ask|auto>
 
 Thread handle: <batch-short>-<lane>-<word>
 Lane Card:claim/PR-open/block/cancel/final;route;holder/branch/PR/phase/URLs/UNKNOWN
 Launch:<repo:<issue|pull-request>:N|repo:adhoc:date-slug>;ovr:n/a|name/auth/ref/task;none:reuse/create issue(auth/ask)+bind;invalid|dup|UNKNOWN:stop
 PF:issue/PR=security;adhoc=trusted+task-bound+durable,no-target-security
-Repo:OWNER/REPO
-Objective:...
-merge_authority:<none|ask|auto_merge_when_gates_pass>
 Batch size target: <codex|claude|generic>;wave: <cap/items>
 Coordinator model/effort preference: <model/class>/<effort>.
 Observed host/model/effort: <host|UNKNOWN>/<model|UNKNOWN>/<effort|UNKNOWN>; host-only, no inference.
@@ -2260,7 +2264,7 @@ Apply the [PR-Batch Security Floor](pr-batch-security-floor.md) to every target.
 Pass only its verified target identity and sanitized handoff to workers; do not copy target content or security policy into this continuation prompt.
 
 Repository: infer from exact refs or current checkout.
-merge_authority: ask (use auto_merge_when_gates_pass only when the visible request explicitly grants it)
+merge_authority: ask (use auto only when the visible request explicitly grants it; normalize auto to auto_merge_when_gates_pass before workers or durable evidence)
 Mode: continue from live GitHub state; previous handoffs are stale hints only.
 
 Preflight first:

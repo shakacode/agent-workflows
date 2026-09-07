@@ -332,12 +332,14 @@ omit the queue summary and note that queue state is unavailable.
    such a condition.
 8. Give the user the Batch Plan and fenced `$pr-batch` goal prompt. Start with
    the target-specific invocation (`/goal` then `Use $pr-batch...` for Codex;
-   `Use $pr-batch...` for Claude/generic), then render the exact
-   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` block through
+   `Use $pr-batch...` for Claude/generic), then put the editable controls first:
+   `Batch title:`, `Repo:`, `Objective:`, and `merge_authority:`. Use one space
+   after each control-field colon and exactly one blank line after
+   `merge_authority:` before `Thread handle:`. Do not add `Targets:`; retain the
+   single canonical `Items:` target section. Render the
+   `Batch title: <PROJECT> <A?> <ID?> <MM-DD HH:MM> - <title>` value through
    canonical [Verified Batch Title Selection](../workflows/pr-batch-intake.md#verified-batch-title-selection).
-   The prompt template keeps the title and surrounding blank lines stable;
-   prompt intake owns prefix, issue-identifier, trust, time, and spacing
-   selection.
+   Prompt intake owns prefix, issue-identifier, trust, time, and spacing selection.
    Add `Thread handle:` by deriving `<batch-short>` from the lowercased resolved
    `<PROJECT>` plus its lowercased optional A/B/C suffix, then adding the lane id
    and a coordinator-chosen session word. Add the compact `Lane Card:` line so
@@ -365,6 +367,13 @@ host supports it, a separate coordinator, the canonical staged cost-aware worker
 route, and an explicit `merge_authority` choice before launch. It collapses only
 multi-lane packing and collision mechanics; QA, validation, review, CI,
 readiness, handoff, and closeout remain unchanged.
+
+Editable prompts expose `none`, `ask`, and `auto`. The executor immediately
+normalizes only `auto` to the durable canonical value
+`auto_merge_when_gates_pass`; `none`, `ask`, and an already-canonical long value
+remain compatible. Missing, unresolved-placeholder, or invalid authority fails
+closed before worker launch. Worker prompts, manifests, handoffs, helper inputs,
+and other durable evidence never retain the short `auto` alias.
 
 Choose `ask` when a human should understand the exact-diff PR before deciding:
 after ordinary gates are clean, the coordinator automatically publishes

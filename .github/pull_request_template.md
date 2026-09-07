@@ -18,7 +18,11 @@ closes one.
 
 ## What changed
 
-<!-- One bullet per conceptual change: the human-readable change and its boundary. -->
+<!--
+One bullet per conceptual change: the human-readable change and its boundary.
+If this PR is over about 500 changed lines, say what could have been split or
+deferred, and why it was not.
+-->
 
 ## How to review and verify
 
