@@ -106,10 +106,10 @@ end
 class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
   MISSING_INVOCATION_ROOT = Object.new.freeze
 
-  attr_reader :checkout_invocation_roots, :fetch_environments, :fetch_roots
+  attr_reader :checkout_invocation_roots, :fetch_environments, :fetch_roots, :provenance_results
 
   def initialize(base_sha:, fetched_policy:, expected_merge_sha:, fetch_fail: false, checkout_matches: true,
-                 trusted_ref: "refs/heads/main", trusted_ref_sha: nil)
+                 trusted_ref: "refs/heads/main", trusted_ref_sha: nil, during_fetch: nil)
     super()
     @base_sha = base_sha
     @fetched_policy = fetched_policy
@@ -118,9 +118,11 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
     @checkout_matches = checkout_matches
     @trusted_ref = trusted_ref
     @trusted_ref_sha = trusted_ref_sha || base_sha
+    @during_fetch = during_fetch
     @fetch_environments = []
     @fetch_roots = []
     @checkout_invocation_roots = []
+    @provenance_results = []
   end
 
   def with_isolated_base(_remote_url, _ref)
@@ -129,7 +131,11 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
     Dir.mktmpdir("pr-security-preflight-test-operations") do |fetch_root|
       @fetch_environments << trusted_git_probe_env
       @fetch_roots << fetch_root
+      environment_before_fetch = ENV.to_h
+      @during_fetch&.call
       yield fetch_root, @base_sha
+    ensure
+      ENV.replace(environment_before_fetch) if environment_before_fetch
     end
   end
 
@@ -156,6 +162,11 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
     return [true, nil] if @checkout_matches
 
     [false, "trusted checkout HEAD does not match freshly fetched trusted base"]
+  end
+
+  def pr_provenance(result, **)
+    @provenance_results << result
+    super
   end
 end
 
@@ -1913,6 +1924,104 @@ class PrSecurityPreflightTest < Minitest::Test
       assert status.success?, out
       assert_includes out, "WARN: high-risk-files acknowledgement has no effect unless --fail-on-high-risk-files is set"
       assert_includes out, "SECURITY_PREFLIGHT_OK"
+    end
+  end
+
+  def test_trusted_base_rejects_untrusted_interaction_inserted_during_isolated_fetch
+    with_trusted_base_preflight(
+      during_fetch: -> { ENV["PREFLIGHT_TEST_UNTRUSTED_COMMENT"] = "1" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "security-sensitive PR snapshot changed during trusted-base verification"
+      refute_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+    end
+  ensure
+    ENV.delete("PREFLIGHT_TEST_UNTRUSTED_COMMENT")
+  end
+
+  def test_trusted_base_rejects_trusted_comment_inserted_during_isolated_fetch
+    with_trusted_base_preflight(
+      during_fetch: -> { ENV["PREFLIGHT_TEST_TRUSTED_COMMENT"] = "1" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "security-sensitive PR snapshot changed during trusted-base verification"
+      refute_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+    end
+  end
+
+  def test_trusted_base_rejects_security_sensitive_changes_during_isolated_fetch
+    trusted_timeline = trusted_base_timeline_nodes(
+      {
+        "id" => "trusted-event-2",
+        "__typename" => "HeadRefRestoredEvent",
+        "actor" => { "id" => "actor-1", "login" => "justin808", "__typename" => "User" }
+      }
+    )
+    cases = {
+      "timeline" => -> { ENV["PREFLIGHT_TEST_TIMELINE_NODES"] = JSON.generate(trusted_timeline) },
+      "REST head" => -> { ENV["PREFLIGHT_TEST_REST_HEAD_SHA"] = "d" * 40 },
+      "suspicious diff" => -> { ENV["PREFLIGHT_TEST_SUSPICIOUS_DIFF"] = "1" },
+      "safe diff bytes" => -> { ENV["PREFLIGHT_TEST_SAFE_DIFF_VARIANT"] = "1" },
+      "participant" => lambda do
+        ENV["PREFLIGHT_TEST_PARTICIPANT_TOTAL"] = "2"
+        ENV["PREFLIGHT_TEST_PARTICIPANT_NODES"] = JSON.generate(
+          [
+            { "id" => "actor-1", "login" => "justin808", "url" => "https://github.com/justin808",
+              "__typename" => "User" },
+            { "id" => "actor-2", "login" => "unknown-user", "url" => "https://github.com/unknown-user",
+              "__typename" => "User" }
+          ]
+        )
+      end,
+      "API coverage" => -> { ENV["PREFLIGHT_TEST_MISSING_PARTICIPANT_TOTAL"] = "1" }
+    }
+
+    cases.each do |label, mutation|
+      with_trusted_base_preflight(during_fetch: mutation) do |env, trust_config_path, repo_root, _provenance|
+        out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+        assert_trusted_base_blocked(out, status)
+        assert_match(/security-sensitive PR snapshot changed|post-fetch security-sensitive PR rescan failed/, out, label)
+        refute_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED", label
+      end
+    end
+  end
+
+  def test_trusted_base_rejects_post_fetch_rescan_error
+    with_trusted_base_preflight(
+      during_fetch: -> { ENV["PREFLIGHT_TEST_RESCAN_FAIL"] = "1" }
+    ) do |env, trust_config_path, repo_root, _provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert_trusted_base_blocked(out, status)
+      assert_includes out, "post-fetch security-sensitive PR rescan failed"
+      refute_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+    end
+  end
+
+  def test_trusted_base_accepts_semantically_identical_timeline_reordering_after_fetch
+    original_nodes = trusted_base_timeline_nodes
+    reordered_nodes = original_nodes.reverse
+    overrides = {
+      "PREFLIGHT_TEST_TIMELINE_NODES" => JSON.generate(original_nodes),
+      "PREFLIGHT_TEST_TIMELINE_TOTAL" => original_nodes.size.to_s
+    }
+    with_trusted_base_preflight(
+      fixture_env_overrides: overrides,
+      during_fetch: -> { ENV["PREFLIGHT_TEST_TIMELINE_NODES"] = JSON.generate(reordered_nodes) }
+    ) do |env, trust_config_path, repo_root, provenance|
+      out, status = run_trusted_base_preflight(env, trust_config_path, repo_root)
+
+      assert status.success?, out
+      assert_includes out, "TRUSTED_BASE_HIGH_RISK_ACCEPTED"
+      refreshed_target = provenance.fetch(:operations).provenance_results.last.fetch(:target)
+      refreshed_nodes = refreshed_target.dig("timelineItems", "nodes")
+      assert_equal(reordered_nodes.map { |node| node.fetch("id") },
+                   refreshed_nodes.map { |node| node.fetch("id") })
     end
   end
 
@@ -6669,7 +6778,8 @@ class PrSecurityPreflightTest < Minitest::Test
     raise "git init failed in #{root}" unless system(clean_git_env, "git", "-C", root, "init", "--quiet")
   end
 
-  def with_trusted_base_preflight(policy: trusted_base_policy, fetched_policy: policy, fixture_env_overrides: {})
+  def with_trusted_base_preflight(policy: trusted_base_policy, fetched_policy: policy, fixture_env_overrides: {},
+                                  during_fetch: nil)
     with_fake_gh("trusted-base-high-risk") do |env, trust_config_path, _log_path, dir|
       repo_root = File.join(dir, "consumer")
       FileUtils.mkdir_p(repo_root)
@@ -6688,7 +6798,8 @@ class PrSecurityPreflightTest < Minitest::Test
         expected_merge_sha: merge_sha,
         fetch_fail: fixture_env_overrides["PREFLIGHT_TEST_FETCH_FAIL"] == "1",
         checkout_matches: fixture_env_overrides["PREFLIGHT_TEST_CHECKOUT_MISMATCH"] != "1",
-        trusted_ref_sha: fixture_env_overrides["PREFLIGHT_TEST_TRUSTED_REF_SHA"]
+        trusted_ref_sha: fixture_env_overrides["PREFLIGHT_TEST_TRUSTED_REF_SHA"],
+        during_fetch:
       )
       @trusted_base_operations ||= {}
       @trusted_base_operations[repo_root] = operations
@@ -7196,6 +7307,10 @@ class PrSecurityPreflightTest < Minitest::Test
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo/issues/123" ]; then
+        if [ "$mode" = "trusted-base-high-risk" ] && [ "${PREFLIGHT_TEST_RESCAN_FAIL:-}" = "1" ]; then
+          printf 'simulated post-fetch rescan failure\n' >&2
+          exit 1
+        fi
         if [ "$mode" = "warning-diff" ] || [ "$mode" = "high-risk-file-predicates" ] || [ "$mode" = "renamed-high-risk-file" ] || [ "$mode" = "moving-pr-base" ] || [ "$mode" = "malformed-pr-identity" ] || [ "$mode" = "truncated-pr-files" ] || [ "$mode" = "capped-pr-files" ] || [ "$mode" = "multi-hunk-warning-diff" ] || [ "$mode" = "malformed-hunk-warning-diff" ] || [ "$mode" = "trusted-blocking-diff" ] || [ "$mode" = "untrusted-warning-diff" ] || [ "$mode" = "truncated-commit-authors" ] || [ "$mode" = "unknown-commit-author" ] || [ "$mode" = "missing-pr-author-warning-diff" ] || [ "$mode" = "truncated-timeline-warning-diff" ] || [ "$mode" = "timeline-total-includes-non-node-items" ] || [ "$mode" = "timeline-total-rest-identity-mismatch" ] || [ "$mode" = "metadata-bot-review" ] || [ "$mode" = "resolved-metadata-bot-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-warning-review-comment" ] || [ "$mode" = "resolved-metadata-bot-self-blocking-review-comment" ] || [ "$mode" = "trusted-base-high-risk" ]; then
           pr_body="${PREFLIGHT_TEST_PR_BODY:-}"
           cat <<JSON
@@ -7268,6 +7383,10 @@ class PrSecurityPreflightTest < Minitest::Test
       JSON
           exit 0
         fi
+        cat <<'JSON'
+      {"number":123,"state":"open","merged":false,"merged_at":null,"merged_by":null,"user":{"login":"justin808"},"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","repo":{"full_name":"owner/repo"}},"base":{"ref":"main","repo":{"full_name":"owner/repo"}},"merge_commit_sha":null}
+      JSON
+        exit 0
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "graphql" ]; then
@@ -7579,6 +7698,11 @@ class PrSecurityPreflightTest < Minitest::Test
       [[{"id":702,"html_url":"https://github.com/owner/repo/issues/123#issuecomment-702","user":{"login":"unknown-user"},"body":"Looks good to me."}]]
       JSON
           exit 0
+        elif [ "$mode" = "trusted-base-high-risk" ] && [ "${PREFLIGHT_TEST_TRUSTED_COMMENT:-}" = "1" ]; then
+          cat <<'JSON'
+      [[{"id":703,"html_url":"https://github.com/owner/repo/issues/123#issuecomment-703","user":{"login":"justin808"},"body":"Maintainer follow-up."}]]
+      JSON
+          exit 0
         elif [ "$mode" = "overflow-interaction-queues" ]; then
           printf '%s\n' #{Shellwords.shellescape(overflow_interaction_comments)}
           exit 0
@@ -7729,6 +7853,21 @@ class PrSecurityPreflightTest < Minitest::Test
       --- a/.github/workflows/test.yml
       +++ b/.github/workflows/test.yml
       +rm -rf tmp/build
+      DIFF
+            exit 0
+          fi
+          if [ "${PREFLIGHT_TEST_SAFE_DIFF_VARIANT:-}" = "1" ]; then
+            cat <<'DIFF'
+      diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+      index 0000000..1111111 100644
+      --- a/.github/workflows/test.yml
+      +++ b/.github/workflows/test.yml
+      +another safe workflow change
+      diff --git a/AGENTS.md b/AGENTS.md
+      index 0000000..1111111 100644
+      --- a/AGENTS.md
+      +++ b/AGENTS.md
+      +safe agent guidance
       DIFF
             exit 0
           fi

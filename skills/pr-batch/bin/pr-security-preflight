@@ -892,18 +892,22 @@ def rest_context(repo, number, include_pull_comments:, issue:, trust_config:, te
   context = {
     issue:,
     issue_comments: run_gh_paginated_json_array("api", "repos/#{repo}/issues/#{number}/comments?per_page=100"),
+    pull_request: nil,
     review_comments: [],
     reviews: [],
+    timeline: [],
     resolved_review_comment_ids: Set.new
   }
 
   return context unless include_pull_comments
 
+  context[:pull_request] = pull_request_payload(repo, number)
   context[:review_comments] = run_gh_paginated_json_array(
     "api",
     "repos/#{repo}/pulls/#{number}/comments?per_page=100"
   )
   context[:reviews] = run_gh_paginated_json_array("api", "repos/#{repo}/pulls/#{number}/reviews?per_page=100")
+  context[:timeline] = rest_pull_request_timeline(repo, number)
   context[:resolved_review_comment_ids] = resolved_review_comment_database_ids(repo, number, trust_config:, team_cache:)
   context
 end
@@ -1177,8 +1181,8 @@ def suspicious_findings_for_target(repo:, number:, rest:, target_is_pr:, trusted
     pattern: WARNING_SUSPICIOUS_PATTERN
   )
 
-  if target_is_pr
-    diff = run_gh("pr", "diff", number.to_s, "--repo", repo)
+  diff = target_is_pr ? run_gh("pr", "diff", number.to_s, "--repo", repo) : nil
+  if diff
     blocking_diff_findings = suspicious_added_lines(diff, pattern: BLOCKING_SUSPICIOUS_PATTERN)
     warning_diff_findings = suspicious_added_lines(diff, pattern: WARNING_SUSPICIOUS_PATTERN)
     suspicious.concat(blocking_diff_findings)
@@ -1191,7 +1195,11 @@ def suspicious_findings_for_target(repo:, number:, rest:, target_is_pr:, trusted
 
   suspicious_warnings = warnings_not_already_blocking(suspicious_warnings, suspicious)
 
-  { suspicious:, suspicious_warnings: }
+  {
+    suspicious:,
+    suspicious_warnings:,
+    diff_digest: diff && "sha256:#{Digest::SHA256.hexdigest(diff.b)}"
+  }
 end
 
 def untrusted_interaction_finding(repo, author, kind, url, trust_config:, team_cache:)
@@ -1702,7 +1710,7 @@ end
 def exact_pr_provenance(result, repo:, policy_ref:, trust_config:, team_cache:)
   target = result.fetch(:target)
   number = result.fetch(:number)
-  rest = pull_request_payload(repo, number)
+  rest = result.fetch(:rest_pull_request)
   head_sha = target["headRefOid"]
   merge_sha = target.dig("mergeCommit", "oid")
   graph_author = target.dig("author", "login")
@@ -1776,6 +1784,32 @@ def clean_for_trusted_base_high_risk_acceptance?(result)
     result.fetch(:graph_coverage_findings).empty? && result.fetch(:participant_findings).empty? &&
     result.fetch(:untrusted_interactions).empty? && result.fetch(:suspicious).empty? &&
     result.fetch(:suspicious_warnings).empty?
+end
+
+def canonical_security_snapshot_value(value)
+  case value
+  when Hash
+    value.each_with_object({}) do |(key, entry), canonical|
+      canonical[key.to_s] = canonical_security_snapshot_value(entry)
+    end.sort.to_h
+  when Array, Set
+    value.map { |entry| canonical_security_snapshot_value(entry) }
+         .sort_by { |entry| JSON.generate(entry) }
+  else
+    value
+  end
+end
+
+def security_sensitive_snapshot(rest:, target:, diff_snapshot:, file_records:, findings:)
+  evidence = {
+    rest:,
+    target:,
+    diff_snapshot:,
+    file_records:,
+    findings:
+  }
+  canonical = canonical_security_snapshot_value(evidence)
+  "sha256:#{Digest::SHA256.hexdigest(JSON.generate(canonical))}"
 end
 
 def complete_graph_identity?(value)
@@ -2302,7 +2336,7 @@ class TrustedBaseHighRiskOperations
 end
 
 def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, team_cache:,
-                                   operations: TrustedBaseHighRiskOperations.new)
+                                   operations: TrustedBaseHighRiskOperations.new, post_fetch_rescan: nil)
   return [nil, "independent actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"] unless clean_for_trusted_base_high_risk_acceptance?(result)
 
   operator_ref, operator_ref_error = operator_trusted_base_ref
@@ -2362,8 +2396,27 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
     )
     next [nil, checkout_error] unless checkout_matches
 
+    unless post_fetch_rescan
+      next [nil, "post-fetch security-sensitive PR rescan is unavailable"]
+    end
+
+    begin
+      refreshed_result = post_fetch_rescan.call
+    rescue StandardError => e
+      next [nil, "post-fetch security-sensitive PR rescan failed: #{e.message.lines.first&.strip}"]
+    end
+    unless refreshed_result.is_a?(Hash) && refreshed_result[:security_snapshot]
+      next [nil, "post-fetch security-sensitive PR rescan returned malformed evidence"]
+    end
+    unless result[:security_snapshot] == refreshed_result.fetch(:security_snapshot)
+      next [nil, "security-sensitive PR snapshot changed during trusted-base verification"]
+    end
+    unless clean_for_trusted_base_high_risk_acceptance?(refreshed_result)
+      next [nil, "post-fetch actor, participant, interaction, suspicious-content, or API-coverage facts are not clean"]
+    end
+
     pr_provenance, provenance_error = operations.pr_provenance(
-      result,
+      refreshed_result,
       repo:,
       policy_ref: bootstrap_policy.fetch("ref"),
       trust_config:,
@@ -2377,7 +2430,7 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
 
     receipt = {
       repository: repo,
-      pr: result.fetch(:number),
+      pr: refreshed_result.fetch(:number),
       head_sha: pr_provenance.fetch(:head_sha),
       merge_sha:,
       base_sha:,
@@ -2385,7 +2438,7 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
       policy_remote: bootstrap_policy.fetch("remote"),
       policy_ref: bootstrap_policy.fetch("ref"),
       policy_ref_anchor: ref_anchor.fetch(:source),
-      high_risk_paths: result.fetch(:risky_files).sort.uniq
+      high_risk_paths: refreshed_result.fetch(:risky_files).sort.uniq
     }
     receipt[:policy_ref_anchor_sha] = ref_anchor.fetch(:sha) if ref_anchor[:sha]
     [receipt, nil]
@@ -2945,7 +2998,7 @@ def append_graph_connection_pages!(owner:, name:, number:, graph_field:, target:
     return
   end
 
-  rest_items = rest_pull_request_timeline("#{owner}/#{name}", number)
+  rest_items = rest_context&.fetch(:timeline, nil) || rest_pull_request_timeline("#{owner}/#{name}", number)
   if graph_timeline_matches_complete_rest?(
     nodes,
     rest_items,
@@ -3222,7 +3275,7 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     require_unchanged_pull_request_snapshot!(diff_snapshot, pull_request_snapshot(repo, number), number)
   end
 
-  {
+  findings = {
     changed_file_count: diff_snapshot&.fetch(:changed_file_count),
     diff_identity:,
     file_records:,
@@ -3242,6 +3295,8 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     risky_file_findings:,
     suspicious: suspicious_findings.fetch(:suspicious),
     suspicious_warnings: suspicious_findings.fetch(:suspicious_warnings),
+    diff_digest: suspicious_findings.fetch(:diff_digest),
+    rest_pull_request: rest.fetch(:pull_request),
     target:,
     target_is_pr:,
     all_participants_visible: all_participants_visible?(target, visible),
@@ -3249,6 +3304,14 @@ def scan_target(repo:, owner:, name:, number:, pr_query:, issue_query:, include_
     metadata_only_interactions:,
     untrusted_interactions:
   }
+  findings[:security_snapshot] = security_sensitive_snapshot(
+    rest:,
+    target:,
+    diff_snapshot:,
+    file_records:,
+    findings:
+  )
+  findings
 end
 
 def print_graph_coverage_findings(findings)
@@ -3681,7 +3744,22 @@ def run_preflight(argv, trusted_base_operations: TrustedBaseHighRiskOperations.n
         github_host:,
         trust_config:,
         team_cache:,
-        operations: trusted_base_operations
+        operations: trusted_base_operations,
+        post_fetch_rescan: lambda do
+          scan_target(
+            repo:,
+            owner:,
+            name:,
+            number:,
+            pr_query:,
+            issue_query:,
+            include_reactions: options[:include_reactions],
+            permission_cache:,
+            trust_config:,
+            team_cache:,
+            canonical_bot_cache:
+          )
+        end
       )
       result[:trusted_base_receipt] = receipt if receipt
       result[:trusted_base_rejection] = rejection if rejection
