@@ -6,6 +6,11 @@ base_branch: main
 # titles and thread handles. Use 1-6 uppercase ASCII letters or digits. Omit
 # repo_prefix when unset; this optional key does not accept the "n/a" sentinel.
 # repo_prefix: "APP"
+# Optional positive integer: compact final layout for single-repo batches with
+# at most this many distinct durable lanes (including completed lanes, not
+# worker instances or PRs/targets). Omit to keep the split closing stack.
+# This does not change the separate pr-open checkpoint.
+# compact_terminal_structure_max_lanes: 2
 # Optional project writing guide. Select the exact built-in ASD-STE100-inspired
 # preset, or create docs/writing-style.md and select its relative path. Either
 # repository value overrides an optional ~/.agents/agent-workflow.yml personal

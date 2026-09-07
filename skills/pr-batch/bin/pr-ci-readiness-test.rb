@@ -24,7 +24,7 @@ class PrCiReadinessTest < Minitest::Test
       "status" => "in_progress", "conclusion" => nil,
       "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
       "head_sha" => head_sha, "app_slug" => "circleci-checks",
-      "dependabot" => false, "actions" => nil,
+      "dependabot" => false,
       "details_url" => workflow_url,
       "output" => {
         "title" => "Workflow: #{name}",
@@ -101,7 +101,16 @@ class PrCiReadinessTest < Minitest::Test
       "non-name evidence" => held.merge("name" => 123),
       "stale head" => held.merge("head_sha" => "b" * 40),
       "wrong provider" => held.merge("app_slug" => "other-ci"),
-      "active phase" => running
+      "active phase" => running,
+      "failed phase" => held.merge(
+        "output" => held.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{held.fetch('details_url')})\n\n* start - Failed\n"
+        )
+      ),
+      "unknown actions" => held.merge("actions" => "UNKNOWN"),
+      "malformed actions" => held.merge("actions" => false),
+      "empty actions array" => held.merge("actions" => []),
+      "actionful response" => held.merge("actions" => [{ "identifier" => "approve" }])
     }
 
     cases.each do |label, row|
@@ -1194,6 +1203,17 @@ class PrCiReadinessCliTest < Minitest::Test
       assert_equal "READY", result.fetch("verdict")
       assert_equal base_sha, result.dig("ci_policy", "base", "sha")
       assert_equal([31], result.dig("scopes", "other", "rows").map { |row| row.fetch("id") })
+      assert_equal workflow_id,
+                   result.dig("scopes", "other", "policy_dispositions", 0, "provider_run_id")
+    end
+  end
+
+  def test_cli_preserves_omitted_check_run_actions_without_blocking_authenticated_hold
+    # GitHub GET check-run responses omit the write-side actions parameter (#767).
+    with_cli_optional_hold(mutate_held: ->(row) { row.delete("actions") }) do |result, _base, workflow_id|
+      assert_equal "READY", result.fetch("verdict")
+      row = result.dig("scopes", "other", "rows").first
+      refute row.key?("actions"), "missing API data must remain absent, not be fabricated as null"
       assert_equal workflow_id,
                    result.dig("scopes", "other", "policy_dispositions", 0, "provider_run_id")
     end
