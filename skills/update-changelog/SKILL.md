@@ -40,9 +40,10 @@ entry-format reference or unrelated release runbooks.
   PR base. Use `COMPARE_BRANCH` for the `[unreleased]` compare endpoint.
   An explicit sweep retains its requested `BASE_REF..TARGET_REF` audit range.
 - Before version-mode edits, start from a clean feature branch based on the
-  resolved target. Read the existing changelog and reconcile all applicable
-  shipped tags before adding entries or stamping. A topmost draft header is
-  not proof that a shipped release is missing.
+  resolved target.
+- Before any changelog edit, read the existing changelog, including contributor
+  guidelines, and reconcile all applicable shipped tags. A topmost draft header
+  is not proof that a shipped release is missing.
 - For post-tag changes, prove the target-side baseline is an ancestor of the
   PR target. A sibling release tag needs verified cherry-pick/forward-port
   mapping; a divergent two-dot range is not post-tag history.
@@ -52,8 +53,8 @@ entry-format reference or unrelated release runbooks.
 
 ## Classify and edit
 
-Include public API/configuration changes, runtime fixes, breaking changes,
-deprecations, security, compatibility, and user-visible performance/reliability.
+Include user-visible new features and bug fixes, public API/configuration changes,
+breaking changes, deprecations, security, compatibility, and performance/reliability.
 Scope-specific changes count for users of that scope. Exclude contributor-only
 CI, lint, tests, formatting, internal refactors, and release tooling. Docs count
 when correcting public behavior documentation. Use the repo's exact taxonomy

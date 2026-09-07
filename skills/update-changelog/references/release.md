@@ -120,7 +120,7 @@ Both RC sections remain intact with their own compare links until the stable rel
 
 When releasing from prerelease to a stable version (e.g., `v16.5.0.rc.1` -> `v16.5.0`), this is where the accumulated prerelease sections get coalesced into one stable section. **Curate carefully** — users landing on the stable version don't care about intermediate prerelease state, and noise here makes the upgrade story harder to read.
 
-#### Step 1: Coalesce all prerelease sections into one stable section
+### Step 1: Coalesce all prerelease sections into one stable section
 
 - Replace `### [16.5.0.rc.0]`, `### [16.5.0.rc.1]`, `### [16.5.0.beta.1]`, etc. (however many exist) with a single `### [16.5.0] - YYYY-MM-DD` section
 - **Move any remaining entries from `### [Unreleased]` into the new stable section** — anything still under `[Unreleased]` at stable-release time is shipping in this stable version. Leave `### [Unreleased]` with only its header (no entries).
@@ -130,7 +130,7 @@ When releasing from prerelease to a stable version (e.g., `v16.5.0.rc.1` -> `v16
 - Update the `[unreleased]:` compare link to point from `v16.5.0` to `COMPARE_BRANCH`
 - **Before committing**, spot-check the compare-link updates above: orphaned RC compare links removed, the new `[16.5.0]` link anchored at the previous stable tag (e.g., `v16.4.0...v16.5.0`) — not the latest RC tag — and `[unreleased]` pointing from `v16.5.0` to `COMPARE_BRANCH`. When the repo's changelog version-stamping task (`release` mode) does the coalesce, this is handled automatically; still verify the result before pushing.
 
-#### Step 2: Curate the entries — REMOVE these
+### Step 2: Curate the entries — REMOVE these
 
 1. **Prerelease-only fixes** — bugs introduced during the prerelease cycle and fixed in a later RC. If the bug never shipped in a stable release, the fix is noise to stable users.
    - Investigate when a bug was introduced: `git log --oneline v<last_stable>..v<rc_containing_the_fix>` — search this range for the commit that introduced the bug. If the range is large and you know which files are relevant, scope it with `-- path/to/file` to cut noise. If you **find it** in this range, the bug was introduced during the RC cycle and never shipped in stable — apply the merge-or-drop rules below. If you **don't find it**, the bug predates the RC cycle and existed in `<last_stable>` — keep the fix as its own entry.
@@ -142,7 +142,7 @@ When releasing from prerelease to a stable version (e.g., `v16.5.0.rc.1` -> `v16
 
 3. **Internal/contributor-only tooling** — yalc publish fixes, git dependency support, CI/build script changes, generator handling of prerelease version formats, local-dev tooling fixes. These don't belong in a user-facing changelog.
 
-#### Step 3: Curate the entries — KEEP these
+### Step 3: Curate the entries — KEEP these
 
 1. **User-facing fixes for bugs that existed in the previous stable** — if `rc.2` fixes a bug that was in `16.4.0`, that fix matters to stable users upgrading
 
@@ -154,7 +154,7 @@ When releasing from prerelease to a stable version (e.g., `v16.5.0.rc.1` -> `v16
 
 **Scope-tag tagging:** When the repo's changelog policy defines an inline scope tag (such as `**[Pro]**`), scope-tagged changes stay in the changelog with that inline tag — do NOT drop them just because they only apply to that scope. Apply the same REMOVE/KEEP rules above based on whether they're prerelease-only iteration vs user-facing changes that ship to users of that scope.
 
-#### Step 4: Investigation process for each entry
+### Step 4: Investigation process for each entry
 
 For each entry that doesn't obviously fall into a REMOVE or KEEP category above, ask:
 
@@ -162,7 +162,7 @@ For each entry that doesn't obviously fall into a REMOVE or KEEP category above,
 - Was this feature introduced in an earlier prerelease and then iterated/refined across later RCs? If yes, keep only the final description and drop the intermediate history.
 - Does this matter to someone upgrading from the last stable to this stable? If no, drop.
 
-#### Step 5: Final read-through
+### Step 5: Final read-through
 
 Read the resulting stable section as if you're a user upgrading from the previous stable. Every entry should be something you'd want to know about. If an entry only makes sense to someone who tracked the RC cycle, drop it.
 
