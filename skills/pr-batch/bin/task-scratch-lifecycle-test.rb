@@ -182,7 +182,7 @@ class TaskScratchLifecycleTest < Minitest::Test
 
   def test_cleanup_rejects_noncanonical_create_wrappers_before_touching_scratch
     Dir.mktmpdir("task-scratch-lifecycle") do |directory|
-      repository, = build_repository(directory)
+      repository, base_sha, head_sha = build_repository(directory)
       identity_path = File.join(directory, "task-identity.json")
       File.write(identity_path, JSON.generate("identity" => TASK_IDENTITY))
       scratch_parent = File.join(directory, "scratch-parent")
@@ -198,10 +198,15 @@ class TaskScratchLifecycleTest < Minitest::Test
       assert create_status.success?, create_stderr
       scratch_root = created.dig("receipt", "scratch_root")
       File.write(File.join(scratch_root, "evidence.json"), "{}\n")
+      review_input_path, = write_clean_review_input(durable_root, repository, base_sha, head_sha)
       variants = {
         "extra field" => created.merge("unexpected" => true),
         "wrong contract" => created.merge("contract" => "other-decision"),
         "wrong version" => created.merge("version" => 2),
+        "numeric lookalike version" => created.merge("version" => 1.0),
+        "string version" => created.merge("version" => "1"),
+        "boolean version" => created.merge("version" => true),
+        "null version" => created.merge("version" => nil),
         "wrong status" => created.merge("status" => "cleaned"),
         "missing receipt" => created.reject { |key, _value| key == "receipt" },
         "non-object receipt" => created.merge("receipt" => [])
@@ -211,7 +216,7 @@ class TaskScratchLifecycleTest < Minitest::Test
         receipt_path = File.join(durable_root, "#{label.tr(' ', '-')}.json")
         File.write(receipt_path, JSON.generate(wrapper))
 
-        blocked, stderr, status = run_cleanup(receipt_path, identity_path)
+        blocked, stderr, status = run_cleanup(receipt_path, review_input_path)
 
         refute status.success?, label
         assert_empty stderr, label

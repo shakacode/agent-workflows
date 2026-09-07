@@ -148,7 +148,8 @@ module TaskScratchLifecycle
 
     valid_wrapper = document.is_a?(Hash) && document.keys.sort == CREATE_DECISION_KEYS.sort &&
                     document["contract"] == "task-scratch-lifecycle-decision" &&
-                    document["version"] == 1 && document["status"] == "created" &&
+                    document["version"].is_a?(Integer) && document["version"] == 1 &&
+                    document["status"] == "created" &&
                     document["receipt"].is_a?(Hash)
     fail!("receipt-invalid") unless valid_wrapper
 
