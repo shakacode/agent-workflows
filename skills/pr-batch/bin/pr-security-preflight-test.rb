@@ -5646,6 +5646,9 @@ class PrSecurityPreflightTest < Minitest::Test
   private
 
   def with_clean_gitlink_checkout
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+
     Dir.mktmpdir("trusted-base-gitlink") do |repo_root|
       Dir.mktmpdir("trusted-base-gitlink-source") do |source_root|
         git! "-C", source_root, "init", "--quiet", "--initial-branch=main"
@@ -5676,8 +5679,6 @@ class PrSecurityPreflightTest < Minitest::Test
         FileUtils.mkdir_p(File.join(submodule_git_dir, "hooks"))
         FileUtils.cp(local_tool, File.join(submodule_git_dir, "hooks", "post-checkout"))
 
-        previous_executable = TrustedGitState.executable
-        previous_local_env_vars = TrustedGitState.local_env_vars
         TrustedGitState.executable = REAL_GIT
         TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
           REAL_GIT,
