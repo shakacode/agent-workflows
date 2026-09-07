@@ -878,7 +878,10 @@ module BatchPlanPreflight
   end
 
   def companion_policy_key_line?(line)
-    line.b.match?(/\A[ \t]*(?:companion_path_conventions|["']companion_path_conventions["'])\s*:/)
+    line.b.match?(
+      /\A[ \t]*(?:[!&][^ \t\r\n]+[ \t]+)*
+       (?:companion_path_conventions|["']companion_path_conventions["'])\s*:/x
+    )
   end
 
   def companion_policy_quoted_line_starts(lines)
@@ -1004,7 +1007,8 @@ module BatchPlanPreflight
 
   def companion_policy_flow_value_line?(line)
     line.b.match?(
-      /\A[ \t]*(?:companion_path_conventions|["']companion_path_conventions["'])
+      /\A[ \t]*(?:[!&][^ \t\r\n]+[ \t]+)*
+       (?:companion_path_conventions|["']companion_path_conventions["'])
        \s*:\s*(?:[!&][^ \t\r\n]+[ \t]+)*[\[{]/x
     )
   end

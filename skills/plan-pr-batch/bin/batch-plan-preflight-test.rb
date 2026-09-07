@@ -857,6 +857,24 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_recovery_recognizes_decorated_policy_keys
+    ["&policy", "!policy"].each do |property|
+      Dir.mktmpdir("batch-plan-decorated-policy-key") do |root|
+        FileUtils.mkdir_p(File.join(root, ".agents"))
+        File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+          #{property} companion_path_conventions: invalid
+          malformed: [
+        YAML
+
+        result, _stderr, status = evaluate(input_for, chdir: root)
+
+        refute status.success?, property
+        assert_includes result.fetch("violations").map { |item| item.fetch("code") },
+                        "companion-path-conventions-invalid", property
+      end
+    end
+  end
+
   def test_duplicate_companion_policy_keys_fail_closed
     policies = {
       "top-level" => <<~YAML,
