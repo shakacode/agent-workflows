@@ -79,7 +79,8 @@ blocker. Do not fake a manual pass from static inspection.
      defines the portable recording procedure and clip-inspection requirements.
    - Put the artifacts where every intended reviewer can open them. For
      GitHub-only or public work, prefer GitHub PR attachments. Use GitHub CLI
-     2.99.0+'s repeatable `--attach` flag with `gh pr create` or `gh pr comment`
+     2.99.0+'s repeatable `--attach` flag with `gh pr create`, `gh pr edit`, or
+     `gh pr comment`
      when the actor has write access through OAuth, a classic PAT, or a
      fine-grained PAT, and the user has already authorized that GitHub mutation;
      otherwise confirm before posting. GitHub Actions and App tokens cannot use

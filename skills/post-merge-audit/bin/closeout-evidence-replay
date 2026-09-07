@@ -36,6 +36,7 @@ module CloseoutEvidenceReplay
     www.github.com
     user-images.githubusercontent.com
   ].freeze
+  PUBLIC_GITHUB_HOST_ALIASES = %w[github.com www.github.com].freeze
   VALID_PERFORMANCE_IMPACTS = %w[not_applicable bundle_hygiene measured_metric].freeze
   VALID_PRIORITY_SEVERITIES = %w[P0 P1 P2 P3 Must-Fix BLOCKING].freeze
   VALID_PRIORITY_DISPOSITIONS = %w[fixed waived false_positive not_applicable deferred_with_issue].freeze
@@ -711,9 +712,9 @@ module CloseoutEvidenceReplay
       uri = parse_https_url(url)
       next false unless uri
 
+      authority = github_authority(uri)
       host = uri.host.downcase
-      authority = uri.port == 443 ? host : "#{host}:#{uri.port}"
-      public_github_target = configured_host.nil? || %w[github.com www.github.com].include?(configured_host)
+      public_github_target = configured_host.nil? || configured_host == "github.com"
       accepted_host = authority == configured_host ||
                       (public_github_target && authority == host && DURABLE_GITHUB_EVIDENCE_HOSTS.include?(host))
       accepted_host && uri.path && !uri.path.empty? && uri.path != "/"
@@ -727,6 +728,11 @@ module CloseoutEvidenceReplay
     return unless uri && uri.userinfo.nil?
     return unless (uri.path.nil? || uri.path.empty?) && uri.query.nil? && uri.fragment.nil?
 
+    authority = github_authority(uri)
+    PUBLIC_GITHUB_HOST_ALIASES.include?(authority) ? "github.com" : authority
+  end
+
+  def github_authority(uri)
     host = uri.host.downcase
     uri.port == 443 ? host : "#{host}:#{uri.port}"
   end

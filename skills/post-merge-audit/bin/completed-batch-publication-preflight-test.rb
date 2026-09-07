@@ -1958,6 +1958,26 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
     )
   end
 
+  def test_validated_target_canonicalizes_www_github_alias_before_api_snapshot_verification
+    target = {
+      "host" => "www.github.com",
+      "repo" => "shakacode/hichee",
+      "type" => "pull_request",
+      "number" => 10_049
+    }
+    normalized = CompletedBatchPublicationPreflight.validated_target(target)
+    payload = {
+      "number" => 10_049,
+      "html_url" => "https://github.com/shakacode/hichee/pull/10049",
+      "state" => "closed",
+      "merged_at" => "2026-08-24T00:41:33Z",
+      "head" => { "sha" => "a" * 40 }
+    }
+
+    assert_equal "github.com", normalized.fetch("host")
+    assert CompletedBatchPublicationPreflight.verified_target_api_snapshot(payload, normalized)
+  end
+
   def test_receipt_binds_the_exact_raw_source_input
     input = fixture("completed-batch-publication-hichee-terminal.json")
     result = assess_input(input)

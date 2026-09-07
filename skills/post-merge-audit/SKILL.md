@@ -95,4 +95,3 @@ When non-OK findings need follow-up, build a deduped issue plan; independent aud
 
 At audit handoff, load the receipt/output contract; only the coordinator publishes completed-batch receipts, and clean status needs current complete evidence. Read [Output](references/output.md) for this stage.
 <!-- /stage-reference -->
-

@@ -1942,6 +1942,12 @@ class CloseoutEvidenceReplayTest < Minitest::Test
     end
   end
 
+  def test_normalize_github_host_canonicalizes_public_www_alias_only_on_default_port
+    assert_equal "github.com", CloseoutEvidenceReplay.normalize_github_host("www.github.com")
+    assert_equal "github.com", CloseoutEvidenceReplay.normalize_github_host("WWW.GITHUB.COM:443")
+    assert_equal "www.github.com:444", CloseoutEvidenceReplay.normalize_github_host("www.github.com:444")
+  end
+
   def test_v2_github_destination_rejects_non_default_ports_on_public_hosts
     github_hosts = [nil, "github.com", "www.github.com"]
 
