@@ -1304,7 +1304,9 @@ module CompletedBatchPublicationPreflight
   )
     return unless comment.is_a?(Hash)
     return unless Integer(comment["id"], exception: false) == reference.fetch("comment_id")
-    return unless comment["html_url"] == reference.fetch("url")
+
+    api_reference = waiver_comment_reference(comment["html_url"], target)
+    return unless api_reference && api_reference.fetch("comment_id") == reference.fetch("comment_id")
     return unless issue_api_url_matches_target?(comment["issue_url"], target)
     return unless valid_timestamp?(comment["created_at"]) && valid_timestamp?(comment["updated_at"])
 

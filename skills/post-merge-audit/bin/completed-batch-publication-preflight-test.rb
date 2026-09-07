@@ -2735,6 +2735,21 @@ class CompletedBatchPublicationPreflightTest < Minitest::Test
                     "shakacode/hichee#pull_request:10026 maintainer QA waiver is not replayable"
   end
 
+  def test_authenticated_waiver_accepts_www_evidence_url_with_canonical_api_url
+    input = fixture("completed-batch-publication-hichee-terminal.json")
+    row = input.fetch("qa_evidence").find { |candidate| candidate.key?("maintainer_waiver") }
+    canonical_url = row.dig("maintainer_waiver", "url")
+    evidence_url = canonical_url.sub("https://github.com", "https://www.github.com")
+    row["evidence"] = row.fetch("evidence").sub(canonical_url, evidence_url)
+    row.fetch("maintainer_waiver")["url"] = evidence_url
+    comment = valid_waiver_comment(row, input)
+    comment["html_url"] = canonical_url
+
+    result = assess_input(input, waiver_verifier: ->(**_keywords) { comment })
+
+    assert result.fetch("eligible"), result.fetch("blockers").join("\n")
+  end
+
   def test_forged_nonexistent_maintainer_waiver_comment_blocks
     input = fixture("completed-batch-publication-hichee-terminal.json")
     qa = input.fetch("qa_evidence").find { |row| row.key?("maintainer_waiver") }
