@@ -2336,7 +2336,7 @@ PR_TIMELINE_NODES_FRAGMENT = <<~GRAPHQL
   ... on HeadRefDeletedEvent { id actor { ... on Node { id } login __typename } }
   ... on HeadRefRestoredEvent { id actor { ... on Node { id } login __typename } }
   ... on RemovedFromMergeQueueEvent { id actor { ... on Node { id } login __typename } }
-  ... on ReviewDismissedEvent { id actor { ... on Node { id } login __typename } }
+  ... on ReviewDismissedEvent { id actor { ... on Node { id } login __typename } review { id } }
   ... on MergedEvent { id createdAt actor { ... on Node { id } login __typename } }
   ... on PullRequestCommit {
     id
@@ -2680,12 +2680,44 @@ def graph_timeline_matches_complete_rest?(nodes, rest_items, reviews:, review_co
   end
 
   valid_reply_relationships = review_comments.all? do |comment|
-    reply_to_id = comment["in_reply_to_id"]
-    reply_to_id.nil? ||
-      (reply_to_id.is_a?(Integer) && reply_to_id.positive? &&
-       reply_to_id != comment["id"] && comments_by_id.key?(reply_to_id))
+    seen_comment_ids = Set.new
+    current = comment
+    loop do
+      reply_to_id = current["in_reply_to_id"]
+      break true if reply_to_id.nil?
+      break false unless reply_to_id.is_a?(Integer) && reply_to_id.positive?
+      break false unless seen_comment_ids.add?(current.fetch("id"))
+
+      current = comments_by_id[reply_to_id]
+      break false unless current
+    end
   end
   return false unless valid_reply_relationships
+
+  graph_dismissals_by_event_id = {}
+  nodes.each do |node|
+    next unless node["__typename"] == "ReviewDismissedEvent"
+
+    event_id = node["id"]
+    review_node_id = node.dig("review", "id")
+    return false if event_id.to_s.empty? || review_node_id.to_s.empty?
+    return false if graph_dismissals_by_event_id.key?(event_id)
+
+    graph_dismissals_by_event_id[event_id] = review_node_id
+  end
+
+  dismissed_review_ids = Set.new
+  rest_items.each do |item|
+    next unless item["event"] == "review_dismissed"
+
+    review_id = item.dig("dismissed_review", "review_id")
+    return false unless review_id.is_a?(Integer) && review_id.positive? && dismissed_review_ids.add?(review_id)
+
+    review = reviews_by_id[review_id]
+    return false unless review && review["state"].to_s.casecmp?("DISMISSED")
+    return false unless graph_dismissals_by_event_id.delete(item["node_id"]) == review["node_id"]
+  end
+  return false unless graph_dismissals_by_event_id.empty?
 
   timeline_review_ids = Set.new
   rest_items.each do |item|
@@ -2703,13 +2735,18 @@ def graph_timeline_matches_complete_rest?(nodes, rest_items, reviews:, review_co
 
   reviews_by_id.each_key do |review_id|
     next if timeline_review_ids.include?(review_id)
+    next if dismissed_review_ids.include?(review_id)
 
     comments = comments_by_review_id[review_id]
     return false if comments.empty? || comments.any? { |comment| comment["in_reply_to_id"].nil? }
   end
 
   non_review_timeline_count = rest_items.count { |item| item["event"] != "reviewed" }
-  independently_accounted_total = non_review_timeline_count + comments_by_review_id.size
+  hidden_dismissed_review_duplicates = dismissed_review_ids.count do |review_id|
+    comments_by_review_id.key?(review_id)
+  end
+  independently_accounted_total =
+    non_review_timeline_count + comments_by_review_id.size - hidden_dismissed_review_duplicates
   independently_accounted_total == reported_total_count
 end
 

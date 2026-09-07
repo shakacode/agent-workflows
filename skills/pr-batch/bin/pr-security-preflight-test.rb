@@ -2275,6 +2275,10 @@ class PrSecurityPreflightTest < Minitest::Test
         event_type
       )
     end
+    assert_match(
+      /\.\.\. on ReviewDismissedEvent \{ [^\n]*review \{ id \}/,
+      PR_TIMELINE_NODES_FRAGMENT
+    )
   end
 
   def test_trusted_base_accepts_metadata_bot_timeline_comment_author
@@ -5059,6 +5063,96 @@ class PrSecurityPreflightTest < Minitest::Test
     )
   end
 
+  def test_timeline_total_accepts_identity_bound_dismissed_review_duplicate
+    fixture = dismissed_review_timeline_fixture
+
+    assert graph_timeline_matches_complete_rest?(
+      fixture.fetch(:graph_nodes),
+      fixture.fetch(:rest_items),
+      reviews: fixture.fetch(:reviews),
+      review_comments: fixture.fetch(:review_comments),
+      reported_total_count: 4
+    )
+  end
+
+  def test_timeline_total_rejects_unbound_or_duplicate_dismissed_review_identities
+    mutations = {
+      "missing GraphQL review identity" => lambda do |fixture|
+        fixture.fetch(:graph_nodes).find { |node| node["__typename"] == "ReviewDismissedEvent" }.delete("review")
+      end,
+      "mismatched GraphQL review identity" => lambda do |fixture|
+        event = fixture.fetch(:graph_nodes).find { |node| node["__typename"] == "ReviewDismissedEvent" }
+        event.fetch("review")["id"] = "different-review-node"
+      end,
+      "missing REST dismissed review identity" => lambda do |fixture|
+        fixture.fetch(:rest_items).find { |item| item["event"] == "review_dismissed" }.delete("dismissed_review")
+      end,
+      "non-dismissed REST review" => lambda do |fixture|
+        fixture.dig(:reviews, 1)["state"] = "CHANGES_REQUESTED"
+      end,
+      "duplicate dismissed review identity" => lambda do |fixture|
+        graph_event = fixture.fetch(:graph_nodes).find { |node| node["__typename"] == "ReviewDismissedEvent" }
+        duplicate_graph_event = Marshal.load(Marshal.dump(graph_event))
+        duplicate_graph_event["id"] = "dismissal-event-2"
+        fixture.fetch(:graph_nodes) << duplicate_graph_event
+        rest_event = fixture.fetch(:rest_items).find { |item| item["event"] == "review_dismissed" }
+        duplicate_rest_event = Marshal.load(Marshal.dump(rest_event))
+        duplicate_rest_event["node_id"] = "dismissal-event-2"
+        fixture.fetch(:rest_items) << duplicate_rest_event
+      end
+    }
+
+    mutations.each do |label, mutate|
+      fixture = dismissed_review_timeline_fixture
+      mutate.call(fixture)
+
+      refute graph_timeline_matches_complete_rest?(
+        fixture.fetch(:graph_nodes),
+        fixture.fetch(:rest_items),
+        reviews: fixture.fetch(:reviews),
+        review_comments: fixture.fetch(:review_comments),
+        reported_total_count: label.start_with?("duplicate") ? 5 : 4
+      ), label
+    end
+  end
+
+  def test_timeline_total_rejects_reply_cycles_without_rejecting_cross_review_replies
+    fixture = dismissed_review_timeline_fixture
+    fixture.fetch(:reviews) << {
+      "id" => 504,
+      "node_id" => "review-node-cycle",
+      "user" => { "login" => "reply-author" },
+      "state" => "COMMENTED",
+      "submitted_at" => "2026-08-30T04:02:00Z"
+    }
+    fixture.fetch(:review_comments).concat(
+      [
+        {
+          "id" => 604,
+          "node_id" => "comment-node-cycle-1",
+          "pull_request_review_id" => 504,
+          "in_reply_to_id" => 605,
+          "user" => { "login" => "reply-author" }
+        },
+        {
+          "id" => 605,
+          "node_id" => "comment-node-cycle-2",
+          "pull_request_review_id" => 504,
+          "in_reply_to_id" => 604,
+          "user" => { "login" => "reply-author" }
+        }
+      ]
+    )
+
+    refute graph_timeline_matches_complete_rest?(
+      fixture.fetch(:graph_nodes),
+      fixture.fetch(:rest_items),
+      reviews: fixture.fetch(:reviews),
+      review_comments: fixture.fetch(:review_comments),
+      reported_total_count: 5
+    )
+  end
+
   def test_timeline_total_surplus_requires_exact_filtered_and_page_counts
     connection = { "totalCount" => 3, "filteredCount" => 2, "pageCount" => 2 }
     assert graph_timeline_filtered_cardinality_matches?(
@@ -6009,6 +6103,97 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   private
+
+  def dismissed_review_timeline_fixture
+    {
+      graph_nodes: [
+        {
+          "id" => "commit-event-1",
+          "__typename" => "PullRequestCommit",
+          "commit" => { "oid" => "a" * 40 }
+        },
+        { "id" => "review-node-1", "__typename" => "PullRequestReview" },
+        { "id" => "review-node-dismissed", "__typename" => "PullRequestReview" },
+        {
+          "id" => "dismissal-event-1",
+          "__typename" => "ReviewDismissedEvent",
+          "actor" => { "id" => "actor-1", "login" => "maintainer", "__typename" => "User" },
+          "review" => { "id" => "review-node-dismissed" }
+        }
+      ],
+      rest_items: [
+        { "event" => "committed", "node_id" => "commit-object-1", "sha" => "a" * 40 },
+        {
+          "event" => "reviewed",
+          "id" => 501,
+          "node_id" => "review-node-1",
+          "user" => { "login" => "reviewer" },
+          "state" => "commented",
+          "submitted_at" => "2026-08-30T04:00:00Z"
+        },
+        {
+          "event" => "reviewed",
+          "id" => 502,
+          "node_id" => "review-node-dismissed",
+          "user" => { "login" => "reviewer" },
+          "state" => "dismissed",
+          "submitted_at" => "2026-08-30T04:01:00Z"
+        },
+        {
+          "event" => "review_dismissed",
+          "node_id" => "dismissal-event-1",
+          "actor" => { "login" => "maintainer" },
+          "dismissed_review" => { "review_id" => 502, "state" => "changes_requested" }
+        }
+      ],
+      reviews: [
+        {
+          "id" => 501,
+          "node_id" => "review-node-1",
+          "user" => { "login" => "reviewer" },
+          "state" => "COMMENTED",
+          "submitted_at" => "2026-08-30T04:00:00Z"
+        },
+        {
+          "id" => 502,
+          "node_id" => "review-node-dismissed",
+          "user" => { "login" => "reviewer" },
+          "state" => "DISMISSED",
+          "submitted_at" => "2026-08-30T04:01:00Z"
+        },
+        {
+          "id" => 503,
+          "node_id" => "review-node-reply",
+          "user" => { "login" => "reply-author" },
+          "state" => "COMMENTED",
+          "submitted_at" => "2026-08-30T04:02:00Z"
+        }
+      ],
+      review_comments: [
+        {
+          "id" => 601,
+          "node_id" => "comment-node-1",
+          "pull_request_review_id" => 501,
+          "in_reply_to_id" => nil,
+          "user" => { "login" => "reviewer" }
+        },
+        {
+          "id" => 602,
+          "node_id" => "comment-node-dismissed",
+          "pull_request_review_id" => 502,
+          "in_reply_to_id" => nil,
+          "user" => { "login" => "reviewer" }
+        },
+        {
+          "id" => 603,
+          "node_id" => "comment-node-reply",
+          "pull_request_review_id" => 503,
+          "in_reply_to_id" => 601,
+          "user" => { "login" => "reply-author" }
+        }
+      ]
+    }
+  end
 
   def with_clean_gitlink_checkout
     previous_executable = TrustedGitState.executable
