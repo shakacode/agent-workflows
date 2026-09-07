@@ -811,6 +811,26 @@ class BatchPlanPreflightTest < Minitest::Test
     end
   end
 
+  def test_malformed_policy_fallback_preserves_aligned_flow_entries
+    with_companion_repo do |root, fixture|
+      File.write(File.join(root, ".agents", "agent-workflow.yml"), <<~YAML)
+        companion_path_conventions: [
+        { source_glob: "#{fixture.fetch('source_glob')}", companion_glob: "#{fixture.fetch('companion_glob')}" }
+        ]
+        malformed: [
+      YAML
+
+      result, stderr, status = evaluate(
+        companion_input(fixture, paths: [fixture.fetch("source_path")]),
+        chdir: root
+      )
+
+      assert status.success?, stderr
+      assert_includes result.fetch("advisories").map { |item| item.fetch("code") },
+                      "companion-path-omitted"
+    end
+  end
+
   def test_unreadable_shared_policy_does_not_block_preflight
     Dir.mktmpdir("batch-plan-unreadable-companion") do |root|
       FileUtils.mkdir_p(File.join(root, ".agents"))

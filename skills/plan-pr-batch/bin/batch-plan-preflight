@@ -853,8 +853,7 @@ module BatchPlanPreflight
       if line_indent < key_indent
         true
       elsif line_indent == key_indent
-        continue_fragment = companion_policy_flow_terminator_line?(line) &&
-                            companion_policy_flow_collection_open?(lines, start_index, index)
+        continue_fragment = companion_policy_flow_collection_open?(lines, start_index, index)
         !line.lstrip.start_with?("-") && !continue_fragment
       else
         false
@@ -946,18 +945,10 @@ module BatchPlanPreflight
     line.b.match(/\A[ \t]*/).to_s.length
   end
 
-  def companion_policy_flow_terminator_line?(line)
-    line.lstrip.match?(/\A[}\]]+(?:[ \t]*(?:#.*)?)?\r?\n?\z/)
-  end
-
   def companion_policy_flow_collection_open?(lines, start_index, finish_index)
     fragment = lines[start_index...finish_index].join
-    line = lines[finish_index].to_s.b.lstrip
-    return false unless line.start_with?("]") || line.start_with?("}")
-
-    opener = line.start_with?("]") ? "[" : "{"
-    closer = line.start_with?("]") ? "]" : "}"
-    companion_policy_flow_opener_open?(fragment, opener, closer)
+    companion_policy_flow_opener_open?(fragment, "[", "]") ||
+      companion_policy_flow_opener_open?(fragment, "{", "}")
   end
 
   def companion_policy_flow_opener_open?(fragment, opener, closer)
