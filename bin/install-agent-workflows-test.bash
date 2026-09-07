@@ -4919,6 +4919,47 @@ test_bash_env_globignore_does_not_change_the_symlinked_skill_set() {
   assert_file "$target/skills/globignore-fixture/SKILL.md"
 }
 
+test_bash_env_globignore_symlink_preflight_refuses_before_relinking_pack_files() {
+  local tmp source relocated_source target bash_env canonical_target output status
+  tmp="$(mktemp -d)"
+  source="$tmp/source"
+  relocated_source="$tmp/relocated-source"
+  target="$tmp/codex-home"
+  bash_env="$tmp/bash-env"
+  mkdir -p "$source"
+  new_source_repo "$source"
+  mkdir -p "$source/skills/globignore-fixture"
+  printf 'globignore fixture\n' > "$source/skills/globignore-fixture/SKILL.md"
+  git -C "$source" add skills/globignore-fixture
+  git -C "$source" commit --quiet -m "commit globignore fixture"
+  rsync -a "$source/" "$relocated_source/"
+
+  "$source/bin/install-agent-workflows" --host codex --target "$target" \
+    --mode symlink --delivery-mode flat >"$tmp/flat.out"
+  # Detach one managed skill into a real directory. Re-linking from another
+  # checkout must be refused by the preflight before any pack file is re-pointed,
+  # even when an inherited GLOBIGNORE hides that skill from the enumeration.
+  rm "$target/skills/globignore-fixture"
+  cp -R "$source/skills/globignore-fixture" "$target/skills/globignore-fixture"
+  printf 'GLOBIGNORE=%q\n' "$relocated_source/skills/globignore-fixture" > "$bash_env"
+  canonical_target="$(ruby -e 'print File.realpath(ARGV.fetch(0))' "$target")"
+
+  set +e
+  output="$(BASH_ENV="$bash_env" "$relocated_source/bin/install-agent-workflows" --host codex \
+    --target "$target" --mode symlink --delivery-mode flat 2>&1)"
+  status=$?
+  set -e
+
+  [[ "$status" -ne 0 ]] || fail "symlink install replaced a real skill directory hidden by GLOBIGNORE"
+  assert_contains "$output" "Refusing to replace non-symlink path: $canonical_target/skills/globignore-fixture"
+  [[ "$(readlink "$target/LICENSE")" = "$source/LICENSE" ]] || \
+    fail "refused symlink install re-linked the pack LICENSE before the skill preflight"
+  [[ "$(readlink "$target/THIRD_PARTY-NOTICES.md")" = "$source/THIRD_PARTY-NOTICES.md" ]] || \
+    fail "refused symlink install re-linked the pack third-party notices before the skill preflight"
+  [[ -d "$target/skills/globignore-fixture" && ! -L "$target/skills/globignore-fixture" ]] || \
+    fail "refused symlink install replaced the detached skill directory"
+}
+
 test_inherited_dotglob_preserves_hidden_workflow_copy() {
   local tmp source target
   tmp="$(mktemp -d)"
@@ -8956,6 +8997,7 @@ main() {
     test_inherited_dotglob_symlink_preflight_ignores_hidden_source_entry
     test_bash_env_globignore_does_not_change_the_installed_skill_set
     test_bash_env_globignore_does_not_change_the_symlinked_skill_set
+    test_bash_env_globignore_symlink_preflight_refuses_before_relinking_pack_files
     test_inherited_dotglob_preserves_hidden_workflow_copy
     test_copy_metadata_fingerprint_matches_delivery_state_verifier
     test_repeat_copy_install_accepts_edited_installer_created_uncommitted_pack_doc

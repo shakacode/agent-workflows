@@ -3638,6 +3638,11 @@ verify_install_destinations() {
       fi
     done
     if [[ "$delivery_mode" = "flat" ]]; then
+      # An inherited GLOBIGNORE must not hide a source skill from this preflight:
+      # the creation loop unsets it too, but only after the pack license and
+      # notices links are rewritten. Plain unset, no subshell: the exit below
+      # must abort the install.
+      unset GLOBIGNORE
       for skill in "$repo_root"/skills/*; do
         [[ -d "$skill" ]] || continue
         skill_name="$(basename "$skill")"
