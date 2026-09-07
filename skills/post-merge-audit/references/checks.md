@@ -116,7 +116,7 @@ Classify each PR:
 - **OK**: no credible release risk found.
 - **Needs maintainer question**: a decision cannot be made safely from evidence.
 - **Needs changelog update**: user-visible change is missing from the repo's changelog; recommend `/update-changelog`.
-- **Needs follow-up issue**: non-blocking work remains valuable and is actionable after release. It must fix an observed failure or a verified defect with a fix smaller than the problem. Style nits, hypothetical future mistakes, speculative hardening, and unreproduced bot suggestions are `OK`, not follow-ups.
+- **Needs follow-up issue**: non-blocking work remains valuable and is actionable after release. It must fix an observed failure or a verified defect with a known affected user, and the fix must be smaller than the problem. Style nits, hypothetical future mistakes, speculative hardening, and unreproduced bot suggestions are `OK`, not follow-ups.
 - **Needs fix PR**: a real defect, missing test, missing compatibility note, or bad interaction should be fixed before release.
 - **Needs revert consideration**: the merge appears risky enough that reverting may be safer than patching. The downstream procedure is [Unwinding A Bad Agent Merge](https://github.com/shakacode/agent-workflows/blob/main/docs/revert-runbook.md), which covers revert scope, order, bookkeeping, and the operator-authority rule. Reference it in the child issue; it is a runbook for the operator, not a gate on this audit, and it never blocks or alters audit completion.
 

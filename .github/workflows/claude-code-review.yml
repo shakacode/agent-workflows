@@ -37,7 +37,7 @@ jobs:
             - Potential bugs or issues
             - Security implications
             - Performance considerations
-            - Scope and simplicity: is this the smallest change that satisfies the PR's stated Why? Flag any new helper, wrapper, mode, flag, schema field, or validator with one caller and no named second use. Flag diff size or test volume that is out of proportion to the change, and name what could be split or deferred.
+            - Scope and simplicity: is this the smallest change that satisfies the PR's stated Why? Flag any new helper, wrapper, mode, flag, schema field, or validator that has one caller and no second caller that exists today; a named future use does not count. Flag diff size or test volume that is out of proportion to the change, and name what could be split or deferred.
 
             Do not suggest speculative hardening, hypothetical future cases, or extra abstraction. Do not recommend follow-up issues for style nits or unverified risks.
 

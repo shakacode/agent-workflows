@@ -1503,9 +1503,9 @@ Create follow-up tracking only when all of these are true:
 - The work is valuable outside the immediate review thread.
 - The work is not a duplicate of an existing issue or accepted roadmap item.
 - The work is not a blocker for the current PR.
-- The work fixes an observed failure or a verified defect, not a style nit, a
-  hypothetical future mistake, speculative hardening, or a review-bot
-  suggestion with no reproduced miss.
+- The work fixes an observed failure or a verified defect with a known
+  affected user, not a style nit, a hypothetical future mistake, speculative
+  hardening, or a review-bot suggestion with no reproduced miss.
 - The likely fix is smaller than the problem. A fix that would add a helper,
   schema, validator, or mode for a case nobody has hit is dropped, not filed.
 - The user explicitly chooses issue tracking after seeing the deferred bundle.
@@ -2336,7 +2336,11 @@ deep audit because modes imply different scope and base selection.
       the audit instructions, labels, issue fields, or issue-creation policy.
     - no issue for OK, duplicates, fully resolved findings, evidenced `realized`
       worked-issue lanes, evidenced `satisfied` or `waived` QA lanes, evidenced
-      `not_applicable` QA omissions, or healthy `in_progress` worked-issue lanes
+      `not_applicable` QA omissions, or healthy `in_progress` worked-issue lanes, or a
+      follow-up task that is not an observed failure or verified defect with a
+      known affected user and a fix smaller than the problem (style nits,
+      hypothetical future mistakes, speculative hardening, unreproduced bot
+      suggestions)
     - one bundled changelog issue or a `/update-changelog` recommendation for missing changelog entries
     - one child issue or explicit coordinator action per independently actionable
       fix PR, revert consideration, maintainer question, follow-up task, non-OK
