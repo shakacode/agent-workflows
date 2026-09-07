@@ -916,7 +916,7 @@ before mutating GitHub or the branch.
    - **Parallel fixes**: When there are 2+ items to fix that touch different files with no logical dependencies, process them in parallel if your environment supports concurrent execution (e.g., sub-agents, background tasks). Items in the same file or with cross-file dependencies must be fixed sequentially. Instruct each sub-agent **not to commit** — all changes must remain unstaged so the self-review gate can run on the combined diff. After parallel fixes complete, verify no conflicts exist between the changes by checking whether any sub-agents touched the same files (`git diff --name-only`).
 
 9. Deferred-work tracking (after `f+i`, `m`, or an explicit user request):
-   - Follow-up issues are expensive; default to no new issue.
+   - Follow-up issues are expensive; default to no new issue. Drop optional and speculative items by default; only an observed failure or verified defect with a known affected user, and a fix smaller than the problem, belongs in the bundle.
    - Present one deferred-work bundle and ask the user to choose: link an existing issue, create one bundled follow-up issue, post a PR summary comment only, or drop the bundle.
    - Create at most one follow-up issue per PR by default. More than one follow-up issue requires explicit user approval.
    - Every new follow-up issue title must begin with the exact follow-up issue prefix (see `follow_up_prefix` in `.agents/agent-workflow.yml`). Resolve it into `FOLLOW_UP_PREFIX` before creating the issue; for this workflow, the title is `"${FOLLOW_UP_PREFIX} Review feedback from PR #N"`.
