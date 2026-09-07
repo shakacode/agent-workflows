@@ -967,7 +967,7 @@ module TaskReviewLoop
       submitted, artifact_error = load_artifact(package["exact_diff"], "#{label}-exact-diff")
       if artifact_error
         errors << artifact_error
-      elsif submitted != captured
+      elsif submitted != captured.b
         errors << "#{label}-canonical-diff-mismatch"
       end
     end
