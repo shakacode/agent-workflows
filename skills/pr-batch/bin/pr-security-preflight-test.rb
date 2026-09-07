@@ -2468,6 +2468,15 @@ class PrSecurityPreflightTest < Minitest::Test
 
   def test_graphql_node_id_conflicts_are_canonical_api_coverage_findings
     cases = {
+      "participant URL" => {
+        connection: "participants",
+        overrides: {
+          "PREFLIGHT_TEST_PARTICIPANT_TOTAL" => "2",
+          "PREFLIGHT_TEST_PARTICIPANT_NODES" =>
+            '[{"id":"actor-1","login":"justin808","url":"https://github.com/justin808","__typename":"User"},' \
+            '{"id":"actor-1","login":"justin808","url":"https://example.invalid/justin808","__typename":"User"}]'
+        }
+      },
       "participant presentation" => {
         connection: "participants",
         overrides: {
@@ -2584,6 +2593,55 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, "GitHub API coverage findings:"
       assert_includes out, "commit authors login has conflicting node ids"
       assert_includes out, "#123: GitHub API coverage truncated"
+    end
+  end
+
+  def test_graphql_bot_and_user_may_share_normalized_login_with_distinct_node_ids
+    assert_empty graph_node_identity_coverage_findings(bot_and_account_identity_target("User"))
+  end
+
+  def test_graphql_bot_and_organization_may_share_normalized_login_with_distinct_node_ids
+    assert_empty graph_node_identity_coverage_findings(bot_and_account_identity_target("Organization"))
+  end
+
+  def test_graphql_same_namespace_login_bound_to_distinct_node_ids_fails_closed
+    cases = {
+      "two bots" => %w[Bot Bot],
+      "two non-bot account types" => %w[User Organization]
+    }
+
+    cases.each do |label, (participant_typename, actor_typename)|
+      target = {
+        "participants" => {
+          "totalCount" => 1,
+          "nodes" => [
+            {
+              "id" => "actor-1",
+              "login" => "shared-login",
+              "url" => "https://github.com/shared-login",
+              "__typename" => participant_typename
+            }
+          ]
+        },
+        "timelineItems" => {
+          "totalCount" => 1,
+          "nodes" => [
+            {
+              "id" => "comment-1",
+              "__typename" => "IssueComment",
+              "author" => {
+                "id" => "actor-2",
+                "login" => "shared-login",
+                "__typename" => actor_typename
+              }
+            }
+          ]
+        }
+      }
+
+      finding = graph_node_identity_coverage_findings(target).fetch(0)
+      assert_equal "timeline actors", finding.fetch(:connection), label
+      assert_equal "login has conflicting node ids", finding.fetch(:reason), label
     end
   end
 
@@ -6103,6 +6161,36 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   private
+
+  def bot_and_account_identity_target(account_typename)
+    {
+      "participants" => {
+        "totalCount" => 1,
+        "nodes" => [
+          {
+            "id" => "bot-1",
+            "login" => "shared-login",
+            "url" => "https://github.com/apps/shared-login",
+            "__typename" => "Bot"
+          }
+        ]
+      },
+      "timelineItems" => {
+        "totalCount" => 1,
+        "nodes" => [
+          {
+            "id" => "comment-1",
+            "__typename" => "IssueComment",
+            "author" => {
+              "id" => "account-1",
+              "login" => "shared-login",
+              "__typename" => account_typename
+            }
+          }
+        ]
+      }
+    }
+  end
 
   def dismissed_review_timeline_fixture
     {

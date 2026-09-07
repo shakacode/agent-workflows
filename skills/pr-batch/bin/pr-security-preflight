@@ -1794,6 +1794,10 @@ def merge_graph_identity_representation!(canonical_identities, id, representatio
   true
 end
 
+def graph_login_coherence_key(typename, login)
+  [typename == "Bot" ? "Bot" : "Account", normalized_login(login)]
+end
+
 def graph_identity_coverage_finding(nodes, connection:, total_count:, canonical_identities:, coherent_ids:)
   seen = {}
   nodes.each do |node|
@@ -1858,7 +1862,7 @@ def graph_node_identity_coverage_findings(target)
       "login" => normalized_login(login),
       "url" => node["url"]
     }.compact
-    [id, node, normalized_login(login), canonical_representation]
+    [id, node, graph_login_coherence_key(typename, login), canonical_representation]
   end
   findings << participant_finding if participant_finding
 
@@ -1910,7 +1914,7 @@ def graph_node_identity_coverage_findings(target)
                 TIMELINE_NESTED_ACTOR_TYPENAMES.include?(typename)
 
     canonical_representation = { "__typename" => typename, "login" => normalized_login(login) }
-    [id, actor, normalized_login(login), canonical_representation]
+    [id, actor, graph_login_coherence_key(typename, login), canonical_representation]
   end
   findings << timeline_actor_finding if timeline_actor_finding
 
@@ -1932,7 +1936,7 @@ def graph_node_identity_coverage_findings(target)
       next unless complete_graph_identity?(id) && complete_graph_identity?(login) && typename == "User"
 
       canonical_representation = { "__typename" => typename, "login" => normalized_login(login) }
-      [id, user, normalized_login(login), canonical_representation]
+      [id, user, graph_login_coherence_key(typename, login), canonical_representation]
     end
     findings << author_finding if author_finding
   end
