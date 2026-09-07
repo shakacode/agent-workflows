@@ -104,7 +104,9 @@ def process_state_fallback_trusted?(canonical_candidate, rejected_roots:, writab
 end
 
 class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
-  attr_reader :fetch_environments, :fetch_roots
+  MISSING_INVOCATION_ROOT = Object.new.freeze
+
+  attr_reader :checkout_invocation_roots, :fetch_environments, :fetch_roots
 
   def initialize(base_sha:, fetched_policy:, expected_merge_sha:, fetch_fail: false, checkout_matches: true,
                  trusted_ref: "refs/heads/main", trusted_ref_sha: nil)
@@ -118,6 +120,7 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
     @trusted_ref_sha = trusted_ref_sha || base_sha
     @fetch_environments = []
     @fetch_roots = []
+    @checkout_invocation_roots = []
   end
 
   def with_isolated_base(_remote_url, _ref)
@@ -147,7 +150,9 @@ class TestTrustedBaseHighRiskOperations < TrustedBaseHighRiskOperations
     [false, "PR merge result is not an ancestor of fetched trusted base: simulated non-ancestor"]
   end
 
-  def checkout_matches_fetched_base?(_root, _base_sha, _policy_ref)
+  def checkout_matches_fetched_base?(_root, _base_sha, _policy_ref,
+                                     invocation_root: MISSING_INVOCATION_ROOT)
+    @checkout_invocation_roots << invocation_root
     return [true, nil] if @checkout_matches
 
     [false, "trusted checkout HEAD does not match freshly fetched trusted base"]
@@ -1926,6 +1931,7 @@ class PrSecurityPreflightTest < Minitest::Test
       assert_includes out, '"policy_ref_anchor":"authenticated-remote-default-head"'
       assert_includes out, %("policy_ref_anchor_sha":"#{provenance.fetch(:base_sha)}")
       assert_includes out, '"high_risk_paths":[".github/workflows/test.yml","AGENTS.md"]'
+      assert_equal [File.realpath(repo_root)], provenance.fetch(:operations).checkout_invocation_roots
       refute_includes out, "Acknowledged security preflight findings:"
       assert_includes out, "SECURITY_PREFLIGHT_OK"
       refute_includes out, "SECURITY_PREFLIGHT_BLOCKED"
@@ -3416,6 +3422,207 @@ class PrSecurityPreflightTest < Minitest::Test
     end
   end
 
+  def test_checkout_binding_rejects_core_worktree_redirect_away_from_dirty_invocation_checkout
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+
+    Dir.mktmpdir("trusted-base-core-worktree-redirect") do |dir|
+      original_root = File.join(dir, "original")
+      clean_root = File.join(dir, "clean")
+      FileUtils.mkdir_p([original_root, clean_root])
+      tracked_path = File.join(original_root, "tracked.txt")
+      File.write(tracked_path, "trusted\n")
+      File.chmod(0o644, tracked_path)
+      git! "-C", original_root, "init", "--quiet", "--initial-branch=main"
+      git! "-C", original_root, "add", "tracked.txt"
+      git! "-C", original_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "trusted"
+      base_sha = git_output!("-C", original_root, "rev-parse", "HEAD")
+
+      FileUtils.cp(tracked_path, File.join(clean_root, "tracked.txt"))
+      File.write(File.join(clean_root, ".git"), "gitdir: #{File.join(original_root, '.git')}\n")
+      git! "--git-dir", File.join(original_root, ".git"), "config", "core.worktree", clean_root
+      File.chmod(0o755, tracked_path)
+      assert_equal 0o755, File.stat(tracked_path).mode & 0o777
+      assert_equal 0o644, File.stat(File.join(clean_root, "tracked.txt")).mode & 0o777
+      assert_match(/\AM\s+tracked\.txt\z/, git_output!("--git-dir", File.join(original_root, ".git"),
+                                                       "--work-tree", original_root, "status", "--short"))
+
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      resolved_root = trusted_git_toplevel(chdir: original_root)
+      assert_equal File.realpath(clean_root), File.realpath(resolved_root)
+
+      matches, error = TrustedBaseHighRiskOperations.new.checkout_matches_fetched_base?(
+        resolved_root,
+        base_sha,
+        "refs/heads/main",
+        invocation_root: original_root
+      )
+      refute matches
+      assert_equal "trusted checkout core.worktree override is not allowed", error
+    end
+  ensure
+    TrustedGitState.executable = previous_executable
+    TrustedGitState.local_env_vars = previous_local_env_vars
+  end
+
+  def test_checkout_binding_rejects_clean_different_repository_root_with_same_head
+    with_clean_real_git_checkout("trusted-base-root-binding") do |dir, invocation_root, base_sha, operations|
+      resolved_root = File.join(dir, "different-clean-root")
+      git! "clone", "--quiet", invocation_root, resolved_root
+      File.chmod(0o755, File.join(invocation_root, "tracked.txt"))
+
+      matches, error = operations.checkout_matches_fetched_base?(
+        resolved_root,
+        base_sha,
+        "refs/heads/main",
+        invocation_root:
+      )
+      refute matches
+      assert_equal "trusted checkout top-level does not match invocation repository", error
+    end
+  end
+
+  def test_checkout_binding_accepts_clean_linked_worktree
+    with_clean_real_git_checkout("trusted-base-linked-worktree") do |dir, repo_root, base_sha, operations|
+      linked_root = File.join(dir, "linked")
+      git! "-C", repo_root, "worktree", "add", "--quiet", "--detach", linked_root, base_sha
+      invocation_root, invocation_error = Dir.chdir(linked_root) { operations.invocation_repository_root }
+      assert_nil invocation_error
+      assert_equal File.realpath(linked_root), invocation_root
+      assert File.file?(File.join(linked_root, ".git"))
+
+      matches, error = operations.checkout_matches_fetched_base?(
+        linked_root,
+        base_sha,
+        "refs/heads/main",
+        invocation_root:
+      )
+      assert matches, error
+    end
+  end
+
+  def test_checkout_binding_rejects_every_repository_local_core_worktree_value
+    with_clean_real_git_checkout("trusted-base-core-worktree-values") do |dir, repo_root, base_sha, operations|
+      symlink_root = File.join(dir, "repo-symlink")
+      File.symlink(repo_root, symlink_root)
+      values = {
+        "canonical existing path" => repo_root,
+        "symlinked path" => symlink_root,
+        "missing path" => File.join(dir, "missing"),
+        "noncanonical relative path" => "../repo/./subdir/.."
+      }
+      git_dir = File.join(repo_root, ".git")
+
+      values.each do |label, value|
+        git! "config", "--file", File.join(git_dir, "config"), "--replace-all", "core.worktree", value
+        matches, error = operations.checkout_matches_fetched_base?(
+          repo_root,
+          base_sha,
+          "refs/heads/main",
+          invocation_root: repo_root
+        )
+        refute matches, label
+        if label == "noncanonical relative path"
+          assert_includes error, "trusted checkout worktree-config extension state could not be verified", label
+        else
+          assert_equal "trusted checkout core.worktree override is not allowed", error, label
+        end
+        git! "config", "--file", File.join(git_dir, "config"), "--unset-all", "core.worktree"
+      end
+    end
+  end
+
+  def test_checkout_binding_rejects_worktree_scoped_core_worktree_override
+    with_clean_real_git_checkout("trusted-base-worktree-core-worktree") do |_dir, repo_root, base_sha, operations|
+      git_dir = File.join(repo_root, ".git")
+      git! "--git-dir", git_dir, "config", "extensions.worktreeConfig", "true"
+      git! "--git-dir", git_dir, "--work-tree", repo_root,
+           "config", "--worktree", "core.worktree", repo_root
+
+      matches, error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main",
+        invocation_root: repo_root
+      )
+      refute matches
+      assert_equal "trusted checkout core.worktree override is not allowed", error
+    end
+  end
+
+  def test_checkout_binding_canonicalizes_symlinked_invocation_path_and_rejects_missing_path
+    with_clean_real_git_checkout("trusted-base-invocation-path") do |dir, repo_root, base_sha, operations|
+      symlink_root = File.join(dir, "repo-symlink")
+      File.symlink(repo_root, symlink_root)
+
+      matches, error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main",
+        invocation_root: symlink_root
+      )
+      assert matches, error
+
+      matches, error = operations.checkout_matches_fetched_base?(
+        repo_root,
+        base_sha,
+        "refs/heads/main",
+        invocation_root: File.join(dir, "missing")
+      )
+      refute matches
+      assert_includes error, "trusted checkout worktree-config extension state could not be verified"
+    end
+  end
+
+  def test_structural_invocation_root_rejects_symlinked_git_marker_and_missing_path
+    Dir.mktmpdir("trusted-base-structural-root") do |dir|
+      repo_root = File.join(dir, "repo")
+      git_dir = File.join(dir, "actual-git-dir")
+      FileUtils.mkdir_p([repo_root, git_dir])
+      File.symlink(git_dir, File.join(repo_root, ".git"))
+
+      root, error = trusted_structural_git_repository_root(repo_root)
+      assert_nil root
+      assert_equal "trusted checkout .git marker is symlinked", error
+
+      root, error = trusted_structural_git_repository_root(File.join(dir, "missing"))
+      assert_nil root
+      assert_includes error, "trusted checkout invocation path could not be resolved"
+    end
+  end
+
+  def test_checkout_binding_fails_closed_on_malformed_or_failed_core_worktree_probes
+    with_clean_real_git_checkout("trusted-base-core-worktree-probe") do |_dir, repo_root, base_sha, operations|
+      cases = {
+        "malformed output" => ["redirect", "", TestCommandStatus.new(0)],
+        "missing process status" => ["", "", nil],
+        "probe failure" => ["", "fatal: simulated config failure", TestCommandStatus.new(128)]
+      }
+
+      cases.each do |label, response|
+        matcher = lambda do |args|
+          args.last(5) == ["config", "--local", "--null", "--get-all", "core.worktree"]
+        end
+        with_trusted_git_probe_fault(matcher, response) do
+          matches, error = operations.checkout_matches_fetched_base?(
+            repo_root,
+            base_sha,
+            "refs/heads/main",
+            invocation_root: repo_root
+          )
+          refute matches, label
+          assert_includes error, "trusted checkout local core.worktree probe", label if label != "probe failure"
+          assert_includes error, "trusted checkout local core.worktree state could not be verified", label if label == "probe failure"
+        end
+      end
+    end
+  end
+
   def test_checkout_binding_rejects_hidden_index_flags_and_local_diff_overrides
     Dir.mktmpdir("trusted-base-checkout-flags") do |repo_root|
       tracked_path = File.join(repo_root, "tracked.txt")
@@ -3533,7 +3740,12 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   def test_checkout_binding_accepts_clean_initialized_gitlink_at_recorded_head
-    with_clean_gitlink_checkout do |repo_root, _submodule_root, base_sha, _submodule_sha, operations, marker|
+    with_clean_gitlink_checkout do |repo_root, submodule_root, base_sha, _submodule_sha, operations, marker|
+      invocation_root, invocation_error = Dir.chdir(submodule_root) { operations.invocation_repository_root }
+      assert_nil invocation_error
+      assert_equal File.realpath(submodule_root), invocation_root
+      assert File.file?(File.join(submodule_root, ".git"))
+
       matches, error = operations.checkout_matches_fetched_base?(repo_root, base_sha, "refs/heads/main")
       assert matches, error
       refute File.exist?(marker), "checkout probe executed submodule-controlled code"
@@ -6161,6 +6373,34 @@ class PrSecurityPreflightTest < Minitest::Test
   end
 
   private
+
+  def with_clean_real_git_checkout(prefix)
+    previous_executable = TrustedGitState.executable
+    previous_local_env_vars = TrustedGitState.local_env_vars
+
+    Dir.mktmpdir(prefix) do |dir|
+      repo_root = File.join(dir, "repo")
+      FileUtils.mkdir_p(repo_root)
+      tracked_path = File.join(repo_root, "tracked.txt")
+      File.write(tracked_path, "trusted\n")
+      File.chmod(0o644, tracked_path)
+      git! "-C", repo_root, "init", "--quiet", "--initial-branch=main"
+      git! "-C", repo_root, "add", "tracked.txt"
+      git! "-C", repo_root, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--quiet", "-m", "trusted"
+      base_sha = git_output!("-C", repo_root, "rev-parse", "HEAD")
+
+      TrustedGitState.executable = REAL_GIT
+      TrustedGitState.local_env_vars = PrBatchGitProbeEnv.local_env_vars_for(
+        REAL_GIT,
+        unsetenv_others: true
+      )
+      yield dir, repo_root, base_sha, TrustedBaseHighRiskOperations.new
+    end
+  ensure
+    TrustedGitState.executable = previous_executable
+    TrustedGitState.local_env_vars = previous_local_env_vars
+  end
 
   def bot_and_account_identity_target(account_typename)
     {

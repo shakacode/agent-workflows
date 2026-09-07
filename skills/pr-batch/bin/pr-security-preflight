@@ -48,6 +48,24 @@ def trusted_git_repository_root
   end
 end
 
+def trusted_structural_git_repository_root(chdir)
+  current = File.realpath(chdir)
+  loop do
+    git_marker = File.join(current, ".git")
+    return [nil, "trusted checkout .git marker is symlinked"] if File.symlink?(git_marker)
+    return [current, nil] if File.file?(git_marker) || File.directory?(git_marker)
+
+    parent = File.dirname(current)
+    if parent == current
+      return [nil, "trusted checkout invocation path is not inside a structurally identifiable Git worktree"]
+    end
+
+    current = parent
+  end
+rescue SystemCallError => e
+  [nil, "trusted checkout invocation path could not be resolved: #{e.message.lines.first&.strip}"]
+end
+
 def canonical_trusted_git_directory(path)
   return if path.to_s.empty? || File.absolute_path(path) != path
   return unless File.directory?(path)
@@ -1953,6 +1971,10 @@ class TrustedBaseHighRiskOperations
     trusted_git_toplevel
   end
 
+  def invocation_repository_root
+    trusted_structural_git_repository_root(Dir.pwd)
+  end
+
   def bootstrap_policy(root, repo:)
     bootstrap_trusted_base_policy(root, repo:)
   end
@@ -2014,7 +2036,85 @@ class TrustedBaseHighRiskOperations
     [hidden, nil]
   end
 
-  def checkout_matches_fetched_base?(root, base_sha, policy_ref)
+  def core_worktree_override?(root)
+    scopes = ["local"]
+    stdout, stderr, status = capture_checkout_git_probe(
+      root, "config", "--local", "--type=bool", "--null", "--get", "extensions.worktreeConfig"
+    )
+    unless status.respond_to?(:exitstatus)
+      return [nil, "trusted checkout worktree-config extension probe did not return a process status"]
+    end
+
+    case status.exitstatus
+    when 0
+      values = stdout.to_s.b.split("\0", -1)
+      terminated = values.length == 2 && values.pop.empty?
+      unless terminated && %w[true false].include?(values.fetch(0, nil))
+        return [nil, "trusted checkout worktree-config extension probe returned malformed output"]
+      end
+
+      scopes << "worktree" if values.fetch(0) == "true"
+    when 1
+      unless stdout.to_s.empty? && stderr.to_s.empty?
+        return [nil, "trusted checkout worktree-config extension probe returned malformed absence output"]
+      end
+    else
+      detail = stderr.to_s.dup.force_encoding("UTF-8").scrub.lines.first&.strip
+      return [nil, "trusted checkout worktree-config extension state could not be verified: #{detail}"]
+    end
+
+    scopes.each do |scope|
+      stdout, stderr, status = capture_checkout_git_probe(
+        root, "config", "--#{scope}", "--null", "--get-all", "core.worktree"
+      )
+      unless status.respond_to?(:exitstatus)
+        return [nil, "trusted checkout #{scope} core.worktree probe did not return a process status"]
+      end
+
+      case status.exitstatus
+      when 0
+        records = stdout.to_s.b.split("\0", -1)
+        terminated = records.length > 1 && records.pop.empty?
+        if !terminated || records.empty? || records.any?(&:empty?)
+          return [nil, "trusted checkout #{scope} core.worktree probe returned malformed output"]
+        end
+
+        return [true, nil]
+      when 1
+        unless stdout.to_s.empty? && stderr.to_s.empty?
+          return [nil, "trusted checkout #{scope} core.worktree probe returned malformed absence output"]
+        end
+      else
+        detail = stderr.to_s.dup.force_encoding("UTF-8").scrub.lines.first&.strip
+        return [nil, "trusted checkout #{scope} core.worktree state could not be verified: #{detail}"]
+      end
+    end
+
+    [false, nil]
+  end
+
+  def checkout_root_matches_invocation?(root, invocation_root)
+    expanded_root = File.expand_path(root)
+    expanded_invocation_root = File.expand_path(invocation_root)
+    canonical_root = File.realpath(expanded_root)
+    canonical_invocation_root = File.realpath(expanded_invocation_root)
+    unless canonical_root == canonical_invocation_root
+      return [false, "trusted checkout top-level does not match invocation repository"]
+    end
+
+    [true, nil]
+  rescue SystemCallError => e
+    [false, "trusted checkout repository path could not be verified: #{e.message.lines.first&.strip}"]
+  end
+
+  def checkout_matches_fetched_base?(root, base_sha, policy_ref, invocation_root: root)
+    core_worktree_override, core_worktree_error = core_worktree_override?(invocation_root)
+    return [false, core_worktree_error] if core_worktree_error
+    return [false, "trusted checkout core.worktree override is not allowed"] if core_worktree_override
+
+    root_matches, root_error = checkout_root_matches_invocation?(root, invocation_root)
+    return [false, root_error] unless root_matches
+
     stdout, stderr, status = capture_checkout_git_probe(
       root, "rev-parse", "--verify", "HEAD^{commit}"
     )
@@ -2223,6 +2323,9 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
     return [nil, "could not pin trusted Git: #{e.message.lines.first&.strip}"]
   end
 
+  invocation_root, invocation_error = operations.invocation_repository_root
+  return [nil, invocation_error] unless invocation_root
+
   # Recompute and revalidate through pinned trusted operations. This read is
   # authoritative; the preliminary policy above is intentionally discarded.
   root = operations.git_toplevel
@@ -2254,7 +2357,8 @@ def trusted_base_high_risk_receipt(result, repo:, github_host:, trust_config:, t
     checkout_matches, checkout_error = operations.checkout_matches_fetched_base?(
       root,
       base_sha,
-      bootstrap_policy.fetch("ref")
+      bootstrap_policy.fetch("ref"),
+      invocation_root:
     )
     next [nil, checkout_error] unless checkout_matches
 
