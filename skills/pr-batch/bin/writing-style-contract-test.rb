@@ -1,7 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
+require "fileutils"
+require "tmpdir"
 require "yaml"
 
 ROOT = File.expand_path("../../..", __dir__)
@@ -24,7 +28,7 @@ class WritingStyleContractTest < Minitest::Test
   ].freeze
 
   def read(relative_path)
-    File.read(File.join(ROOT, relative_path), encoding: "UTF-8")
+    SkillStageSource.read(File.join(ROOT, relative_path), encoding: "UTF-8")
   end
 
   def test_every_initial_authoring_surface_explicitly_resolves_the_shared_guide
@@ -63,6 +67,39 @@ class WritingStyleContractTest < Minitest::Test
     assert_includes normalized, "no valid user-global override takes precedence"
     assert_includes normalized, "A nonzero resolver exit is not proof of missing tooling"
     assert_includes normalized, "An explicit malformed repository value blocks authoring; never bypass it"
+  end
+
+  def test_loaded_workflow_and_skill_fallbacks_support_split_pack_roots
+    workflow = read("workflows/pr-processing.md")
+    normalized = workflow.gsub(/\s+/, " ")
+
+    assert_includes normalized, "start from the exact loaded `workflows/pr-processing.md` path"
+    assert_includes normalized, "resolve `../bin/agent-workflow-writing-style` from its containing `workflows/` directory"
+    assert_includes normalized, "then start from the exact loaded `skills/<skill>/SKILL.md` path"
+    assert_includes normalized, "resolve `../../bin/agent-workflow-writing-style` from its containing skill directory"
+    assert_includes normalized, "Do not use a skill-local `skills/<skill>/bin/` directory for this fallback."
+
+    Dir.mktmpdir do |root|
+      loaded_workflow = File.join(root, "consumer", ".agents", "workflows", "pr-processing.md")
+      loaded_skill = File.join(root, "agent-home", "skills", "pr-batch", "SKILL.md")
+      installed_resolver = File.join(root, "agent-home", "bin", "agent-workflow-writing-style")
+      FileUtils.mkdir_p(File.dirname(loaded_workflow))
+      FileUtils.mkdir_p(File.dirname(loaded_skill))
+      FileUtils.mkdir_p(File.dirname(installed_resolver))
+      FileUtils.touch(loaded_workflow)
+      FileUtils.touch(loaded_skill)
+      FileUtils.touch(installed_resolver)
+
+      workflow_candidate = File.expand_path("../bin/agent-workflow-writing-style", File.dirname(loaded_workflow))
+      skill_candidate = File.expand_path("../../bin/agent-workflow-writing-style", File.dirname(loaded_skill))
+      skill_local_resolver = File.join(File.dirname(loaded_skill), "bin", "agent-workflow-writing-style")
+      selected = [workflow_candidate, skill_candidate].find { |candidate| File.file?(candidate) }
+
+      refute File.exist?(workflow_candidate)
+      assert_equal installed_resolver, skill_candidate
+      assert_equal installed_resolver, selected
+      refute_equal skill_local_resolver, selected
+    end
   end
 
   def test_seam_design_inventories_covered_and_deferred_consumers

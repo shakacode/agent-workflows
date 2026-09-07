@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require_relative "../lib/skill_stage_source"
+
 require "minitest/autorun"
 require "json"
 
@@ -321,7 +323,7 @@ INDEPENDENT_GATE_FIRST_BLOCKS_EXECUTION_PATTERN =
 CONCRETE_INDEPENDENT_BLOCKER_SENTENCE_PATTERN =
   /\b(?:exact-head\s+CI\s+gate|(?:credential|security|risk|scope|evidence|authority)\s+(?:check|gate))\s+(?:fails?|blocks?)\b/i
 def read_repo_file(path)
-  File.read(File.join(ROOT, path), encoding: "UTF-8")
+  SkillStageSource.read(File.join(ROOT, path), encoding: "UTF-8")
 end
 
 def extract_markdown_section(text, heading)

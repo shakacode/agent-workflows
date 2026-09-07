@@ -24,7 +24,7 @@ class PrCiReadinessTest < Minitest::Test
       "status" => "in_progress", "conclusion" => nil,
       "started_at" => "2026-08-24T08:07:48Z", "completed_at" => nil,
       "head_sha" => head_sha, "app_slug" => "circleci-checks",
-      "dependabot" => false, "actions" => nil,
+      "dependabot" => false,
       "details_url" => workflow_url,
       "output" => {
         "title" => "Workflow: #{name}",
@@ -101,7 +101,16 @@ class PrCiReadinessTest < Minitest::Test
       "non-name evidence" => held.merge("name" => 123),
       "stale head" => held.merge("head_sha" => "b" * 40),
       "wrong provider" => held.merge("app_slug" => "other-ci"),
-      "active phase" => running
+      "active phase" => running,
+      "failed phase" => held.merge(
+        "output" => held.fetch("output").merge(
+          "summary" => "[View CircleCI Workflow](#{held.fetch('details_url')})\n\n* start - Failed\n"
+        )
+      ),
+      "unknown actions" => held.merge("actions" => "UNKNOWN"),
+      "malformed actions" => held.merge("actions" => false),
+      "empty actions array" => held.merge("actions" => []),
+      "actionful response" => held.merge("actions" => [{ "identifier" => "approve" }])
     }
 
     cases.each do |label, row|
@@ -246,6 +255,61 @@ class PrCiReadinessTest < Minitest::Test
     out = PrCiReadiness.assess(pr_number: 1, required_used: false,
                                rows: [{ "name" => "stale", "bucket" => "cancel" }])
     assert_equal "UNKNOWN", out["verdict"]
+  end
+
+  def test_draft_head_failure_does_not_block_integration_success
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
+                                 { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "fail" },
+                                 { "name" => "validate", "bucket" => "pass" }
+                               ])
+    assert_equal "READY", out["verdict"]
+  end
+
+  def test_only_draft_head_rows_is_unknown
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true,
+                               rows: [{ "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "pass" }])
+    assert_equal "UNKNOWN", out["verdict"]
+  end
+
+  def test_invalid_draft_head_row_still_fails_closed
+    out = PrCiReadiness.assess(pr_number: 1, required_used: true, rows: [
+                                 { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "future-state" },
+                                 { "workflow" => "Validate", "name" => "validate", "bucket" => "pass" }
+                               ])
+    assert_equal "NOT_READY", out["verdict"]
+    assert_equal ['validate (draft head) (bucket: "future-state")'], out["invalid"]
+  end
+
+  def test_draft_head_filter_is_exact_and_applies_to_evidence_scopes
+    scope = PrCiReadiness.evidence_scope(
+      source: "github.actions.exact_head", head_sha: "a" * 40, complete: true,
+      rows: [
+        { "workflow" => "Validate", "name" => "validate (draft head)", "bucket" => "fail" },
+        { "workflow" => "Validate", "name" => "validate (draft head)" },
+        { "workflow" => "Security", "name" => "validate (draft head)", "bucket" => "fail" },
+        { "workflow" => "Validate", "name" => "validate (draft head extra)", "bucket" => "fail" }
+      ],
+      checked_at: "2026-09-02T00:00:00Z"
+    )
+    identities = scope["rows"].map { |row| [row["workflow"], row["name"]] }
+    assert_equal "UNKNOWN", scope["state"]
+    assert_equal [
+      ["Validate", "validate (draft head)"],
+      ["Security", "validate (draft head)"],
+      ["Validate", "validate (draft head extra)"]
+    ], identities
+  end
+
+  def test_draft_head_actions_filter_removes_the_validate_run_and_job
+    base = "https://github.com/owner/repo/actions/runs"
+    rows = [
+      { "kind" => "run", "id" => 10, "name" => "Validate", "url" => "#{base}/10" },
+      { "kind" => "job", "id" => 11, "name" => "validate (draft head)", "url" => "#{base}/10/job/11" },
+      { "kind" => "run", "id" => 20, "name" => "Security", "url" => "#{base}/20" },
+      { "kind" => "job", "id" => 21, "name" => "validate (draft head)", "url" => "#{base}/20/job/21" }
+    ]
+    ids = PrCiReadiness.non_draft_head_actions_rows(rows).map { |row| row["id"] }
+    assert_equal [20, 21], ids
   end
 
   def test_same_context_current_pass_supersedes_cancelled_history
@@ -1144,6 +1208,17 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
+  def test_cli_preserves_omitted_check_run_actions_without_blocking_authenticated_hold
+    # GitHub GET check-run responses omit the write-side actions parameter (#767).
+    with_cli_optional_hold(mutate_held: ->(row) { row.delete("actions") }) do |result, _base, workflow_id|
+      assert_equal "READY", result.fetch("verdict")
+      row = result.dig("scopes", "other", "rows").first
+      refute row.key?("actions"), "missing API data must remain absent, not be fabricated as null"
+      assert_equal workflow_id,
+                   result.dig("scopes", "other", "policy_dispositions", 0, "provider_run_id")
+    end
+  end
+
   def test_optional_hold_cannot_mask_pending_viewer_review_draft
     pages = {
       nil => {
@@ -1644,7 +1719,7 @@ class PrCiReadinessCliTest < Minitest::Test
     end
   end
 
-  def test_exact_head_actions_keep_only_current_run_per_workflow_and_event
+  def test_exact_head_actions_keep_latest_non_cancelled_run_per_workflow_and_event
     head = "a" * 40
     action_runs = [
       {
@@ -1663,7 +1738,7 @@ class PrCiReadinessCliTest < Minitest::Test
       },
       {
         "id" => 102, "workflow_id" => 10, "event" => "pull_request",
-        "run_number" => 8, "run_attempt" => 2, "name" => "CI", "head_sha" => head,
+        "run_number" => 9, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
         "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
         "pull_requests" => [],
         "status" => "completed", "conclusion" => "cancelled"
@@ -1731,6 +1806,34 @@ class PrCiReadinessCliTest < Minitest::Test
       Array.new(2) { ["READY", "READY", [103, 1030, 104, 1040, 105, 1050]] },
       results
     )
+  end
+
+  def test_exact_head_actions_keep_latest_cancelled_run_when_group_has_no_successor
+    head = "a" * 40
+    cancelled_run = {
+      "id" => 100, "workflow_id" => 10, "event" => "pull_request",
+      "run_number" => 7, "run_attempt" => 1, "name" => "CI", "head_sha" => head,
+      "head_branch" => "feature", "head_repository" => { "id" => 9_002 },
+      "pull_requests" => [],
+      "status" => "completed", "conclusion" => "cancelled"
+    }
+
+    with_fake_gh(
+      required_json: '[{"workflow":"CI","name":"required","bucket":"pass"}]',
+      full_json: "[]",
+      pr_head: head,
+      exact_actions: [cancelled_run],
+      runs: { "100" => { run: cancelled_run, jobs: [] } }
+    ) do |env|
+      out, status = run_script(env, "123", "--repo", "owner/repo")
+      assert status.success?, out
+      data = JSON.parse(out)
+
+      assert_equal "NOT_READY", data.fetch("verdict")
+      assert_equal "NOT_READY", data.dig("scopes", "github_actions", "state")
+      row_ids = data.dig("scopes", "github_actions", "rows").map { |row| row.fetch("id") }
+      assert_equal [100], row_ids
+    end
   end
 
   # Regression: exact_head_inventory must not re-append a superseded GitHub

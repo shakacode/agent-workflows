@@ -5,7 +5,7 @@
 > it does not by itself add a daemon, dashboard feature, or coordination API.
 > It is a point-in-time record. The live file layout, snapshot schema, writer
 > state, and desk rules are the
-> [Snapshot And Desk Contract](../control-tower-prompts.md#snapshot-and-desk-contract).
+> [Snapshot And Desk Contract](../../docs/control-tower-prompts.md#snapshot-and-desk-contract).
 
 ## Objective
 
@@ -13,7 +13,7 @@ Reduce large issue and pull-request backlogs quickly without making the human
 poll many Codex tasks. Keep repositories independently productive, concentrate
 human attention on the highest-value unresolved decision, and preserve the
 small safety floor in the
-[throughput-first workflow](2026-08-29-throughput-first-human-agent-workflow.md).
+[throughput-first workflow](../../docs/plans/2026-08-29-throughput-first-human-agent-workflow.md).
 
 At the 2026-09-02 planning snapshot, GitHub reported:
 
@@ -195,7 +195,7 @@ terminal tasks SHALL be archived rather than renamed merely to mark them.
 The HIL Desk SHALL rerank from current inputs on every refresh. Priority SHALL
 be explained in plain language, not hidden behind an opaque score. Each item
 SHALL carry one of the four allowed `priority_class` machine classifications in
-the [contract](../control-tower-prompts.md#snapshot-and-desk-contract). The desk
+the [contract](../../docs/control-tower-prompts.md#snapshot-and-desk-contract). The desk
 SHALL rank imminent irreversible harm first; otherwise it ranks by work
 unblocked, not a readiness-state label.
 
@@ -284,7 +284,7 @@ Each machine may mount the shared directory at a different local path. The
 control-tower prompts call that local path `<SHARED_HIL_ROOT>`. The file
 layout, snapshot schema, writer state, generated-document fields, and transport
 rules are defined once, in the
-[Snapshot And Desk Contract](../control-tower-prompts.md#snapshot-and-desk-contract),
+[Snapshot And Desk Contract](../../docs/control-tower-prompts.md#snapshot-and-desk-contract),
 so that towers, the desk, the later renderer, and the dashboard read one
 source. This plan does not duplicate them.
 
